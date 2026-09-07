@@ -55,3 +55,6 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 apple/Build/
+apple/.derived-data-*/
+apple/.swiftpm-module-cache/
+apple/.clang-module-cache/
