@@ -133,6 +133,7 @@ import Testing
     #expect(importer.contains("AndroidConfigTokenCodec.decode(payload)"))
     #expect(infoPlist.contains("<string>r2cenroll</string>"))
     #expect(entitlements.contains("<string>applinks:r2c-tracker.com</string>"))
+    #expect(entitlements.contains("<string>applinks:prerel.r2c-tracker.com</string>"))
 }
 @testable import R2CCore
 

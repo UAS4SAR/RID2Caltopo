@@ -82,6 +82,16 @@
                     android:host="r2c-tracker.com"
                     android:pathPattern="/.*/enroll" />
             </intent-filter>
+            <!-- Pre-release tracker enrollment App Links (modularization soak). -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="prerel.r2c-tracker.com"
+                    android:pathPattern="/.*/enroll" />
+            </intent-filter>
             <!-- Browser fallback when verified-link state is unavailable or stale. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
