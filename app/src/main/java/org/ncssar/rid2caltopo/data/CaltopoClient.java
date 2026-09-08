@@ -4281,10 +4281,16 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         if (IsExitRequested()) return;
         long appActiveStartedAtMsec = AppActiveStartedAtMsec;
         long lastRidMessageMsec = CtDroneSpec.LastRidMessageTimestampMsec();
+        long lastProtectedActivityMsec = MapOfflinePrepRuntime.lastActivityAtMsec();
         long nowMsec = System.currentTimeMillis();
+        if (MapOfflinePrepRuntime.isActive()) {
+            Log.i(TAG, "CheckIdle(): offline map preparation is active; deferring automatic shutdown.");
+            return;
+        }
         long remainingMsec = ApplicationIdleTimeoutPolicy.remainingDelayMsec(
                 appActiveStartedAtMsec,
                 lastRidMessageMsec,
+                lastProtectedActivityMsec,
                 maxIdleInMinutes,
                 nowMsec);
         if (remainingMsec == ApplicationIdleTimeoutPolicy.DISABLED) return;
@@ -4293,10 +4299,12 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             if (context != null) AppIdleAlarmReceiver.schedule(context, remainingMsec);
             return;
         }
-        long idleBaselineMsec = Math.max(appActiveStartedAtMsec, lastRidMessageMsec);
+        long idleBaselineMsec = Math.max(
+                appActiveStartedAtMsec,
+                Math.max(lastRidMessageMsec, lastProtectedActivityMsec));
         long idleInMsec = Math.max(0L, nowMsec - idleBaselineMsec);
         String exitMessage = String.format(Locale.US,
-                "CheckIdle(): app idle timeout expired after %.3f/%.3f minutes without RID messages (appActiveStarted=%s lastRidMessage=%s). Shutting down app and map to save battery.",
+                "CheckIdle(): app idle timeout expired after %.3f/%.3f minutes without RID messages or protected activity (appActiveStarted=%s lastRidMessage=%s). Shutting down app and map to save battery.",
                 idleInMsec / 60000.0,
                 (double) maxIdleInMinutes,
                 TimeDatestampString(appActiveStartedAtMsec),

@@ -18,6 +18,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.hardware.display.DisplayManager
 import android.hardware.biometrics.BiometricPrompt
+import android.hardware.biometrics.BiometricManager
 import android.app.KeyguardManager
 import android.media.AudioManager
 import android.media.ToneGenerator
@@ -26,6 +27,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Looper
 import android.os.CancellationSignal
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.Display
 import android.view.View
@@ -204,10 +206,12 @@ internal enum class OrganizationExternalFlow {
 internal class OrganizationAccessSession {
     private var authenticated = false
     private var trustedExternalFlow: OrganizationExternalFlow? = null
+    private var screenLockedAtElapsedRealtimeMs: Long? = null
 
     @Synchronized
     fun markAuthenticated() {
         authenticated = true
+        screenLockedAtElapsedRealtimeMs = null
     }
 
     @Synchronized
@@ -227,16 +231,44 @@ internal class OrganizationAccessSession {
         if (authenticated && (isChangingConfigurations || trustedExternalFlow != null)) {
             return true
         }
+        if (screenLockedAtElapsedRealtimeMs != null) {
+            authenticated = false
+            return false
+        }
         authenticated = false
         trustedExternalFlow = null
         return false
     }
 
     @Synchronized
-    fun invalidateForScreenLock() {
+    fun invalidateForScreenLock(screenOffElapsedRealtimeMs: Long) {
         // Retain the flow marker so its eventual result can still be consumed, but
         // require authentication before protected app content is shown again.
+        val canResumeFromSystemUnlock = authenticated
         authenticated = false
+        screenLockedAtElapsedRealtimeMs = screenOffElapsedRealtimeMs.takeIf {
+            canResumeFromSystemUnlock
+        }
+    }
+
+    @Synchronized
+    fun authenticateFromSystemUnlock(
+        authenticationElapsedRealtimeMs: Long,
+        deviceLocked: Boolean,
+    ): Boolean {
+        val screenLockTime = screenLockedAtElapsedRealtimeMs ?: return false
+        if (deviceLocked || authenticationElapsedRealtimeMs < screenLockTime) return false
+        authenticated = true
+        screenLockedAtElapsedRealtimeMs = null
+        return true
+    }
+
+    @Synchronized
+    fun authenticateFromUserPresent(): Boolean {
+        if (screenLockedAtElapsedRealtimeMs == null) return false
+        authenticated = true
+        screenLockedAtElapsedRealtimeMs = null
+        return true
     }
 
     @Synchronized
@@ -246,6 +278,7 @@ internal class OrganizationAccessSession {
     fun invalidate() {
         authenticated = false
         trustedExternalFlow = null
+        screenLockedAtElapsedRealtimeMs = null
     }
 }
 
@@ -744,11 +777,23 @@ class R2CActivity :
     private var screenLockReceiverRegistered = false
     private val screenLockReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action != Intent.ACTION_SCREEN_OFF) return
-            organizationAccessSession.invalidateForScreenLock()
-            organizationAuthenticationCancellation?.cancel()
-            organizationAuthenticationCancellation = null
-            CTDebug(TAG, "Organization access locked because the screen turned off")
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    organizationAccessSession.invalidateForScreenLock(SystemClock.elapsedRealtime())
+                    organizationAuthenticationCancellation?.cancel()
+                    organizationAuthenticationCancellation = null
+                    CTDebug(TAG, "Organization access locked because the screen turned off")
+                }
+                Intent.ACTION_USER_PRESENT -> {
+                    if (organizationAccessSession.authenticateFromUserPresent()) {
+                        organizationAuthenticationCancellation?.cancel()
+                        organizationAuthenticationCancellation = null
+                        organizationAccessState = OrganizationAccessState.UNLOCKED
+                        organizationAccessError = null
+                        CTDebug(TAG, "Organization access accepted the completed system unlock")
+                    }
+                }
+            }
         }
     }
     private val bluetoothStateReceiver = object : BroadcastReceiver() {
@@ -1125,6 +1170,7 @@ class R2CActivity :
             if (configuredAccessAuthenticationRequired() &&
                 organizationAccessState != OrganizationAccessState.AUTHENTICATING
             ) {
+                acceptSystemAuthenticationAfterScreenUnlock()
                 organizationAccessState = if (organizationAccessSession.isAuthenticated()) {
                     organizationAccessError = null
                     OrganizationAccessState.UNLOCKED
@@ -1720,6 +1766,11 @@ class R2CActivity :
 
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                     organizationAuthenticationCancellation = null
+                    if (organizationAccessSession.isAuthenticated()) {
+                        organizationAccessState = OrganizationAccessState.UNLOCKED
+                        organizationAccessError = null
+                        return
+                    }
                     organizationAccessSession.invalidate()
                     organizationAccessState = OrganizationAccessState.LOCKED
                     organizationAccessError =
@@ -1731,6 +1782,31 @@ class R2CActivity :
                 }
             },
         )
+    }
+
+    private fun acceptSystemAuthenticationAfterScreenUnlock(): Boolean {
+        if (Build.VERSION.SDK_INT < 35) return false
+        val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+        return try {
+            val biometricManager = getSystemService(BiometricManager::class.java)
+            val lastAuthenticationTime = biometricManager.getLastAuthenticationTime(
+                BiometricManager.Authenticators.DEVICE_CREDENTIAL or
+                    BiometricManager.Authenticators.BIOMETRIC_STRONG,
+            )
+            val accepted = lastAuthenticationTime != BiometricManager.BIOMETRIC_NO_AUTHENTICATION &&
+                organizationAccessSession.authenticateFromSystemUnlock(
+                    authenticationElapsedRealtimeMs = lastAuthenticationTime,
+                    deviceLocked = keyguardManager.isDeviceLocked,
+                )
+            if (accepted) {
+                organizationAccessError = null
+                CTDebug(TAG, "Organization access accepted recent system authentication")
+            }
+            accepted
+        } catch (e: RuntimeException) {
+            CTDebug(TAG, "Recent system authentication query unavailable: ${e.javaClass.simpleName}")
+            false
+        }
     }
 
     private fun acceptLaunchDisclaimer() {
@@ -1863,7 +1939,10 @@ class R2CActivity :
 
     private fun registerScreenLockReceiver() {
         if (screenLockReceiverRegistered) return
-        val filter = IntentFilter(Intent.ACTION_SCREEN_OFF)
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(screenLockReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {

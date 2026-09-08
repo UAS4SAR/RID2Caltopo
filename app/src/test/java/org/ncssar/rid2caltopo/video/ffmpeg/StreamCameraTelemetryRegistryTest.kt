@@ -337,6 +337,7 @@ class StreamCameraTelemetryRegistryTest {
         assertNull(DjiCameraOrientation.controllerAzimuthDeg(null))
         // August 24 M4TD clue: controller reported 288 degrees and -17 degrees.
         assertEquals(286.733, DjiCameraOrientation.controllerAzimuthDeg(16.733) ?: 0.0, 1e-9)
+        assertEquals(300.033, DjiCameraOrientation.controllerAzimuthDeg(16.733, 13.3) ?: 0.0, 1e-9)
         assertEquals(-17.54, DjiCameraOrientation.calibratedTiltDeg(-29.264) ?: 0.0, 0.01)
         assertEquals(-90.0, DjiCameraOrientation.calibratedTiltDeg(-90.0) ?: 0.0, 0.0)
         assertEquals(0.0, DjiCameraOrientation.calibratedTiltDeg(-14.5625) ?: 1.0, 0.0)

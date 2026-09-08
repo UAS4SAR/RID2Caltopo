@@ -6,12 +6,15 @@ object DjiCameraOrientation {
     private const val RAW_DOWN_REFERENCE_DEG = -90.0
 
     @JvmStatic
-    fun controllerAzimuthDeg(cameraAzimuthDeg: Double?): Double? {
+    fun controllerAzimuthDeg(
+        cameraAzimuthDeg: Double?,
+        magneticDeclinationDeg: Double? = 0.0,
+    ): Double? {
         val finite = cameraAzimuthDeg?.takeIf { it.isFinite() } ?: return null
-        // The M4TD controller and August 24 clue flight confirm that tag-4 offset 3
-        // increases clockwise and is already aligned to the controller's north
-        // convention. Raw 16.733 degrees corresponds to about 287-288 degrees.
-        return (((finite - 90.0) % 360.0) + 360.0) % 360.0
+        val declination = magneticDeclinationDeg?.takeIf { it.isFinite() } ?: 0.0
+        // Tag-4 offset 3 increases clockwise, but its north reference is magnetic.
+        // CalTopo bearings are true north, so preserve the direction and add declination.
+        return (((finite - 90.0 + declination) % 360.0) + 360.0) % 360.0
     }
 
     /**

@@ -59,6 +59,8 @@ class ClueCaptureSummaryTest {
 
         assertTrue(summary.contains("  Position (USNG): 18S VK "))
         assertTrue(summary.contains("  Decimal: 39.952600, -75.165200"))
+        assertTrue(summary.contains("  Camera Azimuth: 273.2°"))
+        assertTrue(!summary.contains("Heading used for clue"))
         assertTrue(summary.contains("  Gimbal angle at capture: -45.0°"))
         assertTrue(summary.contains("  AGL: 82'"))
         assertTrue(summary.contains("  ATO: 131'"))

@@ -1,11 +1,12 @@
 package org.ncssar.rid2caltopo.video.ffmpeg
 
+import android.hardware.GeomagneticField
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
 
 data class StreamCameraTelemetrySample(
-    /** Camera azimuth aligned with the heading shown by the DJI controller. */
+    /** Clockwise camera azimuth relative to true north. */
     val azimuthDeg: Double?,
     /** Course from recent SEI position motion; not camera azimuth. */
     val courseDeg: Double?,
@@ -31,6 +32,8 @@ data class StreamCameraTelemetrySample(
     val attitudeAnglesDeg: List<Double>,
     /** Clockwise true-north camera bearing reserved for the Map Pane FOV wedge. */
     val fovAzimuthDeg: Double? = null,
+    /** Magnetic-to-true correction applied to the raw DJI camera azimuth. */
+    val magneticDeclinationDeg: Double = 0.0,
 )
 
 internal fun shouldBlockRidClueFallback(
@@ -79,7 +82,17 @@ object StreamCameraTelemetryRegistry {
         val referenceLatitude = telemetry.latitude?.takeIf { it.isFinite() && it in -90.0..90.0 }
         val referenceLongitude = telemetry.longitude?.takeIf { it.isFinite() && it in -180.0..180.0 }
         val referenceAltitude = telemetry.altitudeMeters?.takeIf { it.isFinite() && it in -1000.0..30000.0 }
-        val controllerAzimuth = DjiCameraOrientation.controllerAzimuthDeg(rawAzimuth) ?: return
+        val declination = if (referenceLatitude != null && referenceLongitude != null) {
+            GeomagneticField(
+                referenceLatitude.toFloat(),
+                referenceLongitude.toFloat(),
+                (referenceAltitude ?: 0.0).toFloat(),
+                nowMs,
+            ).declination.toDouble()
+        } else {
+            0.0
+        }
+        val controllerAzimuth = DjiCameraOrientation.controllerAzimuthDeg(rawAzimuth, declination) ?: return
         val northMm = telemetry.djiNorthMm
         val eastMm = telemetry.djiEastMm
         val downMm = telemetry.djiDownMm
@@ -135,6 +148,7 @@ object StreamCameraTelemetryRegistry {
                 sourceTimestampUs = telemetry.sourceTimestampUs,
                 receivedAtMs = nowMs,
                 rawCameraAzimuthDeg = rawAzimuth,
+                magneticDeclinationDeg = declination,
                 rawTiltDeg = rawTilt,
                 attitudeAnglesDeg = telemetry.djiAttitudeAnglesDeg.takeIf { it.size == 9 }
                     ?: List(9) { Double.NaN },

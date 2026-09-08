@@ -141,6 +141,11 @@
             android:exported="false"
             android:foregroundServiceType="mediaPlayback|connectedDevice|dataSync"/>
         <service
+            android:name=".app.MapOfflineDownloadService"
+            android:exported="false"
+            android:stopWithTask="true"
+            android:foregroundServiceType="dataSync" />
+        <service
             android:name="com.google.firebase.sessions.SessionLifecycleService"
             tools:node="remove" />
         <provider

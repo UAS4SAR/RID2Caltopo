@@ -224,6 +224,7 @@ class FfmpegProbeService(
     private val onLocalPlaybackEnded: (String) -> Unit = {},
     private val onLocalPlaybackEof: (String) -> Unit = {},
     private val onLiveFrame: (String, Long) -> Unit = { _, _ -> },
+    private val onCameraTelemetry: (String, StreamCameraTelemetrySample?) -> Unit = { _, _ -> },
 ) {
     private val tag = "FfmpegProbeService"
     private val recentReaderWaitPenaltyMs = 5_000L
@@ -239,6 +240,7 @@ class FfmpegProbeService(
     private val suspendedRenderSessions = mutableMapOf<String, Long>()
     private val lastFrameAtMs = mutableMapOf<String, Long>()
     private val lastLiveFrameCallbackAtMs = mutableMapOf<String, Long>()
+    private val lastCameraTelemetryCallbackAtMs = mutableMapOf<String, Long>()
     private val lastTelemetryLogAtMs = mutableMapOf<String, Long>()
     private val sourcePathByDesignator = mutableMapOf<String, String>()
     private val renderEnabledDesignators = mutableSetOf<String>()
@@ -297,16 +299,31 @@ class FfmpegProbeService(
             }
             return@probeListener
         }
+        val now = System.currentTimeMillis()
         if (eventType == "telemetry") {
             val telemetryProbeSessionId = synchronized(stateLock) {
                 telemetryProbeSessions[designator]
             }
-            if (OperationalTelemetryAuthorityPolicy.accepts(
+            if (telemetry.sourceTag == "dji-sei-245" &&
+                OperationalTelemetryAuthorityPolicy.accepts(
                     sessionId = sessionId,
                     telemetryProbeSessionId = telemetryProbeSessionId,
                 )
             ) {
-                StreamCameraTelemetryRegistry.update(designator, telemetry)
+                StreamCameraTelemetryRegistry.update(designator, telemetry, now)
+                val sample = StreamCameraTelemetryRegistry.fresh(designator, now)
+                val shouldNotify = sample != null && synchronized(stateLock) {
+                    val previous = lastCameraTelemetryCallbackAtMs[designator] ?: 0L
+                    if (now - previous >= CAMERA_TELEMETRY_UI_INTERVAL_MS) {
+                        lastCameraTelemetryCallbackAtMs[designator] = now
+                        true
+                    } else {
+                        false
+                    }
+                }
+                if (shouldNotify) {
+                    onCameraTelemetry(designator, sample)
+                }
             }
             mergeTelemetry(designator, telemetry)
         }
@@ -322,7 +339,6 @@ class FfmpegProbeService(
             }
         }
 
-        val now = System.currentTimeMillis()
         if (eventType == "reader_wait_long") {
             var stallDiagnostic: String? = null
             synchronized(stateLock) {
@@ -695,6 +711,7 @@ class FfmpegProbeService(
     fun onStreamStopped(designator: String) {
         CTDebug(tag, "Stream stopped for $designator; tearing down FFmpeg sessions")
         StreamCameraTelemetryRegistry.clear(designator)
+        onCameraTelemetry(designator, null)
         val sessionIds: List<Long>
         synchronized(stateLock) {
             sessionIds = sessionIdsForDesignatorLocked(designator)
@@ -704,6 +721,7 @@ class FfmpegProbeService(
             localPlaybackPausedByDesignator.remove(designator)
             lastFrameAtMs.remove(designator)
             lastLiveFrameCallbackAtMs.remove(designator)
+            lastCameraTelemetryCallbackAtMs.remove(designator)
             lastTelemetryLogAtMs.remove(designator)
             sourcePathByDesignator.remove(designator)
             renderEnabledDesignators.remove(designator)
@@ -720,6 +738,10 @@ class FfmpegProbeService(
         sessionIds.forEach { sessionId ->
             stopSessionAsync(sessionId, "Stopped FFmpeg render for $designator sessionId=$sessionId")
         }
+    }
+
+    private companion object {
+        const val CAMERA_TELEMETRY_UI_INTERVAL_MS = 200L
     }
 
     fun suspendRender(designator: String) {

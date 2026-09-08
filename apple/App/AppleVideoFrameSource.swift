@@ -876,7 +876,8 @@ final class AppleVideoFrameSource: ObservableObject {
                 latestDJICameraTelemetry = AppleDJICameraTelemetry(
                     rawAzimuthCandidateDegrees: RidHeading.normalized(djiAzimuthDegrees) ?? djiAzimuthDegrees,
                     cameraAzimuthDegrees: OperationalClueGeometry.djiControllerCameraAzimuthDegrees(
-                        seiCameraAzimuthDegrees: djiAzimuthDegrees
+                        seiCameraAzimuthDegrees: djiAzimuthDegrees,
+                        magneticDeclinationDegrees: AppleMagneticNorth.declinationDegrees
                     ),
                     courseDegrees: RidHeading.normalized(djiPositionValues[6]),
                     rawTiltDegrees: djiTiltDegrees,

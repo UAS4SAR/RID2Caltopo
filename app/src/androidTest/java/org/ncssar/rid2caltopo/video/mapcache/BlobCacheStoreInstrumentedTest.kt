@@ -24,7 +24,7 @@ class BlobCacheStoreInstrumentedTest {
         get() = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
 
     @Test
-    fun blobSqlDiskCache_roundTripsAndEvictsLeastRecentlyUsed() {
+    fun blobSqlDiskCache_keepsWritesFastAndEvictsDuringExplicitMaintenance() {
         val cache = BlobSqlDiskCache(
             cacheDir = createTempDir("blobsql"),
             dbName = "test_cache.db",
@@ -36,6 +36,9 @@ class BlobCacheStoreInstrumentedTest {
         assertArrayEquals(byteArrayOf(1, 2, 3, 4, 5, 6), cache.get("a")?.bytes)
 
         cache.put("b", byteArrayOf(7, 8, 9, 10, 11, 12), expiresAtMs = cache.defaultExpiry())
+
+        assertArrayEquals(byteArrayOf(1, 2, 3, 4, 5, 6), cache.get("a")?.bytes)
+        cache.runMaintenance(maxEntryAgeCutoffMs = 0L, trimToBytes = 9L)
 
         assertNull(cache.get("a", countHitMiss = false))
         assertArrayEquals(byteArrayOf(7, 8, 9, 10, 11, 12), cache.get("b")?.bytes)
@@ -115,6 +118,57 @@ class BlobCacheStoreInstrumentedTest {
         } finally {
             executor.shutdownNow()
         }
+    }
+
+    @Test
+    fun safBlobCacheStore_prewarmIndexesExistingReadableTileFiles() {
+        val root = DocumentFile.fromFile(createTempDir("safprewarm"))
+        val namespace = "tile_cache_v1_test_${UUID.randomUUID()}"
+        val namespaceDir = root.createDirectory(namespace)!!
+        val sourceDir = namespaceDir.createDirectory("source")!!
+        val zoomDir = sourceDir.createDirectory("12")!!
+        val xDir = zoomDir.createDirectory("100")!!
+        val tile = xDir.createFile("application/octet-stream", "200.bin")!!
+        context.contentResolver.openOutputStream(tile.uri, "w")!!.use {
+            it.write(byteArrayOf(4, 5, 6))
+        }
+        val cache = SafBlobCacheStore(
+            context = context,
+            rootDir = root,
+            namespace = namespace,
+            maxBytes = 1_024L * 1_024L,
+            defaultTtlMs = 60_000L,
+        )
+
+        cache.prewarm()
+
+        assertTrue(cache.exists("v1|source|12|100|200"))
+        assertArrayEquals(byteArrayOf(4, 5, 6), cache.get("v1|source|12|100|200")?.bytes)
+    }
+
+    @Test
+    fun safBlobCacheStore_prewarmRejectsStaleDatabaseResidency() {
+        val root = DocumentFile.fromFile(createTempDir("safstale"))
+        val namespace = "tile_cache_v1_test_${UUID.randomUUID()}"
+        val cache = SafBlobCacheStore(
+            context = context,
+            rootDir = root,
+            namespace = namespace,
+            maxBytes = 1_024L * 1_024L,
+            defaultTtlMs = 60_000L,
+        )
+        val key = "v1|source|12|100|200"
+        cache.put(key, byteArrayOf(4, 5, 6), expiresAtMs = cache.defaultExpiry())
+        root.findFile(namespace)!!
+            .findFile("source")!!
+            .findFile("12")!!
+            .findFile("100")!!
+            .findFile("200.bin")!!
+            .delete()
+
+        cache.prewarm()
+
+        assertFalse(cache.exists(key))
     }
 
     private fun createTempDir(prefix: String): File {

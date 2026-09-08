@@ -2,6 +2,12 @@ import Foundation
 import R2CCore
 
 actor AppleTerrainElevationService {
+    private struct PendingPrefetch {
+        let cell: String
+        let latitude: Double
+        let longitude: Double
+    }
+
     private struct CacheEntry: Codable {
         let elevationMeters: Double
         let fetchedAt: Date
@@ -12,7 +18,9 @@ actor AppleTerrainElevationService {
     private let localDEM: GeoTiffElevationSource
     private let maximumFreshAge: TimeInterval = 365 * 24 * 60 * 60
     private var scheduledPrefetchCells = Set<String>()
-    private var pendingPrefetchCoordinates: [(latitude: Double, longitude: Double)] = []
+    private var pendingPrefetchCoordinates: [PendingPrefetch] = []
+    private var prefetchFailureCounts: [String: Int] = [:]
+    private var prefetchRetryAfter: [String: Date] = [:]
     private var prefetchWorkerRunning = false
 
     init(session: URLSession = .shared) {
@@ -85,8 +93,9 @@ actor AppleTerrainElevationService {
 
     private func schedulePrefetch(latitude: Double, longitude: Double) {
         let cell = "\(Int(floor(latitude * 20))):\(Int(floor(longitude * 20)))"
+        if let retryAfter = prefetchRetryAfter[cell], retryAfter > Date() { return }
         guard scheduledPrefetchCells.insert(cell).inserted else { return }
-        pendingPrefetchCoordinates.append((latitude, longitude))
+        pendingPrefetchCoordinates.append(.init(cell: cell, latitude: latitude, longitude: longitude))
         guard !prefetchWorkerRunning else { return }
         prefetchWorkerRunning = true
         Task(priority: .utility) { [weak self] in
@@ -97,30 +106,48 @@ actor AppleTerrainElevationService {
     private func drainPrefetchQueue() async {
         while !pendingPrefetchCoordinates.isEmpty {
             let coordinate = pendingPrefetchCoordinates.removeFirst()
-            await prefetchBestDEM(latitude: coordinate.latitude, longitude: coordinate.longitude)
+            let complete = await prefetchBestDEM(
+                latitude: coordinate.latitude,
+                longitude: coordinate.longitude
+            )
+            if complete {
+                prefetchFailureCounts[coordinate.cell] = nil
+                prefetchRetryAfter[coordinate.cell] = nil
+            } else {
+                scheduledPrefetchCells.remove(coordinate.cell)
+                let failures = (prefetchFailureCounts[coordinate.cell] ?? 0) + 1
+                prefetchFailureCounts[coordinate.cell] = failures
+                prefetchRetryAfter[coordinate.cell] = Date().addingTimeInterval(
+                    OperationalCacheRetryPolicy.prefetchDelaySeconds(failureCount: failures)
+                )
+            }
         }
         prefetchWorkerRunning = false
     }
 
-    private func prefetchBestDEM(latitude: Double, longitude: Double) async {
+    private func prefetchBestDEM(latitude: Double, longitude: Double) async -> Bool {
+        var s1mReady = true
         do {
             if let download = try await resolveS1M(latitude: latitude, longitude: longitude) {
                 try await downloadDEM(download)
             }
         } catch is CancellationError {
-            return
+            return false
         } catch {
+            s1mReady = false
             AppleLog.warning("Terrain", "S1M prefetch unavailable; retaining terrain fallback")
         }
         do {
             let tile = Self.geographicTileName(latitude: latitude, longitude: longitude)
             let fileName = "USGS_1_\(tile).tif"
-            guard let url = URL(string: "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/\(tile)/\(fileName)") else { return }
+            guard let url = URL(string: "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/\(tile)/\(fileName)") else { return false }
             try await downloadDEM((url, fileName, nil))
+            return s1mReady
         } catch is CancellationError {
-            return
+            return false
         } catch {
             AppleLog.warning("Terrain", "DEM fallback prefetch unavailable")
+            return false
         }
     }
 
@@ -138,8 +165,7 @@ actor AppleTerrainElevationService {
         ]
         var request = URLRequest(url: components.url!)
         request.timeoutInterval = 15
-        let (data, response) = try await session.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+        let data = try await AppleCacheHTTPClient.data(for: request, session: session)
         return try OperationalS1MCatalog.products(
             data: data,
             containing: (latitude, longitude)
@@ -147,28 +173,12 @@ actor AppleTerrainElevationService {
     }
 
     private func downloadDEM(_ download: (url: URL, fileName: String, expectedBytes: Int64?)) async throws {
-        let destination = AppleMapCachePaths.demRoot.appendingPathComponent(download.fileName)
-        if let size = (try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize) {
-            let minimum = download.expectedBytes.map { max(100_000, $0 * 95 / 100) } ?? 5_000_000
-            if Int64(size) >= minimum {
-                localDEM.invalidateCatalog()
-                return
-            }
-        }
-        let required = (download.expectedBytes ?? 400_000_000) + 250_000_000
-        let capacityURL = destination.deletingLastPathComponent().deletingLastPathComponent()
-        if let available = try? capacityURL.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-            .volumeAvailableCapacityForImportantUsage,
-           available < required {
-            throw CocoaError(.fileWriteOutOfSpace)
-        }
-        let (temporary, response) = try await session.download(from: download.url)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if FileManager.default.fileExists(atPath: destination.path) {
-            try FileManager.default.removeItem(at: destination)
-        }
-        try FileManager.default.moveItem(at: temporary, to: destination)
+        _ = try await AppleDEMDownloadCoordinator.shared.ensureDEM(
+            url: download.url,
+            fileName: download.fileName,
+            expectedBytes: download.expectedBytes,
+            session: session
+        )
         localDEM.invalidateCatalog()
     }
 

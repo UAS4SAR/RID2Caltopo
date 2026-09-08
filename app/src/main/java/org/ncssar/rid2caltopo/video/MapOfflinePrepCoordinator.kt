@@ -1,32 +1,69 @@
 package org.ncssar.rid2caltopo.video
 
+import android.content.Context
 import androidx.compose.runtime.mutableStateOf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import okhttp3.Call
+import org.ncssar.rid2caltopo.app.MapOfflineDownloadService
+import org.ncssar.rid2caltopo.data.CaltopoClient
+import org.ncssar.rid2caltopo.video.mapcache.MapCacheMaintenanceScheduler
+import org.ncssar.rid2caltopo.video.mapcache.TileFetchPriorityScheduler
+import java.io.Closeable
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /** Process-lifetime signal used by app shutdown and relocation policy. */
 object MapOfflinePrepRuntime {
     private val active = AtomicBoolean(false)
+    private val lastActivityAtMsec = AtomicLong(0L)
 
     @Volatile
     private var cancelAction: ((Boolean) -> Unit)? = null
 
+    @Volatile
+    private var idlePolicyChangedAction: (() -> Unit)? = null
+
     @JvmStatic
     fun isActive(): Boolean = active.get()
 
-    internal fun begin(onCancel: (hideDialog: Boolean) -> Unit) {
+    @JvmStatic
+    fun lastActivityAtMsec(): Long = lastActivityAtMsec.get()
+
+    internal fun noteProgress() {
+        if (active.get()) lastActivityAtMsec.set(System.currentTimeMillis())
+    }
+
+    internal fun claimStallRecovery(nowMsec: Long, thresholdMsec: Long): Boolean {
+        if (!active.get()) return false
+        while (true) {
+            val lastActivity = lastActivityAtMsec.get()
+            if (nowMsec - lastActivity < thresholdMsec) return false
+            if (lastActivityAtMsec.compareAndSet(lastActivity, nowMsec)) return true
+        }
+    }
+
+    internal fun begin(
+        onIdlePolicyChanged: () -> Unit = {},
+        onCancel: (hideDialog: Boolean) -> Unit,
+    ) {
         cancelAction = onCancel
+        idlePolicyChangedAction = onIdlePolicyChanged
+        lastActivityAtMsec.set(System.currentTimeMillis())
         active.set(true)
+        onIdlePolicyChanged()
     }
 
     internal fun finish() {
-        active.set(false)
+        val wasActive = active.getAndSet(false)
+        if (wasActive) lastActivityAtMsec.set(System.currentTimeMillis())
         cancelAction = null
+        val onIdlePolicyChanged = idlePolicyChangedAction
+        idlePolicyChangedAction = null
+        if (wasActive) onIdlePolicyChanged?.invoke()
     }
 
     @JvmStatic
@@ -35,7 +72,27 @@ object MapOfflinePrepRuntime {
     }
 
     internal fun resetForTesting() {
-        finish()
+        active.set(false)
+        lastActivityAtMsec.set(0L)
+        cancelAction = null
+        idlePolicyChangedAction = null
+    }
+}
+
+/** Owns a closeable worker resource for exactly one offline-preparation run. */
+internal class OfflinePrepWorkerLease<T : Closeable>(private val factory: () -> T) {
+    private var active: T? = null
+
+    @Synchronized
+    fun acquire(): T {
+        check(active == null) { "Offline preparation worker lease is already active" }
+        return factory().also { active = it }
+    }
+
+    @Synchronized
+    fun release() {
+        active?.close()
+        active = null
     }
 }
 
@@ -60,13 +117,29 @@ internal object AndroidMapOfflinePrepCoordinator {
     val job = mutableStateOf<Job?>(null)
     val autoCloseJob = mutableStateOf<Job?>(null)
     val activeCalls = ConcurrentHashMap.newKeySet<Call>()
+    private val tileWorkerLease = OfflinePrepWorkerLease(::TileFetchPriorityScheduler)
 
-    fun begin() {
-        MapOfflinePrepRuntime.begin(::requestCancel)
+    fun begin(context: Context): TileFetchPriorityScheduler {
+        val scheduler = tileWorkerLease.acquire()
+        MapOfflinePrepRuntime.begin(
+            onIdlePolicyChanged = CaltopoClient::CheckIdle,
+            onCancel = ::requestCancel,
+        )
+        MapOfflineDownloadService.start(context.applicationContext)
+        return scheduler
     }
 
     fun finish() {
+        tileWorkerLease.release()
+        MapOfflineDownloadService.stop()
         MapOfflinePrepRuntime.finish()
+        MapCacheMaintenanceScheduler.resumeAfterOfflinePrep()
+    }
+
+    fun recoverStalledNetworkCalls(): Int {
+        val calls = activeCalls.toList()
+        calls.forEach(Call::cancel)
+        return calls.size
     }
 
     fun requestCancel(hideDialog: Boolean = false) {
@@ -88,9 +161,7 @@ internal object AndroidMapOfflinePrepCoordinator {
 
 internal fun offlinePrepMenuStatus(inFlight: Boolean, progress: OfflinePrepProgress): String? {
     if (!inFlight) return null
-    if (progress.total <= 0) return progress.phase
-    val percent = (progress.completed.toDouble() * 100.0 / progress.total.toDouble())
-        .coerceIn(0.0, 100.0)
-        .toInt()
+    if (progress.totalBytes <= 0L) return progress.phase
+    val percent = (progress.fraction * 100.0).toInt()
     return "$percent%"
 }

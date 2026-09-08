@@ -1,5 +1,9 @@
 package org.ncssar.rid2caltopo.video
 
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
 import org.json.JSONArray
 import org.json.JSONObject
 import org.ncssar.rid2caltopo.data.CaltopoClient
@@ -48,6 +52,75 @@ class MapPaneArtifactOverlayStateTest {
                 conservativeDemBytes(count, DemResolutionOption.STANDARD_30M)
         )
         assertEquals(demPrefetchCellKey(39.001, -121.001), demPrefetchCellKey(39.049, -121.049))
+    }
+
+    @Test
+    fun offlineCapacityIncludesExistingCacheAndRecommendsHeadroom() {
+        val capacity = OfflinePrepCapacity(
+            currentTileCacheBytes = 900_000_000L,
+            estimatedTileBytes = 300_000_000L,
+            estimatedDemBytes = 400_000_000L,
+            maximumTileCacheBytes = 1_000_000_000L,
+            availableVolumeBytes = 10_000_000_000L
+        )
+
+        assertEquals(1_200_000_000L, capacity.projectedTileCacheBytes)
+        assertEquals(700_000_000L, capacity.estimatedDownloadBytes)
+        assertTrue(capacity.exceedsCacheLimit)
+        assertEquals(2_000_000_000L, capacity.recommendedMaximumBytes)
+    }
+
+    @Test
+    fun offlineCapacitySeparatesCacheLimitFromVolumeCapacity() {
+        val capacity = OfflinePrepCapacity(
+            currentTileCacheBytes = 100_000_000L,
+            estimatedTileBytes = 200_000_000L,
+            estimatedDemBytes = 800_000_000L,
+            maximumTileCacheBytes = 2_000_000_000L,
+            availableVolumeBytes = 900_000_000L
+        )
+
+        assertTrue(!capacity.exceedsCacheLimit)
+        assertTrue(capacity.exceedsAvailableVolume)
+    }
+
+    @Test
+    fun offlineCapacityCanRecommendMoreThanLegacy64GbLimit() {
+        assertEquals(110_000_000_000L, recommendedCacheMaximumBytes(100_000_000_000L))
+    }
+
+    @Test
+    fun reasonableCacheMaximumLeavesFreeSpaceHeadroom() {
+        assertEquals(
+            869_000_000_000L,
+            reasonableCacheMaximumBytes(
+                currentCacheBytes = 14_000_000_000L,
+                availableVolumeBytes = 900_000_000_000L
+            )
+        )
+    }
+
+    @Test
+    fun tnmCatalogRetriesTransientGatewayFailure() {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setResponseCode(504))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{\"items\":[],\"total\":0}"))
+        server.start()
+        try {
+            val delays = mutableListOf<Long>()
+            val page = fetchTnmCatalogPage(
+                client = OkHttpClient(),
+                request = Request.Builder().url(server.url("/api/v1/products")).build(),
+                maxAttempts = 2,
+                sleeper = delays::add
+            )
+
+            assertEquals(0, page.getJSONArray("items").length())
+            assertEquals(2, server.requestCount)
+            assertEquals(listOf(1_000L), delays)
+        } finally {
+            server.shutdown()
+        }
     }
 
     @Test
@@ -824,6 +897,29 @@ class MapPaneArtifactOverlayStateTest {
 
         assertEquals(listOf("marker-system"), state.points.map { it.id })
         assertEquals(listOf("line-system", "range-ring", "app-track"), state.lines.map { it.id })
+    }
+
+    @Test
+    fun buildMapFolderUiStates_defaultsBuiltInFoldersVisibleLikeApple() {
+        val line = lineFeature("line-system", "System Line", "Lines & Polygons")
+        val rangeRing = lineFeature("range-ring", "1 mi", "Range Rings")
+        val marker = markerFeature("marker-system", "System Marker", "")
+        val appTrack = appTrackFeature("app-track", "Tablet Track")
+
+        val folders = buildMapFolderUiStates(
+            mapOf(
+                "line-system" to line,
+                "range-ring" to rangeRing,
+                "marker-system" to marker,
+                "app-track" to appTrack,
+            )
+        )
+
+        assertEquals(
+            listOf("App Tracks", "Lines & Polygons", "Markers", "Range Rings"),
+            folders.map { it.title },
+        )
+        assertTrue(folders.all { it.initiallyVisible })
     }
 
     @Test

@@ -1,7 +1,11 @@
 package org.ncssar.rid2caltopo.video
 
 import android.content.Context
+import android.os.Build
+import android.os.Environment
 import android.os.StatFs
+import android.os.storage.StorageManager
+import android.provider.DocumentsContract
 import kotlinx.coroutines.CancellationException
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -15,9 +19,12 @@ import org.ncssar.rid2caltopo.video.mapcache.DemElevationService
 import org.ncssar.rid2caltopo.video.mapcache.MapCacheDebug
 import org.ncssar.rid2caltopo.video.mapcache.MapCacheRoot
 import org.ncssar.rid2caltopo.video.mapcache.MapCacheRootResolver
+import org.ncssar.rid2caltopo.video.mapcache.MapCacheSettings
 import org.osmdroid.util.BoundingBox
 import java.io.File
+import java.io.IOException
 import java.util.Locale
+import kotlin.math.ceil
 
 internal enum class DemResolutionOption(val meters: Int, val label: String, val explanation: String) {
     MAXIMUM_1M(1, "USGS S1M (1 m)", "Default; downloads available USGS seamless 1 m tiles with 10 m fallback; may be very large."),
@@ -30,6 +37,31 @@ internal data class DemDownload(
     val fileName: String,
     val expectedBytes: Long? = null
 )
+
+internal fun estimatedDemDownloadBytes(
+    download: DemDownload,
+    resolution: DemResolutionOption,
+): Long = download.expectedBytes ?: when {
+    download.fileName.startsWith("USGS_1_") -> 54_000_000L
+    download.fileName.startsWith("USGS_13_") -> 486_000_000L
+    resolution == DemResolutionOption.STANDARD_30M -> 54_000_000L
+    resolution == DemResolutionOption.ENHANCED_10M -> 486_000_000L
+    else -> 400_000_000L
+}
+
+internal fun weightedTransferredBytes(
+    estimatedBytes: Long,
+    transferredBytes: Long,
+    expectedBytes: Long?,
+): Long {
+    val estimate = estimatedBytes.coerceAtLeast(0L)
+    if (estimate == 0L || transferredBytes <= 0L) return 0L
+    val expected = (expectedBytes ?: estimate).coerceAtLeast(1L)
+    return (estimate.toDouble() *
+        (transferredBytes.toDouble() / expected.toDouble()).coerceIn(0.0, 1.0))
+        .toLong()
+        .coerceIn(0L, estimate)
+}
 
 internal fun estimateDemDownloadCount(bounds: BoundingBox, resolution: DemResolutionOption): Int {
     if (resolution != DemResolutionOption.MAXIMUM_1M) return demTileNamesForBounds(bounds).size
@@ -94,10 +126,7 @@ internal fun resolveDemDownloads(
             .addQueryParameter("datasets", "Seamless 1-m DEM (S1M)")
             .addQueryParameter("max", "100").addQueryParameter("offset", offset.toString())
             .build()
-        val page = client.newCall(Request.Builder().url(url).build()).execute().use { response ->
-            check(response.isSuccessful) { "TNM catalog HTTP ${response.code}" }
-            JSONObject(response.body?.string() ?: error("TNM catalog response was empty"))
-        }
+        val page = fetchTnmCatalogPage(client, Request.Builder().url(url).build())
         val items = page.optJSONArray("items") ?: break
         for (index in 0 until items.length()) {
             val item = items.optJSONObject(index) ?: continue
@@ -119,6 +148,39 @@ internal fun resolveDemDownloads(
         if (items.length() == 0 || offset >= total) break
     } while (offset < 2_000)
     return out.values.sortedBy { it.fileName }
+}
+
+internal fun fetchTnmCatalogPage(
+    client: OkHttpClient,
+    request: Request,
+    maxAttempts: Int = 4,
+    sleeper: (Long) -> Unit = Thread::sleep
+): JSONObject {
+    require(maxAttempts > 0)
+    var lastFailure: Exception? = null
+    repeat(maxAttempts) { attempt ->
+        try {
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    return JSONObject(response.body?.string() ?: error("TNM catalog response was empty"))
+                }
+                val failure = IllegalStateException("TNM catalog HTTP ${response.code}")
+                lastFailure = failure
+                val transient = response.code == 408 || response.code == 429 || response.code in 500..599
+                if (!transient || attempt == maxAttempts - 1) throw failure
+                val retryAfterMs = response.header("Retry-After")
+                    ?.toLongOrNull()
+                    ?.coerceIn(0L, 30L)
+                    ?.times(1_000L)
+                sleeper(retryAfterMs ?: (1_000L shl attempt).coerceAtMost(8_000L))
+            }
+        } catch (e: IOException) {
+            lastFailure = e
+            if (attempt == maxAttempts - 1) throw e
+            sleeper((1_000L shl attempt).coerceAtMost(8_000L))
+        }
+    }
+    throw lastFailure ?: IllegalStateException("TNM catalog request failed")
 }
 
 private fun estimateDemSamplesForBounds(
@@ -388,6 +450,51 @@ internal fun formatDurationShort(totalSeconds: Long): String {
     }
 }
 
+internal data class OfflinePrepCapacity(
+    val currentTileCacheBytes: Long,
+    val estimatedTileBytes: Long,
+    val estimatedDemBytes: Long,
+    val maximumTileCacheBytes: Long,
+    val availableVolumeBytes: Long?
+) {
+    val projectedTileCacheBytes: Long = saturatedAdd(currentTileCacheBytes, estimatedTileBytes)
+    val estimatedDownloadBytes: Long = saturatedAdd(estimatedTileBytes, estimatedDemBytes)
+    val exceedsCacheLimit: Boolean = projectedTileCacheBytes > maximumTileCacheBytes
+    val exceedsAvailableVolume: Boolean = availableVolumeBytes?.let {
+        estimatedDownloadBytes > it * 95L / 100L
+    } ?: false
+    val recommendedMaximumBytes: Long = recommendedCacheMaximumBytes(projectedTileCacheBytes)
+}
+
+internal fun recommendedCacheMaximumBytes(projectedBytes: Long): Long {
+    val decimalGb = 1_000_000_000L
+    val withHeadroom = saturatedAdd(projectedBytes, maxOf(100_000_000L, projectedBytes / 10L))
+    return (ceil(withHeadroom.toDouble() / decimalGb.toDouble()) * decimalGb)
+        .toLong()
+        .coerceIn(100_000_000L, MapCacheSettings.MAX_CACHE_BYTES)
+}
+
+internal fun reasonableCacheMaximumBytes(
+    currentCacheBytes: Long,
+    availableVolumeBytes: Long?
+): Long? = availableVolumeBytes?.let { available ->
+    // Leave five percent of currently free space outside the cache allowance.
+    saturatedAdd(currentCacheBytes, available.coerceAtLeast(0L) - available.coerceAtLeast(0L) / 20L)
+}
+
+internal fun formatStorageBytes(bytes: Long): String {
+    val safe = bytes.coerceAtLeast(0L)
+    return if (safe >= 1_000_000_000L) {
+        String.format(Locale.US, "%.1f GB", safe.toDouble() / 1_000_000_000.0)
+    } else {
+        String.format(Locale.US, "%.0f MB", safe.toDouble() / 1_000_000.0)
+    }
+}
+
+private fun saturatedAdd(left: Long, right: Long): Long =
+    if (Long.MAX_VALUE - left.coerceAtLeast(0L) < right.coerceAtLeast(0L)) Long.MAX_VALUE
+    else left.coerceAtLeast(0L) + right.coerceAtLeast(0L)
+
 internal fun queryAvailableCacheBytes(context: Context): Long? {
     return try {
         when (val root = MapCacheRootResolver.resolveRoot(context.applicationContext)) {
@@ -396,9 +503,38 @@ internal fun queryAvailableCacheBytes(context: Context): Long? {
                 stat.availableBytes
             }
             is MapCacheRoot.SafBacked -> {
-                null
+                availableBytesForDocumentTree(context.applicationContext, root.dir.uri)
             }
         }
+    } catch (_: Exception) {
+        null
+    }
+}
+
+private fun availableBytesForDocumentTree(context: Context, uri: android.net.Uri): Long? {
+    val documentId = try {
+        DocumentsContract.getTreeDocumentId(uri)
+    } catch (_: Exception) {
+        return null
+    }
+    val volumeId = documentId.substringBefore(':')
+    val storageManager = context.getSystemService(StorageManager::class.java)
+    val volumeDirectory = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        storageManager?.storageVolumes?.firstOrNull { volume ->
+            if (volumeId.equals("primary", ignoreCase = true)) volume.isPrimary
+            else volume.uuid.equals(volumeId, ignoreCase = true)
+        }?.directory
+    } else {
+        null
+    }
+    val fallback = when {
+        volumeId.equals("primary", ignoreCase = true) -> Environment.getExternalStorageDirectory()
+        volumeId.isNotBlank() -> File("/storage/$volumeId")
+        else -> null
+    }
+    val path = volumeDirectory ?: fallback ?: return null
+    return try {
+        StatFs(path.absolutePath).availableBytes
     } catch (_: Exception) {
         null
     }

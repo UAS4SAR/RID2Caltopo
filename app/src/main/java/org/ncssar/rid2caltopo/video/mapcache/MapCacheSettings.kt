@@ -15,7 +15,9 @@ internal object MapCacheSettings {
 
     private const val DECIMAL_GB_BYTES = 1_000_000_000L
     private const val MIN_CACHE_BYTES = 100_000_000L
-    private const val MAX_CACHE_BYTES = 64_000_000_000L
+    // Large removable volumes are common on field tablets. Keep a generous
+    // guardrail while allowing operators to reserve more than the old 64 GB cap.
+    internal const val MAX_CACHE_BYTES = 1_000_000_000_000L
     private const val DEFAULT_MAX_CACHE_BYTES = DECIMAL_GB_BYTES
     private const val DEFAULT_MAX_TILE_AGE_DAYS = 365L
     private const val MIN_MAX_TILE_AGE_DAYS = 1L
@@ -104,36 +106,6 @@ internal object MapCacheStartupMaintenance {
 
     fun ensureStarted(context: Context) {
         if (!started.compareAndSet(false, true)) return
-        val appContext = context.applicationContext
-        Thread({
-            try {
-                val maxBytes = MapCachePolicy.tileCacheMaxBytes(appContext)
-                val trimBytes = MapCachePolicy.tileCacheTrimBytes(appContext)
-                val maxAgeMs = MapCachePolicy.tileCacheMaxAgeMs(appContext)
-                val cutoffMs = System.currentTimeMillis() - maxAgeMs
-                val store = BlobCacheStoreFactory.create(
-                    context = appContext,
-                    namespace = "tile_cache_v${MapCachePolicy.TILE_CACHE_VERSION}",
-                    dbName = MapCachePolicy.TILE_CACHE_DB,
-                    maxBytes = maxBytes,
-                    defaultTtlMs = MapCachePolicy.TILE_TTL_MS
-                )
-                store.prewarm()
-                val result = store.runMaintenance(
-                    maxEntryAgeCutoffMs = cutoffMs,
-                    trimToBytes = trimBytes
-                )
-                MapCacheDebug.log(
-                    "startup-maint tile agedOut=${result.agedOutEntries} trimEvicted=${result.trimEvictedEntries} " +
-                        "bytesFreed=${result.bytesFreed} bytesRemaining=${result.bytesRemaining} " +
-                        "maxBytes=$maxBytes trimBytes=$trimBytes maxAgeMs=$maxAgeMs"
-                )
-            } catch (e: Exception) {
-                MapCacheDebug.log("startup-maint failed err=${e.javaClass.simpleName}:${e.message}")
-            }
-        }, "map-cache-maint").apply {
-            isDaemon = true
-            start()
-        }
+        MapCacheMaintenanceScheduler.request(context.applicationContext)
     }
 }

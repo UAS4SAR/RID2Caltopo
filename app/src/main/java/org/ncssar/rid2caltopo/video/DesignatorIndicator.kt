@@ -61,6 +61,7 @@ fun DesignatorIndicator(
     val renderDelayMs = viewModel.renderDelayMsFor(streamDesignator)
     val playbackIndicatorState = viewModel.playbackIndicatorStateFor(streamDesignator)
     val droneDisplayState = viewModel.droneDisplayStateForStream(streamDesignator)
+    val cameraAzimuthDeg = viewModel.cameraAzimuthForStream(streamDesignator)
     val isLocalPlayback = viewModel.isLocalPlayback(streamDesignator)
     val coordinateDisplayFormat = viewModel.coordinateDisplayFormat
     var coordinateMenuExpanded by remember(streamDesignator) { mutableStateOf(false) }
@@ -125,7 +126,7 @@ fun DesignatorIndicator(
             Triple(
                 indicatorPaletteFor(designatorState),
                 "$location (${coordinateDisplayFormat.label})",
-                if (showCompactTopTelemetry) "" else formatCompactTelemetry(droneDisplayState)
+                if (showCompactTopTelemetry) "" else formatCompactTelemetry(droneDisplayState, cameraAzimuthDeg)
             )
         }
         else -> Triple(
@@ -160,13 +161,13 @@ fun DesignatorIndicator(
                 )
                 if (showTelemetryChip) {
                     TelemetryIndicatorChip(
-                        text = telemetryChipTextFor(designatorState, droneDisplayState),
+                        text = telemetryChipTextFor(designatorState, droneDisplayState, cameraAzimuthDeg),
                         palette = palette,
                         onClick = onTelemetryChipClick
                     )
                 } else {
                     OutlinedIndicatorText(
-                        text = formatCompactTelemetry(droneDisplayState),
+                        text = formatCompactTelemetry(droneDisplayState, cameraAzimuthDeg),
                         style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
                         maxLines = 1,
                         overflow = TextOverflow.Clip,
@@ -328,9 +329,10 @@ internal fun designatorDetailText(
 
 internal fun telemetryChipTextFor(
     designatorState: DesignatorState,
-    display: DroneDisplayState?
+    display: DroneDisplayState?,
+    cameraAzimuthDeg: Double? = null,
 ): String = when (designatorState) {
-    is DesignatorState.Green -> formatCompactTelemetry(display)
+    is DesignatorState.Green -> formatCompactTelemetry(display, cameraAzimuthDeg)
     is DesignatorState.Yellow -> "Pair Telemetry"
     DesignatorState.Red -> "No Telemetry"
 }
@@ -347,10 +349,13 @@ internal fun formatLiveState(
     return String.format(Locale.US, "lag:%.1fs", delayMs / 1000.0)
 }
 
-internal fun formatCompactTelemetry(display: DroneDisplayState?): String {
+internal fun formatCompactTelemetry(
+    display: DroneDisplayState?,
+    cameraAzimuthDeg: Double? = null,
+): String {
     // This is the header rendered over focused and split-screen live video. Reuse the map
     // formatter so every operator view has the same entries, order, units, and missing tokens.
-    return streamTelemetryHeaderText(display)
+    return streamTelemetryHeaderText(display, cameraAzimuthDeg)
 }
 
 private fun formatStreamErrorDetail(streamErrorDetail: String?): String? {

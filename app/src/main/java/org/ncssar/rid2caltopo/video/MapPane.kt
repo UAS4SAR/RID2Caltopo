@@ -53,6 +53,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Checkbox
@@ -648,11 +649,16 @@ internal fun SplitMapPane(
     var offlinePrepCacheStatus by remember { mutableStateOf(OfflinePrepCacheStatus()) }
     var offlinePrepCompletedSelectionKey by offlinePrepCoordinator.completedSelectionKey
     var offlinePrepAvailableBytes by remember { mutableStateOf<Long?>(null) }
+    var offlinePrepCurrentTileCacheBytes by remember { mutableStateOf(0L) }
     var offlinePrepTileCacheCapBytes by remember { mutableStateOf(MapCachePolicy.tileCacheMaxBytes(context)) }
+    var offlinePrepCacheLimitInput by remember {
+        mutableStateOf(String.format(Locale.US, "%.1f", MapCachePolicy.tileCacheMaxBytes(context) / 1_000_000_000.0))
+    }
     var offlinePrepJob by offlinePrepCoordinator.job
     var offlinePrepAutoCloseJob by offlinePrepCoordinator.autoCloseJob
     val offlinePrepActiveCalls = offlinePrepCoordinator.activeCalls
     var mapBounds by remember { mutableStateOf<BoundingBox?>(null) }
+
     val packageZoneId = remember { ZoneId.systemDefault() }
     val packageDateFormatter = remember { DateTimeFormatter.ofPattern("yyyy-MM-dd") }
     val packageTimeFormatter = remember { DateTimeFormatter.ofPattern("HH:mm") }
@@ -737,6 +743,11 @@ internal fun SplitMapPane(
         }
     }
     val tileCacheWriter = remember(context) { TileDiskCacheWriter(context) }
+    LaunchedEffect(mapManagementMenuExpanded, showMapCacheSizeDialog) {
+        if (!mapManagementMenuExpanded && !showMapCacheSizeDialog) return@LaunchedEffect
+        offlinePrepAvailableBytes = withContext(Dispatchers.IO) { queryAvailableCacheBytes(context) }
+        offlinePrepCurrentTileCacheBytes = withContext(Dispatchers.IO) { tileCacheWriter.currentSizeBytes() }
+    }
     val tileFetchPriorityScheduler = remember { TileFetchPriorityScheduler() }
     val baseTileSource = tileSourceForBaseLayer(baseLayer)
     val latestBaseTileSource by rememberUpdatedState(baseTileSource)
@@ -1018,7 +1029,7 @@ internal fun SplitMapPane(
                 val appContext = context.applicationContext
                 val prefs = appContext.getSharedPreferences(MAP_CACHE_PREFS_NAME, 0)
                 val signature =
-                    "tile=${MapCachePolicy.TILE_CACHE_VERSION}|icon=${MapCachePolicy.ICON_CACHE_VERSION}|dem=v1|root=${mapCacheRootSignature(appContext)}"
+                    "tile=${MapCachePolicy.TILE_CACHE_VERSION}|icon=${MapCachePolicy.ICON_CACHE_VERSION}|dem=v1|safIndex=2|root=${mapCacheRootSignature(appContext)}"
                 if (prefs.getString(MAP_CACHE_PREWARM_SIG_KEY, null) == signature) return@withContext
                 val startMs = System.currentTimeMillis()
                 tileCacheWriter.prewarm()
@@ -1181,6 +1192,9 @@ internal fun SplitMapPane(
         offlinePrepEstimateRunning = false
         offlinePrepAvailableBytes = withContext(Dispatchers.IO) {
             queryAvailableCacheBytes(context)
+        }
+        offlinePrepCurrentTileCacheBytes = withContext(Dispatchers.IO) {
+            tileCacheWriter.currentSizeBytes()
         }
         offlinePrepTileCacheCapBytes = withContext(Dispatchers.IO) {
             MapCachePolicy.tileCacheMaxBytes(context)
@@ -1388,7 +1402,7 @@ internal fun SplitMapPane(
         offlinePrepCancelRequested = false
         offlinePrepInFlight = true
         offlinePrepProgress = OfflinePrepProgress(phase = "Preparing", total = 0, completed = 0)
-        offlinePrepCoordinator.begin()
+        val offlinePrepTileFetchScheduler = offlinePrepCoordinator.begin(context)
         val preset = offlinePrepPreset
         val includeDem = offlinePrepIncludeDem
         val demResolution = offlinePrepDemResolution
@@ -1416,6 +1430,7 @@ internal fun SplitMapPane(
                 }
                 return@launch
             }
+            tileCacheWriter.prewarm()
             val demDownloads = if (includeDem) {
                 try {
                     resolveDemDownloads(bounds, demResolution, demAutoFetchClient)
@@ -1432,6 +1447,13 @@ internal fun SplitMapPane(
             } else emptyList()
             estimatedDemOps = demDownloads.size
             estimatedTotalOps = (estimatedTileOps + estimatedDemOps).coerceAtLeast(1)
+            val estimatedTileBytes = estimatedTileOps.toLong() * 20_000L
+            val demEstimatedBytes = demDownloads.associateWith {
+                estimatedDemDownloadBytes(it, demResolution)
+            }
+            val estimatedTotalBytes = (
+                estimatedTileBytes + demEstimatedBytes.values.sum()
+            ).coerceAtLeast(1L)
             // Resolve the GeoTIFF DEM storage directory once for this download job.
             // archiveDemDir is null when no archive directory is configured.
             val archiveDemDir: DocumentFile? = if (includeDem) {
@@ -1454,6 +1476,8 @@ internal fun SplitMapPane(
             val demHits = AtomicInteger(0)
             val demFetched = AtomicInteger(0)
             val totalFailed = AtomicInteger(0)
+            val completedEstimatedBytes = AtomicLong(0L)
+            val activeDemBytes = ConcurrentHashMap<String, Long>()
             val tileFailureLogCount = AtomicInteger(0)
             val demFailureLogCount = AtomicInteger(0)
             val startedAt = System.currentTimeMillis()
@@ -1474,12 +1498,14 @@ internal fun SplitMapPane(
                 val demFail = demFailed.get()
                 val failTotal = totalFailed.get()
                 val elapsedSec = ((now - startedAt).coerceAtLeast(1L)).toDouble() / 1000.0
-                val rate = done.toDouble() / elapsedSec
+                val byteDone = (completedEstimatedBytes.get() + activeDemBytes.values.sum())
+                    .coerceIn(0L, estimatedTotalBytes)
+                val rate = byteDone.toDouble() / elapsedSec
                 val displayTotal = maxOf(estimatedTotalOps, done)
                 val displayTileTotal = maxOf(estimatedTileOps, tileDone)
                 val displayDemTotal = maxOf(estimatedDemOps, demDone)
-                val remaining = (displayTotal - done).coerceAtLeast(0)
-                val eta = if (rate > 0.05) kotlin.math.ceil(remaining / rate).toLong() else null
+                val remainingBytes = (estimatedTotalBytes - byteDone).coerceAtLeast(0L)
+                val eta = if (rate > 1.0) kotlin.math.ceil(remainingBytes / rate).toLong() else null
                 withContext(Dispatchers.Main.immediate) {
                     offlinePrepProgress = OfflinePrepProgress(
                         phase = phase,
@@ -1496,7 +1522,9 @@ internal fun SplitMapPane(
                         failed = tileFail,
                         demFailed = demFail,
                         totalFailed = failTotal,
-                        opsPerSec = rate,
+                        completedBytes = byteDone,
+                        totalBytes = estimatedTotalBytes,
+                        bytesPerSec = rate,
                         etaSeconds = eta
                     )
                 }
@@ -1520,42 +1548,54 @@ internal fun SplitMapPane(
                             val x = MapTileIndex.getX(tileIndex)
                             val y = MapTileIndex.getY(tileIndex)
                             var failureDetail = ""
-                            val ok = try {
-                                val url = tileSource.getTileURLString(tileIndex)
-                                val req = buildOfflineTileRequest(tileSource, url)
-                                val call = offlineHttpClient.newCall(req)
-                                offlinePrepActiveCalls += call
-                                try {
-                                    tileFetchPriorityScheduler.lowPriority {
-                                        call.execute().use { resp ->
-                                            if (!resp.isSuccessful) {
-                                                failureDetail = "http=${resp.code} z=$z x=$x y=$y source=${tileSource.name()}"
-                                                return@use false
+                            var ok = false
+                            for (attempt in 1..OFFLINE_TILE_FETCH_MAX_ATTEMPTS) {
+                                var retryable = false
+                                ok = try {
+                                    val url = tileSource.getTileURLString(tileIndex)
+                                    val req = buildOfflineTileRequest(tileSource, url)
+                                    val call = offlineHttpClient.newCall(req)
+                                    offlinePrepActiveCalls += call
+                                    try {
+                                        offlinePrepTileFetchScheduler.lowPriority {
+                                            call.execute().use { resp ->
+                                                if (!resp.isSuccessful) {
+                                                    retryable = resp.code == 408 || resp.code == 429 || resp.code >= 500
+                                                    failureDetail = "http=${resp.code} z=$z x=$x y=$y source=${tileSource.name()}"
+                                                    return@use false
+                                                }
+                                                val body = resp.body ?: run {
+                                                    retryable = true
+                                                    return@use false
+                                                }
+                                                val bytes = body.bytes()
+                                                val saved = tileCacheWriter.saveFile(
+                                                    tileSource,
+                                                    tileIndex,
+                                                    ByteArrayInputStream(bytes),
+                                                    null
+                                                )
+                                                if (!saved && failureDetail.isBlank()) {
+                                                    val rejection = tileCacheWriter.describeRejectedWrite(tileSource, tileIndex, bytes)
+                                                    failureDetail =
+                                                        (rejection ?: "save-rejected") + " z=$z x=$x y=$y source=${tileSource.name()}"
+                                                }
+                                                saved
                                             }
-                                            val body = resp.body ?: return@use false
-                                            val bytes = body.bytes()
-                                            val saved = tileCacheWriter.saveFile(
-                                                tileSource,
-                                                tileIndex,
-                                                ByteArrayInputStream(bytes),
-                                                null
-                                            )
-                                            if (!saved && failureDetail.isBlank()) {
-                                                val rejection = tileCacheWriter.describeRejectedWrite(tileSource, tileIndex, bytes)
-                                                failureDetail =
-                                                    (rejection ?: "save-rejected") + " z=$z x=$x y=$y source=${tileSource.name()}"
-                                            }
-                                            saved
                                         }
+                                    } finally {
+                                        offlinePrepActiveCalls.remove(call)
                                     }
-                                } finally {
-                                    offlinePrepActiveCalls.remove(call)
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    retryable = true
+                                    failureDetail = "ex=${e.javaClass.simpleName} z=$z x=$x y=$y source=${tileSource.name()}"
+                                    false
                                 }
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (e: Exception) {
-                                failureDetail = "ex=${e.javaClass.simpleName} z=$z x=$x y=$y source=${tileSource.name()}"
-                                false
+                                if (ok || !retryable || attempt == OFFLINE_TILE_FETCH_MAX_ATTEMPTS) break
+                                ensureActive()
+                                delay(OFFLINE_TILE_FETCH_RETRY_DELAY_MSEC)
                             }
                             if (tileSource.name() == OsmStandardTileSource.name()) {
                                 delay(OSM_OFFLINE_PREP_REQUEST_DELAY_MS)
@@ -1574,6 +1614,8 @@ internal fun SplitMapPane(
                         }
                         tileCompleted.incrementAndGet()
                         completed.incrementAndGet()
+                        completedEstimatedBytes.addAndGet(20_000L)
+                        MapOfflinePrepRuntime.noteProgress()
                     }
                     suspend fun processDem(lat: Double, lng: Double) {
                         ensureActive()
@@ -1602,6 +1644,7 @@ internal fun SplitMapPane(
                         }
                         demCompleted.incrementAndGet()
                         completed.incrementAndGet()
+                        MapOfflinePrepRuntime.noteProgress()
                     }
 
                     // Downloads one planner-selected USGS GeoTIFF to archiveDir/cache/dem/.
@@ -1609,12 +1652,15 @@ internal fun SplitMapPane(
                     // Stream directly to disk because the finer products can be hundreds of MB.
                     suspend fun processGeoTiffTile(download: DemDownload) {
                         ensureActive()
+                        val estimatedBytes = demEstimatedBytes.getValue(download)
                         val demDir = archiveDemDir
                         if (demDir == null) {
                             demFailed.incrementAndGet()
                             totalFailed.incrementAndGet()
                             demCompleted.incrementAndGet()
                             completed.incrementAndGet()
+                            completedEstimatedBytes.addAndGet(estimatedBytes)
+                            MapOfflinePrepRuntime.noteProgress()
                             return
                         }
                         val fileName = download.fileName
@@ -1624,6 +1670,8 @@ internal fun SplitMapPane(
                             demHits.incrementAndGet()
                             demCompleted.incrementAndGet()
                             completed.incrementAndGet()
+                            completedEstimatedBytes.addAndGet(estimatedBytes)
+                            MapOfflinePrepRuntime.noteProgress()
                             MapCacheDebug.log("geotiff dem hit file=$fileName bytes=${existing.length()}")
                             return
                         }
@@ -1641,8 +1689,25 @@ internal fun SplitMapPane(
                                     val body = resp.body ?: run { failureDetail = "no-body"; return@use false }
                                     val destFile = demDir.findFile(fileName) ?: demDir.createFile("image/tiff", fileName)
                                     if (destFile == null) { failureDetail = "create-failed"; return@use false }
+                                    val expectedResponseBytes = body.contentLength().takeIf { it > 0L }
                                     context.contentResolver.openOutputStream(destFile.uri, "wt")?.use { out ->
-                                        body.byteStream().copyTo(out)
+                                        body.byteStream().use { input ->
+                                            val buffer = ByteArray(128 * 1024)
+                                            var transferred = 0L
+                                            while (true) {
+                                                currentCoroutineContext().ensureActive()
+                                                val count = input.read(buffer)
+                                                if (count < 0) break
+                                                out.write(buffer, 0, count)
+                                                transferred += count
+                                                activeDemBytes[fileName] = weightedTransferredBytes(
+                                                    estimatedBytes = estimatedBytes,
+                                                    transferredBytes = transferred,
+                                                    expectedBytes = expectedResponseBytes,
+                                                )
+                                                MapOfflinePrepRuntime.noteProgress()
+                                            }
+                                        }
                                     } ?: run { failureDetail = "stream-open-failed"; return@use false }
                                     MapCacheDebug.log("geotiff dem fetched file=$fileName uri=${destFile.uri}")
                                     true
@@ -1670,6 +1735,9 @@ internal fun SplitMapPane(
                         }
                         demCompleted.incrementAndGet()
                         completed.incrementAndGet()
+                        activeDemBytes.remove(fileName)
+                        completedEstimatedBytes.addAndGet(estimatedBytes)
+                        MapOfflinePrepRuntime.noteProgress()
                     }
 
                     if (!maximizeThroughput) {
@@ -2229,8 +2297,21 @@ internal fun SplitMapPane(
         showMapCacheSizeDialog = showMapCacheSizeDialog,
         onShowMapCacheSizeDialogChange = { showMapCacheSizeDialog = it },
         mapCacheSizeInput = mapCacheSizeInput,
+        mapCacheAvailableBytes = offlinePrepAvailableBytes,
+        mapCacheCurrentBytes = offlinePrepCurrentTileCacheBytes,
         onMapCacheSizeInputChange = { mapCacheSizeInput = it },
         onMapCacheSizeSaved = { bytes ->
+            val reasonableMaximum = reasonableCacheMaximumBytes(
+                offlinePrepCurrentTileCacheBytes,
+                offlinePrepAvailableBytes
+            )
+            if (reasonableMaximum != null && bytes > reasonableMaximum) {
+                CaltopoClient.ShowToast(
+                    "Requested cache size exceeds the space reasonably available on this volume " +
+                        "(${MapCacheSettings.formatDecimalGb(reasonableMaximum)} maximum recommended)."
+                )
+                return@MapPaneManagementDialogs
+            }
             MapCacheSettings.setMaxCacheBytes(context, bytes)
             offlinePrepTileCacheCapBytes = MapCachePolicy.tileCacheMaxBytes(context)
             mapCacheSizeInput = String.format(
@@ -2238,8 +2319,15 @@ internal fun SplitMapPane(
                 "%.1f",
                 MapCacheSettings.maxCacheBytes(context).toDouble() / 1_000_000_000.0
             )
+            val savedBytes = MapCacheSettings.maxCacheBytes(context)
             showMapCacheSizeDialog = false
-            CaltopoClient.ShowToast("Map cache size saved. Startup cache maintenance will use the new limit next launch.")
+            CaltopoClient.ShowToast(
+                if (savedBytes == bytes) {
+                    "Map cache size saved as ${MapCacheSettings.formatDecimalGb(savedBytes)}. Startup maintenance will use it next launch."
+                } else {
+                    "Map cache size adjusted to ${MapCacheSettings.formatDecimalGb(savedBytes)}. Startup maintenance will use it next launch."
+                }
+            )
         },
         showMapTileAgeDialog = showMapTileAgeDialog,
         onShowMapTileAgeDialogChange = { showMapTileAgeDialog = it },
@@ -4009,6 +4097,7 @@ internal fun SplitMapPane(
                 predictiveHeadEnabled = predictiveHeadEnabled,
                 followFocusedDroneEnabled = followFocusedDroneEnabled,
                 mapReloadInFlight = mapReloadInFlight,
+                mapCacheAvailableBytes = offlinePrepAvailableBytes,
                 downloadMapStatus = offlinePrepMenuStatus(offlinePrepInFlight, offlinePrepProgress),
                 mapName = mapName,
                 autoRemoveBadTiles = autoRemoveBadTiles,
@@ -4021,6 +4110,11 @@ internal fun SplitMapPane(
                 },
                 onDownloadMap = {
                     offlinePrepIncludeContours = contourOverlayEnabled
+                    offlinePrepCacheLimitInput = String.format(
+                        Locale.US,
+                        "%.1f",
+                        MapCachePolicy.tileCacheMaxBytes(context) / 1_000_000_000.0
+                    )
                     settingsMenuExpanded = false
                     showOfflinePrepDialog = true
                 },
@@ -4180,9 +4274,8 @@ internal fun SplitMapPane(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         if (offlinePrepInFlight || offlinePrepProgress.phase != "Idle") {
-                            val pct = if (offlinePrepProgress.total > 0) {
-                                (offlinePrepProgress.completed.toDouble() * 100.0 / offlinePrepProgress.total.toDouble())
-                                    .coerceIn(0.0, 100.0)
+                            val pct = if (offlinePrepProgress.totalBytes > 0L) {
+                                offlinePrepProgress.fraction * 100.0
                             } else if (offlinePrepProgress.phase == "Complete" || offlinePrepProgress.phase == "Complete with failures") {
                                 100.0
                             } else {
@@ -4201,7 +4294,7 @@ internal fun SplitMapPane(
                                     "${String.format(Locale.US, "%.0f", pct)}% complete",
                                     fontSize = 18.sp
                                 )
-                                if (offlinePrepInFlight && offlinePrepProgress.total <= 0) {
+                                if (offlinePrepInFlight && offlinePrepProgress.totalBytes <= 0L) {
                                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                                 } else {
                                     LinearProgressIndicator(
@@ -4212,7 +4305,7 @@ internal fun SplitMapPane(
                                 Text(
                                     "Progress: ${offlinePrepProgress.phase} ${offlinePrepProgress.completed}/${offlinePrepProgress.total} " +
                                         "(${String.format(Locale.US, "%.2f", pct)}%) " +
-                                        "rate=${String.format(Locale.US, "%.1f", offlinePrepProgress.opsPerSec)}/s " +
+                                        "rate=${formatStorageBytes(offlinePrepProgress.bytesPerSec.toLong())}/s " +
                                         "ETA=$etaText",
                                     fontSize = 12.sp
                                 )
@@ -4415,24 +4508,95 @@ internal fun SplitMapPane(
                             fontSize = 11.sp
                         )
                         if (offlinePrepEstimate.ready) {
-                            val cacheCapMb = offlinePrepTileCacheCapBytes.toDouble() / (1024.0 * 1024.0)
-                            if (offlinePrepEstimate.estimatedTileCacheMb > cacheCapMb) {
+                            val estimatedTileBytes = (offlinePrepEstimate.estimatedTileCacheMb * 1024.0 * 1024.0).toLong()
+                            val estimatedDemBytes = (offlinePrepEstimate.estimatedDemCacheMb * 1024.0 * 1024.0).toLong()
+                            val capacity = OfflinePrepCapacity(
+                                currentTileCacheBytes = offlinePrepCurrentTileCacheBytes,
+                                estimatedTileBytes = estimatedTileBytes,
+                                estimatedDemBytes = estimatedDemBytes,
+                                maximumTileCacheBytes = offlinePrepTileCacheCapBytes,
+                                availableVolumeBytes = offlinePrepAvailableBytes
+                            )
+                            Text(
+                                "Tile cache: ${formatStorageBytes(capacity.currentTileCacheBytes)} currently; " +
+                                    "up to ${formatStorageBytes(capacity.projectedTileCacheBytes)} after this download",
+                                fontSize = 11.sp
+                            )
+                            Text(
+                                "Configured limit: ${formatStorageBytes(capacity.maximumTileCacheBytes)}",
+                                fontSize = 11.sp
+                            )
+                            if (capacity.exceedsCacheLimit) {
                                 Text(
-                                    "Warning: estimate exceeds tile cache cap (~${"%.0f".format(Locale.US, cacheCapMb)} MB). Older tiles may be evicted.",
-                                    fontSize = 11.sp
+                                    "This download is expected to exceed the tile-cache limit. Increase the limit or reduce the selection before starting.",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.error
                                 )
+                                val recommendedGb = capacity.recommendedMaximumBytes / 1_000_000_000.0
+                                TextButton(
+                                    onClick = {
+                                        MapCacheSettings.setMaxCacheBytes(context, capacity.recommendedMaximumBytes)
+                                        offlinePrepTileCacheCapBytes = MapCachePolicy.tileCacheMaxBytes(context)
+                                        offlinePrepCacheLimitInput = String.format(Locale.US, "%.1f", recommendedGb)
+                                    },
+                                    enabled = !offlinePrepInFlight
+                                ) {
+                                    Text("Use recommended ${String.format(Locale.US, "%.1f", recommendedGb)} GB limit")
+                                }
                             }
-                            val availableMb = offlinePrepAvailableBytes?.toDouble()?.div(1024.0 * 1024.0)
-                            if (availableMb != null) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                OutlinedTextField(
+                                    value = offlinePrepCacheLimitInput,
+                                    onValueChange = { offlinePrepCacheLimitInput = it },
+                                    label = { Text("Max cache (GB)") },
+                                    singleLine = true,
+                                    enabled = !offlinePrepInFlight,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(
+                                    onClick = {
+                                        val requestedGb = offlinePrepCacheLimitInput.toDoubleOrNull()
+                                        if (requestedGb == null || requestedGb <= 0.0) {
+                                            CaltopoClient.ShowToast("Enter a positive cache size in GB.")
+                                        } else {
+                                            val requestedBytes = (requestedGb * 1_000_000_000.0).toLong()
+                                            val reasonableMaximum = reasonableCacheMaximumBytes(
+                                                offlinePrepCurrentTileCacheBytes,
+                                                offlinePrepAvailableBytes
+                                            )
+                                            if (reasonableMaximum != null && requestedBytes > reasonableMaximum) {
+                                                CaltopoClient.ShowToast(
+                                                    "Requested cache size exceeds the space reasonably available on this volume " +
+                                                        "(${MapCacheSettings.formatDecimalGb(reasonableMaximum)} maximum recommended)."
+                                                )
+                                            } else {
+                                                MapCacheSettings.setMaxCacheBytes(context, requestedBytes)
+                                                offlinePrepTileCacheCapBytes = MapCachePolicy.tileCacheMaxBytes(context)
+                                                offlinePrepCacheLimitInput = String.format(
+                                                    Locale.US,
+                                                    "%.1f",
+                                                    offlinePrepTileCacheCapBytes / 1_000_000_000.0
+                                                )
+                                            }
+                                        }
+                                    },
+                                    enabled = !offlinePrepInFlight
+                                ) { Text("Apply") }
+                            }
+                            if (capacity.availableVolumeBytes != null) {
                                 Text(
-                                    "Available storage: ~${"%.0f".format(Locale.US, availableMb)} MB",
+                                    "Available on cache volume: ${formatStorageBytes(capacity.availableVolumeBytes)}",
                                     fontSize = 11.sp
                                 )
-                                val totalEstimateMb = offlinePrepEstimate.estimatedTileCacheMb + offlinePrepEstimate.estimatedDemCacheMb
-                                if (totalEstimateMb > (availableMb * 0.95)) {
+                                if (capacity.exceedsAvailableVolume) {
                                     Text(
                                         "Warning: estimated download may exceed available storage.",
-                                        fontSize = 11.sp
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.error
                                     )
                                 }
                             }
@@ -4581,17 +4745,26 @@ internal fun SplitMapPane(
                                     return@TextButton
                                 }
                                 if (offlinePrepEstimate.ready) {
-                                    val estimateMb = offlinePrepEstimate.estimatedTileCacheMb + offlinePrepEstimate.estimatedDemCacheMb
-                                    val estimateBytes = (estimateMb * 1024.0 * 1024.0).toLong()
-                                    val available = offlinePrepAvailableBytes
-                                    if (available != null && estimateBytes > (available * 95L / 100L)) {
+                                    val capacity = OfflinePrepCapacity(
+                                        currentTileCacheBytes = offlinePrepCurrentTileCacheBytes,
+                                        estimatedTileBytes = (offlinePrepEstimate.estimatedTileCacheMb * 1024.0 * 1024.0).toLong(),
+                                        estimatedDemBytes = (offlinePrepEstimate.estimatedDemCacheMb * 1024.0 * 1024.0).toLong(),
+                                        maximumTileCacheBytes = offlinePrepTileCacheCapBytes,
+                                        availableVolumeBytes = offlinePrepAvailableBytes
+                                    )
+                                    if (capacity.exceedsCacheLimit) {
+                                        CaltopoClient.ShowToast("Increase the tile-cache limit or choose a smaller download.")
+                                        return@TextButton
+                                    }
+                                    if (capacity.exceedsAvailableVolume) {
                                         CaltopoClient.ShowToast("Estimated download exceeds available storage. Pick a smaller area/zoom.")
                                         return@TextButton
                                     }
                                 }
                                 startOfflinePrep(prepBounds, boundary)
                             },
-                            enabled = !offlinePrepInFlight && (mapBounds != null || selectedBoundary != null)
+                            enabled = !offlinePrepInFlight && offlinePrepEstimate.ready &&
+                                (mapBounds != null || selectedBoundary != null)
                         ) { Text("Start") }
                     }
                 },

@@ -37,6 +37,7 @@ import org.ncssar.rid2caltopo.data.PilotDisplayPreference
 import org.ncssar.rid2caltopo.data.sanitizeTrackColor
 import org.ncssar.rid2caltopo.notam.NearbyNotam
 import org.ncssar.rid2caltopo.ui.MapFoldersDialog
+import org.ncssar.rid2caltopo.video.mapcache.MapCacheSettings
 
 private val PILOT_DISPLAY_COLOR_PALETTE = listOf(
     DEFAULT_ACTIVE_TRACK_COLOR,
@@ -300,6 +301,8 @@ internal fun MapPaneManagementDialogs(
     showMapCacheSizeDialog: Boolean,
     onShowMapCacheSizeDialogChange: (Boolean) -> Unit,
     mapCacheSizeInput: String,
+    mapCacheAvailableBytes: Long?,
+    mapCacheCurrentBytes: Long,
     onMapCacheSizeInputChange: (String) -> Unit,
     onMapCacheSizeSaved: (Long) -> Unit,
     showMapTileAgeDialog: Boolean,
@@ -380,6 +383,15 @@ internal fun MapPaneManagementDialogs(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Enter the maximum tile cache size in decimal GB.")
+                    Text("Currently configured: ${MapCacheSettings.formatDecimalGb(MapCacheSettings.maxCacheBytes(context))}")
+                    Text(
+                        mapCacheAvailableBytes?.let {
+                            "Available on cache volume: ${MapCacheSettings.formatDecimalGb(it)}"
+                        } ?: "Available space on cache volume: unavailable"
+                    )
+                    reasonableCacheMaximumBytes(mapCacheCurrentBytes, mapCacheAvailableBytes)?.let {
+                        Text("Largest recommended maximum now: ${MapCacheSettings.formatDecimalGb(it)}")
+                    }
                     OutlinedTextField(
                         value = mapCacheSizeInput,
                         onValueChange = onMapCacheSizeInputChange,

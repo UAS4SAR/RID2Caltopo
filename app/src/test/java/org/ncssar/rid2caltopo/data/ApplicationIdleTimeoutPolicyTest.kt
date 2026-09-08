@@ -61,4 +61,21 @@ class ApplicationIdleTimeoutPolicyTest {
             ),
         )
     }
+
+    @Test
+    fun completedProtectedActivityRestartsIdleCountdown() {
+        val protectedActivityAt = 7_000_000L
+        val now = protectedActivityAt + 30_000L
+
+        assertEquals(
+            90_000L,
+            ApplicationIdleTimeoutPolicy.remainingDelayMsec(
+                1_000L,
+                0L,
+                protectedActivityAt,
+                2L,
+                now,
+            ),
+        )
+    }
 }

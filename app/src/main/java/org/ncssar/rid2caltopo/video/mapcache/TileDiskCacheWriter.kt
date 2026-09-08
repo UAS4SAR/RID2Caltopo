@@ -55,6 +55,9 @@ class TileDiskCacheWriter(context: Context) : IFilesystemCache {
             }
             val expiresAt = pExpirationTime?.takeIf { it > System.currentTimeMillis() } ?: diskCache.defaultExpiry()
             diskCache.put(key, bytes, expiresAt)
+            if (diskCache.snapshot().bytesUsed > MapCachePolicy.tileCacheMaxBytes(appContext)) {
+                MapCacheMaintenanceScheduler.request(appContext)
+            }
             MapCacheDebug.log(
                 "tile put source=${pTileSourceInfo.name()} key=$key bytes=${bytes.size} expiresAt=$expiresAt"
             )
@@ -176,6 +179,8 @@ class TileDiskCacheWriter(context: Context) : IFilesystemCache {
     }
 
     fun statsSnapshot(): CacheStatsSnapshot = diskCache.snapshot()
+
+    fun currentSizeBytes(): Long = diskCache.usageBytes()
 
     fun describeRejectedWrite(
         tileSource: ITileSource,

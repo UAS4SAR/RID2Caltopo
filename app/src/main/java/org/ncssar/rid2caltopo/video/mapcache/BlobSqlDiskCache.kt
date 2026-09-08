@@ -1,7 +1,6 @@
 package org.ncssar.rid2caltopo.video.mapcache
 
 import android.content.ContentValues
-import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
@@ -70,7 +69,6 @@ internal class BlobSqlDiskCache(
             }
             db.replaceOrThrow("entries", null, cv)
             MapCacheDebug.log("sql put db=$dbName key=$cacheKey bytes=${bytes.size} expiresAt=$expiresAtMs dir=${cacheDir.absolutePath}")
-            evictToCapLocked()
             bytesUsedAtomic.set(bytesUsedLocked())
         }
     }
@@ -159,14 +157,22 @@ internal class BlobSqlDiskCache(
         staleServedCount.incrementAndGet()
     }
 
-    override fun runMaintenance(maxEntryAgeCutoffMs: Long, trimToBytes: Long): CacheMaintenanceResult {
+    override fun usageBytes(): Long = synchronized(lock) {
+        bytesUsedLocked().also(bytesUsedAtomic::set)
+    }
+
+    override fun runMaintenance(
+        maxEntryAgeCutoffMs: Long,
+        trimToBytes: Long,
+        shouldContinue: () -> Boolean
+    ): CacheMaintenanceResult {
         synchronized(lock) {
             var agedOutEntries = 0
             var trimEvictedEntries = 0
             var bytesFreed = 0L
 
             if (maxEntryAgeCutoffMs > 0L) {
-                while (true) {
+                while (shouldContinue()) {
                     val victims = ArrayList<Pair<String, Long>>()
                     val cursor = db.query(
                         "entries",
@@ -185,6 +191,7 @@ internal class BlobSqlDiskCache(
                     }
                     if (victims.isEmpty()) break
                     for ((key, size) in victims) {
+                        if (!shouldContinue()) break
                         if (db.delete("entries", "cache_key = ?", arrayOf(key)) > 0) {
                             agedOutEntries += 1
                             bytesFreed += size
@@ -195,7 +202,7 @@ internal class BlobSqlDiskCache(
 
             var current = bytesUsedLocked()
             val trimTarget = trimToBytes.coerceAtLeast(0L)
-            while (current > trimTarget) {
+            while (current > trimTarget && shouldContinue()) {
                 val victims = ArrayList<Pair<String, Long>>()
                 val cursor = db.query(
                     "entries",
@@ -214,6 +221,7 @@ internal class BlobSqlDiskCache(
                 }
                 if (victims.isEmpty()) break
                 for ((key, size) in victims) {
+                    if (!shouldContinue()) break
                     if (db.delete("entries", "cache_key = ?", arrayOf(key)) > 0) {
                         trimEvictedEntries += 1
                         bytesFreed += size
@@ -232,40 +240,6 @@ internal class BlobSqlDiskCache(
                 bytesFreed = bytesFreed,
                 bytesRemaining = remaining
             )
-        }
-    }
-
-    private fun evictToCapLocked() {
-        var current = bytesUsedLocked()
-        if (current <= maxBytes) return
-
-        while (current > maxBytes) {
-            val cursor: Cursor = db.query(
-                "entries",
-                arrayOf("cache_key", "size_bytes"),
-                null,
-                null,
-                null,
-                null,
-                "accessed_at ASC",
-                "64"
-            )
-            val victims = ArrayList<Pair<String, Long>>()
-            cursor.use {
-                while (it.moveToNext()) {
-                    victims += it.getString(0) to it.getLong(1)
-                }
-            }
-            if (victims.isEmpty()) break
-
-            for ((key, size) in victims) {
-                val deleted = db.delete("entries", "cache_key = ?", arrayOf(key))
-                if (deleted > 0) {
-                    current -= size
-                    evictionCount.incrementAndGet()
-                }
-                if (current <= maxBytes) break
-            }
         }
     }
 

@@ -35,6 +35,121 @@ public struct OperationalOfflineTile: Sendable, Hashable {
     }
 }
 
+public struct OperationalOfflineCapacity: Sendable, Equatable {
+    public let currentTileCacheBytes: Int64
+    public let currentDEMCacheBytes: Int64
+    public let estimatedTileBytes: Int64
+    public let estimatedDEMBytes: Int64
+    public let maximumTileCacheBytes: Int64
+    public let availableVolumeBytes: Int64?
+
+    public init(
+        currentTileCacheBytes: Int64,
+        currentDEMCacheBytes: Int64 = 0,
+        estimatedTileBytes: Int64,
+        estimatedDEMBytes: Int64,
+        maximumTileCacheBytes: Int64,
+        availableVolumeBytes: Int64?
+    ) {
+        self.currentTileCacheBytes = max(0, currentTileCacheBytes)
+        self.currentDEMCacheBytes = max(0, currentDEMCacheBytes)
+        self.estimatedTileBytes = max(0, estimatedTileBytes)
+        self.estimatedDEMBytes = max(0, estimatedDEMBytes)
+        self.maximumTileCacheBytes = max(0, maximumTileCacheBytes)
+        self.availableVolumeBytes = availableVolumeBytes.map { max(0, $0) }
+    }
+
+    public var projectedTileCacheBytes: Int64 {
+        Self.saturatedAdd(currentTileCacheBytes, estimatedTileBytes)
+    }
+
+    public var estimatedDownloadBytes: Int64 {
+        Self.saturatedAdd(estimatedTileBytes, estimatedDEMBytes)
+    }
+
+    public var currentOfflineStorageBytes: Int64 {
+        Self.saturatedAdd(currentTileCacheBytes, currentDEMCacheBytes)
+    }
+
+    public var projectedOfflineStorageBytes: Int64 {
+        Self.saturatedAdd(currentOfflineStorageBytes, estimatedDownloadBytes)
+    }
+
+    public var exceedsCacheLimit: Bool { projectedTileCacheBytes > maximumTileCacheBytes }
+
+    public var exceedsAvailableVolume: Bool {
+        guard let availableVolumeBytes else { return false }
+        return estimatedDownloadBytes > availableVolumeBytes * 95 / 100
+    }
+
+    public var recommendedMaximumBytes: Int64 {
+        let decimalGB: Int64 = 1_000_000_000
+        let headroom = max(100_000_000, projectedTileCacheBytes / 10)
+        let desired = Self.saturatedAdd(projectedTileCacheBytes, headroom)
+        let rounded = Self.saturatedAdd(desired, decimalGB - 1) / decimalGB * decimalGB
+        return min(64_000_000_000, max(100_000_000, rounded))
+    }
+
+    private static func saturatedAdd(_ left: Int64, _ right: Int64) -> Int64 {
+        left > Int64.max - right ? Int64.max : left + right
+    }
+}
+
+public enum OperationalOfflineProgress {
+    public static func weightedCompletedBytes(
+        completedBytes: Int64,
+        activeEstimatedBytes: Int64,
+        activeTransferredBytes: Int64,
+        activeExpectedBytes: Int64?
+    ) -> Int64 {
+        let completed = max(0, completedBytes)
+        let estimated = max(0, activeEstimatedBytes)
+        guard estimated > 0, activeTransferredBytes > 0 else { return completed }
+        let expected = max(1, activeExpectedBytes ?? estimated)
+        let active = min(
+            estimated,
+            Int64((Double(estimated) * min(1, Double(activeTransferredBytes) / Double(expected))).rounded(.down))
+        )
+        return completed > Int64.max - active ? Int64.max : completed + active
+    }
+
+    public static func fraction(completedBytes: Int64, totalBytes: Int64) -> Double {
+        guard totalBytes > 0 else { return 0 }
+        return min(1, max(0, Double(completedBytes) / Double(totalBytes)))
+    }
+}
+
+public enum OperationalCacheRetryPolicy {
+    public static func shouldRetry(statusCode: Int) -> Bool {
+        statusCode == 408 || statusCode == 429 || (500 ... 599).contains(statusCode)
+    }
+
+    public static func delaySeconds(
+        attempt: Int,
+        retryAfterHeader: String? = nil
+    ) -> TimeInterval? {
+        guard attempt >= 0 && attempt < 3 else { return nil }
+        if let retryAfterHeader,
+           let seconds = TimeInterval(retryAfterHeader.trimmingCharacters(in: .whitespacesAndNewlines)),
+           seconds >= 0 {
+            return min(30, seconds)
+        }
+        return [0.5, 1, 2][attempt]
+    }
+
+    public static func prefetchDelaySeconds(failureCount: Int) -> TimeInterval {
+        let exponent = min(7, max(0, failureCount - 1))
+        return min(3_600, 30 * pow(2, Double(exponent)))
+    }
+}
+
+public enum OperationalCacheFreshness {
+    public static func isFresh(modifiedAt: Date?, cutoff: Date) -> Bool {
+        guard let modifiedAt else { return false }
+        return modifiedAt >= cutoff
+    }
+}
+
 public enum OperationalMapTileLayerState {
     public static func fingerprint(
         baseLayer: OperationalMapBaseLayer,

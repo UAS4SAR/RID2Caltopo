@@ -377,7 +377,8 @@ internal fun droneStatusLabelText(
     aglFeet: Double?,
     aglStale: Boolean,
     rangeFeet: Double?,
-    headingDeg: Double?
+    headingDeg: Double?,
+    headingLabel: String = "HDG",
 ): String {
     val ato = atoFeet
         ?.takeIf { kotlin.math.abs(it) <= LABEL_MAX_ABS_FEET }
@@ -394,7 +395,7 @@ internal fun droneStatusLabelText(
         ?.takeIf { it.isFinite() }
         ?.let { String.format(Locale.US, "%.0f", normalizeDegrees(it)) }
         ?: "--"
-    return "ATO:$ato' AGL:$agl' RNG:$range' HDG:$heading°"
+    return "ATO:$ato' AGL:$agl' RNG:$range' $headingLabel:$heading°"
 }
 
 internal fun droneDetailLines(

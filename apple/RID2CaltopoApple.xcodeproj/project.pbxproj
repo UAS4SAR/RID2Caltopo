@@ -100,7 +100,7 @@
 		100000000000000000000219 /* AppleSpokenWarningCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSpokenWarningCenter.swift; sourceTree = "<group>"; };
 		10000000000000000000021C /* AppleManagedVideoPreflightPeer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleManagedVideoPreflightPeer.swift; sourceTree = "<group>"; };
 		10000000000000000000021D /* AppleManagedVideoMediaPeer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleManagedVideoMediaPeer.swift; sourceTree = "<group>"; };
-		100000000000000000000215 /* whats_new.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = whats_new.txt; path = ../release-notes/2.2.4/whats_new.txt; sourceTree = "<group>"; };
+		100000000000000000000215 /* whats_new.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = whats_new.txt; path = ../release-notes/2.2.5/whats_new.txt; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -202,7 +202,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = App/RID2CaltopoApple.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 185;
+				CURRENT_PROJECT_VERSION = 189;
 				DEVELOPMENT_TEAM = 94UV79S6LR;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
@@ -216,7 +216,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				MARKETING_VERSION = 2.2.4;
+				MARKETING_VERSION = 2.2.5;
 				OTHER_LDFLAGS = "$(inherited) -lresolv -framework VideoToolbox -framework CoreMedia -framework CoreVideo";
 				PRODUCT_BUNDLE_IDENTIFIER = org.ncssar.RID2CaltopoApple;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -235,7 +235,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = App/RID2CaltopoApple.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 185;
+				CURRENT_PROJECT_VERSION = 189;
 				DEVELOPMENT_TEAM = 94UV79S6LR;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
@@ -249,7 +249,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				MARKETING_VERSION = 2.2.4;
+				MARKETING_VERSION = 2.2.5;
 				OTHER_LDFLAGS = "$(inherited) -lresolv -framework VideoToolbox -framework CoreMedia -framework CoreVideo";
 				PRODUCT_BUNDLE_IDENTIFIER = org.ncssar.RID2CaltopoApple;
 				PRODUCT_NAME = "$(TARGET_NAME)";

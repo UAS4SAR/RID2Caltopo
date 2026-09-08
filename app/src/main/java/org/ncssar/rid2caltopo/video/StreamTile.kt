@@ -111,13 +111,17 @@ internal fun shouldShowStreamClueCaptureButton(
     streamState: StreamState,
 ): Boolean = showTileControls && !isLocalPlayback && streamState == StreamState.LIVE
 
-internal fun streamTelemetryHeaderText(displayState: DroneDisplayState?): String =
+internal fun streamTelemetryHeaderText(
+    displayState: DroneDisplayState?,
+    cameraAzimuthDeg: Double? = null,
+): String =
     droneStatusLabelText(
         atoFeet = displayState?.atoFt,
         aglFeet = displayState?.aglFt,
         aglStale = displayState?.aglStale == true,
         rangeFeet = displayState?.rangeFt,
-        headingDeg = displayState?.headingDeg,
+        headingDeg = cameraAzimuthDeg ?: displayState?.headingDeg,
+        headingLabel = if (cameraAzimuthDeg != null) "CAM" else "HDG",
     )
 
 internal fun isNearStreamCenter(
@@ -677,9 +681,10 @@ fun StreamTile(
                     }
             )
         }
-        // Match the map's canonical ATO / AGL / RNG / HDG telemetry order.
+        // Keep aircraft heading distinct from the camera bearing supplied by DJI SEI.
         if (streamState == StreamState.LIVE && !isLocalPlayback && showStandaloneTelemetryOverlay) {
             val displayState = viewModel.droneDisplayStateForStream(streamDesignator)
+            val cameraAzimuthDeg = viewModel.cameraAzimuthForStream(streamDesignator)
             Row(
                 modifier = Modifier
                     .align(Alignment.TopStart)
@@ -689,7 +694,7 @@ fun StreamTile(
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = streamTelemetryHeaderText(displayState),
+                    text = streamTelemetryHeaderText(displayState, cameraAzimuthDeg),
                     color = Color.White,
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,

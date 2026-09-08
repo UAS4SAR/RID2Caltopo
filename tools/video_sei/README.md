@@ -66,7 +66,7 @@ The expected CalTopo camera fields map as follows after a controlled Matrice
 
 | CalTopo field | Candidate encoding | Confidence |
 | --- | --- | --- |
-| `camera:azimuth` | tag 4, offset 3, unsigned 32-bit binary angle (`raw * 360 / 2^32`), then convert magnetic-east/counter-clockwise to true-north/clockwise as `90° - raw + declination` | Field-validated |
+| `camera:azimuth` | tag 4, offset 3, unsigned 32-bit binary angle (`raw * 360 / 2^32`), then convert clockwise magnetic bearing to clockwise true-north bearing as `raw - 90° + declination` | Field-validated |
 | raw gimbal tilt | tag 4, offset 11, the same binary angle minus 90°, normalized signed | High |
 | `camera:fov_width` | tag 10, offset 1, unsigned 32-bit / 256 | High |
 | `camera:fov_height` | tag 10, offset 5, unsigned 32-bit / 256 | High |
@@ -94,8 +94,8 @@ one target while the controller reported approximately 270°, 180°, 89°, and
 0°. Offset 3 instead reported 1°, 285°, 150°, and 76°, which initially made
 the field appear unrelated. Comparing a subsequent four-vantage clue test with
 the known target bearings exposed the missing camera-image axis conversion:
-subtracting 90° from offset 3 produces the absolute camera azimuth. Android and
-Apple apply that conversion, freshness-gate the result, and prefer it over
+subtracting 90° from offset 3 produces the magnetic camera azimuth. Android and
+Apple add local magnetic declination to produce a true-north bearing, freshness-gate the result, and prefer it over
 movement-derived or Remote ID direction. The raw value and all nine aligned
 tag-4 binary-angle candidates remain in diagnostics for continued field
 qualification.

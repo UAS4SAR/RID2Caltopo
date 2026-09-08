@@ -2427,7 +2427,7 @@ private struct ClueSubmissionView: View {
             summaryLines.append(String(format: "  Decimal: %.6f, %.6f", projection.latitude, projection.longitude))
         }
         summaryLines += [
-            "  Heading used for clue: \(headingMeasurement(heading.degrees))",
+            "  Camera Azimuth: \(headingMeasurement(heading.degrees))",
             "  Heading source: \(heading.sourceLabel ?? "N/A")",
             "  Gimbal angle at capture: \(String(format: "%.1f°", gimbalAngle))",
             "  AGL: \(measurement(aglMeters.map { $0 * 3.28084 }, suffix: display?.aglStale == true ? "? ft" : " ft"))",
@@ -4521,26 +4521,43 @@ private final class CachedMapTileOverlay: MKTileOverlay {
         let requestURL = url(forTilePath: sourcePath)
         var request = URLRequest(url: requestURL)
         request.setValue("RID2Caltopo/Apple (contact: kjt@uas4sar.com)", forHTTPHeaderField: "User-Agent")
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            guard let data, (response as? HTTPURLResponse)?.statusCode == 200,
-                  AppleMapOfflineManager.dataIsUsableTile(data), !AppleBadTilePolicy.isBlocked(data)
-            else {
-                if let data { AppleBadTilePolicy.record(data) }
-                completion.result(nil, error ?? CocoaError(.fileReadUnknown))
-                return
+        let transfer = TileLoadTransfer(
+            request: request,
+            sourceDestination: sourceDestination,
+            requestedDestination: requestedDestination,
+            overzoom: overzoom,
+            fileExtension: ext,
+            blockedHashes: AppleBadTilePolicy.hashes(),
+            completion: completion
+        )
+        Self.downloadAndComplete(transfer)
+    }
+
+    private nonisolated static func downloadAndComplete(_ transfer: TileLoadTransfer) {
+        Task.detached(priority: .userInitiated) {
+            do {
+                let downloaded = try await AppleMapTileDownloadCoordinator.shared.download(
+                    request: transfer.request,
+                    destination: transfer.sourceDestination,
+                    blockedHashes: transfer.blockedHashes
+                )
+                AppleMapOfflineManager.noteTileCached(bytes: Int(downloaded.bytesAdded))
+                guard let output = Self.displayTileData(
+                    sourceData: downloaded.data,
+                    overzoom: transfer.overzoom,
+                    fileExtension: transfer.fileExtension
+                ) else {
+                    transfer.completion.result(nil, CocoaError(.fileReadCorruptFile))
+                    return
+                }
+                if transfer.requestedDestination != transfer.sourceDestination {
+                    Self.cache(output, at: transfer.requestedDestination)
+                }
+                transfer.completion.result(output, nil)
+            } catch {
+                transfer.completion.result(nil, error)
             }
-            Self.cache(data, at: sourceDestination)
-            guard let output = Self.displayTileData(
-                sourceData: data,
-                overzoom: overzoom,
-                fileExtension: ext
-            ) else {
-                completion.result(nil, CocoaError(.fileReadCorruptFile))
-                return
-            }
-            Self.cache(output, at: requestedDestination)
-            completion.result(output, nil)
-        }.resume()
+        }
     }
 
     private func cacheDestination(for path: MKTileOverlayPath, fileExtension: String) -> URL {
@@ -4551,17 +4568,26 @@ private final class CachedMapTileOverlay: MKTileOverlay {
     }
 
     private func usableCachedTile(at destination: URL) -> Data? {
-        if let data = try? Data(contentsOf: destination),
-           AppleMapOfflineManager.dataIsUsableTile(data),
-           !AppleBadTilePolicy.isBlocked(data) {
-            return data
-        }
-        if FileManager.default.fileExists(atPath: destination.path) {
-            if UserDefaults.standard.object(forKey: "map.autoRemoveBadTiles") as? Bool ?? true {
-                try? FileManager.default.removeItem(at: destination)
+        AppleMapCacheAccess.synchronized {
+            let maximumAgeDays = max(
+                1,
+                min(3_650, UserDefaults.standard.object(forKey: "map.maximumTileAgeDays") as? Int ?? 365)
+            )
+            let cutoff = Date().addingTimeInterval(-Double(maximumAgeDays) * 86_400)
+            let modified = try? destination.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            if OperationalCacheFreshness.isFresh(modifiedAt: modified, cutoff: cutoff),
+               let data = try? Data(contentsOf: destination),
+               AppleMapOfflineManager.dataIsUsableTile(data),
+               !AppleBadTilePolicy.isBlocked(data) {
+                return data
             }
+            if FileManager.default.fileExists(atPath: destination.path) {
+                if UserDefaults.standard.object(forKey: "map.autoRemoveBadTiles") as? Bool ?? true {
+                    try? FileManager.default.removeItem(at: destination)
+                }
+            }
+            return nil
         }
-        return nil
     }
 
     private static func displayTileData(
@@ -4605,11 +4631,8 @@ private final class CachedMapTileOverlay: MKTileOverlay {
 
     private static func cache(_ data: Data, at destination: URL) {
         do {
-            try FileManager.default.createDirectory(
-                at: destination.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try data.write(to: destination, options: .atomic)
+            let bytesAdded = try AppleMapCacheAccess.write(data, to: destination)
+            AppleMapOfflineManager.noteTileCached(bytes: Int(bytesAdded))
         } catch {
             AppleLog.warning("MapTiles", "Tile cache write failed: \(error.localizedDescription)")
         }
@@ -4619,6 +4642,16 @@ private final class CachedMapTileOverlay: MKTileOverlay {
 
 private struct TileResultTransfer: @unchecked Sendable {
     let result: (Data?, Error?) -> Void
+}
+
+private struct TileLoadTransfer: @unchecked Sendable {
+    let request: URLRequest
+    let sourceDestination: URL
+    let requestedDestination: URL
+    let overzoom: OperationalOverzoomTile?
+    let fileExtension: String
+    let blockedHashes: Set<String>
+    let completion: TileResultTransfer
 }
 
 private enum OperationalMapRenderLayer {

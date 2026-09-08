@@ -91,12 +91,15 @@ internal class SafBlobCacheStore(
         else -> ReadableLayoutKind.NONE
     }
     private val dbLock = Any()
+    private val prewarmLock = Any()
     private val hitCount = AtomicLong(0)
     private val missCount = AtomicLong(0)
     private val evictionCount = AtomicLong(0)
     private val staleServedCount = AtomicLong(0)
     private val bytesUsedAtomic = AtomicLong(0L)
     private var namespaceFileIndex: MutableMap<String, DocumentFile>? = null
+    @Volatile
+    private var prewarmed = false
 
     private val db: SQLiteDatabase by lazy { SafCacheIndexDatabaseHolder.get(appContext) }
 
@@ -128,7 +131,6 @@ internal class SafBlobCacheStore(
             bytesUsedAtomic.set(bytesUsedLocked())
         }
         MapCacheDebug.log("saf put ns=$namespace key=$cacheKey bytes=${bytes.size} uri=${target.uri}")
-        evictToCap()
     }
 
     override fun get(cacheKey: String, countHitMiss: Boolean): CachedBlob? {
@@ -178,7 +180,21 @@ internal class SafBlobCacheStore(
     }
 
     override fun exists(cacheKey: String): Boolean {
-        return get(cacheKey, countHitMiss = false) != null
+        // Offline-map preparation calls this thousands of times. Reading every
+        // cached tile body just to prove it exists makes removable SAF storage
+        // the bottleneck and needlessly updates the LRU timestamp for a probe.
+        return synchronized(dbLock) {
+            val indexed = queryRow(cacheKey)
+            if (indexed != null && namespaceFileIndex?.containsKey(indexed.fileName) == false) {
+                // A completed prewarm is a filesystem snapshot. Do not let a
+                // stale database row make package/readiness checks skip a tile
+                // that is no longer present on removable storage.
+                deleteRow(cacheKey)
+                null
+            } else {
+                indexed ?: recoverRowFromFileLocked(cacheKey)
+            }
+        } != null
     }
 
     override fun remove(cacheKey: String): Boolean {
@@ -229,26 +245,51 @@ internal class SafBlobCacheStore(
         staleServedCount.incrementAndGet()
     }
 
+    override fun usageBytes(): Long = synchronized(dbLock) {
+        bytesUsedLocked().also(bytesUsedAtomic::set)
+    }
+
     override fun prewarm() {
-        val nsDir = getNamespaceDir()
-        if (nsDir == null) {
-            MapCacheDebug.log("saf prewarm ns=$namespace skipped(no namespace dir)")
-            return
-        }
-        val fileIndex = buildNamespaceFileIndex(nsDir)
-        synchronized(dbLock) {
-            namespaceFileIndex = fileIndex
-            bytesUsedAtomic.set(bytesUsedLocked())
-            MapCacheDebug.log("saf prewarm ns=$namespace ready files=${namespaceFileIndex?.size ?: 0}")
+        if (prewarmed) return
+        synchronized(prewarmLock) {
+            if (prewarmed) return
+            val nsDir = getNamespaceDir()
+            if (nsDir == null) {
+                MapCacheDebug.log("saf prewarm ns=$namespace skipped(no namespace dir)")
+                prewarmed = true
+                return
+            }
+            val fileIndex = buildNamespaceFileIndex(nsDir)
+            val indexedFiles = fileIndex.mapNotNull { (relativePath, file) ->
+                relativePathToCacheKey(relativePath)?.let { cacheKey ->
+                    IndexedFile(
+                        cacheKey = cacheKey,
+                        relativePath = relativePath,
+                        uri = file.uri.toString(),
+                        sizeBytes = file.length().coerceAtLeast(0L)
+                    )
+                }
+            }
+            synchronized(dbLock) {
+                namespaceFileIndex = fileIndex
+                maybeRebuildIndexLocked(indexedFiles)
+                bytesUsedAtomic.set(bytesUsedLocked())
+                MapCacheDebug.log("saf prewarm ns=$namespace ready files=${namespaceFileIndex?.size ?: 0}")
+            }
+            prewarmed = true
         }
     }
 
-    override fun runMaintenance(maxEntryAgeCutoffMs: Long, trimToBytes: Long): CacheMaintenanceResult {
+    override fun runMaintenance(
+        maxEntryAgeCutoffMs: Long,
+        trimToBytes: Long,
+        shouldContinue: () -> Boolean
+    ): CacheMaintenanceResult {
         var agedOutEntries = 0
         var trimEvictedEntries = 0
         var bytesFreed = 0L
 
-        while (true) {
+        while (shouldContinue()) {
             val victims: List<Triple<String, String, Long>> = synchronized(dbLock) {
                 val cursor = db.query(
                     "saf_entries",
@@ -270,6 +311,7 @@ internal class SafBlobCacheStore(
             }
             if (victims.isEmpty()) break
             for ((key, uri, size) in victims) {
+                if (!shouldContinue()) break
                 try {
                     DocumentFile.fromSingleUri(appContext, Uri.parse(uri))?.delete()
                 } catch (_: Exception) {
@@ -291,7 +333,7 @@ internal class SafBlobCacheStore(
         }
 
         val trimTarget = trimToBytes.coerceAtLeast(0L)
-        while (true) {
+        while (shouldContinue()) {
             val victims: List<Triple<String, String, Long>> = synchronized(dbLock) {
                 val current = bytesUsedLocked()
                 bytesUsedAtomic.set(current)
@@ -316,6 +358,7 @@ internal class SafBlobCacheStore(
             }
             if (victims.isEmpty()) break
             for ((key, uri, size) in victims) {
+                if (!shouldContinue()) break
                 try {
                     DocumentFile.fromSingleUri(appContext, Uri.parse(uri))?.delete()
                 } catch (_: Exception) {
@@ -346,54 +389,6 @@ internal class SafBlobCacheStore(
             bytesFreed = bytesFreed,
             bytesRemaining = remaining
         )
-    }
-
-    private fun evictToCap() {
-        while (true) {
-            val victims: List<Triple<String, String, Long>> = synchronized(dbLock) {
-                val current = bytesUsedLocked()
-                bytesUsedAtomic.set(current)
-                if (current <= maxBytes) return
-                val cursor: Cursor = db.query(
-                    "saf_entries",
-                    arrayOf("cache_key", "file_uri", "size_bytes"),
-                    "namespace = ?",
-                    arrayOf(storageNamespace),
-                    null,
-                    null,
-                    "accessed_at ASC",
-                    "64"
-                )
-                cursor.use {
-                    val out = ArrayList<Triple<String, String, Long>>(64)
-                    while (it.moveToNext()) {
-                        out += Triple(it.getString(0), it.getString(1), it.getLong(2))
-                    }
-                    out
-                }
-            }
-            if (victims.isEmpty()) return
-
-            for ((key, uri, _) in victims) {
-                try {
-                    DocumentFile.fromSingleUri(appContext, Uri.parse(uri))?.delete()
-                } catch (e: Exception) {
-                    MapCacheDebug.log("saf evict delete-failed ns=$namespace key=$key uri=$uri err=${e.javaClass.simpleName}")
-                }
-                val rows = synchronized(dbLock) {
-                    namespaceFileIndex?.remove(keyToRelativePath(key))
-                    namespaceFileIndex?.remove(legacyFileNameForKey(key))
-                    db.delete(
-                        "saf_entries",
-                        "namespace = ? AND cache_key = ?",
-                        arrayOf(storageNamespace, key)
-                    )
-                }
-                if (rows > 0) {
-                    evictionCount.incrementAndGet()
-                }
-            }
-        }
     }
 
     private fun bytesUsedLocked(): Long {
@@ -562,18 +557,18 @@ internal class SafBlobCacheStore(
         return if (leaf.isFile) LocatedFile(leaf, relativePath) else null
     }
 
-    private fun maybeRebuildIndexLocked(fileIndex: MutableMap<String, DocumentFile>) {
+    private fun maybeRebuildIndexLocked(indexedFiles: List<IndexedFile>) {
         if (readableLayoutKind == ReadableLayoutKind.NONE) return
-        val readableFiles = fileIndex.keys.count { relativePathToCacheKey(it) != null }
+        val readableFiles = indexedFiles.size
         if (readableFiles <= 0) return
 
         val dbRows = queryRowsLocked()
         val missingIndex = dbRows.isEmpty()
-        val inconsistentIndex = !missingIndex && isIndexInconsistent(fileIndex, dbRows, readableFiles)
+        val inconsistentIndex = !missingIndex && isIndexInconsistent(indexedFiles, dbRows)
         if (!missingIndex && !inconsistentIndex) return
 
         rebuildIndexFromFilesystemLocked(
-            fileIndex = fileIndex,
+            indexedFiles = indexedFiles,
             dbRowCount = dbRows.size,
             readableFileCount = readableFiles,
             reason = if (missingIndex) "missing" else "inconsistent"
@@ -581,22 +576,21 @@ internal class SafBlobCacheStore(
     }
 
     private fun isIndexInconsistent(
-        fileIndex: Map<String, DocumentFile>,
-        dbRows: List<Row>,
-        readableFileCount: Int
+        indexedFiles: List<IndexedFile>,
+        dbRows: List<Row>
     ): Boolean {
-        val readableDbRows = dbRows.count { relativePathToCacheKey(it.fileName) != null }
-        if (readableDbRows != readableFileCount) return true
-        for (row in dbRows) {
-            val file = fileIndex[row.fileName] ?: continue
-            if (!file.isFile) return true
-            if (file.uri.toString() != row.fileUri) return true
+        val readableDbRows = dbRows.filter { relativePathToCacheKey(it.fileName) != null }
+        if (readableDbRows.size != indexedFiles.size) return true
+        val filesByPath = indexedFiles.associateBy { it.relativePath }
+        for (row in readableDbRows) {
+            val file = filesByPath[row.fileName] ?: return true
+            if (file.uri != row.fileUri) return true
         }
         return false
     }
 
     private fun rebuildIndexFromFilesystemLocked(
-        fileIndex: Map<String, DocumentFile>,
+        indexedFiles: List<IndexedFile>,
         dbRowCount: Int,
         readableFileCount: Int,
         reason: String
@@ -608,19 +602,13 @@ internal class SafBlobCacheStore(
         db.beginTransaction()
         try {
             db.delete("saf_entries", "namespace = ?", arrayOf(storageNamespace))
-            for ((relativePath, file) in fileIndex) {
-                val cacheKey = relativePathToCacheKey(relativePath)
-                if (cacheKey == null || !file.isFile) {
-                    skipped += 1
-                    continue
-                }
-                val size = file.length().coerceAtLeast(0L)
+            for (file in indexedFiles) {
                 val cv = ContentValues().apply {
                     put("namespace", storageNamespace)
-                    put("cache_key", cacheKey)
-                    put("file_uri", file.uri.toString())
-                    put("file_name", relativePath)
-                    put("size_bytes", size)
+                    put("cache_key", file.cacheKey)
+                    put("file_uri", file.uri)
+                    put("file_name", file.relativePath)
+                    put("size_bytes", file.sizeBytes)
                     put("created_at", now)
                     put("accessed_at", now)
                     put("expires_at", defaultExpiry(now))
@@ -872,5 +860,12 @@ internal class SafBlobCacheStore(
     private data class LocatedFile(
         val file: DocumentFile,
         val fileName: String
+    )
+
+    private data class IndexedFile(
+        val cacheKey: String,
+        val relativePath: String,
+        val uri: String,
+        val sizeBytes: Long
     )
 }

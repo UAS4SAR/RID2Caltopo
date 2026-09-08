@@ -50,6 +50,8 @@ internal const val MAP_CACHE_PREWARM_SIG_KEY = "prewarm_signature_v1"
 internal const val OSM_TILE_DOWNLOAD_THREADS: Short = 1
 internal const val OSM_TILE_DOWNLOAD_MAX_QUEUE: Short = 1000
 internal const val OSM_OFFLINE_PREP_REQUEST_DELAY_MS = 1_250L
+internal const val OFFLINE_TILE_FETCH_MAX_ATTEMPTS = 2
+internal const val OFFLINE_TILE_FETCH_RETRY_DELAY_MSEC = 250L
 internal const val TILE_FS_THREADS: Short = 4
 internal const val TILE_FS_MAX_QUEUE: Short = 2000
 internal const val TILE_IO_ACTIVE_GRACE_MS = 2_000L
@@ -99,9 +101,18 @@ internal data class OfflinePrepProgress(
     val failed: Int = 0,
     val demFailed: Int = 0,
     val totalFailed: Int = 0,
-    val opsPerSec: Double = 0.0,
+    val completedBytes: Long = 0L,
+    val totalBytes: Long = 0L,
+    val bytesPerSec: Double = 0.0,
     val etaSeconds: Long? = null
-)
+) {
+    val fraction: Double
+        get() = if (totalBytes > 0L) {
+            (completedBytes.toDouble() / totalBytes.toDouble()).coerceIn(0.0, 1.0)
+        } else {
+            0.0
+        }
+}
 
 internal data class GeoBoundary(
     val ring: List<GeoPoint>,

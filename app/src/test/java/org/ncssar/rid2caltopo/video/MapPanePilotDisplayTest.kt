@@ -63,6 +63,22 @@ class MapPanePilotDisplayTest {
     }
 
     @Test
+    fun streamTelemetryHeader_prefersFreshCameraAzimuthWithoutCallingItAircraftHeading() {
+        assertEquals(
+            "ATO:125' AGL:90' RNG:420' CAM:91°",
+            streamTelemetryHeaderText(
+                displayState = DroneDisplayState(
+                    headingDeg = 273.2,
+                    aglFt = 90.4,
+                    atoFt = 125.2,
+                    rangeFt = 420.0,
+                ),
+                cameraAzimuthDeg = 90.6,
+            )
+        )
+    }
+
+    @Test
     fun droneStatusLabel_usesMissingTokensAndStaleAglMarker() {
         assertEquals(
             "ATO:--' AGL:75?' RNG:--' HDG:--°",

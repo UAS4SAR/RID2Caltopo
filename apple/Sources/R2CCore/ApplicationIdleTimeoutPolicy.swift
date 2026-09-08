@@ -4,10 +4,15 @@ public enum ApplicationIdleTimeoutPolicy {
     public static func deadline(
         appStartedAt: Date,
         lastRIDMessageAt: Date?,
-        maximumIdleMinutes: Int
+        maximumIdleMinutes: Int,
+        lastProtectedActivityAt: Date? = nil,
+        protectedActivityActive: Bool = false
     ) -> Date? {
-        guard maximumIdleMinutes > 0 else { return nil }
-        let baseline = max(appStartedAt, lastRIDMessageAt ?? appStartedAt)
+        guard maximumIdleMinutes > 0, !protectedActivityActive else { return nil }
+        let baseline = max(
+            appStartedAt,
+            max(lastRIDMessageAt ?? appStartedAt, lastProtectedActivityAt ?? appStartedAt)
+        )
         return baseline.addingTimeInterval(Double(maximumIdleMinutes) * 60)
     }
 
@@ -15,12 +20,16 @@ public enum ApplicationIdleTimeoutPolicy {
         appStartedAt: Date,
         lastRIDMessageAt: Date?,
         maximumIdleMinutes: Int,
-        now: Date
+        now: Date,
+        lastProtectedActivityAt: Date? = nil,
+        protectedActivityActive: Bool = false
     ) -> TimeInterval? {
         guard let deadline = deadline(
             appStartedAt: appStartedAt,
             lastRIDMessageAt: lastRIDMessageAt,
-            maximumIdleMinutes: maximumIdleMinutes
+            maximumIdleMinutes: maximumIdleMinutes,
+            lastProtectedActivityAt: lastProtectedActivityAt,
+            protectedActivityActive: protectedActivityActive
         ) else { return nil }
         return max(0, deadline.timeIntervalSince(now))
     }
@@ -29,12 +38,16 @@ public enum ApplicationIdleTimeoutPolicy {
         appStartedAt: Date,
         lastRIDMessageAt: Date?,
         maximumIdleMinutes: Int,
-        now: Date
+        now: Date,
+        lastProtectedActivityAt: Date? = nil,
+        protectedActivityActive: Bool = false
     ) -> Bool {
         guard let deadline = deadline(
             appStartedAt: appStartedAt,
             lastRIDMessageAt: lastRIDMessageAt,
-            maximumIdleMinutes: maximumIdleMinutes
+            maximumIdleMinutes: maximumIdleMinutes,
+            lastProtectedActivityAt: lastProtectedActivityAt,
+            protectedActivityActive: protectedActivityActive
         ) else { return false }
         return now >= deadline
     }

@@ -664,6 +664,35 @@ import Testing
     #expect(terrainService.contains("guard scheduledPrefetchCells.insert(cell).inserted else { return }"))
 }
 
+@Test func appleOfflineCacheCoordinatesDurabilityFreshnessMaintenanceAndDEMDownloads() throws {
+    let appleRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let manager = try String(
+        contentsOf: appleRoot.appendingPathComponent("App/AppleMapOfflineManager.swift"),
+        encoding: .utf8
+    )
+    let mapView = try String(
+        contentsOf: appleRoot.appendingPathComponent("App/RIDTrackMapView.swift"),
+        encoding: .utf8
+    )
+    let terrainService = try String(
+        contentsOf: appleRoot.appendingPathComponent("App/AppleTerrainElevationService.swift"),
+        encoding: .utf8
+    )
+
+    #expect(manager.contains("urls(for: .applicationSupportDirectory"))
+    #expect(manager.contains("resourceValues.isExcludedFromBackup = true"))
+    #expect(manager.contains("maintenanceTask = worker"))
+    #expect(manager.contains("AppleMapCacheAccess.synchronized"))
+    #expect(manager.contains("OperationalCacheFreshness.isFresh"))
+    #expect(mapView.contains("AppleMapTileDownloadCoordinator.shared.download"))
+    #expect(terrainService.contains("scheduledPrefetchCells.remove(coordinate.cell)"))
+    #expect(terrainService.contains("OperationalCacheRetryPolicy.prefetchDelaySeconds"))
+    #expect(terrainService.contains("AppleDEMDownloadCoordinator.shared.ensureDEM"))
+}
+
 @Test func managedVideoProbeQueueKeepsEnoughDataInFlightForRoutedLinks() {
     #expect(ManagedVideoProbeQueuePolicy.maySend(chunksSentInBurst: 0, bufferedBytes: 0))
     #expect(ManagedVideoProbeQueuePolicy.maySend(
@@ -1795,6 +1824,86 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
         maximumZoom: 19,
         maximumCount: 1_000
     ) == nil)
+}
+
+@Test func offlineMapCapacityAccountsForExistingTilesAndRecommendsHeadroom() {
+    let capacity = OperationalOfflineCapacity(
+        currentTileCacheBytes: 900_000_000,
+        currentDEMCacheBytes: 200_000_000,
+        estimatedTileBytes: 300_000_000,
+        estimatedDEMBytes: 400_000_000,
+        maximumTileCacheBytes: 1_000_000_000,
+        availableVolumeBytes: 10_000_000_000
+    )
+
+    #expect(capacity.projectedTileCacheBytes == 1_200_000_000)
+    #expect(capacity.estimatedDownloadBytes == 700_000_000)
+    #expect(capacity.currentOfflineStorageBytes == 1_100_000_000)
+    #expect(capacity.projectedOfflineStorageBytes == 1_800_000_000)
+    #expect(capacity.exceedsCacheLimit)
+    #expect(!capacity.exceedsAvailableVolume)
+    #expect(capacity.recommendedMaximumBytes == 2_000_000_000)
+}
+
+@Test func offlineMapCapacityProtectsVolumeHeadroom() {
+    let capacity = OperationalOfflineCapacity(
+        currentTileCacheBytes: 0,
+        estimatedTileBytes: 800_000_000,
+        estimatedDEMBytes: 200_000_000,
+        maximumTileCacheBytes: 2_000_000_000,
+        availableVolumeBytes: 1_000_000_000
+    )
+
+    #expect(!capacity.exceedsCacheLimit)
+    #expect(capacity.exceedsAvailableVolume)
+}
+
+@Test func offlineMapProgressWeightsActiveTransfersByBytes() {
+    let completed = OperationalOfflineProgress.weightedCompletedBytes(
+        completedBytes: 1_000_000,
+        activeEstimatedBytes: 400_000_000,
+        activeTransferredBytes: 100_000_000,
+        activeExpectedBytes: 400_000_000
+    )
+    #expect(completed == 101_000_000)
+    #expect(OperationalOfflineProgress.fraction(
+        completedBytes: completed,
+        totalBytes: 501_000_000
+    ) > 0.20)
+    #expect(OperationalOfflineProgress.weightedCompletedBytes(
+        completedBytes: 1_000_000,
+        activeEstimatedBytes: 400_000_000,
+        activeTransferredBytes: 600_000_000,
+        activeExpectedBytes: 400_000_000
+    ) == 401_000_000)
+}
+
+@Test func cacheRetryPolicyRetriesOnlyTransientResponsesWithBoundedBackoff() {
+    #expect(OperationalCacheRetryPolicy.shouldRetry(statusCode: 408))
+    #expect(OperationalCacheRetryPolicy.shouldRetry(statusCode: 429))
+    #expect(OperationalCacheRetryPolicy.shouldRetry(statusCode: 504))
+    #expect(!OperationalCacheRetryPolicy.shouldRetry(statusCode: 404))
+    #expect(!OperationalCacheRetryPolicy.shouldRetry(statusCode: 200))
+    #expect(OperationalCacheRetryPolicy.delaySeconds(attempt: 0) == 0.5)
+    #expect(OperationalCacheRetryPolicy.delaySeconds(attempt: 2) == 2)
+    #expect(OperationalCacheRetryPolicy.delaySeconds(attempt: 3) == nil)
+    #expect(OperationalCacheRetryPolicy.delaySeconds(attempt: 0, retryAfterHeader: "120") == 30)
+    #expect(OperationalCacheRetryPolicy.prefetchDelaySeconds(failureCount: 1) == 30)
+    #expect(OperationalCacheRetryPolicy.prefetchDelaySeconds(failureCount: 8) == 3_600)
+    #expect(OperationalCacheRetryPolicy.prefetchDelaySeconds(failureCount: 20) == 3_600)
+}
+
+@Test func cacheFreshnessRejectsMissingAndExpiredModificationDates() {
+    let cutoff = Date(timeIntervalSince1970: 1_000)
+    #expect(!OperationalCacheFreshness.isFresh(modifiedAt: nil, cutoff: cutoff))
+    #expect(!OperationalCacheFreshness.isFresh(
+        modifiedAt: Date(timeIntervalSince1970: 999),
+        cutoff: cutoff
+    ))
+    #expect(OperationalCacheFreshness.isFresh(
+        modifiedAt: Date(timeIntervalSince1970: 1_000),
+        cutoff: cutoff
+    ))
 }
 
 @Test func visibleMapLongPressSelectsExpectedWebMercatorTile() {
@@ -4308,6 +4417,10 @@ private func proximityDrone(
     #expect(abs((OperationalClueGeometry.djiControllerCameraAzimuthDegrees(
         seiCameraAzimuthDegrees: 16.733
     ) ?? 0) - 286.733) < 0.000001)
+    #expect(abs((OperationalClueGeometry.djiControllerCameraAzimuthDegrees(
+        seiCameraAzimuthDegrees: 16.733,
+        magneticDeclinationDegrees: 13.3
+    ) ?? 0) - 300.033) < 0.000001)
     #expect(abs((OperationalClueGeometry.djiCalibratedTiltDegrees(
         rawTiltDegrees: -29.264
     ) ?? 0) - (-17.54)) < 0.01)
@@ -5676,6 +5789,26 @@ private func writeInt32(_ value: Int32, into bytes: inout [UInt8], at offset: In
     ) == 60)
 }
 
+@Test func applicationIdleTimeoutDefersProtectedWorkAndRestartsAfterItFinishes() {
+    let startedAt = Date(timeIntervalSince1970: 1_000)
+    let protectedActivityAt = Date(timeIntervalSince1970: 1_075)
+
+    #expect(ApplicationIdleTimeoutPolicy.deadline(
+        appStartedAt: startedAt,
+        lastRIDMessageAt: nil,
+        maximumIdleMinutes: 2,
+        lastProtectedActivityAt: protectedActivityAt,
+        protectedActivityActive: true
+    ) == nil)
+    #expect(ApplicationIdleTimeoutPolicy.remainingDelay(
+        appStartedAt: startedAt,
+        lastRIDMessageAt: nil,
+        maximumIdleMinutes: 2,
+        now: Date(timeIntervalSince1970: 1_135),
+        lastProtectedActivityAt: protectedActivityAt
+    ) == 60)
+}
+
 @Test func applicationShutdownCleansOnceAndAllowsDismissalRetry() {
     var state = ApplicationShutdownState()
 
@@ -5835,6 +5968,8 @@ private func writeInt32(_ value: Int32, into bytes: inout [UInt8], at offset: In
     )
     #expect(source.contains("freshValidatedDJIPositionByAircraftID(tracks: model.tracks)"))
     #expect(!source.contains(".anchoredToRID("))
+    #expect(source.contains("Camera Azimuth: "))
+    #expect(!source.contains("Heading used for clue"))
 }
 
 @Test func cluePositionSourcePolicyBlocksSilentRIDFallbackForPositionalSEIStreams() {

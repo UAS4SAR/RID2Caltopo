@@ -144,7 +144,13 @@ class R2CActivityLogArchiveTest {
         )
 
         assertTrue(activitySource.contains("Intent.ACTION_SCREEN_OFF"))
-        assertTrue(activitySource.contains("organizationAccessSession.invalidateForScreenLock()"))
+        assertTrue(activitySource.contains("Intent.ACTION_USER_PRESENT"))
+        assertTrue(
+            activitySource.contains(
+                "organizationAccessSession.invalidateForScreenLock(SystemClock.elapsedRealtime())"
+            )
+        )
+        assertTrue(activitySource.contains("acceptSystemAuthenticationAfterScreenUnlock()"))
         assertTrue(activitySource.contains("onArchiveDirPickerStarted = ::beginArchiveDirectoryPicker"))
         assertTrue(activitySource.contains("onArchiveDirPickerFinished = ::finishArchiveDirectoryPicker"))
         assertTrue(mainScreenSource.contains("onArchiveDirPickerStarted()"))

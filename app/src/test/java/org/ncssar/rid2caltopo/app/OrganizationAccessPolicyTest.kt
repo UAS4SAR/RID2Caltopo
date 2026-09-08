@@ -99,10 +99,64 @@ class OrganizationAccessPolicyTest {
         session.markAuthenticated()
         assertTrue(session.beginTrustedExternalFlow(OrganizationExternalFlow.ARCHIVE_DIRECTORY_PICKER))
 
-        session.invalidateForScreenLock()
+        session.invalidateForScreenLock(screenOffElapsedRealtimeMs = 1_000L)
         assertFalse(session.isAuthenticated())
 
         session.completeTrustedExternalFlow(OrganizationExternalFlow.ARCHIVE_DIRECTORY_PICKER)
+        assertFalse(session.isAuthenticated())
+    }
+
+    @Test
+    fun systemAuthenticationAfterScreenLockUnlocksTheProtectedSession() {
+        val session = OrganizationAccessSession()
+        session.markAuthenticated()
+        session.invalidateForScreenLock(screenOffElapsedRealtimeMs = 1_000L)
+
+        assertTrue(
+            session.authenticateFromSystemUnlock(
+                authenticationElapsedRealtimeMs = 1_100L,
+                deviceLocked = false,
+            )
+        )
+        assertTrue(session.isAuthenticated())
+    }
+
+    @Test
+    fun staleOrStillLockedSystemAuthenticationDoesNotUnlockTheProtectedSession() {
+        val session = OrganizationAccessSession()
+        session.markAuthenticated()
+        session.invalidateForScreenLock(screenOffElapsedRealtimeMs = 1_000L)
+
+        assertFalse(session.authenticateFromSystemUnlock(999L, deviceLocked = false))
+        assertFalse(session.authenticateFromSystemUnlock(1_100L, deviceLocked = true))
+        assertFalse(session.isAuthenticated())
+    }
+
+    @Test
+    fun userPresentOnlyUnlocksAConversationThatStartedWithScreenOff() {
+        val session = OrganizationAccessSession()
+        assertFalse(session.authenticateFromUserPresent())
+
+        session.markAuthenticated()
+        session.invalidateForScreenLock(screenOffElapsedRealtimeMs = 1_000L)
+
+        assertTrue(session.authenticateFromUserPresent())
+        assertTrue(session.isAuthenticated())
+        assertFalse(session.authenticateFromUserPresent())
+    }
+
+    @Test
+    fun screenOffDoesNotCreateAnUnlockHandoffForAnAlreadyLockedSession() {
+        val session = OrganizationAccessSession()
+        session.invalidateForScreenLock(screenOffElapsedRealtimeMs = 1_000L)
+
+        assertFalse(session.authenticateFromUserPresent())
+        assertFalse(
+            session.authenticateFromSystemUnlock(
+                authenticationElapsedRealtimeMs = 1_100L,
+                deviceLocked = false,
+            )
+        )
         assertFalse(session.isAuthenticated())
     }
 

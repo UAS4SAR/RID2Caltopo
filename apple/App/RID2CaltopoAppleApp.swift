@@ -18,6 +18,8 @@ final class AppleApplicationCleanupCenter {
     private var idleTimeoutTask: Task<Void, Never>?
     private var idleAppStartedAt = Date()
     private var idleLastRIDMessageAt: Date?
+    private var idleLastProtectedActivityAt: Date?
+    private var idleProtectedActivityActive = false
     private var maximumIdleMinutes = 0
 
     func register(markerCleanup: @escaping Cleanup, fullCleanup: @escaping Cleanup) {
@@ -51,6 +53,12 @@ final class AppleApplicationCleanupCenter {
     func noteRIDMessage(receivedAt: Date) {
         idleLastRIDMessageAt = maxDate(idleLastRIDMessageAt, receivedAt)
         if idleTimeoutTask == nil { scheduleIdleTimeoutCheck() }
+    }
+
+    func setIdleShutdownDeferral(active: Bool, at date: Date = Date()) {
+        idleProtectedActivityActive = active
+        idleLastProtectedActivityAt = maxDate(idleLastProtectedActivityAt, date)
+        scheduleIdleTimeoutCheck()
     }
 
     func removeMarkerForBackgrounding() {
@@ -112,7 +120,9 @@ final class AppleApplicationCleanupCenter {
             appStartedAt: idleAppStartedAt,
             lastRIDMessageAt: idleLastRIDMessageAt,
             maximumIdleMinutes: maximumIdleMinutes,
-            now: Date()
+            now: Date(),
+            lastProtectedActivityAt: idleLastProtectedActivityAt,
+            protectedActivityActive: idleProtectedActivityActive
         ) else { return }
 
         idleTimeoutTask = Task { @MainActor in
@@ -131,18 +141,26 @@ final class AppleApplicationCleanupCenter {
             appStartedAt: idleAppStartedAt,
             lastRIDMessageAt: idleLastRIDMessageAt,
             maximumIdleMinutes: maximumIdleMinutes,
-            now: now
+            now: now,
+            lastProtectedActivityAt: idleLastProtectedActivityAt,
+            protectedActivityActive: idleProtectedActivityActive
         ) else {
             scheduleIdleTimeoutCheck()
             return
         }
 
-        let baseline = max(idleAppStartedAt, idleLastRIDMessageAt ?? idleAppStartedAt)
+        let baseline = max(
+            idleAppStartedAt,
+            max(
+                idleLastRIDMessageAt ?? idleAppStartedAt,
+                idleLastProtectedActivityAt ?? idleAppStartedAt
+            )
+        )
         let idleMinutes = now.timeIntervalSince(baseline) / 60
         AppleLog.warning(
             "Lifecycle",
             String(
-                format: "Maximum idle timeout expired after %.3f/%.3f minutes without RID messages; closing the application session",
+                format: "Maximum idle timeout expired after %.3f/%.3f minutes without RID messages or protected activity; closing the application session",
                 idleMinutes,
                 Double(maximumIdleMinutes)
             )

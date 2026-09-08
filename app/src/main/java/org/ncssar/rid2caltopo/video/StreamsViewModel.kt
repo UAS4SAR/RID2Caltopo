@@ -77,8 +77,8 @@ import org.ncssar.rid2caltopo.video.anomaly.TargetColorFamily
 import org.ncssar.rid2caltopo.video.ffmpeg.FfmpegProbeService
 import org.ncssar.rid2caltopo.video.ffmpeg.DjiCameraOrientation
 import org.ncssar.rid2caltopo.video.ffmpeg.StreamCameraTelemetryRegistry
-import org.ncssar.rid2caltopo.video.ffmpeg.shouldBlockRidClueFallback
 import org.ncssar.rid2caltopo.video.ffmpeg.StreamCameraTelemetrySample
+import org.ncssar.rid2caltopo.video.ffmpeg.shouldBlockRidClueFallback
 import org.ncssar.rid2caltopo.video.ffmpeg.StreamRuntimeSnapshot
 import org.ncssar.rid2caltopo.video.ffmpeg.StreamTelemetrySnapshot
 import org.ncssar.rid2caltopo.video.CoordinateDisplayFormat
@@ -471,8 +471,8 @@ internal fun buildClueCaptureSummary(
         lines += String.format(Locale.US, "  Decimal: %.6f, %.6f", clue.lat, clue.lng)
     }
     lines += formatClueHeading(clue.headingDeg)?.let {
-        "  Heading used for clue: $it\u00b0"
-    } ?: "  Heading used for clue: N/A"
+        "  Camera Azimuth: $it\u00b0"
+    } ?: "  Camera Azimuth: N/A"
     lines += "  Heading source: ${clue.headingSourceLabel ?: "N/A"}"
     lines += String.format(Locale.US, "  Gimbal angle at capture: %.1f\u00b0", clue.gimbalAngleDeg)
     lines += clue.aglMeters?.let {
@@ -960,6 +960,23 @@ class StreamsViewModel(
                     notePairedLiveVideoFrame(designator, observedAtMs)
                 }
             },
+            onCameraTelemetry = { designator, sample ->
+                viewModelScope.launch(Dispatchers.Main.immediate) {
+                    cameraTelemetryExpiryJobs.remove(designator)?.cancel()
+                    if (sample == null) {
+                        _streamCameraTelemetryByDesignator.remove(designator)
+                    } else {
+                        _streamCameraTelemetryByDesignator[designator] = sample
+                        cameraTelemetryExpiryJobs[designator] = viewModelScope.launch(Dispatchers.Main.immediate) {
+                            kotlinx.coroutines.delay(StreamCameraTelemetryRegistry.DEFAULT_MAX_AGE_MS + 1L)
+                            if (_streamCameraTelemetryByDesignator[designator]?.receivedAtMs == sample.receivedAtMs) {
+                                _streamCameraTelemetryByDesignator.remove(designator)
+                            }
+                            cameraTelemetryExpiryJobs.remove(designator)
+                        }
+                    }
+                }
+            },
             onLocalPlaybackEof = { designator ->
                 viewModelScope.launch {
                     handleLocalPlaybackEof(designator)
@@ -1069,6 +1086,9 @@ class StreamsViewModel(
     private val _droneStates = mutableStateMapOf<String, DroneSpecState>()
     val droneStates: Map<String, DroneSpecState> get() = _droneStates
     private val runtimeStreamTelemetryBindings = mutableStateMapOf<String, String>()
+    private val _streamCameraTelemetryByDesignator =
+        mutableStateMapOf<String, StreamCameraTelemetrySample>()
+    private val cameraTelemetryExpiryJobs = mutableMapOf<String, Job>()
     private var automaticPairingGeneration = 0L
     var automaticStreamPairingRequest by mutableStateOf<AutomaticStreamPairingRequest?>(null)
         private set
@@ -1119,6 +1139,11 @@ class StreamsViewModel(
             displayStateByDesignator = altitudeCoordinator.displayStateByDesignator
         )
     }
+
+    fun cameraAzimuthForStream(streamDesignator: String): Double? =
+        _streamCameraTelemetryByDesignator[streamDesignator]
+            ?.azimuthDeg
+            ?.takeIf { it.isFinite() }
 
     internal suspend fun centerpointElevationForStream(
         streamDesignator: String,
@@ -2947,6 +2972,13 @@ class StreamsViewModel(
                 } else {
                     String.format(Locale.US, "  Camera yaw: %.1f\u00b0", raw)
                 }
+            }
+            djiCameraSample?.let { sample ->
+                lines += String.format(
+                    Locale.US,
+                    "  Magnetic declination applied: %+.1f\u00b0",
+                    sample.magneticDeclinationDeg,
+                )
             }
             telemetry.horizontalFovDeg?.let { lines += String.format(Locale.US, "  Horizontal FOV: %.2f\u00b0", it) }
             telemetry.verticalFovDeg?.let { lines += String.format(Locale.US, "  Vertical FOV: %.2f\u00b0", it) }

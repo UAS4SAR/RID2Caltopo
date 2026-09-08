@@ -218,14 +218,14 @@ public enum OperationalClueGeometry {
             ? observedRelativeUpMeters : nil
     }
 
-    /// Clockwise camera bearing aligned with the heading shown by the DJI controller.
-    /// The August 24 M4TD clue flight confirmed raw 16.733 degrees corresponds to
-    /// approximately 287-288 degrees; no additional magnetic declination is applied.
+    /// Clockwise true-north camera bearing derived from DJI's magnetic encoder.
     public static func djiControllerCameraAzimuthDegrees(
-        seiCameraAzimuthDegrees: Double?
+        seiCameraAzimuthDegrees: Double?,
+        magneticDeclinationDegrees: Double? = nil
     ) -> Double? {
         guard let seiCameraAzimuthDegrees, seiCameraAzimuthDegrees.isFinite else { return nil }
-        return RidHeading.normalized(seiCameraAzimuthDegrees - 90)
+        let declination = magneticDeclinationDegrees.flatMap { $0.isFinite ? $0 : nil } ?? 0
+        return RidHeading.normalized(seiCameraAzimuthDegrees - 90 + declination)
     }
 
     /// Matrice 4TD calibration: raw -90 is down; controlled raw -14.5625 is horizontal.

@@ -109,7 +109,7 @@ final class AppleConfigurationTransferManager: ObservableObject {
             var tileManifest: [[String: Any]] = []
             for tile in tiles {
                 let source = AppleMapCachePaths.tile(tile, layerKey: layer.cacheKey, fileExtension: layer.fileExtension)
-                guard let data = try? Data(contentsOf: source) else { continue }
+                guard let data = AppleMapCacheAccess.synchronized({ try? Data(contentsOf: source) }) else { continue }
                 guard data.count <= maximumPackageBytes - packageBytes else { throw TransferError.packageBytesTooLarge }
                 packageBytes += data.count
                 let path = "tiles/\(layer == .openStreetMap ? "osm-standard" : "arcgis-worldimagery")/\(tile.zoom)/\(tile.x)/\(tile.y).bin"
@@ -125,7 +125,7 @@ final class AppleConfigurationTransferManager: ObservableObject {
                 for tileName in OperationalOfflineMapPlanner.demTileNames(bounds: bounds) {
                     let fileName = "USGS_1_\(tileName).tif"
                     let source = AppleMapCachePaths.demRoot.appendingPathComponent(fileName)
-                    guard let data = try? Data(contentsOf: source) else { continue }
+                    guard let data = AppleMapCacheAccess.synchronized({ try? Data(contentsOf: source) }) else { continue }
                     guard data.count <= maximumPackageBytes - packageBytes else { throw TransferError.packageBytesTooLarge }
                     packageBytes += data.count
                     let path = "dem/\(fileName)"
@@ -248,8 +248,8 @@ final class AppleConfigurationTransferManager: ObservableObject {
                   let y = (item["y"] as? NSNumber)?.intValue else { continue }
             let layer: OperationalMapBaseLayer = (item["source"] as? String) == "ArcGIS-WorldImagery" ? .imagery : .openStreetMap
             let destination = AppleMapCachePaths.tile(.init(zoom: z, x: x, y: y), layerKey: layer.cacheKey, fileExtension: layer.fileExtension)
-            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try bytes.write(to: destination, options: .atomic)
+            let bytesAdded = try AppleMapCacheAccess.write(bytes, to: destination)
+            AppleMapOfflineManager.noteTileCached(bytes: Int(bytesAdded))
             importedTiles += 1
         }
         var importedDEM = 0
@@ -258,8 +258,7 @@ final class AppleConfigurationTransferManager: ObservableObject {
                   let fileName = item["file_name"] as? String,
                   !fileName.contains("/") && !fileName.contains("..") else { continue }
             let destination = AppleMapCachePaths.demRoot.appendingPathComponent(fileName)
-            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try bytes.write(to: destination, options: .atomic)
+            _ = try AppleMapCacheAccess.write(bytes, to: destination)
             importedDEM += 1
         }
         status = "Imported MA package: \(importedTiles) tile(s), \(importedDEM) DEM tile(s)."

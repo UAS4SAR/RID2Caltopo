@@ -35,6 +35,7 @@ internal fun BoxScope.MapPaneSettingsMenus(
     predictiveHeadEnabled: Boolean,
     followFocusedDroneEnabled: Boolean,
     mapReloadInFlight: Boolean,
+    mapCacheAvailableBytes: Long?,
     downloadMapStatus: String?,
     mapName: String?,
     autoRemoveBadTiles: Boolean,
@@ -128,7 +129,12 @@ internal fun BoxScope.MapPaneSettingsMenus(
                 onClick = onOpenBadTiles
             )
             DropdownMenuItem(
-                text = { Text("Max Cache Size: ${MapCacheSettings.formatDecimalGb(MapCacheSettings.maxCacheBytes(context))}") },
+                text = {
+                    Text(
+                        "Max Cache Size: ${MapCacheSettings.formatDecimalGb(MapCacheSettings.maxCacheBytes(context))}" +
+                            (mapCacheAvailableBytes?.let { " (${MapCacheSettings.formatDecimalGb(it)} available)" } ?: "")
+                    )
+                },
                 onClick = onOpenCacheSize
             )
             DropdownMenuItem(

@@ -9,9 +9,14 @@ internal interface BlobCacheStore {
     fun remove(cacheKey: String): Boolean
     fun clear()
     fun snapshot(): CacheStatsSnapshot
+    fun usageBytes(): Long = snapshot().bytesUsed
     fun markStaleServed()
     fun prewarm() {}
-    fun runMaintenance(maxEntryAgeCutoffMs: Long, trimToBytes: Long): CacheMaintenanceResult =
+    fun runMaintenance(
+        maxEntryAgeCutoffMs: Long,
+        trimToBytes: Long,
+        shouldContinue: () -> Boolean = { true }
+    ): CacheMaintenanceResult =
         CacheMaintenanceResult()
 }
 
