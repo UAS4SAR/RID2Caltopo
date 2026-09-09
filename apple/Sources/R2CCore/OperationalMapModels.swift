@@ -492,11 +492,74 @@ public enum CaltopoArtifactVisibilityPolicy {
     }
 }
 
+public struct CaltopoArtifactChanges: Sendable, Equatable {
+    public let featuresByID: [String: Data]
+    public let deletedFeatureIDs: Set<String>
+    public let receivedFeatureCount: Int
+
+    public init(
+        featuresByID: [String: Data] = [:],
+        deletedFeatureIDs: Set<String> = [],
+        receivedFeatureCount: Int = 0
+    ) {
+        self.featuresByID = featuresByID
+        self.deletedFeatureIDs = deletedFeatureIDs
+        self.receivedFeatureCount = receivedFeatureCount
+    }
+}
+
+public struct CaltopoArtifactFeatureStore: Sendable {
+    public private(set) var featuresByID: [String: Data]
+
+    public init(featuresByID: [String: Data] = [:]) {
+        self.featuresByID = featuresByID
+    }
+
+    public mutating func apply(_ changes: CaltopoArtifactChanges, replacing: Bool) {
+        if replacing { featuresByID.removeAll(keepingCapacity: true) }
+        for featureID in changes.deletedFeatureIDs {
+            featuresByID.removeValue(forKey: featureID)
+        }
+        featuresByID.merge(changes.featuresByID) { _, incoming in incoming }
+    }
+
+    public func snapshot() throws -> CaltopoArtifactSnapshot {
+        try CaltopoArtifactDecoder.decode(featuresByID: featuresByID)
+    }
+}
+
 public enum CaltopoArtifactDecoder {
     public static func decode(data: Data) throws -> CaltopoArtifactSnapshot {
+        let changes = try decodeChanges(data: data)
+        return try decode(featuresByID: changes.featuresByID)
+    }
+
+    public static func decodeChanges(data: Data) throws -> CaltopoArtifactChanges {
         let root = try JSONSerialization.jsonObject(with: data)
-        guard let dictionary = root as? [String: Any] else { return CaltopoArtifactSnapshot() }
+        guard let dictionary = root as? [String: Any] else { return CaltopoArtifactChanges() }
         let features = featureArray(in: dictionary) ?? []
+        var featuresByID: [String: Data] = [:]
+        var deletedFeatureIDs: Set<String> = []
+        for feature in features {
+            let id = string(feature["id"])
+            guard !id.isEmpty else { continue }
+            if isDeleted(feature) {
+                deletedFeatureIDs.insert(id)
+                continue
+            }
+            featuresByID[id] = try JSONSerialization.data(withJSONObject: feature, options: [.sortedKeys])
+        }
+        return CaltopoArtifactChanges(
+            featuresByID: featuresByID,
+            deletedFeatureIDs: deletedFeatureIDs,
+            receivedFeatureCount: features.count
+        )
+    }
+
+    public static func decode(featuresByID: [String: Data]) throws -> CaltopoArtifactSnapshot {
+        let features = try featuresByID.values.compactMap { data -> [String: Any]? in
+            try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        }
         return decode(features: features)
     }
 
@@ -637,6 +700,14 @@ public enum CaltopoArtifactDecoder {
                 break
             }
         }
+        let stableArtifactOrder: (String, String, String, String) -> Bool = { lhsTitle, lhsID, rhsTitle, rhsID in
+            let titleOrder = lhsTitle.localizedCaseInsensitiveCompare(rhsTitle)
+            if titleOrder != .orderedSame { return titleOrder == .orderedAscending }
+            return lhsID.localizedCaseInsensitiveCompare(rhsID) == .orderedAscending
+        }
+        points.sort { stableArtifactOrder($0.title, $0.id, $1.title, $1.id) }
+        lines.sort { stableArtifactOrder($0.title, $0.id, $1.title, $1.id) }
+        polygons.sort { stableArtifactOrder($0.title, $0.id, $1.title, $1.id) }
         return CaltopoArtifactSnapshot(
             folders: folderInfo.values.sorted { $0.title < $1.title },
             points: points,
@@ -646,6 +717,16 @@ public enum CaltopoArtifactDecoder {
             totalFeatureCount: features.count,
             ignoredTrackCount: ignoredTracks
         )
+    }
+
+    private static func isDeleted(_ feature: [String: Any]) -> Bool {
+        if bool(feature["deleted"], fallback: false) { return true }
+        guard let properties = feature["properties"] as? [String: Any] else {
+            return feature["id"] != nil && feature["geometry"] == nil
+        }
+        if bool(properties["deleted"], fallback: false) { return true }
+        let action = string(properties["action"]).lowercased()
+        return action == "delete" || action == "removed"
     }
 
     private static func appendLine(

@@ -87,6 +87,23 @@ class CtDroneSpecTest {
     }
 
     @Test
+    fun displayLabel_usesPilotCallsignWithoutChangingStreamDesignator() {
+        val drone = CtDroneSpec(
+            "1581F6Z9C24BH0036EJL",
+            "MINI4PRO",
+            "NCSSAR",
+            "DJI Mini 4 Pro",
+            "1SAR7"
+        )
+
+        assertEquals("1SAR7", drone.displayLabel)
+        assertEquals("MINI4PRO", drone.mappedId)
+        drone.owner = "1SAR8"
+        assertEquals("1SAR8", drone.displayLabel)
+        assertEquals("MINI4PRO", drone.mappedId)
+    }
+
+    @Test
     fun checkNewWaypoint_acceptsAfterTabletLocationBaselineRefresh() {
         CtDroneSpec.MyLat = 38.0
         CtDroneSpec.MyLng = -120.0

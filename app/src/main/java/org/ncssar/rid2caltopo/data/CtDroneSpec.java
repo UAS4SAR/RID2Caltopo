@@ -279,6 +279,13 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
     private void updateTrackLabel() {
         String oldTrackLabel = trackLabel;
         String lModel, lMappedId, lCallsign;
+        String pilotCallsign = owner == null ? "" : owner.trim();
+        if (!pilotCallsign.isEmpty()) {
+            lMappedId = pilotCallsign;
+            trackLabel = String.format(Locale.US, "%s_%s", lMappedId,
+                    TimeDatestampString(startMsecTimestamp));
+            return;
+        }
         Matcher rexMatch = CallsignOptModelPattern.matcher(mappedId);
         if (!rexMatch.matches()) {
             lMappedId = mappedId; // assume we're adults and there is a reason to not follow protocol.
@@ -793,7 +800,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         // (lat=0, dedup, spurious coordinates, implausible speed) cannot ghost-activate it
         // and trigger an infinite terminate-and-revive loop in ProcessSortedCurrentDroneSpecArray.
         if (trackLabel.isEmpty()) {
-            trackLabel = mappedId;
+            trackLabel = getDisplayLabel();
             // Notify CaltopoClient so it (re)starts UiUpdatePoll and the drone appears in R2CView.
             // Without this, drones that never broadcast airborne=true are silently ignored: the
             // airborne-transition path below is the only other place that calls DroneSpecStatusChanged,
@@ -1143,13 +1150,32 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
     @NonNull
     public String getRemoteId() { return remoteId;}
     public String getMappedId() { return mappedId;}
+    /** Operator-visible aircraft label; mappedId remains the stable stream routing key. */
+    public String getDisplayLabel() {
+        String pilotCallsign = owner == null ? "" : owner.trim();
+        if (!pilotCallsign.isEmpty()) return pilotCallsign;
+        if (mappedId != null && !mappedId.trim().isEmpty()) return mappedId.trim();
+        return remoteId;
+    }
     public long getStartMsecTimestamp() { return startMsecTimestamp; }
     public String getOrg() { return org;}
     public void setOrg(String newVal) { org = newVal;}
     public String getModel() { return model;}
     public void setModel(String newVal) { model = newVal;}
     public String getOwner() { return owner;}
-    public void setOwner(String newVal) { owner = newVal;}
+    public void setOwner(String newVal) {
+        String normalized = newVal == null ? "" : newVal.trim();
+        if (normalized.equals(owner)) return;
+        String oldTrackLabel = trackLabel;
+        owner = normalized;
+        if (startMsecTimestamp > 0) {
+            updateTrackLabel();
+            if (oldTrackLabel != null && !oldTrackLabel.isEmpty() && !oldTrackLabel.equals(trackLabel)) {
+                WaypointTrack.RenameTrack(oldTrackLabel, trackLabel, this);
+            }
+            if (null != myLiveTrack) myLiveTrack.renameTrack();
+        }
+    }
     public String getOwnerName() { return ownerName == null ? "" : ownerName;}
     public void setOwnerName(String newVal) { ownerName = newVal == null ? "" : newVal;}
 

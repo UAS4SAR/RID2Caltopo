@@ -698,6 +698,7 @@ internal fun SplitMapPane(
     var pilotDisplayRefreshToken by remember { mutableIntStateOf(0) }
     var colorPickerTarget by remember { mutableStateOf<PilotColorPickerTarget?>(null) }
     var localDeviceRefreshToken by remember { mutableIntStateOf(0) }
+    var positionFreshnessRefreshToken by remember { mutableIntStateOf(0) }
     val managedOverlays = remember { mutableListOf<Overlay>() }
     val markerInfoWindow = remember { MapOwnedReusable<LocalMarkerInfoWindow>() }
     var artifactOverlayState: ArtifactOverlayState by remember {
@@ -2204,6 +2205,25 @@ internal fun SplitMapPane(
             localDeviceRefreshToken++
         }
     }
+    LaunchedEffect(dronePoints) {
+        while (isActive) {
+            val nowWallMsec = System.currentTimeMillis()
+            val nextStaleAtMsec = dronePoints
+                .flatMap { point ->
+                    point.receivedAtMsec?.let { receivedAtMsec ->
+                        listOf(
+                            receivedAtMsec + DISPLAYED_POSITION_STALE_AFTER_MSEC,
+                            receivedAtMsec + DISPLAYED_POSITION_VERY_STALE_AFTER_MSEC,
+                        )
+                    }.orEmpty()
+                }
+                .filter { staleAtMsec -> staleAtMsec > nowWallMsec }
+                .minOrNull()
+                ?: break
+            delay((nextStaleAtMsec - nowWallMsec).coerceAtLeast(1L))
+            positionFreshnessRefreshToken++
+        }
+    }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -2390,7 +2410,7 @@ internal fun SplitMapPane(
             }
             AlertDialog(
                 onDismissRequest = { openBubbleDesignator = null },
-                title = { Text(point.designator) },
+                title = { Text(point.droneSpec?.displayLabel ?: point.designator) },
                 text = {
                     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                         Text(
@@ -2506,11 +2526,13 @@ internal fun SplitMapPane(
             cachedFeatureCount = cachedFeatureCount
         )
         CaltopoMap.AddArtifactListener(listener, replayCachedArtifacts)
+        CaltopoMap.SetMapArtifactForegroundVisible(true)
         if (mapPaneShouldRequestArtifactRefreshOnMount(presentationMode, cachedFeatureCount)) {
             CaltopoMap.RequestMapRefreshNow()
         }
         onDispose {
             CaltopoMap.RemoveArtifactListener(listener)
+            CaltopoMap.SetMapArtifactForegroundVisible(false)
         }
     }
 
@@ -2780,6 +2802,7 @@ internal fun SplitMapPane(
                 trackOverlayRefreshToken
                 pilotDisplayRefreshToken
                 localDeviceRefreshToken
+                positionFreshnessRefreshToken
                 val sharedMarkerInfoWindow = if (isInsetMode) {
                     null
                 } else {
@@ -3476,6 +3499,14 @@ internal fun SplitMapPane(
                 val droneLabelSpecs = mutableListOf<DroneLabelDrawSpec>()
                 val cameraFovSpecs = mutableListOf<CameraFovDrawSpec>()
                 dronePoints.forEach { point ->
+                    val positionStale = isDisplayedPositionStale(
+                        nowWallMsec = uiNowWallMsec,
+                        receivedAtMsec = point.receivedAtMsec,
+                    )
+                    val positionIconAlpha = displayedPositionIconAlpha(
+                        nowWallMsec = uiNowWallMsec,
+                        receivedAtMsec = point.receivedAtMsec,
+                    )
                     val pointLatencyKey =
                         "${point.timestampMsec}|${"%.6f".format(Locale.US, point.lat)}|${"%.6f".format(Locale.US, point.lng)}|${"%.1f".format(Locale.US, point.altitudeM)}|${point.headingDeg?.let { "%.1f".format(Locale.US, it) } ?: "n/a"}|${point.cameraAzimuthDeg?.let { "%.1f".format(Locale.US, it) } ?: "n/a"}|${point.horizontalCameraFovDeg?.let { "%.1f".format(Locale.US, it) } ?: "n/a"}"
                     if (renderLatencyKeyByDesignator[point.designator] != pointLatencyKey) {
@@ -3586,7 +3617,8 @@ internal fun SplitMapPane(
                             baseIcon = droneMarkerIcon,
                             tint = markerTint,
                             headingDeg = travelBearingDeg,
-                            scale = markerScale
+                            scale = markerScale,
+                            positionIconAlpha = positionIconAlpha,
                         )
                         setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
                         if (!isInsetMode) {
@@ -3614,9 +3646,13 @@ internal fun SplitMapPane(
                             aglFeet = labelAglFeet,
                             aglStale = labelAglStale,
                             rangeFeet = labelRangeFeet,
-                            headingDeg = headingDeg
+                            headingDeg = headingDeg,
+                            positionStale = positionStale,
                         )
-                        val nameDrawable = buildDroneNameLabelDrawable(context.resources, point.designator)
+                        val nameDrawable = buildDroneNameLabelDrawable(
+                            context.resources,
+                            point.droneSpec?.displayLabel ?: point.designator
+                        )
                         val statusDrawable = buildDroneStatusLabelDrawable(context.resources, labelText)
                         droneLabelSpecs.add(
                             DroneLabelDrawSpec(

@@ -171,12 +171,19 @@ private final class AppleMapArtifactModel: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private var configurationFingerprint = ""
     private var configuredMapID = ""
+    private var configuredSource: AppleCaltopoConfiguration?
     private var visibilityInitialized = false
     private var folderVisibilityOverrides: [String: Bool] = [:]
     private var lastPollAtByMapID: [String: Date] = [:]
+    private var featureStore = CaltopoArtifactFeatureStore()
+    private var lastSuccessfulCursorMilliseconds: Int64 = 0
+    private var lastFullReconciliationAt: Date?
+    private var foregroundActive = false
 
-    private static let minimumPollInterval: TimeInterval = 30
-    private static let automaticPollInterval: Duration = .seconds(90)
+    private static let minimumPollInterval: TimeInterval = 5
+    private static let foregroundPollInterval: Duration = .seconds(15)
+    private static let backgroundPollInterval: Duration = .seconds(90)
+    private static let fullReconciliationInterval: TimeInterval = 15 * 60
 
     init() {
         Self.removeLegacyPersistedVisibility()
@@ -197,11 +204,15 @@ private final class AppleMapArtifactModel: ObservableObject {
         let mapSessionChanged = configuredMapID != configuration.mapID
         configurationFingerprint = fingerprint
         configuredMapID = configuration.mapID
+        configuredSource = configuration
         refreshTask?.cancel()
         hiddenFolderIDs = []
         hiddenItemIDs = []
         if mapSessionChanged {
             folderVisibilityOverrides = [:]
+            featureStore = CaltopoArtifactFeatureStore()
+            lastSuccessfulCursorMilliseconds = 0
+            lastFullReconciliationAt = nil
         }
         visibilityInitialized = false
         guard !configuration.domainAndPort.isEmpty,
@@ -232,7 +243,10 @@ private final class AppleMapArtifactModel: ObservableObject {
                 let client = try CaltopoLiveClient(configuration: live)
                 while !Task.isCancelled {
                     await self.refresh(using: client)
-                    try? await Task.sleep(for: Self.automaticPollInterval)
+                    let interval = self.foregroundActive
+                        ? Self.foregroundPollInterval
+                        : Self.backgroundPollInterval
+                    try? await Task.sleep(for: interval)
                 }
             } catch {
                 status = "Map artifacts: \(error.localizedDescription)"
@@ -247,6 +261,13 @@ private final class AppleMapArtifactModel: ObservableObject {
         lastPollAtByMapID[configuration.mapID] = nil
         configurationFingerprint = ""
         configure(configuration)
+    }
+
+    func setForegroundActive(_ active: Bool) {
+        guard foregroundActive != active else { return }
+        foregroundActive = active
+        guard active, let configuredSource else { return }
+        refresh(configuredSource)
     }
 
     func toggleFolder(_ folder: CaltopoArtifactFolder) {
@@ -327,13 +348,32 @@ private final class AppleMapArtifactModel: ObservableObject {
             }
         }
         guard !Task.isCancelled, mapID == configuredMapID else { return }
-        lastPollAtByMapID[mapID] = Date()
+        let requestStartedAt = Date()
+        lastPollAtByMapID[mapID] = requestStartedAt
         isRefreshing = true
         defer { isRefreshing = false }
         status = "Refreshing CalTopo artifacts…"
         do {
-            let value = try await client.fetchMapArtifacts()
+            let fullReconciliation = featureStore.featuresByID.isEmpty ||
+                lastSuccessfulCursorMilliseconds == 0 ||
+                lastFullReconciliationAt.map {
+                    requestStartedAt.timeIntervalSince($0) >= Self.fullReconciliationInterval
+                } ?? true
+            let changes = try await client.fetchMapArtifactChanges(
+                sinceMilliseconds: fullReconciliation ? 0 : lastSuccessfulCursorMilliseconds,
+                now: requestStartedAt
+            )
+            var updatedStore = featureStore
+            updatedStore.apply(changes, replacing: fullReconciliation)
+            let value = try updatedStore.snapshot()
+            guard !Task.isCancelled, mapID == configuredMapID else { return }
+            featureStore = updatedStore
             snapshot = value
+            lastSuccessfulCursorMilliseconds = max(
+                lastSuccessfulCursorMilliseconds,
+                Int64(requestStartedAt.timeIntervalSince1970 * 1_000)
+            )
+            if fullReconciliation { lastFullReconciliationAt = requestStartedAt }
             let serverHiddenFolders = Set(value.folders.filter { !$0.initiallyVisible }.map(\.id))
             if !visibilityInitialized {
                 visibilityInitialized = true
@@ -348,7 +388,12 @@ private final class AppleMapArtifactModel: ObservableObject {
             )
             status = "\(value.points.count) markers, \(value.lines.count) lines, \(value.polygons.count) areas"
             Self.saveCachedSnapshot(value, mapID: configuredMapID)
-            AppleLog.info("Map", "CalTopo artifact refresh features=\(value.totalFeatureCount) ignoredTracks=\(value.ignoredTrackCount) \(status)")
+            AppleLog.info(
+                "Map",
+                "CalTopo artifact refresh mode=\(fullReconciliation ? "full" : "delta") " +
+                    "received=\(changes.receivedFeatureCount) features=\(value.totalFeatureCount) " +
+                    "ignoredTracks=\(value.ignoredTrackCount) \(status)"
+            )
         } catch {
             status = "Map artifact refresh failed: \(error.localizedDescription)"
             AppleLog.error("Map", status)
@@ -398,6 +443,27 @@ private final class AppleMapArtifactModel: ObservableObject {
         } catch {
             AppleLog.warning("Map", "Artifact cache write failed: \(error.localizedDescription)")
         }
+    }
+}
+
+private struct CalTopoArtifactRefreshLifecycleModifier: ViewModifier {
+    @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject var artifacts: AppleMapArtifactModel
+    @State private var isVisible = false
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: scenePhase) { _, phase in
+                artifacts.setForegroundActive(isVisible && phase == .active)
+            }
+            .onAppear {
+                isVisible = true
+                artifacts.setForegroundActive(scenePhase == .active)
+            }
+            .onDisappear {
+                isVisible = false
+                artifacts.setForegroundActive(false)
+            }
     }
 }
 
@@ -766,6 +832,7 @@ struct RIDTrackMapView: View {
         .onChange(of: caltopoConfiguration) { _, configuration in
             artifacts.configure(configuration)
         }
+        .modifier(CalTopoArtifactRefreshLifecycleModifier(artifacts: artifacts))
         .onAppear {
             if offlineMaps.isRunning {
                 showOfflinePreparation = true
@@ -1097,6 +1164,7 @@ struct RIDTrackMapView: View {
             OperationalMKMapView(
                 tracks: mapTracks,
                 seiTrackPointsByAircraftID: activeSEITrackPointsByAircraftID,
+                positionFreshnessRefreshToken: cameraTelemetryRefreshToken,
                 aircraftDisplay: aircraftDisplay,
                 altitudeDisplay: model.altitudeDisplayByAircraftID,
                 cameraFovByAircraftID: cameraFovByAircraftID,
@@ -1143,7 +1211,7 @@ struct RIDTrackMapView: View {
                     selectedPilotSettings = PilotDisplaySelection(
                         id: remoteID,
                         remoteID: remoteID,
-                        displayName: identity?.mappedID ?? remoteID,
+                        displayName: identity?.displayLabel ?? remoteID,
                         pilotCallsign: identity?.pilotCallsign ?? ""
                     )
                 },
@@ -1241,7 +1309,7 @@ struct RIDTrackMapView: View {
             return (
                 track.aircraftID,
                 AircraftMapDisplay(
-                    title: identity?.mappedID
+                    title: identity?.displayLabel
                         ?? model.peerTrafficMappedIDByAircraftID[track.aircraftID]
                         ?? track.aircraftID,
                     preference: pilotDisplay.preference(for: identity?.pilotCallsign),
@@ -1306,6 +1374,7 @@ struct RIDTrackMapView: View {
                     if expandedStreamID == streamID { expandedStreamID = nil }
                 },
                 onRestartStreams: onRestartStreams,
+                primaryLabel: streamPrimaryLabel,
                 telemetryText: streamTelemetryText,
                 coordinateText: streamCoordinateText,
                 remoteRequesterEmail: peerCoordinator.activeRemoteVideoRequesterEmail,
@@ -1474,7 +1543,7 @@ struct RIDTrackMapView: View {
             return model.tracks.isEmpty ? nil : "Long-press to pair"
         }
         let identity = identityStore.identity(for: aircraftID)
-        let label = identity?.mappedID.isEmpty == false ? identity!.mappedID : aircraftID
+        let label = identity?.displayLabel ?? aircraftID
         let altitude = model.altitudeDisplayByAircraftID[aircraftID]
         let heading = model.tracks
             .first(where: { $0.aircraftID == aircraftID })?
@@ -1487,6 +1556,11 @@ struct RIDTrackMapView: View {
             rangeFeet: altitude?.rangeFeet,
             headingDegrees: heading
         )
+    }
+
+    private func streamPrimaryLabel(_ streamID: String) -> String? {
+        guard let aircraftID = aircraftID(for: streamID) else { return nil }
+        return identityStore.identity(for: aircraftID)?.displayLabel ?? aircraftID
     }
 
     private var coordinateDisplayFormat: OperationalCoordinateDisplayFormat {
@@ -1556,62 +1630,6 @@ struct RIDTrackMapView: View {
         }
         let ridCaptureObservation = captureTrack.lastObservation
         let captureAltitudeDisplay = model.altitudeDisplayByAircraftID[defaultAircraftID]
-        let takeoffMsl = captureTrack.points.first?.altitudeMeters
-        let freshDjiCameraTelemetry = session.model.freshDJICameraTelemetry()
-        let validatedDjiPositionTelemetry = streamRegistry
-            .freshValidatedDJIPositionByAircraftID(tracks: model.tracks)[defaultAircraftID]
-        let freshRawSEIPositionAvailable = freshDjiCameraTelemetry?.latitudeDegrees != nil &&
-            freshDjiCameraTelemetry?.longitudeDegrees != nil
-        let validatedSEIPositionAvailable = validatedDjiPositionTelemetry?.latitudeDegrees != nil &&
-            validatedDjiPositionTelemetry?.longitudeDegrees != nil
-        if OperationalCluePositionSourcePolicy.shouldBlockRIDFallback(
-            seiPositionAuthorityEstablished: streamRegistry.isSEIPositionAuthorityEstablished(
-                streamID: streamID
-            ),
-            freshRawSEIPositionAvailable: freshRawSEIPositionAvailable,
-            validatedSEIPositionAvailable: validatedSEIPositionAvailable
-        ) {
-            AppleLog.warning(
-                "Clues",
-                "Clue blocked instead of falling back to RID for stream \(streamID)"
-            )
-            clueError = "Current video aircraft position is unavailable. Wait for SEI telemetry and try again."
-            return
-        }
-        let seiMslAltitude: Double? = validatedDjiPositionTelemetry?.relativeUpMeters.flatMap { relativeUp -> Double? in
-            takeoffMsl.map { $0 + relativeUp }
-        }
-        let captureObservation = RidObservation(
-            source: ridCaptureObservation.source,
-            aircraftId: ridCaptureObservation.aircraftId,
-            receivedAt: ridCaptureObservation.receivedAt,
-            latitude: validatedDjiPositionTelemetry?.latitudeDegrees ?? ridCaptureObservation.latitude,
-            longitude: validatedDjiPositionTelemetry?.longitudeDegrees ?? ridCaptureObservation.longitude,
-            altitudeMeters: seiMslAltitude ?? ridCaptureObservation.altitudeMeters,
-            heightMeters: ridCaptureObservation.heightMeters,
-            heightReference: ridCaptureObservation.heightReference,
-            horizontalAccuracyCode: ridCaptureObservation.horizontalAccuracyCode,
-            headingDegrees: ridCaptureObservation.headingDegrees,
-            speedMetersPerSecond: ridCaptureObservation.speedMetersPerSecond,
-            operatorLatitude: ridCaptureObservation.operatorLatitude,
-            operatorLongitude: ridCaptureObservation.operatorLongitude,
-            signalStrengthDbm: ridCaptureObservation.signalStrengthDbm,
-            droneScoutRelay: ridCaptureObservation.droneScoutRelay
-        )
-        let captureGimbalPitch = freshDjiCameraTelemetry?.tiltDegrees
-            ?? session.model.latestGimbalPitchDegrees
-        let captureHeading = OperationalClueGeometry.selectedHeading(
-            cameraAzimuthDegrees: freshDjiCameraTelemetry?.cameraAzimuthDegrees,
-            videoCourseDegrees: freshDjiCameraTelemetry?.courseDegrees,
-            cameraYawDegrees: freshDjiCameraTelemetry == nil
-                ? session.model.latestCameraYawDegrees
-                : nil,
-            streamHeadingDegrees: session.model.latestStreamHeadingDegrees,
-            ridHeadingDegrees: captureObservation.headingDegrees,
-            derivedHeadingDegrees: OperationalMapGeometry.travelBearingDegrees(
-                points: captureTrack.points
-            )
-        )
         capturingSnapshot = true
         Task {
             defer { capturingSnapshot = false }
@@ -1619,6 +1637,55 @@ struct RIDTrackMapView: View {
                 let snapshot = try await session.model.captureSnapshot(
                     zoomScale: zoomScale,
                     normalizedPan: normalizedPan
+                )
+                let frameTelemetry = snapshot.djiCameraTelemetry.flatMap { telemetry in
+                    let age = snapshot.capturedAt.timeIntervalSince(telemetry.receivedAt)
+                    return age >= 0 && age <= 3 ? telemetry : nil
+                }
+                let completeSEITelemetry = frameTelemetry.flatMap { telemetry -> AppleDJICameraTelemetry? in
+                    guard telemetry.latitudeDegrees != nil,
+                          telemetry.longitudeDegrees != nil,
+                          telemetry.relativeUpMeters?.isFinite == true,
+                          telemetry.referenceLatitudeDegrees != nil,
+                          telemetry.referenceLongitudeDegrees != nil
+                    else { return nil }
+                    return telemetry
+                }
+                let seiRelativeAltitude = completeSEITelemetry.map {
+                    ($0.referenceAltitudeMeters ?? 0) + ($0.relativeUpMeters ?? 0)
+                }
+                let captureObservation = RidObservation(
+                    source: ridCaptureObservation.source,
+                    aircraftId: ridCaptureObservation.aircraftId,
+                    receivedAt: ridCaptureObservation.receivedAt,
+                    latitude: completeSEITelemetry?.latitudeDegrees ?? ridCaptureObservation.latitude,
+                    longitude: completeSEITelemetry?.longitudeDegrees ?? ridCaptureObservation.longitude,
+                    altitudeMeters: seiRelativeAltitude ?? ridCaptureObservation.altitudeMeters,
+                    heightMeters: ridCaptureObservation.heightMeters,
+                    heightReference: ridCaptureObservation.heightReference,
+                    horizontalAccuracyCode: ridCaptureObservation.horizontalAccuracyCode,
+                    headingDegrees: ridCaptureObservation.headingDegrees,
+                    speedMetersPerSecond: ridCaptureObservation.speedMetersPerSecond,
+                    operatorLatitude: ridCaptureObservation.operatorLatitude,
+                    operatorLongitude: ridCaptureObservation.operatorLongitude,
+                    signalStrengthDbm: ridCaptureObservation.signalStrengthDbm,
+                    droneScoutRelay: ridCaptureObservation.droneScoutRelay
+                )
+                let captureGimbalPitch = completeSEITelemetry?.tiltDegrees
+                    ?? (frameTelemetry == nil ? session.model.latestGimbalPitchDegrees : nil)
+                let captureHeading = OperationalClueGeometry.selectedHeading(
+                    cameraAzimuthDegrees: completeSEITelemetry?.cameraAzimuthDegrees,
+                    videoCourseDegrees: completeSEITelemetry?.courseDegrees,
+                    cameraYawDegrees: frameTelemetry == nil
+                        ? session.model.latestCameraYawDegrees
+                        : nil,
+                    streamHeadingDegrees: frameTelemetry == nil
+                        ? session.model.latestStreamHeadingDegrees
+                        : nil,
+                    ridHeadingDegrees: captureObservation.headingDegrees,
+                    derivedHeadingDegrees: OperationalMapGeometry.travelBearingDegrees(
+                        points: captureTrack.points
+                    )
                 )
                 pendingSnapshot = PendingClueSnapshot(
                     snapshot: snapshot,
@@ -1629,7 +1696,7 @@ struct RIDTrackMapView: View {
                     observation: captureObservation,
                     altitudeDisplay: captureAltitudeDisplay,
                     heading: captureHeading,
-                    djiCameraTelemetry: validatedDjiPositionTelemetry ?? freshDjiCameraTelemetry
+                    djiCameraTelemetry: completeSEITelemetry
                 )
             } catch {
                 clueError = error.localizedDescription
@@ -1654,7 +1721,15 @@ struct RIDTrackMapView: View {
             )
         }
         guard let jpeg = image.jpegData(compressionQuality: 0.85) else { return nil }
-        return AppleVideoSnapshot(jpegData: jpeg, capturedAt: Date(), width: 960, height: 540)
+        return AppleVideoSnapshot(
+            jpegData: jpeg,
+            capturedAt: Date(),
+            width: 960,
+            height: 540,
+            frameSequence: 0,
+            sourceTimestampMicroseconds: nil,
+            djiCameraTelemetry: nil
+        )
     }
 
     private func insetFrame<Content: View>(
@@ -2188,9 +2263,8 @@ private struct ClueSubmissionView: View {
         OperationalClueGeometry.selectedProjectionHeight(
             freshAGLMeters: display?.aglStale == true ? nil : aglMeters,
             atoMeters: atoMeters,
-            validatedDJIRelativeUpMeters: usesCaptureTelemetry && atoMeters != nil
-                ? pending.djiCameraTelemetry?.relativeUpMeters
-                : nil
+            validatedDJIRelativeUpMeters: usesCaptureTelemetry
+                ? pending.djiCameraTelemetry?.relativeUpMeters : nil
         )
     }
     private var flatProjection: OperationalClueProjection? {
@@ -2214,7 +2288,13 @@ private struct ClueSubmissionView: View {
             altitudeMeters: observation.altitudeMeters,
             headingDegrees: heading.degrees,
             projectionHeightMeters: projectionHeight.meters,
-            gimbalAngleDegrees: gimbalAngle
+            gimbalAngleDegrees: gimbalAngle,
+            terrainReferenceLatitude: usesCaptureTelemetry
+                ? pending.djiCameraTelemetry?.referenceLatitudeDegrees : nil,
+            terrainReferenceLongitude: usesCaptureTelemetry
+                ? pending.djiCameraTelemetry?.referenceLongitudeDegrees : nil,
+            relativeUpMeters: usesCaptureTelemetry
+                ? pending.djiCameraTelemetry?.relativeUpMeters : nil
         )
     }
     private var clueDistanceFeet: Double? {
@@ -2360,7 +2440,10 @@ private struct ClueSubmissionView: View {
                     observation: observation,
                     headingDegrees: input.headingDegrees,
                     aglMeters: input.projectionHeightMeters,
-                    gimbalAngleDegrees: input.gimbalAngleDegrees
+                    gimbalAngleDegrees: input.gimbalAngleDegrees,
+                    terrainReferenceLatitude: input.terrainReferenceLatitude,
+                    terrainReferenceLongitude: input.terrainReferenceLongitude,
+                    relativeUpMeters: input.relativeUpMeters
                 )
                 guard !Task.isCancelled, projectionInput == input else { return }
                 terrainProjection = refined
@@ -2436,34 +2519,6 @@ private struct ClueSubmissionView: View {
             "  ATO: \(measurement(display?.atoFeet, suffix: " ft"))",
             "  Distance to clue: \(measurement(clueDistanceFeet, suffix: " ft"))"
         ]
-        if let telemetry = pending.djiCameraTelemetry {
-            summaryLines += [
-                "",
-                String(format: "DJI raw azimuth encoder: %.1f°", telemetry.rawAzimuthCandidateDegrees),
-                String(
-                    format: "DJI calibrated camera azimuth: %.1f°",
-                    telemetry.cameraAzimuthDegrees ?? .nan
-                )
-            ]
-            if let timestamp = telemetry.sourceTimestampMicroseconds {
-                summaryLines.append("  Telemetry timestamp(us): \(timestamp)")
-            }
-            if let latitude = telemetry.latitudeDegrees,
-               let longitude = telemetry.longitudeDegrees {
-                summaryLines.append(
-                    String(
-                        format: "  DJI SEI aircraft position (used for clue geometry): %.7f, %.7f relative-up %.1f'",
-                        latitude,
-                        longitude,
-                        (telemetry.relativeUpMeters ?? 0) * 3.28084
-                    )
-                )
-            }
-            if let latitude = telemetry.referenceLatitudeDegrees,
-               let longitude = telemetry.referenceLongitudeDegrees {
-                summaryLines.append(String(format: "  DJI SEI home/reference: %.7f, %.7f", latitude, longitude))
-            }
-        }
         let summary = summaryLines.joined(separator: "\n")
         let trimmedDescription = description.trimmingCharacters(in: .whitespacesAndNewlines)
         let finalDescription = trimmedDescription.isEmpty ? summary : trimmedDescription + "\n\n" + summary
@@ -2564,6 +2619,9 @@ private struct ClueProjectionInput: Hashable {
     let headingDegrees: Double?
     let projectionHeightMeters: Double?
     let gimbalAngleDegrees: Double
+    let terrainReferenceLatitude: Double?
+    let terrainReferenceLongitude: Double?
+    let relativeUpMeters: Double?
 }
 
 private struct ClueDetailView: View {
@@ -2860,6 +2918,7 @@ private struct AircraftMapRenderState: Equatable {
     let width: Double
     let height: Double
     let predictionSecond: Int?
+    let positionIconAlphaByAircraftID: [String: Double]
 }
 
 private struct PilotDisplaySettingsView: View {
@@ -2988,6 +3047,7 @@ private final class ViewportPreservingMKMapView: MKMapView {
 private struct OperationalMKMapView: UIViewRepresentable {
     let tracks: [RidAircraftTrack]
     let seiTrackPointsByAircraftID: [String: [AppleSEIMapPoint]]
+    let positionFreshnessRefreshToken: Int
     let aircraftDisplay: [String: AircraftMapDisplay]
     let altitudeDisplay: [String: OperationalAircraftAltitudeDisplay]
     let cameraFovByAircraftID: [String: CameraFovBoundaryBearings]
@@ -3131,6 +3191,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
             on: map,
             tracks: tracks,
             seiTrackPointsByAircraftID: seiTrackPointsByAircraftID,
+            positionFreshnessRefreshToken: positionFreshnessRefreshToken,
             aircraftDisplay: aircraftDisplay,
             altitudeDisplay: altitudeDisplay,
             cameraFovByAircraftID: cameraFovByAircraftID,
@@ -3384,6 +3445,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
             on map: MKMapView,
             tracks: [RidAircraftTrack],
             seiTrackPointsByAircraftID: [String: [AppleSEIMapPoint]],
+            positionFreshnessRefreshToken: Int,
             aircraftDisplay: [String: AircraftMapDisplay],
             altitudeDisplay: [String: OperationalAircraftAltitudeDisplay],
             cameraFovByAircraftID: [String: CameraFovBoundaryBearings],
@@ -3437,6 +3499,17 @@ private struct OperationalMKMapView: UIViewRepresentable {
             let renderInputByAircraftID = Dictionary(
                 uniqueKeysWithValues: renderInputs.map { ($0.aircraftID, $0) }
             )
+            _ = positionFreshnessRefreshToken
+            let positionIconAlphaByAircraftID = Dictionary(uniqueKeysWithValues: tracks.map { track in
+                let receivedAt = renderInputByAircraftID[track.aircraftID]?.points.last?.receivedAt
+                return (
+                    track.aircraftID,
+                    OperationalAircraftDisplay.positionIconAlpha(
+                        lastAcceptedPositionAt: receivedAt,
+                        now: now
+                    )
+                )
+            })
             // Camera FOV is intentionally excluded from this state. SEI changes
             // several times per second and is updated on the existing annotation
             // below so the aircraft icon and labels do not flash.
@@ -3454,7 +3527,8 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 longitudeDelta: region.span.longitudeDelta,
                 width: map.bounds.width,
                 height: map.bounds.height,
-                predictionSecond: predictiveHeadEnabled ? Int(now.timeIntervalSinceReferenceDate) : nil
+                predictionSecond: predictiveHeadEnabled ? Int(now.timeIntervalSinceReferenceDate) : nil,
+                positionIconAlphaByAircraftID: positionIconAlphaByAircraftID
             )
             let aircraftChanged = nextAircraftState != aircraftRenderState
             if aircraftChanged {
@@ -3494,7 +3568,8 @@ private struct OperationalMKMapView: UIViewRepresentable {
                         aglFeet: altitude?.aglFeet,
                         aglStale: altitude?.aglStale == true,
                         rangeFeet: altitude?.rangeFeet,
-                        headingDegrees: renderInputByAircraftID[track.aircraftID]?.points.last?.headingDegrees
+                        headingDegrees: renderInputByAircraftID[track.aircraftID]?.points.last?.headingDegrees,
+                        positionStale: (positionIconAlphaByAircraftID[track.aircraftID] ?? 1) < 1
                     )
                 )
             })
@@ -3600,7 +3675,8 @@ private struct OperationalMKMapView: UIViewRepresentable {
                         statusText: statusLabels[track.aircraftID] ?? "",
                         labelLayout: labelLayouts[track.aircraftID],
                         anchorScreen: MapScreenPoint(x: anchorPoint.x, y: anchorPoint.y),
-                        focused: focusedAircraftID == track.aircraftID
+                        focused: focusedAircraftID == track.aircraftID,
+                        positionIconAlpha: positionIconAlphaByAircraftID[track.aircraftID] ?? 1
                     )
                     if aircraftAnnotationsByRemoteID[track.aircraftID] == nil {
                         aircraftAnnotationsByRemoteID[track.aircraftID] = annotation
@@ -4213,7 +4289,8 @@ private final class AircraftAnnotationView: MKAnnotationView {
             size: iconSize,
             color: aircraft.color,
             headingDegrees: aircraft.heading,
-            focused: aircraft.focused
+            focused: aircraft.focused,
+            positionIconAlpha: aircraft.positionIconAlpha
         )
         iconView.transform = .identity
         configureCameraFov(aircraft.cameraFov, iconSize: iconSize)
@@ -4303,7 +4380,8 @@ private enum AircraftMarkerRenderer {
         size: CGFloat,
         color: UIColor,
         headingDegrees: Double?,
-        focused: Bool
+        focused: Bool,
+        positionIconAlpha: Double
     ) -> UIImage {
         let format = UIGraphicsImageRendererFormat()
         format.opaque = false
@@ -4344,7 +4422,10 @@ private enum AircraftMarkerRenderer {
                 context.strokePath()
             }
 
+            context.saveGState()
+            context.setAlpha(CGFloat(positionIconAlpha))
             drawDrone(context: context, center: center, color: color, scale: scale)
+            context.restoreGState()
         }
     }
 
@@ -4731,6 +4812,7 @@ private final class AircraftAnnotation: NSObject, MKAnnotation, MapLayerAnnotati
     var labelLayout: MapAircraftLabelLayout?
     var anchorScreen = MapScreenPoint(x: 0, y: 0)
     var focused = false
+    var positionIconAlpha = 1.0
 
     init(remoteID: String) {
         self.remoteID = remoteID
@@ -4748,7 +4830,8 @@ private final class AircraftAnnotation: NSObject, MKAnnotation, MapLayerAnnotati
         statusText: String,
         labelLayout: MapAircraftLabelLayout?,
         anchorScreen: MapScreenPoint,
-        focused: Bool
+        focused: Bool,
+        positionIconAlpha: Double
     ) {
         self.coordinate = coordinate
         self.title = title
@@ -4761,6 +4844,7 @@ private final class AircraftAnnotation: NSObject, MKAnnotation, MapLayerAnnotati
         self.labelLayout = labelLayout
         self.anchorScreen = anchorScreen
         self.focused = focused
+        self.positionIconAlpha = positionIconAlpha
     }
 }
 

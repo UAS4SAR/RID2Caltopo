@@ -24,16 +24,22 @@ struct AppleLiveVideoSurface: UIViewRepresentable {
 
 struct AppleLiveVideoIndicator: View {
     @ObservedObject var model: AppleVideoFrameSource
+    var displayDesignator: String? = nil
     var tint: Color = .white
 
     var body: some View {
-        Text("\(model.streamDesignator) - \(statusLabel)")
+        Text("\(primaryLabel) - \(statusLabel)")
             .font(.caption.monospaced().weight(.bold))
             .foregroundStyle(tint)
             .padding(.horizontal, 7)
             .padding(.vertical, 5)
             .background(.black.opacity(0.68), in: RoundedRectangle(cornerRadius: 4))
-            .accessibilityLabel("Stream \(model.streamDesignator), \(statusLabel)")
+            .accessibilityLabel("Stream \(primaryLabel), \(statusLabel)")
+    }
+
+    private var primaryLabel: String {
+        let proposed = displayDesignator?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return proposed.isEmpty ? model.streamDesignator : proposed
     }
 
     private var statusLabel: String {

@@ -9,10 +9,25 @@ import Security
 import UIKit
 
 enum AppleNetworkAddress {
-    static func preferredIPv4Address() -> String? {
+    static func preferredIPv4Address(for path: NWPath? = nil) -> String? {
         let candidates = ipv4Candidates()
-        return candidates.first(where: { $0.name == "en0" })?.address
-            ?? candidates.first(where: { $0.name.hasPrefix("en") })?.address
+        let availableInterfaces = path?.availableInterfaces ?? []
+        let reportedWiFiNames = availableInterfaces
+            .filter { $0.type == .wifi }
+            .map(\.name)
+        let wifiNames = reportedWiFiNames.isEmpty
+            ? candidates.map(\.name).filter { $0 == "en0" || $0.hasPrefix("en") }
+            : reportedWiFiNames
+        let wiredNames = availableInterfaces
+            .filter { $0.type == .wiredEthernet }
+            .map(\.name)
+        return ControllerIPv4Selection.preferredAddress(
+            candidates: candidates.map {
+                ControllerIPv4Candidate(interfaceName: $0.name, address: $0.address)
+            },
+            wifiInterfaceNames: wifiNames,
+            wiredInterfaceNames: wiredNames
+        )
     }
 
     static func ipv4DiagnosticSummary() -> String {
@@ -82,6 +97,7 @@ final class AppleNetworkDiagnosticCenter: ObservableObject {
 
     @Published private(set) var currentSnapshotID = "none"
     @Published private(set) var currentWiFiSSID: String?
+    @Published private(set) var currentControllerIPv4Address: String?
 
     private var monitor: NWPathMonitor?
     private var latestPath: NWPath?
@@ -121,12 +137,14 @@ final class AppleNetworkDiagnosticCenter: ObservableObject {
         let ssid = await AppleNetworkAddress.currentWiFiSSID()
         let interfaces = Self.interfaceSummary(path)
         let ipv4 = AppleNetworkAddress.ipv4DiagnosticSummary()
+        let controllerIPv4 = AppleNetworkAddress.preferredIPv4Address(for: path)
         let status = Self.statusSummary(path.status)
         let bssidHash = await Self.currentBSSIDHash()
         let transitionKey = [
             ssid ?? "unavailable",
             bssidHash,
             ipv4,
+            controllerIPv4 ?? "unavailable",
             status,
             interfaces,
             String(path.isExpensive),
@@ -137,6 +155,7 @@ final class AppleNetworkDiagnosticCenter: ObservableObject {
         let reason = previousTransitionKey == nil ? "startup" : requestedReason.rawValue
         previousTransitionKey = transitionKey
         currentWiFiSSID = ssid
+        currentControllerIPv4Address = controllerIPv4
         currentSnapshotID = "net-\(nextSnapshotNumber)"
         nextSnapshotNumber += 1
         AppleLog.info(

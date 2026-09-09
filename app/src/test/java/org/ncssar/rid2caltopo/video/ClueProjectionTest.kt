@@ -8,12 +8,12 @@ import org.ncssar.rid2caltopo.video.mapcache.DemElevationSample
 
 class ClueProjectionTest {
     @Test
-    fun projectionHeight_prefersFreshAglThenFallsBackToAtoAndValidatedDji() {
+    fun projectionHeight_prefersDjiSeiThenFallsBackToAglAndAto() {
         val agl = selectClueProjectionHeight(30.0, 25.0, 24.0)!!
-        assertEquals(30.0, agl.meters, 0.0)
-        assertEquals("fresh AGL", agl.sourceLabel)
+        assertEquals(24.0, agl.meters, 0.0)
+        assertEquals("DJI SEI relative altitude", agl.sourceLabel)
 
-        val ato = selectClueProjectionHeight(null, 25.0, 24.0)!!
+        val ato = selectClueProjectionHeight(null, 25.0, null)!!
         assertEquals(25.0, ato.meters, 0.0)
         assertEquals("ATO flat-ground fallback", ato.sourceLabel)
         val fieldFallback = projectClueLocation(
@@ -32,7 +32,7 @@ class ClueProjectionTest {
 
         val dji = selectClueProjectionHeight(Double.NaN, -1.0, 24.0)!!
         assertEquals(24.0, dji.meters, 0.0)
-        assertTrue(dji.sourceLabel.contains("validated DJI"))
+        assertEquals("DJI SEI relative altitude", dji.sourceLabel)
 
         assertEquals(null, selectClueProjectionHeight(null, null, null))
     }
@@ -184,5 +184,36 @@ class ClueProjectionTest {
         assertTrue("expected terrain intersection near the far hillside", northMeters < 2_100.0)
         assertTrue(projection.terrainProjectionApplied)
         assertEquals(1.0, projection.demResolutionMeters ?: 0.0, 0.0)
+    }
+
+    @Test
+    fun projectClueLocationWithDemSamples_anchorsSeiRelativeUpAtHomeTerrain() = runBlocking {
+        val homeLat = 39.0
+        val droneLat = homeLat + (20.0 / 111_195.0)
+        val projection = projectClueLocationWithDemSamples(
+            droneLat = droneLat,
+            droneLng = -105.0,
+            droneAlt = 9_999.0,
+            headingDeg = 0.0,
+            aglMeters = 5.0,
+            gimbalAngleDeg = -45.0,
+            terrainReferenceLatitude = homeLat,
+            terrainReferenceLongitude = -105.0,
+            seiRelativeUpMeters = 50.0,
+            sampleElevationMeters = { lat, _ ->
+                val northMeters = (lat - homeLat) * 111_195.0
+                DemElevationSample(
+                    elevationMeters = 100.0 + northMeters * 0.5,
+                    stale = false,
+                    source = "usgs-geotiff-local-1m",
+                    horizontalResolutionMeters = 1.0,
+                )
+            },
+        )
+
+        val northFromDrone = (projection.lat - droneLat) * 111_195.0
+        assertTrue("expected SEI/DEM intersection near 27 m", northFromDrone in 25.0..28.0)
+        assertTrue(projection.terrainProjectionApplied)
+        assertTrue("RID-like altitude must not leak into result", projection.alt < 200.0)
     }
 }

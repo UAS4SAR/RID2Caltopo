@@ -48,6 +48,8 @@ public enum RidTrackGeoJSON {
         metadata: RidTrackArchiveMetadata = RidTrackArchiveMetadata()
     ) throws -> Data {
         let mappedID = metadata.mappedID.isEmpty ? track.aircraftID : metadata.mappedID
+        let owner = metadata.owner.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayLabel = owner.isEmpty ? mappedID : owner
         let startDate = track.points.first?.receivedAt ?? track.lastObservation.receivedAt
         let startTime = formattedStartTime(startDate)
         let coordinates: [[String]] = track.points.map { point in
@@ -78,7 +80,7 @@ public enum RidTrackGeoJSON {
         let feature: [String: Any] = [
             "type": "Feature",
             "properties": [
-                "title": mappedID,
+                "title": displayLabel,
                 "start_time": startTime,
                 "r2c_prop": r2cProperties,
             ],

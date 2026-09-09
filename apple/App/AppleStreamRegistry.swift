@@ -426,6 +426,7 @@ struct AppleStreamsGridView: View {
     var onDoubleTapSession: ((String, Double, CGPoint) -> Void)? = nil
     var onCloseSession: ((String) -> Void)? = nil
     var onRestartStreams: (() -> Void)? = nil
+    var primaryLabel: ((String) -> String?)? = nil
     var telemetryText: ((String) -> String?)? = nil
     var coordinateText: ((String) -> String?)? = nil
     var remoteRequesterEmail: ((String) -> String?)? = nil
@@ -509,6 +510,7 @@ struct AppleStreamsGridView: View {
             networkSSID: currentNetworkSSID,
             focused: registry.focusedID == session.id,
             fillsAvailableSpace: fillsAvailableSpace,
+            primaryLabel: primaryLabel?(session.id),
             telemetryText: telemetryText?(session.id),
             coordinateText: coordinateText?(session.id),
             remoteRequesterEmail: remoteRequesterEmail?(session.id),
@@ -587,6 +589,7 @@ private struct AppleStreamTile: View {
     let networkSSID: String?
     let focused: Bool
     let fillsAvailableSpace: Bool
+    let primaryLabel: String?
     let telemetryText: String?
     let coordinateText: String?
     let remoteRequesterEmail: String?
@@ -606,6 +609,7 @@ private struct AppleStreamTile: View {
         networkSSID: String?,
         focused: Bool,
         fillsAvailableSpace: Bool,
+        primaryLabel: String?,
         telemetryText: String?,
         coordinateText: String?,
         remoteRequesterEmail: String?,
@@ -625,6 +629,7 @@ private struct AppleStreamTile: View {
         self.networkSSID = networkSSID
         self.focused = focused
         self.fillsAvailableSpace = fillsAvailableSpace
+        self.primaryLabel = primaryLabel
         self.telemetryText = telemetryText
         self.coordinateText = coordinateText
         self.remoteRequesterEmail = remoteRequesterEmail
@@ -683,7 +688,11 @@ private struct AppleStreamTile: View {
             .offset(pan)
             .clipped()
             HStack {
-                AppleLiveVideoIndicator(model: model, tint: telemetryPairingState.color)
+                AppleLiveVideoIndicator(
+                    model: model,
+                    displayDesignator: primaryLabel,
+                    tint: telemetryPairingState.color
+                )
                 Spacer()
                 if focused || fillsAvailableSpace {
                     Menu {

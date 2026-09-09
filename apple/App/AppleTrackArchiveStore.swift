@@ -88,7 +88,9 @@ actor AppleTrackArchiveStore {
         if !clues.isEmpty {
             try writeKMZ(
                 track: track,
-                title: metadata.mappedID.isEmpty ? track.aircraftID : metadata.mappedID,
+                title: metadata.owner.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? (metadata.mappedID.isEmpty ? track.aircraftID : metadata.mappedID)
+                    : metadata.owner.trimmingCharacters(in: .whitespacesAndNewlines),
                 clues: clues,
                 destination: directory.appendingPathComponent(
                     RidTrackGeoJSON.suggestedClueReportFilename(for: track)
@@ -334,7 +336,7 @@ actor AppleTrackArchiveStore {
         fill("op_period", configuration.operationalPeriod)
         fill("map_id", configuration.mapID)
         guard changed else { return nil }
-        properties["title"] = identity.mappedID
+        properties["title"] = identity.displayLabel
         properties["r2c_prop"] = metadata
         features[0]["properties"] = properties
         root["features"] = features

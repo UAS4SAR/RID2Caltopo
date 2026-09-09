@@ -214,6 +214,15 @@ public actor CaltopoLiveClient {
         return try CaltopoArtifactDecoder.decode(data: data)
     }
 
+    public func fetchMapArtifactChanges(
+        sinceMilliseconds: Int64,
+        now: Date = Date()
+    ) async throws -> CaltopoArtifactChanges {
+        let request = try makeMapChangesRequest(sinceMilliseconds: sinceMilliseconds, now: now)
+        let data = try await perform(request)
+        return try CaltopoArtifactDecoder.decodeChanges(data: data)
+    }
+
     public func createFolder(
         title: String,
         visible: Bool,
@@ -445,7 +454,12 @@ public actor CaltopoLiveClient {
     }
 
     func makeMapSnapshotRequest(now: Date) throws -> URLRequest {
-        let path = "/api/v1/map/\(configuration.mapID)/since/0"
+        try makeMapChangesRequest(sinceMilliseconds: 0, now: now)
+    }
+
+    func makeMapChangesRequest(sinceMilliseconds: Int64, now: Date) throws -> URLRequest {
+        let cursor = max(0, sinceMilliseconds - 500)
+        let path = "/api/v1/map/\(configuration.mapID)/since/\(cursor)"
         let expires = Int64(now.timeIntervalSince1970 * 1_000)
             + CaltopoRequestSigner.validityMilliseconds
         let signature = try CaltopoRequestSigner.signature(

@@ -48,9 +48,37 @@ class MapPanePilotDisplayTest {
     }
 
     @Test
+    fun displayedPositionStaleness_startsAtFiveSecondsAndClearsOnFreshPoint() {
+        assertEquals(false, isDisplayedPositionStale(14_999L, 10_000L))
+        assertEquals(true, isDisplayedPositionStale(15_000L, 10_000L))
+        assertEquals(false, isDisplayedPositionStale(15_001L, 15_001L))
+        assertEquals(false, isDisplayedPositionStale(15_001L, null))
+        assertEquals(255, displayedPositionIconAlpha(14_999L, 10_000L))
+        assertEquals(128, displayedPositionIconAlpha(15_000L, 10_000L))
+        assertEquals(128, displayedPositionIconAlpha(19_999L, 10_000L))
+        assertEquals(64, displayedPositionIconAlpha(20_000L, 10_000L))
+        assertEquals(255, displayedPositionIconAlpha(20_000L, null))
+    }
+
+    @Test
+    fun droneStatusLabel_marksUncertainPositionQuietly() {
+        assertEquals(
+            "ATO:125' AGL:90' RNG:420' HDG:273° POS?",
+            droneStatusLabelText(
+                atoFeet = 125.2,
+                aglFeet = 90.4,
+                aglStale = false,
+                rangeFeet = 420.0,
+                headingDeg = 273.2,
+                positionStale = true,
+            )
+        )
+    }
+
+    @Test
     fun streamTelemetryHeader_matchesMapEntriesAndOrder() {
         assertEquals(
-            "ATO:125' AGL:90' RNG:420' HDG:273°",
+            "ATO:125' AGL:90' RNG:420' TRK:273°",
             streamTelemetryHeaderText(
                 DroneDisplayState(
                     headingDeg = 273.2,

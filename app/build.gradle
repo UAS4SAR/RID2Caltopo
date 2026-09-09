@@ -12,7 +12,7 @@ def generatedLegalAssetsDir = layout.buildDirectory.dir("generated/legal/assets/
 def generatedAppConfigProtoDir = layout.buildDirectory.dir("generated/source/proto/main/java")
 def versionMajor = 2
 def versionMinor = 2
-def versionPatch = 5
+def versionPatch = 6
 def appVersionName = "${versionMajor}.${versionMinor}.${versionPatch}"
 def canonicalReleaseNotesFile = rootProject.file("release-notes/${appVersionName}/whats_new.txt")
 def runProcess = { File workingDirectory, List command, Map environmentOverrides = [:], boolean ignoreExitValue = false ->
@@ -220,7 +220,7 @@ android {
         applicationId "org.ncssar.rid2caltopo"
         minSdk = 29
         targetSdk = 36
-        versionCode = 189
+        versionCode = 196
         versionName appVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 

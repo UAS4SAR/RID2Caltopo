@@ -39,6 +39,13 @@ public struct RidAircraftIdentity: Sendable, Equatable {
         return callsign + Self.modelAbbreviation(droneDescription)
     }
 
+    /// Operator-visible aircraft label. `mappedID` remains the stable stream routing key.
+    public var displayLabel: String {
+        if !pilotCallsign.isEmpty { return pilotCallsign }
+        if !mappedID.isEmpty { return mappedID }
+        return remoteID
+    }
+
     /// Mirrors Android CtDroneSpec.GuessPilotCallsign so imported rid_map
     /// owner names are not mistaken for operational pilot callsigns.
     public static func guessPilotCallsign(mappedID: String, model: String, remoteID: String) -> String {

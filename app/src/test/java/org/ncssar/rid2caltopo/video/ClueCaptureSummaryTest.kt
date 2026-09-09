@@ -9,13 +9,15 @@ import java.io.File
 
 class ClueCaptureSummaryTest {
     @Test
-    fun clueCaptureUsesValidatedSeiContinuationInsteadOfPerReadRidAnchoring() {
+    fun clueCaptureUsesFrameAssociatedSeiWithoutPerReadRidAnchoring() {
         val source = sequenceOf(
             File("src/main/java/org/ncssar/rid2caltopo/video/StreamsViewModel.kt"),
             File("app/src/main/java/org/ncssar/rid2caltopo/video/StreamsViewModel.kt"),
         ).first(File::isFile).readText()
 
-        assertTrue(source.contains("StreamCameraTelemetryRegistry.freshPositionAfterRidValidation("))
+        assertTrue(source.contains("renderedFrameSourceTimestampUs(designator)"))
+        assertTrue(source.contains("StreamCameraTelemetryRegistry.freshForFrame("))
+        assertTrue(!source.contains("StreamCameraTelemetryRegistry.freshPositionAfterRidValidation("))
         assertTrue(!source.contains("StreamCameraTelemetryRegistry.freshAnchored("))
     }
 

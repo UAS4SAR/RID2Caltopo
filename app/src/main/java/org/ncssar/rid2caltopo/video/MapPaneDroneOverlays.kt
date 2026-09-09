@@ -372,6 +372,31 @@ internal data class ScreenLine(
     val endY: Double
 )
 
+internal const val DISPLAYED_POSITION_STALE_AFTER_MSEC = 5_000L
+internal const val DISPLAYED_POSITION_VERY_STALE_AFTER_MSEC = 10_000L
+
+internal fun isDisplayedPositionStale(
+    nowWallMsec: Long,
+    receivedAtMsec: Long?,
+    staleAfterMsec: Long = DISPLAYED_POSITION_STALE_AFTER_MSEC,
+): Boolean {
+    val receivedAt = receivedAtMsec ?: return false
+    val ageMsec = nowWallMsec - receivedAt
+    return ageMsec >= staleAfterMsec.coerceAtLeast(0L)
+}
+
+internal fun displayedPositionIconAlpha(
+    nowWallMsec: Long,
+    receivedAtMsec: Long?,
+): Int {
+    val receivedAt = receivedAtMsec ?: return 255
+    return when (nowWallMsec - receivedAt) {
+        in DISPLAYED_POSITION_VERY_STALE_AFTER_MSEC..Long.MAX_VALUE -> 64
+        in DISPLAYED_POSITION_STALE_AFTER_MSEC until DISPLAYED_POSITION_VERY_STALE_AFTER_MSEC -> 128
+        else -> 255
+    }
+}
+
 internal fun droneStatusLabelText(
     atoFeet: Double?,
     aglFeet: Double?,
@@ -379,6 +404,7 @@ internal fun droneStatusLabelText(
     rangeFeet: Double?,
     headingDeg: Double?,
     headingLabel: String = "HDG",
+    positionStale: Boolean = false,
 ): String {
     val ato = atoFeet
         ?.takeIf { kotlin.math.abs(it) <= LABEL_MAX_ABS_FEET }
@@ -395,7 +421,8 @@ internal fun droneStatusLabelText(
         ?.takeIf { it.isFinite() }
         ?.let { String.format(Locale.US, "%.0f", normalizeDegrees(it)) }
         ?: "--"
-    return "ATO:$ato' AGL:$agl' RNG:$range' $headingLabel:$heading°"
+    val positionStatus = if (positionStale) " POS?" else ""
+    return "ATO:$ato' AGL:$agl' RNG:$range' $headingLabel:$heading°$positionStatus"
 }
 
 internal fun droneDetailLines(
@@ -615,7 +642,8 @@ internal fun buildDroneMarkerDrawable(
     baseIcon: Drawable?,
     tint: Int?,
     headingDeg: Double?,
-    scale: Float = 1.0f
+    scale: Float = 1.0f,
+    positionIconAlpha: Int = 255,
 ): Drawable? {
     if (baseIcon == null) return null
     val safeScale = drawableScaleOrDefault(scale)
@@ -693,6 +721,7 @@ internal fun buildDroneMarkerDrawable(
     canvas.drawCircle(cx, cy, radius, haloStroke)
 
     icon.setBounds(pad, pad, pad + iconW, pad + iconH)
+    icon.alpha = positionIconAlpha.coerceIn(0, 255)
     icon.draw(canvas)
     return BitmapDrawable(resources, bitmap)
 }

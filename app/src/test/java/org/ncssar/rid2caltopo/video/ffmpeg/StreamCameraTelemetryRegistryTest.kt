@@ -57,8 +57,12 @@ class StreamCameraTelemetryRegistryTest {
             "mtrc4td",
             nowMs = 12_999,
         )
-        assertEquals(21.46, fresh?.azimuthDeg ?: 0.0, 1e-9)
-        assertEquals(21.46, fresh?.fovAzimuthDeg ?: 0.0, 1e-9)
+        val expectedAzimuth = DjiCameraOrientation.controllerAzimuthDeg(
+            fresh?.rawCameraAzimuthDeg,
+            fresh?.magneticDeclinationDeg,
+        ) ?: 0.0
+        assertEquals(expectedAzimuth, fresh?.azimuthDeg ?: 0.0, 1e-9)
+        assertEquals(expectedAzimuth, fresh?.fovAzimuthDeg ?: 0.0, 1e-9)
         assertNull(fresh?.courseDeg)
         assertEquals(-26.768848384424192, fresh?.tiltDeg ?: 0.0, 1e-9)
         assertEquals(111.46, fresh?.rawCameraAzimuthDeg ?: 0.0, 1e-9)
@@ -108,8 +112,12 @@ class StreamCameraTelemetryRegistryTest {
         assertEquals(4.0, sample?.eastMeters ?: 0.0, 0.0)
         assertEquals(2.5, sample?.relativeUpMeters ?: 0.0, 0.0)
         assertEquals(45.0, sample?.courseDeg ?: 0.0, 1e-9)
-        assertEquals(345.3, sample?.azimuthDeg ?: 0.0, 1e-9)
-        assertEquals(345.3, sample?.fovAzimuthDeg ?: 0.0, 1e-9)
+        val expectedAzimuth = DjiCameraOrientation.controllerAzimuthDeg(
+            sample?.rawCameraAzimuthDeg,
+            sample?.magneticDeclinationDeg,
+        ) ?: 0.0
+        assertEquals(expectedAzimuth, sample?.azimuthDeg ?: 0.0, 1e-9)
+        assertEquals(expectedAzimuth, sample?.fovAzimuthDeg ?: 0.0, 1e-9)
         StreamCameraTelemetryRegistry.clear("WRAP")
     }
 
@@ -192,7 +200,11 @@ class StreamCameraTelemetryRegistryTest {
         )
         assertNull(anchored?.latitudeDeg)
         assertNull(anchored?.longitudeDeg)
-        assertEquals(345.0, anchored?.azimuthDeg ?: 0.0, 1e-9)
+        assertEquals(
+            DjiCameraOrientation.controllerAzimuthDeg(75.0, anchored?.magneticDeclinationDeg) ?: 0.0,
+            anchored?.azimuthDeg ?: 0.0,
+            1e-9,
+        )
         StreamCameraTelemetryRegistry.clear("AMBIGUOUS")
     }
 
@@ -293,7 +305,11 @@ class StreamCameraTelemetryRegistryTest {
         )
         assertNull(sample?.latitudeDeg)
         assertNull(sample?.longitudeDeg)
-        assertEquals(345.0, sample?.azimuthDeg ?: 0.0, 1e-9)
+        assertEquals(
+            DjiCameraOrientation.controllerAzimuthDeg(75.0, sample?.magneticDeclinationDeg) ?: 0.0,
+            sample?.azimuthDeg ?: 0.0,
+            1e-9,
+        )
         StreamCameraTelemetryRegistry.clear("UNVALIDATED")
     }
 
@@ -343,5 +359,40 @@ class StreamCameraTelemetryRegistryTest {
         assertEquals(0.0, DjiCameraOrientation.calibratedTiltDeg(-14.5625) ?: 1.0, 0.0)
         assertEquals(-11.86, DjiCameraOrientation.calibratedTiltDeg(-24.5) ?: 0.0, 0.02)
         assertEquals(90.0, DjiCameraOrientation.calibratedTiltDeg(120.0) ?: 0.0, 0.0)
+    }
+
+    @Test
+    fun frameCaptureUsesTelemetryNearestTheRenderedFrame() {
+        val base = FfmpegTelemetry(
+            sourceTag = "dji-sei-245",
+            gimbalPitchDeg = -30.0,
+            cameraYawDeg = 75.0,
+            horizontalFovDeg = 40.0,
+            verticalFovDeg = 25.0,
+        )
+        StreamCameraTelemetryRegistry.update(
+            "FRAME-PAIR",
+            base.copy(sourceTimestampUs = 1_000_000),
+            nowMs = 1_000,
+        )
+        StreamCameraTelemetryRegistry.update(
+            "FRAME-PAIR",
+            base.copy(sourceTimestampUs = 2_000_000, cameraYawDeg = 165.0),
+            nowMs = 1_100,
+        )
+
+        val paired = StreamCameraTelemetryRegistry.freshForFrame(
+            "FRAME-PAIR",
+            frameTimestampUs = 1_020_000,
+            nowMs = 1_200,
+        )
+        assertEquals(1_000_000L, paired?.sourceTimestampUs)
+        assertEquals(75.0, paired?.rawCameraAzimuthDeg ?: 0.0, 0.0)
+        assertNull(StreamCameraTelemetryRegistry.freshForFrame(
+            "FRAME-PAIR",
+            frameTimestampUs = 1_500_000,
+            nowMs = 1_200,
+        ))
+        StreamCameraTelemetryRegistry.clear("FRAME-PAIR")
     }
 }

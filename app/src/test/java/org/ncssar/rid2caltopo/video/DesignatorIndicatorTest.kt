@@ -78,7 +78,7 @@ class DesignatorIndicatorTest {
             )
         )
         assertEquals(
-            "ATO:--' AGL:--' RNG:--' HDG:--\u00b0",
+            "ATO:--' AGL:--' RNG:--' TRK:--\u00b0",
             telemetryChipTextFor(
                 designatorState = DesignatorState.Green(
                     DroneSpecState(CtDroneSpec("testRemoteId"))
@@ -91,7 +91,7 @@ class DesignatorIndicatorTest {
     @Test
     fun compactLiveTelemetry_matchesMapEntriesAndOrder() {
         assertEquals(
-            "ATO:7' AGL:0' RNG:26' HDG:--\u00b0",
+            "ATO:7' AGL:0' RNG:26' TRK:--\u00b0",
             formatCompactTelemetry(
                 DroneDisplayState(
                     headingDeg = null,

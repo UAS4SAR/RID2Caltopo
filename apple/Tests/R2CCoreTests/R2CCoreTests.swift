@@ -1415,6 +1415,19 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
     #expect(source.sampleElevationMeters(latitude: 38, longitude: -104.5) == nil)
 }
 
+@Test func geoTiffElevationSourceDecodesLZWFloatPredictorAcrossEntireRows() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("r2c-dem-lzw-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let tile = directory.appendingPathComponent("USGS_1_n40w105.tif")
+    try makeLZWFloatPredictorGeoTiff().write(to: tile)
+
+    let source = GeoTiffElevationSource(directory: directory)
+    let elevation = try #require(source.sampleElevationMeters(latitude: 39.5, longitude: -104.5))
+    #expect(abs(elevation - 250) < 0.001)
+}
+
 @Test func operationalFacilityMapMatchesAndroidQueryParserAndPolicy() throws {
     let url = try #require(OperationalFacilityMap.queryURL(latitude: 39.7392, longitude: -104.9903))
     let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
@@ -1577,6 +1590,44 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
         ingestAddress: "rtmp://192.168.1.5:1935/",
         networkSSID: " "
     ) == "Stream video to: rtmp://192.168.1.5:1935/<droneDesig> on Wi-Fi name unavailable network")
+}
+
+@Test func controllerIPv4SelectionPrefersWiFiAndNeverFallsBackToCellular() {
+    let candidates = [
+        ControllerIPv4Candidate(interfaceName: "pdp_ip0", address: "10.20.30.40"),
+        ControllerIPv4Candidate(interfaceName: "en0", address: "192.168.50.12"),
+        ControllerIPv4Candidate(interfaceName: "en5", address: "172.16.0.8"),
+    ]
+
+    #expect(ControllerIPv4Selection.preferredAddress(
+        candidates: candidates,
+        wifiInterfaceNames: ["en0"],
+        wiredInterfaceNames: ["en5"]
+    ) == "192.168.50.12")
+    #expect(ControllerIPv4Selection.preferredAddress(
+        candidates: candidates,
+        wifiInterfaceNames: [],
+        wiredInterfaceNames: ["en5"]
+    ) == "172.16.0.8")
+    #expect(ControllerIPv4Selection.preferredAddress(
+        candidates: candidates,
+        wifiInterfaceNames: [],
+        wiredInterfaceNames: []
+    ) == nil)
+}
+
+@Test func appleControllerRTMPAddressOmitsTheDefaultPort() throws {
+    let appleRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let contentView = try String(
+        contentsOf: appleRoot.appendingPathComponent("App/ContentView.swift"),
+        encoding: .utf8
+    )
+
+    #expect(contentView.contains("let nextURL = \"rtmp://\\(address)\""))
+    #expect(!contentView.contains("let nextURL = \"rtmp://\\(address):1935\""))
 }
 
 @Test func operationalContourToggleChangesTileLayerFingerprintWithoutViewportChange() {
@@ -2548,6 +2599,19 @@ private func proximityDrone(
     ).isComplete)
 }
 
+@Test func pilotCallsignIsDisplayLabelWhileMappedIDRemainsRoutingDesignator() {
+    let identity = RidAircraftIdentity(
+        remoteID: "RID-1",
+        organization: "NCSSAR",
+        pilotCallsign: "1SAR8",
+        droneDescription: "DJI Mini 4 Pro",
+        mappedIDOverride: "MINI4PRO"
+    )
+
+    #expect(identity.displayLabel == "1SAR8")
+    #expect(identity.mappedID == "MINI4PRO")
+}
+
 @Test func operationalMapBearingLineReachesViewportEdgeAtCardinalHeadings() throws {
     let start = MapScreenPoint(x: 50, y: 40)
     let north = try #require(OperationalMapGeometry.bearingLineToViewportEdge(
@@ -2713,6 +2777,54 @@ private func proximityDrone(
     ) == "ATO:--' AGL:--' RNG:1250' HDG:5°")
 }
 
+@Test func operationalAircraftDisplayedPositionStalenessMatchesAndroid() {
+    let receivedAt = Date(timeIntervalSinceReferenceDate: 10_000)
+    #expect(!OperationalAircraftDisplay.isDisplayedPositionStale(
+        lastAcceptedPositionAt: receivedAt,
+        now: receivedAt.addingTimeInterval(4.999)
+    ))
+    #expect(OperationalAircraftDisplay.isDisplayedPositionStale(
+        lastAcceptedPositionAt: receivedAt,
+        now: receivedAt.addingTimeInterval(5)
+    ))
+    #expect(!OperationalAircraftDisplay.isDisplayedPositionStale(
+        lastAcceptedPositionAt: receivedAt.addingTimeInterval(5.001),
+        now: receivedAt.addingTimeInterval(5.001)
+    ))
+    #expect(!OperationalAircraftDisplay.isDisplayedPositionStale(
+        lastAcceptedPositionAt: nil,
+        now: receivedAt
+    ))
+    #expect(OperationalAircraftDisplay.positionIconAlpha(
+        lastAcceptedPositionAt: receivedAt,
+        now: receivedAt.addingTimeInterval(4.999)
+    ) == 1)
+    #expect(OperationalAircraftDisplay.positionIconAlpha(
+        lastAcceptedPositionAt: receivedAt,
+        now: receivedAt.addingTimeInterval(5)
+    ) == 0.5)
+    #expect(OperationalAircraftDisplay.positionIconAlpha(
+        lastAcceptedPositionAt: receivedAt,
+        now: receivedAt.addingTimeInterval(9.999)
+    ) == 0.5)
+    #expect(OperationalAircraftDisplay.positionIconAlpha(
+        lastAcceptedPositionAt: receivedAt,
+        now: receivedAt.addingTimeInterval(10)
+    ) == 0.25)
+    #expect(OperationalAircraftDisplay.positionIconAlpha(
+        lastAcceptedPositionAt: nil,
+        now: receivedAt.addingTimeInterval(10)
+    ) == 1)
+    #expect(OperationalAircraftDisplay.statusLabel(
+        atoFeet: 125.2,
+        aglFeet: 90.4,
+        aglStale: false,
+        rangeFeet: 420,
+        headingDegrees: 273.2,
+        positionStale: true
+    ) == "ATO:125' AGL:90' RNG:420' HDG:273° POS?")
+}
+
 @Test func operationalAircraftStreamHeaderMatchesMapEntriesAndOrder() {
     #expect(OperationalAircraftDisplay.streamHeader(
         designator: "1SAR7Mn4pr",
@@ -2721,7 +2833,7 @@ private func proximityDrone(
         aglStale: false,
         rangeFeet: 420,
         headingDegrees: 273.2
-    ) == "1SAR7Mn4pr  ATO:125' AGL:90' RNG:420' HDG:273°")
+    ) == "1SAR7Mn4pr  ATO:125' AGL:90' RNG:420' TRK:273°")
 }
 
 @Test func operationalAltitudeUsesAtoAndTerrainDeltaLikeAndroid() throws {
@@ -2872,19 +2984,19 @@ private func proximityDrone(
     #expect(upward.altitudeMeters == 400)
 }
 
-@Test func operationalClueProjectionHeightPrefersFreshAglThenFallsBackSafely() throws {
+@Test func operationalClueProjectionHeightPrefersDJISEIThenFallsBackSafely() throws {
     let agl = try #require(OperationalClueGeometry.selectedProjectionHeight(
         freshAGLMeters: 30,
         atoMeters: 25,
         validatedDJIRelativeUpMeters: 24
     ))
-    #expect(agl.meters == 30)
-    #expect(agl.sourceLabel == "fresh AGL")
+    #expect(agl.meters == 24)
+    #expect(agl.sourceLabel == "DJI SEI relative altitude")
 
     let ato = try #require(OperationalClueGeometry.selectedProjectionHeight(
         freshAGLMeters: nil,
         atoMeters: 25,
-        validatedDJIRelativeUpMeters: 24
+        validatedDJIRelativeUpMeters: nil
     ))
     #expect(ato.meters == 25)
     #expect(ato.sourceLabel == "ATO flat-ground fallback")
@@ -2912,7 +3024,7 @@ private func proximityDrone(
         validatedDJIRelativeUpMeters: 24
     ))
     #expect(dji.meters == 24)
-    #expect(dji.sourceLabel.contains("validated DJI"))
+    #expect(dji.sourceLabel == "DJI SEI relative altitude")
 
     #expect(OperationalClueGeometry.selectedProjectionHeight(
         freshAGLMeters: nil,
@@ -2986,6 +3098,35 @@ private func proximityDrone(
     #expect(northMeters < 2_100)
     #expect(projected.terrainProjectionApplied)
     #expect(projected.demResolutionMeters == 1)
+}
+
+@Test func operationalClueProjectionAnchorsSEIRelativeUpAtHomeTerrain() async {
+    let homeLatitude = 39.0
+    let droneLatitude = homeLatitude + (20 / 111_195)
+    let projected = await OperationalClueGeometry.projectWithTerrain(
+        droneLatitude: droneLatitude,
+        droneLongitude: -105,
+        droneAltitudeMeters: 9_999,
+        headingDegrees: 0,
+        aglMeters: 5,
+        gimbalAngleDegrees: -45,
+        terrainReferenceLatitude: homeLatitude,
+        terrainReferenceLongitude: -105,
+        relativeUpMeters: 50,
+        sampleElevationMeters: { latitude, _ in
+            let northMeters = (latitude - homeLatitude) * 111_195
+            return OperationalTerrainSample(
+                elevationMeters: 100 + northMeters * 0.5,
+                source: "usgs-geotiff-local-1m",
+                horizontalResolutionMeters: 1
+            )
+        }
+    )
+    let northFromDrone = (projected.latitude - droneLatitude) * 111_195
+    #expect(northFromDrone > 25)
+    #expect(northFromDrone < 28)
+    #expect(projected.terrainProjectionApplied)
+    #expect((projected.altitudeMeters ?? 9_999) < 200)
 }
 
 @Test func centerpointElevationTapRequiresTheConfiguredCenterRadius() {
@@ -3191,6 +3332,41 @@ private func proximityDrone(
     #expect(try JSONDecoder().decode(CaltopoArtifactSnapshot.self, from: JSONEncoder().encode(snapshot)) == snapshot)
 }
 
+@Test func caltopoArtifactFeatureStoreAppliesFolderRenamesMovesAndDeletes() throws {
+    let initial = try CaltopoArtifactDecoder.decodeChanges(data: Data(#"""
+    {"state":{"features":[
+      {"id":"folder-a","properties":{"class":"Folder","title":"Division A"}},
+      {"id":"folder-b","properties":{"class":"Folder","title":"Division B"}},
+      {"id":"marker-a","geometry":{"type":"Point","coordinates":[-121.1,39.1]},"properties":{"class":"Marker","title":"Clue","folderId":"folder-a"}}
+    ]}}
+    """#.utf8))
+    var store = CaltopoArtifactFeatureStore()
+    store.apply(initial, replacing: true)
+
+    let changed = try CaltopoArtifactDecoder.decodeChanges(data: Data(#"""
+    {"state":{"features":[
+      {"id":"folder-a","properties":{"class":"Folder","title":"Division Alpha"}},
+      {"id":"marker-a","geometry":{"type":"Point","coordinates":[-121.1,39.1]},"properties":{"class":"Marker","title":"Clue","folderId":"folder-b"}}
+    ]}}
+    """#.utf8))
+    store.apply(changed, replacing: false)
+    var snapshot = try store.snapshot()
+    #expect(snapshot.folders.first { $0.id == "folder-a" }?.title == "Division Alpha")
+    #expect(snapshot.items.first { $0.id == "marker-a" }?.folderID == "folder-b")
+
+    let deleted = try CaltopoArtifactDecoder.decodeChanges(data: Data(#"""
+    {"state":{"features":[
+      {"id":"folder-a","deleted":true},
+      {"id":"marker-a","properties":{"action":"delete"}}
+    ]}}
+    """#.utf8))
+    store.apply(deleted, replacing: false)
+    snapshot = try store.snapshot()
+    #expect(!snapshot.folders.contains { $0.id == "folder-a" })
+    #expect(!snapshot.items.contains { $0.id == "marker-a" })
+    #expect(snapshot.folders.contains { $0.id == "folder-b" })
+}
+
 @Test func caltopoArtifactVisibilityOperatorOverridesWinForActiveSession() {
     let resolved = CaltopoArtifactVisibilityPolicy.hiddenFolderIDs(
         localHidden: ["local-hidden", "operator-shown"],
@@ -3363,6 +3539,23 @@ private func proximityDrone(
     #expect(values["id"] == "credential")
     #expect(values["expires"] == "1700000120000")
     #expect(values["signature"]?.isEmpty == false)
+}
+
+@Test func caltopoMapChangesRequestUsesOverlappingSuccessfulCursor() async throws {
+    let client = try CaltopoLiveClient(configuration: CaltopoLiveConfiguration(
+        domainAndPort: "caltopo.com",
+        mapID: "map123",
+        credentialID: "credential",
+        credentialSecretBase64: "c2VjcmV0",
+        connectKey: "NCSSAR-UAS"
+    ))
+    let request = try await client.makeMapChangesRequest(
+        sinceMilliseconds: 123_456,
+        now: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    let components = try #require(request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) })
+    #expect(components.path == "/api/v1/map/map123/since/122956")
+    #expect(request.httpMethod == "GET")
 }
 
 @Test func liveVideoRecoveryDetectsConnectionAndDecodedFrameStalls() {
@@ -4185,6 +4378,7 @@ private func proximityDrone(
         track: track,
         metadata: RidTrackArchiveMetadata(
             mappedID: "ALPHA1",
+            owner: "PILOT7",
             organization: "NCSSAR",
             incident: "Test Incident",
             operationalPeriod: "1",
@@ -4205,9 +4399,10 @@ private func proximityDrone(
     #expect(coordinates[0][1] == "39.739200")
     #expect(coordinates[0][3] == "1700000000000")
     let properties = try #require(feature["properties"] as? [String: Any])
-    #expect(properties["title"] as? String == "ALPHA1")
+    #expect(properties["title"] as? String == "PILOT7")
     let r2c = try #require(properties["r2c_prop"] as? [String: Any])
     #expect(r2c["rid"] as? String == "ARCHIVE01")
+    #expect(r2c["mid"] as? String == "ALPHA1")
     #expect(r2c["org"] as? String == "NCSSAR")
     #expect(r2c["map_id"] as? String == "map-123")
     #expect(r2c["BUILD_VERSION"] as? String == "1.7.0")
@@ -5573,6 +5768,10 @@ private func makeFloatGeoTiff() -> Data {
     return Data(bytes)
 }
 
+private func makeLZWFloatPredictorGeoTiff() -> Data {
+    Data(base64Encoded: "SUkqABoAAACAEIAoVALgAQchgApjIcQcAQENAAABAwABAAAAAgAAAAEBAwABAAAAAgAAAAIBAwABAAAAIAAAAAMBAwABAAAABQAAAAYBAwABAAAAAQAAABEBBAABAAAACAAAABYBAwABAAAAAgAAABcBBAABAAAAEgAAABwBAwABAAAAAQAAAD0BAwABAAAAAwAAAFMBAwABAAAAAwAAAA6DDAADAAAAvAAAAIKEDAAGAAAA1AAAAAAAAAAAAAAAAADwPwAAAAAAAPA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEBawAAAAAAAAERAAAAAAAAAAAA=")!
+}
+
 private func trackObservation(
     id: String,
     at date: Date,
@@ -5957,7 +6156,7 @@ private func writeInt32(_ value: Int32, into bytes: inout [UInt8], at offset: In
     let afterSuccessfulRecovery = CaltopoInterruptedPublicationJournal(fileURL: fileURL)
     #expect(await afterSuccessfulRecovery.entries(mapID: "map-a").isEmpty)
 }
-@Test func appleClueCaptureUsesValidatedSEIContinuationInsteadOfPerReadRIDAnchoring() throws {
+@Test func appleClueCapturePrefersCompleteFreshSEIWithoutRIDAnchoring() throws {
     let appleRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
@@ -5966,10 +6165,15 @@ private func writeInt32(_ value: Int32, into bytes: inout [UInt8], at offset: In
         contentsOf: appleRoot.appendingPathComponent("App/RIDTrackMapView.swift"),
         encoding: .utf8
     )
-    #expect(source.contains("freshValidatedDJIPositionByAircraftID(tracks: model.tracks)"))
+    #expect(source.contains("let frameTelemetry = snapshot.djiCameraTelemetry.flatMap"))
+    #expect(source.contains("let completeSEITelemetry = frameTelemetry.flatMap"))
+    #expect(!source.contains("let freshDjiCameraTelemetry = session.model.freshDJICameraTelemetry()"))
+    #expect(!source.contains("freshValidatedDJIPositionByAircraftID(tracks: model.tracks)"))
     #expect(!source.contains(".anchoredToRID("))
     #expect(source.contains("Camera Azimuth: "))
     #expect(!source.contains("Heading used for clue"))
+    #expect(!source.contains("DJI frame/SEI diagnostics:"))
+    #expect(!source.contains("DJI tag-4 angles:"))
 }
 
 @Test func cluePositionSourcePolicyBlocksSilentRIDFallbackForPositionalSEIStreams() {

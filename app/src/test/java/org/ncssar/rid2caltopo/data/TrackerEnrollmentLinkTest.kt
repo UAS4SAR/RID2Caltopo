@@ -118,8 +118,9 @@ class TrackerEnrollmentLinkTest {
             "apple/App/AppleNetworkAddress.swift",
         ).readText()
 
-        assertTrue(androidActivity.contains("Is this a new \$model?"))
-        assertTrue(androidActivity.contains("No, same tablet"))
+        assertTrue(androidActivity.contains("Is this \${it.deviceName}?"))
+        assertTrue(androidActivity.contains("Yes, same tablet"))
+        assertTrue(androidActivity.contains("No, new tablet"))
         assertTrue(androidActivity.contains("replaceDeviceAuthorization"))
         assertFalse(appleIdentity.contains("replacement-candidates"))
     }

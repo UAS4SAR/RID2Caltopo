@@ -58,14 +58,12 @@ object DroneSpecConfirmationLogic {
     fun shouldPreserveMappedId(
         existingMappedId: String,
         remoteId: String,
-        initialPilotCallsign: String,
-        savedPilotCallsign: String,
-        initialDroneDescription: String,
-        savedDroneDescription: String
+        @Suppress("UNUSED_PARAMETER") initialPilotCallsign: String,
+        @Suppress("UNUSED_PARAMETER") savedPilotCallsign: String,
+        @Suppress("UNUSED_PARAMETER") initialDroneDescription: String,
+        @Suppress("UNUSED_PARAMETER") savedDroneDescription: String
     ): Boolean {
-        if (existingMappedId.isBlank() || existingMappedId == remoteId) return false
-        return initialPilotCallsign.trim() == savedPilotCallsign.trim() &&
-            initialDroneDescription.trim() == savedDroneDescription.trim()
+        return existingMappedId.isNotBlank() && existingMappedId != remoteId
     }
 
     private fun guessPilotCallsign(

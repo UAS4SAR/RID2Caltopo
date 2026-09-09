@@ -155,7 +155,7 @@ fun DroneItem(drone: CtDroneSpec,
                     contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
                 ) {
                     Text(
-                        text = drone.mappedId.ifBlank { "Confirm Drone" },
+                        text = drone.owner.trim().ifBlank { drone.mappedId.ifBlank { "Confirm Drone" } },
                         textAlign = TextAlign.Center,
                         fontSize = 12.sp,
                         maxLines = 1,

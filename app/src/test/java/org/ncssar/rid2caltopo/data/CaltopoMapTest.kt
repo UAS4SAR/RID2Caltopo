@@ -1,6 +1,7 @@
 package org.ncssar.rid2caltopo.data
 
 import org.json.JSONObject
+import org.json.JSONArray
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -39,7 +40,17 @@ class CaltopoMapTest {
     private lateinit var clientStateField: Field
     private lateinit var lastWaypointTimestampField: Field
     private lateinit var appExitRequestedField: Field
+    private lateinit var lastMapSyncField: Field
+    private lateinit var lastFullArtifactSyncField: Field
+    private lateinit var mapRefreshInFlightField: Field
+    private lateinit var mapRefreshPendingField: Field
+    private lateinit var fullMapRefreshPendingField: Field
+    private lateinit var mapRefreshGenerationField: Field
     private lateinit var setMapStatusMethod: Method
+    private lateinit var finishMapRefreshMethod: Method
+    private lateinit var parseMapUpdateMethod: Method
+    private lateinit var reconcileArtifactStoreMethod: Method
+    private lateinit var resetArtifactStoreMethod: Method
 
     private lateinit var originalMapStatus: CaltopoMap.MapStatusListener.mapStatus
     private var originalMapNode: Any? = null
@@ -59,6 +70,12 @@ class CaltopoMapTest {
     private var originalMyLocation: Location? = null
     private var originalLastWaypointTimestamp: Long = 0L
     private var originalAppExitRequested: Boolean = false
+    private var originalLastMapSync: Long = 0L
+    private var originalLastFullArtifactSync: Long = 0L
+    private var originalMapRefreshInFlight: Boolean = false
+    private var originalMapRefreshPending: Boolean = false
+    private var originalFullMapRefreshPending: Boolean = false
+    private var originalMapRefreshGeneration: Long = 0L
 
     @Before
     fun setUp() {
@@ -80,10 +97,36 @@ class CaltopoMapTest {
         clientStateField = CaltopoClient::class.java.getDeclaredField("Ccstate").apply { isAccessible = true }
         lastWaypointTimestampField = CtDroneSpec::class.java.getDeclaredField("MostRecentWaypointTimestampInMsec").apply { isAccessible = true }
         appExitRequestedField = CaltopoClient::class.java.getDeclaredField("AppExitRequested").apply { isAccessible = true }
+        lastMapSyncField = CaltopoMap::class.java.getDeclaredField("LastMapSync").apply { isAccessible = true }
+        lastFullArtifactSyncField = CaltopoMap::class.java.getDeclaredField("LastFullArtifactSync").apply { isAccessible = true }
+        mapRefreshInFlightField = CaltopoMap::class.java.getDeclaredField("MapRefreshInFlight").apply { isAccessible = true }
+        mapRefreshPendingField = CaltopoMap::class.java.getDeclaredField("MapRefreshPending").apply { isAccessible = true }
+        fullMapRefreshPendingField = CaltopoMap::class.java.getDeclaredField("FullMapRefreshPending").apply { isAccessible = true }
+        mapRefreshGenerationField = CaltopoMap::class.java.getDeclaredField("MapRefreshGeneration").apply { isAccessible = true }
         setMapStatusMethod = CaltopoMap::class.java.getDeclaredMethod(
             "SetMapStatus",
             CaltopoMap.MapStatusListener.mapStatus::class.java,
             String::class.java
+        ).apply { isAccessible = true }
+        parseMapUpdateMethod = CaltopoMap::class.java.getDeclaredMethod(
+            "ParseMapUpdate",
+            JSONObject::class.java
+        ).apply { isAccessible = true }
+        reconcileArtifactStoreMethod = CaltopoMap::class.java.getDeclaredMethod(
+            "ReconcileArtifactStore",
+            JSONObject::class.java,
+            String::class.java
+        ).apply { isAccessible = true }
+        resetArtifactStoreMethod = CaltopoMap::class.java.getDeclaredMethod(
+            "resetArtifactStore",
+            String::class.java
+        ).apply { isAccessible = true }
+        finishMapRefreshMethod = CaltopoMap::class.java.getDeclaredMethod(
+            "FinishMapRefresh",
+            Boolean::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType,
+            Long::class.javaPrimitiveType,
+            Long::class.javaPrimitiveType
         ).apply { isAccessible = true }
 
         originalMapStatus = mapStatusField.get(null) as CaltopoMap.MapStatusListener.mapStatus
@@ -105,6 +148,12 @@ class CaltopoMapTest {
         originalMyLocation = CaltopoMap.MyLocation
         originalLastWaypointTimestamp = lastWaypointTimestampField.getLong(null)
         originalAppExitRequested = appExitRequestedField.getBoolean(null)
+        originalLastMapSync = lastMapSyncField.getLong(null)
+        originalLastFullArtifactSync = lastFullArtifactSyncField.getLong(null)
+        originalMapRefreshInFlight = mapRefreshInFlightField.getBoolean(null)
+        originalMapRefreshPending = mapRefreshPendingField.getBoolean(null)
+        originalFullMapRefreshPending = fullMapRefreshPendingField.getBoolean(null)
+        originalMapRefreshGeneration = mapRefreshGenerationField.getLong(null)
 
         mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.up)
         mapNodeField.set(null, CaltopoNode.MapNode("map-test", "Map Test", 0L))
@@ -119,6 +168,13 @@ class CaltopoMapTest {
         standaloneStartedField.setBoolean(null, false)
         standaloneEnabledForActiveFlightsField.set(null, null)
         appExitRequestedField.setBoolean(null, false)
+        lastMapSyncField.setLong(null, 0L)
+        lastFullArtifactSyncField.setLong(null, 0L)
+        mapRefreshInFlightField.setBoolean(null, false)
+        mapRefreshPendingField.setBoolean(null, false)
+        fullMapRefreshPendingField.setBoolean(null, false)
+        mapRefreshGenerationField.setLong(null, 1L)
+        resetArtifactStoreMethod.invoke(null, "CaltopoMapTest.setUp")
         MapOfflinePrepRuntime.resetForTesting()
         CaltopoMap.resetAutoQuitRelocationForTesting()
     }
@@ -142,6 +198,13 @@ class CaltopoMapTest {
         CaltopoClient.SetTrackerUrlPfx(originalTrackerUrlPfx)
         lastWaypointTimestampField.setLong(null, originalLastWaypointTimestamp)
         appExitRequestedField.setBoolean(null, originalAppExitRequested)
+        lastMapSyncField.setLong(null, originalLastMapSync)
+        lastFullArtifactSyncField.setLong(null, originalLastFullArtifactSync)
+        mapRefreshInFlightField.setBoolean(null, originalMapRefreshInFlight)
+        mapRefreshPendingField.setBoolean(null, originalMapRefreshPending)
+        fullMapRefreshPendingField.setBoolean(null, originalFullMapRefreshPending)
+        mapRefreshGenerationField.setLong(null, originalMapRefreshGeneration)
+        resetArtifactStoreMethod.invoke(null, "CaltopoMapTest.tearDown")
         MapOfflinePrepRuntime.resetForTesting()
         CaltopoMap.resetAutoQuitRelocationForTesting()
         clientStateField.set(null, originalClientState)
@@ -169,7 +232,9 @@ class CaltopoMapTest {
     }
 
     @Test
-    fun archiveFeature_refreshesMapUpdatesAfterArchiveEditSucceeds() {
+    fun archiveFeature_requestsIncrementalMapRefreshAfterLiveTrackDeleteFinishes() {
+        lastMapSyncField.setLong(null, 12_345L)
+        lastFullArtifactSyncField.setLong(null, System.currentTimeMillis())
         val feature = JSONObject()
             .put("id", "track-archive-refresh")
             .put(
@@ -180,13 +245,91 @@ class CaltopoMapTest {
                     .put("folderId", "folder-test")
             )
 
-        CaltopoMap.ArchiveFeature(feature, "Shape", 1_000L, 0L)
+        CaltopoMap.ArchiveFeature(feature, "LiveTrack", 1_000L, 0L)
 
         val operations = fixture.calTopoSessionGateway.snapshotOperations()
         val editIndex = operations.indexOfFirst { it.kind == "editObject" }
+        val deleteIndex = operations.indexOfFirst { it.kind == "deleteLiveTrack" }
         val refreshIndex = operations.indexOfFirst { it.kind == "openMap" }
         assertTrue(operations.toString(), editIndex >= 0)
-        assertTrue(operations.toString(), refreshIndex > editIndex)
+        assertTrue(operations.toString(), deleteIndex > editIndex)
+        assertTrue(operations.toString(), refreshIndex > deleteIndex)
+        assertEquals(12_345L, operations[refreshIndex].payload?.optLong("lastSyncTimestamp"))
+    }
+
+    @Test
+    fun artifactDeltasRenameMoveAndDeleteWithoutReloadingTheMap() {
+        val initialState = JSONObject().put(
+            "features",
+            JSONArray()
+                .put(JSONObject().put("id", "folder-a").put(
+                    "properties",
+                    JSONObject().put("class", "Folder").put("title", "Division A")
+                ))
+                .put(JSONObject().put("id", "marker-a").put(
+                    "geometry",
+                    JSONObject().put("type", "Point").put("coordinates", JSONArray().put(-121.1).put(39.1))
+                ).put(
+                    "properties",
+                    JSONObject().put("class", "Marker").put("title", "Clue").put("folderId", "folder-a")
+                ))
+        )
+        parseMapUpdateMethod.invoke(null, initialState)
+
+        val changedState = JSONObject().put(
+            "features",
+            JSONArray()
+                .put(JSONObject().put("id", "folder-a").put(
+                    "properties",
+                    JSONObject().put("class", "Folder").put("title", "Division Alpha")
+                ))
+                .put(JSONObject().put("id", "folder-b").put(
+                    "properties",
+                    JSONObject().put("class", "Folder").put("title", "Division B")
+                ))
+                .put(JSONObject().put("id", "marker-a").put(
+                    "geometry",
+                    JSONObject().put("type", "Point").put("coordinates", JSONArray().put(-121.1).put(39.1))
+                ).put(
+                    "properties",
+                    JSONObject().put("class", "Marker").put("title", "Clue").put("folderId", "folder-b")
+                ))
+        )
+        parseMapUpdateMethod.invoke(null, changedState)
+
+        val changedFeatures = CaltopoMap.GetArtifactFeatureSnapshot().associateBy { it.getString("id") }
+        assertEquals("Division Alpha", changedFeatures.getValue("folder-a").getJSONObject("properties").getString("title"))
+        assertEquals("folder-b", changedFeatures.getValue("marker-a").getJSONObject("properties").getString("folderId"))
+
+        parseMapUpdateMethod.invoke(
+            null,
+            JSONObject().put("features", JSONArray().put(JSONObject().put("id", "folder-a").put("deleted", true)))
+        )
+        assertFalse(CaltopoMap.GetArtifactFeatureSnapshot().any { it.optString("id") == "folder-a" })
+
+        reconcileArtifactStoreMethod.invoke(
+            null,
+            JSONObject().put("features", JSONArray().put(changedFeatures.getValue("folder-b"))),
+            "test-reconcile"
+        )
+        val reconciledIds = CaltopoMap.GetArtifactFeatureSnapshot().map { it.getString("id") }.toSet()
+        assertEquals(setOf("folder-b"), reconciledIds)
+    }
+
+    @Test
+    fun failedArtifactRefreshDoesNotAdvanceTheSuccessfulCursor() {
+        shutdownInProgressField.setBoolean(null, true)
+        lastMapSyncField.setLong(null, 12_345L)
+        mapRefreshInFlightField.setBoolean(null, true)
+
+        finishMapRefreshMethod.invoke(null, false, false, 20_000L, 1L)
+
+        assertEquals(12_345L, lastMapSyncField.getLong(null))
+        assertFalse(mapRefreshInFlightField.getBoolean(null))
+
+        mapRefreshInFlightField.setBoolean(null, true)
+        finishMapRefreshMethod.invoke(null, true, false, 20_000L, 1L)
+        assertEquals(20_000L, lastMapSyncField.getLong(null))
     }
 
     @Test

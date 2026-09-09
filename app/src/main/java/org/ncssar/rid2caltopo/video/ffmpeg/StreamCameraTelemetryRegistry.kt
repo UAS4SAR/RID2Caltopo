@@ -45,12 +45,15 @@ internal fun shouldBlockRidClueFallback(
 
 object StreamCameraTelemetryRegistry {
     const val DEFAULT_MAX_AGE_MS = 3_000L
+    private const val MAX_FRAME_TELEMETRY_DELTA_US = 250_000L
+    private const val HISTORY_LIMIT = 120
     private const val EARTH_RADIUS_METERS = 6_378_137.0
     private const val MAX_RID_ANCHOR_RESIDUAL_METERS = 30.0
     private const val MAX_RID_VERTICAL_RESIDUAL_METERS = 20.0
     private const val COURSE_BASELINE_METERS = 3.0
     private val lock = Any()
     private val samples = mutableMapOf<String, StreamCameraTelemetrySample>()
+    private val sampleHistory = mutableMapOf<String, MutableList<StreamCameraTelemetrySample>>()
     private val courseStates = mutableMapOf<String, CourseState>()
     private val positionValidated = mutableSetOf<String>()
     private val relativeUpValidated = mutableSetOf<String>()
@@ -108,6 +111,7 @@ object StreamCameraTelemetryRegistry {
                     if (sourceRestarted) {
                         positionValidated.remove(key)
                         relativeUpValidated.remove(key)
+                        sampleHistory.remove(key)
                     }
                     CourseState(northMm, eastMm, telemetry.sourceTimestampUs).also {
                         courseStates[key] = it
@@ -128,7 +132,7 @@ object StreamCameraTelemetryRegistry {
             val aircraftLongitude = if (referenceLatitude != null && referenceLongitude != null && eastMeters != null) {
                 referenceLongitude + Math.toDegrees(eastMeters / (EARTH_RADIUS_METERS * cos(Math.toRadians(referenceLatitude))))
             } else null
-            samples[key] = StreamCameraTelemetrySample(
+            val sample = StreamCameraTelemetrySample(
                 azimuthDeg = controllerAzimuth,
                 courseDeg = courseState?.courseDeg,
                 tiltDeg = tilt,
@@ -154,6 +158,13 @@ object StreamCameraTelemetryRegistry {
                     ?: List(9) { Double.NaN },
                 fovAzimuthDeg = controllerAzimuth,
             )
+            samples[key] = sample
+            sample.sourceTimestampUs?.let { timestampUs ->
+                val history = sampleHistory.getOrPut(key) { mutableListOf() }
+                history.removeAll { it.sourceTimestampUs == timestampUs }
+                history += sample
+                while (history.size > HISTORY_LIMIT) history.removeAt(0)
+            }
         }
     }
 
@@ -165,6 +176,29 @@ object StreamCameraTelemetryRegistry {
         samples[designator.trim().uppercase()]?.takeIf {
             nowMs >= it.receivedAtMs && nowMs - it.receivedAtMs <= maxAgeMs
         }
+    }
+
+    /** Selects telemetry carried by the rendered frame instead of a later registry update. */
+    fun freshForFrame(
+        designator: String,
+        frameTimestampUs: Long?,
+        nowMs: Long = System.currentTimeMillis(),
+        maxAgeMs: Long = DEFAULT_MAX_AGE_MS,
+    ): StreamCameraTelemetrySample? = synchronized(lock) {
+        val key = designator.trim().uppercase()
+        if (frameTimestampUs == null || frameTimestampUs <= 0L) {
+            return@synchronized samples[key]?.takeIf {
+                nowMs >= it.receivedAtMs && nowMs - it.receivedAtMs <= maxAgeMs
+            }
+        }
+        sampleHistory[key]
+            ?.asSequence()
+            ?.filter { nowMs >= it.receivedAtMs && nowMs - it.receivedAtMs <= maxAgeMs }
+            ?.minByOrNull { kotlin.math.abs(checkNotNull(it.sourceTimestampUs) - frameTimestampUs) }
+            ?.takeIf {
+                kotlin.math.abs(checkNotNull(it.sourceTimestampUs) - frameTimestampUs) <=
+                    MAX_FRAME_TELEMETRY_DELTA_US
+            }
     }
 
     fun lastReceivedAtMs(designator: String): Long = synchronized(lock) {
@@ -233,6 +267,7 @@ object StreamCameraTelemetryRegistry {
         synchronized(lock) {
             val key = designator.trim().uppercase()
             samples.remove(key)
+            sampleHistory.remove(key)
             courseStates.remove(key)
             positionValidated.remove(key)
             relativeUpValidated.remove(key)

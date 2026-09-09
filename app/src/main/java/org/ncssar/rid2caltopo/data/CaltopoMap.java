@@ -113,6 +113,8 @@ public class CaltopoMap {
     private static android.location.Location MyLocationOverride;
     private static long FirstMapUpdateTimeInSeconds = 15;
     private static long RepeatMapUpdateTimeInSeconds = 90;
+    private static final long FOREGROUND_MAP_UPDATE_TIME_IN_SECONDS = 15;
+    private static final long FULL_ARTIFACT_RECONCILE_INTERVAL_MS = 15L * 60L * 1000L;
     public static final CtLineProperty ArchiveLineProp =
             new CtLineProperty(2, 0.5F, "#ff00ff", "solid");
     private static final int MAX_MAP_STARTUP_DELAY_IN_SECONDS = 45;
@@ -157,6 +159,14 @@ public class CaltopoMap {
     // A developer-only "Disable MQTT" toggle in Settings can suppress it via
     // CaltopoClient.GetUsePeersFlag() — that flag is read live, not cached.
     private static long LastMapSync;
+    private static final Object MapRefreshLock = new Object();
+    private static boolean MapRefreshInFlight;
+    private static boolean MapRefreshPending;
+    private static boolean FullMapRefreshPending;
+    private static int MapArtifactForegroundConsumers;
+    private static long LastFullArtifactSync;
+    private static long MapRefreshGeneration;
+    private static final ArrayList<Runnable> FullMapRefreshCallbacks = new ArrayList<>();
 
     // liveTracks that we are writing into the map keyed by their map ID:
     private static final Hashtable<String, CaltopoLiveTrack> LiveTracksById = new Hashtable<>();
@@ -511,8 +521,13 @@ public class CaltopoMap {
         SetMapStatus(MapStatusListener.mapStatus.connecting, null);
         try {
             CTDebug(TAG, String.format(Locale.US, "Connecting to map '%s'(%s)'", MapNode.getTitle(), MapNode.getId()));
+            long requestStartedAtMs = timeSource.now();
+            long refreshGeneration;
+            synchronized (MapRefreshLock) {
+                refreshGeneration = MapRefreshGeneration;
+            }
             getCurrentRuntime().getCalTopoSessionGateway()
-                    .openMap(MapNode, 0, CaltopoMap::OpenMapFinished);
+                    .openMap(MapNode, 0, op -> OpenMapFinished(op, requestStartedAtMs, refreshGeneration));
 
         } catch (Exception e) {
             String emsg = "OpenMap(): CaltopoSession.OpenMap() barfed";
@@ -585,14 +600,8 @@ public class CaltopoMap {
 
     public static void RequestMapRefreshNow() {
         if (MapNode == null) return;
-        boolean restartPeriodicUpdates = MapCheckerDelay.stop();
+        MapCheckerDelay.stop();
         PollMapUpdates();
-        if (restartPeriodicUpdates && !ShutdownInProgress && MapNode != null) {
-            MapCheckerDelay.start(
-                    CaltopoMap::PollMapUpdates,
-                    RepeatMapUpdateTimeInSeconds * 1000,
-                    RepeatMapUpdateTimeInSeconds * 1000);
-        }
     }
 
     public static void ReloadMapArtifactsNow(@Nullable Runnable onComplete) {
@@ -601,10 +610,30 @@ public class CaltopoMap {
             return;
         }
         CTInfo(TAG, String.format(Locale.US,
-                "ReloadMapArtifactsNow(): reloading full artifact snapshot for map '%s'.",
+                "ReloadMapArtifactsNow(): scheduling full artifact reconciliation for map '%s'.",
                 GetMapId()));
-        getCurrentRuntime().getCalTopoSessionGateway()
-                .openMap(MapNode, 0, op -> ReloadMapArtifactsFinished(op, onComplete));
+        synchronized (MapRefreshLock) {
+            FullMapRefreshPending = true;
+            if (onComplete != null) FullMapRefreshCallbacks.add(onComplete);
+        }
+        RequestMapRefreshNow();
+    }
+
+    public static void SetMapArtifactForegroundVisible(boolean visible) {
+        synchronized (MapRefreshLock) {
+            if (visible) {
+                MapArtifactForegroundConsumers++;
+            } else if (MapArtifactForegroundConsumers > 0) {
+                MapArtifactForegroundConsumers--;
+            }
+        }
+        if (MapNode == null || ShutdownInProgress) return;
+        MapCheckerDelay.stop();
+        if (visible) {
+            RequestMapRefreshNow();
+        } else {
+            ScheduleNextMapUpdate();
+        }
     }
 
     public static void AddLiveTrack(@NonNull CaltopoLiveTrack track) {
@@ -731,6 +760,15 @@ public class CaltopoMap {
         }
         DisconnectInProgress = true;
         MapCheckerDelay.stop();
+        synchronized (MapRefreshLock) {
+            MapRefreshGeneration++;
+            MapRefreshInFlight = false;
+            MapRefreshPending = false;
+            FullMapRefreshPending = false;
+            FullMapRefreshCallbacks.clear();
+            LastMapSync = 0L;
+            LastFullArtifactSync = 0L;
+        }
         InitialMarkerPublishDelay.stop();
         InitialMarkerPublishPending = false;
         InitialMarkerWaitStartedMs = 0L;
@@ -883,6 +921,43 @@ public class CaltopoMap {
         }
     }
 
+    private static void ReconcileArtifactStore(@NonNull JSONObject state, @NonNull String source)
+            throws JSONException {
+        JSONArray features = state.optJSONArray("features");
+        if (features == null) features = new JSONArray();
+
+        HashSet<String> previousIds;
+        synchronized (ArtifactLock) {
+            previousIds = new HashSet<>(ArtifactFeaturesById.keySet());
+        }
+        HashSet<String> incomingIds = new HashSet<>();
+        ArrayList<JSONObject> incomingFeatures = new ArrayList<>();
+        for (int i = 0; i < features.length(); i++) {
+            JSONObject feature = features.optJSONObject(i);
+            if (feature == null) continue;
+            String featureId = feature.optString("id", "");
+            if (featureId.isEmpty()) continue;
+            incomingFeatures.add(feature);
+            if (!isArtifactDelete(feature)) incomingIds.add(featureId);
+        }
+
+        int removedCount = 0;
+        for (String removedId : previousIds) {
+            if (incomingIds.contains(removedId)) continue;
+            notifyArtifactFeature(
+                    new JSONObject().put("id", removedId).put("deleted", true),
+                    source);
+            removedCount++;
+        }
+        for (JSONObject feature : incomingFeatures) {
+            notifyArtifactFeature(feature, source);
+        }
+        CTInfo(TAG, String.format(Locale.US,
+                "ReconcileArtifactStore(): source=%s incoming=%d removed=%d cached=%d",
+                source, incomingIds.size(), removedCount,
+                GetArtifactFeatureSnapshot().size()));
+    }
+
     /* Parse the feature set returned by the openMap()
      * to look for our track directory and it's companion archive dir.
      * Also make a list of all other LiveTracks that might be leftover old
@@ -978,16 +1053,46 @@ public class CaltopoMap {
             CTDebug(TAG, "PollMapUpdates(): skipping due to shutdown or no map.");
             return;
         }
-        // Our marker feature s/b/ valid at this point, so start polling for updates...
-        CTInfo(TAG, "PollMapUpdates(): updating map connection()");
-        long mapSync = System.currentTimeMillis();
-        getCurrentRuntime().getCalTopoSessionGateway()
-                .openMap(MapNode, LastMapSync, CaltopoMap::UpdateMapFinished);
-        LastMapSync = mapSync;
+        final long requestStartedAtMs = timeSource.now();
+        final long requestCursor;
+        final boolean fullReconcile;
+        final long refreshGeneration;
+        final CaltopoNode.MapNode requestMapNode = MapNode;
+        synchronized (MapRefreshLock) {
+            if (MapRefreshInFlight) {
+                MapRefreshPending = true;
+                return;
+            }
+            MapRefreshInFlight = true;
+            MapRefreshPending = false;
+            refreshGeneration = MapRefreshGeneration;
+            fullReconcile = FullMapRefreshPending || LastFullArtifactSync == 0L ||
+                    requestStartedAtMs - LastFullArtifactSync >= FULL_ARTIFACT_RECONCILE_INTERVAL_MS;
+            if (fullReconcile) FullMapRefreshPending = false;
+            requestCursor = fullReconcile ? 0L : LastMapSync;
+        }
+        CTInfo(TAG, String.format(Locale.US,
+                "PollMapUpdates(): requesting %s map artifacts since %d.",
+                fullReconcile ? "full" : "incremental", requestCursor));
+        try {
+            getCurrentRuntime().getCalTopoSessionGateway().openMap(
+                    requestMapNode,
+                    requestCursor,
+                    op -> UpdateMapFinished(
+                            op, requestStartedAtMs, fullReconcile, refreshGeneration, requestMapNode.getId()));
+        } catch (Exception e) {
+            CTError(TAG, "PollMapUpdates(): openMap() raised.", e);
+            FinishMapRefresh(false, fullReconcile, requestStartedAtMs, refreshGeneration);
+        }
     }
 
-    private static void UpdateMapFinished(CaltopoOp updateMapOp) {
-        if (ShutdownInProgress) {
+    private static void UpdateMapFinished(CaltopoOp updateMapOp,
+                                          long requestStartedAtMs,
+                                          boolean fullReconcile,
+                                          long refreshGeneration,
+                                          @NonNull String requestMapId) {
+        if (ShutdownInProgress || refreshGeneration != MapRefreshGeneration || MapNode == null ||
+                !requestMapId.equals(MapNode.getId())) {
             CTDebug(TAG, "updateMapFinished(): ignoring callback during shutdown.");
             return;
         }
@@ -995,7 +1100,8 @@ public class CaltopoMap {
         if (updateMapOp == null || updateMapOp.fail()) {
             CTError(TAG, String.format(Locale.US, "Not able to update map '%s':\n  %s",
                     GetMapId(), updateMapOp));
-            return;  // keep timer running; next poll will retry
+            FinishMapRefresh(false, fullReconcile, requestStartedAtMs, refreshGeneration);
+            return;
         }
         recordCaltopoSessionRtt(updateMapOp, "updateMap");
 
@@ -1003,53 +1109,79 @@ public class CaltopoMap {
             CTInfo(TAG, "updateMapFinished() dumping map updates to logfile...");
             CTInfo(TAG, updateMapOp.responseString());
         }
-        if (null != updateMapOp.responseJson) {
-            JSONObject stateObj = updateMapOp.responseJson.optJSONObject("state");
-            if (null != stateObj) try {
-                ParseMapUpdate(stateObj);
-            } catch (Exception e) {
-                CTError(TAG, "updateMapFinished(): parseMapUpdate() raised. ", e);
-            }
+        JSONObject stateObj = updateMapOp.responseJson != null
+                ? updateMapOp.responseJson.optJSONObject("state")
+                : null;
+        if (stateObj == null) {
+            CTError(TAG, "updateMapFinished(): response missing map state.");
+            FinishMapRefresh(false, fullReconcile, requestStartedAtMs, refreshGeneration);
+            return;
+        }
+        try {
+                if (fullReconcile) {
+                    ReconcileArtifactStore(stateObj, "reconcile");
+                } else {
+                    ParseMapUpdate(stateObj);
+                }
+        } catch (Exception e) {
+            CTError(TAG, "updateMapFinished(): map artifact parse raised. ", e);
+            FinishMapRefresh(false, fullReconcile, requestStartedAtMs, refreshGeneration);
+            return;
         }
 
         if (!InitialMarkerPublishPending && !DisconnectInProgress) {
             publishMyDeviceMarkerIfPossible(GetMyLocation());
         }
         SetMapStatus(MapStatusListener.mapStatus.up, null);
+        FinishMapRefresh(true, fullReconcile, requestStartedAtMs, refreshGeneration);
     }
 
-    private static void ReloadMapArtifactsFinished(@Nullable CaltopoOp openMapOp,
-                                                   @Nullable Runnable onComplete) {
-        if (ShutdownInProgress) {
-            CTDebug(TAG, "ReloadMapArtifactsFinished(): ignoring callback during shutdown.");
-            return;
-        }
-        if (openMapOp == null || openMapOp.fail()) {
-            CTError(TAG, String.format(Locale.US,
-                    "ReloadMapArtifactsFinished(): not able to reload map '%s':\n  %s",
-                    GetMapId(), openMapOp));
-            ShowToast("Map reload failed.");
-            return;
-        }
-        recordCaltopoSessionRtt(openMapOp, "reloadMap");
-
-        JSONObject responseJson = openMapOp.responseJson;
-        JSONObject state = (responseJson != null) ? responseJson.optJSONObject("state") : null;
-        if (state == null) {
-            CTError(TAG, "ReloadMapArtifactsFinished(): state missing from response.");
-            ShowToast("Map reload failed.");
-            return;
-        }
-        try {
-            ParseMap(state);
-            SetMapStatus(MapStatusListener.mapStatus.up, null);
-            if (onComplete != null) {
-                onComplete.run();
+    private static void FinishMapRefresh(boolean success,
+                                         boolean fullReconcile,
+                                         long requestStartedAtMs,
+                                         long refreshGeneration) {
+        ArrayList<Runnable> completedCallbacks = new ArrayList<>();
+        boolean runAgain;
+        synchronized (MapRefreshLock) {
+            if (refreshGeneration != MapRefreshGeneration) return;
+            if (success) {
+                LastMapSync = Math.max(LastMapSync, requestStartedAtMs);
+                if (fullReconcile) {
+                    LastFullArtifactSync = requestStartedAtMs;
+                    completedCallbacks.addAll(FullMapRefreshCallbacks);
+                    FullMapRefreshCallbacks.clear();
+                }
+            } else if (fullReconcile && !FullMapRefreshCallbacks.isEmpty()) {
+                FullMapRefreshPending = true;
             }
-        } catch (Exception e) {
-            CTError(TAG, "ReloadMapArtifactsFinished(): parseMap() raised:", e);
-            ShowToast("Map reload failed.");
+            MapRefreshInFlight = false;
+            runAgain = MapRefreshPending || FullMapRefreshPending;
+            MapRefreshPending = false;
         }
+        for (Runnable callback : completedCallbacks) {
+            try {
+                callback.run();
+            } catch (Exception e) {
+                CTError(TAG, "FinishMapRefresh() callback raised.", e);
+            }
+        }
+        if (ShutdownInProgress || MapNode == null) return;
+        if (runAgain) {
+            DelayedExec.RunAfterDelayInMsec(CaltopoMap::PollMapUpdates, 0L);
+        } else {
+            ScheduleNextMapUpdate();
+        }
+    }
+
+    private static void ScheduleNextMapUpdate() {
+        if (ShutdownInProgress || MapNode == null) return;
+        long delaySeconds;
+        synchronized (MapRefreshLock) {
+            delaySeconds = MapArtifactForegroundConsumers > 0
+                    ? FOREGROUND_MAP_UPDATE_TIME_IN_SECONDS
+                    : RepeatMapUpdateTimeInSeconds;
+        }
+        MapCheckerDelay.start(CaltopoMap::PollMapUpdates, delaySeconds * 1000L, 0L);
     }
 
     private static void PhotoMarkerTimeout() {
@@ -1178,8 +1310,10 @@ public class CaltopoMap {
      * when the app was terminated mid-record).
      * o Create TrackDir and ArchiveDir if they weren't already present.
      */
-    private static void OpenMapFinished(CaltopoOp lOpenMapOp) {
-        if (null == MapNode) return;
+    private static void OpenMapFinished(CaltopoOp lOpenMapOp,
+                                        long requestStartedAtMs,
+                                        long refreshGeneration) {
+        if (null == MapNode || refreshGeneration != MapRefreshGeneration) return;
         if (lOpenMapOp.fail()) {
             if (null != lOpenMapOp.response && lOpenMapOp.response.startsWith("<!DOCTYPE html>")) {
                 // Not going to figure this out on our own - write response to a file and open it with a browser:
@@ -1200,14 +1334,17 @@ public class CaltopoMap {
             CTError(TAG, "OpenMapFinished(): state missing from response: " + lOpenMapOp.response );
         } else try {
             ParseMap(state);
+            synchronized (MapRefreshLock) {
+                LastMapSync = Math.max(LastMapSync, requestStartedAtMs);
+                LastFullArtifactSync = requestStartedAtMs;
+            }
         } catch (Exception e) {
             CTError(TAG, "OpenMapFinished(): parseMap() raised:", e);
         }
         if (!MapCheckerDelay.isRunning()) {
             CTDebug(TAG, "openMapFinished(): starting map checker delay...");
-            MapCheckerDelay.start(
-                    CaltopoMap::PollMapUpdates, FirstMapUpdateTimeInSeconds * 1000,
-                    RepeatMapUpdateTimeInSeconds * 1000);
+            MapCheckerDelay.start(CaltopoMap::PollMapUpdates,
+                    FirstMapUpdateTimeInSeconds * 1000L, 0L);
         }
     }
 
@@ -1617,6 +1754,7 @@ public class CaltopoMap {
                             return;
                         }
                         if (!featureClass.equals("LiveTrack")) {
+                            refreshArtifactsAfterArchiveFinished(trackId, true);
                             if (onComplete != null) onComplete.accept(true);
                             return;
                         }
@@ -1626,6 +1764,8 @@ public class CaltopoMap {
                                     CTInfo(TAG, String.format(Locale.US,
                                             "archiveFeature(): delete liveTrackId=%s success=%s responseCode=%d",
                                             trackId, finishedDeleteOp.success(), finishedDeleteOp.responseCode));
+                                    refreshArtifactsAfterArchiveFinished(
+                                            trackId, finishedDeleteOp.success());
                                     if (onComplete != null) onComplete.accept(finishedDeleteOp.success());
                                 }, 400, 404));
                     });
@@ -1648,8 +1788,12 @@ public class CaltopoMap {
                 "archiveFeature(): edit trackId=%s success=%s responseCode=%d",
                 trackId, archiveOp.success(), archiveOp.responseCode));
         if (!archiveOp.success()) return;
+    }
+
+    private static void refreshArtifactsAfterArchiveFinished(@NonNull String trackId, boolean success) {
         CTInfo(TAG, String.format(Locale.US,
-                "archiveFeature(): requesting map update after archiving trackId=%s", trackId));
+                "archiveFeature(): requesting incremental artifact refresh after trackId=%s success=%s",
+                trackId, success));
         RequestMapRefreshNow();
     }
 

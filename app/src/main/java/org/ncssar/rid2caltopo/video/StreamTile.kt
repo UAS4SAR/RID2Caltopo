@@ -121,7 +121,7 @@ internal fun streamTelemetryHeaderText(
         aglStale = displayState?.aglStale == true,
         rangeFeet = displayState?.rangeFt,
         headingDeg = cameraAzimuthDeg ?: displayState?.headingDeg,
-        headingLabel = if (cameraAzimuthDeg != null) "CAM" else "HDG",
+        headingLabel = if (cameraAzimuthDeg != null) "CAM" else "TRK",
     )
 
 internal fun isNearStreamCenter(

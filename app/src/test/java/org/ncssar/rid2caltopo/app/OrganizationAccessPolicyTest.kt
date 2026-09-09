@@ -94,6 +94,22 @@ class OrganizationAccessPolicyTest {
     }
 
     @Test
+    fun screenLockHandoffSurvivesWhenActivityStopsBeforeScreenOffBroadcast() {
+        val session = OrganizationAccessSession()
+        session.markAuthenticated()
+
+        assertFalse(
+            session.activityStopped(
+                isChangingConfigurations = false,
+                screenOffElapsedRealtimeMs = 1_000L,
+            )
+        )
+        assertTrue(session.isAwaitingSystemUnlock())
+        assertTrue(session.authenticateFromUserPresent())
+        assertTrue(session.isAuthenticated())
+    }
+
+    @Test
     fun screenLockInvalidatesAuthenticationWhileRetainingPickerCompletion() {
         val session = OrganizationAccessSession()
         session.markAuthenticated()
@@ -112,6 +128,7 @@ class OrganizationAccessPolicyTest {
         session.markAuthenticated()
         session.invalidateForScreenLock(screenOffElapsedRealtimeMs = 1_000L)
 
+        assertTrue(session.isAwaitingSystemUnlock())
         assertTrue(
             session.authenticateFromSystemUnlock(
                 authenticationElapsedRealtimeMs = 1_100L,
@@ -119,6 +136,7 @@ class OrganizationAccessPolicyTest {
             )
         )
         assertTrue(session.isAuthenticated())
+        assertFalse(session.isAwaitingSystemUnlock())
     }
 
     @Test
@@ -140,8 +158,10 @@ class OrganizationAccessPolicyTest {
         session.markAuthenticated()
         session.invalidateForScreenLock(screenOffElapsedRealtimeMs = 1_000L)
 
+        assertTrue(session.isAwaitingSystemUnlock())
         assertTrue(session.authenticateFromUserPresent())
         assertTrue(session.isAuthenticated())
+        assertFalse(session.isAwaitingSystemUnlock())
         assertFalse(session.authenticateFromUserPresent())
     }
 

@@ -597,9 +597,8 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                 initialDroneDescription = current.initialDroneDescription,
                 savedDroneDescription = droneDescription
             )) {
-            // Preserve an explicit stream-to-drone mapping made via long-press instead of
-            // regenerating the mappedId from the confirmation fields when the operator
-            // has not changed the callsign/description shown in the confirmation panel.
+            // Pilot callsign and description are presentation fields. Preserve the explicit
+            // stream routing designator even when either field changes.
             existingMappedId
         } else {
             CtDroneSpec.BuildMappedId(callsign, droneDescription, remoteId)

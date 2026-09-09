@@ -134,6 +134,9 @@ data class PendingClue(
     val atoMeters: Double?,
     val projectionHeightMeters: Double? = null,
     val projectionHeightSourceLabel: String? = null,
+    val terrainReferenceLatitude: Double? = null,
+    val terrainReferenceLongitude: Double? = null,
+    val seiRelativeUpMeters: Double? = null,
     val gimbalAngleDeg: Double,
     val timestamp: Long,
     val bitmap: Bitmap?,
@@ -162,14 +165,14 @@ internal fun selectClueProjectionHeight(
     fun validHeight(value: Double?): Double? = value?.takeIf {
         it.isFinite() && it > 0.0 && it <= 10_000.0
     }
+    validHeight(validatedDjiRelativeUpMeters)?.let {
+        return ClueProjectionHeightSelection(it, "DJI SEI relative altitude")
+    }
     validHeight(freshAglMeters)?.let {
         return ClueProjectionHeightSelection(it, "fresh AGL")
     }
     validHeight(atoMeters)?.let {
         return ClueProjectionHeightSelection(it, "ATO flat-ground fallback")
-    }
-    validHeight(validatedDjiRelativeUpMeters)?.let {
-        return ClueProjectionHeightSelection(it, "validated DJI relative altitude flat-ground fallback")
     }
     return null
 }
@@ -645,6 +648,9 @@ internal suspend fun projectClueLocationWithDem(
     headingDeg: Double?,
     aglMeters: Double?,
     gimbalAngleDeg: Double,
+    terrainReferenceLatitude: Double? = null,
+    terrainReferenceLongitude: Double? = null,
+    seiRelativeUpMeters: Double? = null,
 ): ClueProjection {
     return projectClueLocationWithDemSamples(
         droneLat = droneLat,
@@ -653,6 +659,9 @@ internal suspend fun projectClueLocationWithDem(
         headingDeg = headingDeg,
         aglMeters = aglMeters,
         gimbalAngleDeg = gimbalAngleDeg,
+        terrainReferenceLatitude = terrainReferenceLatitude,
+        terrainReferenceLongitude = terrainReferenceLongitude,
+        seiRelativeUpMeters = seiRelativeUpMeters,
         sampleElevationMeters = { lat, lng ->
             demElevationService.sampleElevationMeters(lat, lng)
         },
@@ -666,18 +675,38 @@ internal suspend fun projectClueLocationWithDemSamples(
     headingDeg: Double?,
     aglMeters: Double?,
     gimbalAngleDeg: Double,
+    terrainReferenceLatitude: Double? = null,
+    terrainReferenceLongitude: Double? = null,
+    seiRelativeUpMeters: Double? = null,
     sampleElevationMeters: suspend (Double, Double) -> DemElevationSample?,
 ): ClueProjection {
+    val referenceDemSample = if (
+        terrainReferenceLatitude?.isFinite() == true && terrainReferenceLatitude in -90.0..90.0 &&
+        terrainReferenceLongitude?.isFinite() == true && terrainReferenceLongitude in -180.0..180.0
+    ) {
+        sampleElevationMeters(terrainReferenceLatitude, terrainReferenceLongitude)
+    } else null
+    val anchoredRelativeUp = seiRelativeUpMeters?.takeIf { it.isFinite() && it > 0.0 }
+    val referenceGround = referenceDemSample?.elevationMeters?.takeIf { it.isFinite() }
+    val effectiveDroneAlt = if (referenceGround != null && anchoredRelativeUp != null) {
+        referenceGround + anchoredRelativeUp
+    } else droneAlt
+    val effectiveAgl = anchoredRelativeUp ?: aglMeters
     val flatProjection = projectClueLocation(
         droneLat = droneLat,
         droneLng = droneLng,
-        droneAlt = droneAlt,
+        droneAlt = effectiveDroneAlt,
         headingDeg = headingDeg,
-        aglMeters = aglMeters,
+        aglMeters = effectiveAgl,
         gimbalAngleDeg = gimbalAngleDeg,
     )
+    if (anchoredRelativeUp != null && terrainReferenceLatitude != null &&
+        terrainReferenceLongitude != null && referenceGround == null
+    ) {
+        return flatProjection
+    }
     val validHeading = headingDeg?.takeIf { it.isFinite() } ?: return flatProjection
-    val validAgl = aglMeters?.takeIf { it.isFinite() && it > 0.0 } ?: return flatProjection
+    val validAgl = effectiveAgl?.takeIf { it.isFinite() && it > 0.0 } ?: return flatProjection
     val clampedAngle = gimbalAngleDeg
         .takeIf { it.isFinite() }
         ?.coerceIn(-90.0, 90.0)
@@ -692,14 +721,14 @@ internal suspend fun projectClueLocationWithDemSamples(
     val flatDistanceM = validAgl / slopeDown
     if (!flatDistanceM.isFinite() || flatDistanceM <= 0.0) return flatProjection
 
-    val flatGroundM = droneAlt - validAgl
-    val droneDemSample = sampleElevationMeters(droneLat, droneLng)
-    val droneDemRaw = droneDemSample?.elevationMeters?.takeIf { it.isFinite() }
-    val demScaleToMeters = inferDemScaleToMeters(
-        droneAltMeters = droneAlt,
+    val flatGroundM = referenceGround ?: (effectiveDroneAlt - validAgl)
+    val droneDemSample = referenceDemSample ?: sampleElevationMeters(droneLat, droneLng)
+    val droneDemRaw = referenceGround ?: droneDemSample?.elevationMeters?.takeIf { it.isFinite() }
+    val demScaleToMeters = if (referenceGround == null) inferDemScaleToMeters(
+        droneAltMeters = effectiveDroneAlt,
         knownGroundMeters = flatGroundM,
         droneDemRaw = droneDemRaw,
-    )
+    ) else 1.0
 
     // A shallow sightline over falling terrain may stay above the ground for kilometres.
     // Search far enough to reach the visible terrain instead of sizing the DEM walk from
@@ -741,7 +770,7 @@ internal suspend fun projectClueLocationWithDemSamples(
             continue
         }
         val groundM = checkNotNull(sampledGroundM)
-        val rayAltitudeM = droneAlt - (slopeDown * distanceM)
+        val rayAltitudeM = effectiveDroneAlt - (slopeDown * distanceM)
         if (rayAltitudeM <= groundM) {
             var lowDistanceM = previousDistanceM
             var lowPoint = previousPoint
@@ -765,7 +794,7 @@ internal suspend fun projectClueLocationWithDemSamples(
                     flatGroundM = flatGroundM,
                     demScaleToMeters = demScaleToMeters,
                 ) ?: ((lowGroundM + highGroundM) / 2.0)
-                val midRayAltitudeM = droneAlt - (slopeDown * midDistanceM)
+                val midRayAltitudeM = effectiveDroneAlt - (slopeDown * midDistanceM)
                 if (midRayAltitudeM <= midGroundM) {
                     highDistanceM = midDistanceM
                     highPoint = midPoint
@@ -865,6 +894,8 @@ class DroneSpecState(
         private set
     var mappedId by mutableStateOf(source.mappedId)
         private set
+    var pilotCallsign by mutableStateOf(source.owner)
+        private set
 
     fun updateFrom(spec: CtDroneSpec) {
         flightStartMsec = spec.startMsecTimestamp
@@ -873,6 +904,7 @@ class DroneSpecState(
         lastAlt = spec.lastAlt
         lastTimestamp = spec.durationInSecAsString
         mappedId = spec.mappedId
+        pilotCallsign = spec.owner
     }
 }
 
@@ -1902,12 +1934,17 @@ class StreamsViewModel(
 
     fun streamTilePrimaryLabel(streamDesignator: String): String {
         if (isLocalPlayback(streamDesignator)) return streamDesignator
-        return resolveStreamTelemetryBinding(
+        val binding = resolveStreamTelemetryBinding(
             streamDesignator = streamDesignator,
             telemetryStates = streamTelemetryStates(),
             runtimeStreamBindings = runtimeStreamTelemetryBindings,
             configuredStreamBindings = configuredStreamBindings
-        ).primaryLabel
+        )
+        return pairedDroneSpecStateFor(streamDesignator)
+            ?.pilotCallsign
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?: binding.primaryLabel
     }
 
     fun bindStreamTelemetry(streamDesignator: String, remoteId: String) {
@@ -2176,48 +2213,24 @@ class StreamsViewModel(
         val telemetryStartedAtMs = System.currentTimeMillis()
         val telemetry = ffmpegProbeService?.telemetrySnapshot(designator)
         logSnapshotIfSlow("telemetrySnapshot", System.currentTimeMillis() - telemetryStartedAtMs)
-        val freshRawDjiCamera = StreamCameraTelemetryRegistry.fresh(designator)
-        val freshDjiCamera = StreamCameraTelemetryRegistry.freshPositionAfterRidValidation(
+        val renderedFrameTimestampUs = ffmpegProbeService?.renderedFrameSourceTimestampUs(designator)
+        val freshDjiCamera = StreamCameraTelemetryRegistry.freshForFrame(
             designator = designator,
-            anchorLatitudeDeg = droneSpec.lastLat,
-            anchorLongitudeDeg = droneSpec.lastLng,
-            anchorAltitudeMeters = droneSpec.lastAlt,
-            takeoffReportedAltitudeMeters = droneSpec.getImpliedTakeoffAltM(),
-            nowMs = System.currentTimeMillis(),
-        )
-        val validatedSeiPositionAvailable = freshDjiCamera?.latitudeDeg != null &&
-            freshDjiCamera.longitudeDeg != null
-        val freshRawSeiPositionAvailable = freshRawDjiCamera?.latitudeDeg != null &&
-            freshRawDjiCamera.longitudeDeg != null
-        val seiPositionAuthorityEstablished = StreamCameraTelemetryRegistry
-            .isPositionAuthorityEstablished(designator)
-        if (shouldBlockRidClueFallback(
-                seiPositionAuthorityEstablished = seiPositionAuthorityEstablished,
-                freshRawSeiPositionAvailable = freshRawSeiPositionAvailable,
-                validatedSeiPositionAvailable = validatedSeiPositionAvailable,
-            )
-        ) {
-            CaltopoClient.CTWarn(
-                tag,
-                "onSnapshotCaptured($designator): clue blocked instead of falling back to RID " +
-                    "seiAuthority=$seiPositionAuthorityEstablished " +
-                    "freshRawSeiPosition=$freshRawSeiPositionAvailable",
-            )
-            CaltopoClient.ShowToast(
-                "Clue unavailable: current video aircraft position is unavailable. " +
-                    "Wait for SEI telemetry and try again.",
-            )
-            return
+            frameTimestampUs = renderedFrameTimestampUs,
+        )?.takeIf {
+            it.latitudeDeg != null && it.longitudeDeg != null &&
+                it.relativeUpMeters?.isFinite() == true &&
+                it.referenceLatitudeDeg != null && it.referenceLongitudeDeg != null
         }
         val nonDjiTelemetry = telemetry?.takeUnless { it.sourceTag == "dji-sei-245" }
         val clueLat = freshDjiCamera?.latitudeDeg ?: nonDjiTelemetry?.latitude ?: droneSpec.lastLat
         val clueLng = freshDjiCamera?.longitudeDeg ?: nonDjiTelemetry?.longitude ?: droneSpec.lastLng
-        // DJI's fixed altitude uses an unknown datum. Anchor its continuous relative-up
-        // displacement to the same RID/barometric takeoff MSL value used elsewhere.
-        val seiBarometricAltitude = freshDjiCamera?.relativeUpMeters?.let { relativeUp ->
-            droneSpec.getImpliedTakeoffAltM()?.plus(relativeUp)
+        // The SEI altitude datum is opaque. The DEM refinement anchors relative-up at
+        // the SEI home coordinate; this provisional altitude is only a flat fallback.
+        val seiRelativeAltitude = freshDjiCamera?.let {
+            (it.referenceAltitudeMeters ?: 0.0) + checkNotNull(it.relativeUpMeters)
         }
-        val clueAlt = seiBarometricAltitude ?: nonDjiTelemetry?.altitudeMeters ?: droneSpec.lastAlt
+        val clueAlt = seiRelativeAltitude ?: nonDjiTelemetry?.altitudeMeters ?: droneSpec.lastAlt
         val clueTimestamp = freshDjiCamera
             ?.takeIf { it.latitudeDeg != null && it.longitudeDeg != null }
             ?.receivedAtMs
@@ -2241,8 +2254,7 @@ class StreamsViewModel(
         val projectionHeight = selectClueProjectionHeight(
             freshAglMeters = clueAglMeters?.takeUnless { displayState.aglStale },
             atoMeters = clueAtoMeters,
-            validatedDjiRelativeUpMeters = freshDjiCamera?.relativeUpMeters
-                ?.takeIf { droneSpec.getImpliedTakeoffAltM()?.isFinite() == true },
+            validatedDjiRelativeUpMeters = freshDjiCamera?.relativeUpMeters,
         )
         val clueGimbalAngle = freshDjiCamera?.tiltDeg
             ?: nonDjiTelemetry?.gimbalPitchDeg
@@ -2303,6 +2315,9 @@ class StreamsViewModel(
             atoMeters = clueAtoMeters,
             projectionHeightMeters = projectionHeight?.meters,
             projectionHeightSourceLabel = projectionHeight?.sourceLabel,
+            terrainReferenceLatitude = freshDjiCamera?.referenceLatitudeDeg,
+            terrainReferenceLongitude = freshDjiCamera?.referenceLongitudeDeg,
+            seiRelativeUpMeters = freshDjiCamera?.relativeUpMeters,
             gimbalAngleDeg = clueGimbalAngle,
             timestamp = clueTimestamp,
             bitmap = bitmap,
@@ -2616,6 +2631,9 @@ class StreamsViewModel(
                 headingDeg = clue.headingDeg,
                 aglMeters = projectionAglMeters,
                 gimbalAngleDeg = clue.gimbalAngleDeg,
+                terrainReferenceLatitude = clue.terrainReferenceLatitude,
+                terrainReferenceLongitude = clue.terrainReferenceLongitude,
+                seiRelativeUpMeters = clue.seiRelativeUpMeters,
             )
             withContext(Dispatchers.Main) {
                 val current = _pendingClue.value ?: return@withContext

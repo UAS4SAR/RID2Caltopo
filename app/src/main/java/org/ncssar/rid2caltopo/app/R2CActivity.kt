@@ -27,6 +27,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Looper
 import android.os.CancellationSignal
+import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.view.Display
@@ -227,7 +228,13 @@ internal class OrganizationAccessSession {
     }
 
     @Synchronized
-    fun activityStopped(isChangingConfigurations: Boolean): Boolean {
+    fun activityStopped(
+        isChangingConfigurations: Boolean,
+        screenOffElapsedRealtimeMs: Long? = null,
+    ): Boolean {
+        if (screenOffElapsedRealtimeMs != null && screenLockedAtElapsedRealtimeMs == null) {
+            invalidateForScreenLock(screenOffElapsedRealtimeMs)
+        }
         if (authenticated && (isChangingConfigurations || trustedExternalFlow != null)) {
             return true
         }
@@ -273,6 +280,9 @@ internal class OrganizationAccessSession {
 
     @Synchronized
     fun isAuthenticated(): Boolean = authenticated
+
+    @Synchronized
+    fun isAwaitingSystemUnlock(): Boolean = screenLockedAtElapsedRealtimeMs != null
 
     @Synchronized
     fun invalidate() {
@@ -1178,7 +1188,11 @@ class R2CActivity :
                     OrganizationAccessState.LOCKED
                 }
             }
-            requestOrganizationAccessAuthentication()
+            if (organizationAccessSession.isAwaitingSystemUnlock()) {
+                CTDebug(TAG, "Organization access is waiting for the completed system unlock")
+            } else {
+                requestOrganizationAccessAuthentication()
+            }
         }
         ScanningService.setDisplayActive(applicationContext, true, externalDisplayConnected)
         val retryTrackerReauthentication = shouldRetryTrackerReauthenticationAfterBrowserReturn(
@@ -1207,8 +1221,19 @@ class R2CActivity :
         if (configuredAccessAuthenticationRequired() &&
             organizationAccessState != OrganizationAccessState.AUTHENTICATING
         ) {
+            val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            val screenOffElapsedRealtimeMs = if (
+                !isChangingConfigurations &&
+                (!powerManager.isInteractive || keyguardManager.isDeviceLocked)
+            ) {
+                SystemClock.elapsedRealtime()
+            } else {
+                null
+            }
             val remainsAuthenticated = organizationAccessSession.activityStopped(
                 isChangingConfigurations = isChangingConfigurations,
+                screenOffElapsedRealtimeMs = screenOffElapsedRealtimeMs,
             )
             if (!remainsAuthenticated) organizationAccessState = OrganizationAccessState.LOCKED
         }
@@ -2374,27 +2399,31 @@ class R2CActivity :
         val model = candidates.firstNotNullOfOrNull { candidate ->
             candidate.deviceModel.takeIf { it.isNotBlank() }
         } ?: AndroidDeviceIdentity.modelName()
+        val singleCandidate = candidates.singleOrNull()
         deviceReconciliationDialog?.dismiss()
         deviceReconciliationDialog = androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("Is this a new $model?")
+            .setTitle(
+                singleCandidate?.let { "Is this ${it.deviceName}?" }
+                    ?: "Is this an existing $model?"
+            )
             .setMessage(
-                if (candidates.size == 1) {
-                    "Tracker already knows ${candidates.first().deviceName}. Is this another tablet?"
+                if (singleCandidate != null) {
+                    "Tracker already knows this tablet name. Is this the same physical tablet?"
                 } else {
-                    "Tracker already knows ${candidates.size} matching tablets. Is this another tablet?"
+                    "Tracker already knows ${candidates.size} matching tablets. Is this one of them?"
                 }
             )
-            .setPositiveButton("Yes, new tablet") { _, _ ->
-                TrackerEnrollmentClient.clearDeviceReconciliationPending(this)
-                deviceReconciliationInFlight = false
-                resumeTrackerAfterReauthentication()
-            }
-            .setNegativeButton("No, same tablet") { _, _ ->
-                if (candidates.size == 1) {
-                    replaceEarlierDeviceAuthorization(candidates.first())
+            .setPositiveButton("Yes, same tablet") { _, _ ->
+                if (singleCandidate != null) {
+                    replaceEarlierDeviceAuthorization(singleCandidate)
                 } else {
                     showEarlierDeviceChooser(candidates)
                 }
+            }
+            .setNegativeButton("No, new tablet") { _, _ ->
+                TrackerEnrollmentClient.clearDeviceReconciliationPending(this)
+                deviceReconciliationInFlight = false
+                resumeTrackerAfterReauthentication()
             }
             .setCancelable(false)
             .create()

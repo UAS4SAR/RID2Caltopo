@@ -451,10 +451,7 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
         guard bytes.count >= rowBytes * height else { return false }
         for row in 0 ..< height {
             let rowBase = row * rowBytes
-            for plane in 0 ..< sampleBytes {
-                let planeBase = rowBase + plane * samplesPerRow
-                for index in 1 ..< samplesPerRow { bytes[planeBase + index] &+= bytes[planeBase + index - 1] }
-            }
+            for index in 1 ..< rowBytes { bytes[rowBase + index] &+= bytes[rowBase + index - 1] }
             let source = Array(bytes[rowBase ..< rowBase + rowBytes])
             for sample in 0 ..< samplesPerRow {
                 for plane in 0 ..< sampleBytes {

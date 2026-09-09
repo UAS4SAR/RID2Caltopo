@@ -197,6 +197,7 @@ private data class ManagedRenderSession(
     var lastFrameAtMs: Long? = null,
     var sourceClockOffsetMs: Long? = null,
     var lastSourceTimestampUs: Long? = null,
+    var lastRenderedSourceTimestampUs: Long? = null,
     var readerWaitWindowStartedAtMs: Long? = null,
     var readerWaitEventCountInWindow: Int = 0,
     var pendingRepublishMarker: UpstreamRepublishMarker? = null,
@@ -1150,6 +1151,12 @@ class FfmpegProbeService(
         )
     }
 
+    fun renderedFrameSourceTimestampUs(designator: String): Long? = synchronized(stateLock) {
+        val sessionId = renderSessions[designator] ?: suspendedRenderSessions[designator]
+            ?: return@synchronized null
+        managedRenderSessions[sessionId]?.lastRenderedSourceTimestampUs
+    }
+
     fun runtimeSnapshot(designator: String): StreamRuntimeSnapshot? {
         val nowMs = System.currentTimeMillis()
         val seed = synchronized(stateLock) {
@@ -1644,6 +1651,7 @@ class FfmpegProbeService(
         renderLatencyMs: Long?,
     ) {
         val sessionState = managedRenderSessions[sessionId] ?: return
+        sessionState.lastRenderedSourceTimestampUs = sourceTimestampUs?.takeIf { it > 0L }
         recordRenderedFrameLocked(sessionState)
         setSessionPhaseLocked(
             session = sessionState,

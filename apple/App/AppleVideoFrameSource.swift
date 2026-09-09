@@ -23,6 +23,9 @@ struct AppleVideoSnapshot: Sendable, Equatable {
     let capturedAt: Date
     let width: Int
     let height: Int
+    let frameSequence: Int
+    let sourceTimestampMicroseconds: Int64?
+    let djiCameraTelemetry: AppleDJICameraTelemetry?
 }
 
 protocol AppleDecodedVideoFrameConsumer: AnyObject {
@@ -281,7 +284,7 @@ final class AppleAnomalyProcessor: @unchecked Sendable {
 /// Pulls decoded BGRA frames from an AVFoundation HLS player at display cadence.
 /// Consumers can render the player while the same decoded CVPixelBuffers feed
 /// the portable anomaly detector boundary.
-struct AppleDJICameraTelemetry: Equatable {
+struct AppleDJICameraTelemetry: Sendable, Equatable {
     /** Raw tag-4 azimuth encoder retained alongside the calibrated azimuth. */
     let rawAzimuthCandidateDegrees: Double
     let cameraAzimuthDegrees: Double?
@@ -298,6 +301,10 @@ struct AppleDJICameraTelemetry: Equatable {
     let referenceLatitudeDegrees: Double?
     let referenceLongitudeDegrees: Double?
     let referenceAltitudeMeters: Double?
+    let relativeNorthMillimeters: Int32?
+    let relativeEastMillimeters: Int32?
+    let downMillimeters: Int32?
+    let magneticDeclinationDegrees: Double?
     let sourceTimestampMicroseconds: Int64?
     let receivedAt: Date
 
@@ -318,6 +325,10 @@ struct AppleDJICameraTelemetry: Equatable {
             referenceLatitudeDegrees: referenceLatitudeDegrees,
             referenceLongitudeDegrees: referenceLongitudeDegrees,
             referenceAltitudeMeters: referenceAltitudeMeters,
+            relativeNorthMillimeters: relativeNorthMillimeters,
+            relativeEastMillimeters: relativeEastMillimeters,
+            downMillimeters: downMillimeters,
+            magneticDeclinationDegrees: magneticDeclinationDegrees,
             sourceTimestampMicroseconds: sourceTimestampMicroseconds,
             receivedAt: receivedAt
         )
@@ -397,6 +408,8 @@ final class AppleVideoFrameSource: ObservableObject {
     private var decoderSelectionPolicy = LiveVideoDecoderSelectionPolicy()
     private var latestPixelBuffer: CVPixelBuffer?
     private var latestFrameCapturedAt: Date?
+    private var latestFrameSourceTimestampMicroseconds: Int64?
+    private var latestFrameDJICameraTelemetry: AppleDJICameraTelemetry?
     private weak var managedVideoFrameConsumer: AppleDecodedVideoFrameConsumer?
     private var frameRateWindowStartedAt: CFTimeInterval?
     private var frameRateWindowFrameCount = 0
@@ -671,6 +684,8 @@ final class AppleVideoFrameSource: ObservableObject {
         ffmpegDJICameraTelemetrySequence = 0
         latestPixelBuffer = nil
         latestFrameCapturedAt = nil
+        latestFrameSourceTimestampMicroseconds = nil
+        latestFrameDJICameraTelemetry = nil
         usesNativeVideoSurface = false
         decoderBackend = "None"
         flushDisplayLayers(removeImage: true)
@@ -713,6 +728,8 @@ final class AppleVideoFrameSource: ObservableObject {
             // last decoded image as though it were still live.
             latestPixelBuffer = nil
             latestFrameCapturedAt = nil
+            latestFrameSourceTimestampMicroseconds = nil
+            latestFrameDJICameraTelemetry = nil
             flushDisplayLayers(removeImage: true)
         }
         handleRecoveryDecision(recoveryPolicy.setPublisherAvailable(publisherAvailable))
@@ -844,40 +861,40 @@ final class AppleVideoFrameSource: ObservableObject {
             if copiedDJITelemetry,
                djiTelemetrySequence != ffmpegDJICameraTelemetrySequence {
                 ffmpegDJICameraTelemetrySequence = djiTelemetrySequence
-                if AppleSEIHexDiagnostics.enabled {
-                    var payload = [UInt8](repeating: 0, count: 128)
-                    var payloadSize: Int32 = 0
-                    var northMillimeters: Int32 = 0
-                    var eastMillimeters: Int32 = 0
-                    var downMillimeters: Int32 = 0
-                    var payloadTimestampMicroseconds: Int64 = 0
-                    var payloadSequence: UInt64 = 0
-                    let copiedPayload = payload.withUnsafeMutableBufferPointer { bytes in
-                        R2CFFmpegSessionCopyLatestDJISEIPayload(
-                            ffmpegSession,
-                            bytes.baseAddress,
-                            Int32(bytes.count),
-                            &payloadSize,
-                            &northMillimeters,
-                            &eastMillimeters,
-                            &downMillimeters,
-                            &payloadTimestampMicroseconds,
-                            &payloadSequence
-                        )
-                    }
-                    if copiedPayload, payloadSize > 0, Int(payloadSize) <= payload.count {
+                var payload = [UInt8](repeating: 0, count: 128)
+                var payloadSize: Int32 = 0
+                var northMillimeters: Int32 = 0
+                var eastMillimeters: Int32 = 0
+                var downMillimeters: Int32 = 0
+                var payloadTimestampMicroseconds: Int64 = 0
+                var payloadSequence: UInt64 = 0
+                let copiedPayload = payload.withUnsafeMutableBufferPointer { bytes in
+                    R2CFFmpegSessionCopyLatestDJISEIPayload(
+                        ffmpegSession,
+                        bytes.baseAddress,
+                        Int32(bytes.count),
+                        &payloadSize,
+                        &northMillimeters,
+                        &eastMillimeters,
+                        &downMillimeters,
+                        &payloadTimestampMicroseconds,
+                        &payloadSequence
+                    )
+                }
+                if AppleSEIHexDiagnostics.enabled,
+                   copiedPayload, payloadSize > 0, Int(payloadSize) <= payload.count {
                         let hex = payload.prefix(Int(payloadSize)).map { String(format: "%02x", $0) }.joined()
                         AppleLog.debug(
                             "DjiSeiHex",
                             "DJI_SEI_HEX path=\(currentPath ?? "unknown") sequence=\(payloadSequence) ptsUs=\(payloadTimestampMicroseconds) len=\(payloadSize) northMm=\(northMillimeters) eastMm=\(eastMillimeters) downMm=\(downMillimeters) payload=\(hex)"
                         )
-                    }
                 }
+                let magneticDeclinationDegrees = AppleMagneticNorth.declinationDegrees
                 latestDJICameraTelemetry = AppleDJICameraTelemetry(
                     rawAzimuthCandidateDegrees: RidHeading.normalized(djiAzimuthDegrees) ?? djiAzimuthDegrees,
                     cameraAzimuthDegrees: OperationalClueGeometry.djiControllerCameraAzimuthDegrees(
                         seiCameraAzimuthDegrees: djiAzimuthDegrees,
-                        magneticDeclinationDegrees: AppleMagneticNorth.declinationDegrees
+                        magneticDeclinationDegrees: magneticDeclinationDegrees
                     ),
                     courseDegrees: RidHeading.normalized(djiPositionValues[6]),
                     rawTiltDegrees: djiTiltDegrees,
@@ -894,6 +911,10 @@ final class AppleVideoFrameSource: ObservableObject {
                     referenceLatitudeDegrees: djiPositionValues[3].isFinite ? djiPositionValues[3] : nil,
                     referenceLongitudeDegrees: djiPositionValues[4].isFinite ? djiPositionValues[4] : nil,
                     referenceAltitudeMeters: djiPositionValues[5].isFinite ? djiPositionValues[5] : nil,
+                    relativeNorthMillimeters: copiedPayload ? northMillimeters : nil,
+                    relativeEastMillimeters: copiedPayload ? eastMillimeters : nil,
+                    downMillimeters: copiedPayload ? downMillimeters : nil,
+                    magneticDeclinationDegrees: magneticDeclinationDegrees,
                     sourceTimestampMicroseconds: djiSourceTimestampMicroseconds > 0
                         ? djiSourceTimestampMicroseconds
                         : nil,
@@ -908,37 +929,21 @@ final class AppleVideoFrameSource: ObservableObject {
                 let selected = OperationalClueGeometry.selectedGimbalAngleDegrees(
                     streamPitchDegrees: gimbalPitchDegrees
                 )
-                if latestGimbalPitchDegrees != selected {
-                    latestGimbalPitchDegrees = selected
-                    AppleLog.info(
-                        "Video",
-                        "Stream gimbal pitch updated path=\(currentPath ?? "unknown") degrees=\(String(format: "%.1f", selected))"
-                    )
-                }
+                latestGimbalPitchDegrees = selected
             }
             var cameraYawDegrees = 0.0
             if R2CFFmpegSessionCopyLatestCameraYawDegrees(
                 ffmpegSession,
                 &cameraYawDegrees
-            ), let normalized = RidHeading.normalized(cameraYawDegrees),
-               latestCameraYawDegrees != normalized {
+            ), let normalized = RidHeading.normalized(cameraYawDegrees) {
                 latestCameraYawDegrees = normalized
-                AppleLog.info(
-                    "Video",
-                    "Stream camera yaw updated path=\(currentPath ?? "unknown") degrees=\(String(format: "%.1f", normalized))"
-                )
             }
             var streamHeadingDegrees = 0.0
             if R2CFFmpegSessionCopyLatestHeadingDegrees(
                 ffmpegSession,
                 &streamHeadingDegrees
-            ), let normalized = RidHeading.normalized(streamHeadingDegrees),
-               latestStreamHeadingDegrees != normalized {
+            ), let normalized = RidHeading.normalized(streamHeadingDegrees) {
                 latestStreamHeadingDegrees = normalized
-                AppleLog.info(
-                    "Video",
-                    "Stream heading updated path=\(currentPath ?? "unknown") degrees=\(String(format: "%.1f", normalized))"
-                )
             }
             let itemTime = presentationTimeMicroseconds > Int64.min / 2
                 ? CMTime(value: presentationTimeMicroseconds, timescale: 1_000_000)
@@ -990,6 +995,8 @@ final class AppleVideoFrameSource: ObservableObject {
         }
         latestPixelBuffer = pixelBuffer
         latestFrameCapturedAt = Date()
+        latestFrameSourceTimestampMicroseconds = sourceTimestampMicroseconds
+        latestFrameDJICameraTelemetry = latestDJICameraTelemetry
         managedVideoFrameConsumer?.consumeDecodedVideoFrame(
             pixelBuffer,
             timestampNanoseconds: Int64(CACurrentMediaTime() * 1_000_000_000)
@@ -1175,6 +1182,9 @@ final class AppleVideoFrameSource: ObservableObject {
         let transfer = PixelBufferTransfer(value: latestPixelBuffer)
         let width = CVPixelBufferGetWidth(latestPixelBuffer)
         let height = CVPixelBufferGetHeight(latestPixelBuffer)
+        let frameSequence = frameCount
+        let frameTimestampMicroseconds = latestFrameSourceTimestampMicroseconds
+        let frameTelemetry = latestFrameDJICameraTelemetry
         let viewport = OperationalVideoViewport(
             scale: zoomScale,
             normalizedPanX: normalizedPan.x,
@@ -1205,11 +1215,15 @@ final class AppleVideoFrameSource: ObservableObject {
             else { throw AppleVideoSnapshotError.conversionFailed }
             return jpeg
         }.value
-        AppleLog.info(
-            "Video",
-            "Snapshot captured size=\(width)x\(height) bytes=\(data.count) zoom=\(String(format: "%.2f", viewport.scale)) pan=\(String(format: "%.3f,%.3f", viewport.normalizedPanX, viewport.normalizedPanY))"
+        return AppleVideoSnapshot(
+            jpegData: data,
+            capturedAt: capturedAt,
+            width: width,
+            height: height,
+            frameSequence: frameSequence,
+            sourceTimestampMicroseconds: frameTimestampMicroseconds,
+            djiCameraTelemetry: frameTelemetry
         )
-        return AppleVideoSnapshot(jpegData: data, capturedAt: capturedAt, width: width, height: height)
     }
 
     private func logPlayerFailureContext(prefix: String, trigger: LiveVideoRecoveryPolicy.Trigger) {

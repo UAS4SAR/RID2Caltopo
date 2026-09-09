@@ -1626,7 +1626,7 @@ struct ContentView: View {
             }
                 .frame(width: 28, height: 42)
                 .background(Color(uiColor: .secondarySystemBackground))
-            Button(identity?.mappedID ?? "Confirm Drone") { selectedAircraftID = track.aircraftID }
+            Button(identity?.displayLabel ?? "Confirm Drone") { selectedAircraftID = track.aircraftID }
                 .font(.caption.monospaced())
                 .lineLimit(1)
                 .buttonStyle(.bordered)
@@ -2600,8 +2600,8 @@ struct ContentView: View {
 
     private func refreshControllerRTMPURL() {
         let interfaces = AppleNetworkAddress.ipv4DiagnosticSummary()
-        if let address = AppleNetworkAddress.preferredIPv4Address() {
-            let nextURL = "rtmp://\(address):1935"
+        if let address = networkDiagnostics.currentControllerIPv4Address {
+            let nextURL = "rtmp://\(address)"
             let changed = nextURL != controllerRTMPURL
             controllerRTMPURL = nextURL
             if changed {

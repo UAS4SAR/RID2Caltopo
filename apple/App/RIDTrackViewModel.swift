@@ -310,7 +310,10 @@ final class RIDTrackViewModel: ObservableObject {
         observation: RidObservation,
         headingDegrees: Double?,
         aglMeters: Double?,
-        gimbalAngleDegrees: Double
+        gimbalAngleDegrees: Double,
+        terrainReferenceLatitude: Double? = nil,
+        terrainReferenceLongitude: Double? = nil,
+        relativeUpMeters: Double? = nil
     ) async -> OperationalClueProjection {
         let terrainService = self.terrainService
         return await OperationalClueGeometry.projectWithTerrain(
@@ -320,6 +323,9 @@ final class RIDTrackViewModel: ObservableObject {
             headingDegrees: headingDegrees,
             aglMeters: aglMeters,
             gimbalAngleDegrees: gimbalAngleDegrees,
+            terrainReferenceLatitude: terrainReferenceLatitude,
+            terrainReferenceLongitude: terrainReferenceLongitude,
+            relativeUpMeters: relativeUpMeters,
             sampleElevationMeters: { latitude, longitude in
                 await terrainService.sample(latitude: latitude, longitude: longitude)
             }
@@ -833,7 +839,7 @@ final class RIDTrackViewModel: ObservableObject {
     }
 
     private func publish(_ track: RidAircraftTrack) {
-        let label = identityProvider?(track.aircraftID)?.mappedID ?? track.aircraftID
+        let label = identityProvider?(track.aircraftID)?.displayLabel ?? track.aircraftID
         if let telemetry = validatedSEIPositionProvider?([track], Date())[track.aircraftID] {
             _ = enqueueSEIPublication(track: track, label: label, telemetry: telemetry)
             return
@@ -856,7 +862,7 @@ final class RIDTrackViewModel: ObservableObject {
                   peerCoordinator?.publicationAllowed(remoteID: track.aircraftID) != false,
                   let telemetry = telemetryByAircraftID[track.aircraftID]
             else { continue }
-            let label = identityProvider?(track.aircraftID)?.mappedID ?? track.aircraftID
+            let label = identityProvider?(track.aircraftID)?.displayLabel ?? track.aircraftID
             _ = enqueueSEIPublication(track: track, label: label, telemetry: telemetry)
         }
     }
@@ -943,10 +949,12 @@ final class RIDTrackViewModel: ObservableObject {
                 guard self.publicationSuppressionProvider?(track.aircraftID) != true,
                       self.peerCoordinator?.publicationAllowed(remoteID: track.aircraftID) != false
                 else { continue }
-                let label = self.identityProvider?(track.aircraftID)?.mappedID ?? track.aircraftID
-                guard label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let identity = self.identityProvider?(track.aircraftID)
+                let routingDesignator = identity?.mappedID ?? track.aircraftID
+                guard routingDesignator.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                     == normalizedDesignator
                 else { continue }
+                let label = identity?.displayLabel ?? track.aircraftID
                 publications.append(self.enqueuePublication(
                     remoteID: track.aircraftID,
                     label: label,
@@ -985,9 +993,8 @@ final class RIDTrackViewModel: ObservableObject {
             signalStrengthDbm: observation.signalStrengthDbm,
             droneScoutRelay: observation.droneScoutRelay
         )
-        let cameraMetadata = peerCoordinator?.caltopoCameraMetadata(
-            droneDesignator: label
-        )
+        let routingDesignator = identityProvider?(remoteID)?.mappedID ?? remoteID
+        let cameraMetadata = peerCoordinator?.caltopoCameraMetadata(droneDesignator: routingDesignator)
         let task = Task { [caltopoPublisher] in
             _ = await previous?.value
             guard !Task.isCancelled else { return }
@@ -1026,7 +1033,7 @@ final class RIDTrackViewModel: ObservableObject {
             headingDegrees: relay.headingDegrees,
             speedMetersPerSecond: relay.groundSpeedKnots.map { $0 / 1.943_844 }
         )
-        let label = identityProvider?(relay.remoteID)?.mappedID ?? relay.remoteID
+        let label = identityProvider?(relay.remoteID)?.displayLabel ?? relay.remoteID
         enqueuePublication(remoteID: relay.remoteID, label: label, observation: observation)
     }
 

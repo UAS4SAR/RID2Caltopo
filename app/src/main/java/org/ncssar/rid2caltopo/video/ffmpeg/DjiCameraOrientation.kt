@@ -4,7 +4,6 @@ package org.ncssar.rid2caltopo.video.ffmpeg
 object DjiCameraOrientation {
     private const val RAW_HORIZONTAL_REFERENCE_DEG = -14.5625
     private const val RAW_DOWN_REFERENCE_DEG = -90.0
-
     @JvmStatic
     fun controllerAzimuthDeg(
         cameraAzimuthDeg: Double?,
@@ -14,8 +13,10 @@ object DjiCameraOrientation {
         val declination = magneticDeclinationDeg?.takeIf { it.isFinite() } ?: 0.0
         // Tag-4 offset 3 increases clockwise, but its north reference is magnetic.
         // CalTopo bearings are true north, so preserve the direction and add declination.
-        return (((finite - 90.0 + declination) % 360.0) + 360.0) % 360.0
+        return normalize(finite - 90.0 + declination)
     }
+
+    private fun normalize(degrees: Double): Double = ((degrees % 360.0) + 360.0) % 360.0
 
     /**
      * Matrice 4TD field calibration from the controlled flight observed on 2026-08-19:

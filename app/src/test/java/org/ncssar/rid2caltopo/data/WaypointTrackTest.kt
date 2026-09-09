@@ -70,15 +70,14 @@ class WaypointTrackTest {
     }
 
     @Test
-    fun renameTrack_movesExistingTrackToUpdatedDroneLabel() {
+    fun routingDesignatorChange_keepsPilotCallsignTrackLabel() {
         val drone = activeDrone("RID456", "RID456")
         val oldTrackLabel = drone.trackLabel()
         WaypointTrack.AddWaypointForTrack(drone, 39.153061, -121.132946, 101L, 12_345L)
 
         drone.setMappedId("1sar7DjMn4Pr")
 
-        assertTrue(oldTrackLabel != drone.trackLabel())
-        assertEquals(emptyList<WaypointTrack.TrackPoint>(), WaypointTrack.GetTrackPointsSnapshot(CtDroneSpec("RID456")))
+        assertEquals(oldTrackLabel, drone.trackLabel())
         val points = WaypointTrack.GetTrackPointsSnapshot(drone)
         assertEquals(1, points.size)
         assertEquals(12_345L, points.single().timestampMsec)
@@ -86,10 +85,10 @@ class WaypointTrackTest {
 
     @Test
     fun renameTrack_mergesIntoExistingDestinationTrack() {
-        val alpha = activeDrone("RID-A", "RID-A")
+        val alpha = activeDrone("RID-A", "RID-A", "Pilot Alpha")
         WaypointTrack.AddWaypointForTrack(alpha, 39.153000, -121.132000, 100L, 1_000L)
 
-        val bravo = activeDrone("RID-B", "RID-B")
+        val bravo = activeDrone("RID-B", "RID-B", "Pilot Bravo")
         WaypointTrack.AddWaypointForTrack(bravo, 39.154000, -121.133000, 101L, 2_000L)
 
         WaypointTrack.RenameTrack(bravo.trackLabel(), alpha.trackLabel(), alpha)
@@ -352,8 +351,12 @@ class WaypointTrackTest {
         assertFalse(WaypointTrack.IsTrackFileActive(0, now))
     }
 
-    private fun activeDrone(remoteId: String, mappedId: String): CtDroneSpec {
-        val drone = CtDroneSpec(remoteId, mappedId, "NCSSAR", "DJI Mini 4 Pro", "Pilot")
+    private fun activeDrone(
+        remoteId: String,
+        mappedId: String,
+        pilotCallsign: String = "Pilot"
+    ): CtDroneSpec {
+        val drone = CtDroneSpec(remoteId, mappedId, "NCSSAR", "DJI Mini 4 Pro", pilotCallsign)
         assertTrue(
             drone.checkNewWaypoint(
                 39.153061,

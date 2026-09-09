@@ -159,7 +159,7 @@ class DroneSpecConfirmationLogicTest {
     }
 
     @Test
-    fun shouldPreserveMappedId_onlyWhenCallsignUnchangedFromInitialPrompt() {
+    fun shouldPreserveMappedId_keepsExplicitStreamDesignatorWhenPresentationFieldsChange() {
         assertEquals(
             true,
             DroneSpecConfirmationLogic.shouldPreserveMappedId(
@@ -172,7 +172,7 @@ class DroneSpecConfirmationLogicTest {
             )
         )
         assertEquals(
-            false,
+            true,
             DroneSpecConfirmationLogic.shouldPreserveMappedId(
                 existingMappedId = "1SAR7mm4p",
                 remoteId = "1581F6Z9C24BH0036EJL",
@@ -183,7 +183,7 @@ class DroneSpecConfirmationLogicTest {
             )
         )
         assertEquals(
-            false,
+            true,
             DroneSpecConfirmationLogic.shouldPreserveMappedId(
                 existingMappedId = "1SAR7mm4p",
                 remoteId = "1581F6Z9C24BH0036EJL",

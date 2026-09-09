@@ -72,6 +72,33 @@ public struct MapAircraftLabelLayout: Sendable, Equatable {
 }
 
 public enum OperationalAircraftDisplay {
+    public static let displayedPositionStaleAfter: TimeInterval = 5
+    public static let displayedPositionVeryStaleAfter: TimeInterval = 10
+
+    public static func isDisplayedPositionStale(
+        lastAcceptedPositionAt: Date?,
+        now: Date,
+        staleAfter: TimeInterval = displayedPositionStaleAfter
+    ) -> Bool {
+        guard let lastAcceptedPositionAt else { return false }
+        return now.timeIntervalSince(lastAcceptedPositionAt) >= max(0, staleAfter)
+    }
+
+    public static func positionIconAlpha(
+        lastAcceptedPositionAt: Date?,
+        now: Date
+    ) -> Double {
+        guard let lastAcceptedPositionAt else { return 1 }
+        switch now.timeIntervalSince(lastAcceptedPositionAt) {
+        case displayedPositionVeryStaleAfter...:
+            return 0.25
+        case displayedPositionStaleAfter..<displayedPositionVeryStaleAfter:
+            return 0.5
+        default:
+            return 1
+        }
+    }
+
     public static func streamHeader(
         designator: String,
         atoFeet: Double?,
@@ -85,7 +112,8 @@ public enum OperationalAircraftDisplay {
             aglFeet: aglFeet,
             aglStale: aglStale,
             rangeFeet: rangeFeet,
-            headingDegrees: headingDegrees
+            headingDegrees: headingDegrees,
+            headingLabel: "TRK"
         )
     }
 
@@ -94,7 +122,9 @@ public enum OperationalAircraftDisplay {
         aglFeet: Double?,
         aglStale: Bool,
         rangeFeet: Double?,
-        headingDegrees: Double?
+        headingDegrees: Double?,
+        headingLabel: String = "HDG",
+        positionStale: Bool = false
     ) -> String {
         func feet(_ value: Double?, stale: Bool = false, capped: Bool = true) -> String {
             guard let value, value.isFinite, !capped || abs(value) <= 1_000 else { return "--" }
@@ -106,8 +136,9 @@ public enum OperationalAircraftDisplay {
         } else {
             heading = "--"
         }
+        let positionStatus = positionStale ? " POS?" : ""
         return "ATO:\(feet(atoFeet))' AGL:\(feet(aglFeet, stale: aglStale))' "
-            + "RNG:\(feet(rangeFeet, capped: false))' HDG:\(heading)°"
+            + "RNG:\(feet(rangeFeet, capped: false))' \(headingLabel):\(heading)°\(positionStatus)"
     }
 
     public static func layoutLabels(

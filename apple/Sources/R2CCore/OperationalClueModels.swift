@@ -154,6 +154,12 @@ public enum OperationalClueGeometry {
             guard let value, value.isFinite, value > 0, value <= 10_000 else { return nil }
             return value
         }
+        if let meters = validHeight(validatedDJIRelativeUpMeters) {
+            return OperationalClueProjectionHeightSelection(
+                meters: meters,
+                sourceLabel: "DJI SEI relative altitude"
+            )
+        }
         if let meters = validHeight(freshAGLMeters) {
             return OperationalClueProjectionHeightSelection(
                 meters: meters,
@@ -164,12 +170,6 @@ public enum OperationalClueGeometry {
             return OperationalClueProjectionHeightSelection(
                 meters: meters,
                 sourceLabel: "ATO flat-ground fallback"
-            )
-        }
-        if let meters = validHeight(validatedDJIRelativeUpMeters) {
-            return OperationalClueProjectionHeightSelection(
-                meters: meters,
-                sourceLabel: "validated DJI relative altitude flat-ground fallback"
             )
         }
         return nil
@@ -393,19 +393,50 @@ public enum OperationalClueGeometry {
         headingDegrees: Double?,
         aglMeters: Double?,
         gimbalAngleDegrees: Double,
+        terrainReferenceLatitude: Double? = nil,
+        terrainReferenceLongitude: Double? = nil,
+        relativeUpMeters: Double? = nil,
         sampleElevationMeters: @Sendable (Double, Double) async -> OperationalTerrainSample?
     ) async -> OperationalClueProjection {
+        let referenceDEMSample: OperationalTerrainSample? = if let latitude = terrainReferenceLatitude,
+                                                               let longitude = terrainReferenceLongitude,
+                                                               latitude.isFinite,
+                                                               longitude.isFinite,
+                                                               (-90 ... 90).contains(latitude),
+                                                               (-180 ... 180).contains(longitude) {
+            await sampleElevationMeters(latitude, longitude)
+        } else {
+            nil
+        }
+        let anchoredRelativeUp = relativeUpMeters.flatMap {
+            $0.isFinite && $0 > 0 ? $0 : nil
+        }
+        let referenceGround = referenceDEMSample.flatMap { sample in
+            sample.elevationMeters.isFinite ? sample.elevationMeters : nil
+        }
+        let effectiveAltitude = if let referenceGround, let anchoredRelativeUp {
+            referenceGround + anchoredRelativeUp
+        } else {
+            droneAltitudeMeters
+        }
+        let effectiveAGL = anchoredRelativeUp ?? aglMeters
         let flatProjection = project(
             droneLatitude: droneLatitude,
             droneLongitude: droneLongitude,
-            droneAltitudeMeters: droneAltitudeMeters,
+            droneAltitudeMeters: effectiveAltitude,
             headingDegrees: headingDegrees,
-            aglMeters: aglMeters,
+            aglMeters: effectiveAGL,
             gimbalAngleDegrees: gimbalAngleDegrees
         )
-        guard let droneAltitudeMeters, droneAltitudeMeters.isFinite,
+        if anchoredRelativeUp != nil,
+           terrainReferenceLatitude != nil,
+           terrainReferenceLongitude != nil,
+           referenceGround == nil {
+            return flatProjection
+        }
+        guard let droneAltitudeMeters = effectiveAltitude, droneAltitudeMeters.isFinite,
               let headingDegrees, headingDegrees.isFinite,
-              let aglMeters, aglMeters.isFinite, aglMeters > 0
+              let aglMeters = effectiveAGL, aglMeters.isFinite, aglMeters > 0
         else { return flatProjection }
 
         let angle = min(90, max(-90, gimbalAngleDegrees))
@@ -417,14 +448,22 @@ public enum OperationalClueGeometry {
         let flatDistance = aglMeters / slopeDown
         guard flatDistance.isFinite, flatDistance > 0 else { return flatProjection }
 
-        let flatGround = droneAltitudeMeters - aglMeters
-        let droneDEMSample = await sampleElevationMeters(droneLatitude, droneLongitude)
-        let droneDEM = droneDEMSample?.elevationMeters
-        let scale = inferDEMScaleToMeters(
-            droneAltitudeMeters: droneAltitudeMeters,
-            knownGroundMeters: flatGround,
-            droneDEM: droneDEM
-        )
+        let flatGround = referenceGround ?? (droneAltitudeMeters - aglMeters)
+        let droneDEMSample: OperationalTerrainSample? = if let referenceDEMSample {
+            referenceDEMSample
+        } else {
+            await sampleElevationMeters(droneLatitude, droneLongitude)
+        }
+        let droneDEM = referenceGround ?? droneDEMSample?.elevationMeters
+        let scale: Double = if referenceGround == nil {
+            inferDEMScaleToMeters(
+                droneAltitudeMeters: droneAltitudeMeters,
+                knownGroundMeters: flatGround,
+                droneDEM: droneDEM
+            )
+        } else {
+            1
+        }
         // A shallow sightline over falling terrain may stay above the ground for kilometres.
         // Do not derive the terrain-search limit from the short flat-ground estimate.
         let usingLocalDEM = droneDEMSample?.source?.hasPrefix("usgs-geotiff-local-") == true
