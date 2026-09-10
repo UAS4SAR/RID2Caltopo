@@ -799,6 +799,14 @@ struct ContentView: View {
                     "TrackerPeer",
                     "Reauthentication completed; configuration preserved"
                 )
+                notams.configure(
+                    faaProxyURL: orgConfigSettings.faaProxyURL,
+                    trackerURLPrefix: orgConfigSettings.trackerURLPrefix,
+                    trackerAPIKey: orgConfigSettings.trackerAPIKey
+                )
+                notams.enabled = true
+                notams.refreshNow(location: locationProvider.lastLocation)
+                airspace.update(location: locationProvider.lastLocation)
                 configurePeerCoordinator(forceReconnect: true)
             } else if url.host == "erase" {
                 droneConfirmations.resetPersistedState()

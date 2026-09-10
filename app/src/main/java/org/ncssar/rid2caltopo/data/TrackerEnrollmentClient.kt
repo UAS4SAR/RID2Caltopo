@@ -74,6 +74,8 @@ object TrackerEnrollmentClient {
     }
 
     fun redeemBlocking(context: Context, value: String): TrackerEnrollmentResult {
+        val startedAt = android.os.SystemClock.elapsedRealtime()
+        CaltopoClient.CTDebug("OrgConfig", "Starting managed tracker enrollment request")
         val enrollmentUrl = value.trim().toHttpUrlOrNull()
             ?: throw IllegalArgumentException("Enrollment QR is not a valid URL.")
         if (!isEnrollmentUrl(value)) {
@@ -105,9 +107,19 @@ object TrackerEnrollmentClient {
                 BuildConfig.TRACKER_FUNCTIONALITY_RELEASE.toString()
             )
             .post(payload.toRequestBody(jsonMediaType))
+            .apply {
+                CaltopoClient.GetHomeTrackerApiKey().trim().takeIf { it.isNotEmpty() }?.let {
+                    header("X-R2C-Previous-Device-Token", it)
+                }
+            }
             .build()
         return CaltopoSession.MyOkHttpClient.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
+            CaltopoClient.CTDebug(
+                "OrgConfig",
+                "Managed tracker enrollment response status=${response.code} " +
+                    "durationMs=${android.os.SystemClock.elapsedRealtime() - startedAt}"
+            )
             if (!response.isSuccessful) {
                 val detail = runCatching { JSONObject(body).optString("detail") }.getOrNull()
                 throw IllegalStateException(detail?.ifBlank { null } ?: "Enrollment failed (${response.code}).")
@@ -147,12 +159,14 @@ object TrackerEnrollmentClient {
         CaltopoClient.SetTrackerFaaProxyUrl(result.faaProxyUrl)
         CaltopoClient.SetTrackerEnrollmentUrl(result.enrollmentUrl)
         CaltopoClient.SetNotamEnabled(true)
-        R2CApplication.getAppCtxt()?.let { context ->
-            OrgConfigManager.syncManagedConfigurationAfterEnrollment(
-                context,
-                result.trackerBaseUrl,
-                result.deviceToken
-            )
+        if (result.reauthenticationUrl == null) {
+            R2CApplication.getAppCtxt()?.let { context ->
+                OrgConfigManager.syncManagedConfigurationAfterEnrollment(
+                    context,
+                    result.trackerBaseUrl,
+                    result.deviceToken
+                )
+            }
         }
     }
 

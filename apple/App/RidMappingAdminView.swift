@@ -33,6 +33,15 @@ struct AppleManagedOrganizationConfigResult: @unchecked Sendable {
 
 enum AppleTrackerEnrollmentClient {
     static let appLinkScheme = "r2cenroll"
+    private static let enrollmentSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.timeoutIntervalForRequest = 20
+        configuration.timeoutIntervalForResource = 30
+        configuration.waitsForConnectivity = false
+        configuration.httpMaximumConnectionsPerHost = 2
+        return URLSession(configuration: configuration)
+    }()
 
     static func normalizedEnrollmentURL(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -71,7 +80,8 @@ enum AppleTrackerEnrollmentClient {
 
     static func redeem(
         _ value: String,
-        deviceName: String
+        deviceName: String,
+        previousDeviceToken: String? = nil
     ) async throws -> AppleTrackerEnrollmentResult {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard isEnrollmentURL(trimmed),
@@ -86,7 +96,7 @@ enum AppleTrackerEnrollmentClient {
         endpoint.port = enrollment.port
         endpoint.path = "/api/v1/device-enrollment/redeem"
         guard let url = endpoint.url else { throw EnrollmentError.invalidURL }
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, timeoutInterval: 20)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -94,6 +104,14 @@ enum AppleTrackerEnrollmentClient {
             String(TrackerCoordinationClient.trackerFunctionalityRelease),
             forHTTPHeaderField: "X-R2C-Functionality-Release"
         )
+        if let previousDeviceToken = previousDeviceToken?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !previousDeviceToken.isEmpty {
+            request.setValue(
+                previousDeviceToken,
+                forHTTPHeaderField: "X-R2C-Previous-Device-Token"
+            )
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "token": token,
             "device_name": deviceName,
@@ -102,10 +120,19 @@ enum AppleTrackerEnrollmentClient {
             "installation_id": AppleDeviceIdentity.installationID(),
             "functionality_release": TrackerCoordinationClient.trackerFunctionalityRelease,
         ])
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let requestStartedAt = ProcessInfo.processInfo.systemUptime
+        AppleLog.info("OrgConfig", "Starting managed tracker enrollment network request")
+        let (data, response) = try await enrollmentSession.data(for: request)
+        let durationMs = Int(
+            ((ProcessInfo.processInfo.systemUptime - requestStartedAt) * 1_000).rounded()
+        )
         guard let http = response as? HTTPURLResponse else {
             throw EnrollmentError.invalidResponse
         }
+        AppleLog.info(
+            "OrgConfig",
+            "Managed tracker enrollment response status=\(http.statusCode) durationMs=\(durationMs)"
+        )
         guard (200 ..< 300).contains(http.statusCode) else {
             let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             throw EnrollmentError.server(

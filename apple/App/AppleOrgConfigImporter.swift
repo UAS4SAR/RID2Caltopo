@@ -949,7 +949,8 @@ final class AppleOrgConfigImporter: ObservableObject {
         do {
             let result = try await AppleTrackerEnrollmentClient.redeem(
                 rawURL,
-                deviceName: deviceName
+                deviceName: deviceName,
+                previousDeviceToken: orgSettings.trackerAPIKey
             )
             try orgSettings.applyTrackerEnrollment(
                 organization: result.organization,
@@ -959,34 +960,39 @@ final class AppleOrgConfigImporter: ObservableObject {
                 enrollmentURL: rawURL
             )
             try profileLifecycle.captureHome(org: orgSettings, caltopo: caltopoSettings)
-            AppleNotamCenter.shared.enabled = true
-            notamEnrollmentAppliedHandler?(
-                orgSettings.faaProxyURL,
-                orgSettings.trackerURLPrefix,
-                orgSettings.trackerAPIKey
-            )
             if let url = result.reauthenticationURL {
                 trackerReauthenticationRequiredHandler?(url)
-            }
-            do {
-                if let managed = try await AppleTrackerEnrollmentClient.fetchManagedOrganizationConfig(
-                    trackerBaseURL: result.trackerBaseURL,
-                    deviceToken: result.deviceToken
-                ) {
-                    try AppleManagedOrganizationConfig.apply(
-                        snapshot: managed.snapshot,
-                        versionMs: managed.versionMs,
-                        caltopo: caltopoSettings,
-                        organization: orgSettings,
-                        identities: identityStore
-                    )
-                    caltopoConfigurationHandler?(caltopoSettings.configuration)
-                }
-            } catch {
-                AppleLog.error(
+                AppleLog.info(
                     "OrgConfig",
-                    "Initial managed configuration sync failed; tracker will retry: \(error.localizedDescription)"
+                    "Deferring protected configuration sync until tracker reauthentication completes"
                 )
+            } else {
+                AppleNotamCenter.shared.enabled = true
+                notamEnrollmentAppliedHandler?(
+                    orgSettings.faaProxyURL,
+                    orgSettings.trackerURLPrefix,
+                    orgSettings.trackerAPIKey
+                )
+                do {
+                    if let managed = try await AppleTrackerEnrollmentClient.fetchManagedOrganizationConfig(
+                        trackerBaseURL: result.trackerBaseURL,
+                        deviceToken: result.deviceToken
+                    ) {
+                        try AppleManagedOrganizationConfig.apply(
+                            snapshot: managed.snapshot,
+                            versionMs: managed.versionMs,
+                            caltopo: caltopoSettings,
+                            organization: orgSettings,
+                            identities: identityStore
+                        )
+                        caltopoConfigurationHandler?(caltopoSettings.configuration)
+                    }
+                } catch {
+                    AppleLog.error(
+                        "OrgConfig",
+                        "Initial managed configuration sync failed; tracker will retry: \(error.localizedDescription)"
+                    )
+                }
             }
             state = .applied("Joined \(result.organization) on r2c-tracker.")
             AppleLog.info(
@@ -1045,7 +1051,8 @@ final class AppleOrgConfigImporter: ObservableObject {
                 }
                 let enrollment = try await AppleTrackerEnrollmentClient.redeem(
                     bundle.trackerEnrollmentURL,
-                    deviceName: AppleDeviceIdentity.displayName
+                    deviceName: AppleDeviceIdentity.displayName,
+                    previousDeviceToken: orgSettings.trackerAPIKey
                 )
                 guard enrollment.organization.caseInsensitiveCompare(name) == .orderedSame else {
                     throw OrgConfigInteropError.invalidBundle
@@ -1058,14 +1065,15 @@ final class AppleOrgConfigImporter: ObservableObject {
                     enrollmentURL: bundle.trackerEnrollmentURL
                 )
                 try profileLifecycle.captureHome(org: orgSettings, caltopo: caltopoSettings)
-                AppleNotamCenter.shared.enabled = true
-                notamEnrollmentAppliedHandler?(
-                    orgSettings.faaProxyURL,
-                    orgSettings.trackerURLPrefix,
-                    orgSettings.trackerAPIKey
-                )
                 if let url = enrollment.reauthenticationURL {
                     trackerReauthenticationRequiredHandler?(url)
+                } else {
+                    AppleNotamCenter.shared.enabled = true
+                    notamEnrollmentAppliedHandler?(
+                        orgSettings.faaProxyURL,
+                        orgSettings.trackerURLPrefix,
+                        orgSettings.trackerAPIKey
+                    )
                 }
                 let extras = [
                     bundle.mutualAidTemplate == nil ? nil : "mutual-aid template",
@@ -1116,16 +1124,26 @@ final class AppleOrgConfigImporter: ObservableObject {
         identityStore: AppleDroneConfirmationStore
     ) async {
         state = .downloading
+        let importStartedAt = ProcessInfo.processInfo.systemUptime
+        AppleLog.info(
+            "OrgConfig",
+            "Reading local config file name='\(url.lastPathComponent)'"
+        )
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         do {
             let data = try Data(contentsOf: url, options: .mappedIfSafe)
             if Self.isQRCodeImageFile(url) {
-                guard let payload = try await Self.decodeQRCodePayload(from: data) else {
+                let decodeStartedAt = ProcessInfo.processInfo.systemUptime
+                guard let payload = try await Self.decodeQRCodePayload(from: data, fileURL: url) else {
                     state = .failed("No readable QR code was found in that image.")
                     AppleLog.error("OrgConfig", "Selected image did not contain a readable QR code")
                     return
                 }
+                AppleLog.info(
+                    "OrgConfig",
+                    "Decoded local QR image bytes=\(data.count) durationMs=\(Int(((ProcessInfo.processInfo.systemUptime - decodeStartedAt) * 1_000).rounded()))"
+                )
                 if let enrollmentURL = AppleTrackerEnrollmentClient.normalizedEnrollmentURL(payload) {
                     await importTrackerEnrollment(
                         enrollmentURL,
@@ -1144,6 +1162,10 @@ final class AppleOrgConfigImporter: ObservableObject {
                     state = .failed("The QR code does not contain a supported configuration.")
                     AppleLog.error("OrgConfig", "Selected QR image contained an unsupported payload")
                 }
+                AppleLog.info(
+                    "OrgConfig",
+                    "Finished local QR import durationMs=\(Int(((ProcessInfo.processInfo.systemUptime - importStartedAt) * 1_000).rounded()))"
+                )
                 return
             }
             guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -1167,7 +1189,8 @@ final class AppleOrgConfigImporter: ObservableObject {
             }
             let enrollment = try await AppleTrackerEnrollmentClient.redeem(
                 bundle.trackerEnrollmentURL,
-                deviceName: AppleDeviceIdentity.displayName
+                deviceName: AppleDeviceIdentity.displayName,
+                previousDeviceToken: orgSettings.trackerAPIKey
             )
             guard enrollment.organization.caseInsensitiveCompare(bundle.organizationName) == .orderedSame else {
                 throw OrgConfigInteropError.invalidBundle
@@ -1180,21 +1203,22 @@ final class AppleOrgConfigImporter: ObservableObject {
                 enrollmentURL: bundle.trackerEnrollmentURL
             )
             try profileLifecycle.captureHome(org: orgSettings, caltopo: caltopoSettings)
-            AppleNotamCenter.shared.enabled = true
-            notamEnrollmentAppliedHandler?(
-                orgSettings.faaProxyURL,
-                orgSettings.trackerURLPrefix,
-                orgSettings.trackerAPIKey
-            )
             if let url = enrollment.reauthenticationURL {
                 trackerReauthenticationRequiredHandler?(url)
+            } else {
+                AppleNotamCenter.shared.enabled = true
+                notamEnrollmentAppliedHandler?(
+                    orgSettings.faaProxyURL,
+                    orgSettings.trackerURLPrefix,
+                    orgSettings.trackerAPIKey
+                )
             }
             state = .applied(
                 "Loaded \(url.lastPathComponent): \(bundle.mappings.count) RID mapping(s)."
             )
             AppleLog.info(
                 "OrgConfig",
-                "Loaded local config file name='\(url.lastPathComponent)' mappings=\(bundle.mappings.count)"
+                "Loaded local config file name='\(url.lastPathComponent)' mappings=\(bundle.mappings.count) durationMs=\(Int(((ProcessInfo.processInfo.systemUptime - importStartedAt) * 1_000).rounded()))"
             )
         } catch {
             state = .failed("Config file import failed: \(error.localizedDescription)")
@@ -1210,14 +1234,35 @@ final class AppleOrgConfigImporter: ObservableObject {
             .conforms(to: .image) == true
     }
 
-    private nonisolated static func decodeQRCodePayload(from data: Data) async throws -> String? {
+    private nonisolated static func decodeQRCodePayload(
+        from data: Data,
+        fileURL: URL
+    ) async throws -> String? {
         try await Task.detached(priority: .userInitiated) {
             let request = VNDetectBarcodesRequest()
             request.symbologies = [.qr]
-            let handler = VNImageRequestHandler(data: data, options: [:])
+            let handler: VNImageRequestHandler
+            if isSVGQRCodeFile(fileURL) {
+                handler = VNImageRequestHandler(
+                    cgImage: try TrackerQRSVG.rasterize(data),
+                    options: [:]
+                )
+            } else {
+                handler = VNImageRequestHandler(data: data, options: [:])
+            }
             try handler.perform([request])
             return request.results?.compactMap(\.payloadStringValue).first { !$0.isEmpty }
         }.value
+    }
+
+    private nonisolated static func isSVGQRCodeFile(_ url: URL) -> Bool {
+        if url.pathExtension.caseInsensitiveCompare("svg") == .orderedSame {
+            return true
+        }
+        guard let type = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType else {
+            return false
+        }
+        return type == .svg || type.identifier == "public.svg-image"
     }
 
     @discardableResult

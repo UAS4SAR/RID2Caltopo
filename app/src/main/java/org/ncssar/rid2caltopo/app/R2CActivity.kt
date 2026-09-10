@@ -2480,6 +2480,9 @@ class R2CActivity :
 
     private fun resumeTrackerAfterReauthentication() {
         TrackerEnrollmentClient.retryManagedConfigurationBootstrap(this)
+        NotamCenter.requestImmediateRefresh()
+        AirspaceCenter.requestImmediateRefresh()
+        CaltopoClient.CheckUnreportedFiles()
         R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator
             .resumeAfterReauthentication()
     }

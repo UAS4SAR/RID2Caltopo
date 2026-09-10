@@ -133,9 +133,11 @@ internal fun applyTrackerEnrollmentAndRefreshNotams(
     requestTrackReplay: () -> Unit = CaltopoClient::CheckUnreportedFiles
 ) {
     TrackerEnrollmentClient.apply(result)
-    requestNotamRefresh()
-    requestAirspaceRefresh()
-    requestTrackReplay()
+    if (result.reauthenticationUrl == null) {
+        requestNotamRefresh()
+        requestAirspaceRefresh()
+        requestTrackReplay()
+    }
 }
 
 internal fun resetPersistedStateAndRequestRequiredSetup(
@@ -328,6 +330,122 @@ internal enum class ImportConfigFileKind {
     UNSUPPORTED
 }
 
+internal data class TrackerQrSvgRect(
+    val x: Double,
+    val y: Double,
+    val width: Double,
+    val height: Double
+)
+
+internal data class TrackerQrSvgDocument(
+    val minX: Double,
+    val minY: Double,
+    val width: Double,
+    val height: Double,
+    val rectangles: List<TrackerQrSvgRect>
+)
+
+internal data class RasterizedQrImage(
+    val width: Int,
+    val height: Int,
+    val pixels: IntArray
+)
+
+private const val MAX_QR_SVG_BYTES = 2 * 1024 * 1024
+private const val MAX_QR_SVG_DIMENSION = 2048
+private const val QR_SVG_PIXELS_PER_MODULE = 12.0
+
+private val svgNumberPattern = "[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][-+]?\\d+)?"
+private val svgViewBoxRegex = Regex(
+    """\bviewBox\s*=\s*["']\s*($svgNumberPattern)[,\s]+($svgNumberPattern)[,\s]+($svgNumberPattern)[,\s]+($svgNumberPattern)\s*["']"""
+)
+private val svgPathDataRegex = Regex(
+    """<path\b[^>]*\bd\s*=\s*["']([^"']+)["'][^>]*>""",
+    setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+)
+private val svgQrRectangleRegex = Regex(
+    """M\s*($svgNumberPattern)\s*[,\s]\s*($svgNumberPattern)\s*H\s*($svgNumberPattern)\s*V\s*($svgNumberPattern)\s*H\s*($svgNumberPattern)\s*[zZ]"""
+)
+
+internal fun parseTrackerQrSvg(svg: String): TrackerQrSvgDocument? {
+    if (svg.toByteArray(Charsets.UTF_8).size > MAX_QR_SVG_BYTES) return null
+    val viewBox = svgViewBoxRegex.find(svg)?.groupValues ?: return null
+    val minX = viewBox[1].toDoubleOrNull() ?: return null
+    val minY = viewBox[2].toDoubleOrNull() ?: return null
+    val width = viewBox[3].toDoubleOrNull() ?: return null
+    val height = viewBox[4].toDoubleOrNull() ?: return null
+    if (!width.isFinite() || !height.isFinite() || width <= 0.0 || height <= 0.0) return null
+
+    val rectangles = mutableListOf<TrackerQrSvgRect>()
+    val paths = svgPathDataRegex.findAll(svg).map { it.groupValues[1] }.toList()
+    if (paths.isEmpty()) return null
+    for (path in paths) {
+        var consumedThrough = 0
+        for (match in svgQrRectangleRegex.findAll(path)) {
+            if (path.substring(consumedThrough, match.range.first).isNotBlank()) return null
+            consumedThrough = match.range.last + 1
+            val values = match.groupValues.drop(1).map { it.toDoubleOrNull() ?: return null }
+            val x1 = values[0]
+            val y1 = values[1]
+            val x2 = values[2]
+            val y2 = values[3]
+            val closingX = values[4]
+            if (kotlin.math.abs(closingX - x1) > 0.000_001) return null
+            val left = minOf(x1, x2)
+            val top = minOf(y1, y2)
+            val rectWidth = kotlin.math.abs(x2 - x1)
+            val rectHeight = kotlin.math.abs(y2 - y1)
+            if (
+                !left.isFinite() || !top.isFinite() ||
+                !rectWidth.isFinite() || !rectHeight.isFinite() ||
+                rectWidth <= 0.0 || rectHeight <= 0.0 ||
+                left < minX || top < minY ||
+                left + rectWidth > minX + width + 0.000_001 ||
+                top + rectHeight > minY + height + 0.000_001
+            ) return null
+            rectangles += TrackerQrSvgRect(left, top, rectWidth, rectHeight)
+        }
+        if (path.substring(consumedThrough).isNotBlank()) return null
+    }
+    return rectangles.takeIf { it.isNotEmpty() }?.let {
+        TrackerQrSvgDocument(minX, minY, width, height, it)
+    }
+}
+
+internal fun rasterizeTrackerQrSvg(svg: String): RasterizedQrImage? {
+    val document = parseTrackerQrSvg(svg) ?: return null
+    val moduleSize = document.rectangles.minOf { minOf(it.width, it.height) }
+    val preferredScale = QR_SVG_PIXELS_PER_MODULE / moduleSize
+    val maximumScale = MAX_QR_SVG_DIMENSION / maxOf(document.width, document.height)
+    val scale = minOf(preferredScale, maximumScale)
+    if (!scale.isFinite() || scale <= 0.0) return null
+    val width = kotlin.math.ceil(document.width * scale).toInt().coerceAtLeast(1)
+    val height = kotlin.math.ceil(document.height * scale).toInt().coerceAtLeast(1)
+    val pixels = IntArray(width * height) { 0xFFFFFFFF.toInt() }
+    for (rect in document.rectangles) {
+        val left = kotlin.math.floor((rect.x - document.minX) * scale).toInt().coerceIn(0, width)
+        val right = kotlin.math.ceil((rect.x + rect.width - document.minX) * scale).toInt().coerceIn(0, width)
+        val top = kotlin.math.floor((rect.y - document.minY) * scale).toInt().coerceIn(0, height)
+        val bottom = kotlin.math.ceil((rect.y + rect.height - document.minY) * scale).toInt().coerceIn(0, height)
+        for (y in top until bottom) {
+            java.util.Arrays.fill(pixels, y * width + left, y * width + right, 0xFF000000.toInt())
+        }
+    }
+    return RasterizedQrImage(width, height, pixels)
+}
+
+private fun java.io.InputStream.readAtMost(maximumByteCount: Int): ByteArray {
+    val output = java.io.ByteArrayOutputStream(minOf(maximumByteCount + 1, 16 * 1024))
+    val buffer = ByteArray(8 * 1024)
+    while (output.size() <= maximumByteCount) {
+        val remaining = maximumByteCount + 1 - output.size()
+        val count = read(buffer, 0, minOf(buffer.size, remaining))
+        if (count <= 0) break
+        output.write(buffer, 0, count)
+    }
+    return output.toByteArray()
+}
+
 internal fun classifyImportConfigFile(
     displayName: String?,
     mimeType: String?
@@ -336,7 +454,7 @@ internal fun classifyImportConfigFile(
     if (normalizedName.endsWith(".json")) return ImportConfigFileKind.JSON_CONFIG
     if (normalizedName.endsWith(".zip")) return ImportConfigFileKind.MUTUAL_AID_PACKAGE
     if (
-        listOf(".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif")
+        listOf(".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif", ".svg")
             .any(normalizedName::endsWith)
     ) return ImportConfigFileKind.QR_IMAGE
 
@@ -373,6 +491,18 @@ internal suspend fun decodeQrCodeImage(
     uri: Uri,
     dispatcher: CoroutineDispatcher = Dispatchers.IO
 ): String? = withContext(dispatcher) {
+    val mimeType = context.contentResolver.getType(uri)?.substringBefore(';')?.lowercase()
+    val isSvg = mimeType == "image/svg+xml" ||
+        uri.lastPathSegment?.substringAfterLast('/')?.lowercase()?.endsWith(".svg") == true
+    if (isSvg) {
+        val svgBytes = context.contentResolver.openInputStream(uri)?.use { input ->
+            input.readAtMost(MAX_QR_SVG_BYTES)
+        } ?: return@withContext null
+        if (svgBytes.size > MAX_QR_SVG_BYTES) return@withContext null
+        val raster = rasterizeTrackerQrSvg(svgBytes.toString(Charsets.UTF_8))
+            ?: return@withContext null
+        return@withContext decodeQrCodePixels(raster.width, raster.height, raster.pixels)
+    }
     val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
         ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) {
                 decoder, info, _ ->

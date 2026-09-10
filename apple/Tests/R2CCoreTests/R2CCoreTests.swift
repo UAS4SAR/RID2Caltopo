@@ -581,6 +581,10 @@ import Testing
         contentsOf: appleRoot.appendingPathComponent("App/AppleOrgConfigImporter.swift"),
         encoding: .utf8
     )
+    let enrollmentClient = try String(
+        contentsOf: appleRoot.appendingPathComponent("App/RidMappingAdminView.swift"),
+        encoding: .utf8
+    )
     let start = try #require(source.range(of: "func importTrackerEnrollment("))
     let end = try #require(
         source.range(of: "func importToken(", range: start.upperBound..<source.endIndex)
@@ -588,6 +592,13 @@ import Testing
     let enrollment = source[start.lowerBound..<end.lowerBound]
     #expect(enrollment.contains("profileLifecycle.captureHome"))
     #expect(enrollment.contains("trackerReauthenticationRequiredHandler?(url)"))
+    #expect(enrollment.contains("Deferring protected configuration sync until tracker reauthentication completes"))
+    let challenge = try #require(enrollment.range(of: "if let url = result.reauthenticationURL"))
+    let protectedRefresh = try #require(enrollment.range(of: "notamEnrollmentAppliedHandler?("))
+    #expect(challenge.lowerBound < protectedRefresh.lowerBound)
+    #expect(enrollmentClient.contains("URLSessionConfiguration.ephemeral"))
+    #expect(enrollmentClient.contains("enrollmentSession.data(for: request)"))
+    #expect(enrollmentClient.contains("X-R2C-Previous-Device-Token"))
 }
 
 @Test func appleTrackerCredentialRefreshForcesCoordinatorReconnect() throws {
@@ -606,6 +617,8 @@ import Testing
 
     #expect(contentView.contains("notams.refreshNow(location: locationProvider.lastLocation)\n                    configurePeerCoordinator(forceReconnect: true)"))
     #expect(contentView.contains("Reauthentication completed; configuration preserved"))
+    #expect(contentView.contains("notams.refreshNow(location: locationProvider.lastLocation)"))
+    #expect(contentView.contains("airspace.update(location: locationProvider.lastLocation)"))
     #expect(contentView.contains("configurePeerCoordinator(forceReconnect: true)"))
     #expect(contentView.contains("resumeTrackerAfterBrowserReturnIfNeeded"))
     #expect(contentView.contains("callbackPending: trackerCallbackPending"))

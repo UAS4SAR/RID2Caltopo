@@ -3,6 +3,7 @@ package org.ncssar.rid2caltopo.ui
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.ncssar.rid2caltopo.data.CaltopoClient
@@ -75,12 +76,40 @@ class ImportConfigRoutingTest {
 
     @Test
     fun `common saved QR image extensions route to image decoding`() {
-        listOf("png", "jpg", "jpeg", "webp", "heic", "heif").forEach { extension ->
+        listOf("png", "jpg", "jpeg", "webp", "heic", "heif", "svg").forEach { extension ->
             assertEquals(
                 ImportConfigFileKind.QR_IMAGE,
                 classifyImportConfigFile("enrollment.$extension", "application/octet-stream")
             )
         }
+    }
+
+    @Test
+    fun `tracker SVG QR rasterizes and decodes to the original import payload`() {
+        val payload =
+            "r2cenroll://open?url=https%3A%2F%2Fr2c-tracker.com%2Fncssar%2Fenroll%3Ftoken%3Dsvg-token"
+        val matrix = QRCodeWriter().encode(payload, BarcodeFormat.QR_CODE, 128, 128)
+        val path = buildString {
+            for (y in 0 until matrix.height) {
+                for (x in 0 until matrix.width) {
+                    if (matrix[x, y]) append("M${x},${y}H${x + 1}V${y + 1}H${x}z")
+                }
+            }
+        }
+        val svg =
+            """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${matrix.width} ${matrix.height}"><path d="$path" fill="#000000"/></svg>"""
+
+        val raster = requireNotNull(rasterizeTrackerQrSvg(svg))
+
+        assertEquals(payload, decodeQrCodePixels(raster.width, raster.height, raster.pixels))
+    }
+
+    @Test
+    fun `SVG QR parser rejects executable or unsupported path commands`() {
+        val svg =
+            """<svg viewBox="0 0 10 10"><script>alert(1)</script><path d="M1,1L9,9z"/></svg>"""
+
+        assertEquals(null, parseTrackerQrSvg(svg))
     }
 
     @Test
@@ -111,6 +140,33 @@ class ImportConfigRoutingTest {
         assertTrue(notamRefreshRequested)
         assertTrue(airspaceRefreshRequested)
         assertTrue(trackReplayRequested)
+        CaltopoClient.ResetPersistedClientState()
+    }
+
+    @Test
+    fun `tracker enrollment defers protected refreshes until reauthentication`() {
+        CaltopoClient.ResetPersistedClientState()
+        var notamRefreshRequested = false
+        var airspaceRefreshRequested = false
+        var trackReplayRequested = false
+
+        applyTrackerEnrollmentAndRefreshNotams(
+            result = TrackerEnrollmentResult(
+                organization = "TEST_ORG",
+                trackerBaseUrl = "https://tracker.example.test/org",
+                deviceToken = "pending-device-token",
+                faaProxyUrl = "https://tracker.example.test/faa/notams",
+                enrollmentUrl = "https://r2c-tracker.com/test/enroll?token=campaign-token",
+                reauthenticationUrl = "https://r2c-tracker.com/test/device-reauthenticate?token=pending"
+            ),
+            requestNotamRefresh = { notamRefreshRequested = true },
+            requestAirspaceRefresh = { airspaceRefreshRequested = true },
+            requestTrackReplay = { trackReplayRequested = true }
+        )
+
+        assertFalse(notamRefreshRequested)
+        assertFalse(airspaceRefreshRequested)
+        assertFalse(trackReplayRequested)
         CaltopoClient.ResetPersistedClientState()
     }
 }
