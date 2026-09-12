@@ -21,6 +21,7 @@ import org.ncssar.rid2caltopo.data.CaltopoClient.CTDebugEnabled
 import org.ncssar.rid2caltopo.video.MINIMUM_TRAVEL_BEARING_DISPLACEMENT_METERS
 import org.ncssar.rid2caltopo.video.autoDownloadBestDemForLocation
 import org.ncssar.rid2caltopo.video.demPrefetchCellKey
+import org.ncssar.rid2caltopo.video.TerrainPrefetchGate
 import org.ncssar.rid2caltopo.video.mapcache.DemElevationService
 import androidx.compose.runtime.snapshotFlow
 import java.util.concurrent.TimeUnit
@@ -49,7 +50,7 @@ internal class DroneAltitudeCoordinator(
 
     // ── Public DEM service (MapPane still needs it for tile downloads, offline prep, stats) ─
     val demElevationService = DemElevationService(applicationContext)
-    private val terrainPrefetchCells = HashSet<String>()
+    private val terrainPrefetchGate = TerrainPrefetchGate()
     private val terrainPrefetchMutex = Mutex()
     private val terrainPrefetchClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -439,10 +440,10 @@ internal class DroneAltitudeCoordinator(
 
     /**
      * Starts terrain preparation without waiting for a map pane or blocking normal app use.
-     * The first usable tablet or aircraft coordinate wins; later updates in the same small
-     * location cell are deduplicated while the serialized background transfer completes.
+     * Device requests include the operating radius; aircraft requests cover their location cell.
+     * Successful cells are deduplicated and failed transfers retry on later location updates.
      */
-    fun prefetchTerrainForLocation(lat: Double, lng: Double) {
+    fun prefetchTerrainForLocation(lat: Double, lng: Double, radiusMeters: Double = 0.0) {
         if (!lat.isFinite() || !lng.isFinite() || lat !in -90.0..90.0 || lng !in -180.0..180.0) {
             return
         }
@@ -450,20 +451,25 @@ internal class DroneAltitudeCoordinator(
         // A fresh install can receive a location before archive selection completes. Do not
         // consume the cell in that state; a later tablet/drone update must be allowed to retry.
         if (org.ncssar.rid2caltopo.data.CaltopoClient.GetArchiveDir() == null) return
-        val cell = demPrefetchCellKey(lat, lng)
-        synchronized(terrainPrefetchCells) {
-            if (!terrainPrefetchCells.add(cell)) return
-        }
+        val cell = "${demPrefetchCellKey(lat, lng)}:$radiusMeters"
+        if (!terrainPrefetchGate.schedule(cell, android.os.SystemClock.elapsedRealtime())) return
         scope.launch(Dispatchers.IO) {
-            terrainPrefetchMutex.withLock {
-                autoDownloadBestDemForLocation(
-                    lat,
-                    lng,
-                    applicationContext,
-                    terrainPrefetchClient,
-                    demElevationService,
-                )
-                demElevationService.prewarmForLocation(lat, lng)
+            var complete = false
+            try {
+                // Make already-downloaded local data usable before any catalog/network wait.
+                val localS1mReady = demElevationService.prewarmLocalForLocation(lat, lng)
+                terrainPrefetchMutex.withLock {
+                    complete = if (radiusMeters == 0.0 && localS1mReady) true else autoDownloadBestDemForLocation(
+                        lat, lng, applicationContext, terrainPrefetchClient, demElevationService, radiusMeters,
+                    )
+                    demElevationService.prewarmLocalForLocation(lat, lng)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                CTDebug("TerrainPrefetch", "Terrain preparation failed; retryable error=${e.javaClass.simpleName}")
+            } finally {
+                terrainPrefetchGate.finish(cell, complete, android.os.SystemClock.elapsedRealtime())
             }
         }
     }

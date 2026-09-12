@@ -178,6 +178,8 @@ import org.ncssar.rid2caltopo.notam.NotamMapOverlayAdapter
 import org.ncssar.rid2caltopo.video.mapcache.CaltopoIconCacheService
 import org.ncssar.rid2caltopo.video.mapcache.BadTilePolicy
 import org.ncssar.rid2caltopo.video.mapcache.MapCacheDebug
+import org.ncssar.rid2caltopo.video.mapcache.UnifiedMapCache
+import org.ncssar.rid2caltopo.video.mapcache.MapCacheUsage
 import org.ncssar.rid2caltopo.video.mapcache.MapCachePolicy
 import org.ncssar.rid2caltopo.video.mapcache.MapCacheSettings
 import org.ncssar.rid2caltopo.video.mapcache.TileCacheMapProvider
@@ -650,6 +652,16 @@ internal fun SplitMapPane(
     var offlinePrepCompletedSelectionKey by offlinePrepCoordinator.completedSelectionKey
     var offlinePrepAvailableBytes by remember { mutableStateOf<Long?>(null) }
     var offlinePrepCurrentTileCacheBytes by remember { mutableStateOf(0L) }
+    var combinedCacheUsage by remember { mutableStateOf(MapCacheUsage(0, 0, 0, 0, 0)) }
+    LaunchedEffect(context) {
+        while (isActive) {
+            runCatching { withContext(Dispatchers.IO) { UnifiedMapCache.usage(context) } }.getOrNull()?.let {
+                combinedCacheUsage = it
+                offlinePrepCurrentTileCacheBytes = it.total
+            }
+            delay(10_000)
+        }
+    }
     var offlinePrepTileCacheCapBytes by remember { mutableStateOf(MapCachePolicy.tileCacheMaxBytes(context)) }
     var offlinePrepCacheLimitInput by remember {
         mutableStateOf(String.format(Locale.US, "%.1f", MapCachePolicy.tileCacheMaxBytes(context) / 1_000_000_000.0))
@@ -747,7 +759,7 @@ internal fun SplitMapPane(
     LaunchedEffect(mapManagementMenuExpanded, showMapCacheSizeDialog) {
         if (!mapManagementMenuExpanded && !showMapCacheSizeDialog) return@LaunchedEffect
         offlinePrepAvailableBytes = withContext(Dispatchers.IO) { queryAvailableCacheBytes(context) }
-        offlinePrepCurrentTileCacheBytes = withContext(Dispatchers.IO) { tileCacheWriter.currentSizeBytes() }
+        offlinePrepCurrentTileCacheBytes = withContext(Dispatchers.IO) { UnifiedMapCache.usage(context).total }
     }
     val tileFetchPriorityScheduler = remember { TileFetchPriorityScheduler() }
     val baseTileSource = tileSourceForBaseLayer(baseLayer)
@@ -792,7 +804,7 @@ internal fun SplitMapPane(
     var fullArtifactHydrationQueued by remember { mutableStateOf(false) }
     // Tracks which drone's info-window bubble is open so it can be restored after each overlay rebuild.
     var openBubbleDesignator by remember { mutableStateOf<String?>(null) }
-    val focusedPath by viewModel.focusedPath.collectAsStateWithLifecycle()
+    val focusedPath by viewModel.mapFocusedDesignator.collectAsStateWithLifecycle()
     val latestFocusedPath by rememberUpdatedState(focusedPath)
     var lastInsetFollowAtMs by remember { mutableStateOf(0L) }
     var lastInsetFollowDesignator by remember { mutableStateOf<String?>(null) }
@@ -1195,7 +1207,7 @@ internal fun SplitMapPane(
             queryAvailableCacheBytes(context)
         }
         offlinePrepCurrentTileCacheBytes = withContext(Dispatchers.IO) {
-            tileCacheWriter.currentSizeBytes()
+            UnifiedMapCache.usage(context).total
         }
         offlinePrepTileCacheCapBytes = withContext(Dispatchers.IO) {
             MapCachePolicy.tileCacheMaxBytes(context)
@@ -1260,7 +1272,7 @@ internal fun SplitMapPane(
                 }.getOrDefault(emptyList())
                 for (download in downloads) {
                     val demFile = demDir?.findFile(download.fileName)
-                    if (demFile?.isFile != true) {
+                    if (demFile?.isFile != true && !hasCachedS1mPieces(download, demDir, context)) {
                         demMissing++
                     }
                 }
@@ -1667,61 +1679,26 @@ internal fun SplitMapPane(
                         val fileName = download.fileName
                         val existing = demDir.findFile(fileName)
                         val minimumCompleteBytes = download.expectedBytes?.let { maxOf(100_000L, it * 95L / 100L) } ?: 5_000_000L
-                        if (existing != null && existing.isFile && existing.length() >= minimumCompleteBytes) {
+                        if ((existing != null && existing.isFile && existing.length() >= minimumCompleteBytes) || hasCachedS1mPieces(download, demDir, context)) {
                             demHits.incrementAndGet()
                             demCompleted.incrementAndGet()
                             completed.incrementAndGet()
                             completedEstimatedBytes.addAndGet(estimatedBytes)
                             MapOfflinePrepRuntime.noteProgress()
-                            MapCacheDebug.log("geotiff dem hit file=$fileName bytes=${existing.length()}")
+                            MapCacheDebug.log("geotiff dem hit file=$fileName bytes=${existing?.length() ?: 0}")
                             return
                         }
                         var failureDetail = "unknown"
-                        val ok = try {
-                            val req = Request.Builder().url(download.url).build()
-                            val call = geoTiffHttpClient.newCall(req)
-                            offlinePrepActiveCalls += call
-                            try {
-                                call.execute().use { resp ->
-                                    if (!resp.isSuccessful) {
-                                        failureDetail = "http=${resp.code}"
-                                        return@use false
-                                    }
-                                    val body = resp.body ?: run { failureDetail = "no-body"; return@use false }
-                                    val destFile = demDir.findFile(fileName) ?: demDir.createFile("image/tiff", fileName)
-                                    if (destFile == null) { failureDetail = "create-failed"; return@use false }
-                                    val expectedResponseBytes = body.contentLength().takeIf { it > 0L }
-                                    context.contentResolver.openOutputStream(destFile.uri, "wt")?.use { out ->
-                                        body.byteStream().use { input ->
-                                            val buffer = ByteArray(128 * 1024)
-                                            var transferred = 0L
-                                            while (true) {
-                                                currentCoroutineContext().ensureActive()
-                                                val count = input.read(buffer)
-                                                if (count < 0) break
-                                                out.write(buffer, 0, count)
-                                                transferred += count
-                                                activeDemBytes[fileName] = weightedTransferredBytes(
-                                                    estimatedBytes = estimatedBytes,
-                                                    transferredBytes = transferred,
-                                                    expectedBytes = expectedResponseBytes,
-                                                )
-                                                MapOfflinePrepRuntime.noteProgress()
-                                            }
-                                        }
-                                    } ?: run { failureDetail = "stream-open-failed"; return@use false }
-                                    MapCacheDebug.log("geotiff dem fetched file=$fileName uri=${destFile.uri}")
-                                    true
-                                }
-                            } finally {
-                                offlinePrepActiveCalls.remove(call)
-                            }
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            failureDetail = "ex=${e.javaClass.simpleName}:${e.message}"
-                            false
-                        }
+                        val ok = downloadAutomaticDem(download, context, geoTiffHttpClient, demElevationService,
+                            onProgress = { transferred, expected ->
+                                activeDemBytes[fileName] = weightedTransferredBytes(estimatedBytes, transferred, expected)
+                                MapOfflinePrepRuntime.noteProgress()
+                            },
+                            onCall = { call, active ->
+                                if (active) offlinePrepActiveCalls += call else offlinePrepActiveCalls -= call
+                            },
+                        )
+                        if (!ok) failureDetail = "Download failed or combined map cache limit reached"
                         if (ok) {
                             demFetched.incrementAndGet()
                         } else {
@@ -2310,7 +2287,7 @@ internal fun SplitMapPane(
         onZoomToItem = { itemId ->
             pendingArtifactZoomFeatureId = itemId
             operatorAdjustedViewport = true
-            viewModel.clearFocus()
+            viewModel.clearMapDroneFocus()
         },
         showBadTilesHowToDialog = showBadTilesHowToDialog,
         onShowBadTilesHowToDialogChange = { showBadTilesHowToDialog = it },
@@ -2319,6 +2296,7 @@ internal fun SplitMapPane(
         mapCacheSizeInput = mapCacheSizeInput,
         mapCacheAvailableBytes = offlinePrepAvailableBytes,
         mapCacheCurrentBytes = offlinePrepCurrentTileCacheBytes,
+        mapCacheUsage = combinedCacheUsage,
         onMapCacheSizeInputChange = { mapCacheSizeInput = it },
         onMapCacheSizeSaved = { bytes ->
             val reasonableMaximum = reasonableCacheMaximumBytes(
@@ -2333,6 +2311,7 @@ internal fun SplitMapPane(
                 return@MapPaneManagementDialogs
             }
             MapCacheSettings.setMaxCacheBytes(context, bytes)
+            org.ncssar.rid2caltopo.video.mapcache.MapCacheMaintenanceScheduler.request(context)
             offlinePrepTileCacheCapBytes = MapCachePolicy.tileCacheMaxBytes(context)
             mapCacheSizeInput = String.format(
                 Locale.US,
@@ -2343,9 +2322,9 @@ internal fun SplitMapPane(
             showMapCacheSizeDialog = false
             CaltopoClient.ShowToast(
                 if (savedBytes == bytes) {
-                    "Map cache size saved as ${MapCacheSettings.formatDecimalGb(savedBytes)}. Startup maintenance will use it next launch."
+                    "Map cache size saved as ${MapCacheSettings.formatDecimalGb(savedBytes)}. Applies to all map and terrain caches now."
                 } else {
-                    "Map cache size adjusted to ${MapCacheSettings.formatDecimalGb(savedBytes)}. Startup maintenance will use it next launch."
+                    "Map cache size adjusted to ${MapCacheSettings.formatDecimalGb(savedBytes)}. Applies to all map and terrain caches now."
                 }
             )
         },
@@ -2437,7 +2416,10 @@ internal fun SplitMapPane(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(
                                 checked = followFocusedDroneEnabled,
-                                onCheckedChange = viewModel::setFollowFocusedDroneEnabled
+                                onCheckedChange = { enabled ->
+                                    if (enabled) operatorAdjustedViewport = false
+                                    viewModel.setFollowFocusedDroneEnabled(enabled)
+                                }
                             )
                             Text("Follow focused drone")
                         }
@@ -2681,7 +2663,7 @@ internal fun SplitMapPane(
                     gesture = gesture
                 )
             ) {
-                viewModel.clearFocus()
+                viewModel.clearMapDroneFocus()
                 CTInfo(MAP_PANE_TAG, "Map ${gesture.name.lowercase()} released focused drone $focus")
             }
         }
@@ -3619,18 +3601,19 @@ internal fun SplitMapPane(
                             headingDeg = travelBearingDeg,
                             scale = markerScale,
                             positionIconAlpha = positionIconAlpha,
+                            focused = sameMapDrone(focusedPath, point.designator),
                         )
                         setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
                         if (!isInsetMode) {
-                            setOnMarkerClickListener { tappedMarker, _ ->
-                                if (focusedPath != point.designator) {
-                                    viewModel.toggleFocus(point.designator)
-                                }
-                                if (tappedMarker.isInfoWindowShown) {
-                                    tappedMarker.closeInfoWindow()
-                                    openBubbleDesignator = null
-                                } else {
+                            setOnMarkerClickListener { _, _ ->
+                                if (sameMapDrone(latestFocusedPath, point.designator)) {
                                     openBubbleDesignator = point.designator
+                                } else {
+                                    openBubbleDesignator = null
+                                    operatorAdjustedViewport = false
+                                    lastInsetFollowDesignator = null
+                                    lastInsetFollowPoint = null
+                                    viewModel.focusMapDrone(point.designator)
                                 }
                                 true
                             }
@@ -3707,7 +3690,7 @@ internal fun SplitMapPane(
                     )
                 }
 
-                val focusedCompliance = focusedPath?.let { complianceByDesignator[it] }
+                val focusedCompliance = complianceByDesignator.entries.firstOrNull { sameMapDrone(it.key, focusedPath) }?.value
                 val anyOver = complianceByDesignator.values.any { it.overAgl || it.overRange }
                 val anyNear = complianceByDesignator.values.any { it.nearAgl || it.nearRange }
                 val severity = when {
@@ -3729,7 +3712,7 @@ internal fun SplitMapPane(
                     if (CTDebugEnabled(MAP_PANE_TAG)) CTDebug(MAP_PANE_TAG, "Artifact render stats: $renderStats")
                 }
 
-                val focusPoint = dronePoints.firstOrNull { it.designator == focusedPath }
+                val focusPoint = dronePoints.firstOrNull { sameMapDrone(it.designator, focusedPath) }
                     ?: dronePoints.firstOrNull()
                 if (focusPoint != null) {
                     val nearestArtifactMeters =
@@ -4046,7 +4029,7 @@ internal fun SplitMapPane(
                 }
                 val focusDesignator = focusedPath
                 val followFocusPoint = focusDesignator?.let { focus ->
-                    dronePoints.firstOrNull { it.designator == focus }
+                    dronePoints.firstOrNull { sameMapDrone(it.designator, focus) }
                 }
                 val shouldFollowFocusedDrone = shouldFollowFocusedDrone(
                     presentationMode = presentationMode,
@@ -4554,8 +4537,8 @@ internal fun SplitMapPane(
                                 availableVolumeBytes = offlinePrepAvailableBytes
                             )
                             Text(
-                                "Tile cache: ${formatStorageBytes(capacity.currentTileCacheBytes)} currently; " +
-                                    "up to ${formatStorageBytes(capacity.projectedTileCacheBytes)} after this download",
+                                "Map cache: ${formatStorageBytes(capacity.currentTileCacheBytes)} currently; " +
+                                    "up to ${formatStorageBytes(capacity.projectedTileCacheBytes)} before older entries are removed",
                                 fontSize = 11.sp
                             )
                             Text(
@@ -4564,7 +4547,7 @@ internal fun SplitMapPane(
                             )
                             if (capacity.exceedsCacheLimit) {
                                 Text(
-                                    "This download is expected to exceed the tile-cache limit. Increase the limit or reduce the selection before starting.",
+                                    "This download is expected to exceed the map-cache limit. Increase the limit or reduce the selection before starting.",
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.error
                                 )
@@ -4789,7 +4772,7 @@ internal fun SplitMapPane(
                                         availableVolumeBytes = offlinePrepAvailableBytes
                                     )
                                     if (capacity.exceedsCacheLimit) {
-                                        CaltopoClient.ShowToast("Increase the tile-cache limit or choose a smaller download.")
+                                        CaltopoClient.ShowToast("Increase the map-cache limit or choose a smaller download.")
                                         return@TextButton
                                     }
                                     if (capacity.exceedsAvailableVolume) {

@@ -445,28 +445,19 @@ struct AppleStreamsGridView: View {
     }
 
     private var currentNetworkSSID: String? {
-        networkDiagnostics.currentWiFiSSID ?? networkSSID
+        networkDiagnostics.currentControllerConnectionLabel
     }
 
     var body: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
-                if showsSetupHeader, let ingestAddress {
+                if showsSetupHeader {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Controller RTMP setup").font(.caption.bold())
-                        if ingestAddress.hasPrefix("rtmp://") {
-                            Text("Example: \(ingestAddress)/DRONE1")
-                                .font(.headline.monospaced())
-                            if let currentNetworkSSID {
-                                Text("Network: \(currentNetworkSSID)")
-                                    .font(.subheadline)
-                            }
-                            Text("Replace DRONE1 with the aircraft designator. The controller and iPad must be on the same Wi-Fi network.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text(ingestAddress).font(.headline)
-                        }
+                        AppleControllerConnectionURLs().font(.headline.monospaced())
+                        Text("Replace <droneDesig> with the aircraft designator. Use the address for the network connecting this device and the controller.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding()
@@ -962,16 +953,10 @@ private struct AppleStreamTile: View {
                 .font(.largeTitle)
             Text("Waiting for controller to connect")
                 .font(.headline)
-            if session.id == "demo",
-               let ingestAddress,
-               ingestAddress.hasPrefix("rtmp://") {
-                Text(OperationalStreamSetupPresentation.instruction(
-                    ingestAddress: ingestAddress,
-                    networkSSID: networkSSID
-                ))
+            if session.id == "demo" {
+                AppleControllerConnectionURLs()
                     .font(.subheadline.monospaced())
                     .multilineTextAlignment(.center)
-                    .textSelection(.enabled)
             }
         }
         .foregroundStyle(.white)

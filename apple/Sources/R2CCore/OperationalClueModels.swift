@@ -428,6 +428,19 @@ public enum OperationalClueGeometry {
             aglMeters: effectiveAGL,
             gimbalAngleDegrees: gimbalAngleDegrees
         )
+        // A vertical sightline can use DEM directly without heading or an AGL estimate.
+        if gimbalAngleDegrees.isFinite, gimbalAngleDegrees <= -89.9,
+           droneLatitude.isFinite, droneLongitude.isFinite,
+           (-90 ... 90).contains(droneLatitude), (-180 ... 180).contains(droneLongitude) {
+            if let ground = await sampleElevationMeters(droneLatitude, droneLongitude), ground.elevationMeters.isFinite {
+                return OperationalClueProjection(
+                    latitude: droneLatitude, longitude: droneLongitude, altitudeMeters: ground.elevationMeters,
+                    terrainProjectionApplied: true, demSource: ground.source,
+                    demResolutionMeters: ground.horizontalResolutionMeters, demSampleStale: ground.stale
+                )
+            }
+            return flatProjection
+        }
         if anchoredRelativeUp != nil,
            terrainReferenceLatitude != nil,
            terrainReferenceLongitude != nil,

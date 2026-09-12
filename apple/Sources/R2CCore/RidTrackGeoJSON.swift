@@ -1,6 +1,7 @@
 import Foundation
 
 public struct RidTrackArchiveMetadata: Sendable, Equatable {
+    public var flightReadiness: FlightReadiness?
     public var mappedID: String
     public var owner: String
     public var model: String
@@ -24,8 +25,10 @@ public struct RidTrackArchiveMetadata: Sendable, Equatable {
         deviceName: String = "",
         buildVersion: String = "",
         buildTime: String = "",
-        localArchiveOnly: Bool = false
+        localArchiveOnly: Bool = false,
+        flightReadiness: FlightReadiness? = nil
     ) {
+        self.flightReadiness = flightReadiness
         self.mappedID = mappedID
         self.owner = owner
         self.model = model
@@ -62,6 +65,7 @@ public enum RidTrackGeoJSON {
         }
         let miles = track.distanceMeters / 1_609.344
         let r2cProperties: [String: Any] = [
+            "flightReadiness": metadata.flightReadiness?.dictionary ?? [:],
             "owner": metadata.owner,
             "model": metadata.model,
             "org": metadata.organization,

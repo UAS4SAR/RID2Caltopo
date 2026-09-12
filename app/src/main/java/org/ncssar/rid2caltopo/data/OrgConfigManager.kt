@@ -197,11 +197,12 @@ object OrgConfigManager {
         for (index in 0 until drones.length()) {
             droneSpecs.put(filteredObject(
                 drones.getJSONObject(index),
-                listOf("remoteId", "mappedId", "org", "model", "owner")
+                listOf("remoteId", "mappedId", "org", "model", "owner", "ownerName", "ownerCallsign", "readiness")
             ))
         }
         return JSONObject()
             .put("configSchemaVersion", 1)
+            .put("aircraftSchemaVersion", 1)
             .put("sourcePlatform", "android")
             .put("sourceAppVersion", BuildConfig.VERSION_NAME)
             .put("sourceAppBuild", BuildConfig.VERSION_CODE)
@@ -259,13 +260,14 @@ object OrgConfigManager {
             CaltopoClient.SetMutualAidTemplateFields("", "", "", "", "", "")
         }
         current.put("configs", rebuilt)
-        val applied = CaltopoClient.ApplyOrgConfigBundle(current.toString())
+        val applied = AircraftOrganizationAccess.applyingManagedDownload { CaltopoClient.ApplyOrgConfigBundle(current.toString()) }
         if (applied) {
             CaltopoClient.SetTrackerManagedCaltopoCredentials(
                 CaltopoClient.GetCaltopoCredentials()
             )
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putLong(KEY_MANAGED_VERSION_MS, versionMs)
+                .putInt("managed_readiness_schema_version", snapshot.optInt("aircraftSchemaVersion", 0))
                 .apply()
         }
         return applied
@@ -361,6 +363,7 @@ object OrgConfigManager {
                     val root = JSONObject(response.body?.string().orEmpty())
                     val versionMs = root.getLong("versionMs")
                     val needsApply = versionMs != getManagedVersionMs(context) ||
+                        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt("managed_readiness_schema_version", 0) < 1 ||
                         !CaltopoCredentials.sniffTest(CaltopoClient.GetCaltopoCredentials())
                     if (needsApply &&
                         !applyManagedSnapshot(context, root.getJSONObject("config"), versionMs)) {

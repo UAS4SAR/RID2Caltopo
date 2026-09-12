@@ -8,6 +8,8 @@
 
 package org.ncssar.rid2caltopo.app
 
+import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.fillMaxSize
 import StreamsViewModel
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
@@ -1579,6 +1581,12 @@ class R2CActivity :
                             localViewModel.markPendingDroneConfirmationUnknown()
                         },
                     )
+                }
+                androidx.compose.foundation.layout.Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.TopCenter) {
+                    androidx.compose.foundation.layout.Column {
+                        org.ncssar.rid2caltopo.ui.ActiveOperatingProfiles()
+                        org.ncssar.rid2caltopo.ui.ShortFlightRecordingPanel()
+                    }
                 }
                 ProximityAlertHost(
                     onSuspend = { ProximityAlertCenter.suspendCurrentAlert() },

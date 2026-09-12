@@ -673,7 +673,7 @@ import Testing
     #expect(viewModel.contains("await terrainService.prefetch(latitude: latitude, longitude: longitude)"))
     #expect(viewModel.contains("latitude: track.lastObservation.latitude"))
     #expect(viewModel.contains("Task(priority: .utility)"))
-    #expect(terrainService.contains("func prefetch(latitude: Double, longitude: Double)"))
+    #expect(terrainService.contains("func prefetch(latitude: Double, longitude: Double, radiusMeters: Double = 0)"))
     #expect(terrainService.contains("guard scheduledPrefetchCells.insert(cell).inserted else { return }"))
 }
 
@@ -1605,7 +1605,7 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
     ) == "Stream video to: rtmp://192.168.1.5:1935/<droneDesig> on Wi-Fi name unavailable network")
 }
 
-@Test func controllerIPv4SelectionPrefersWiFiAndNeverFallsBackToCellular() {
+@Test func controllerIPv4SelectionPrefersEthernetAndNeverFallsBackToCellular() {
     let candidates = [
         ControllerIPv4Candidate(interfaceName: "pdp_ip0", address: "10.20.30.40"),
         ControllerIPv4Candidate(interfaceName: "en0", address: "192.168.50.12"),
@@ -1616,7 +1616,7 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
         candidates: candidates,
         wifiInterfaceNames: ["en0"],
         wiredInterfaceNames: ["en5"]
-    ) == "192.168.50.12")
+    ) == "172.16.0.8")
     #expect(ControllerIPv4Selection.preferredAddress(
         candidates: candidates,
         wifiInterfaceNames: [],
@@ -1890,7 +1890,7 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
     ) == nil)
 }
 
-@Test func offlineMapCapacityAccountsForExistingTilesAndRecommendsHeadroom() {
+@Test func offlineMapCapacityAllowsEvictingOldCacheForNewPackage() {
     let capacity = OperationalOfflineCapacity(
         currentTileCacheBytes: 900_000_000,
         currentDEMCacheBytes: 200_000_000,
@@ -1904,9 +1904,9 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
     #expect(capacity.estimatedDownloadBytes == 700_000_000)
     #expect(capacity.currentOfflineStorageBytes == 1_100_000_000)
     #expect(capacity.projectedOfflineStorageBytes == 1_800_000_000)
-    #expect(capacity.exceedsCacheLimit)
+    #expect(!capacity.exceedsCacheLimit)
     #expect(!capacity.exceedsAvailableVolume)
-    #expect(capacity.recommendedMaximumBytes == 2_000_000_000)
+    #expect(capacity.recommendedMaximumBytes == 1_000_000_000)
 }
 
 @Test func offlineMapCapacityProtectsVolumeHeadroom() {
@@ -2612,7 +2612,7 @@ private func proximityDrone(
     ).isComplete)
 }
 
-@Test func pilotCallsignIsDisplayLabelWhileMappedIDRemainsRoutingDesignator() {
+@Test func legacyDesignatorIsUsedForTrackDisplay() {
     let identity = RidAircraftIdentity(
         remoteID: "RID-1",
         organization: "NCSSAR",
@@ -2621,7 +2621,7 @@ private func proximityDrone(
         mappedIDOverride: "MINI4PRO"
     )
 
-    #expect(identity.displayLabel == "1SAR8")
+    #expect(identity.displayLabel == "MINI4PRO")
     #expect(identity.mappedID == "MINI4PRO")
 }
 

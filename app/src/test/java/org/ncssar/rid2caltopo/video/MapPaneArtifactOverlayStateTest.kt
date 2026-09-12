@@ -51,11 +51,11 @@ class MapPaneArtifactOverlayStateTest {
             conservativeDemBytes(count, DemResolutionOption.ENHANCED_10M) >
                 conservativeDemBytes(count, DemResolutionOption.STANDARD_30M)
         )
-        assertEquals(demPrefetchCellKey(39.001, -121.001), demPrefetchCellKey(39.049, -121.049))
+        assertEquals(demPrefetchCellKey(39.001, -121.001), demPrefetchCellKey(39.004, -121.004))
     }
 
     @Test
-    fun offlineCapacityIncludesExistingCacheAndRecommendsHeadroom() {
+    fun offlineCapacityAllowsEvictingOldCacheForNewPackage() {
         val capacity = OfflinePrepCapacity(
             currentTileCacheBytes = 900_000_000L,
             estimatedTileBytes = 300_000_000L,
@@ -64,10 +64,10 @@ class MapPaneArtifactOverlayStateTest {
             availableVolumeBytes = 10_000_000_000L
         )
 
-        assertEquals(1_200_000_000L, capacity.projectedTileCacheBytes)
+        assertEquals(1_600_000_000L, capacity.projectedTileCacheBytes)
         assertEquals(700_000_000L, capacity.estimatedDownloadBytes)
-        assertTrue(capacity.exceedsCacheLimit)
-        assertEquals(2_000_000_000L, capacity.recommendedMaximumBytes)
+        assertTrue(!capacity.exceedsCacheLimit)
+        assertEquals(1_000_000_000L, capacity.recommendedMaximumBytes)
     }
 
     @Test
@@ -92,7 +92,7 @@ class MapPaneArtifactOverlayStateTest {
     @Test
     fun reasonableCacheMaximumLeavesFreeSpaceHeadroom() {
         assertEquals(
-            869_000_000_000L,
+            734_000_000_000L,
             reasonableCacheMaximumBytes(
                 currentCacheBytes = 14_000_000_000L,
                 availableVolumeBytes = 900_000_000_000L

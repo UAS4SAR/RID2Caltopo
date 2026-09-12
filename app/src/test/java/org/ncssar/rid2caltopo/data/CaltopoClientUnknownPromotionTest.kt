@@ -33,6 +33,20 @@ class CaltopoClientUnknownPromotionTest {
     }
 
     @Test
+    fun unresolvedPilotRetainsTeamFlightForTrackerWithoutInventingCallsign() {
+        val remoteId = "UNRESOLVED1"
+        CaltopoClient.SaveDroneSpecUnknownConfirmation(remoteId)
+        CaltopoClient.SaveDroneSpecConfirmation(remoteId, "NCSSAR", "Matrice", "", "AIRCRAFT1")
+        val drone = CaltopoClient.GetDroneSpec(remoteId)!!
+        drone.setFlightReadinessJson(FlightReadiness(aircraft = AircraftReadiness(), payloadDescription = "water bottle").confirmed().toJSON().toString())
+        assertFalse(drone.isLocalArchiveOnly)
+        assertFalse(CaltopoClient.IsSessionUnknownDrone(remoteId))
+        assertEquals("", drone.owner)
+        assertEquals("water bottle", org.json.JSONObject(drone.flightReadinessJson).getString("payloadDescription"))
+        assertEquals(0, org.json.JSONObject(drone.flightReadinessJson).getJSONObject("pilot").length())
+    }
+
+    @Test
     fun promoteLocalArchiveOnlyDrone_rejoinsCoordinatorForActiveFlight() {
         val remoteId = "DRONE1"
         CaltopoClient.SaveDroneSpecUnknownConfirmation(remoteId)

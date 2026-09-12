@@ -1,6 +1,6 @@
 import Foundation
 
-public struct OperationalMapBounds: Sendable, Equatable {
+public struct OperationalMapBounds: Sendable, Equatable, Hashable {
     public let north: Double
     public let south: Double
     public let west: Double
@@ -75,7 +75,7 @@ public struct OperationalOfflineCapacity: Sendable, Equatable {
         Self.saturatedAdd(currentOfflineStorageBytes, estimatedDownloadBytes)
     }
 
-    public var exceedsCacheLimit: Bool { projectedTileCacheBytes > maximumTileCacheBytes }
+    public var exceedsCacheLimit: Bool { estimatedDownloadBytes > maximumTileCacheBytes }
 
     public var exceedsAvailableVolume: Bool {
         guard let availableVolumeBytes else { return false }
@@ -84,10 +84,10 @@ public struct OperationalOfflineCapacity: Sendable, Equatable {
 
     public var recommendedMaximumBytes: Int64 {
         let decimalGB: Int64 = 1_000_000_000
-        let headroom = max(100_000_000, projectedTileCacheBytes / 10)
-        let desired = Self.saturatedAdd(projectedTileCacheBytes, headroom)
+        let headroom = max(100_000_000, estimatedDownloadBytes / 10)
+        let desired = Self.saturatedAdd(estimatedDownloadBytes, headroom)
         let rounded = Self.saturatedAdd(desired, decimalGB - 1) / decimalGB * decimalGB
-        return min(64_000_000_000, max(100_000_000, rounded))
+        return min(1_000_000_000_000, max(100_000_000, rounded))
     }
 
     private static func saturatedAdd(_ left: Int64, _ right: Int64) -> Int64 {
@@ -227,6 +227,29 @@ public enum OperationalDEMResolution: Int, Sendable, Hashable, Identifiable, Cas
     }
 }
 
+public enum OperationalTerrainPrefetch {
+    public static let operatingRadiusMeters = 1609.344
+
+    public static func cellKey(latitude: Double, longitude: Double) -> String {
+        "\(Int(floor(latitude * 200))):\(Int(floor(longitude * 200)))"
+    }
+
+    /// Include every possible device position in the deduplication cell plus its operating radius.
+    public static func bounds(latitude: Double, longitude: Double, radiusMeters: Double) -> OperationalMapBounds {
+        let south = floor(latitude * 200) / 200
+        let west = floor(longitude * 200) / 200
+        let north = south + 0.005
+        let east = west + 0.005
+        let latitudePadding = max(0, radiusMeters) / 6_335_000 * 180 / .pi
+        let extremeLatitude = max(abs(south), abs(north)) + latitudePadding
+        let longitudePadding = latitudePadding / cos(min(89.9, extremeLatitude) * .pi / 180)
+        return OperationalMapBounds(
+            north: north + latitudePadding, south: south - latitudePadding,
+            west: west - longitudePadding, east: east + longitudePadding
+        )
+    }
+}
+
 public struct OperationalS1MProduct: Sendable, Hashable {
     public let url: URL
     public let fileName: String
@@ -238,7 +261,8 @@ public enum OperationalS1MCatalog {
 
     public static func products(
         data: Data,
-        containing coordinate: (latitude: Double, longitude: Double)? = nil
+        containing coordinate: (latitude: Double, longitude: Double)? = nil,
+        intersecting bounds: OperationalMapBounds? = nil
     ) throws -> [OperationalS1MProduct] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let items = object["items"] as? [[String: Any]]
@@ -253,6 +277,16 @@ public enum OperationalS1MCatalog {
             let maxX = (box?["maxX"] as? NSNumber)?.doubleValue
             let minY = (box?["minY"] as? NSNumber)?.doubleValue
             let maxY = (box?["maxY"] as? NSNumber)?.doubleValue
+            if let minX, let maxX, let minY, let maxY {
+                guard [minX, maxX, minY, maxY].allSatisfy({ $0.isFinite }), minX < maxX, minY < maxY
+                else { return nil }
+            }
+            if let bounds {
+                guard let minX, let maxX, let minY, let maxY,
+                      maxY >= bounds.south, minY <= bounds.north,
+                      maxX >= bounds.west, minX <= bounds.east
+                else { return nil }
+            }
             if let coordinate {
                 guard let minX, let maxX, let minY, let maxY,
                       (minY ... maxY).contains(coordinate.latitude),
@@ -498,5 +532,13 @@ public enum OperationalAltitudeAlertPolicy {
 private extension Int {
     func clamped(to range: ClosedRange<Int>) -> Int {
         Swift.min(range.upperBound, Swift.max(range.lowerBound, self))
+    }
+}
+
+public enum OperationalMapCacheBudget {
+    public static func defaultLimit(free: Int64) -> Int64 { min(10_000_000_000, max(0, free) / 5 * 4) }
+    public static func fits(used: Int64, reserved: Int64, incoming: Int64, limit: Int64) -> Bool {
+        used >= 0 && reserved >= 0 && incoming >= 0 && used <= limit &&
+            reserved <= limit - used && incoming <= limit - used - reserved
     }
 }

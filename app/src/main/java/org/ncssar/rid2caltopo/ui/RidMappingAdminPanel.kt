@@ -1,5 +1,7 @@
 package org.ncssar.rid2caltopo.ui
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.clickable
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -13,7 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -27,6 +29,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -53,17 +56,29 @@ import org.ncssar.rid2caltopo.data.CaltopoClient
 import org.ncssar.rid2caltopo.data.EditableRidMapping
 import org.ncssar.rid2caltopo.data.RidMappingRules
 import java.io.File
+import org.ncssar.rid2caltopo.data.AircraftReadiness
+import org.ncssar.rid2caltopo.data.AircraftOrganizationAccess
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 private data class RidMappingDraft(
     val key: Long,
     var remoteId: String,
     var ownerName: String,
     var ownerCallsign: String,
-    var model: String
+    var model: String,
+    var readiness: AircraftReadiness = AircraftReadiness()
 )
 
 @Composable
 fun RidMappingAdminDialog(onDismiss: () -> Unit) {
+    var canEdit by remember { mutableStateOf(AircraftOrganizationAccess.canEdit()) }
+    LaunchedEffect(Unit) { canEdit = withContext(Dispatchers.IO) { AircraftOrganizationAccess.refresh() } }
+    val scope = rememberCoroutineScope()
+    var saving by remember { mutableStateOf(false) }
     val context = LocalContext.current
     var organization by remember { mutableStateOf(CaltopoClient.GetHomeOrgName()) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -88,10 +103,47 @@ fun RidMappingAdminDialog(onDismiss: () -> Unit) {
                     remoteId = spec.remoteId,
                     ownerName = ownerFields.ownerName,
                     ownerCallsign = ownerFields.ownerCallsign,
-                    model = spec.model
+                    model = spec.model,
+                    readiness = spec.readiness
                 )
             }
         }
+    }
+    var selectedKey by remember { mutableStateOf<Long?>(null) }
+    var baseline by remember { mutableStateOf<List<RidMappingDraft>>(emptyList()) }
+    var baselineOrganization by remember { mutableStateOf(organization) }
+    fun beginEdit(key: Long) {
+        baseline = mappings.toList()
+        baselineOrganization = organization
+        error = null
+        selectedKey = key
+    }
+    fun cancelEdit() {
+        mappings.clear()
+        mappings.addAll(baseline)
+        organization = baselineOrganization
+        selectedKey = null
+        scanTargetIndex = null
+        error = null
+    }
+    suspend fun saveEdit(): Boolean {
+        val index = mappings.indexOfFirst { it.key == selectedKey }
+        val entry = mappings.getOrNull(index)
+        val values = mappings.map { EditableRidMapping(it.remoteId, it.ownerName, it.ownerCallsign, it.model, it.readiness) }
+        val errors = if (entry == null) emptyList() else RidMappingRules.validateEntry(organization, values[index], values.filterIndexed { i, _ -> i != index })
+        if (errors.isNotEmpty()) { error = errors.joinToString("\n"); return false }
+        saving = true
+        try {
+            if (!withContext(Dispatchers.IO) { AircraftOrganizationAccess.refresh() }) {
+                error = "Editing permission could not be verified. Check your connection and organization administrator access, then try Save again. Your edits are retained."
+                return false
+            }
+            return runCatching {
+                if (entry != null) CaltopoClient.SavePersistedDroneSpec(organization, baseline.find { it.key == entry.key }?.remoteId, values[index])
+                else baseline.find { it.key == selectedKey }?.let { CaltopoClient.RemovePersistedDroneSpec(it.remoteId) }
+            }.fold(onSuccess = { selectedKey = null; error = null; scanTargetIndex = null; true },
+                onFailure = { error = it.message; false })
+        } finally { saving = false }
     }
     val barcodeScanner = remember(context) {
         GmsBarcodeScanning.getClient(
@@ -132,12 +184,13 @@ fun RidMappingAdminDialog(onDismiss: () -> Unit) {
     }
 
     Dialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!saving) { if (selectedKey != null) cancelEdit() else onDismiss() } },
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
             decorFitsSystemWindows = false
         )
     ) {
+        BackHandler(enabled = selectedKey != null) { if (!saving) cancelEdit() }
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -152,14 +205,19 @@ fun RidMappingAdminDialog(onDismiss: () -> Unit) {
                 tonalElevation = 6.dp
             ) {
                 Column(modifier = Modifier.padding(20.dp)) {
-                    Text("RID Map Entries", style = MaterialTheme.typography.headlineSmall)
+                    if (!canEdit) {
+                        Text("Organization aircraft entries are read-only. Editing requires organization administrator access.")
+                        TextButton(onClick = { scope.launch { canEdit = withContext(Dispatchers.IO) { AircraftOrganizationAccess.refresh() } } }) { Text("Refresh access") }
+                    }
+                    Text(if (selectedKey == null) "RID Map Entries" else "Aircraft details", style = MaterialTheme.typography.headlineSmall)
                     Spacer(Modifier.height(12.dp))
                     Column(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
-                            .verticalScroll(rememberScrollState())
+                            .verticalScroll(remember(selectedKey) { ScrollState(0) })
                     ) {
+                        if (selectedKey != null) {
                         Text(
                             "Entries imported from the organization QR code can be reviewed or edited here. " +
                                 "Organization is stored once and applied to every aircraft. " +
@@ -167,6 +225,7 @@ fun RidMappingAdminDialog(onDismiss: () -> Unit) {
                             style = MaterialTheme.typography.bodySmall
                         )
                         OutlinedTextField(
+                            enabled = false,
                             value = organization,
                             onValueChange = { organization = it },
                             label = { Text("Organization designator") },
@@ -174,7 +233,17 @@ fun RidMappingAdminDialog(onDismiss: () -> Unit) {
                             modifier = Modifier.fillMaxWidth()
                         )
                         Spacer(Modifier.height(12.dp))
+                        }
                         mappings.forEachIndexed { index, draft ->
+                            if (selectedKey == null) {
+                                Card(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp).clickable { beginEdit(draft.key) }) {
+                                    Column(Modifier.padding(12.dp)) {
+                                        Text("${index + 1}.  ${draft.remoteId}", style = MaterialTheme.typography.titleSmall)
+                                        Text("Owner: ${draft.ownerName.ifBlank { "—" }} · Model: ${draft.model}")
+                                        Text("Designator: " + EditableRidMapping(draft.remoteId, draft.ownerName, draft.ownerCallsign, draft.model).mappedId(), style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
+                            } else if (selectedKey == draft.key) {
                             Card(modifier = Modifier.fillMaxWidth()) {
                                 Column(
                                     modifier = Modifier
@@ -183,6 +252,7 @@ fun RidMappingAdminDialog(onDismiss: () -> Unit) {
                                 ) {
                                     Text("Aircraft ${index + 1}", style = MaterialTheme.typography.titleSmall)
                                     OutlinedTextField(
+                            enabled = canEdit && !saving,
                                         value = draft.remoteId,
                                         onValueChange = {
                                             mappings[index] = draft.copy(remoteId = it.uppercase())
@@ -190,7 +260,7 @@ fun RidMappingAdminDialog(onDismiss: () -> Unit) {
                                         label = { Text("Remote ID") },
                                         singleLine = true,
                                         trailingIcon = {
-                                            IconButton(onClick = {
+                                            IconButton(enabled = canEdit && !saving, onClick = {
                                                 scanTargetIndex = index
                                                 showScanChoices = true
                                             }) {
@@ -203,6 +273,7 @@ fun RidMappingAdminDialog(onDismiss: () -> Unit) {
                                         modifier = Modifier.fillMaxWidth()
                                     )
                                     OutlinedTextField(
+                            enabled = canEdit && !saving,
                                         value = draft.ownerName,
                                         onValueChange = { mappings[index] = draft.copy(ownerName = it) },
                                         label = { Text("Owner name") },
@@ -210,6 +281,7 @@ fun RidMappingAdminDialog(onDismiss: () -> Unit) {
                                         modifier = Modifier.fillMaxWidth()
                                     )
                                     OutlinedTextField(
+                            enabled = canEdit && !saving,
                                         value = draft.ownerCallsign,
                                         onValueChange = { mappings[index] = draft.copy(ownerCallsign = it) },
                                         label = { Text("Owner callsign (for example 1SAR7)") },
@@ -217,12 +289,14 @@ fun RidMappingAdminDialog(onDismiss: () -> Unit) {
                                         modifier = Modifier.fillMaxWidth()
                                     )
                                     OutlinedTextField(
+                            enabled = canEdit && !saving,
                                         value = draft.model,
                                         onValueChange = { mappings[index] = draft.copy(model = it) },
                                         label = { Text("Model") },
                                         singleLine = true,
                                         modifier = Modifier.fillMaxWidth()
                                     )
+                                    AircraftReadinessFields(draft.readiness, canEdit && !saving) { mappings[index] = draft.copy(readiness = it) }
                                     Text(
                                         "Drone designator: " + EditableRidMapping(
                                             draft.remoteId,
@@ -232,19 +306,31 @@ fun RidMappingAdminDialog(onDismiss: () -> Unit) {
                                         ).mappedId(),
                                         style = MaterialTheme.typography.bodySmall
                                     )
-                                    TextButton(onClick = { mappings.removeAt(index) }) {
+                                    TextButton(enabled = canEdit && !saving, onClick = {
+                                        scope.launch {
+                                            val removed = mappings.removeAt(index)
+                                            if (!saveEdit()) mappings.add(index, removed)
+                                        }
+                                    }) {
                                         Text("Remove aircraft")
                                     }
                                 }
                             }
                             Spacer(Modifier.height(10.dp))
                         }
+                        }
+                        if (selectedKey == null) {
+                        if (mappings.isEmpty()) Text("No aircraft entries.")
                         OutlinedButton(
+                            enabled = canEdit && !saving,
                             onClick = {
-                                mappings += RidMappingDraft(nextKey++, "", "", "", "")
+                                val draft = RidMappingDraft(nextKey++, "", "", "", "")
+                                beginEdit(draft.key)
+                                mappings += draft
                             },
                             modifier = Modifier.fillMaxWidth()
                         ) { Text("Add aircraft") }
+                        }
                         error?.let {
                             HorizontalDivider()
                             Text(it, color = MaterialTheme.colorScheme.error)
@@ -256,19 +342,12 @@ fun RidMappingAdminDialog(onDismiss: () -> Unit) {
                         horizontalArrangement = Arrangement.End,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        TextButton(onClick = onDismiss) { Text("Cancel") }
-                        Button(onClick = {
-                            val values = mappings.map {
-                                EditableRidMapping(it.remoteId, it.ownerName, it.ownerCallsign, it.model)
-                            }
-                            val errors = RidMappingRules.validate(organization, values)
-                            if (errors.isEmpty()) {
-                                CaltopoClient.ReplacePersistedDroneSpecs(organization, values)
-                                onDismiss()
-                            } else {
-                                error = errors.joinToString("\n")
-                            }
-                        }) { Text("Save") }
+                        if (selectedKey == null) {
+                            TextButton(onClick = onDismiss) { Text("Close") }
+                        } else {
+                            TextButton(enabled = !saving, onClick = { cancelEdit() }) { Text(if (canEdit) "Cancel" else "Back") }
+                            if (canEdit) Button(enabled = !saving, onClick = { scope.launch { saveEdit() } }) { Text(if (saving) "Checking permission…" else "Save") }
+                        }
                     }
                 }
             }
@@ -291,7 +370,7 @@ fun RidMappingAdminDialog(onDismiss: () -> Unit) {
                                 ?.let(::extractRemoteIdCandidates)
                                 ?.firstOrNull()
                             val target = scanTargetIndex
-                            if (candidate != null && target != null && target in mappings.indices) {
+                            if (candidate != null && target != null && target in mappings.indices && mappings[target].key == selectedKey && AircraftOrganizationAccess.canEdit()) {
                                 mappings[target] = mappings[target].copy(remoteId = candidate)
                             } else {
                                 error = "The barcode did not contain a recognizable Remote ID."
@@ -332,7 +411,7 @@ fun RidMappingAdminDialog(onDismiss: () -> Unit) {
                         TextButton(
                             onClick = {
                                 val target = scanTargetIndex
-                                if (target != null && target in mappings.indices) {
+                                if (target != null && target in mappings.indices && mappings[target].key == selectedKey && AircraftOrganizationAccess.canEdit()) {
                                     mappings[target] = mappings[target].copy(remoteId = candidate)
                                 }
                                 ocrCandidates = emptyList()
@@ -365,4 +444,17 @@ internal fun extractRemoteIdCandidates(value: String): List<String> {
                 .thenByDescending { it.length }
         )
         .toList()
+}
+
+@Composable
+fun OrganizationUserLabel() {
+    val change by AircraftOrganizationAccess.changes.collectAsState()
+    val endpoint = CaltopoClient.GetTrackerCoordinationUrlPfx()
+    val credential = CaltopoClient.GetTrackerCoordinationApiKey()
+    LaunchedEffect(endpoint, credential) { withContext(Dispatchers.IO) { AircraftOrganizationAccess.refresh() } }
+    val username = remember(change, endpoint, credential) { AircraftOrganizationAccess.organizationUser() }
+    if (AircraftOrganizationAccess.belongsToOrganization()) {
+        Text("Org user: " + (username ?: "not verified"), style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(6.dp))
+    }
 }

@@ -426,12 +426,14 @@ fun DroneSpecConfirmationDialog(
     onSave: () -> Unit,
     onUnknown: () -> Unit,
 ) {
-    val organization = state.organization.trim()
+    var readiness by remember(state.remoteId) { mutableStateOf(org.ncssar.rid2caltopo.data.FlightReadiness(
+        aircraft = CaltopoClient.GetPersistedDroneSpecs().firstOrNull { it.remoteId == state.remoteId }?.readiness ?: org.ncssar.rid2caltopo.data.AircraftReadiness(),
+        selectedAccessories = emptySet())) }
+    val managedAircraft = org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.belongsToOrganization()
     val pilotCallsign = state.pilotCallsign.trim()
-    val droneDescription = state.droneDescription.trim()
-    val saveEnabled = organization.isNotEmpty() &&
-        pilotCallsign.isNotEmpty() &&
-        droneDescription.isNotEmpty()
+    val pilotMatched = org.json.JSONObject(readiness.pilotJson).optString("memberId").isNotBlank() &&
+        org.json.JSONObject(readiness.pilotJson).optString("callsign").equals(pilotCallsign, true)
+
 
     AlertDialog(
         onDismissRequest = {},
@@ -452,23 +454,9 @@ fun DroneSpecConfirmationDialog(
                     )
                 }
                 OutlinedTextField(
-                    value = state.remoteId,
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text("Remote ID") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = state.organization,
-                    onValueChange = { onFieldChange(it, null, null) },
-                    label = { Text("Organization") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-                OutlinedTextField(
                     value = state.pilotCallsign,
                     onValueChange = { onFieldChange(null, it, null) },
-                    label = { Text("Pilot Callsign") },
+                    label = { Text(if (managedAircraft) "RPIC callsign" else "Pilot Callsign") },
                     supportingText = state.pilotCallsignWarning?.let { message ->
                         { Text(message) }
                     },
@@ -482,19 +470,37 @@ fun DroneSpecConfirmationDialog(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
+                FlightReadinessFields(state.remoteId, pilotCallsign, readiness, { readiness = it.copy(operatingProfileJson = it.operatingProfileJson ?: readiness.operatingProfileJson) }) { onFieldChange(null, it, null) }
             }
         },
         confirmButton = {
             TextButton(
-                onClick = onSave,
-                enabled = saveEnabled
+                onClick = {
+                    readiness.operatingProfileJson?.let { raw ->
+                        val selected = org.json.JSONObject(raw)
+                        org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.rememberProfile(selected.getJSONObject("profile"))
+                        if (selected.optBoolean("useForAssignment")) {
+                            org.ncssar.rid2caltopo.data.OperatingProfiles.remember(selected.getJSONObject("profile"))
+                            selected.put("assignmentId", org.ncssar.rid2caltopo.data.OperatingProfiles.assignmentId)
+                            readiness = readiness.copy(operatingProfileJson = selected.toString())
+                        } else {
+                            org.ncssar.rid2caltopo.data.OperatingProfiles.endAssignment()
+                            selected.put("assignmentId", "")
+                            readiness = readiness.copy(operatingProfileJson = selected.toString())
+                        }
+                    }
+                    val recorded = readiness.resolvingPilot(pilotCallsign, org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.cachedState().optJSONArray("pilots")).confirmed()
+                    CaltopoClient.GetDroneSpec(state.remoteId)?.setFlightReadinessJson(recorded.toJSON().toString())
+                    org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.rememberAccessories(state.remoteId, readiness.selectedAccessories)
+                    onSave()
+                }
             ) {
-                Text("Save")
+                Text("Publish track")
             }
         },
         dismissButton = {
             TextButton(onClick = onUnknown) {
-                Text("Ignore")
+                Text("Don’t publish")
             }
         },
     )

@@ -228,15 +228,18 @@ enum AppleManagedOrganizationConfig {
             mutualAidEncoded = ""
         }
         return [
-            "configSchemaVersion": 1, "sourcePlatform": "ios",
+            "configSchemaVersion": 1, "aircraftSchemaVersion": 1, "sourcePlatform": "ios",
             "sourceAppVersion": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
             "sourceAppBuild": Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0") ?? 0,
             "organizationCaltopoEnc": OrgConfigTokenCodec.encryptPayload(credentials),
             "mutualAidCaltopoEnc": mutualAidEncoded,
-            "droneSpecs": identities.importedMappings.map {
-                ["remoteId": $0.remoteID, "mappedId": $0.mappedID,
-                 "org": $0.organization, "model": $0.droneDescription,
-                 "owner": $0.ownerName]
+            "droneSpecs": identities.importedMappings.map { identity in
+                let source = (AppleAircraftOrganizationAccess.cachedState["aircraft"] as? [[String: Any]] ?? []).first { ($0["remoteId"] as? String)?.caseInsensitiveCompare(identity.remoteID) == .orderedSame }
+                let clean = source.map { identity.preservingBlankPublishedOwnerFields($0) } ?? identity
+                return ["remoteId": clean.remoteID, "mappedId": clean.mappedID,
+                 "org": clean.organization, "model": clean.droneDescription,
+                 "owner": clean.pilotCallsign, "ownerName": clean.ownerName, "ownerCallsign": clean.pilotCallsign,
+                 "readiness": clean.readiness.dictionary] as [String: Any]
             },
         ]
     }
@@ -271,15 +274,19 @@ enum AppleManagedOrganizationConfig {
             organizationName: organization.organizationName,
             trackFolder: credentials["track_folder"] as? String ?? organization.trackFolder,
             mutualAidTemplate: mutualAid)
-        identities.applyImportedMappings(droneSpecs.compactMap { value in
+        try identities.applyImportedMappings(droneSpecs.compactMap { value in
             guard let remoteID = value["remoteId"] as? String, !remoteID.isEmpty else { return nil }
             return OrgConfigRIDMapping(
                 remoteID: remoteID, mappedID: value["mappedId"] as? String ?? "",
                 organization: value["org"] as? String ?? "",
                 model: value["model"] as? String ?? "",
-                owner: value["owner"] as? String ?? "")
-        })
+                owner: value["owner"] as? String ?? "",
+                ownerName: value["ownerName"] as? String ?? "",
+                ownerCallsign: value["ownerCallsign"] as? String ?? "",
+                readiness: AircraftReadiness.decode(value["readiness"]))
+        }, managedDownload: true)
         defaults.set(versionMs, forKey: versionDefaultsKey)
+        defaults.set((snapshot["aircraftSchemaVersion"] as? NSNumber)?.intValue ?? 0, forKey: "org.managedReadinessSchemaVersion")
         AppleLog.info("OrgConfig", "Applied managed organization configuration \(versionMs)")
     }
 
@@ -607,6 +614,8 @@ final class AppleTrackerCoordinator: ObservableObject {
         let normalizedURL = trackerURLPrefix.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedKey = trackerAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedMapID = mapID.trimmingCharacters(in: .whitespacesAndNewlines)
+        AppleAircraftOrganizationAccess.operatingIncidentID = normalizedMapID
+        AppleAircraftOrganizationAccess.operatingAssignment.setScope(organization: normalizedURL, incident: normalizedMapID)
         let trackerConfigurationChanged = self.trackerURLPrefix != normalizedURL
             || self.trackerAPIKey != normalizedKey
         let previouslyConfigured = !self.trackerURLPrefix.isEmpty && !self.trackerAPIKey.isEmpty
@@ -620,6 +629,7 @@ final class AppleTrackerCoordinator: ObservableObject {
         self.usePeers = usePeers
         self.standaloneR2CCoordinationEnabled = standaloneR2CCoordinationEnabled
         self.trackerURLPrefix = normalizedURL
+        if self.trackerAPIKey != normalizedKey { AppleAircraftOrganizationAccess.operatingAssignment.end() }
         self.trackerAPIKey = normalizedKey
         self.mapID = normalizedMapID
         standaloneStandbyEligible = normalizedMapID.isEmpty
@@ -1063,6 +1073,10 @@ final class AppleTrackerCoordinator: ObservableObject {
     private func handleOrganizationConfigMessage(_ data: Data) -> Bool {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = object["type"] as? String else { return false }
+        if type == "aircraft_readiness_changed" {
+            Task { _ = await AppleAircraftOrganizationAccess.refresh(baseURL: AppleAircraftOrganizationAccess.scope) }
+            return true
+        }
         if type == "organization_config_snapshot_request" {
             let requestID = (object["requestId"] as? String ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1090,7 +1104,8 @@ final class AppleTrackerCoordinator: ObservableObject {
         if type == "hello_ack",
            let version = (object["organizationConfigVersionMs"] as? NSNumber)?.int64Value,
            version != 0,
-           version != Int64(defaults.integer(forKey: AppleManagedOrganizationConfig.versionDefaultsKey)) {
+           (version != Int64(defaults.integer(forKey: AppleManagedOrganizationConfig.versionDefaultsKey)) ||
+            defaults.integer(forKey: "org.managedReadinessSchemaVersion") < 1) {
             organizationConfigSyncInProgress = true
             synchronizeOrganizationConfig(advertisedVersionMs: version)
         }

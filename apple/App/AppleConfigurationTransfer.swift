@@ -157,7 +157,8 @@ final class AppleConfigurationTransferManager: ObservableObject {
         guard passphrase.count >= 8 else { throw TransferError.shortPassphrase }
         let mappings = identities.importedMappings.map {
             ["remote_id": $0.remoteID, "mapped_id": $0.mappedID, "organization": $0.organization,
-             "owner": $0.pilotCallsign, "model": $0.droneDescription]
+             "owner": $0.pilotCallsign, "model": $0.droneDescription,
+             "ownerName": $0.ownerName, "ownerCallsign": $0.pilotCallsign, "readiness": $0.readiness.dictionary] as [String: Any]
         }
         let payload: [String: Any] = [
             "version": 1,
@@ -199,6 +200,7 @@ final class AppleConfigurationTransferManager: ObservableObject {
               let caltopoObject = payload["caltopo"] as? [String: Any],
               let orgObject = payload["organization"] as? [String: Any]
         else { throw TransferError.invalidBackup }
+        try AppleAircraftOrganizationAccess.requireEdit()
         try organization.applyTransferSnapshot(orgObject)
         try caltopo.applyTransferSnapshot(caltopoObject)
         let mappings = (payload["rid_mappings"] as? [[String: Any]] ?? []).compactMap { item -> OrgConfigRIDMapping? in
@@ -208,10 +210,13 @@ final class AppleConfigurationTransferManager: ObservableObject {
                 mappedID: item["mapped_id"] as? String ?? "",
                 organization: item["organization"] as? String ?? "",
                 model: item["model"] as? String ?? "",
-                owner: item["owner"] as? String ?? ""
+                owner: item["owner"] as? String ?? "",
+                ownerName: item["ownerName"] as? String ?? "",
+                ownerCallsign: item["ownerCallsign"] as? String ?? "",
+                readiness: AircraftReadiness.decode(item["readiness"])
             )
         }
-        identities.applyImportedMappings(mappings)
+        try identities.applyImportedMappings(mappings)
         status = "Configuration restored. Reconnect tracker and CalTopo services to apply it."
     }
 

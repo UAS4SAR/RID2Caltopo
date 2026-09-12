@@ -8,6 +8,7 @@ final class RIDTrackViewModel: ObservableObject {
     private static let deferredVideoLinkRetryCount = 15
     private static let caltopoFinishRetryNanoseconds: UInt64 = 5_000_000_000
     private static let caltopoFinishRetryCount = 3
+    let shortFlightDecisions = ShortFlightRecordingGate()
     @Published private(set) var tracks: [RidAircraftTrack] = []
     @Published private(set) var acceptedObservationCount = 0
     @Published private(set) var filteredObservationCount = 0
@@ -333,7 +334,13 @@ final class RIDTrackViewModel: ObservableObject {
     }
 
     func prefetchTerrainForDeviceLocation(latitude: Double, longitude: Double) {
-        prefetchTerrain(latitude: latitude, longitude: longitude)
+        let terrainService = self.terrainService
+        Task(priority: .utility) {
+            await terrainService.prefetch(
+                latitude: latitude, longitude: longitude,
+                radiusMeters: OperationalTerrainPrefetch.operatingRadiusMeters
+            )
+        }
     }
 
     private func prefetchTerrain(latitude: Double, longitude: Double) {
@@ -731,6 +738,7 @@ final class RIDTrackViewModel: ObservableObject {
     }
 
     func shutdown() async {
+        shortFlightDecisions.setActive(false)
         demoTask?.cancel()
         demoTask = nil
         agingTask?.cancel()
@@ -793,11 +801,21 @@ final class RIDTrackViewModel: ObservableObject {
             mapID: archiveConfiguration?.mapID ?? "",
             deviceName: AppleDeviceIdentity.displayName,
             buildVersion: AppleBuildMetadata.version,
-            buildTime: AppleBuildMetadata.buildTime
+            buildTime: AppleBuildMetadata.buildTime,
+            flightReadiness: identity?.flightReadiness
         )
+        let start = track.points.first?.receivedAt ?? track.lastAircraftMessageAt
+        let clues = clueArchiveProvider?(track.aircraftID, start, Date()) ?? []
+        let save: () -> Void = { [self] in
+            Task { @MainActor in await self.archiveRecorded(track, metadata: metadata, clues: clues) }
+        }
+        if shortFlightDecisions.request(aircraft: metadata.mappedID,
+            seconds: track.lastAircraftMessageAt.timeIntervalSince(start), meters: track.distanceMeters, keep: save) { return }
+        await archiveRecorded(track, metadata: metadata, clues: clues)
+    }
+
+    private func archiveRecorded(_ track: RidAircraftTrack, metadata: RidTrackArchiveMetadata, clues: [AppleTrackArchiveClue]) async {
         do {
-            let start = track.points.first?.receivedAt ?? track.lastSignalAt
-            let clues = clueArchiveProvider?(track.aircraftID, start, Date()) ?? []
             let outcome = try await archiveStore.archive(
                 track: track,
                 metadata: metadata,

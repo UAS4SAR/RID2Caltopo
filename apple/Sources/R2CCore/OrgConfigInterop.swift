@@ -20,13 +20,19 @@ public struct OrgConfigJoinToken: Sendable, Equatable {
 }
 
 public struct OrgConfigRIDMapping: Sendable, Equatable {
+    public let readiness: AircraftReadiness
+    public let ownerName: String
+    public let ownerCallsign: String
     public let remoteID: String
     public let mappedID: String
     public let organization: String
     public let model: String
     public let owner: String
 
-    public init(remoteID: String, mappedID: String, organization: String, model: String, owner: String) {
+    public init(remoteID: String, mappedID: String, organization: String, model: String, owner: String, ownerName: String = "", ownerCallsign: String = "", readiness: AircraftReadiness = AircraftReadiness()) {
+        self.readiness = readiness
+        self.ownerName = ownerName
+        self.ownerCallsign = ownerCallsign
         self.remoteID = remoteID
         self.mappedID = mappedID
         self.organization = organization
@@ -419,7 +425,10 @@ public enum OrgConfigTokenCodec {
                         mappedID: string(entry["mappedId"]),
                         organization: string(entry["org"]),
                         model: string(entry["model"]),
-                        owner: string(entry["owner"])
+                        owner: string(entry["owner"]),
+                        ownerName: string(entry["ownerName"]),
+                        ownerCallsign: string(entry["ownerCallsign"]),
+                        readiness: AircraftReadiness.decode(entry["readiness"])
                     )
                 })
             case "ct_credentials":

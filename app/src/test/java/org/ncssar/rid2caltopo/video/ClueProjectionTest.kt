@@ -7,6 +7,34 @@ import org.ncssar.rid2caltopo.video.ffmpeg.DjiCameraOrientation
 import org.ncssar.rid2caltopo.video.mapcache.DemElevationSample
 
 class ClueProjectionTest {
+    @Test fun verticalClueUsesLocalDemWithoutHeadingOrAgl() = runBlocking {
+        val result = projectClueLocationWithDemSamples(
+            droneLat = 39.0, droneLng = -105.0, droneAlt = 550.0,
+            headingDeg = null, aglMeters = null, gimbalAngleDeg = -90.0,
+            sampleElevationMeters = { lat, lng ->
+                assertEquals(39.0, lat, 0.0)
+                assertEquals(-105.0, lng, 0.0)
+                DemElevationSample(487.0, false, "usgs-geotiff-local-1m", 1.0)
+            },
+        )
+        assertEquals(39.0, result.lat, 0.0)
+        assertEquals(-105.0, result.lng, 0.0)
+        assertEquals(487.0, result.alt, 0.0)
+        assertTrue(result.terrainProjectionApplied)
+        assertEquals("usgs-geotiff-local-1m", result.demSource)
+        assertEquals(1.0, result.demResolutionMeters!!, 0.0)
+    }
+
+    @Test fun verticalClueRetainsFlatEstimateWhenDemUnavailable() = runBlocking {
+        val result = projectClueLocationWithDemSamples(
+            droneLat = 39.0, droneLng = -105.0, droneAlt = 550.0,
+            headingDeg = 0.0, aglMeters = 30.0, gimbalAngleDeg = -90.0,
+            sampleElevationMeters = { _, _ -> null },
+        )
+        assertEquals(520.0, result.alt, 0.0)
+        assertTrue(!result.terrainProjectionApplied)
+    }
+
     @Test
     fun projectionHeight_prefersDjiSeiThenFallsBackToAglAndAto() {
         val agl = selectClueProjectionHeight(30.0, 25.0, 24.0)!!

@@ -562,17 +562,17 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         restoreScreenAfterConfirmation()
     }
 
-    fun savePendingDroneConfirmation() {
+    fun savePendingDroneConfirmation(recordUnresolvedPilot: Boolean = false) {
         val current = _pendingDroneConfirmation.value ?: return
         val remoteId = current.remoteId.trim()
-        val organization = current.organization.trim()
-        val callsign = current.pilotCallsign.trim()
+        val organization = current.organization.trim().ifEmpty { CaltopoClient.GetHomeOrgName() }
+        val callsign = if (recordUnresolvedPilot) "" else current.pilotCallsign.trim()
         val droneDescription = current.droneDescription.trim()
         CTDebug(
             tag,
             "savePendingDroneConfirmation(): requested remoteId=$remoteId org='$organization' callsign='$callsign' model='$droneDescription'"
         )
-        if (remoteId.isEmpty() || organization.isEmpty() || callsign.isEmpty() || droneDescription.isEmpty()) {
+        if (remoteId.isEmpty()) {
             CTDebug(
                 tag,
                 "savePendingDroneConfirmation(): blocked by empty field remoteIdEmpty=${remoteId.isEmpty()} orgEmpty=${organization.isEmpty()} callsignEmpty=${callsign.isEmpty()} modelEmpty=${droneDescription.isEmpty()}"

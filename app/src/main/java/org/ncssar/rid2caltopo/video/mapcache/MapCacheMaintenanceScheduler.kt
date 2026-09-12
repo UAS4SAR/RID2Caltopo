@@ -57,28 +57,6 @@ internal object MapCacheMaintenanceScheduler {
     }
 
     private fun maintain(context: Context) {
-        val maxBytes = MapCachePolicy.tileCacheMaxBytes(context)
-        val trimBytes = MapCachePolicy.tileCacheTrimBytes(context)
-        val maxAgeMs = MapCachePolicy.tileCacheMaxAgeMs(context)
-        val cutoffMs = System.currentTimeMillis() - maxAgeMs
-        val store = BlobCacheStoreFactory.create(
-            context = context,
-            namespace = "tile_cache_v${MapCachePolicy.TILE_CACHE_VERSION}",
-            dbName = MapCachePolicy.TILE_CACHE_DB,
-            maxBytes = maxBytes,
-            defaultTtlMs = MapCachePolicy.TILE_TTL_MS
-        )
-        store.prewarm()
-        val result = store.runMaintenance(
-            maxEntryAgeCutoffMs = cutoffMs,
-            trimToBytes = trimBytes,
-            shouldContinue = { !MapOfflinePrepRuntime.isActive() }
-        )
-        if (MapOfflinePrepRuntime.isActive()) requested.set(true)
-        MapCacheDebug.log(
-            "background-maint tile agedOut=${result.agedOutEntries} trimEvicted=${result.trimEvictedEntries} " +
-                "bytesFreed=${result.bytesFreed} bytesRemaining=${result.bytesRemaining} " +
-                "maxBytes=$maxBytes trimBytes=$trimBytes maxAgeMs=$maxAgeMs"
-        )
+        UnifiedMapCache.maintain(context)
     }
 }

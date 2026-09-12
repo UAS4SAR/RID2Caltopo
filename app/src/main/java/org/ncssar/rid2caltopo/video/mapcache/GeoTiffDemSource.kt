@@ -88,7 +88,12 @@ internal class GeoTiffDemSource(context: Context) {
         return best
     }
 
+    private var budgetGeneration = -1L
     private fun refreshCatalogLocked() {
+        if (budgetGeneration != UnifiedMapCache.generation) {
+            catalogRefreshedAtMs = 0L
+            budgetGeneration = UnifiedMapCache.generation
+        }
         val now = System.currentTimeMillis()
         if (now - catalogRefreshedAtMs < 60_000L && tiles.isNotEmpty()) return
         catalogRefreshedAtMs = now
@@ -269,6 +274,7 @@ internal class GeoTiffDemSource(context: Context) {
             blockHeight = minOf(rowsPerStrip, metadata.height - (strip * rowsPerStrip))
         }
 
+        UnifiedMapCache.touchTerrain(tileName)
         val memKey = "$tileName|$blockIndex"
 
         // 1. Memory cache — no I/O
@@ -299,7 +305,10 @@ internal class GeoTiffDemSource(context: Context) {
         // Persist decoded block — future sessions skip the LZW+pred3 work entirely.
         try {
             bf.parentFile?.mkdirs()
-            bf.writeBytes(decoded)
+            UnifiedMapCache.reserve(appContext, decoded.size.toLong()).use {
+                bf.writeBytes(decoded)
+                UnifiedMapCache.remember(bf)
+            }
             MapCacheDebug.warn(MapCacheDebug.TAG_DEM,
                 "dem block-saved $tileName #$blockIndex (${decoded.size}B)")
         } catch (e: Exception) {

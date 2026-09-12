@@ -1,6 +1,7 @@
 package org.ncssar.rid2caltopo.ui
 
 import org.junit.After
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
@@ -336,6 +337,20 @@ class R2CViewModelDroneConfirmationTest {
             listOf("DRONEFIRST", "DRONESECOND"),
             viewModel.drones.value.map { it.remoteId }
         )
+    }
+
+    @Test
+    fun continueRetainsMissionWithMissingPilotAndAircraftDetails() {
+        val drone = activeDrone("INCOMPLETE", waypointTimestampMsec = 91011L)
+        val viewModel = R2CViewModel(SimpleTimer())
+        CaltopoClient.SetHomeOrgName("NCSSAR")
+        viewModel.onDroneSpecsChanged(listOf(drone))
+        viewModel.updatePendingDroneConfirmation(organization = "", pilotCallsign = "", droneDescription = "")
+        viewModel.savePendingDroneConfirmation()
+        assertNull(viewModel.pendingDroneConfirmation.value)
+        assertTrue(CaltopoClient.IsCurrentPeerDroneConfirmed("INCOMPLETE"))
+        assertFalse(CaltopoClient.GetDroneSpec("INCOMPLETE")!!.isLocalArchiveOnly)
+        assertEquals("", CaltopoClient.GetDroneSpec("INCOMPLETE")!!.owner)
     }
 
     @Test

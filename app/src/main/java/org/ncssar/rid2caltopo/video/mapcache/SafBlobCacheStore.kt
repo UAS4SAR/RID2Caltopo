@@ -197,29 +197,17 @@ internal class SafBlobCacheStore(
         } != null
     }
 
-    override fun remove(cacheKey: String): Boolean {
-        val (row, deletedRows) = synchronized(dbLock) {
-            val existing = queryRow(cacheKey)
-            val deleted = db.delete(
-                "saf_entries",
-                "namespace = ? AND cache_key = ?",
-                arrayOf(storageNamespace, cacheKey)
-            )
-            existing to deleted
-        }
-        if (row != null) {
-            try {
-                DocumentFile.fromSingleUri(appContext, Uri.parse(row.fileUri))?.delete()
-            } catch (e: Exception) {
-                MapCacheDebug.log("saf remove delete-failed ns=$namespace key=$cacheKey uri=${row.fileUri} err=${e.javaClass.simpleName}")
-            }
-        }
-        synchronized(dbLock) {
-            namespaceFileIndex?.remove(row?.fileName ?: keyToRelativePath(cacheKey))
-            namespaceFileIndex?.remove(legacyFileNameForKey(cacheKey))
-            if (deletedRows > 0) bytesUsedAtomic.set(bytesUsedLocked())
-        }
-        return deletedRows > 0
+    override fun remove(cacheKey: String): Boolean = synchronized(dbLock) {
+        val row = queryRow(cacheKey) ?: return@synchronized false
+        try {
+            val file = DocumentFile.fromSingleUri(appContext, Uri.parse(row.fileUri))
+            if (file != null && file.exists() && !file.delete()) return@synchronized false
+        } catch (_: Exception) { return@synchronized false }
+        val deleted = db.delete("saf_entries", "namespace = ? AND cache_key = ?", arrayOf(storageNamespace, cacheKey))
+        namespaceFileIndex?.remove(row.fileName)
+        namespaceFileIndex?.remove(legacyFileNameForKey(cacheKey))
+        if (deleted > 0) bytesUsedAtomic.set(bytesUsedLocked())
+        deleted > 0
     }
 
     override fun clear() {
@@ -243,6 +231,13 @@ internal class SafBlobCacheStore(
 
     override fun markStaleServed() {
         staleServedCount.incrementAndGet()
+    }
+
+    override fun oldestEntries(): List<CacheEvictionEntry> = synchronized(dbLock) {
+        db.query("saf_entries", arrayOf("cache_key", "size_bytes", "accessed_at"), "namespace = ?", arrayOf(storageNamespace),
+            null, null, "accessed_at ASC", "128").use { cursor ->
+            buildList { while (cursor.moveToNext()) add(CacheEvictionEntry(cursor.getString(0), cursor.getLong(1), cursor.getLong(2))) }
+        }
     }
 
     override fun usageBytes(): Long = synchronized(dbLock) {

@@ -507,6 +507,7 @@ public class CaltopoMap {
             CTDebug(TAG, "OpenMap(): Map connection reset.");
             ResetMapConnection(4_000L);
             MapNode = null;
+            OperatingProfiles.endAssignment();
             SetMapStatus(MapStatusListener.mapStatus.down, "Disconnect request.");
             return;
         }
@@ -516,6 +517,7 @@ public class CaltopoMap {
             SetMapStatus(MapStatusListener.mapStatus.down, "Map switch request.");
         }
         MapNode = mapNode;
+        OperatingProfiles.setScope(CaltopoClient.GetTrackerCoordinationUrlPfx(), GetMapId());
         DisconnectInProgress = false;
 
         SetMapStatus(MapStatusListener.mapStatus.connecting, null);
@@ -1324,6 +1326,7 @@ public class CaltopoMap {
                 ShowToast(LastErrorString);
             }
             MapNode = null;
+            OperatingProfiles.endAssignment();
             return;
         }
         recordCaltopoSessionRtt(lOpenMapOp, "openMap");
@@ -1824,6 +1827,7 @@ public class CaltopoMap {
             ResetMapConnection(10_000L);
             removeMyDeviceMarker(10_000L);
             MapNode = null;
+            OperatingProfiles.endAssignment();
             SessionNodeMap = null;
             SetMapStatus(MapStatusListener.mapStatus.down, "Shutdown in progress.");
             getCurrentRuntime().getPeerCoordinator().stop(); // always stop; no-op if never started

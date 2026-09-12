@@ -672,10 +672,38 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         return specs;
     }
 
+    public static void RemovePersistedDroneSpec(String remoteId) {
+        AircraftOrganizationAccess.requireEdit();
+        GetState().cachedDroneSpecTable.remove(remoteId);
+        UpdateDroneSpecs();
+        ArchiveState("RID mapping removed in Admin settings");
+    }
+
+    public static void SavePersistedDroneSpec(String organization, String originalRemoteId, EditableRidMapping mapping) {
+        AircraftOrganizationAccess.requireEdit();
+        List<EditableRidMapping> others = new ArrayList<>();
+        for (CtDroneSpec spec : GetPersistedDroneSpecs()) {
+            if (!spec.getRemoteId().equalsIgnoreCase(originalRemoteId)) {
+                others.add(new EditableRidMapping(spec.getRemoteId(), spec.getOwnerName(), spec.getOwner(), spec.getModel(), spec.getReadiness()));
+            }
+        }
+        List<String> errors = RidMappingRules.INSTANCE.validateEntry(organization, mapping, others);
+        if (!errors.isEmpty()) throw new IllegalArgumentException(String.join("\n", errors));
+        String remoteId = RidMappingRules.INSTANCE.normalizeRemoteId(mapping.getRemoteId());
+        CtDroneSpec spec = new CtDroneSpec(remoteId, CtDroneSpec.BuildMappedId(mapping.getOwnerCallsign().trim(), mapping.getModel().trim(), remoteId),
+                organization.trim(), mapping.getModel().trim(), mapping.getOwnerName().trim(), mapping.getOwnerCallsign().trim());
+        spec.setReadiness(mapping.getReadiness());
+        if (originalRemoteId != null) GetState().cachedDroneSpecTable.remove(originalRemoteId);
+        GetState().cachedDroneSpecTable.put(remoteId, spec);
+        UpdateDroneSpecs();
+        ArchiveState("RID mapping edited in Admin settings");
+    }
+
     public static void ReplacePersistedDroneSpecs(
             @NonNull String organization,
             @NonNull List<EditableRidMapping> mappings
     ) {
+        AircraftOrganizationAccess.requireEdit();
         List<String> errors = RidMappingRules.INSTANCE.validate(organization, mappings);
         if (!errors.isEmpty()) {
             throw new IllegalArgumentException(errors.get(0));
@@ -695,6 +723,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
                     mapping.getOwnerName().trim(),
                     callsign
             );
+            spec.setReadiness(mapping.getReadiness());
             replacements.put(remoteId, spec);
         }
         ccs.cachedDroneSpecTable = replacements;
@@ -808,6 +837,18 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             if (!org.isEmpty())   active.setOrg(org);
             if (!model.isEmpty()) active.setModel(model);
             if (!owner.isEmpty()) active.setOwner(owner);
+            return;
+        }
+
+        if (AircraftOrganizationAccess.belongsToOrganization()) {
+            // Peer confirmations belong to the current operation, never the approved aircraft list.
+            CtDroneSpec saved = ccs.cachedDroneSpecTable.get(remoteId);
+            CtDroneSpec working = saved != null ? saved.copy() : new CtDroneSpec(remoteId);
+            working.setMappedId(mappedId);
+            working.setOrg(org);
+            working.setModel(model);
+            working.setOwner(owner);
+            ccs.droneSpecTable.put(remoteId, working);
             return;
         }
 
@@ -2435,6 +2476,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     // New for v1.0.7rc1: This is now the only way to _add_ dronespecs into the
     // persistent ClientClassState.
     public static void readRidmapFileContent(JSONObject json) throws JSONException {
+        AircraftOrganizationAccess.requireEdit();
         JSONArray mapJson;
         int changeCount = 0;
         boolean replaceFlag = false;
@@ -2480,16 +2522,18 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
                     model,
                     ownerFields.getOwnerName(),
                     ownerFields.getOwnerCallsign());
+            newDs.setReadiness(AircraftReadiness.fromJSON(entry.optJSONObject("readiness")));
             CtDroneSpec existingDs = ccs.cachedDroneSpecTable.get(rid);
             boolean changed = (null == existingDs);
             if (!changed) {
                 CTDebug(TAG, "readRidmapFileContent(): Found existing droneSpec for spec: " + existingDs);
-                if (existingDs.isDifferentFrom(newDs)) {
+                if (existingDs.isDifferentFrom(newDs) || !existingDs.getReadiness().equals(newDs.getReadiness())) {
                     existingDs.setModel(newDs.getModel());
                     existingDs.setMappedId(newDs.getMappedId());
                     existingDs.setOrg(newDs.getOrg());
                     existingDs.setOwner(newDs.getOwner());
                     existingDs.setOwnerName(newDs.getOwnerName());
+                    existingDs.setReadiness(newDs.getReadiness());
                     CTDebug(TAG, String.format(Locale.US,
                             "readRidmapFileContent(): changed persistent dronespec from:\n    %s\n  to:\n    %s",
                             existingDs, newDs));
@@ -2608,6 +2652,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
                 mapEntry.put("owner",    spec.getOwner());
                 mapEntry.put("ownerName", spec.getOwnerName());
                 mapEntry.put("ownerCallsign", spec.getOwner());
+                mapEntry.put("readiness", spec.getReadiness().toJSON());
                 mapArray.put(mapEntry);
             }
             ridmap.put("map", mapArray);
@@ -3461,6 +3506,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         ClientClassState ccs = GetState();
         apiKey = apiKey.trim();
         if (!ccs.trackerApiKey.equals(apiKey)) {
+            OperatingProfiles.endAssignment();
             ccs.trackerApiKey = apiKey;
             NotifySettingsChanged();
             ArchiveState("tracker api key changed");
@@ -3476,6 +3522,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         ClientClassState ccs = GetState();
         urlPfx = urlPfx.trim();
         if (!ccs.trackerUrlPfx.equals(urlPfx)) {
+            OperatingProfiles.endAssignment();
             ccs.trackerUrlPfx = urlPfx;
             NotifySettingsChanged();
             ArchiveState("tracker url prefix changed");

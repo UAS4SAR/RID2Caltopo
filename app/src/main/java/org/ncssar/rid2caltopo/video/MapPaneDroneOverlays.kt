@@ -644,6 +644,7 @@ internal fun buildDroneMarkerDrawable(
     headingDeg: Double?,
     scale: Float = 1.0f,
     positionIconAlpha: Int = 255,
+    focused: Boolean = false,
 ): Drawable? {
     if (baseIcon == null) return null
     val safeScale = drawableScaleOrDefault(scale)
@@ -719,6 +720,14 @@ internal fun buildDroneMarkerDrawable(
 
     canvas.drawCircle(cx, cy, radius, haloFill)
     canvas.drawCircle(cx, cy, radius, haloStroke)
+    if (focused) {
+        val focusPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = AndroidColor.YELLOW
+            style = Paint.Style.STROKE
+            strokeWidth = 3f * scaledDensity
+        }
+        canvas.drawCircle(cx, cy, radius + 1.5f * scaledDensity, focusPaint)
+    }
 
     icon.setBounds(pad, pad, pad + iconW, pad + iconH)
     icon.alpha = positionIconAlpha.coerceIn(0, 255)

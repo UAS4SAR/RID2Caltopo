@@ -579,7 +579,10 @@ private final class AppleDeveloperToolsManager: ObservableObject {
                         "org": $0.organization,
                         "model": $0.droneDescription,
                         "owner": $0.pilotCallsign,
-                    ]
+                        "ownerName": $0.ownerName,
+                        "ownerCallsign": $0.pilotCallsign,
+                        "readiness": $0.readiness.dictionary,
+                    ] as [String: Any]
                 },
             ]
             var credentials: [String: Any] = [

@@ -113,6 +113,12 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
     private String org;
     private String owner;
     private String ownerName;
+    private AircraftReadiness readiness;
+    private volatile transient String flightReadinessJson;
+    public String getFlightReadinessJson() { return flightReadinessJson == null ? "{}" : flightReadinessJson; }
+    public synchronized void setFlightReadinessJson(String value) { flightReadinessJson = OperatingProfiles.mergeHistory(getFlightReadinessJson(), value); }
+    public AircraftReadiness getReadiness() { return readiness == null ? new AircraftReadiness() : readiness; }
+    public void setReadiness(AircraftReadiness value) { readiness = value; }
     private String model; /* This is the concise text description of the drone. */
     public volatile transient long mostRecentMsecTimestamp; /* wall-clock time when the most recent good waypoint was received */
     private volatile transient long mostRecentSignalMsecTimestamp; /* wall-clock time when the most recent received RID position packet was seen */
@@ -173,6 +179,8 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         retval.put("org", org);
         retval.put("owner", owner);
         retval.put("model", model);
+        retval.put("ownerName", getOwnerName());
+        retval.put("readiness", getReadiness().toJSON());
         retval.put("localArchiveOnly", localArchiveOnly);
         retval.put("startTimeInMsec", startMsecTimestamp);
         retval.put("mostRecentTimeInMsec", mostRecentMsecTimestamp);
@@ -232,6 +240,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
 
 
     public void reset() {
+        flightReadinessJson = null;
         outOfRange = false;
         if (trackLabel.isEmpty()) return;
         CTDebug(TAG, "reset(): Advising dronespec inactive: " + trackLabel);
@@ -584,6 +593,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         owner = jo.optString("owner");
         ownerName = jo.optString("ownerName");
         model = jo.optString("model");
+        readiness = AircraftReadiness.fromJSON(jo.optJSONObject("readiness"));
         goodCount = jo.optInt("goodCount");
         okToLog = false;
         localArchiveOnly = jo.optBoolean("localArchiveOnly", false);
@@ -645,6 +655,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
     public CtDroneSpec copy() {
         CtDroneSpec copy = new CtDroneSpec(remoteId, mappedId, org, model, ownerName, owner);
         copy.setLocalArchiveOnly(localArchiveOnly);
+        copy.setReadiness(getReadiness());
         return copy;
     }
 
@@ -1152,8 +1163,6 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
     public String getMappedId() { return mappedId;}
     /** Operator-visible aircraft label; mappedId remains the stable stream routing key. */
     public String getDisplayLabel() {
-        String pilotCallsign = owner == null ? "" : owner.trim();
-        if (!pilotCallsign.isEmpty()) return pilotCallsign;
         if (mappedId != null && !mappedId.trim().isEmpty()) return mappedId.trim();
         return remoteId;
     }

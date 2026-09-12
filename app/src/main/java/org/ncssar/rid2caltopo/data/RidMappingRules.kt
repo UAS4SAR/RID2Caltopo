@@ -6,7 +6,8 @@ data class EditableRidMapping(
     val remoteId: String,
     val ownerName: String,
     val ownerCallsign: String,
-    val model: String
+    val model: String,
+    val readiness: AircraftReadiness = AircraftReadiness()
 ) {
     fun mappedId(): String = CtDroneSpec.BuildMappedId(ownerCallsign, model, remoteId)
 }
@@ -61,6 +62,15 @@ object RidMappingRules {
         return value.takeUnless { it.lowercase(Locale.US) in placeholders }.orEmpty()
     }
 
+    fun validateEntry(organization: String, entry: EditableRidMapping, others: List<EditableRidMapping>): List<String> {
+        val errors = validate(organization, listOf(entry)).toMutableList()
+        if (others.any { normalizeRemoteId(it.remoteId) == normalizeRemoteId(entry.remoteId) })
+            errors += "Remote ID is already listed."
+        if (others.any { it.ownerCallsign.trim().equals(entry.ownerCallsign.trim(), true) && it.model.trim().equals(entry.model.trim(), true) })
+            errors += "Model must be unique for this owner callsign."
+        return errors.map { it.removePrefix("Aircraft 1: ") }
+    }
+
     fun validate(
         organization: String,
         mappings: List<EditableRidMapping>
@@ -73,6 +83,7 @@ object RidMappingRules {
         val ownerModels = mutableSetOf<String>()
         mappings.forEachIndexed { index, raw ->
             val row = index + 1
+            errors += raw.readiness.validationErrors().map { "Aircraft $row: $it" }
             val remoteId = normalizeRemoteId(raw.remoteId)
             val callsign = raw.ownerCallsign.trim()
             val model = raw.model.trim()

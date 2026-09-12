@@ -121,9 +121,14 @@ object AppConfigStore {
 
     @JvmStatic
     fun importConfigBytes(context: Context, bytes: ByteArray): Boolean {
+        if (!AircraftOrganizationAccess.canEdit()) return false
         initialize(context)
         return try {
             val imported = AppConfig.parseFrom(bytes)
+            imported.ridMappingsList.forEach { mapping ->
+                val readiness = AircraftReadiness.fromJSON(mapping.readinessJson.takeIf { it.isNotBlank() }?.let { org.json.JSONObject(it) })
+                require(readiness.validationErrors().isEmpty()) { "Invalid aircraft readiness in backup." }
+            }
             replaceCachedConfigAndEnqueueWrite(context, imported, "importConfigBytes")
             true
         } catch (e: Exception) {
@@ -421,6 +426,8 @@ object AppConfigStore {
                 ownerFields.ownerName,
                 ownerFields.ownerCallsign
             )
+            spec.readiness = AircraftReadiness.fromJSON(
+                mapping.readinessJson.takeIf { it.isNotBlank() }?.let { org.json.JSONObject(it) })
             state.cachedDroneSpecTable[spec.remoteId] = spec
         }
         state.configFilesLoaded = loadedConfigFilesDisplay(config)
@@ -560,6 +567,7 @@ object AppConfigStore {
                         .setOwner(spec.owner ?: "")
                         .setOwnerName(spec.ownerName ?: "")
                         .setOwnerCallsign(spec.owner ?: "")
+                        .setReadinessJson(spec.readiness.toJSON().toString())
                         .build()
                 )
             }

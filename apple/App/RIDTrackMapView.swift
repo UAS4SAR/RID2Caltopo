@@ -502,7 +502,6 @@ struct RIDTrackMapView: View {
     // in Split, while changes remain local to the current Live View session.
     @State private var storedLayout = OperationalMapVideoLayout.split.rawValue
     @AppStorage("map.showContours") private var showContours = false
-    @AppStorage("map.offlineOnly") private var offlineOnly = false
     @AppStorage("map.followFocusedDrone") private var followFocusedDrone = true
     @AppStorage("map.videoPipEnabled") private var videoPipEnabled = false
     @AppStorage("map.videoPipInsetFraction")
@@ -616,7 +615,6 @@ struct RIDTrackMapView: View {
         .sheet(isPresented: $showMapManagement) {
             AppleMapCacheManagementView(
                 manager: offlineMaps,
-                offlineOnly: $offlineOnly,
                 followFocusedDrone: Binding(
                     get: { followFocusedDrone },
                     set: { enabled in
@@ -1177,7 +1175,6 @@ struct RIDTrackMapView: View {
                     : AppleLandRestrictionState(),
                 baseLayer: baseLayer,
                 showContours: showContours,
-                offlineOnly: offlineOnly,
                 tileCacheRevision: offlineMaps.cacheStats.files,
                 operatorCoordinate: locationProvider.lastLocation?.coordinate,
                 operatorStatusLines: peerCoordinator.localDeviceStatusLines,
@@ -1204,9 +1201,13 @@ struct RIDTrackMapView: View {
                     selectedArtifactInspection = ArtifactInspection(title: title, description: description)
                 },
                 onSelectAircraft: { remoteID in
+                    let inspect = OperationalMapFocusPolicy.shouldInspectAircraft(
+                        focusedAircraftID: focusedAircraftID,
+                        tappedAircraftID: remoteID
+                    )
                     focusedAircraftID = remoteID
-                    if followFocusedDrone { operatorAdjustedViewport = false }
-                    guard !inset else { return }
+                    if !inspect { operatorAdjustedViewport = false }
+                    guard inspect, !inset else { return }
                     let identity = identityStore.identity(for: remoteID)
                     selectedPilotSettings = PilotDisplaySelection(
                         id: remoteID,
@@ -1818,10 +1819,7 @@ struct RIDTrackMapView: View {
                         showLandRestrictions = true
                     }
                 }
-                Text(ingestAddress.hasPrefix("rtmp://")
-                    ? "🟢 In => \(ingestAddress)/<droneDesig>"
-                    : "🟡 \(ingestAddress)")
-                    .lineLimit(1)
+                AppleControllerConnectionURLs()
                 Button(action: openLiveViewMapActions) {
                     AppleOperationalStatusChipLabel(
                         title: liveViewMapTitle,
@@ -1838,7 +1836,6 @@ struct RIDTrackMapView: View {
                     .lineLimit(1)
                 Label("\(model.tracks.count) active", systemImage: "airplane.circle")
                 Text("\(model.acceptedObservationCount) points")
-                if offlineOnly { Label("Offline", systemImage: "wifi.slash") }
             }
         }
         .font(.caption.monospacedDigit())
@@ -3058,7 +3055,6 @@ private struct OperationalMKMapView: UIViewRepresentable {
     let landRestrictionState: AppleLandRestrictionState
     let baseLayer: OperationalMapBaseLayer
     let showContours: Bool
-    let offlineOnly: Bool
     let tileCacheRevision: Int
     let operatorCoordinate: CLLocationCoordinate2D?
     let operatorStatusLines: [String]
@@ -3184,7 +3180,6 @@ private struct OperationalMKMapView: UIViewRepresentable {
             on: map,
             baseLayer: baseLayer,
             contours: showContours,
-            offlineOnly: offlineOnly,
             revision: tileCacheRevision
         )
         context.coordinator.updateOperationalOverlays(
@@ -3295,23 +3290,22 @@ private struct OperationalMKMapView: UIViewRepresentable {
             on map: MKMapView,
             baseLayer: OperationalMapBaseLayer,
             contours: Bool,
-            offlineOnly: Bool,
             revision: Int
         ) {
             let fingerprint = OperationalMapTileLayerState.fingerprint(
                 baseLayer: baseLayer,
                 contours: contours,
-                offlineOnly: offlineOnly,
+                offlineOnly: false,
                 revision: revision
             )
             guard fingerprint != tileFingerprint else { return }
             tileFingerprint = fingerprint
             map.removeOverlays(map.overlays.filter { $0 is CachedMapTileOverlay })
-            let base = CachedMapTileOverlay(baseLayer: baseLayer, offlineOnly: offlineOnly)
+            let base = CachedMapTileOverlay(baseLayer: baseLayer)
             base.canReplaceMapContent = true
             map.insertOverlay(base, at: 0, level: .aboveRoads)
             if contours {
-                map.addOverlay(CachedMapTileOverlay(contoursOfflineOnly: offlineOnly), level: .aboveLabels)
+                map.addOverlay(CachedMapTileOverlay(contours: true), level: .aboveLabels)
             }
         }
 
@@ -4165,6 +4159,8 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 return
             }
             guard let aircraft = view.annotation as? AircraftAnnotation else { return }
+            // Keep subsequent taps available; focus is rendered from aircraft state.
+            mapView.deselectAnnotation(aircraft, animated: false)
             onSelectAircraft(aircraft.remoteID)
         }
 
@@ -4527,13 +4523,11 @@ private final class CachedMapTileOverlay: MKTileOverlay {
     private static let displayMaximumZ = 22
     private let baseLayer: OperationalMapBaseLayer?
     private let contours: Bool
-    private let offlineOnly: Bool
     private let cacheRoot: URL
 
-    init(baseLayer: OperationalMapBaseLayer, offlineOnly: Bool) {
+    init(baseLayer: OperationalMapBaseLayer) {
         self.baseLayer = baseLayer
         contours = false
-        self.offlineOnly = offlineOnly
         cacheRoot = AppleMapCachePaths.root.appendingPathComponent(baseLayer.cacheKey, isDirectory: true)
         super.init(urlTemplate: nil)
         minimumZ = 0
@@ -4541,10 +4535,9 @@ private final class CachedMapTileOverlay: MKTileOverlay {
         tileSize = CGSize(width: 256, height: 256)
     }
 
-    init(contoursOfflineOnly offlineOnly: Bool) {
+    init(contours: Bool) {
         baseLayer = nil
-        contours = true
-        self.offlineOnly = offlineOnly
+        self.contours = contours
         cacheRoot = AppleMapCachePaths.root.appendingPathComponent("usgsContours", isDirectory: true)
         super.init(urlTemplate: nil)
         minimumZ = 0
@@ -4594,11 +4587,6 @@ private final class CachedMapTileOverlay: MKTileOverlay {
             completion.result(output, nil)
             return
         }
-        guard !offlineOnly else {
-            completion.result(nil, CocoaError(.fileNoSuchFile))
-            return
-        }
-
         let requestURL = url(forTilePath: sourcePath)
         var request = URLRequest(url: requestURL)
         request.setValue("RID2Caltopo/Apple (contact: kjt@uas4sar.com)", forHTTPHeaderField: "User-Agent")
@@ -5131,7 +5119,7 @@ private actor CaltopoMarkerIconDataLoader {
         configuration.requestCachePolicy = .returnCacheDataElseLoad
         configuration.urlCache = URLCache(
             memoryCapacity: 8 * 1_024 * 1_024,
-            diskCapacity: 32 * 1_024 * 1_024
+            diskCapacity: 0
         )
         session = URLSession(configuration: configuration)
     }
@@ -5169,7 +5157,7 @@ private actor CaltopoMarkerIconDataLoader {
         let data = await task.value
         inFlight[url] = nil
         guard let data, let image = UIImage(data: data) else { return nil }
-        try? data.write(to: diskURL, options: .atomic)
+        _ = try? AppleMapCacheAccess.write(data, to: diskURL)
         memoryCache.setObject(image, forKey: url as NSURL)
         return image
     }

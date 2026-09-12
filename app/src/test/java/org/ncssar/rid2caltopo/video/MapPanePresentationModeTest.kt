@@ -7,6 +7,21 @@ import org.junit.Test
 
 class MapPanePresentationModeTest {
     @Test
+    fun droneSelection_matchesStreamCapitalizationWithoutMatchingAnotherAircraft() {
+        assertTrue(sameMapDrone("1sar7DjMn4Pr", "1sar7djmn4pr"))
+        assertFalse(sameMapDrone("1sar7DjMn4Pr", "1sar8DjMn4Pr"))
+        assertFalse(sameMapDrone(null, "1sar7DjMn4Pr"))
+        assertFalse(sameMapDrone(null, null))
+    }
+
+    @Test
+    fun reacquiringDrone_afterOperatorMovement_restoresFollowOnlyWhenEnabled() {
+        assertFalse(shouldFollowFocusedDrone(MapPanePresentationMode.Full, true, true, true))
+        assertTrue(shouldFollowFocusedDrone(MapPanePresentationMode.Full, true, true, false))
+        assertFalse(shouldFollowFocusedDrone(MapPanePresentationMode.Full, false, true, false))
+    }
+
+    @Test
     fun viewportRestoreTracker_restoresEveryReplacementExactlyOnce() {
         val tracker = MapViewportRestoreTracker()
         val firstMapView = Any()

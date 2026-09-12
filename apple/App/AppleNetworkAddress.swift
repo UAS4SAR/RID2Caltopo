@@ -7,17 +7,16 @@ import NetworkExtension
 import R2CCore
 import Security
 import UIKit
+import SwiftUI
 
 enum AppleNetworkAddress {
-    static func preferredIPv4Address(for path: NWPath? = nil) -> String? {
+    static func preferredIPv4Address(for path: NWPath? = nil, additionalInterfaces: [NWInterface] = []) -> String? {
         let candidates = ipv4Candidates()
-        let availableInterfaces = path?.availableInterfaces ?? []
+        let availableInterfaces = (path?.availableInterfaces ?? []) + additionalInterfaces
         let reportedWiFiNames = availableInterfaces
             .filter { $0.type == .wifi }
             .map(\.name)
-        let wifiNames = reportedWiFiNames.isEmpty
-            ? candidates.map(\.name).filter { $0 == "en0" || $0.hasPrefix("en") }
-            : reportedWiFiNames
+        let wifiNames = reportedWiFiNames
         let wiredNames = availableInterfaces
             .filter { $0.type == .wiredEthernet }
             .map(\.name)
@@ -48,6 +47,7 @@ enum AppleNetworkAddress {
             guard let socketAddress = interface.ifa_addr,
                   socketAddress.pointee.sa_family == UInt8(AF_INET),
                   interface.ifa_flags & UInt32(IFF_UP) != 0,
+                  interface.ifa_flags & UInt32(IFF_RUNNING) != 0,
                   interface.ifa_flags & UInt32(IFF_LOOPBACK) == 0
             else { continue }
 
@@ -98,12 +98,17 @@ final class AppleNetworkDiagnosticCenter: ObservableObject {
     @Published private(set) var currentSnapshotID = "none"
     @Published private(set) var currentWiFiSSID: String?
     @Published private(set) var currentControllerIPv4Address: String?
+    @Published private(set) var currentWiredIPv4Address: String?
+    @Published private(set) var currentControllerConnectionLabel = "Wi-Fi or Ethernet"
 
     private var monitor: NWPathMonitor?
     private var latestPath: NWPath?
+    private var localMonitors: [NWPathMonitor] = []
+    private var localPaths: [NWInterface.InterfaceType: NWPath] = [:]
     private let monitorQueue = DispatchQueue(label: "org.ncssar.rid2caltopo.network-diagnostics")
     private var previousTransitionKey: String?
     private var nextSnapshotNumber = 1
+    private var recordGeneration = 0
 
     func start() {
         guard monitor == nil else { return }
@@ -117,12 +122,35 @@ final class AppleNetworkDiagnosticCenter: ObservableObject {
             }
         }
         pathMonitor.start(queue: monitorQueue)
+        // Observe local-only links even when Wi-Fi/cellular remains the Internet route.
+        for type in [NWInterface.InterfaceType.wiredEthernet, .wifi] {
+            let localMonitor = NWPathMonitor(requiredInterfaceType: type)
+            localMonitor.pathUpdateHandler = { [weak self] path in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.localPaths[type] = path
+                    if let latestPath = self.latestPath {
+                        await self.record(path: latestPath, reason: .networkPathChanged)
+                    }
+                }
+            }
+            localMonitors.append(localMonitor)
+            localMonitor.start(queue: monitorQueue)
+        }
     }
 
     func stop() {
         monitor?.cancel()
         monitor = nil
         latestPath = nil
+        localMonitors.forEach { $0.cancel() }
+        localMonitors.removeAll()
+        localPaths.removeAll()
+        currentControllerIPv4Address = nil
+        currentWiredIPv4Address = nil
+        currentControllerConnectionLabel = "Wi-Fi or Ethernet"
+        previousTransitionKey = nil
+        recordGeneration += 1
     }
 
     /// Re-reads Wi-Fi identity even when the network path itself has not changed.
@@ -134,17 +162,32 @@ final class AppleNetworkDiagnosticCenter: ObservableObject {
     }
 
     private func record(path: NWPath, reason requestedReason: RefreshReason) async {
+        recordGeneration += 1
+        let generation = recordGeneration
         let ssid = await AppleNetworkAddress.currentWiFiSSID()
         let interfaces = Self.interfaceSummary(path)
         let ipv4 = AppleNetworkAddress.ipv4DiagnosticSummary()
-        let controllerIPv4 = AppleNetworkAddress.preferredIPv4Address(for: path)
+        let localInterfaces = localPaths.values.flatMap(\.availableInterfaces)
+        let controllerIPv4 = AppleNetworkAddress.preferredIPv4Address(
+            additionalInterfaces: (path.availableInterfaces + localInterfaces).filter { $0.type == .wifi }
+        )
+        let wiredNames = Set(((path.availableInterfaces) + localInterfaces)
+            .filter { $0.type == .wiredEthernet }.map(\.name))
+        let wiredIPv4 = AppleNetworkAddress.preferredIPv4Address(
+            additionalInterfaces: localInterfaces.filter { wiredNames.contains($0.name) }
+                + path.availableInterfaces.filter { wiredNames.contains($0.name) }
+        )
+        let connectionLabel = ssid ?? "Wi-Fi name unavailable"
         let status = Self.statusSummary(path.status)
         let bssidHash = await Self.currentBSSIDHash()
+        guard generation == recordGeneration else { return }
         let transitionKey = [
             ssid ?? "unavailable",
             bssidHash,
             ipv4,
             controllerIPv4 ?? "unavailable",
+            wiredIPv4 ?? "unavailable",
+            connectionLabel,
             status,
             interfaces,
             String(path.isExpensive),
@@ -156,6 +199,8 @@ final class AppleNetworkDiagnosticCenter: ObservableObject {
         previousTransitionKey = transitionKey
         currentWiFiSSID = ssid
         currentControllerIPv4Address = controllerIPv4
+        currentWiredIPv4Address = wiredIPv4
+        currentControllerConnectionLabel = connectionLabel
         currentSnapshotID = "net-\(nextSnapshotNumber)"
         nextSnapshotNumber += 1
         AppleLog.info(
@@ -298,6 +343,22 @@ enum AppleDeviceIdentity {
 
     static func displayName(fromHostname hostname: String) -> String {
         OperationalDeviceName.displayName(fromHostname: hostname) ?? "iPad"
+    }
+}
+
+struct AppleControllerConnectionURLs: View {
+    @ObservedObject private var network = AppleNetworkDiagnosticCenter.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(network.currentControllerIPv4Address.map {
+                "Wi-Fi: rtmp://\($0)/<droneDesig>"
+            } ?? "Wi-Fi: Not connected")
+            if let wired = network.currentWiredIPv4Address {
+                Text("Ethernet: rtmp://\(wired)/<droneDesig>")
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 

@@ -87,7 +87,7 @@ class CtDroneSpecTest {
     }
 
     @Test
-    fun displayLabel_usesPilotCallsignWithoutChangingStreamDesignator() {
+    fun displayLabel_usesLegacyDesignator() {
         val drone = CtDroneSpec(
             "1581F6Z9C24BH0036EJL",
             "MINI4PRO",
@@ -96,10 +96,10 @@ class CtDroneSpecTest {
             "1SAR7"
         )
 
-        assertEquals("1SAR7", drone.displayLabel)
+        assertEquals("MINI4PRO", drone.displayLabel)
         assertEquals("MINI4PRO", drone.mappedId)
         drone.owner = "1SAR8"
-        assertEquals("1SAR8", drone.displayLabel)
+        assertEquals("MINI4PRO", drone.displayLabel)
         assertEquals("MINI4PRO", drone.mappedId)
     }
 

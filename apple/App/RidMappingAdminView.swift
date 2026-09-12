@@ -3,18 +3,149 @@ import SwiftUI
 import Foundation
 import VisionKit
 
+@MainActor
+enum AppleAircraftOrganizationAccess {
+    static var operatingAssignment = OperatingProfileAssignment()
+    static var operatingIncidentID = ""
+    private static var authorizedToken = ""
+    private static var expires = Date.distantPast
+    private static var verifiedToken = ""
+    private static var verifiedScope = ""
+    private static var username = ""
+    static var organizationUser: String? {
+        guard belongsToOrganization, verifiedToken == AppleOrgConfigSettings.loadTrackerAPIKey(), verifiedScope == scope, !username.isEmpty else { return nil }
+        return username
+    }
+    static var scope: String { UserDefaults.standard.string(forKey: "org.trackerURLPrefix") ?? "" }
+    static var cachedState: [String: Any] {
+        guard let data = UserDefaults.standard.data(forKey: "readiness:" + scope) else { return [:] }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+    }
+    static var belongsToOrganization: Bool { (AppleOrgConfigSettings.loadTrackerAPIKey() ?? "").hasPrefix("r2c_dev_") }
+    static var canEdit: Bool {
+        !belongsToOrganization || (authorizedToken == AppleOrgConfigSettings.loadTrackerAPIKey() && verifiedScope == scope && Date() < expires)
+    }
+    static func requireEdit() throws {
+        guard canEdit else { throw AppleTrackerEnrollmentClient.EnrollmentError.server("Organization aircraft changes require current config_admin authorization. Refresh RID Map Entries while online.") }
+    }
+    static func refresh(baseURL: String) async -> Bool {
+        authorizedToken = ""; expires = .distantPast
+        username = ""
+        defer { NotificationCenter.default.post(name: Notification.Name("aircraftReadinessUpdated"), object: nil) }
+        if !belongsToOrganization { return true }
+        let token = AppleOrgConfigSettings.loadTrackerAPIKey() ?? ""
+        guard let base = URL(string: baseURL) else { return false }
+        var request = URLRequest(url: base.appendingPathComponent("api/v1/aircraft-readiness"))
+        request.setValue(token, forHTTPHeaderField: "X-SAR-Token")
+        request.timeoutInterval = 20
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard token == AppleOrgConfigSettings.loadTrackerAPIKey(), baseURL == scope else { return false }
+            if [401, 403].contains((response as? HTTPURLResponse)?.statusCode ?? 0) {
+                UserDefaults.standard.removeObject(forKey: "readiness:" + baseURL)
+                NotificationCenter.default.post(name: Notification.Name("aircraftReadinessUpdated"), object: nil)
+            }
+            guard (response as? HTTPURLResponse)?.statusCode == 200,
+                  let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+            verifiedToken = token; verifiedScope = baseURL
+            username = value["username"] as? String ?? ""
+            UserDefaults.standard.set(data, forKey: "readiness:" + baseURL)
+            NotificationCenter.default.post(name: Notification.Name("aircraftReadinessUpdated"), object: nil)
+            guard value["canEditAircraft"] as? Bool == true else { return false }
+            authorizedToken = token; expires = Date().addingTimeInterval(300)
+            return canEdit
+        } catch { return false }
+    }
+}
+
+struct AppleOrganizationUserLabel: View {
+    @State private var username: String?
+    var body: some View {
+        let currentUser = username == AppleAircraftOrganizationAccess.organizationUser ? username : nil
+        return Group {
+            if AppleAircraftOrganizationAccess.belongsToOrganization {
+                Text("Org user: " + (currentUser ?? "not verified"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .accessibilityLabel("Organization user: " + (currentUser ?? "not verified"))
+            }
+        }
+        .task(id: AppleAircraftOrganizationAccess.scope + (AppleOrgConfigSettings.loadTrackerAPIKey() ?? "")) {
+            _ = await AppleAircraftOrganizationAccess.refresh(baseURL: AppleAircraftOrganizationAccess.scope)
+            username = AppleAircraftOrganizationAccess.organizationUser
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("aircraftReadinessUpdated"))) { _ in
+            username = AppleAircraftOrganizationAccess.organizationUser
+        }
+    }
+}
+
+private struct AppleAircraftReadinessFields: View {
+    @Binding var value: AircraftReadiness
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Aircraft serial number").font(.caption).foregroundStyle(.secondary)
+            TextField("Aircraft serial number", text: $value.serialNumber)
+        }
+        VStack(alignment: .leading, spacing: 4) {
+            Text("FAA registration number").font(.caption).foregroundStyle(.secondary)
+            TextField("FAA registration number", text: $value.registrationNumber)
+        }
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Base weight (grams)").font(.caption).foregroundStyle(.secondary)
+            TextField("Base weight (grams)", value: $value.baseWeightGrams, format: .number)
+        }
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Included in base weight").font(.caption).foregroundStyle(.secondary)
+            TextField("Included in base weight", text: $value.baseWeightIncludes)
+        }
+        Text("Exclude selectable batteries, accessories and payload from base weight. Blank weights remain unknown.").font(.footnote)
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Required equipment").font(.caption).foregroundStyle(.secondary)
+            TextField("Required equipment", text: $value.requiredEquipment)
+        }
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Air traffic monitoring equipment").font(.caption).foregroundStyle(.secondary)
+            TextField("Air traffic monitoring equipment", text: $value.monitoringEquipment)
+        }
+        Text("Examples: aircraft ADS-B warnings on controller; standalone skyAlert.").font(.footnote)
+        ForEach($value.accessories) { $accessory in
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Accessory / battery name").font(.caption).foregroundStyle(.secondary)
+                TextField("Accessory / battery name", text: $accessory.name)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Accessory weight (grams)").font(.caption).foregroundStyle(.secondary)
+                TextField("Accessory weight (grams)", value: $accessory.weightGrams, format: .number)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Choose-one group (for example battery)").font(.caption).foregroundStyle(.secondary)
+                TextField("Choose-one group (for example battery)", text: $accessory.group)
+            }
+            Toggle("Required equipment", isOn: $accessory.required)
+            Button("Remove accessory", role: .destructive) { value.accessories.removeAll { $0.id == accessory.id } }
+        }
+        Button("Add accessory or battery") { value.accessories.append(AircraftAccessory()) }
+            .disabled(value.accessories.count >= 32)
+    }
+}
+
+
 private struct AppleRidMappingDraft: Identifiable, Codable, Equatable {
     var id = UUID()
     var remoteID: String
     var ownerName: String
     var ownerCallsign: String
     var model: String
+    var readiness: AircraftReadiness
 
     init(identity: RidAircraftIdentity? = nil) {
         remoteID = identity?.remoteID ?? ""
         ownerName = identity?.ownerName ?? ""
         ownerCallsign = identity?.pilotCallsign ?? ""
         model = identity?.droneDescription ?? ""
+        readiness = identity?.readiness ?? AircraftReadiness()
     }
 }
 
@@ -204,13 +335,17 @@ enum AppleTrackerEnrollmentClient {
 }
 
 struct RidMappingAdminView: View {
+    @State private var canEdit = AppleAircraftOrganizationAccess.canEdit
     @ObservedObject var organization: AppleOrgConfigSettings
     @ObservedObject var identities: AppleDroneConfirmationStore
-    @Environment(\.dismiss) private var dismiss
     @State private var organizationName: String
     @State private var mappings: [AppleRidMappingDraft]
     @State private var errors: [String] = []
     @State private var showingValidationErrors = false
+    @State private var selectedID: UUID?
+    @State private var baseline: [AppleRidMappingDraft] = []
+    @State private var baselineOrganization = ""
+    @State private var saving = false
 
     private static let draftOrganizationKey = "org.ridMappingDraft.organization"
     private static let draftsKey = "org.ridMappingDraft.entries"
@@ -222,90 +357,89 @@ struct RidMappingAdminView: View {
     ) {
         self.organization = organization
         self.identities = identities
-        let defaults = UserDefaults.standard
-        let importedMappings = identities.importedMappings
-        let importedRemoteIDs = Set(importedMappings.map { Self.normalizedRemoteID($0.remoteID) })
-        let savedDrafts = defaults.data(forKey: Self.draftsKey)
-            .flatMap { try? JSONDecoder().decode([AppleRidMappingDraft].self, from: $0) }
-        let savedBaseline = (defaults.array(forKey: Self.draftBaselineRemoteIDsKey) as? [String])
-            .map { Set($0.map(Self.normalizedRemoteID)) }
-        let savedRemoteIDs = savedDrafts.map {
-            Set($0.map { Self.normalizedRemoteID($0.remoteID) })
-        }
-        let draftMatchesImportedMappings = savedDrafts != nil && (
-            savedBaseline == importedRemoteIDs
-                || (savedBaseline == nil && savedRemoteIDs == importedRemoteIDs)
-        )
-
-        _organizationName = State(
-            initialValue: draftMatchesImportedMappings
-                ? (defaults.string(forKey: Self.draftOrganizationKey)
-                    ?? organization.organizationName)
-                : organization.organizationName
-        )
-        _mappings = State(
-            initialValue: draftMatchesImportedMappings ? savedDrafts! : importedMappings.map {
-                AppleRidMappingDraft(identity: $0)
-            }
-        )
-        if savedDrafts != nil && !draftMatchesImportedMappings {
-            defaults.removeObject(forKey: Self.draftOrganizationKey)
-            defaults.removeObject(forKey: Self.draftsKey)
-            defaults.removeObject(forKey: Self.draftBaselineRemoteIDsKey)
-        }
+        _organizationName = State(initialValue: organization.organizationName)
+        _mappings = State(initialValue: identities.importedMappings.map { AppleRidMappingDraft(identity: $0) })
     }
 
     var body: some View {
         Form {
-            Section("Organization") {
-                TextField("Organization designator", text: $organizationName)
-                    .textInputAutocapitalization(.characters)
-                    .autocorrectionDisabled()
-                Text("Stored once and applied to every aircraft.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+            if !canEdit {
+                Text("Organization aircraft entries are read-only. Editing requires organization administrator access.")
+                Button("Refresh access") { Task { canEdit = await AppleAircraftOrganizationAccess.refresh(baseURL: organization.trackerURLPrefix) } }
             }
-            ForEach($mappings) { $mapping in
+            if selectedID == nil {
                 Section("Aircraft") {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Remote ID")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        AppleScannableTextField(
-                            title: "Remote ID",
-                            text: $mapping.remoteID,
-                            mode: .remoteID
-                        )
+                    if mappings.isEmpty { Text("No aircraft entries.").foregroundStyle(.secondary) }
+                    ForEach(Array(mappings.enumerated()), id: \.element.id) { index, mapping in
+                        Button { beginEdit(mapping.id) } label: {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("\(index + 1).  \(mapping.remoteID)").font(.headline)
+                                Text("Owner: \(mapping.ownerName.isEmpty ? "—" : mapping.ownerName) · Model: \(mapping.model)")
+                                Text("Designator: \(identity(for: mapping).mappedID)").foregroundStyle(.secondary)
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                        }.foregroundStyle(.primary)
                     }
+                    Button("Add aircraft", systemImage: "plus") {
+                        let draft = AppleRidMappingDraft()
+                        beginEdit(draft.id)
+                        mappings.append(draft)
+                    }.disabled(!canEdit || saving)
+                }
+            } else {
+                Section("Organization") {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Owner name")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        TextField("Owner name", text: $mapping.ownerName)
-                    }
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Owner callsign (for example 1SAR7)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        TextField("Owner callsign", text: $mapping.ownerCallsign)
+                        Text("Organization designator").font(.caption).foregroundStyle(.secondary)
+                        TextField("Organization designator", text: $organizationName).disabled(true)
                             .textInputAutocapitalization(.characters)
                             .autocorrectionDisabled()
                     }
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Model")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        TextField("Model", text: $mapping.model)
-                    }
-                    LabeledContent("Drone designator", value: identity(for: mapping).mappedID)
-                    Button("Remove aircraft", role: .destructive) {
-                        mappings.removeAll { $0.id == mapping.id }
-                    }
+                    Text("Stored once and applied to every aircraft.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
-            }
-            Section {
-                Button("Add aircraft", systemImage: "plus") {
-                    mappings.append(AppleRidMappingDraft())
+                .disabled(!canEdit)
+                ForEach($mappings) { $mapping in
+                    if mapping.id == selectedID {
+                        Section("Aircraft") {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Remote ID")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                AppleScannableTextField(
+                                    title: "Remote ID",
+                                    text: $mapping.remoteID,
+                                    mode: .remoteID
+                                )
+                            }
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Owner name")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                TextField("Owner name", text: $mapping.ownerName)
+                            }
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Owner callsign (for example 1SAR7)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                TextField("Owner callsign", text: $mapping.ownerCallsign)
+                                    .textInputAutocapitalization(.characters)
+                                    .autocorrectionDisabled()
+                            }
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Model")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                TextField("Model", text: $mapping.model)
+                            }
+                            AppleAircraftReadinessFields(value: $mapping.readiness)
+                            LabeledContent("Drone designator", value: identity(for: mapping).mappedID)
+                            Button("Remove aircraft", role: .destructive) {
+                                let previous = mappings
+                                mappings.removeAll { $0.id == mapping.id }
+                                Task { if !(await save()) { mappings = previous } }
+                            }
+                        }.disabled(!canEdit || saving)
+                    }
                 }
             }
             if !errors.isEmpty {
@@ -316,21 +450,28 @@ struct RidMappingAdminView: View {
                 }
             }
         }
-        .onChange(of: organizationName) { _, value in
-            UserDefaults.standard.set(value, forKey: Self.draftOrganizationKey)
-        }
-        .onChange(of: mappings) { _, value in
-            persistDrafts(value)
-        }
+        .id(selectedID)
+        .task { canEdit = await AppleAircraftOrganizationAccess.refresh(baseURL: organization.trackerURLPrefix) }
         .alert("RID entries were not saved", isPresented: $showingValidationErrors) {
             Button("Review Fields", role: .cancel) {}
         } message: {
             Text(errors.joined(separator: "\n"))
         }
-        .navigationTitle("RID Map Entries")
+        .navigationTitle(selectedID == nil ? "RID Map Entries" : "Aircraft details")
+        .navigationBarBackButtonHidden(selectedID != nil)
         .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Save") { save() }
+            if selectedID != nil {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(canEdit ? "Cancel" : "Back") {
+                        mappings = baseline
+                        organizationName = baselineOrganization
+                        selectedID = nil
+                        errors = []
+                    }.disabled(saving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    if canEdit { Button(saving ? "Checking permission…" : "Save") { Task { _ = await save() } }.disabled(saving) }
+                }
             }
         }
     }
@@ -341,71 +482,54 @@ struct RidMappingAdminView: View {
             organization: organizationName,
             ownerName: mapping.ownerName,
             pilotCallsign: mapping.ownerCallsign,
-            droneDescription: mapping.model
+            droneDescription: mapping.model,
+            readiness: mapping.readiness
         )
     }
 
-    private func save() {
+    private func beginEdit(_ id: UUID) {
+        baseline = mappings
+        baselineOrganization = organizationName
+        errors = []
+        selectedID = id
+    }
+
+    @discardableResult
+    private func save() async -> Bool {
+        guard !saving else { return false }
         errors = validate()
         guard errors.isEmpty else {
-            persistDrafts(mappings)
             showingValidationErrors = true
-            return
+            return false
         }
-        organization.setOrganizationNameForRidMappings(organizationName)
-        identities.replacePersistedMappings(mappings.map { identity(for: $0) })
+        saving = true
+        defer { saving = false }
+        guard await AppleAircraftOrganizationAccess.refresh(baseURL: organization.trackerURLPrefix) else {
+            errors = ["Editing permission could not be verified. Check your connection and organization administrator access, then try Save again. Your edits are retained."]
+            showingValidationErrors = true
+            return false
+        }
+        do {
+            let originals = identities.importedMappings
+            try identities.replacePersistedMappings(mappings.map { mapping in
+                if mapping.id != selectedID, let original = originals.first(where: { $0.remoteID == mapping.remoteID }) { return original }
+                return identity(for: mapping)
+            })
+        }
+        catch { errors = [error.localizedDescription]; showingValidationErrors = true; return false }
         UserDefaults.standard.removeObject(forKey: Self.draftOrganizationKey)
         UserDefaults.standard.removeObject(forKey: Self.draftsKey)
         UserDefaults.standard.removeObject(forKey: Self.draftBaselineRemoteIDsKey)
-        dismiss()
-    }
-
-    private func persistDrafts(_ drafts: [AppleRidMappingDraft]) {
-        guard let data = try? JSONEncoder().encode(drafts) else { return }
-        UserDefaults.standard.set(data, forKey: Self.draftsKey)
-        UserDefaults.standard.set(
-            identities.importedMappings.map { Self.normalizedRemoteID($0.remoteID) },
-            forKey: Self.draftBaselineRemoteIDsKey
-        )
-    }
-
-    private static func normalizedRemoteID(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        organization.setOrganizationNameForRidMappings(organizationName)
+        selectedID = nil
+        return true
     }
 
     private func validate() -> [String] {
-        var result: [String] = []
-        if organizationName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            result.append("Organization is required.")
-        }
-        var remoteIDs: Set<String> = []
-        var ownerModels: Set<String> = []
-        for (offset, mapping) in mappings.enumerated() {
-            let row = offset + 1
-            let remoteID = mapping.remoteID
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .uppercased()
-            let callsign = mapping.ownerCallsign.trimmingCharacters(in: .whitespacesAndNewlines)
-            let model = mapping.model.trimmingCharacters(in: .whitespacesAndNewlines)
-            if remoteID.range(of: #"^[A-Z0-9]+$"#, options: .regularExpression) == nil {
-                result.append("Aircraft \(row): Remote ID must contain only A-Z and 0-9.")
-            } else if !remoteIDs.insert(remoteID).inserted {
-                result.append("Aircraft \(row): Remote ID is already listed.")
-            }
-            if callsign.range(
-                of: #"^[0-9]+[A-Za-z]+[0-9]+(?:-[0-9]+)?$"#,
-                options: .regularExpression
-            ) == nil {
-                result.append("Aircraft \(row): Owner callsign must look like 1SAR7 or 1SAR7-2.")
-            }
-            if model.isEmpty {
-                result.append("Aircraft \(row): Model is required.")
-            } else if !ownerModels.insert("\(callsign.lowercased())\u{0}\(model.lowercased())").inserted {
-                result.append("Aircraft \(row): Model must be unique for this owner callsign.")
-            }
-        }
-        return result
+        guard let selected = mappings.first(where: { $0.id == selectedID }) else { return [] }
+        return RidMappingEditValidation.errors(identity(for: selected), others: mappings.filter { $0.id != selectedID }.map { identity(for: $0) })
     }
+
 }
 
 enum AppleScannedFieldMode {

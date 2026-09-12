@@ -107,6 +107,7 @@ struct RIDAircraftDetailView: View {
             Section("Identity and signal") {
                 LabeledContent("Remote ID", value: track.aircraftID)
                 if let identity = identityStore.identity(for: track.aircraftID) {
+                    LabeledContent("Operating profile", value: (OperatingProfiles.active(identity.flightReadiness)["profile"] as? [String: Any])?["name"] as? String ?? "Not reported")
                     LabeledContent("Mapped ID", value: identity.mappedID)
                     LabeledContent("Organization", value: identity.organization)
                     LabeledContent("Pilot callsign", value: identity.pilotCallsign)
@@ -247,7 +248,8 @@ final class AppleDroneConfirmationStore: ObservableObject {
                         remoteID: remoteID
                     ),
                     droneDescription: entry["model"] ?? "",
-                    mappedIDOverride: entry["mappedID"]
+                    mappedIDOverride: entry["mappedID"],
+                    readiness: AircraftReadiness.decode(entry["readiness"])
                 )
                 return (remoteID, identity)
             })
@@ -258,7 +260,8 @@ final class AppleDroneConfirmationStore: ObservableObject {
     }
 
     func identity(for remoteID: String) -> RidAircraftIdentity? {
-        peerIdentities[remoteID] ?? sessionIdentities[remoteID] ?? importedIdentities[remoteID]
+        peerIdentities[remoteID]?.preservingLocalFlightReadiness(from: sessionIdentities[remoteID])
+            ?? sessionIdentities[remoteID] ?? importedIdentities[remoteID]
     }
 
     func isCurrentFlightConfirmed(_ remoteID: String) -> Bool {
@@ -326,8 +329,9 @@ final class AppleDroneConfirmationStore: ObservableObject {
         importedIdentities.values.sorted { $0.remoteID < $1.remoteID }
     }
 
-    func confirm(_ identity: RidAircraftIdentity) {
-        guard identity.isComplete else { return }
+    func confirm(_ identity: RidAircraftIdentity, recordUnresolvedPilot: Bool = false) {
+        // Recording incomplete evidence never establishes pilot qualification.
+        guard identity.isComplete || (recordUnresolvedPilot && !identity.remoteID.isEmpty) else { return }
         ignoredRemoteIDs.remove(identity.remoteID)
         sessionIdentities[identity.remoteID] = identity
         AppleLog.info(
@@ -336,21 +340,19 @@ final class AppleDroneConfirmationStore: ObservableObject {
         )
     }
 
-    func applyImportedMappings(_ mappings: [OrgConfigRIDMapping]) {
+    func applyImportedMappings(_ mappings: [OrgConfigRIDMapping], managedDownload: Bool = false) throws {
+        if !managedDownload { try AppleAircraftOrganizationAccess.requireEdit() }
         importedIdentities = Dictionary(uniqueKeysWithValues: mappings.map { mapping in
             (
                 mapping.remoteID,
                 RidAircraftIdentity(
                     remoteID: mapping.remoteID,
                     organization: mapping.organization,
-                    ownerName: mapping.owner,
-                    pilotCallsign: Self.importedPilotCallsign(
-                        mappedID: mapping.mappedID,
-                        model: mapping.model,
-                        remoteID: mapping.remoteID
-                    ),
+                    ownerName: mapping.ownerName,
+                    pilotCallsign: mapping.ownerCallsign.isEmpty ? (managedDownload ? mapping.owner : Self.importedPilotCallsign(mappedID: mapping.mappedID, model: mapping.model, remoteID: mapping.remoteID)) : mapping.ownerCallsign,
                     droneDescription: mapping.model,
-                    mappedIDOverride: mapping.mappedID
+                    mappedIDOverride: mapping.mappedID,
+                    readiness: mapping.readiness
                 )
             )
         })
@@ -361,18 +363,16 @@ final class AppleDroneConfirmationStore: ObservableObject {
                 "organization": mapping.organization,
                 "model": mapping.model,
                 "owner": mapping.owner,
-                "ownerName": mapping.owner,
-                "ownerCallsign": Self.importedPilotCallsign(
-                    mappedID: mapping.mappedID,
-                    model: mapping.model,
-                    remoteID: mapping.remoteID
-                ),
+                "ownerName": mapping.ownerName,
+                "readiness": mapping.readiness.jsonString,
+                "ownerCallsign": mapping.ownerCallsign.isEmpty ? (managedDownload ? mapping.owner : Self.importedPilotCallsign(mappedID: mapping.mappedID, model: mapping.model, remoteID: mapping.remoteID)) : mapping.ownerCallsign,
             ]
         }
         defaults.set(persisted, forKey: "org.ridMappings")
     }
 
-    func replacePersistedMappings(_ mappings: [RidAircraftIdentity]) {
+    func replacePersistedMappings(_ mappings: [RidAircraftIdentity]) throws {
+        try AppleAircraftOrganizationAccess.requireEdit()
         importedIdentities = Dictionary(uniqueKeysWithValues: mappings.map { ($0.remoteID, $0) })
         defaults.set(
             mappings.map { identity in
@@ -384,6 +384,7 @@ final class AppleDroneConfirmationStore: ObservableObject {
                     "owner": identity.ownerName,
                     "ownerName": identity.ownerName,
                     "ownerCallsign": identity.pilotCallsign,
+                    "readiness": identity.readiness.jsonString,
                 ]
             },
             forKey: "org.ridMappings"
@@ -421,6 +422,13 @@ final class AppleDroneConfirmationStore: ObservableObject {
 }
 
 struct DroneConfirmationView: View {
+    @State private var profileJSON = "{}"
+    @State private var profileTouched = false
+    @State private var useForAssignment = false
+    @State private var checkedConditions: Set<Int> = []
+    @State private var readiness = FlightReadiness()
+    @State private var rosterState = AppleAircraftOrganizationAccess.cachedState
+    private var managedAircraft: Bool { AppleAircraftOrganizationAccess.belongsToOrganization }
     let remoteID: String
     @ObservedObject var identityStore: AppleDroneConfirmationStore
     let onConfirm: (RidAircraftIdentity) -> Void
@@ -430,6 +438,7 @@ struct DroneConfirmationView: View {
     @State private var organization: String
     @State private var pilotCallsign: String
     @State private var droneDescription: String
+    @State private var showEquipment = false
 
     init(
         remoteID: String,
@@ -445,6 +454,11 @@ struct DroneConfirmationView: View {
         mappedIDOverride = existing.flatMap { identity in
             identity.mappedID == remoteID ? nil : identity.mappedID
         }
+        let prior = OperatingProfiles.active(existing?.flightReadiness)["profile"] as? [String: Any]
+        let remembered = AppleAircraftOrganizationAccess.operatingAssignment.profileJSON
+        _profileJSON = State(initialValue: prior.map { OperatingProfiles.json($0) } ?? remembered ?? OperatingProfiles.json(OperatingProfiles.preferredProfile(AppleAircraftOrganizationAccess.cachedState, savedID: UserDefaults.standard.string(forKey: OperatingProfiles.preferenceKey(organization: AppleAircraftOrganizationAccess.scope)))))
+        _profileTouched = State(initialValue: prior != nil || remembered != nil)
+        _useForAssignment = State(initialValue: remembered != nil)
         _organization = State(initialValue: existing?.organization ?? "")
         _pilotCallsign = State(initialValue: PilotDisplayPreference.preferredPilotCallsign(
             saved: identityStore.preferredPilotCallsign,
@@ -456,28 +470,36 @@ struct DroneConfirmationView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Confirm Drone") {
-                    LabeledContent("Remote ID", value: remoteID)
-                    LabeledContent("Organization") {
-                        TextField("Required", text: $organization)
-                            .multilineTextAlignment(.trailing)
-                            .accessibilityLabel("Organization")
-                    }
-                    LabeledContent("Pilot Callsign") {
-                        TextField("Required", text: $pilotCallsign)
-                            .multilineTextAlignment(.trailing)
-                            .accessibilityLabel("Pilot Callsign")
-                    }
-                    LabeledContent("Drone Description") {
-                        TextField("Required", text: $droneDescription)
-                            .multilineTextAlignment(.trailing)
-                            .accessibilityLabel("Drone Description")
-                    }
-                }
                 Section {
-                    Text("Matching Android, all three fields are required. Save keeps the local identity for this session and broadcasts it when tracker coordination is configured. Ignore suppresses this Remote ID and its CalTopo track for this session. You can still reopen the aircraft details to change either decision.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    LabeledContent("Pilot Callsign / RPIC") {
+                        TextField("Callsign", text: $pilotCallsign).multilineTextAlignment(.trailing)
+                    }
+                    LabeledContent("Drone model") {
+                        TextField("Model", text: $droneDescription).multilineTextAlignment(.trailing)
+                    }
+                    Menu {
+                        Button("Base configuration") { readiness.selectedAccessories = []; readiness.payloadDescription = ""; readiness.payloadWeightGrams = nil }
+                        Button("Configure equipment / payload…") { showEquipment = true }
+                    } label: {
+                        LabeledContent("Configuration", value: readiness.selectedAccessories.isEmpty && readiness.payloadDescription.isEmpty ? "Base" : "Custom")
+                    }
+                    Menu {
+                        ForEach(Array(OperatingProfiles.choices(rosterState).enumerated()), id: \.offset) { _, choice in
+                            Button(choice["name"] as? String ?? "Profile") {
+                                profileJSON = OperatingProfiles.json(choice); profileTouched = true; checkedConditions = []
+                            }
+                        }
+                    } label: { LabeledContent("Type of flight", value: OperatingProfiles.object(profileJSON)["name"] as? String ?? "Other") }
+                }
+                if managedAircraft && !selectedPilotEligible { Text("RPIC qualifications not verified").font(.caption).foregroundStyle(.orange) }
+                if OperatingProfiles.object(profileJSON)["id"] as? String == "bvlos-pending" { Text("BVLOS authority details not configured").font(.caption).foregroundStyle(.orange) }
+                Section {
+                    DisclosureGroup("Equipment, payload & weight", isExpanded: $showEquipment) { flightReadinessFields }
+                    DisclosureGroup("Authority & briefing details") { operatingProfileFields }
+                    DisclosureGroup("Aircraft identification") {
+                        LabeledContent("Remote ID", value: remoteID)
+                        TextField("Organization", text: $organization)
+                    }
                 }
                 if let conflict = pilotCallsignConflict {
                     Section {
@@ -489,12 +511,22 @@ struct DroneConfirmationView: View {
                     }
                 }
             }
+            .task {
+                readiness.aircraft = identityStore.importedMappings.first(where: { $0.remoteID == remoteID })?.readiness ?? AircraftReadiness()
+                readiness.selectedAccessories = []
+                _ = await AppleAircraftOrganizationAccess.refresh(baseURL: AppleAircraftOrganizationAccess.scope)
+                applyReadinessState()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("aircraftReadinessUpdated"))) { _ in
+                applyReadinessState()
+            }
+            .onChange(of: pilotCallsign) { _, _ in matchReportedPilot() }
             .navigationTitle("Confirm Drone")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     if let onIgnore {
-                        Button("Ignore") {
+                        Button("Don’t publish") {
                             onIgnore()
                             dismiss()
                         }
@@ -503,14 +535,125 @@ struct DroneConfirmationView: View {
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        identityStore.confirm(identity)
+                    Button("Publish track") {
+                        if organization.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            organization = UserDefaults.standard.string(forKey: "org.name") ?? ""
+                        }
+                        matchReportedPilot()
+                        readiness = readiness.withReportedPilot(callsign: pilotCallsign, matched: (readiness.dictionary["pilot"] as? [String: Any])?["memberId"] != nil)
+                        let profile = OperatingProfiles.object(profileJSON)
+                        UserDefaults.standard.set(profile["missingProfileId"] as? String ?? profile["id"] as? String,
+                            forKey: OperatingProfiles.preferenceKey(organization: AppleAircraftOrganizationAccess.scope))
+                        if useForAssignment { AppleAircraftOrganizationAccess.operatingAssignment.remember(profile) }
+                        else { AppleAircraftOrganizationAccess.operatingAssignment.end() }
+                        readiness.operatingProfileJSON = OperatingProfiles.json(OperatingProfiles.snapshot(profile, state: rosterState,
+                            pilotID: (readiness.dictionary["pilot"] as? [String: Any])?["memberId"] as? String ?? "",
+                            aircraftID: readiness.aircraft.recordId, incidentID: AppleAircraftOrganizationAccess.operatingIncidentID,
+                            assignmentID: AppleAircraftOrganizationAccess.operatingAssignment.assignmentID, managed: managedAircraft, checked: checkedConditions))
+                        readiness = OperatingProfiles.retainingHistory(previous: identityStore.identity(for: remoteID)?.flightReadiness, next: readiness)
+                        readiness.confirmedAt = ISO8601DateFormatter().string(from: Date())
+                        UserDefaults.standard.set(Array(readiness.selectedAccessories), forKey: "accessories:" + AppleAircraftOrganizationAccess.scope + remoteID)
+                        identityStore.confirm(identity, recordUnresolvedPilot: true)
                         onConfirm(identity)
                         dismiss()
                     }
-                    .disabled(!identity.isComplete)
                 }
             }
+        }
+    }
+
+    private var selectedPilotEligible: Bool {
+        if !managedAircraft { return true }
+        let selected = readiness.dictionary["pilot"] as? [String: Any] ?? [:]
+        let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"
+        return (rosterState["pilots"] as? [[String: Any]] ?? []).contains {
+            $0["memberId"] as? String == selected["memberId"] as? String &&
+                $0["callsign"] as? String == selected["callsign"] as? String &&
+                ($0["callsign"] as? String ?? "").caseInsensitiveCompare(pilotCallsign.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame &&
+                $0["eligible"] as? Bool == true && ($0["validUntil"] as? String ?? "") >= formatter.string(from: Date())
+        }
+    }
+
+    private func applyReadinessState() {
+        rosterState = AppleAircraftOrganizationAccess.cachedState
+        matchReportedPilot()
+        if !profileTouched { profileJSON = OperatingProfiles.json(OperatingProfiles.preferredProfile(rosterState, savedID: UserDefaults.standard.string(forKey: OperatingProfiles.preferenceKey(organization: AppleAircraftOrganizationAccess.scope)))) }
+        readiness.rosterFetchedAt = rosterState["fetchedAt"] as? String ?? ""
+        readiness.configurationVersion = (rosterState["configurationVersion"] as? NSNumber)?.int64Value ?? 0
+        if let entry = (rosterState["aircraft"] as? [[String: Any]] ?? []).first(where: { ($0["remoteId"] as? String)?.uppercased() == remoteID.uppercased() }) {
+            readiness = readiness.withAircraft(local: identityStore.importedMappings.first(where: { $0.remoteID.caseInsensitiveCompare(remoteID) == .orderedSame })?.readiness, published: entry["readiness"].map { AircraftReadiness.decode($0) })
+            readiness.selectedAccessories.formIntersection(readiness.aircraft.accessories.map(\.id))
+            if let service = (entry["history"] as? [[String: Any]])?.first,
+               let data = try? JSONSerialization.data(withJSONObject: service) { readiness.serviceJSON = String(decoding: data, as: UTF8.self) }
+        }
+    }
+
+    private func matchReportedPilot() {
+        readiness = readiness.resolvingPilot(callsign: pilotCallsign, roster: rosterState["pilots"] as? [[String: Any]] ?? [])
+    }
+
+    private var operatingProfileFields: some View {
+        VStack(alignment: .leading) {
+            let profile = OperatingProfiles.object(profileJSON)
+            Menu(profile["name"] as? String ?? "Other / details pending") {
+                ForEach(Array(OperatingProfiles.choices(rosterState).enumerated()), id: \.offset) { _, choice in
+                    Button(choice["name"] as? String ?? "Profile") {
+                        profileJSON = OperatingProfiles.json(choice); profileTouched = true; checkedConditions = []
+                    }
+                }
+            }
+            Toggle("Use for this assignment (across batteries)", isOn: $useForAssignment)
+            if !AppleAircraftOrganizationAccess.operatingAssignment.assignmentID.isEmpty {
+                Button("End assignment / start a different assignment") {
+                    AppleAircraftOrganizationAccess.operatingAssignment.end(); useForAssignment = false
+                }
+            }
+            ForEach(OperatingProfiles.warnings(profile, state: rosterState,
+                pilotID: (readiness.dictionary["pilot"] as? [String: Any])?["memberId"] as? String ?? "",
+                aircraftID: readiness.aircraft.recordId, incidentID: AppleAircraftOrganizationAccess.operatingIncidentID,
+                managed: managedAircraft), id: \.self) { issue in Text(issue + " Continue remains available.").foregroundStyle(.orange) }
+            ForEach(Array((profile["conditions"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { index, condition in
+                Toggle(["text", "source", "unit", "reference"].compactMap { condition[$0] as? String }.filter { !$0.isEmpty }.joined(separator: " · "),
+                    isOn: Binding(get: { checkedConditions.contains(index) }, set: { if $0 { checkedConditions.insert(index) } else { checkedConditions.remove(index) } }))
+            }
+            Text("RPIC or VO for the RPIC: review applicability and conditions. Selection does not grant authority. Airspace authorization is separate.").font(.footnote)
+        }
+    }
+
+    private var flightReadinessFields: some View {
+        VStack(alignment: .leading) {
+            if managedAircraft {
+                let aircraft = (rosterState["aircraft"] as? [[String: Any]] ?? []).first { ($0["remoteId"] as? String)?.uppercased() == remoteID.uppercased() }
+                let service = (aircraft?["history"] as? [[String: Any]])?.first ?? [:]
+                Text("Service status: " + (service["status"] as? String ?? "Not yet reported").replacingOccurrences(of: "_", with: " "))
+                Text(service["note"] as? String ?? "")
+                Text("Last synchronized: " + (rosterState["fetchedAt"] as? String ?? "not available")).font(.footnote)
+                if let url = URL(string: AppleAircraftOrganizationAccess.scope + "/aircraft") { Link("Report / review aircraft service status", destination: url) }
+                let today = ISO8601DateFormatter().string(from: Date()).prefix(10)
+                let pilots = (rosterState["pilots"] as? [[String: Any]] ?? []).filter { $0["eligible"] as? Bool == true && ($0["validUntil"] as? String ?? "") >= today }
+                if readiness.pilotJSON != "{}" && !selectedPilotEligible { Text("Pilot details changed or are no longer current. Select the RPIC again.").foregroundStyle(.red) }
+                Text(["part107", "part107_waiver"].contains(OperatingProfiles.object(profileJSON)["authorityType"] as? String ?? "") ? "RPIC — select the certified pilot serving in command" : "RPIC — reported callsign; this roster records Part 107 qualifications. Other authority requires separate review.")
+                ForEach(pilots.indices, id: \.self) { index in
+                    let pilot = pilots[index]
+                    Button((pilot["callsign"] as? String ?? "") + " — " + (pilot["name"] as? String ?? "")) {
+                        pilotCallsign = pilot["callsign"] as? String ?? ""
+                        if let data = try? JSONSerialization.data(withJSONObject: pilot) { readiness.pilotJSON = String(decoding: data, as: UTF8.self) }
+                        if let data = try? JSONSerialization.data(withJSONObject: service) { readiness.serviceJSON = String(decoding: data, as: UTF8.self) }
+                    }
+                }
+                if pilots.isEmpty { Text("No eligible pilot in the saved roster. Recording continues; synchronize or ask a member administrator to complete qualifications.") }
+            }
+            ForEach(readiness.aircraft.accessories) { accessory in
+                Toggle(accessory.name + (accessory.required ? " (required)" : ""), isOn: Binding(get: { readiness.selectedAccessories.contains(accessory.id) }, set: { selected in
+                    if selected {
+                        if !accessory.group.isEmpty { readiness.selectedAccessories.subtract(readiness.aircraft.accessories.filter { $0.group == accessory.group }.map(\.id)) }
+                        readiness.selectedAccessories.insert(accessory.id)
+                    } else { readiness.selectedAccessories.remove(accessory.id) }
+                }))
+            }
+            TextField("Takeoff payload (for example water bottle)", text: $readiness.payloadDescription)
+            TextField("Payload weight (grams, if known)", value: $readiness.payloadWeightGrams, format: .number)
+            Text("Takeoff weight: " + (readiness.aircraft.totalWeight(selected: readiness.selectedAccessories, payloadDescription: readiness.payloadDescription, payloadGrams: readiness.payloadWeightGrams).map { "\($0) grams" } ?? "incomplete — weight unknown"))
         }
     }
 
@@ -520,7 +663,9 @@ struct DroneConfirmationView: View {
             organization: organization,
             pilotCallsign: pilotCallsign,
             droneDescription: droneDescription,
-            mappedIDOverride: mappedIDOverride
+            mappedIDOverride: mappedIDOverride,
+            readiness: readiness.aircraft,
+            flightReadiness: readiness
         )
     }
 

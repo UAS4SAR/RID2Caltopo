@@ -165,6 +165,7 @@ public class WaypointTrack {
     private final List<ArchivedClue> clues = new ArrayList<>();
     private boolean archivePrepared = false;
     private String archivedOwner = "";
+    private String archivedFlightReadinessJson = "{}";
     private String archivedModel = "";
     private String archivedOrg = "";
     private String archivedRemoteId = "";
@@ -256,6 +257,7 @@ public class WaypointTrack {
     synchronized void prepareForArchive() {
         if (archivePrepared) return;
         archivedOwner = droneSpec.getOwner();
+        archivedFlightReadinessJson = droneSpec.getFlightReadinessJson();
         archivedModel = droneSpec.getModel();
         archivedOrg = droneSpec.getOrg();
         archivedRemoteId = droneSpec.getRemoteId();
@@ -350,6 +352,7 @@ public class WaypointTrack {
 
             JSONObject r2cProp = new JSONObject();
             r2cProp.put("owner", useArchiveSnapshot ? archivedOwner : droneSpec.getOwner());
+            r2cProp.put("flightReadiness", new JSONObject(useArchiveSnapshot ? archivedFlightReadinessJson : droneSpec.getFlightReadinessJson()));
             r2cProp.put("model", useArchiveSnapshot ? archivedModel : droneSpec.getModel());
             r2cProp.put("org", useArchiveSnapshot ? archivedOrg : droneSpec.getOrg());
             r2cProp.put("rid", useArchiveSnapshot ? archivedRemoteId : droneSpec.getRemoteId());
@@ -934,6 +937,17 @@ public class WaypointTrack {
             CTDebug(TAG, "archive(): no waypoints.");
             return;
         }
+        double first = coordinates.optJSONArray(0).optDouble(3, Double.NaN);
+        double last = coordinates.optJSONArray(coordinates.length() - 1).optDouble(3, Double.NaN);
+        if (!ShortFlightRecording.request(archivedMappedId.isEmpty() ? archivedRemoteId : archivedMappedId,
+                (last - first) / 1000.0, archivedDistanceInFeet * 0.3048,
+                () -> GetTrackArchiveExecutorPool().submit(this::archiveRecorded))) {
+            archiveRecorded();
+        }
+    }
+
+    private void archiveRecorded() {
+        long numCoords = coordinates.length();
         JSONObject joTop = getGeoJson();
         String geoJsonString = null;
         if (null != joTop) try {

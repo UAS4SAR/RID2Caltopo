@@ -6,6 +6,7 @@ actor AppleTerrainElevationService {
         let cell: String
         let latitude: Double
         let longitude: Double
+        let radiusMeters: Double
     }
 
     private struct CacheEntry: Codable {
@@ -16,6 +17,7 @@ actor AppleTerrainElevationService {
     private let session: URLSession
     private let cacheDirectory: URL
     private let localDEM: GeoTiffElevationSource
+    private var budgetGeneration = -1
     private let maximumFreshAge: TimeInterval = 365 * 24 * 60 * 60
     private var scheduledPrefetchCells = Set<String>()
     private var pendingPrefetchCoordinates: [PendingPrefetch] = []
@@ -23,7 +25,7 @@ actor AppleTerrainElevationService {
     private var prefetchRetryAfter: [String: Date] = [:]
     private var prefetchWorkerRunning = false
 
-    init(session: URLSession = .shared) {
+    init(session: URLSession = URLSession(configuration: .ephemeral)) {
         self.session = session
         let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -39,6 +41,10 @@ actor AppleTerrainElevationService {
         guard latitude.isFinite, longitude.isFinite,
               (-90 ... 90).contains(latitude), (-180 ... 180).contains(longitude)
         else { return nil }
+        if budgetGeneration != AppleUnifiedMapCache.generation {
+            localDEM.invalidateCatalog()
+            budgetGeneration = AppleUnifiedMapCache.generation
+        }
         let coordinate = OperationalAltitudeCoordinator.Coordinate(latitude: latitude, longitude: longitude)
         let key = OperationalAltitudeCoordinator.terrainCacheKey(coordinate)
         prefetch(latitude: latitude, longitude: longitude)
@@ -84,18 +90,18 @@ actor AppleTerrainElevationService {
         }
     }
 
-    func prefetch(latitude: Double, longitude: Double) {
+    func prefetch(latitude: Double, longitude: Double, radiusMeters: Double = 0) {
         guard latitude.isFinite, longitude.isFinite,
               (-90 ... 90).contains(latitude), (-180 ... 180).contains(longitude)
         else { return }
-        schedulePrefetch(latitude: latitude, longitude: longitude)
+        schedulePrefetch(latitude: latitude, longitude: longitude, radiusMeters: radiusMeters)
     }
 
-    private func schedulePrefetch(latitude: Double, longitude: Double) {
-        let cell = "\(Int(floor(latitude * 20))):\(Int(floor(longitude * 20)))"
+    private func schedulePrefetch(latitude: Double, longitude: Double, radiusMeters: Double) {
+        let cell = OperationalTerrainPrefetch.cellKey(latitude: latitude, longitude: longitude) + ":\(radiusMeters)"
         if let retryAfter = prefetchRetryAfter[cell], retryAfter > Date() { return }
         guard scheduledPrefetchCells.insert(cell).inserted else { return }
-        pendingPrefetchCoordinates.append(.init(cell: cell, latitude: latitude, longitude: longitude))
+        pendingPrefetchCoordinates.append(.init(cell: cell, latitude: latitude, longitude: longitude, radiusMeters: radiusMeters))
         guard !prefetchWorkerRunning else { return }
         prefetchWorkerRunning = true
         Task(priority: .utility) { [weak self] in
@@ -106,9 +112,19 @@ actor AppleTerrainElevationService {
     private func drainPrefetchQueue() async {
         while !pendingPrefetchCoordinates.isEmpty {
             let coordinate = pendingPrefetchCoordinates.removeFirst()
-            let complete = await prefetchBestDEM(
+            let localDEM = self.localDEM
+            // Warm persisted terrain before waiting for the catalog or a transfer.
+            let localSample = await Task.detached(priority: .utility) {
+                localDEM.sample(latitude: coordinate.latitude, longitude: coordinate.longitude)
+            }.value
+            // A ray-sample/aircraft request need not query the catalog when S1M is already local.
+            // Device-area requests must still check neighboring tiles for the full radius.
+            let localS1mReady = coordinate.radiusMeters == 0 &&
+                (localSample?.horizontalResolutionMeters ?? .infinity) <= 1.5
+            let complete = localS1mReady ? true : await prefetchBestDEM(
                 latitude: coordinate.latitude,
-                longitude: coordinate.longitude
+                longitude: coordinate.longitude,
+                radiusMeters: coordinate.radiusMeters
             )
             if complete {
                 prefetchFailureCounts[coordinate.cell] = nil
@@ -125,58 +141,87 @@ actor AppleTerrainElevationService {
         prefetchWorkerRunning = false
     }
 
-    private func prefetchBestDEM(latitude: Double, longitude: Double) async -> Bool {
-        var s1mReady = true
+    private func prefetchBestDEM(latitude: Double, longitude: Double, radiusMeters: Double) async -> Bool {
+        let bounds = OperationalTerrainPrefetch.bounds(
+            latitude: latitude, longitude: longitude, radiusMeters: radiusMeters
+        )
+        var complete = true
         do {
-            if let download = try await resolveS1M(latitude: latitude, longitude: longitude) {
-                try await downloadDEM(download)
+            let downloads = try await resolveS1M(latitude: latitude, longitude: longitude, bounds: bounds)
+            if radiusMeters > 0 {
+                AppleUnifiedMapCache.protect(downloads.map(\.fileName) +
+                    OperationalOfflineMapPlanner.demTileNames(bounds: bounds).map { "USGS_1_\($0).tif" })
             }
-        } catch is CancellationError {
-            return false
-        } catch {
-            s1mReady = false
-            AppleLog.warning("Terrain", "S1M prefetch unavailable; retaining terrain fallback")
+            AppleLog.info("TerrainPrefetch", "S1M preparation tiles=\(downloads.count) operatingRadiusM=\(radiusMeters)")
+            if downloads.isEmpty {
+                AppleLog.info("TerrainPrefetch", "S1M unavailable in catalog; using terrain fallback")
+            }
+            for download in downloads {
+                do {
+                    try await downloadDEM((download.url, download.fileName, download.expectedBytes), bounds: bounds)
+                } catch is CancellationError { return false }
+                catch { complete = false }
+            }
+        } catch is CancellationError { return false }
+        catch {
+            complete = false
+            AppleLog.warning("TerrainPrefetch", "S1M preparation failed; will retry")
         }
-        do {
-            let tile = Self.geographicTileName(latitude: latitude, longitude: longitude)
+        for tile in OperationalOfflineMapPlanner.demTileNames(bounds: bounds) {
             let fileName = "USGS_1_\(tile).tif"
             guard let url = URL(string: "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/\(tile)/\(fileName)") else { return false }
-            try await downloadDEM((url, fileName, nil))
-            return s1mReady
-        } catch is CancellationError {
-            return false
-        } catch {
-            AppleLog.warning("Terrain", "DEM fallback prefetch unavailable")
-            return false
+            do { try await downloadDEM((url, fileName, nil)) }
+            catch is CancellationError { return false }
+            catch { complete = false }
+        }
+        _ = localDEM.sample(latitude: latitude, longitude: longitude)
+        AppleLog.info("TerrainPrefetch", "Terrain preparation complete=\(complete)")
+        return complete
+    }
+
+    private func resolveS1M(latitude: Double, longitude: Double, bounds: OperationalMapBounds) async throws
+        -> [OperationalS1MProduct]
+    {
+        var downloads: [URL: OperationalS1MProduct] = [:]
+        var priority = Set<URL>()
+        var offset = 0
+        while true {
+            var components = URLComponents(string: "https://tnmaccess.nationalmap.gov/api/v1/products")!
+            components.queryItems = [
+                .init(name: "bbox", value: "\(bounds.west),\(bounds.south),\(bounds.east),\(bounds.north)"),
+                .init(name: "prodFormats", value: "GeoTIFF"),
+                .init(name: "outputFormat", value: "JSON"),
+                .init(name: "datasets", value: OperationalS1MCatalog.datasetName),
+                .init(name: "max", value: "100"),
+                .init(name: "offset", value: String(offset)),
+            ]
+            var request = URLRequest(url: components.url!)
+            request.timeoutInterval = 15
+            let data = try await AppleCacheHTTPClient.data(for: request, session: session)
+            guard let page = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let items = page["items"] as? [[String: Any]]
+            else { throw URLError(.cannotParseResponse) }
+            for product in try OperationalS1MCatalog.products(data: data, intersecting: bounds) {
+                downloads[product.url] = product
+            }
+            priority.formUnion(try OperationalS1MCatalog.products(data: data, containing: (latitude, longitude)).map(\.url))
+            offset += items.count
+            let total = (page["total"] as? NSNumber)?.intValue ?? offset
+            if offset >= total { break }
+            guard !items.isEmpty, offset < 2_000 else { throw URLError(.cannotParseResponse) }
+        }
+        return downloads.values.sorted {
+            if priority.contains($0.url) != priority.contains($1.url) { return priority.contains($0.url) }
+            return $0.fileName < $1.fileName
         }
     }
 
-    private func resolveS1M(latitude: Double, longitude: Double) async throws
-        -> (url: URL, fileName: String, expectedBytes: Int64?)?
-    {
-        let delta = 0.0001
-        var components = URLComponents(string: "https://tnmaccess.nationalmap.gov/api/v1/products")!
-        components.queryItems = [
-            .init(name: "bbox", value: "\(longitude - delta),\(latitude - delta),\(longitude + delta),\(latitude + delta)"),
-            .init(name: "prodFormats", value: "GeoTIFF"),
-            .init(name: "outputFormat", value: "JSON"),
-            .init(name: "datasets", value: OperationalS1MCatalog.datasetName),
-            .init(name: "max", value: "20"),
-        ]
-        var request = URLRequest(url: components.url!)
-        request.timeoutInterval = 15
-        let data = try await AppleCacheHTTPClient.data(for: request, session: session)
-        return try OperationalS1MCatalog.products(
-            data: data,
-            containing: (latitude, longitude)
-        ).first.map { ($0.url, $0.fileName, $0.expectedBytes) }
-    }
-
-    private func downloadDEM(_ download: (url: URL, fileName: String, expectedBytes: Int64?)) async throws {
+    private func downloadDEM(_ download: (url: URL, fileName: String, expectedBytes: Int64?), bounds: OperationalMapBounds? = nil) async throws {
         _ = try await AppleDEMDownloadCoordinator.shared.ensureDEM(
             url: download.url,
             fileName: download.fileName,
             expectedBytes: download.expectedBytes,
+            bounds: bounds,
             session: session
         )
         localDEM.invalidateCatalog()
@@ -215,7 +260,7 @@ actor AppleTerrainElevationService {
     private func save(_ entry: CacheEntry, key: String) {
         do {
             try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
-            try JSONEncoder().encode(entry).write(to: url(for: key), options: .atomic)
+            _ = try AppleMapCacheAccess.write(JSONEncoder().encode(entry), to: url(for: key))
         } catch {
             AppleLog.warning("Terrain", "DEM cache write failed: \(error.localizedDescription)")
         }

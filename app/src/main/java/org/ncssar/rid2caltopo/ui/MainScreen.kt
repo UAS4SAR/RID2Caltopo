@@ -1892,6 +1892,7 @@ fun MainScreen(
                             state = landRestrictionUiState,
                             onClick = { showLandRestrictionPanel = true }
                         )
+                        OrganizationUserLabel()
                     }
                 }
                 itemsIndexed(

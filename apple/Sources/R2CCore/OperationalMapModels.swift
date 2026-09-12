@@ -10,6 +10,13 @@ public enum OperationalMapTrackFreshness {
 }
 
 public enum OperationalMapFocusPolicy {
+    public static func shouldInspectAircraft(
+        focusedAircraftID: String?,
+        tappedAircraftID: String
+    ) -> Bool {
+        focusedAircraftID == tappedAircraftID
+    }
+
     public static func shouldReleaseFocus(
         hasFocusedAircraft: Bool,
         isOperatorGesture: Bool

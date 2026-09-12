@@ -6,6 +6,17 @@ import org.junit.Test
 
 class RidMappingRulesTest {
     @Test
+    fun singleEditIgnoresInvalidLegacyEntriesButStillChecksDuplicates() {
+        val valid = EditableRidMapping("RID1", "Owner", "1SAR7", "Model")
+        val invalid = EditableRidMapping("RID2", "Legacy", "Legacy", "Other", AircraftReadiness(accessories = listOf(AircraftAccessory("battery", "", null))))
+        assertTrue(RidMappingRules.validateEntry("SAR", valid, listOf(invalid)).isEmpty())
+        assertTrue(RidMappingRules.validateEntry("SAR", invalid, listOf(valid)).isNotEmpty())
+        val duplicates = RidMappingRules.validateEntry("SAR", valid, listOf(valid))
+        assertTrue(duplicates.contains("Remote ID is already listed."))
+        assertTrue(duplicates.contains("Model must be unique for this owner callsign."))
+    }
+
+    @Test
     fun resolveOwnerFields_repairsLegacyTeamOwnerWhenNameIsMissing() {
         val fields = RidMappingRules.resolveOwnerFields(
             ownerName = "",

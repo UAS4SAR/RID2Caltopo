@@ -12,6 +12,7 @@ internal interface BlobCacheStore {
     fun usageBytes(): Long = snapshot().bytesUsed
     fun markStaleServed()
     fun prewarm() {}
+    fun oldestEntries(): List<CacheEvictionEntry> = emptyList()
     fun runMaintenance(
         maxEntryAgeCutoffMs: Long,
         trimToBytes: Long,
@@ -26,3 +27,5 @@ internal data class CacheMaintenanceResult(
     val bytesFreed: Long = 0L,
     val bytesRemaining: Long = 0L
 )
+
+internal data class CacheEvictionEntry(val key: String, val bytes: Long, val accessed: Long)

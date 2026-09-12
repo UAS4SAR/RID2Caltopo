@@ -68,6 +68,7 @@ message AppConfig {
     string owner = 5;
     string owner_name = 6;
     string owner_callsign = 7;
+    string readiness_json = 8;
   }
 
   message LoadedConfigFileRecord {

@@ -18,11 +18,22 @@ public enum ControllerIPv4Selection {
         wifiInterfaceNames: [String],
         wiredInterfaceNames: [String]
     ) -> String? {
-        for interfaceName in wifiInterfaceNames + wiredInterfaceNames {
-            if let candidate = candidates.first(where: { $0.interfaceName == interfaceName }) {
+        for interfaceName in wiredInterfaceNames + wifiInterfaceNames {
+            if let candidate = candidates.first(where: {
+                $0.interfaceName == interfaceName && isUsableAddress($0.address)
+            }) {
                 return candidate.address
             }
         }
         return nil
+    }
+
+    public static func isUsableAddress(_ address: String) -> Bool {
+        let parts = address.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return false }
+        let octets = parts.compactMap { UInt8($0) }
+        guard octets.count == 4 else { return false }
+        // Link-local addresses are valid for a directly connected controller.
+        return octets[0] > 0 && octets[0] != 127 && octets[0] < 224
     }
 }

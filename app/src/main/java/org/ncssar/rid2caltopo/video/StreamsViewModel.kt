@@ -7,6 +7,7 @@ import android.os.Process
 import android.os.PowerManager
 import android.view.Surface
 import org.osmdroid.api.IGeoPoint
+import org.ncssar.rid2caltopo.video.sameMapDrone
 import org.ncssar.rid2caltopo.video.MapViewportBounds
 import org.ncssar.rid2caltopo.video.AndroidClueRecord
 import org.ncssar.rid2caltopo.video.AndroidClueStore
@@ -700,6 +701,20 @@ internal suspend fun projectClueLocationWithDemSamples(
         aglMeters = effectiveAgl,
         gimbalAngleDeg = gimbalAngleDeg,
     )
+    // A vertical sightline needs neither heading nor AGL: terrain directly below is the target.
+    if (gimbalAngleDeg.isFinite() && gimbalAngleDeg <= -89.9 &&
+        droneLat.isFinite() && droneLng.isFinite() && droneLat in -90.0..90.0 && droneLng in -180.0..180.0
+    ) {
+        val ground = sampleElevationMeters(droneLat, droneLng)
+        if (ground != null && ground.elevationMeters.isFinite()) {
+            return ClueProjection(
+                lat = droneLat, lng = droneLng, alt = ground.elevationMeters,
+                terrainProjectionApplied = true, demSource = ground.source,
+                demResolutionMeters = ground.horizontalResolutionMeters, demSampleStale = ground.stale,
+            )
+        }
+        return flatProjection
+    }
     if (anchoredRelativeUp != null && terrainReferenceLatitude != null &&
         terrainReferenceLongitude != null && referenceGround == null
     ) {
@@ -1102,6 +1117,20 @@ class StreamsViewModel(
             initialValue = emptyMap()
         )
 
+    // Map selection belongs to the aircraft, independently of video availability/focus.
+    private val _mapFocusedDesignator = MutableStateFlow<String?>(null)
+    val mapFocusedDesignator: StateFlow<String?> = _mapFocusedDesignator.asStateFlow()
+
+    fun focusMapDrone(designator: String) {
+        _mapFocusedDesignator.value = designator
+        // Video paths can use different capitalization from the aircraft display name.
+        currentResyncSnapshot().keys.firstOrNull { sameMapDrone(it, designator) }?.let(::ensureFocus)
+    }
+
+    fun clearMapDroneFocus() {
+        _mapFocusedDesignator.value = null
+    }
+
     private val _focusedPath = MutableStateFlow<String?>(null)
     val focusedPath: StateFlow<String?> = _focusedPath.asStateFlow()
     private val localPlaybackPausedState = mutableStateMapOf<String, Boolean>()
@@ -1157,7 +1186,7 @@ class StreamsViewModel(
     fun addAltitudeConsumer(): () -> Unit = altitudeCoordinator.addConsumer()
 
     fun prefetchTerrainForLocation(latitude: Double, longitude: Double) {
-        altitudeCoordinator.prefetchTerrainForLocation(latitude, longitude)
+        altitudeCoordinator.prefetchTerrainForLocation(latitude, longitude, org.ncssar.rid2caltopo.video.DEM_OPERATING_RADIUS_METERS)
     }
 
     fun droneDisplayStateFor(mappedId: String): DroneDisplayState? =

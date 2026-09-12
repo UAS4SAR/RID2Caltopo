@@ -120,7 +120,7 @@ internal class DemElevationService(context: Context) {
 
         val network = fetchSample(lat, lng)
         if (network != null) {
-            cache.put(key, sampleToBytes(network), cache.defaultExpiry())
+            runCatching { cache.put(key, sampleToBytes(network), cache.defaultExpiry()) }
             synchronized(mem) { mem[key] = network }
             MapCacheDebug.log("dem network-fetch key=$key elevM=${"%.2f".format(Locale.US, network.elevationMeters)}")
             return@withContext network
@@ -165,6 +165,12 @@ internal class DemElevationService(context: Context) {
         if (!lat.isFinite() || !lng.isFinite()) return
         sampleElevationMeters(lat, lng)
         sampleElevationMeters(lat + ARC_SEC, lng + ARC_SEC)
+    }
+
+    suspend fun prewarmLocalForLocation(lat: Double, lng: Double) = withContext(Dispatchers.IO) {
+        val sample = localGeoTiff.sample(lat, lng)
+        localGeoTiff.sample(lat + ARC_SEC, lng + ARC_SEC)
+        sample != null && sample.elevationMeters.isFinite() && sample.horizontalResolutionMeters <= 1.5
     }
 
     fun hasCachedSample(lat: Double, lng: Double): Boolean {

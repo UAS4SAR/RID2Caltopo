@@ -303,6 +303,7 @@ internal fun MapPaneManagementDialogs(
     mapCacheSizeInput: String,
     mapCacheAvailableBytes: Long?,
     mapCacheCurrentBytes: Long,
+    mapCacheUsage: org.ncssar.rid2caltopo.video.mapcache.MapCacheUsage,
     onMapCacheSizeInputChange: (String) -> Unit,
     onMapCacheSizeSaved: (Long) -> Unit,
     showMapTileAgeDialog: Boolean,
@@ -382,7 +383,13 @@ internal fun MapPaneManagementDialogs(
             title = { Text("Max Cache Size") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Enter the maximum tile cache size in decimal GB.")
+                    Text("Enter the combined map and terrain cache limit in decimal GB.")
+                    Text("Total used: ${formatStorageBytes(mapCacheCurrentBytes)}")
+                    Text("Map imagery: ${formatStorageBytes(mapCacheUsage.imagery)}")
+                    Text("Terrain files: ${formatStorageBytes(mapCacheUsage.terrain)}")
+                    Text("Decoded terrain: ${formatStorageBytes(mapCacheUsage.decoded)}")
+                    Text("Icons and elevation samples: ${formatStorageBytes(mapCacheUsage.other)}")
+                    Text("Downloads reserved: ${formatStorageBytes(mapCacheUsage.reserved)}")
                     Text("Currently configured: ${MapCacheSettings.formatDecimalGb(MapCacheSettings.maxCacheBytes(context))}")
                     Text(
                         mapCacheAvailableBytes?.let {
@@ -391,6 +398,9 @@ internal fun MapPaneManagementDialogs(
                     )
                     reasonableCacheMaximumBytes(mapCacheCurrentBytes, mapCacheAvailableBytes)?.let {
                         Text("Largest recommended maximum now: ${MapCacheSettings.formatDecimalGb(it)}")
+                        TextButton(onClick = { onMapCacheSizeInputChange(String.format(java.util.Locale.US, "%.2f", kotlin.math.floor(it / 10_000_000.0) / 100.0)) }) {
+                            Text("Allow up to 80% of free space")
+                        }
                     }
                     OutlinedTextField(
                         value = mapCacheSizeInput,

@@ -121,7 +121,6 @@ import org.ncssar.rid2caltopo.ui.ResumeProximityAlertButton
 import org.ncssar.rid2caltopo.ui.SignalStrengthBars
 import org.ncssar.rid2caltopo.ui.SignalLossAlertButton
 import org.ncssar.rid2caltopo.ui.SignalLossAlertDialog
-import org.opendroneid.android.bluetooth.WiFiScanner
 import org.opendroneid.android.bluetooth.DroneScoutBridgeMonitor
 import androidx.documentfile.provider.DocumentFile
 
@@ -327,15 +326,9 @@ fun StreamsScreen(
 
     val isServerRunning = MediaMTXStatus.isServerRunning
     val serverExitReason = MediaMTXStatus.serverExitReason
-    var myIpAddress by remember { mutableStateOf(R2CMqttManager.GetMyIpAddress()) }
-    LaunchedEffect(Unit) {
-        while (myIpAddress.isEmpty()) {
-            delay(2000)
-            myIpAddress = R2CMqttManager.GetMyIpAddress()
-        }
-    }
+    val controllerEndpoints = rememberControllerEndpoints()
     val serverStatus = when {
-        isServerRunning  -> "\uD83D\uDFE2 In => rtmp://$myIpAddress/<droneDesig>"
+        isServerRunning -> controllerEndpointInstructions(controllerEndpoints)
         serverExitReason.isNotEmpty() -> "\uD83D\uDD34 Server exited: $serverExitReason"
         else             -> "\uD83D\uDFE1 Starting"
     }
@@ -433,8 +426,6 @@ fun StreamsScreen(
                                     .clickable { showPerformancePanel = true }
                                     .padding(end = 8.dp),
                                 fontSize = 14.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
                             )
                             StreamsMapStatusButton(
                                 mapName = mapName,
@@ -1728,7 +1719,6 @@ internal fun handleStreamTileSingleTap(
 private fun EmptyStreamsView(
     viewModel: StreamsViewModel,
     mapName: String?,
-    myIpAddress: String = R2CMqttManager.GetMyIpAddress(),
     onMapStatusTap: () -> Unit,
     onPlayCapturedVideo: (() -> Unit)?,
     onRestartServer: () -> Unit,
@@ -1790,8 +1780,8 @@ private fun EmptyStreamsView(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            val ssid = WiFiScanner.WiFiSSID(LocalContext.current)
-            Text("Stream video to: 'rtmp://$myIpAddress/<droneDesig>' on $ssid network")
+            val endpoints = rememberControllerEndpoints()
+            Text(controllerEndpointInstructions(endpoints))
             Spacer(modifier = Modifier.height(12.dp))
             StreamsMapStatusButton(
                 mapName = mapName,

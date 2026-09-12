@@ -1,6 +1,8 @@
 import Foundation
 
 public struct RidAircraftIdentity: Sendable, Equatable {
+    public let flightReadiness: FlightReadiness?
+    public let readiness: AircraftReadiness
     public let remoteID: String
     public let organization: String
     public let ownerName: String
@@ -14,14 +16,40 @@ public struct RidAircraftIdentity: Sendable, Equatable {
         ownerName: String = "",
         pilotCallsign: String,
         droneDescription: String,
-        mappedIDOverride: String? = nil
+        mappedIDOverride: String? = nil,
+        readiness: AircraftReadiness = AircraftReadiness(),
+        flightReadiness: FlightReadiness? = nil
     ) {
+        self.flightReadiness = flightReadiness
+        self.readiness = readiness
         self.remoteID = remoteID.trimmingCharacters(in: .whitespacesAndNewlines)
         self.organization = organization.trimmingCharacters(in: .whitespacesAndNewlines)
         self.ownerName = ownerName.trimmingCharacters(in: .whitespacesAndNewlines)
         self.pilotCallsign = pilotCallsign.trimmingCharacters(in: .whitespacesAndNewlines)
         self.droneDescription = droneDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         self.mappedIDOverride = mappedIDOverride?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Older peer confirmations carry presentation identity but no flight snapshot.
+    public func preservingLocalFlightReadiness(from local: RidAircraftIdentity?) -> RidAircraftIdentity {
+        guard let local, local.remoteID == remoteID, local.flightReadiness != nil else { return self }
+        return RidAircraftIdentity(remoteID: remoteID, organization: organization, ownerName: ownerName,
+            pilotCallsign: pilotCallsign, droneDescription: droneDescription, mappedIDOverride: mappedIDOverride,
+            readiness: local.readiness, flightReadiness: local.flightReadiness)
+    }
+
+    /// Repair the two known legacy import fallbacks when exporting against the
+    /// published source. Real owner names and all equipment edits are retained.
+    public func preservingBlankPublishedOwnerFields(_ published: [String: Any]) -> RidAircraftIdentity {
+        let legacyOwner = published["owner"] as? String ?? ""
+        let sourceName = published["ownerName"] as? String ?? ""
+        let sourceCallsign = published["ownerCallsign"] as? String ?? legacyOwner
+        let legacyIsCallsign = legacyOwner.range(of: #"^[0-9]+[A-Za-z]+[0-9]+(?:-[0-9]+)?$"#, options: .regularExpression) != nil
+        let repairedName = sourceName.isEmpty && legacyIsCallsign && ownerName == legacyOwner ? "" : ownerName
+        let repairedCallsign = sourceCallsign.isEmpty && pilotCallsign == published["mappedId"] as? String ? "" : pilotCallsign
+        return RidAircraftIdentity(remoteID: remoteID, organization: organization, ownerName: repairedName,
+            pilotCallsign: repairedCallsign, droneDescription: droneDescription, mappedIDOverride: mappedIDOverride,
+            readiness: readiness, flightReadiness: flightReadiness)
     }
 
     public var isComplete: Bool {
@@ -41,7 +69,6 @@ public struct RidAircraftIdentity: Sendable, Equatable {
 
     /// Operator-visible aircraft label. `mappedID` remains the stable stream routing key.
     public var displayLabel: String {
-        if !pilotCallsign.isEmpty { return pilotCallsign }
         if !mappedID.isEmpty { return mappedID }
         return remoteID
     }
@@ -93,5 +120,25 @@ public struct RidAircraftIdentity: Sendable, Equatable {
             }
         }
         return String(result.suffix(10))
+    }
+}
+
+/// Validate one aircraft while using the remaining entries only for uniqueness.
+public enum RidMappingEditValidation {
+    public static func errors(_ entry: RidAircraftIdentity, others: [RidAircraftIdentity]) -> [String] {
+        var errors: [String] = []
+        let rid = entry.remoteID.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let callsign = entry.pilotCallsign.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = entry.droneDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        if entry.organization.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { errors.append("Organization is required.") }
+        if rid.range(of: #"^[A-Z0-9]+$"#, options: .regularExpression) == nil { errors.append("Remote ID must contain only A-Z and 0-9.") }
+        if callsign.range(of: #"^[0-9]+[A-Za-z]+[0-9]+(?:-[0-9]+)?$"#, options: .regularExpression) == nil { errors.append("Owner callsign must look like 1SAR7 or 1SAR7-2.") }
+        if model.isEmpty { errors.append("Model is required.") }
+        if others.contains(where: { $0.remoteID.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == rid }) { errors.append("Remote ID is already listed.") }
+        if others.contains(where: { $0.pilotCallsign.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == callsign.lowercased() && $0.droneDescription.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == model.lowercased() }) { errors.append("Model must be unique for this owner callsign.") }
+        let weights = [entry.readiness.baseWeightGrams] + entry.readiness.accessories.map(\.weightGrams)
+        if weights.compactMap({ $0 }).contains(where: { !$0.isFinite || $0 < 0 || $0 > 100000 }) { errors.append("Invalid weight in grams.") }
+        if entry.readiness.accessories.contains(where: { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) { errors.append("Give each accessory or battery a name.") }
+        return errors
     }
 }

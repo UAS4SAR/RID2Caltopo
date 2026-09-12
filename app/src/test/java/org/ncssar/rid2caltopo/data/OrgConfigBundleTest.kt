@@ -7,6 +7,23 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OrgConfigBundleTest {
+    @Test
+    fun aircraftReadinessSurvivesSharedAndManagedConfigurationRoundTrips() {
+        CaltopoClient.ResetPersistedClientState()
+        CaltopoClient.SetCaltopoCredentials(CaltopoCredentials("team", "cred", "secret"))
+        val readiness = AircraftReadiness(serialNumber = "SERIAL", registrationNumber = "FA123",
+            baseWeightGrams = 1200.0, monitoringEquipment = "Controller ADS-B",
+            accessories = listOf(AircraftAccessory("battery", "Battery", 400.0, group = "battery")))
+        CaltopoClient.ReplacePersistedDroneSpecs("NCSSAR", listOf(
+            EditableRidMapping("1581F8HGX1234567890", "Pilot Example", "1SAR7", "DJI Test", readiness)))
+        val shared = findConfig(JSONObject(CaltopoClient.BuildOrgConfigBundle("NCSSAR")), "ct_ridmap")
+        val managed = OrgConfigManager.buildManagedSnapshot()
+        assertEquals(readiness, AircraftReadiness.fromJSON(managed.getJSONArray("droneSpecs").getJSONObject(0).getJSONObject("readiness")))
+        CaltopoClient.ResetPersistedClientState()
+        CaltopoClient.readRidmapFileContent(shared)
+        assertEquals(readiness, CaltopoClient.GetPersistedDroneSpecs().single().readiness)
+    }
+
     @After
     fun tearDown() {
         CaltopoClient.ResetPersistedClientState()

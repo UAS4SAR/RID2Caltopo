@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.video
 
+internal fun sameMapDrone(first: String?, second: String?): Boolean =
+    first != null && second != null && first.equals(second, ignoreCase = true)
+
 data class MapViewportBounds(
     val north: Double,
     val east: Double,

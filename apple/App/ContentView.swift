@@ -81,7 +81,7 @@ struct ContentView: View {
     @State private var pendingDroneConfirmation: DroneConfirmationRequest?
     @State private var automaticStreamPairingAircraftID: String?
     @State private var automaticPairingOfferedStreamIDs: Set<String> = []
-    @State private var controllerRTMPURL = "Connect this device to Wi-Fi"
+    @State private var controllerRTMPURL = "Connect this device to Wi-Fi or Ethernet"
     @State private var appStartedAt = Date()
     @State private var lastBridgePacketDiagnosticLogAt = Date.distantPast
     @State private var dismissedUpdateVersionCode = 0
@@ -908,7 +908,7 @@ struct ContentView: View {
                     await networkDiagnostics.refresh(reason: .locationAuthorizationChanged)
                 }
             }
-            .onChange(of: locationProvider.lastLocation?.timestamp) { _, _ in
+            .onChange(of: locationProvider.lastLocation?.timestamp, initial: true) { _, _ in
                 peerCoordinator.updatePosition(locationProvider.lastLocation)
                 publishLocalDeviceMarker()
                 evaluateIncidentMapRelocation()
@@ -1059,6 +1059,14 @@ struct ContentView: View {
             }
         .overlay(alignment: .top) {
             VStack(spacing: 0) {
+                ForEach(ridTracks.tracks) { track in
+                    if let identity = droneConfirmations.identity(for: track.aircraftID),
+                       let profile = OperatingProfiles.active(identity.flightReadiness)["profile"] as? [String: Any] {
+                        Text(identity.mappedID + ": " + (profile["name"] as? String ?? "Other / details pending"))
+                            .font(.caption2).padding(2).background(.regularMaterial)
+                    }
+                }
+                ShortFlightRecordingPanel(gate: ridTracks.shortFlightDecisions)
                 if operationalAlerts.signalLossAlerts.first != nil || operationalAlerts.altitudeAlerts.first != nil {
                     OperationalAlertBanner(
                         signalLoss: operationalAlerts.signalLossAlerts.first,
@@ -1532,6 +1540,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
             }
+            AppleOrganizationUserLabel()
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 6)
@@ -1956,7 +1965,7 @@ struct ContentView: View {
                 ForEach(AppleAnomalyMode.allCases) { mode in Text(mode.label).tag(mode) }
             }
             LabeledContent("MediaMTX ingest", value: endpoint.loopbackHlsURL?.absoluteString ?? "Unavailable")
-            LabeledContent("Controller RTMP server", value: controllerRTMPURL).textSelection(.enabled)
+            AppleControllerConnectionURLs()
             HStack {
                 Label("Native bridge", systemImage: "video")
                 Spacer()
@@ -2015,7 +2024,7 @@ struct ContentView: View {
     }
 
     private var controllerWiFiSSID: String {
-        networkDiagnostics.currentWiFiSSID ?? "Wi-Fi name unavailable"
+        networkDiagnostics.currentControllerConnectionLabel
     }
 
     private var currentIncidentName: String {
@@ -2619,8 +2628,8 @@ struct ContentView: View {
                 )
             }
         } else {
-            let changed = controllerRTMPURL != "Connect this device to Wi-Fi"
-            controllerRTMPURL = "Connect this device to Wi-Fi"
+            let changed = controllerRTMPURL != "Connect this device to Wi-Fi or Ethernet"
+            controllerRTMPURL = "Connect this device to Wi-Fi or Ethernet"
             if changed {
                 AppleLog.warning(
                     "Network",
@@ -2657,5 +2666,32 @@ private struct RecordingDownloadApprovalModifier: ViewModifier {
                 }
             )
         }
+    }
+}
+
+
+private struct ShortFlightRecordingPanel: View {
+    @ObservedObject var gate: ShortFlightRecordingGate
+    @Environment(\.scenePhase) private var phase
+    var body: some View {
+        VStack(spacing: 4) {
+            ForEach(gate.prompts) { prompt in
+                VStack(alignment: .leading) {
+                    Text("Short flight — Record (Yes/No)?").font(.headline)
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        Text("\(prompt.aircraft) · Yes automatically in \(gate.remainingSeconds(prompt))s")
+                    }
+                    HStack {
+                        Button("Yes — Record") { gate.decide(prompt.id, record: true) }.buttonStyle(.borderedProminent)
+                        Button("No") { gate.decide(prompt.id, record: false) }.buttonStyle(.bordered)
+                    }
+                }
+                .padding(12)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+            }
+        }
+        .onAppear { gate.setActive(phase == .active) }
+        .onChange(of: phase) { _, next in gate.setActive(next == .active) }
+        .onDisappear { gate.setActive(false) }
     }
 }

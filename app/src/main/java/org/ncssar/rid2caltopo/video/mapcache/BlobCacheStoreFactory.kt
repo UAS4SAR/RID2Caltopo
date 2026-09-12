@@ -4,7 +4,20 @@ import android.content.Context
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTWarn
 
 internal object BlobCacheStoreFactory {
+    private val instances = mutableMapOf<String, BlobCacheStore>()
     fun create(
+        context: Context, namespace: String, dbName: String, maxBytes: Long,
+        defaultTtlMs: Long, forceFileBacked: Boolean = false
+    ): BlobCacheStore = synchronized(UnifiedMapCache.lock) {
+        val id = "${MapCacheRootResolver.resolveRoot(context)}:$namespace:$dbName:$forceFileBacked"
+        instances.getOrPut(id) {
+            val raw = createRaw(context, namespace, dbName, maxBytes, defaultTtlMs, forceFileBacked)
+            UnifiedMapCache.register(id, namespace, raw)
+            BudgetedMapStore(context.applicationContext, raw)
+        }
+    }
+
+    private fun createRaw(
         context: Context,
         namespace: String,
         dbName: String,

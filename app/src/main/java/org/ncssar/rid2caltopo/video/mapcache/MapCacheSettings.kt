@@ -18,15 +18,21 @@ internal object MapCacheSettings {
     // Large removable volumes are common on field tablets. Keep a generous
     // guardrail while allowing operators to reserve more than the old 64 GB cap.
     internal const val MAX_CACHE_BYTES = 1_000_000_000_000L
-    private const val DEFAULT_MAX_CACHE_BYTES = DECIMAL_GB_BYTES
+    private const val DEFAULT_MAX_CACHE_BYTES = 10 * DECIMAL_GB_BYTES
     private const val DEFAULT_MAX_TILE_AGE_DAYS = 365L
     private const val MIN_MAX_TILE_AGE_DAYS = 1L
     private const val MAX_MAX_TILE_AGE_DAYS = 3650L
 
     fun maxCacheBytes(context: Context): Long {
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        if (!prefs.contains(MAX_CACHE_BYTES_KEY)) {
+            val free = org.ncssar.rid2caltopo.video.queryAvailableCacheBytes(context)
+                ?: context.filesDir.usableSpace
+            val initial = MapCacheBudgetPolicy.defaultLimit(free)
+            prefs.edit().putLong(MAX_CACHE_BYTES_KEY, initial).apply()
+        }
         return prefs.getLong(MAX_CACHE_BYTES_KEY, DEFAULT_MAX_CACHE_BYTES)
-            .coerceIn(MIN_CACHE_BYTES, MAX_CACHE_BYTES)
+            .coerceIn(0L, MAX_CACHE_BYTES)
     }
 
     fun setMaxCacheBytes(context: Context, bytes: Long) {

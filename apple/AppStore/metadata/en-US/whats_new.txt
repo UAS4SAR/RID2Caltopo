@@ -1,10 +1,25 @@
 Latest changes:
+- Browse aircraft in a concise list, then edit one aircraft with persistent field labels and Save/Cancel. Validate only the selected aircraft and refresh organization edit authorization when saving.
+- Use a compact drone confirmation panel with the Main Screen pilot callsign, legacy drone track naming, Base equipment configuration, and an explicit Publish track / Don't publish choice.
+- Remember the confirmed flight type separately for each organization across app restarts. Keep briefing acknowledgments specific to each flight and identify BVLOS selections awaiting authority details.
+- Preserve locally edited aircraft equipment and weights, match reported RPIC callsigns to organization members, and retain original flight readiness and operating-profile history.
+- Upload intended aircraft edits without filling blank owner fields from callsigns. Tracker v1.4.90 ignores empty new fields when comparing older configurations, displays reported RPIC and local flight times, and includes readiness changes in the organization audit trail.
+- Show the verified organization user alongside the Main Screen rules controls.
 - Import organization configuration directly from Tracker's downloaded SVG QR code without converting it to JPEG.
 - Preserve an already-authorized tablet's sign-in when importing its organization's enrollment again; this requires the corresponding Tracker server update.
 - Wait for required Tracker sign-in before downloading protected configuration, then resume synchronization automatically.
+- Tap a drone once to focus it with a yellow ring; tap the focused drone again to open its settings. Follow Focused Drone keeps it centered, while panning or zooming releases focus.
+- Prepare one-metre terrain around the device and its one-statute-mile operating area for terrain-aware clue reports, with coarser terrain as fallback.
+- Download smaller S1M terrain pieces instead of entire 10 km source tiles, retaining the original elevation detail and overlapping edges.
+- Apply one shared cache limit to map imagery, terrain, decoded terrain, icons, and elevation samples. Older entries are removed automatically without routine cache-full alerts.
+- Default the map cache to 10 GB or 80% of available storage, whichever is smaller, while preserving saved limits. Cache controls show combined usage and available storage.
+- Use terrain elevation for straight-down clue projection even when heading or above-ground altitude is unavailable.
+- Show separate Wi-Fi and Ethernet controller RTMP addresses, including local wired connections when another network provides Internet access.
 
 Platform-specific changes:
 - Apple limits enrollment network waits and records import timing to help diagnose slow imports.
+- Apple removes the separate Offline Tiles Only switch and manual cache-maintenance button; cache cleanup runs automatically as space is needed.
+- Apple Map Management now opens keyboard-entry panels for Max Cache Size and Maximum Tile Age, with Save/Cancel and a recommended cache maximum.
 
 Known platform differences:
 - Apple uses iCloud Drive and Files for backup and transfer; Google Drive remains selectable through Files when installed.

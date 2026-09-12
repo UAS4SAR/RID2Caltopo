@@ -1544,6 +1544,9 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                 case "recording_download_decision_ack":
                     onRecordingDownloadDecisionAck(jo);
                     break;
+                case "aircraft_readiness_changed":
+                    java.util.concurrent.CompletableFuture.runAsync(() -> AircraftOrganizationAccess.INSTANCE.refresh());
+                    break;
                 case "organization_config_snapshot_request":
                     onOrganizationConfigSnapshotRequest(jo);
                     break;

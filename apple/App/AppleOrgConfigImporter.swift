@@ -858,7 +858,7 @@ final class AppleOrgConfigSettings: ObservableObject {
         try Self.storeSecret(config.clientSecret, account: Self.faaClientSecretAccount)
     }
 
-    private static func loadTrackerAPIKey() -> String? {
+    static func loadTrackerAPIKey() -> String? {
         loadSecret(account: trackerAccount)
     }
 
@@ -1042,7 +1042,7 @@ final class AppleOrgConfigImporter: ObservableObject {
                 try orgSettings.apply(bundle: bundle, normalizedToken: normalized)
                 try caltopoSettings.applyImported(credentials: bundle.credentials)
                 caltopoConfigurationHandler?(caltopoSettings.configuration)
-                identityStore.applyImportedMappings(bundle.mappings)
+                try identityStore.applyImportedMappings(bundle.mappings)
                 if let mutualAidTemplate = bundle.mutualAidTemplate {
                     try orgSettings.apply(mutualAidTemplate: mutualAidTemplate)
                 }
@@ -1179,7 +1179,7 @@ final class AppleOrgConfigImporter: ObservableObject {
             try caltopoSettings.applyImported(credentials: bundle.credentials)
             caltopoConfigurationHandler?(caltopoSettings.configuration)
             if !bundle.mappings.isEmpty {
-                identityStore.applyImportedMappings(bundle.mappings)
+                try identityStore.applyImportedMappings(bundle.mappings)
             }
             if let mutualAidTemplate = bundle.mutualAidTemplate {
                 try orgSettings.apply(mutualAidTemplate: mutualAidTemplate)
