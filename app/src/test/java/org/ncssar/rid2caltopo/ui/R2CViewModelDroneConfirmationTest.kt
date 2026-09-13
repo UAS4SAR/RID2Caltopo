@@ -17,6 +17,22 @@ import org.ncssar.rid2caltopo.data.CtDroneSpec
 import org.ncssar.rid2caltopo.data.SimpleTimer
 
 class R2CViewModelDroneConfirmationTest {
+    @Test fun uniqueVideoOpensConfirmationBeforeRidAndDoesNotRepeatOnRidArrival() {
+        val drone=CtDroneSpec("VIDEO1","1sar7Mn4Pr","NCSSAR","DJI Mini 4 Pro","1SAR7")
+        val model=R2CViewModel(SimpleTimer())
+        model.onLiveStreamDesignatorsChanged(setOf(" 1SAR7MN4PR "),listOf(drone))
+        assertEquals("VIDEO1",model.pendingDroneConfirmation.value?.remoteId)
+        model.onDroneSpecsChanged(emptyList())
+        assertNotNull(model.pendingDroneConfirmation.value)
+        model.markPendingDroneConfirmationUnknown()
+        model.onDroneConfirmationCandidate(drone)
+        assertNull(model.pendingDroneConfirmation.value)
+    }
+    @Test fun ambiguousVideoDoesNotChooseAnAircraft() {
+        assertNull(uniqueStreamConfirmationRemoteId("same",listOf("A" to "Same","B" to "same")))
+        assertNull(uniqueStreamConfirmationRemoteId("missing",listOf("A" to "Same")))
+        assertEquals("A",uniqueStreamConfirmationRemoteId(" SAME ",listOf("A" to "same")))
+    }
     @Before
     fun setUp() {
         clearLocalTrackListeners()
@@ -413,9 +429,9 @@ class R2CViewModelDroneConfirmationTest {
     }
 
     @Test
-    fun localTrackFinishedRetainsIgnoreDecisionWhenRidReturns() {
+    fun localTrackFinishedRetainsIgnoreDecisionForNextStream() {
         val remoteId = "DRONEIGNOREDTIMEOUT"
-        val drone = activeDrone(remoteId, waypointTimestampMsec = 131415L)
+        val drone = activeDrone(remoteId, waypointTimestampMsec = 131415L).apply { setMappedId("mini4pro") }
         val viewModel = R2CViewModel(SimpleTimer())
 
         viewModel.onDroneSpecsChanged(listOf(drone))
@@ -425,8 +441,25 @@ class R2CViewModelDroneConfirmationTest {
 
         CaltopoLiveTrack.NotifyLocalTrackFinished(drone, "test track finished")
         viewModel.onDroneSpecsChanged(emptyList())
-        viewModel.onDroneSpecsChanged(listOf(drone))
+        assertTrue(CaltopoClient.IsSessionUnknownDrone(remoteId))
+        assertFalse(CaltopoClient.GetDroneSpec(remoteId)!!.isCurrentFlightConfirmed)
+        viewModel.onLiveStreamDesignatorsChanged(setOf(drone.mappedId), listOf(drone))
 
+        assertNull(viewModel.pendingDroneConfirmation.value)
+    }
+
+    @Test
+    fun liveStreamRetainsIgnoreDecisionAcrossRidTrackEnd() {
+        val drone = activeDrone("DRONEIGNORELIVE", waypointTimestampMsec = 131415L).apply { setMappedId("mini4pro") }
+        val viewModel = R2CViewModel(SimpleTimer())
+        viewModel.onLiveStreamDesignatorsChanged(setOf(drone.mappedId), listOf(drone))
+        viewModel.markPendingDroneConfirmationUnknown()
+        CaltopoLiveTrack.NotifyLocalTrackFinished(drone, "RID gap while video continues")
+        viewModel.onDroneSpecsChanged(emptyList())
+        assertTrue(CaltopoClient.IsSessionUnknownDrone(drone.remoteId))
+        assertNull(viewModel.pendingDroneConfirmation.value)
+        viewModel.onLiveStreamDesignatorsChanged(emptySet(), listOf(drone))
+        viewModel.onLiveStreamDesignatorsChanged(setOf(drone.mappedId), listOf(drone))
         assertNull(viewModel.pendingDroneConfirmation.value)
     }
 

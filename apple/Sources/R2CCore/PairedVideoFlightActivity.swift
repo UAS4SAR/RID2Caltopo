@@ -54,6 +54,26 @@ public struct PairedVideoFlightActivityStore: Sendable, Equatable {
         lastPublisherActivityAtByStreamID[stream] = date
     }
 
+    public func isPublisherActive(streamID: String) -> Bool {
+        livePublisherStreamIDs.contains(Self.normalized(streamID))
+    }
+
+    /// Bind uniquely configured live streams before any aircraft track exists.
+    /// Preserve explicit pair/unpair choices, and never guess ambiguous mappings.
+    @discardableResult
+    public mutating func pairConfiguredPublishers(
+        mappings: [(remoteID: String, designator: String)]
+    ) -> [String: String] {
+        var added: [String: String] = [:]
+        for stream in livePublisherStreamIDs.sorted() {
+            guard let aircraft = OperationalStreamConfirmationMatch.remoteID(designator: stream, mappings: mappings),
+                  pairIfUnbound(streamID: stream, aircraftID: aircraft)
+            else { continue }
+            added[stream] = aircraft
+        }
+        return added
+    }
+
     public var activePublisherStreamIDs: Set<String> { livePublisherStreamIDs }
 
     public func activityByAircraftID(at date: Date) -> [String: Date] {

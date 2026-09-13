@@ -155,7 +155,7 @@ object TrackerEnrollmentClient {
             result.deviceToken
         )
         CaltopoClient.SetUsePeers(true)
-        CaltopoClient.SetStandaloneR2cCoordinationEnabled(true)
+        CaltopoClient.SetStandaloneR2cCoordinationEnabled(false)
         CaltopoClient.SetTrackerFaaProxyUrl(result.faaProxyUrl)
         CaltopoClient.SetTrackerEnrollmentUrl(result.enrollmentUrl)
         CaltopoClient.SetNotamEnabled(true)

@@ -1,13 +1,25 @@
-# RID2Caltopo v2.2.7 source verification
+# RID2Caltopo v2.2.7 — build 236
 
-On September 11, 2026, the operator confirmed the updates working on iPad 2.2.7 (202) with public Tracker v1.4.90, including the aircraft upload workflow. This is operator verification of those updates, not a claim that every terrain, video, or flight scenario was qualified.
+## Release scope
 
-The source release includes the accumulated Android and Apple changes since the earlier build-197 snapshot: terrain and cache improvements, wired controller addresses, aircraft list/detail editing, flight readiness and operating profiles, compact drone confirmation, saved flight-type choice, and persistent aircraft field labels.
+Android production and Apple internal TestFlight use marketing version 2.2.7 and build 236. This source includes the accumulated app work since 2.2.6: offline surface preparation and AOL, telemetry/reference continuity, initial single-stream map follow, map reconciliation, equipment persistence, tablet incident briefings, flight readiness, configuration import, cache improvements, and flight/archive lifecycle fixes.
 
-The iPad build 202 was installed in place and launched successfully. Android changes have automated validation but were not installed or physically verified in this session. Repository build counters remain 197; build 202 was a development build override. No store submission or mobile binary publication is part of this source commit/tag request.
+Ignore persists for the app session on both platforms. Publishing remains explicitly confirmed per flight; saved aircraft configuration does not authorize a new flight. No default acceptance timer was introduced.
 
-Companion Tracker release: v1.4.90, source 15eed5746bbded7d49bdb16a8407c2ac17dac30e. Its 397 tests, guarded staging/candidate checks, production health checks, and audit backfill completed successfully.
+The previous unpublished local v2.2.7 source snapshot is preserved as v2.2.7-build202-snapshot. The final v2.2.7 tag is intended for this release. Local recordings, diagnostic logs, generated builds, credentials, and unrelated editor files are excluded. The video timeline fixture retains relative motion and timing with translated coordinates and relative timestamps.
 
-Final source validation: 1,023 Android unit tests passed with no failures, errors or skips; 310 Swift Testing tests plus 10 XCTest tests passed. The first Apple run found a stale source-signature assertion for terrain prefetch; its expectation was updated for the existing optional radius parameter and the full suite then passed. Apple metadata verification passed with synchronized release notes. The signed build-202 app build had already passed before the operator's device verification.
+## Validation
 
-The earlier local, unpublished v2.2.7 build-197 snapshot tag is preserved as v2.2.7-build197-snapshot; v2.2.7 now identifies this completed source release. This request commits and tags locally without pushing or publishing app binaries.
+- Android production bundle, required release gates, and Crashlytics mapping/native symbol uploads passed. All 1,080 Android unit tests passed with no failures, errors, or skips.
+- Apple shared validation: 352 Swift Testing tests and 14 XCTest tests passed. Rebuilt native frameworks; 5,209 portable anomaly tests and color/person-relevance qualifications passed.
+- Desktop surface preparation regression passed.
+- Release notes and App Store metadata are synchronized and within limits.
+- Upstream laz-perf source retains its original whitespace; project-authored staged files pass whitespace checks.
+
+Clean Apple simulator and arm64 device archive passed the complete release-check gate. A separate signed Release archive also built successfully. Distribution export is verified separately before upload.
+
+## Field and server boundaries
+
+The operator tested preceding development builds on iPad and A5 Pro, including Matrice and Mini 4 Pro streams. Build 236 itself has automated build/validation evidence; do not infer a physical flight test of every final change. Last direct tablet installs were build 235.
+
+This is the mobile release. Separate r2c-tracker source changes are not deployed by this release task. Store upload, processing, tester assignment, review, and public availability are tracked separately in the local release evidence.

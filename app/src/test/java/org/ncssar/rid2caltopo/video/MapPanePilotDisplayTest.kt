@@ -8,6 +8,36 @@ import org.ncssar.rid2caltopo.data.CtDroneSpec
 import org.ncssar.rid2caltopo.data.PilotDisplayPreference
 
 class MapPanePilotDisplayTest {
+    @Test fun mapAndVideoHonorRefreshDeadlineAndStaleOverride() {
+        val window = org.ncssar.rid2caltopo.video.surface.AolRefreshWindow()
+        window.display("launch", org.ncssar.rid2caltopo.video.surface.AolState(feet = -9.0), true, 0)
+        fun labels(now: Long, stale: Boolean): Pair<String, String> {
+            val aol = window.display("launch", null, true, now)
+            val state = DroneDisplayState(headingDeg = 90.0, aglFt = 50.0, atoFt = 50.0,
+                rangeFt = 100.0, aol = aol, positionStale = stale)
+            return droneStatusLabelText(50.0, 50.0, false, 100.0, 90.0,
+                positionStale = stale, aol = aol) to streamTelemetryHeaderText(state)
+        }
+        val held = labels(100, false)
+        assertEquals("ATO:50' AGL:50' AOL:-9' RNG:100' HDG:90°", held.first)
+        assertEquals(held.first.replace("HDG:", "TRK:"), held.second)
+        val stale = labels(200, true)
+        assertEquals("ATO:POS? AGL:POS? AOL:POS? RNG:POS? HDG:POS?", stale.first)
+        assertEquals(stale.first.replace("HDG:", "TRK:"), stale.second)
+        val expired = labels(1600, false)
+        assertEquals("ATO:50' AGL:50' AOL:-- RNG:100' HDG:90°", expired.first)
+        assertEquals(expired.first.replace("HDG:", "TRK:"), expired.second)
+    }
+
+    @Test
+    fun aolHighlightRequiresNegativeNumberAndExcludesAdjacentFields() {
+        for (value in listOf("--", "Unk", "POS?", "0'", "-0'", "25'")) {
+            assertNull(negativeAolRange("ATO:50' AOL:$value RNG:100'"))
+        }
+        val line = "ATO:50' AOL:-25' RNG:100'"
+        assertEquals("AOL:-25'", line.substring(negativeAolRange(line)!!))
+    }
+
     @Test
     fun cameraFovBoundaryBearings_centerOnCameraAzimuthAndWrapNorth() {
         val east = cameraFovBoundaryBearings(90.0, 40.0)
@@ -36,7 +66,7 @@ class MapPanePilotDisplayTest {
     @Test
     fun droneStatusLabel_includesExplicitUnitsAndHeading() {
         assertEquals(
-            "ATO:125' AGL:90' RNG:420' HDG:273°",
+            "ATO:125' AGL:90' AOL:Unk RNG:420' HDG:273°",
             droneStatusLabelText(
                 atoFeet = 125.2,
                 aglFeet = 90.4,
@@ -63,7 +93,7 @@ class MapPanePilotDisplayTest {
     @Test
     fun droneStatusLabel_marksUncertainPositionQuietly() {
         assertEquals(
-            "ATO:125' AGL:90' RNG:420' HDG:273° POS?",
+            "ATO:POS? AGL:POS? AOL:POS? RNG:POS? HDG:POS?",
             droneStatusLabelText(
                 atoFeet = 125.2,
                 aglFeet = 90.4,
@@ -78,7 +108,7 @@ class MapPanePilotDisplayTest {
     @Test
     fun streamTelemetryHeader_matchesMapEntriesAndOrder() {
         assertEquals(
-            "ATO:125' AGL:90' RNG:420' TRK:273°",
+            "ATO:125' AGL:90' AOL:Unk RNG:420' TRK:273°",
             streamTelemetryHeaderText(
                 DroneDisplayState(
                     headingDeg = 273.2,
@@ -93,7 +123,7 @@ class MapPanePilotDisplayTest {
     @Test
     fun streamTelemetryHeader_prefersFreshCameraAzimuthWithoutCallingItAircraftHeading() {
         assertEquals(
-            "ATO:125' AGL:90' RNG:420' CAM:91°",
+            "ATO:125' AGL:90' AOL:Unk RNG:420' CAM:91°",
             streamTelemetryHeaderText(
                 displayState = DroneDisplayState(
                     headingDeg = 273.2,
@@ -109,7 +139,7 @@ class MapPanePilotDisplayTest {
     @Test
     fun droneStatusLabel_usesMissingTokensAndStaleAglMarker() {
         assertEquals(
-            "ATO:--' AGL:75?' RNG:--' HDG:--°",
+            "ATO:Unk AGL:Unk AOL:Unk RNG:Unk HDG:Unk",
             droneStatusLabelText(
                 atoFeet = null,
                 aglFeet = 75.0,
@@ -123,7 +153,7 @@ class MapPanePilotDisplayTest {
     @Test
     fun droneStatusLabel_rejectsOutOfBandAltitudeTokens() {
         assertEquals(
-            "ATO:--' AGL:--' RNG:1250' HDG:5°",
+            "ATO:Unk AGL:Unk AOL:Unk RNG:1250' HDG:5°",
             droneStatusLabelText(
                 atoFeet = 1_500.0,
                 aglFeet = -1_500.0,
@@ -134,13 +164,24 @@ class MapPanePilotDisplayTest {
         )
     }
 
+    @Test fun statusesDistinguishMissingPendingAndStaleAcrossFields() {
+        val pending=org.ncssar.rid2caltopo.video.surface.MeasurementStatus.Pending
+        val unknown=org.ncssar.rid2caltopo.video.surface.MeasurementStatus.Unknown
+        assertEquals("ATO:Unk AGL:-- AOL:-- RNG:Unk HDG:Unk", droneStatusLabelText(
+            null,null,false,null,null,atoStatus=unknown,aglStatus=pending,
+            aol=org.ncssar.rid2caltopo.video.surface.AolState(reason="Working",status=pending)))
+        assertEquals("ATO:POS? AGL:POS? AOL:POS? RNG:POS? HDG:POS?",droneStatusLabelText(
+            20.0,20.0,false,10.0,90.0,positionStale=true,
+            aol=org.ncssar.rid2caltopo.video.surface.AolState(feet=10.0)))
+    }
     @Test
     fun droneDetailLines_useRangeAndHeadingInCombinedPopup() {
         assertEquals(
             listOf(
                 "Location: 39.12345, -121.12345 (Decimal Degrees)",
                 "ATO: 121'",
-                "AGL: 76?'",
+                "AGL: Unk",
+                "AOL · 200 ft radius: Unk",
                 "RNG: 432'",
                 "HDG: 218°"
             ),

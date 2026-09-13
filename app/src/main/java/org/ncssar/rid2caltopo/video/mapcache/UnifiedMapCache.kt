@@ -50,6 +50,7 @@ internal object UnifiedMapCache {
                     .forEach { remember(it) }
             }
             context.noBackupFilesDir.resolve("dem_blocks_v2").walkTopDown().filter { it.isFile }.forEach { remember(it) }
+            context.noBackupFilesDir.resolve("surface_v1").walkTopDown().filter { it.isFile }.forEach { remember(it) }
             scannedRoot = root
         }
     }
@@ -75,8 +76,8 @@ internal object UnifiedMapCache {
         if (used <= target) return
         // Merge the oldest entries across every store; keep small batches to avoid full DB scans.
         val queues = stores.values.associateWith { ArrayDeque(it.cache.oldestEntries()) }.toMutableMap()
-        val eligible = files.entries.filter { (_, entry) ->
-            !entry.terrain || (entry.name !in protectedTerrain && (touched[entry.name] ?: 0) < System.currentTimeMillis() - 60_000)
+        val eligible = files.entries.filter { (path, entry) ->
+            !path.contains("/surface_v1/") && !entry.name.endsWith(".aol") && (!entry.terrain || (entry.name !in protectedTerrain && (touched[entry.name] ?: 0) < System.currentTimeMillis() - 60_000))
         }.sortedBy { maxOf(it.value.modified, touched[it.value.name] ?: 0) }.toMutableList()
         while (used > target) {
             val store = queues.filterValues { it.isNotEmpty() }.minByOrNull { it.value.first().accessed }?.key
@@ -104,6 +105,14 @@ internal object UnifiedMapCache {
             it.cache.runMaintenance(cutoff, it.cache.snapshot().bytesUsed)
         }
         trim(context, (MapCacheSettings.maxCacheBytes(context) - reserved).coerceAtLeast(0))
+    }
+
+    fun reserveWithoutEviction(context: Context, bytes: Long): Reservation = synchronized(lock) {
+        initialize(context)
+        if (!MapCacheBudgetPolicy.fits(usage(context).total, reserved, bytes, MapCacheSettings.maxCacheBytes(context))) {
+            throw IOException("Not enough spare map-cache space for AOL preparation; select a smaller region or increase Cache Size")
+        }
+        reserve(context,bytes)
     }
 
     fun reserve(context: Context, bytes: Long): Reservation = synchronized(lock) {

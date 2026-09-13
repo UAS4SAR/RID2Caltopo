@@ -1,0 +1,9 @@
+# AOL status before calibration
+
+A5 Pro user report on build 219: numeric ATO/AGL while AOL alternated Unk and --; a 50-foot calibration stabilized AOL. Fresh logcat confirms calibration at 18:04:37, but its remaining buffer does not capture the earlier display transitions. Evidence is in outputs/aol-before-calibration-20260912.
+
+Android admitted surface work before checking missing launch reference. Each changed coordinate/height produced a new calculation key, so the display alternated a pending result with a worker-completed unknown result. The fix evaluates missing launch/height and stale height synchronously, invalidates old work, and does not schedule surface calculation until prerequisites exist. The refresh display receives that immediate status. The Apple coordinator also now marks changed inputs unknown immediately if launch or height is absent, rather than briefly pending until its scheduler checks prerequisites.
+
+The required launch reference is unchanged. Video-relative height can provide ATO (and contribute to AGL) without verified launch-ground evidence for AOL. Calibration can supply the launch reference under the existing 50-foot-over-launch procedure. This fix neither fabricates a reference nor makes numeric AOL available without its prerequisites. Staleness remains POS?, and pending remains -- for calculable work.
+
+Regression tests cover repeated moving samples with height but no launch reference, transition through manual calibration, valid numeric results, missing height, and stale precedence. Both platform suites passed. Release notes are synchronized. Apple and Android deployment candidates are 2.2.7 build 221. The Android build excludes Crashlytics upload tasks after automatic review rejected the original upload-enabled command; release verification remains enabled.

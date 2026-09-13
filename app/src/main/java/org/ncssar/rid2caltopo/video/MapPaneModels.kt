@@ -104,7 +104,8 @@ internal data class OfflinePrepProgress(
     val completedBytes: Long = 0L,
     val totalBytes: Long = 0L,
     val bytesPerSec: Double = 0.0,
-    val etaSeconds: Long? = null
+    val etaSeconds: Long? = null,
+    val includesAol: Boolean = false
 ) {
     val fraction: Double
         get() = if (totalBytes > 0L) {

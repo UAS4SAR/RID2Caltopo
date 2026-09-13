@@ -98,7 +98,7 @@ enum AppleUnifiedMapCache {
 
     static var roots: [URL] {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        return [AppleMapCachePaths.root, AppleMapCachePaths.demRoot,
+        return [AppleSurfaceStore.root, AppleMapCachePaths.root, AppleMapCachePaths.demRoot,
                 caches.appendingPathComponent("RID2Caltopo/TerrainV2"),
                 caches.appendingPathComponent("RID2Caltopo/CalTopoMarkerIcons")]
     }
@@ -138,6 +138,7 @@ enum AppleUnifiedMapCache {
         var used = usedBytes()
         for (url, entry) in state.entries.sorted(by: { $0.value.date < $1.value.date }) {
             if used <= target { break }
+            if url.pathExtension == "aol" || url.path.hasPrefix(AppleSurfaceStore.root.path + "/") { continue }
             let isTerrain = url.path.hasPrefix(AppleMapCachePaths.demRoot.path + "/")
             if isTerrain && (state.protectedTerrain.contains(url.lastPathComponent) ||
                 (state.touched[url.lastPathComponent] ?? .distantPast).timeIntervalSinceNow > -60) { continue }
@@ -151,6 +152,15 @@ enum AppleUnifiedMapCache {
     }
     static func maintain() {
         AppleMapCacheAccess.synchronized { initialize(); trim(to: max(0, maximumBytes - state.reserved)) }
+    }
+    static func reserveWithoutEviction(_ bytes: Int64) throws -> Reservation {
+        try AppleMapCacheAccess.synchronized {
+            initialize()
+            guard OperationalMapCacheBudget.fits(used:usedBytes(),reserved:state.reserved,incoming:bytes,limit:maximumBytes) else {
+                throw OperationalSurfacePreparationError.invalid("Not enough spare map-cache space for AOL preparation; select a smaller region or increase Cache Size")
+            }
+            return try reserve(bytes)
+        }
     }
     static func reserve(_ bytes: Int64) throws -> Reservation {
         try AppleMapCacheAccess.synchronized {
@@ -645,6 +655,9 @@ final class AppleMapOfflineManager: ObservableObject {
         var demCacheHits = 0
         var demDownloaded = 0
         var demFailed = 0
+        var includesAOL = false
+        var aolFailed = 0
+        var aolDownloaded = 0
         var estimatedBytesCompleted: Int64 = 0
         var estimatedBytesTotal: Int64 = 0
         var activeEstimatedBytes: Int64 = 0
@@ -667,15 +680,15 @@ final class AppleMapOfflineManager: ObservableObject {
             )
         }
         var cacheHits: Int { tileCacheHits + demCacheHits }
-        var downloaded: Int { tileDownloaded + demDownloaded }
-        var failed: Int { tileFailed + demFailed }
+        var downloaded: Int { tileDownloaded + demDownloaded + aolDownloaded }
+        var failed: Int { tileFailed + demFailed + aolFailed }
         var bytesPerSecond: Double {
             guard weightedCompletedBytes > 0 else { return 0 }
             return Double(weightedCompletedBytes) / max(0.001, Date().timeIntervalSince(startedAt))
         }
         var etaSeconds: Int? {
             let rate = bytesPerSecond
-            guard rate > 1 else { return nil }
+            guard !includesAOL, rate > 1 else { return nil }
             return Int(ceil(Double(max(0, estimatedBytesTotal - weightedCompletedBytes)) / rate))
         }
     }
@@ -694,6 +707,7 @@ final class AppleMapOfflineManager: ObservableObject {
     @Published private(set) var cacheStats = CacheStats()
     @Published private(set) var cacheStatsReady = false
     @Published private(set) var status = "Ready"
+    @Published private(set) var lastPreparationEndedAt: Date?
     @Published private(set) var isRunning = false
     @Published private(set) var activeSelectionDescription = ""
     @Published var maximumCacheGB: Double
@@ -759,6 +773,8 @@ final class AppleMapOfflineManager: ObservableObject {
         return (tiles, dem, mapBytes, demBytes, mapBytes + demBytes)
     }
 
+    private var aolProgressRun = UUID()
+
     func start(
         bounds: OperationalMapBounds,
         preset: OperationalOfflinePreset,
@@ -766,9 +782,11 @@ final class AppleMapOfflineManager: ObservableObject {
         includeContours: Bool,
         includeDEM: Bool,
         demResolution: OperationalDEMResolution = .maximum1m,
-        selectionDescription: String = "Selected map area"
+        selectionDescription: String = "Selected map area",
+        aolPlan: OperationalSurfacePreparationPlan? = nil
     ) {
         guard !isRunning else { return }
+        let aolRun=UUID();aolProgressRun=aolRun
         maintenanceTask?.cancel()
         guard let tiles = OperationalOfflineMapPlanner.tiles(
             bounds: bounds,
@@ -785,7 +803,7 @@ final class AppleMapOfflineManager: ObservableObject {
         AppleApplicationCleanupCenter.shared.setIdleShutdownDeferral(active: true)
         activeSelectionDescription = selectionDescription
         let tileOperationCount = tiles.count * (includeContours ? 2 : 1)
-        let operationCount = tileOperationCount + estimatedDEMCount
+        let operationCount = tileOperationCount + estimatedDEMCount + (aolPlan?.tiles ?? 0)
         let estimatedTileBytes = Int64(tileOperationCount) * 32_000
         let estimatedDEMBytes = includeDEM
             ? OperationalOfflineMapPlanner.estimatedDEMBytes(bounds: bounds, resolution: demResolution)
@@ -798,18 +816,22 @@ final class AppleMapOfflineManager: ObservableObject {
             tileTotal: tileOperationCount,
             demCompleted: 0,
             demTotal: estimatedDEMCount,
+            includesAOL: aolPlan != nil,
             estimatedBytesTotal: Self.saturatedAdd(estimatedTileBytes, estimatedDEMBytes),
             startedAt: Date()
         )
         status = "Preparing \(operationCount) offline items"
         downloadTask = Task { [weak self] in
             guard let self else { return }
+            let timing = AppleOfflineTiming("offline-job")
+            defer { timing.mark("job-ended cancelled=\(Task.isCancelled)") }
             let demDownloads: [DEMDownload]
             do {
                 demDownloads = includeDEM
                     ? try await self.resolveDEMDownloads(bounds: bounds, resolution: demResolution)
                     : []
             } catch {
+                self.lastPreparationEndedAt = Date()
                 self.isRunning = false
                 AppleApplicationCleanupCenter.shared.setIdleShutdownDeferral(active: false)
                 self.progress.phase = "Failed"
@@ -817,23 +839,44 @@ final class AppleMapOfflineManager: ObservableObject {
                 self.downloadTask = nil
                 return
             }
+            timing.mark("terrain-catalog-ready files=\(demDownloads.count)")
             self.progress.demTotal = demDownloads.count
-            self.progress.total = tileOperationCount + demDownloads.count
+            self.progress.total = tileOperationCount + demDownloads.count + (aolPlan?.tiles ?? 0)
             self.progress.estimatedBytesTotal = demDownloads.reduce(estimatedTileBytes) {
                 Self.saturatedAdd($0, $1.estimatedBytes)
             }
+            let aolWeight=(aolPlan?.advertisedBytes ?? 0)+Int64(aolPlan?.tiles ?? 0)*8_000_000
+            self.progress.estimatedBytesTotal += aolWeight
             for tile in tiles {
                 guard !Task.isCancelled else { break }
                 await self.fetchTile(tile, baseLayer: baseLayer)
                 if includeContours, !Task.isCancelled { await self.fetchContour(tile) }
             }
+            timing.mark("map-downloads-ended")
             if !demDownloads.isEmpty, !Task.isCancelled {
                 self.progress.phase = "Preparing DEM tiles"
             }
             for download in demDownloads where !Task.isCancelled {
                 await self.fetchDEM(download)
             }
+            timing.mark("terrain-downloads-ended")
+            var aolReport=""
+            if let aolPlan,!Task.isCancelled {
+                do {
+                    aolReport=try await AppleSurfacePreparationRunner.shared.prepare(aolPlan) { [weak self] message in
+                        await MainActor.run {
+                            if let self,self.isRunning,self.aolProgressRun==aolRun,self.progress.phase != "Cancelling" { self.progress.phase=message }
+                        }
+                    }
+                    self.progress.aolDownloaded=aolPlan.tiles
+                    self.progress.completed+=aolPlan.tiles
+                    self.progress.estimatedBytesCompleted+=aolWeight
+                } catch {
+                    if !Task.isCancelled { self.progress.aolFailed=1;aolReport="AOL preparation failed: \(error.localizedDescription)" }
+                }
+            }
             let cancelled = Task.isCancelled
+            self.lastPreparationEndedAt = Date()
             self.isRunning = false
             AppleApplicationCleanupCenter.shared.setIdleShutdownDeferral(active: false)
             self.progress.phase = cancelled
@@ -842,6 +885,7 @@ final class AppleMapOfflineManager: ObservableObject {
             self.status = cancelled
                 ? "Offline preparation cancelled"
                 : "Offline preparation complete: \(self.progress.downloaded) downloaded, \(self.progress.cacheHits) cached, \(self.progress.failed) failed"
+            if !aolReport.isEmpty { self.status += "\n" + aolReport }
             self.downloadTask = nil
             self.refreshStats()
             if !cancelled { self.runMaintenance() }
@@ -1298,6 +1342,13 @@ struct AppleOfflineMapPreparationView: View {
     @State private var selectedBoundaryID = ""
     @State private var includeContours: Bool
     @State private var includeDEM = true
+    @State private var includeAOL = false
+    @State private var aolPlan: OperationalSurfacePreparationPlan?
+    @State private var aolPlanMessage = ""
+    @State private var aolCatalogAttempt = 0
+    @State private var aolCatalogFailed = false
+    @State private var aolCatalogChecking = false
+    @State private var showDownloadFailure = false
     @State private var demResolution = OperationalDEMResolution.maximum1m
     @State private var cacheLimitInput: String
     @State private var cacheLimitFeedback: String?
@@ -1327,18 +1378,20 @@ struct AppleOfflineMapPreparationView: View {
         return OperationalMapBounds(coordinates: polygon.coordinates)
     }
 
+    private var aolWorkingBytes: Int64 { includeAOL ? (aolPlan.map { $0.reused ? 0 : $0.advertisedBytes*3/2+Int64($0.tiles)*16_000_000 } ?? 0) : 0 }
     private var estimate: (tiles: Int, dem: Int, tileBytes: Int64, demBytes: Int64, bytes: Int64) {
-        manager.estimate(
+        let base=manager.estimate(
             bounds: bounds, preset: preset, includeContours: includeContours,
             includeDEM: includeDEM, demResolution: demResolution
         )
+        return (base.tiles,base.dem,base.tileBytes,base.demBytes,base.bytes+aolWorkingBytes)
     }
 
     private var capacity: OperationalOfflineCapacity {
         OperationalOfflineCapacity(
             currentTileCacheBytes: manager.cacheStats.tileBytes + manager.cacheStats.supportBytes,
             currentDEMCacheBytes: manager.cacheStats.demBytes,
-            estimatedTileBytes: estimate.tileBytes,
+            estimatedTileBytes: estimate.tileBytes+aolWorkingBytes,
             estimatedDEMBytes: estimate.demBytes,
             maximumTileCacheBytes: Int64((parsedCacheLimitGB ?? manager.maximumCacheGB) * 1_000_000_000),
             availableVolumeBytes: manager.cacheStats.availableVolumeBytes
@@ -1421,6 +1474,19 @@ struct AppleOfflineMapPreparationView: View {
                 Section("Contents") {
                     Toggle("Include contour tiles", isOn: $includeContours)
                     Toggle("Include DEM tiles", isOn: $includeDEM)
+                    Toggle("Prepare 1 m AOL tiles", isOn: $includeAOL)
+                    if includeAOL {
+                        Text("Downloads USGS lidar and builds obstacle tiles on this device after map and terrain downloads. Prepare before flight. Uses the selected region's bounding rectangle plus a 200 ft margin. Prepared tiles are used automatically for AOL calculations.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Text(aolPlanMessage).font(.footnote)
+                        if aolCatalogFailed {
+                            Button("Retry USGS catalog") { aolCatalogAttempt += 1 }
+                        }
+                        if aolWorkingBytes>0 {
+                            LabeledContent("AOL temporary-space allowance",value:AppleMapOfflineManager.formatBytes(aolWorkingBytes))
+                            Text("Raw files are removed after assembly; existing prepared areas are retained.").font(.footnote).foregroundStyle(.secondary)
+                        }
+                    }
                     if includeDEM {
                         Picker("DEM detail", selection: $demResolution) {
                             ForEach(OperationalDEMResolution.allCases) { Text($0.label).tag($0) }
@@ -1439,6 +1505,22 @@ struct AppleOfflineMapPreparationView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .disabled(manager.isRunning)
+                .task(id: "\(includeAOL ? String(describing: bounds) : "off")-\(aolCatalogAttempt)") {
+                    aolPlan=nil;aolPlanMessage="";aolCatalogFailed=false;aolCatalogChecking=false
+                    if includeAOL {
+                        aolCatalogChecking=true
+                        aolPlanMessage="Checking USGS lidar coverage and file sizes…"
+                        do {
+                            let plan=try await AppleSurfacePreparationRunner.shared.plan(bounds)
+                            try Task.checkCancellation();aolPlan=plan
+                            aolPlanMessage=plan.reused ? "AOL already prepared — using cached tiles" : "AOL: \(plan.sources.count) lidar files, \(plan.advertisedBytes/1_000_000) MB advertised; \(plan.tiles) local 1 m tiles. Source sizes may differ."
+                        } catch { if !Task.isCancelled {
+                            aolCatalogFailed=true;aolPlanMessage=error.localizedDescription
+                            AppleLog.warning("AOLCatalog", error.localizedDescription)
+                        } }
+                        if !Task.isCancelled { aolCatalogChecking=false }
+                    }
+                }
                 Section("Capacity") {
                     if manager.cacheStatsReady {
                         LabeledContent("Current map cache", value: AppleMapOfflineManager.formatBytes(capacity.currentOfflineStorageBytes))
@@ -1504,6 +1586,10 @@ struct AppleOfflineMapPreparationView: View {
                 }
                 if manager.isRunning || manager.progress.phase != "Idle" {
                     Section("Progress") {
+                        if !manager.isRunning && manager.progress.failed > 0 {
+                            Label("Download failed — retry available", systemImage: "exclamationmark.triangle.fill")
+                                .font(.headline).foregroundStyle(.red)
+                        }
                         if manager.progress.phase == "Cancelling" {
                             Label("Cancelling download…", systemImage: "hourglass")
                                 .font(.headline)
@@ -1519,6 +1605,12 @@ struct AppleOfflineMapPreparationView: View {
                                 .foregroundStyle(.secondary)
                         }
                         let percent = manager.progress.fraction * 100
+                        if manager.isRunning && manager.progress.includesAOL {
+                            Text(manager.progress.phase).font(.title3)
+                            ProgressView()
+                            Text("Map, terrain, then AOL preparation. Remaining time varies with lidar transfer and construction.")
+                                .font(.footnote)
+                        } else {
                         Text("\(percent, specifier: "%.0f")% complete")
                             .font(.title3)
                         ProgressView(value: manager.progress.fraction)
@@ -1532,6 +1624,7 @@ struct AppleOfflineMapPreparationView: View {
                             AppleMapOfflineManager.formatDuration(manager.progress.etaSeconds)
                         ))
                         .font(.caption.monospaced())
+                        }
                         Text(tileProgressText)
                         .font(.caption.monospaced())
                         if manager.progress.demTotal > 0 {
@@ -1569,7 +1662,7 @@ struct AppleOfflineMapPreparationView: View {
                                 }
                             }
                         } else {
-                            Button("Start") {
+                            Button(manager.progress.failed > 0 ? "Retry" : "Start") {
                                 guard saveCacheLimit(showConfirmation: false) else { return }
                                 manager.start(
                                     bounds: bounds,
@@ -1578,13 +1671,15 @@ struct AppleOfflineMapPreparationView: View {
                                     includeContours: includeContours,
                                     includeDEM: includeDEM,
                                     demResolution: demResolution,
-                                    selectionDescription: selectionDescription
+                                    selectionDescription: selectionDescription,
+                                    aolPlan: includeAOL ? aolPlan : nil
                                 )
                                 DispatchQueue.main.async {
                                     withAnimation { proxy.scrollTo(progressSectionID, anchor: .top) }
                                 }
                             }
                             .disabled(!manager.cacheStatsReady
+                                || (includeAOL && (aolPlan == nil || aolPlan?.bounds != bounds))
                                 || parsedCacheLimitGB == nil
                                 || estimate.tiles > 250_000
                                 || capacity.exceedsCacheLimit
@@ -1595,6 +1690,32 @@ struct AppleOfflineMapPreparationView: View {
             }
         }
         .task { manager.refreshStats() }
+        .onChange(of: manager.isRunning) { wasRunning, running in
+            if wasRunning && !running && manager.progress.failed > 0 { showDownloadFailure=true }
+        }
+        .alert("Download failed", isPresented: $showDownloadFailure) {
+            Button("Review and retry", role: .cancel) {}
+        } message: {
+            Text(manager.status + "\nCompleted map and ground tiles remain available. Use Retry to try again.")
+        }
+        .sheet(isPresented: $aolCatalogChecking) {
+            VStack(spacing: 20) {
+                ProgressView().controlSize(.large)
+                Text("Checking USGS lidar catalog…").font(.headline)
+                Text("Finding coverage and file sizes for the selected area. Temporary service failures are retried automatically.")
+                    .multilineTextAlignment(.center)
+                Button("Cancel", role: .cancel) {
+                    includeAOL=false
+                    aolCatalogChecking=false
+                    aolPlan=nil
+                    AppleLog.info("AOLCatalog", "Catalog check cancelled by operator")
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(24)
+            .presentationDetents([.height(280)])
+            .interactiveDismissDisabled()
+        }
     }
 }
 
@@ -1901,5 +2022,344 @@ extension AppleDEMDownloadCoordinator {
             }
             completed += piece.bytes
         }
+    }
+}
+
+/// One immutable prepared surface assignment, pinned inside the shared map budget.
+actor AppleSurfaceStore {
+    static let shared = AppleSurfaceStore()
+    static var root: URL { FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("RID2Caltopo/SurfaceV1") }
+    private struct RegionIndex: Decodable {
+        struct Entry: Decodable { let file: String; let metadata: OperationalSurfacePackage.Metadata }
+        let referenceGroup: String
+        let preparedAtEpochMs: Int64?
+        let originLatitude, originLongitude: Double
+        let width, height: Int
+        let entries: [Entry]
+    }
+    private var regions: [(URL,RegionIndex)]?
+    private var cachedTileURL: URL?
+    private var cachedTile: OperationalSurfacePackage?
+    private func catalog() -> [(URL,RegionIndex)] {
+        if let regions { return regions }
+        let root=Self.root.appendingPathComponent("sets")
+        let dirs=(try? FileManager.default.contentsOfDirectory(at:root,includingPropertiesForKeys:nil)) ?? []
+        let result: [(URL,RegionIndex)] = dirs.sorted { $0.lastPathComponent > $1.lastPathComponent }.compactMap { dir in
+            let url=dir.appendingPathComponent("index.json")
+            guard let size=(try? url.resourceValues(forKeys:[.fileSizeKey]))?.fileSize,size<=2_000_000,
+                  let data=try? Data(contentsOf:url),let index=try? JSONDecoder().decode(RegionIndex.self,from:data) else { return nil }
+            return (dir,index)
+        }
+        regions=result;return result
+    }
+    private func preparedAt(_ dir: URL,_ index: RegionIndex) -> Int64 {
+        index.preparedAtEpochMs ?? Int64(dir.lastPathComponent.split(separator:"-").first.map(String.init) ?? "") ?? 0
+    }
+    func reusable(_ bounds: OperationalMapBounds) -> Bool {
+        let maxAge=Double(max(1,min(3650,UserDefaults.standard.object(forKey:"map.maximumTileAgeDays") as? Int ?? 365)))*86400
+        return catalog().contains { dir,index in
+            let fresh=OperationalPreparedSurfaceSet.fresh(prepared:preparedAt(dir,index),now:Int64(Date().timeIntervalSince1970*1000),maxAge:Int64(maxAge*1000))
+            let (west,south)=xy(.init(latitude:bounds.south,longitude:bounds.west),lat:index.originLatitude,lon:index.originLongitude)
+            let (east,north)=xy(.init(latitude:bounds.north,longitude:bounds.east),lat:index.originLatitude,lon:index.originLongitude)
+            guard fresh,OperationalPreparedSurfaceSet.contains(width:index.width,height:index.height,west:west,south:south,east:east,north:north),!index.entries.isEmpty else { return false }
+            do {
+                try OperationalPreparedSurfaceSet.validate(Data(contentsOf:dir.appendingPathComponent("index.json"))) { name in
+                    let url=dir.appendingPathComponent(name)
+                    guard let size=try url.resourceValues(forKeys:[.fileSizeKey]).fileSize,size<=OperationalSurfacePackage.maximumBytes else { throw OperationalSurfacePreparationError.invalid("Oversized AOL tile") }
+                    return try Data(contentsOf:url)
+                }
+                return true
+            } catch { return false }
+        }
+    }
+    func exportSets(_ bounds: OperationalMapBounds) throws -> [OperationalZipArchive.Entry] {
+        var files:[OperationalZipArchive.Entry]=[]
+        for (dir,index) in catalog() {
+            let (west,south)=xy(.init(latitude:bounds.south,longitude:bounds.west),lat:index.originLatitude,lon:index.originLongitude)
+            let (east,north)=xy(.init(latitude:bounds.north,longitude:bounds.east),lat:index.originLatitude,lon:index.originLongitude)
+            if east < -Double(index.width)/2 || west > Double(index.width)/2 || north < -Double(index.height)/2 || south > Double(index.height)/2 { continue }
+            try OperationalPreparedSurfaceSet.validate(Data(contentsOf:dir.appendingPathComponent("index.json"))) { try Data(contentsOf:dir.appendingPathComponent($0)) }
+            let prefix="aol/\(dir.lastPathComponent)/"
+            for entry in index.entries {
+                guard entry.file.range(of:"^tile-[0-9]+-[0-9]+\\.aol$",options:.regularExpression) != nil else { throw OperationalSurfacePreparationError.invalid("Invalid AOL tile name") }
+                let data=try Data(contentsOf:dir.appendingPathComponent(entry.file));_ = try OperationalSurfacePackage(data:data)
+                files.append(.init(path:prefix+entry.file,data:data))
+            }
+            var object=try JSONSerialization.jsonObject(with:Data(contentsOf:dir.appendingPathComponent("index.json"))) as! [String:Any]
+            object["preparedAtEpochMs"]=preparedAt(dir,index)
+            files.append(.init(path:prefix+"index.json",data:try JSONSerialization.data(withJSONObject:object)))
+        }
+        return files
+    }
+    func importSets(_ files: [String:Data]) throws -> Int {
+        let groups=Dictionary(grouping:files.keys.filter{$0.hasPrefix("aol/")}) { String($0.split(separator:"/",omittingEmptySubsequences:false)[1]) }
+        var count=0
+        for (id,paths) in groups {
+            guard id.range(of:"^[0-9a-fA-F-]+$",options:.regularExpression) != nil,let data=files["aol/\(id)/index.json"] else { throw OperationalSurfacePreparationError.invalid("Missing or invalid AOL index") }
+            try OperationalPreparedSurfaceSet.validate(data) { name in
+                guard let bytes=files["aol/\(id)/\(name)"] else { throw OperationalSurfacePreparationError.invalid("Missing AOL tile") };return bytes
+            }
+            let index=try JSONDecoder().decode(RegionIndex.self,from:data)
+            guard (1...4000).contains(index.width),(1...4000).contains(index.height),(1...16).contains(index.entries.count),paths.count==index.entries.count+1 else { throw OperationalSurfacePreparationError.invalid("Invalid AOL set") }
+            let scratch=FileManager.default.temporaryDirectory.appendingPathComponent("aol-import-\(UUID().uuidString)")
+            let staged=scratch.appendingPathComponent(id)
+            try FileManager.default.createDirectory(at:staged,withIntermediateDirectories:true)
+            defer { try? FileManager.default.removeItem(at:scratch) }
+            var bytes:Int64=Int64(data.count)
+            for entry in index.entries {
+                guard entry.file.range(of:"^tile-[0-9]+-[0-9]+\\.aol$",options:.regularExpression) != nil,let tileData=files["aol/\(id)/\(entry.file)"] else { throw OperationalSurfacePreparationError.invalid("Missing AOL tile") }
+                let decoded=try OperationalSurfacePackage(data:tileData)
+                let encoder=JSONEncoder();encoder.outputFormatting=[.sortedKeys]
+                guard try encoder.encode(decoded.metadata)==encoder.encode(entry.metadata) else { throw OperationalSurfacePreparationError.invalid("AOL metadata mismatch") }
+                bytes+=Int64(tileData.count);try tileData.write(to:staged.appendingPathComponent(entry.file))
+            }
+            try data.write(to:staged.appendingPathComponent("index.json"))
+            if !FileManager.default.fileExists(atPath:Self.root.appendingPathComponent("sets/\(id)").path) {
+                let reservation=try AppleUnifiedMapCache.reserveWithoutEviction(bytes);defer{reservation.close()}
+                try installPrepared(staged,reservation:reservation)
+            }
+            count+=index.entries.count
+        }
+        return count
+    }
+    private func tile(_ url: URL) -> OperationalSurfacePackage? {
+        if cachedTileURL != url {
+            cachedTileURL=url
+            if let size=(try? url.resourceValues(forKeys:[.fileSizeKey]))?.fileSize,size<=OperationalSurfacePackage.maximumBytes {
+                cachedTile=(try? Data(contentsOf:url)).flatMap { try? OperationalSurfacePackage(data:$0) }
+            } else { cachedTile=nil }
+        }
+        return cachedTile
+    }
+    private func xy(_ p: OperationalSurfacePackage.Point,lat:Double,lon:Double) -> (Double,Double) {
+        ((p.longitude-lon)*Double.pi/180*6371008.8*cos(lat*Double.pi/180),(p.latitude-lat)*Double.pi/180*6371008.8)
+    }
+    private func selected(_ point: OperationalSurfacePackage.Point,reference: String? = nil) -> OperationalSurfacePackage? {
+        for (dir,index) in catalog() {
+            if let reference, reference != index.referenceGroup { continue }
+            let (x,y)=xy(point,lat:index.originLatitude,lon:index.originLongitude)
+            for entry in index.entries {
+                let m=entry.metadata
+                guard let west=m.coreWest,let south=m.coreSouth,let w=m.coreWidth,let h=m.coreHeight else { continue }
+                if x>=west,x<west+Double(w),y>=south,y<south+Double(h),entry.file.range(of:"^tile-[0-9]+-[0-9]+\\.aol$",options:.regularExpression) != nil {
+                    return tile(dir.appendingPathComponent(entry.file))
+                }
+            }
+        }
+        return nil
+    }
+    func calculate(position: OperationalSurfacePackage.Point,takeoff: OperationalSurfacePackage.Point,height: Double?) -> OperationalAOLState {
+        guard let p=selected(position) ?? current() else { return .init() }
+        var ground=p.groundAt(takeoff)
+        if ground==nil,let reference=p.metadata.referenceGroup,let other=selected(takeoff,reference:reference),other.metadata.sourceCRS==p.metadata.sourceCRS { ground=other.groundAt(takeoff) }
+        return .calculate(package:p,position:position,takeoff:takeoff,height:height,compatibleGround:ground)
+    }
+    func preparedBriefing(points:[OperationalSurfacePackage.Point],polygon:Bool) -> (OperationalSurfacePackage,OperationalSurfacePackage.Analysis)? {
+        guard !points.isEmpty else { return nil }
+        for (dir,index) in catalog() {
+            let w=Double(index.width)/2,h=Double(index.height)/2
+            let coordinates=points.map { xy($0,lat:index.originLatitude,lon:index.originLongitude) }
+            if coordinates.contains(where: { $0.0-61.67 < -w || $0.0+61.67>=w || $0.1-61.67 < -h || $0.1+61.67>=h }) { continue }
+            var first: OperationalSurfacePackage?,peak:OperationalSurfacePackage.Peak?;var checked=0,missing=0
+            for entry in index.entries {
+                guard entry.file.range(of:"^tile-[0-9]+-[0-9]+\\.aol$",options:.regularExpression) != nil,let p=tile(dir.appendingPathComponent(entry.file)) else { return nil }
+                if first==nil { first=p }
+                let a=p.briefing(points:points,corridor:60.96,polygon:polygon,coreOnly:true);checked+=a.checked;missing+=a.missing
+                if let candidate=a.peak,peak==nil || candidate.elevation>peak!.elevation { peak=candidate }
+            }
+            if let first { return (first,.init(peak:peak,complete:checked>0 && missing==0,checked:checked,missing:missing)) }
+        }
+        return nil
+    }
+    func installPrepared(_ staged: URL,reservation: AppleUnifiedMapCache.Reservation) throws {
+        let root=Self.root.appendingPathComponent("sets")
+        try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
+        let target=root.appendingPathComponent(staged.lastPathComponent)
+        try FileManager.default.moveItem(at:staged,to:target)
+        AppleMapCacheAccess.synchronized {
+            for file in (try? FileManager.default.contentsOfDirectory(at:target,includingPropertiesForKeys:nil)) ?? [] { AppleUnifiedMapCache.remember(file) }
+            reservation.close()
+        }
+        regions=nil;releaseMemory()
+    }
+    private var loaded: OperationalSurfacePackage?
+    private var didLoad = false
+    func releaseMemory() { loaded = nil; didLoad = false;cachedTileURL=nil;cachedTile=nil }
+    func current() -> OperationalSurfacePackage? {
+        if !didLoad {
+            didLoad = true
+            let url=Self.root.appendingPathComponent("active.aol")
+            if let size=(try? url.resourceValues(forKeys:[.fileSizeKey]))?.fileSize, size<=OperationalSurfacePackage.maximumBytes {
+                loaded=(try? Data(contentsOf:url,options:.mappedIfSafe)).flatMap { try? OperationalSurfacePackage(data:$0) }
+            }
+            AppleUnifiedMapCache.remember(url)
+        }
+        return loaded
+    }
+    func install(_ data:Data) throws -> String {
+        let package=try OperationalSurfacePackage(data:data)
+        try FileManager.default.createDirectory(at:Self.root,withIntermediateDirectories:true)
+        let url=Self.root.appendingPathComponent("active.aol")
+        try AppleMapCacheAccess.synchronized {
+            let reservation=try AppleUnifiedMapCache.reserve(Int64(data.count))
+            defer { reservation.close() }
+            try data.write(to:url,options:.atomic)
+            AppleUnifiedMapCache.remember(url)
+        }
+        loaded=package; didLoad=true
+        return package.id
+    }
+}
+
+struct AppleSurfaceBriefing: Identifiable, Sendable {
+    let id = UUID()
+    let text: String
+    let peak: OperationalSurfacePackage.Peak?
+}
+actor AppleSurfaceBriefings {
+    static let shared = AppleSurfaceBriefings()
+    private var cache: [String: AppleSurfaceBriefing] = [:]
+    func analyze(points:[OperationalSurfacePackage.Point],polygon:Bool) async -> AppleSurfaceBriefing {
+        let prepared=await AppleSurfaceStore.shared.preparedBriefing(points:points,polygon:polygon)
+        let fallback=prepared == nil ? await AppleSurfaceStore.shared.current() : nil
+        guard let p=prepared?.0 ?? fallback else { return .init(text:"Surface tiles not prepared. Use Download Map → Prepare 1 m AOL tiles before departure.\n\(OperationalAOLState.explanation)",peak:nil) }
+        let encoder=JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        let key="\(p.id)|\(String(data:(try? encoder.encode(p.metadata)) ?? Data(),encoding:.utf8) ?? "")|\(points)|\(polygon)|60.96"
+        if let cached=cache[key] { return cached }
+        let a=prepared?.1 ?? p.briefing(points:points,corridor:60.96,polygon:polygon)
+        var text="\(polygon ? "Assignment with 200 ft boundary buffer" : "Route with 200 ft corridor radius").\n"
+        text += "Extent: \(points.map(\.latitude).min()!), \(points.map(\.longitude).min()!) to \(points.map(\.latitude).max()!), \(points.map(\.longitude).max()!); \(points.count) vertices.\n"
+        text += a.complete ? "Coverage complete.\n" : "INCOMPLETE: \(a.missing) of \(a.checked) cells missing. Maximum below is only the covered portion.\n"
+        if let peak=a.peak {
+            text += "Highest mapped surface: \(String(format:"%.0f",peak.elevation/0.3048)) ft at \(peak.latitude), \(peak.longitude).\n"
+            text += "Ground at high point: \(peak.ground.map{String(format:"%.0f ft",$0/0.3048)} ?? "unavailable"); height above local ground: \(peak.ground.map{String(format:"%.0f ft",(peak.elevation-$0)/0.3048)} ?? "unavailable"). This is highest absolute elevation, not the tallest object.\n"
+        }
+        text += "\(p.id); survey \(p.metadata.surveyDate); \(p.metadata.spacing) m cells; \(p.metadata.verticalReference).\n\(p.metadata.sourceURL)\n\(p.wireNotes)\n\(OperationalAOLState.explanation)\nThis briefing does not set RTH or a permitted flight altitude."
+        let result=AppleSurfaceBriefing(text:text,peak:a.peak)
+        if cache.count>=32 { cache.removeAll() }
+        cache[key]=result
+        return result
+    }
+}
+
+/// Preparation is owned by the explicit offline job. No flight-update caller.
+actor AppleSurfacePreparationRunner {
+    static let shared = AppleSurfacePreparationRunner()
+    private var busy = false
+    func plan(_ bounds: OperationalMapBounds) async throws -> OperationalSurfacePreparationPlan {
+        let timing = AppleOfflineTiming("aol-catalog")
+        defer { timing.mark("catalog-ended cancelled=\(Task.isCancelled)") }
+        var plan=try OperationalSurfacePreparation.grid(bounds)
+        if await AppleSurfaceStore.shared.reusable(bounds) { plan.reused=true;return plan }
+        let dx=65/(6371008.8*cos(plan.latitude*Double.pi/180))*180/Double.pi,dy=65/6371008.8*180/Double.pi
+        var pages: [Data]=[];var offset=0,total=0
+        repeat {
+            try Task.checkCancellation()
+            var url=URLComponents(string:"https://tnmaccess.nationalmap.gov/api/v1/products")!
+            url.queryItems=[.init(name:"datasets",value:"Lidar Point Cloud (LPC)"),.init(name:"bbox",value:"\(bounds.west-dx),\(bounds.south-dy),\(bounds.east+dx),\(bounds.north+dy)"),.init(name:"max",value:"100"),.init(name:"offset",value:String(offset)),.init(name:"outputFormat",value:"JSON")]
+            AppleLog.info("AOLCatalog", "Requesting catalog page offset=\(offset)")
+            let data = try await OperationalSurfaceCatalog.data(for: URLRequest(url: url.url!)) { request in
+                let started = ProcessInfo.processInfo.systemUptime
+                do {
+                    let result = try await AppleCacheHTTPClient.networkSession.data(for: request)
+                    AppleLog.info("AOLCatalog", "HTTP \((result.1 as? HTTPURLResponse)?.statusCode ?? 0) requestSeconds=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime-started))")
+                    return result
+                } catch {
+                    AppleLog.warning("AOLCatalog", "Request failed after \(String(format: "%.3f", ProcessInfo.processInfo.systemUptime-started)) seconds: \(error.localizedDescription)")
+                    throw error
+                }
+            }
+            pages.append(data)
+            let object=try JSONSerialization.jsonObject(with:data) as? [String:Any]
+            let count=(object?["items"] as? [Any])?.count ?? 0;offset+=count;total=(object?["total"] as? Int) ?? offset
+            guard count>0,offset<=500 else { throw OperationalSurfacePreparationError.invalid("Lidar catalog is empty or too large; choose a smaller region") }
+        } while offset<total
+        plan.sources=try OperationalSurfacePreparation.sources(pages:pages)
+        AppleLog.info("AOLCatalog", "Catalog ready files=\(plan.sources.count) bytes=\(plan.advertisedBytes)")
+        return plan
+    }
+    func prepare(_ plan: OperationalSurfacePreparationPlan,progress: @escaping @Sendable (String) async -> Void) async throws -> String {
+        if await AppleSurfaceStore.shared.reusable(plan.bounds) { return "AOL already prepared — using cached tiles" }
+        guard !plan.reused else { throw OperationalSurfacePreparationError.invalid("Cached AOL coverage expired or changed. Reopen Download Map to refresh the plan.") }
+        guard !busy else { throw OperationalSurfacePreparationError.invalid("Previous AOL preparation is still stopping") }
+        busy=true;defer { busy=false }
+        let timing = AppleOfflineTiming("aol-prepare")
+        defer { timing.mark("preparation-ended cancelled=\(Task.isCancelled)") }
+        let temporaryRoot=FileManager.default.temporaryDirectory
+        for directory in (try? FileManager.default.contentsOfDirectory(at:temporaryRoot,includingPropertiesForKeys:nil)) ?? [] where directory.lastPathComponent.hasPrefix("aol-prep-") {
+            try? FileManager.default.removeItem(at:directory)
+        }
+        let scratch=temporaryRoot.appendingPathComponent("aol-prep-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at:scratch,withIntermediateDirectories:true)
+        defer { try? FileManager.default.removeItem(at:scratch) }
+        let staged=scratch.appendingPathComponent("\(Int64(Date().timeIntervalSince1970*1000))-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at:staged,withIntermediateDirectories:true)
+        let allowance=plan.advertisedBytes*3/2+Int64(plan.tiles)*16_000_000
+        let free=((try? FileManager.default.attributesOfFileSystem(forPath:scratch.path)[.systemFreeSize]) as? NSNumber)?.int64Value ?? 0
+        guard free>=allowance+64_000_000 else { throw OperationalSurfacePreparationError.invalid("Not enough free working space for AOL; select a smaller region or free storage") }
+        let reservation=try AppleUnifiedMapCache.reserveWithoutEviction(allowance);defer { reservation.close() }
+        await progress("AOL: \(plan.sources.count) lidar files, \(plan.advertisedBytes/1_000_000) MB advertised; \(plan.tiles) output tiles")
+        var files:[URL]=[],hashes:[String:String]=[:],used:Int64=0
+        for (index,source) in plan.sources.enumerated() {
+            try Task.checkCancellation()
+            timing.mark("source-\(index+1)-download-start")
+            await progress("Downloading AOL lidar \(index+1)/\(plan.sources.count), \(source.bytes/1_000_000) MB advertised")
+            var request=URLRequest(url:URL(string:source.url)!);request.setValue("identity",forHTTPHeaderField:"Accept-Encoding")
+            let delegate=AppleSurfaceDownloadLimit(limit:min(1_000_000_000,allowance-used-Int64(plan.tiles)*16_000_000)) { written,total in
+                Task { await progress("AOL lidar \(index+1)/\(plan.sources.count): \(written/1_000_000)/\(max(0,total)/1_000_000) MB") }
+            }
+            let (temporary,response)=try await URLSession.shared.download(for:request,delegate:delegate)
+            defer { try? FileManager.default.removeItem(at:temporary) }
+            let size=Int64((try temporary.resourceValues(forKeys:[.fileSizeKey])).fileSize ?? 0)
+            guard let http=response as? HTTPURLResponse,(200..<300).contains(http.statusCode),size>0,size<=delegate.limit,
+                  response.expectedContentLength==size else { throw OperationalSurfacePreparationError.invalid("Incomplete or oversized lidar download") }
+            let file=scratch.appendingPathComponent("source-\(index).laz");try FileManager.default.moveItem(at:temporary,to:file);files.append(file);used+=size
+            timing.mark("source-\(index+1)-download-complete bytes=\(size)")
+            let handle=try FileHandle(forReadingFrom:file);defer { try? handle.close() }
+            var hash=SHA256()
+            while let data=try handle.read(upToCount:65536),!data.isEmpty { try Task.checkCancellation();hash.update(data:data) }
+            hashes[source.url]=hash.finalize().map { String(format:"%02x",$0) }.joined()
+            timing.mark("source-\(index+1)-checksum-complete")
+        }
+        timing.mark("assembly-start tiles=\(plan.tiles)")
+        let inputs=files,sourceHashes=hashes
+        let worker=Task.detached(priority:.utility) {
+            try await OperationalSurfacePreparation.assemble(plan:plan,files:inputs,hashes:sourceHashes,directory:staged,progress:progress)
+        }
+        let report=try await withTaskCancellationHandler(operation: { try await worker.value },onCancel: { worker.cancel() })
+        timing.mark("assembly-complete")
+        try Task.checkCancellation()
+        for file in files { try FileManager.default.removeItem(at:file) }
+        try await AppleSurfaceStore.shared.installPrepared(staged,reservation:reservation)
+        timing.mark("publication-complete")
+        return report
+    }
+}
+
+private final class AppleSurfaceDownloadLimit: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    let limit: Int64
+    private let onProgress: @Sendable (Int64,Int64)->Void
+    private let lock=NSLock()
+    private var lastReport:TimeInterval=0
+    init(limit: Int64,onProgress:@escaping @Sendable (Int64,Int64)->Void) { self.limit=limit;self.onProgress=onProgress }
+    func urlSession(_ session: URLSession,downloadTask: URLSessionDownloadTask,didFinishDownloadingTo location: URL) {}
+    func urlSession(_ session: URLSession,downloadTask: URLSessionDownloadTask,didWriteData bytesWritten: Int64,totalBytesWritten: Int64,totalBytesExpectedToWrite: Int64) {
+        if totalBytesWritten>limit || totalBytesExpectedToWrite>limit { downloadTask.cancel();return }
+        let now=ProcessInfo.processInfo.systemUptime
+        lock.lock();let report=now-lastReport>=0.5;if report { lastReport=now };lock.unlock()
+        if report { onProgress(totalBytesWritten,totalBytesExpectedToWrite) }
+    }
+}
+
+/// No coordinates or URLs: stage intervals are measured with a monotonic clock.
+private final class AppleOfflineTiming {
+    private let id = UUID().uuidString
+    private let start = ProcessInfo.processInfo.systemUptime
+    private var last = ProcessInfo.processInfo.systemUptime
+    init(_ operation: String) { mark("start \(operation)") }
+    func mark(_ stage: String) {
+        let now = ProcessInfo.processInfo.systemUptime
+        AppleLog.info("OfflineTiming", "id=\(id) stage=\(stage) elapsedSeconds=\(String(format: "%.3f", now-start)) stageSeconds=\(String(format: "%.3f", now-last))")
+        last = now
     }
 }

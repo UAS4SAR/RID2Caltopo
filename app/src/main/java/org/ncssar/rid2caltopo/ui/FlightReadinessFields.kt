@@ -13,7 +13,6 @@ fun FlightReadinessFields(remoteId: String, callsign: String, value: FlightReadi
                          onPilotSelected: (String) -> Unit) {
     var rosterState by remember { mutableStateOf(AircraftOrganizationAccess.cachedState()) }
     var equipmentOpen by remember { mutableStateOf(false) }
-    var configurationOpen by remember { mutableStateOf(false) }
     LaunchedEffect(remoteId) {
         withContext(Dispatchers.IO) { AircraftOrganizationAccess.refresh() }
         rosterState = AircraftOrganizationAccess.cachedState()
@@ -31,21 +30,16 @@ fun FlightReadinessFields(remoteId: String, callsign: String, value: FlightReadi
             .resolvingPilot(callsign, pilots).copy(serviceJson = service.toString(),
             rosterFetchedAt = rosterState.optString("fetchedAt"), configurationVersion = rosterState.optLong("configurationVersion")))
     }
-    TextButton(onClick = { configurationOpen = true }) {
-        Text("Configuration: " + if (value.selectedAccessories.isEmpty() && value.payloadDescription.isBlank()) "Base" else "Custom")
-    }
-    DropdownMenu(expanded = configurationOpen, onDismissRequest = { configurationOpen = false }) {
-        DropdownMenuItem(text = { Text("Base configuration") }, onClick = {
-            onChange(value.copy(selectedAccessories = emptySet(), payloadDescription = "", payloadWeightGrams = null)); configurationOpen = false
-        })
-        DropdownMenuItem(text = { Text("Configure equipment / payload…") }, onClick = { equipmentOpen = true; configurationOpen = false })
+    TextButton(onClick = { equipmentOpen = true }) {
+        Text("Equipment & payload: " + value.equipmentSummary())
     }
     OperatingProfileFields(remoteId, value, rosterState, onChange)
     if (AircraftOrganizationAccess.belongsToOrganization() && !AircraftOrganizationAccess.eligiblePilot(value.pilotJson))
-        Text("RPIC qualifications not verified", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        Text(value.pilotQualificationWarning(), style = MaterialTheme.typography.bodySmall)
     if (service.optString("status") == "out_of_service") Text("Aircraft out of service: " + service.optString("note"), color = MaterialTheme.colorScheme.error)
     TextButton(onClick = { equipmentOpen = !equipmentOpen }) { Text("Equipment, payload & weight ${if (equipmentOpen) "▾" else "▸"}") }
     if (equipmentOpen) {
+        Text("Equipment and payload are remembered for this aircraft after publishing. Review them before each flight.")
         value.aircraft.accessories.forEach { accessory ->
             Row {
                 Checkbox(checked = accessory.id in value.selectedAccessories, onCheckedChange = { selected ->

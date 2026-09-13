@@ -2,6 +2,51 @@ import XCTest
 @testable import R2CCore
 
 final class OperatingProfilesTests: XCTestCase {
+    func testIncidentBriefingReuseIsScopedAndDoesNotRewriteSnapshots() {
+        var assignment = OperatingProfileAssignment()
+        assignment.setScope(organization: "org", incident: "map-a")
+        let briefing = IncidentBriefing(incidentName: "Search 26-30", notes: "VO at trailhead\nRTH briefed")
+        assignment.remember(OperatingProfiles.standard, briefing: briefing)
+        let id = assignment.assignmentID
+        let snapshot = OperatingProfiles.snapshot(OperatingProfiles.standard, state: [:], pilotID: "", aircraftID: "",
+            incidentID: "map-a", assignmentID: id, managed: false, checked: [], incidentBriefing: assignment.incidentBriefing, organizationScope: "org")
+        assignment.setScope(organization: "org", incident: "map-a")
+        XCTAssertEqual(assignment.incidentBriefing, briefing)
+        XCTAssertEqual(assignment.assignmentID, id)
+        XCTAssertEqual(IncidentBriefing.currentFlight(snapshot, confirmed: true, organization: "org", incident: "map-a"), briefing)
+        XCTAssertNil(IncidentBriefing.currentFlight(snapshot, confirmed: false, organization: "org", incident: "map-a"))
+        XCTAssertNil(IncidentBriefing.currentFlight(snapshot, confirmed: true, organization: "other", incident: "map-a"))
+        XCTAssertNil(IncidentBriefing.currentFlight(snapshot, confirmed: true, organization: "org", incident: "map-b"))
+        assignment.setScope(organization: "org", incident: "map-b")
+        XCTAssertEqual(assignment.incidentBriefing, IncidentBriefing())
+        assignment.setScope(organization: "org", incident: "map-a")
+        XCTAssertEqual(assignment.incidentBriefing, IncidentBriefing())
+        assignment.remember(OperatingProfiles.standard, briefing: briefing)
+        assignment.end()
+        XCTAssertEqual(assignment.incidentBriefing, IncidentBriefing())
+        XCTAssertEqual((snapshot["incidentBriefing"] as? [String: Any])?["notes"] as? String, briefing.notes)
+        XCTAssertNil((snapshot["profile"] as? [String: Any])?["incidentBriefing"])
+    }
+    func testIncidentNotesOnlyChangeRetainsHistoryAndCanBeCleared() {
+        func flight(_ briefing: IncidentBriefing) -> FlightReadiness {
+            var result = FlightReadiness()
+            result.operatingProfileJSON = OperatingProfiles.json(OperatingProfiles.snapshot(OperatingProfiles.standard,
+                state: [:], pilotID: "", aircraftID: "", incidentID: "map", assignmentID: "assignment", managed: false,
+                checked: [], incidentBriefing: briefing, organizationScope: "org"))
+            return result
+        }
+        let original = flight(IncidentBriefing(incidentName: "Search", notes: "Initial briefing"))
+        let revised = flight(IncidentBriefing(incidentName: "Search", notes: "New VO"))
+        let changed = OperatingProfiles.retainingHistory(previous: original, next: revised)
+        XCTAssertEqual(changed.operatingProfileJSON, original.operatingProfileJSON)
+        XCTAssertEqual((OperatingProfiles.active(changed)["incidentBriefing"] as? [String: Any])?["notes"] as? String, "New VO")
+        XCTAssertEqual((changed.dictionary["operatingProfileChanges"] as? [[String: Any]])?.count, 1)
+        XCTAssertEqual(OperatingProfiles.retainingHistory(previous: changed, next: revised).operatingProfileChangesJSON, changed.operatingProfileChangesJSON)
+        let cleared = OperatingProfiles.retainingHistory(previous: changed, next: flight(IncidentBriefing()))
+        XCTAssertEqual((cleared.dictionary["operatingProfileChanges"] as? [[String: Any]])?.count, 2)
+        XCTAssertEqual(IncidentBriefing(incidentName: String(repeating: "a", count: 170), notes: String(repeating: "b", count: 4100)).notes.count, 4000)
+    }
+
     func testSavedChoiceUsesCurrentCatalogAndKeepsMissingChoiceVisible() {
         XCTAssertEqual(OperatingProfiles.preferredProfile([:], savedID: "bvlos-pending")["id"] as? String, "bvlos-pending")
         let state: [String: Any] = ["operatingProfiles": ["profiles": [["id": "waiver", "version": 2]]]]

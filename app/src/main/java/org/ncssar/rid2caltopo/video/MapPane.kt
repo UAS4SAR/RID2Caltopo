@@ -629,6 +629,8 @@ internal fun SplitMapPane(
         mutableStateOf(MapCacheSettings.maxTileAgeDays(context).toString())
     }
     var showMapFoldersDialog by remember { mutableStateOf(false) }
+    var surfaceBriefing by remember { mutableStateOf<org.ncssar.rid2caltopo.video.surface.SurfaceBriefing?>(null) }
+    var surfaceBriefingRequest by remember { mutableStateOf(0L) }
     var pendingArtifactZoomFeatureId by remember { mutableStateOf<String?>(null) }
     val hiddenFolderIds = viewModel.hiddenFolderIds
     val hiddenItemIds = viewModel.hiddenItemIds
@@ -639,6 +641,15 @@ internal fun SplitMapPane(
     var offlinePrepInFlight by offlinePrepCoordinator.inFlight
     var offlinePrepPreset by offlinePrepCoordinator.preset
     var offlinePrepIncludeDem by offlinePrepCoordinator.includeDem
+    var offlinePrepIncludeAol by offlinePrepCoordinator.includeAol
+    var offlinePrepAolReport by offlinePrepCoordinator.aolReport
+    var offlinePrepFailureNotice by offlinePrepCoordinator.failureNotice
+    var offlinePrepAolPlan by remember { mutableStateOf<org.ncssar.rid2caltopo.video.surface.SurfacePreparationPlan?>(null) }
+    var offlinePrepAolPlanText by remember { mutableStateOf("") }
+    var offlinePrepAolCatalogFailed by remember { mutableStateOf(false) }
+    var offlinePrepAolCatalogChecking by remember { mutableStateOf(false) }
+    var offlinePrepAolCatalogAttempt by remember { mutableIntStateOf(0) }
+    val offlinePrepAolWorkingBytes = if(offlinePrepIncludeAol) offlinePrepAolPlan?.let { if(it.reused) 0L else it.advertisedBytes*3/2+it.tiles*16_000_000L } ?: 0L else 0L
     var offlinePrepDemResolution by offlinePrepCoordinator.demResolution
     var offlinePrepIncludeContours by offlinePrepCoordinator.includeContours
     var offlinePrepMaxThroughput by offlinePrepCoordinator.maximizeThroughput
@@ -827,14 +838,7 @@ internal fun SplitMapPane(
                 activeMappedIds.add(designator)
                 val seiSample = viewModel.cameraTelemetryDesignatorsFor(state.remoteId, state.mappedId)
                     .firstNotNullOfOrNull { streamDesignator ->
-                        StreamCameraTelemetryRegistry.freshPositionAfterRidValidation(
-                            designator = streamDesignator,
-                            anchorLatitudeDeg = state.lastLat,
-                            anchorLongitudeDeg = state.lastLng,
-                            anchorAltitudeMeters = state.lastAlt,
-                            takeoffReportedAltitudeMeters = state.source.impliedTakeoffAltM,
-                            nowMs = nowMs,
-                        )
+                        StreamCameraTelemetryRegistry.freshOperationalPosition(streamDesignator, nowMs)
                     }
                 if (seiSample == null) {
                     seiTelemetryByMappedId.remove(designator)
@@ -977,6 +981,21 @@ internal fun SplitMapPane(
         peerEntries = peerDronePointEntries,
     )
 
+    surfaceBriefing?.let { briefing ->
+        AlertDialog(onDismissRequest = { surfaceBriefing = null }, title = { Text("Surface high-point briefing") },
+            text = { androidx.compose.foundation.layout.Column(Modifier.verticalScroll(rememberScrollState())) { Text(briefing.text) } },
+            confirmButton = { TextButton(onClick = { surfaceBriefing = null }) { Text("Done") } },
+            dismissButton = { briefing.peak?.let { peak -> TextButton(onClick = {
+                currentMapView?.let { map ->
+                    val marker = org.osmdroid.views.overlay.Marker(map).apply {
+                        position = GeoPoint(peak.latitude, peak.longitude); title = "Mapped surface high point"
+                        snippet = briefing.text
+                    }
+                    map.overlays.add(marker); map.controller.setCenter(marker.position); map.invalidate()
+                }
+                surfaceBriefing = null
+            }) { Text("Show high point") } } })
+    }
     MapPaneNotamDialogs(
         selectedNotam = selectedNotam,
         onSelectedNotamChange = { selectedNotam = it },
@@ -1001,6 +1020,29 @@ internal fun SplitMapPane(
         )
     }
     val dronePoints = dronePointEntries.map { it.first }
+    val mapStreams by viewModel.streams.collectAsStateWithLifecycle()
+    val streamFocusArrival = remember { StreamFocusArrival() }
+    val liveMapStreamIds = mapStreams.values
+        .filter { it.state == StreamState.LIVE && !it.isLocalPlayback }
+        .map { it.designator.lowercase(java.util.Locale.US) }.toSet()
+    LaunchedEffect(liveMapStreamIds) {
+        if (!isInsetMode && streamFocusArrival.observe(liveMapStreamIds, followFocusedDroneEnabled, focusedPath != null)) {
+            operatorAdjustedViewport = false
+        }
+    }
+    val liveStreamMapDesignators = mapStreams.values
+        .filter { it.state == StreamState.LIVE && !it.isLocalPlayback }
+        .map { stream ->
+            val mapped = viewModel.mapDesignatorForStream(stream.designator)
+            dronePoints.singleOrNull { sameMapDrone(it.designator, mapped) }?.designator
+        }
+    LaunchedEffect(followFocusedDroneEnabled, focusedPath, operatorAdjustedViewport, liveStreamMapDesignators) {
+        if (!isInsetMode) {
+            initialStreamMapFocus(
+                followFocusedDroneEnabled, focusedPath, operatorAdjustedViewport, liveStreamMapDesignators
+            )?.let(viewModel::focusMapDrone)
+        }
+    }
     val localTailHeadOverrideCount = dronePointEntries.count { it.second }
     var offlineBoundaryOptions by remember { mutableStateOf<List<OfflineBoundaryOption>>(emptyList()) }
     LaunchedEffect(artifactOverlayState) {
@@ -1158,6 +1200,7 @@ internal fun SplitMapPane(
         offlinePrepBoundaryId,
         offlinePrepPreset,
         offlinePrepIncludeDem,
+        offlinePrepIncludeAol,
         offlinePrepDemResolution,
         offlinePrepIncludeContours,
         mapBounds,
@@ -1219,6 +1262,7 @@ internal fun SplitMapPane(
         offlinePrepBoundaryId,
         offlinePrepPreset,
         offlinePrepIncludeDem,
+        offlinePrepIncludeAol,
         offlinePrepDemResolution,
         offlinePrepIncludeContours,
         baseLayer,
@@ -1317,6 +1361,7 @@ internal fun SplitMapPane(
             "base=${baseLayer.name}",
             "preset=${offlinePrepPreset.label}",
             "dem=$offlinePrepIncludeDem",
+            "aol=$offlinePrepIncludeAol",
             "demResolution=${offlinePrepDemResolution.meters}m",
             "contours=$offlinePrepIncludeContours",
             areaKey,
@@ -1327,6 +1372,38 @@ internal fun SplitMapPane(
         ).joinToString("|")
     }
 
+    LaunchedEffect(showOfflinePrepDialog,offlinePrepIncludeAol,offlinePrepAreaMode,offlinePrepBoundaryId,mapBounds,offlineBoundaryOptions,offlinePrepAolCatalogAttempt,offlinePrepInFlight) {
+        val selectedBounds=if(offlinePrepAreaMode==OfflinePrepAreaMode.MapBoundary) offlineBoundaryOptions.firstOrNull { it.id==offlinePrepBoundaryId }?.boundary?.bounds else mapBounds
+        val selectedSurfaceBounds=selectedBounds?.let { org.ncssar.rid2caltopo.video.surface.SurfaceBounds(it.lonWest,it.latSouth,it.lonEast,it.latNorth) }
+        if(org.ncssar.rid2caltopo.video.surface.surfaceCatalogAction(offlinePrepInFlight,showOfflinePrepDialog,offlinePrepIncludeAol,offlinePrepAolPlan?.bounds,selectedSurfaceBounds)==org.ncssar.rid2caltopo.video.surface.SurfaceCatalogAction.Preserve) return@LaunchedEffect
+        offlinePrepAolPlan=null;offlinePrepAolPlanText="";offlinePrepAolCatalogFailed=false;offlinePrepAolCatalogChecking=false
+        if(showOfflinePrepDialog && offlinePrepIncludeAol && !offlinePrepInFlight) {
+            val selected=if(offlinePrepAreaMode==OfflinePrepAreaMode.MapBoundary) offlineBoundaryOptions.firstOrNull { it.id==offlinePrepBoundaryId }?.boundary?.bounds else mapBounds
+            if(selected!=null) {
+                offlinePrepAolCatalogChecking=true
+                offlinePrepAolPlanText="Checking USGS lidar coverage and file sizes…"
+                try {
+                    val b=org.ncssar.rid2caltopo.video.surface.SurfaceBounds(selected.lonWest,selected.latSouth,selected.lonEast,selected.latNorth)
+                    val plan=org.ncssar.rid2caltopo.video.surface.SurfacePreparation.plan(b,demAutoFetchClient,context=context)
+                    offlinePrepAolPlan=plan
+                    offlinePrepAolPlanText=if(plan.reused) "AOL already prepared — using cached tiles" else "AOL: ${plan.sources.size} lidar files, ${plan.advertisedBytes/1_000_000} MB advertised; ${plan.tiles} local 1 m tiles. Source sizes may differ."
+                } catch(e: CancellationException) { throw e }
+                catch(e: Exception) { offlinePrepAolCatalogFailed=true;offlinePrepAolPlanText=e.message ?: "AOL catalog unavailable" }
+                finally { if(kotlinx.coroutines.currentCoroutineContext().isActive) offlinePrepAolCatalogChecking=false }
+            }
+        }
+    }
+    if(showOfflinePrepDialog && offlinePrepAolCatalogChecking) {
+        AlertDialog(
+            onDismissRequest={ offlinePrepIncludeAol=false;offlinePrepAolCatalogChecking=false },
+            title={ Text("Checking USGS lidar catalog…") },
+            text={ Column(verticalArrangement=Arrangement.spacedBy(16.dp)) {
+                androidx.compose.material3.CircularProgressIndicator()
+                Text("Finding coverage and file sizes for the selected area. Temporary service failures are retried automatically.")
+            } },
+            confirmButton={ TextButton(onClick={ offlinePrepIncludeAol=false;offlinePrepAolCatalogChecking=false }) { Text("Cancel") } }
+        )
+    }
     val offlinePrepReadyByCompletion = remember(
         offlinePrepInFlight,
         offlinePrepCompletedSelectionKey,
@@ -1334,6 +1411,7 @@ internal fun SplitMapPane(
         offlinePrepBoundaryId,
         offlinePrepPreset,
         offlinePrepIncludeDem,
+        offlinePrepIncludeAol,
         offlinePrepDemResolution,
         offlinePrepIncludeContours,
         baseLayer,
@@ -1409,12 +1487,20 @@ internal fun SplitMapPane(
 
     fun startOfflinePrep(bounds: BoundingBox, clipBoundary: GeoBoundary?) {
         if (offlinePrepInFlight) return
+        val includeAol=offlinePrepIncludeAol
+        val aolPlan=if(includeAol) offlinePrepAolPlan else null
+        if(includeAol && (aolPlan==null || aolPlan.bounds!=org.ncssar.rid2caltopo.video.surface.SurfaceBounds(bounds.lonWest,bounds.latSouth,bounds.lonEast,bounds.latNorth))) {
+            CaltopoClient.ShowToast("Wait for the AOL coverage and size check for this region.");return
+        }
+        offlinePrepAolReport=""
+        offlinePrepFailureNotice=null
+        offlinePrepCompletedSelectionKey=null
         offlinePrepAutoCloseJob?.cancel()
         offlinePrepAutoCloseJob = null
         offlinePrepActiveCalls.clear()
         offlinePrepCancelRequested = false
         offlinePrepInFlight = true
-        offlinePrepProgress = OfflinePrepProgress(phase = "Preparing", total = 0, completed = 0)
+        offlinePrepProgress = OfflinePrepProgress(phase = "Preparing", total = 0, completed = 0, includesAol = aolPlan != null)
         val offlinePrepTileFetchScheduler = offlinePrepCoordinator.begin(context)
         val preset = offlinePrepPreset
         val includeDem = offlinePrepIncludeDem
@@ -1425,7 +1511,7 @@ internal fun SplitMapPane(
         val maximizeThroughput = offlinePrepMaxThroughput && !isOsmDownload
         val estimatedTileOps = offlinePrepEstimate.tileEstimate
         var estimatedDemOps = if (includeDem) estimateDemDownloadCount(bounds, demResolution) else 0
-        var estimatedTotalOps = (estimatedTileOps + estimatedDemOps).coerceAtLeast(1)
+        var estimatedTotalOps = (estimatedTileOps + estimatedDemOps + (aolPlan?.tiles ?: 0)).coerceAtLeast(1)
         val selectionKey = currentOfflinePrepSelectionKey()
         val tabletLocation = CaltopoMap.GetMyLocation()?.takeIf {
             it.latitude.isFinite() && it.longitude.isFinite()
@@ -1452,20 +1538,22 @@ internal fun SplitMapPane(
                         offlinePrepInFlight = false
                         offlinePrepJob = null
                         offlinePrepCoordinator.finish()
-                        offlinePrepProgress = offlinePrepProgress.copy(phase = "Failed")
+                        offlinePrepProgress = offlinePrepProgress.copy(phase = "Failed: ${e.message ?: e.javaClass.simpleName}")
+                    offlinePrepFailureNotice="${e.message ?: "Download interrupted"}. Completed map and ground tiles are still available. Retry reuses completed files; the interrupted lidar file is downloaded again."
+                    CaltopoClient.CTError("OfflinePreparation", "Download failed: ${e.message ?: e.javaClass.simpleName}")
                         CaltopoClient.ShowToast("DEM planning failed: ${e.message ?: e.javaClass.simpleName}")
                     }
                     return@launch
                 }
             } else emptyList()
             estimatedDemOps = demDownloads.size
-            estimatedTotalOps = (estimatedTileOps + estimatedDemOps).coerceAtLeast(1)
+            estimatedTotalOps = (estimatedTileOps + estimatedDemOps + (aolPlan?.tiles ?: 0)).coerceAtLeast(1)
             val estimatedTileBytes = estimatedTileOps.toLong() * 20_000L
             val demEstimatedBytes = demDownloads.associateWith {
                 estimatedDemDownloadBytes(it, demResolution)
             }
             val estimatedTotalBytes = (
-                estimatedTileBytes + demEstimatedBytes.values.sum()
+                estimatedTileBytes + demEstimatedBytes.values.sum() + (aolPlan?.let { it.advertisedBytes+it.tiles*8_000_000L } ?: 0)
             ).coerceAtLeast(1L)
             // Resolve the GeoTIFF DEM storage directory once for this download job.
             // archiveDemDir is null when no archive directory is configured.
@@ -1518,7 +1606,7 @@ internal fun SplitMapPane(
                 val displayTileTotal = maxOf(estimatedTileOps, tileDone)
                 val displayDemTotal = maxOf(estimatedDemOps, demDone)
                 val remainingBytes = (estimatedTotalBytes - byteDone).coerceAtLeast(0L)
-                val eta = if (rate > 1.0) kotlin.math.ceil(remainingBytes / rate).toLong() else null
+                val eta = if (aolPlan == null && rate > 1.0) kotlin.math.ceil(remainingBytes / rate).toLong() else null
                 withContext(Dispatchers.Main.immediate) {
                     offlinePrepProgress = OfflinePrepProgress(
                         phase = phase,
@@ -1538,7 +1626,8 @@ internal fun SplitMapPane(
                         completedBytes = byteDone,
                         totalBytes = estimatedTotalBytes,
                         bytesPerSec = rate,
-                        etaSeconds = eta
+                        etaSeconds = eta,
+                        includesAol = aolPlan != null
                     )
                 }
             }
@@ -1890,6 +1979,17 @@ internal fun SplitMapPane(
                     progressTicker.cancel()
                 }
 
+                if(aolPlan!=null) {
+                    val report=org.ncssar.rid2caltopo.video.surface.SurfacePreparation.prepare(
+                        context,aolPlan,geoTiffHttpClient,
+                        onCall={ call, active -> if(active) offlinePrepActiveCalls.add(call) else offlinePrepActiveCalls.remove(call) },
+                        onActivity=MapOfflinePrepRuntime::noteProgress,
+                        progress={ message -> phase=message;pushProgress(force=true) }
+                    )
+                    completed.addAndGet(aolPlan.tiles)
+                    completedEstimatedBytes.addAndGet(aolPlan.advertisedBytes+aolPlan.tiles*8_000_000L)
+                    withContext(Dispatchers.Main.immediate) { offlinePrepAolReport=report }
+                }
                 val elapsedMs = System.currentTimeMillis() - startedAt
                 val failTotal = totalFailed.get()
                 phase = if (failTotal > 0) "Complete with failures" else "Complete"
@@ -1901,7 +2001,7 @@ internal fun SplitMapPane(
                 withContext(Dispatchers.Main.immediate) {
                     offlinePrepInFlight = false
                     offlinePrepJob = null
-                    offlinePrepCompletedSelectionKey = selectionKey
+                    offlinePrepCompletedSelectionKey = if(failTotal==0) selectionKey else null
                     offlinePrepActiveCalls.clear()
                     offlinePrepCancelRequested = false
                     offlinePrepCoordinator.finish()
@@ -1914,7 +2014,7 @@ internal fun SplitMapPane(
                     CaltopoClient.ShowToast(doneMsg)
                     MapCacheDebug.log(doneMsg)
                     offlinePrepAutoCloseJob?.cancel()
-                    if (failTotal == 0) {
+                    if (failTotal == 0 && !includeAol) {
                         offlinePrepAutoCloseJob = offlinePrepCoordinator.scope.launch {
                             delay(1500L)
                             if (!offlinePrepInFlight && offlinePrepProgress.phase == "Complete") {
@@ -1949,7 +2049,7 @@ internal fun SplitMapPane(
                     offlinePrepCoordinator.finish()
                     offlinePrepAutoCloseJob?.cancel()
                     offlinePrepAutoCloseJob = null
-                    offlinePrepProgress = offlinePrepProgress.copy(phase = "Failed")
+                    offlinePrepProgress = offlinePrepProgress.copy(phase = "Failed: ${e.message ?: e.javaClass.simpleName}")
                     CaltopoClient.ShowToast("Download map failed: ${e.javaClass.simpleName}")
                 }
                 MapCacheDebug.log("download map failed err=${e.javaClass.simpleName}:${e.message}")
@@ -2284,6 +2384,21 @@ internal fun SplitMapPane(
             else hiddenItemIds.addAll(itemIds)
             startArtifactOverlayRebuild("bulk-item-visibility")
         },
+        onSurfaceBriefing = { itemId ->
+            val feature = artifactStoreById[itemId]
+            val points = feature?.let(::artifactGeoPoints).orEmpty().map { it.latitude to it.longitude }
+            val geometryType = feature?.optJSONObject("geometry")?.optString("type")
+            val request = ++surfaceBriefingRequest
+            uiScope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    if (geometryType !in listOf("Polygon", "LineString") || points.size < 2)
+                        org.ncssar.rid2caltopo.video.surface.SurfaceBriefing("Select a single assignment polygon or route line. Multipart geometry needs separate preparation.", null)
+                    else runCatching { org.ncssar.rid2caltopo.video.surface.SurfaceBriefings.analyze(context, points, geometryType == "Polygon") }
+                        .getOrElse { org.ncssar.rid2caltopo.video.surface.SurfaceBriefing("Surface briefing unavailable: ${it.message}", null) }
+                }
+                if (surfaceBriefingRequest == request) surfaceBriefing = result
+            }
+        },
         onZoomToItem = { itemId ->
             pendingArtifactZoomFeatureId = itemId
             operatorAdjustedViewport = true
@@ -2360,6 +2475,7 @@ internal fun SplitMapPane(
         if (point != null) {
             val coordinateDisplayFormat = viewModel.coordinateDisplayFormat
             var coordinateMenuExpanded by remember(designator, coordinateDisplayFormat) { mutableStateOf(false) }
+            var showAolDetails by remember(designator) { mutableStateOf(false) }
             // AGL, ATO — read from coordinator (same values shown in the map label).
             val bubbleDisplayState = viewModel.droneDisplayStateFor(point.designator)
             val aglFeet  = bubbleDisplayState?.aglFt
@@ -2369,6 +2485,10 @@ internal fun SplitMapPane(
             val telemetry = point.droneSpec?.lastPositionTelemetry
             val headingDeg = point.headingDeg ?: bubbleDisplayState?.headingDeg ?: telemetry?.aircraftTrackDeg
             val detailLines = droneDetailLines(
+                aol = bubbleDisplayState?.aol,
+                positionStale = bubbleDisplayState?.positionStale == true,
+                atoStatus = bubbleDisplayState?.atoStatus ?: org.ncssar.rid2caltopo.video.surface.MeasurementStatus.Unknown,
+                aglStatus = bubbleDisplayState?.aglStatus ?: org.ncssar.rid2caltopo.video.surface.MeasurementStatus.Unknown,
                 locationText = CoordinateFormatter.format(point.lat, point.lng, coordinateDisplayFormat),
                 coordinateFormatLabel = coordinateDisplayFormat.label,
                 atoFeet = atoFeet,
@@ -2411,8 +2531,24 @@ internal fun SplitMapPane(
                             }
                         }
                         detailLines.drop(1).forEach { line ->
-                            Text(line)
+                            val negativeAol = line.startsWith("AOL · 200 ft radius: ") &&
+                                bubbleDisplayState?.positionStale != true &&
+                                bubbleDisplayState?.aol?.status == org.ncssar.rid2caltopo.video.surface.MeasurementStatus.Available &&
+                                (bubbleDisplayState.aol.feet ?: 0.0) < 0
+                            Text(androidx.compose.ui.text.buildAnnotatedString {
+                                append(line)
+                                if (negativeAol) addStyle(
+                                    androidx.compose.ui.text.SpanStyle(color = androidx.compose.ui.graphics.Color.Red),
+                                    line.indexOf(": ") + 2, line.length
+                                )
+                            })
                         }
+                        Text("Only calibrate while hovering at an independently established 50 ft directly above the launch point. This also supplies the AOL launch reference.",fontSize=12.sp)
+                        TextButton(enabled=bubbleDisplayState != null && !bubbleDisplayState.positionStale,onClick={
+                            val applied=viewModel.altitudeCoordinator.manualCalibrateOverLaunch(point.designator)
+                            CaltopoClient.ShowToast(if(applied) "50 ft launch calibration applied" else "Fresh aircraft position and altitude are required")
+                        }) { Text("Calibrate at 50 ft over launch") }
+                        TextButton(onClick = { showAolDetails = true }) { Text("AOL details") }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(
                                 checked = followFocusedDroneEnabled,
@@ -2443,6 +2579,23 @@ internal fun SplitMapPane(
                 },
                 dismissButton = {}
             )
+            if (showAolDetails) {
+                AlertDialog(
+                    onDismissRequest = { showAolDetails = false },
+                    title = { Text("AOL details") },
+                    text = {
+                        androidx.compose.foundation.text.selection.SelectionContainer {
+                            Text(
+                                bubbleDisplayState?.aol?.details ?: "Surface package not prepared",
+                                modifier = Modifier.verticalScroll(rememberScrollState())
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { showAolDetails = false }) { Text("Close") }
+                    }
+                )
+            }
         }
     }
 
@@ -3625,12 +3778,15 @@ internal fun SplitMapPane(
 
                     if (!isInsetMode) {
                         val labelText = droneStatusLabelText(
+                            aol = displayState?.aol,
                             atoFeet = labelAtoFeet,
                             aglFeet = labelAglFeet,
                             aglStale = labelAglStale,
                             rangeFeet = labelRangeFeet,
                             headingDeg = headingDeg,
-                            positionStale = positionStale,
+                            positionStale = positionStale || displayState?.positionStale == true,
+                            atoStatus = displayState?.atoStatus ?: org.ncssar.rid2caltopo.video.surface.MeasurementStatus.Unknown,
+                            aglStatus = displayState?.aglStatus ?: org.ncssar.rid2caltopo.video.surface.MeasurementStatus.Unknown,
                         )
                         val nameDrawable = buildDroneNameLabelDrawable(
                             context.resources,
@@ -4310,10 +4466,11 @@ internal fun SplitMapPane(
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 Text(
-                                    "${String.format(Locale.US, "%.0f", pct)}% complete",
+                                    if(offlinePrepProgress.phase.startsWith("Failed")) "Download failed — retry available" else if (offlinePrepInFlight && offlinePrepProgress.includesAol) offlinePrepProgress.phase else "${String.format(Locale.US, "%.0f", pct)}% complete",
+                                    color=if(offlinePrepProgress.phase.startsWith("Failed")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
                                     fontSize = 18.sp
                                 )
-                                if (offlinePrepInFlight && offlinePrepProgress.totalBytes <= 0L) {
+                                if (offlinePrepInFlight && (offlinePrepProgress.includesAol || offlinePrepProgress.totalBytes <= 0L)) {
                                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                                 } else {
                                     LinearProgressIndicator(
@@ -4322,7 +4479,7 @@ internal fun SplitMapPane(
                                     )
                                 }
                                 Text(
-                                    "Progress: ${offlinePrepProgress.phase} ${offlinePrepProgress.completed}/${offlinePrepProgress.total} " +
+                                    if (offlinePrepInFlight && offlinePrepProgress.includesAol) "Map, terrain, then AOL preparation. Remaining time varies with lidar transfer and construction." else "Progress: ${offlinePrepProgress.phase} ${offlinePrepProgress.completed}/${offlinePrepProgress.total} " +
                                         "(${String.format(Locale.US, "%.2f", pct)}%) " +
                                         "rate=${formatStorageBytes(offlinePrepProgress.bytesPerSec.toLong())}/s " +
                                         "ETA=$etaText",
@@ -4451,8 +4608,21 @@ internal fun SplitMapPane(
                                 }
                             }
                         }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked=offlinePrepIncludeAol,onCheckedChange={ if(!offlinePrepInFlight) offlinePrepIncludeAol=it },enabled=!offlinePrepInFlight)
+                            Text("Prepare 1 m AOL tiles")
+                        }
+                        if(offlinePrepIncludeAol) {
+                            Text("Downloads USGS lidar and builds obstacle tiles on this device after map and terrain downloads. Prepare before flight. Uses the selected region's bounding rectangle plus a 200 ft margin. Prepared tiles are used automatically for AOL calculations.",fontSize=11.sp)
+                            Text(offlinePrepAolPlanText,fontSize=12.sp)
+                            if(offlinePrepAolCatalogFailed) {
+                                TextButton(onClick={ offlinePrepAolCatalogAttempt++ },enabled=!offlinePrepInFlight) { Text("Retry USGS catalog") }
+                            }
+                            if(offlinePrepAolWorkingBytes>0) Text("AOL temporary-space allowance: ${formatStorageBytes(offlinePrepAolWorkingBytes)}. Raw files are removed after assembly; existing prepared areas are retained.",fontSize=11.sp)
+                            if(offlinePrepAolReport.isNotBlank()) Text(offlinePrepAolReport,fontSize=12.sp)
+                        }
                         Text(
-                            "DEM detail is planned separately from map zoom. The default remains 30 m.",
+                            "DEM detail is planned separately from map zoom.",
                             fontSize = 11.sp
                         )
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -4531,7 +4701,7 @@ internal fun SplitMapPane(
                             val estimatedDemBytes = (offlinePrepEstimate.estimatedDemCacheMb * 1024.0 * 1024.0).toLong()
                             val capacity = OfflinePrepCapacity(
                                 currentTileCacheBytes = offlinePrepCurrentTileCacheBytes,
-                                estimatedTileBytes = estimatedTileBytes,
+                                estimatedTileBytes = estimatedTileBytes+offlinePrepAolWorkingBytes,
                                 estimatedDemBytes = estimatedDemBytes,
                                 maximumTileCacheBytes = offlinePrepTileCacheCapBytes,
                                 availableVolumeBytes = offlinePrepAvailableBytes
@@ -4766,7 +4936,7 @@ internal fun SplitMapPane(
                                 if (offlinePrepEstimate.ready) {
                                     val capacity = OfflinePrepCapacity(
                                         currentTileCacheBytes = offlinePrepCurrentTileCacheBytes,
-                                        estimatedTileBytes = (offlinePrepEstimate.estimatedTileCacheMb * 1024.0 * 1024.0).toLong(),
+                                        estimatedTileBytes = (offlinePrepEstimate.estimatedTileCacheMb * 1024.0 * 1024.0).toLong()+offlinePrepAolWorkingBytes,
                                         estimatedDemBytes = (offlinePrepEstimate.estimatedDemCacheMb * 1024.0 * 1024.0).toLong(),
                                         maximumTileCacheBytes = offlinePrepTileCacheCapBytes,
                                         availableVolumeBytes = offlinePrepAvailableBytes
@@ -4782,9 +4952,9 @@ internal fun SplitMapPane(
                                 }
                                 startOfflinePrep(prepBounds, boundary)
                             },
-                            enabled = !offlinePrepInFlight && offlinePrepEstimate.ready &&
+                            enabled = !offlinePrepInFlight && offlinePrepEstimate.ready && (!offlinePrepIncludeAol || offlinePrepAolPlan!=null) &&
                                 (mapBounds != null || selectedBoundary != null)
-                        ) { Text("Start") }
+                        ) { Text(if(offlinePrepProgress.phase.startsWith("Failed")) "Retry" else "Start") }
                     }
                 },
                 dismissButton = {
@@ -4810,6 +4980,15 @@ internal fun SplitMapPane(
                         )
                     }
                 }
+            )
+        }
+
+        if(showOfflinePrepDialog && !isInsetMode && offlinePrepFailureNotice!=null) {
+            AlertDialog(
+                onDismissRequest={ offlinePrepFailureNotice=null },
+                title={ Text("Download failed",color=MaterialTheme.colorScheme.error) },
+                text={ Text(offlinePrepFailureNotice.orEmpty()) },
+                confirmButton={ TextButton(onClick={ offlinePrepFailureNotice=null }) { Text("Review and retry") } }
             )
         }
 

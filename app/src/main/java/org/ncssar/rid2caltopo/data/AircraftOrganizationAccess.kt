@@ -39,11 +39,12 @@ object AircraftOrganizationAccess {
             profile.optString("missingProfileId", profile.optString("id"))).apply()
     }
 
-    fun rememberedAccessories(remoteId: String): Set<String> =
-        preferences().getStringSet("${scope()}:$remoteId:accessories", emptySet()).orEmpty().toSet()
+    fun rememberedEquipment(remoteId: String): JSONObject =
+        preferences().getString("${scope()}:$remoteId:equipment", null)?.let { runCatching { JSONObject(it) }.getOrNull() }
+            ?: JSONObject().put("selectedAccessories", org.json.JSONArray(preferences().getStringSet("${scope()}:$remoteId:accessories", emptySet()).orEmpty().toList()))
 
-    fun rememberAccessories(remoteId: String, selected: Set<String>) {
-        preferences().edit().putStringSet("${scope()}:$remoteId:accessories", selected).apply()
+    fun rememberEquipment(remoteId: String, value: FlightReadiness) {
+        preferences().edit().putString("${scope()}:$remoteId:equipment", value.equipmentJSON().toString()).apply()
     }
 
     @JvmStatic fun belongsToOrganization(): Boolean =

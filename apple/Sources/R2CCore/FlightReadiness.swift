@@ -14,6 +14,31 @@ public struct FlightReadiness: Codable, Sendable, Equatable {
     public var configurationVersion: Int64 = 0
     public init() {}
 
+    // Remember equipment only; each flight gets fresh pilot, service and authority evidence.
+    public var equipmentDictionary: [String: Any] {
+        ["selectedAccessories": selectedAccessories.sorted(), "payloadDescription": payloadDescription,
+         "payloadWeightGrams": payloadWeightGrams as Any? ?? NSNull()]
+    }
+
+    public func restoringEquipment(_ saved: [String: Any]) -> FlightReadiness {
+        var copy = self
+        copy.selectedAccessories = Set(saved["selectedAccessories"] as? [String] ?? [])
+        copy.payloadDescription = saved["payloadDescription"] as? String ?? ""
+        copy.payloadWeightGrams = (saved["payloadWeightGrams"] as? NSNumber)?.doubleValue
+        return copy
+    }
+
+    public var pilotQualificationWarning: String {
+        return "The saved roster does not verify current Part 107 qualifications for this callsign. Review the callsign or update the pilot’s qualifications in Tracker. Recording and publishing remain available."
+    }
+
+    public var equipmentSummary: String {
+        var names = aircraft.accessories.filter { selectedAccessories.contains($0.id) }.map(\.name)
+        if !payloadDescription.isEmpty { names.append(payloadDescription) }
+        else if payloadWeightGrams != nil { names.append("Payload") }
+        return names.isEmpty ? "No equipment or payload selected" : names.joined(separator: ", ")
+    }
+
     public func resolvingPilot(callsign: String, roster: [[String: Any]]) -> FlightReadiness {
         let name = callsign.trimmingCharacters(in: .whitespacesAndNewlines)
         let matches = roster.filter { !name.isEmpty && ($0["callsign"] as? String ?? "").caseInsensitiveCompare(name) == .orderedSame }

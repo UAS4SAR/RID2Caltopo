@@ -54,6 +54,19 @@ class MapOfflinePrepCoordinatorTest {
     }
 
     @Test
+    fun realTransferActivityPreventsWatchdogCancellationUntilActivityStops() {
+        MapOfflinePrepRuntime.begin(onCancel = {})
+        val now = System.currentTimeMillis()
+        MapOfflinePrepRuntime.noteProgress()
+        val activity = MapOfflinePrepRuntime.lastActivityAtMsec()
+        assertTrue(activity >= now)
+        assertFalse(MapOfflinePrepRuntime.claimStallRecovery(activity + 44_999L, 45_000L))
+        assertTrue(MapOfflinePrepRuntime.claimStallRecovery(activity + 45_000L, 45_000L))
+        MapOfflinePrepRuntime.finish()
+        assertFalse(MapOfflinePrepRuntime.claimStallRecovery(activity + 100_000L, 45_000L))
+    }
+
+    @Test
     fun offlineWorkerLeaseOutlivesUiResourcesAndClosesAtDownloadFinish() {
         var closeCount = 0
         val lease = OfflinePrepWorkerLease {

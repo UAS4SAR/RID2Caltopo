@@ -20,6 +20,13 @@ public struct OperationalTerrainSample: Sendable, Equatable {
 }
 
 public struct OperationalAircraftAltitudeDisplay: Sendable, Equatable {
+    public let positionStale: Bool
+    public let atoStatus, aglStatus: OperationalMeasurementStatus
+    public var atoLabel: String { (positionStale ? OperationalMeasurementStatus.stale : atoStatus).label(atoFeet,suffix:" ft") }
+    public var aglLabel: String { (positionStale ? OperationalMeasurementStatus.stale : aglStatus).label(aglFeet,suffix:" ft") }
+    public var aolLabel: String { (positionStale ? OperationalMeasurementStatus.stale : aol.status).label(aol.feet,suffix:" ft") }
+    public var rangeLabel: String { (positionStale ? OperationalMeasurementStatus.stale : .available).label(rangeFeet,suffix:" ft") }
+    public let aol: OperationalAOLState
     public let atoFeet: Double?
     public let aglFeet: Double?
     public let aglStale: Bool
@@ -31,8 +38,14 @@ public struct OperationalAircraftAltitudeDisplay: Sendable, Equatable {
         aglFeet: Double?,
         aglStale: Bool,
         aglUsesTerrain: Bool,
-        rangeFeet: Double?
+        rangeFeet: Double?,
+        aol: OperationalAOLState = .init(),
+        positionStale: Bool = false,
+        atoStatus: OperationalMeasurementStatus = .available,
+        aglStatus: OperationalMeasurementStatus = .available
     ) {
+        self.positionStale=positionStale;self.atoStatus=atoStatus;self.aglStatus=aglStatus
+        self.aol = aol
         self.atoFeet = atoFeet
         self.aglFeet = aglFeet
         self.aglStale = aglStale
@@ -80,6 +93,7 @@ public struct OperationalAltitudeCoordinator: Sendable {
     public private(set) var takeoffCoordinate: Coordinate?
     public private(set) var currentCoordinate: Coordinate?
     private var currentAltitudeMeters: Double?
+    private var lastObservationWasVideo = false
     private var relativeHeightMeters: Double?
     private var relativeHeightReference: RidObservation.HeightReference?
     private var calibration: Calibration?
@@ -89,15 +103,94 @@ public struct OperationalAltitudeCoordinator: Sendable {
     private var currentTerrainKey: String?
     private var correctionMeters: Double?
 
+    public private(set) var aolTakeoffCoordinate: Coordinate?
+    private var terrainPending = false
+    public mutating func setTerrainPending(_ pending: Bool) { terrainPending=pending }
+    private var aolState = OperationalAOLState()
+    private var aolRefreshStartedAt: Date?
+    private var receivedAt: Date?
+    public func hasFreshTelemetry(at now: Date) -> Bool {
+        receivedAt.map { now.timeIntervalSince($0) >= 0 && now.timeIntervalSince($0) < 5 } == true
+    }
+    public var hasFreshAOLTelemetry: Bool { hasFreshTelemetry(at: Date()) }
+    public struct AOLInput: Sendable, Equatable {
+        public let position: Coordinate?
+        public let takeoff: Coordinate?
+        public let height: Double?
+        public let reference: String
+    }
+    public var aolInput: AOLInput {
+        AOLInput(position: currentCoordinate, takeoff: aolTakeoffCoordinate, height: aolHeight,
+                 reference: "\(calibration?.seedSource == .manual ? String(describing: calibration) : "automatic")|\(lastObservationWasVideo && calibration?.seedSource != .manual ? "video" : String(describing: aolTakeoffCoordinate))")
+    }
+
+    public var aolHeight: Double? {
+        if calibration?.seedSource == .manual,let altitude=currentAltitudeMeters,let calibration { return altitude-calibration.takeoffTrackAltitudeMeters }
+        return relativeHeightReference == .takeoff ? relativeHeightMeters : nil
+    }
+    public mutating func applyAOL(_ state: OperationalAOLState) { aolState = state; aolRefreshStartedAt = nil }
+    /// Accept recent completed work while newer positions wait, without extending its age.
+    @discardableResult
+    public mutating func applyCompletedAOL(_ state: OperationalAOLState, input: AOLInput,
+                                          startedAt: Date, now: Date) -> Bool {
+        guard input.reference == aolInput.reference, hasFreshTelemetry(at: now),
+              aolHeight != nil, aolTakeoffCoordinate != nil,
+              now.timeIntervalSince(startedAt) >= 0, now.timeIntervalSince(startedAt) < 1.5 else { return false }
+        aolState = state
+        aolRefreshStartedAt = aolInput == input ? nil : startedAt
+        return true
+    }
+
     public init() {}
 
     public mutating func ingest(_ observation: RidObservation) {
+        let previousInput = aolInput
+        lastObservationWasVideo = observation.source == .djiVideo
+        defer {
+            if aolInput != previousInput {
+                if aolInput.takeoff == nil {
+                    aolState = .init(reason: "Takeoff ground reference not observed; receive ground status and near-zero height before flight")
+                    aolRefreshStartedAt = nil
+                } else if aolInput.height == nil {
+                    aolState = .init(reason: "Takeoff-relative altitude unavailable")
+                    aolRefreshStartedAt = nil
+                } else if aolState.status == .available,
+                    previousInput.takeoff == aolInput.takeoff ||
+                        (observation.source == .djiVideo && calibration?.seedSource != .manual && previousInput.takeoff != nil),
+                   aolInput.height != nil {
+                    // Do not restart the grace window on each incoming observation.
+                    if aolRefreshStartedAt == nil { aolRefreshStartedAt = observation.receivedAt }
+                } else {
+                    aolState = .init(reason: "Surface calculation pending for current position", status: .pending)
+                    aolRefreshStartedAt = nil
+                }
+            }
+        }
+        receivedAt = observation.receivedAt
         let coordinate = Coordinate(latitude: observation.latitude, longitude: observation.longitude)
         if takeoffCoordinate == nil { takeoffCoordinate = coordinate }
         currentCoordinate = coordinate
         currentAltitudeMeters = observation.altitudeMeters.flatMap(Self.validAltitude)
         relativeHeightMeters = observation.heightMeters.flatMap(Self.validAltitude)
         relativeHeightReference = relativeHeightMeters == nil ? nil : observation.heightReference
+        if observation.source == .djiVideo, calibration?.seedSource != .manual,
+           relativeHeightReference == .takeoff, relativeHeightMeters != nil,
+           hasFreshTelemetry(at: Date()),
+           let latitude = observation.videoReferenceLatitude,
+           let longitude = observation.videoReferenceLongitude,
+           latitude.isFinite, longitude.isFinite,
+           (-90...90).contains(latitude), (-180...180).contains(longitude),
+           latitude != 0 || longitude != 0 {
+            // Use the coordinate belonging to the streamed relative height, even if
+            // reception starts airborne. Never substitute current aircraft position.
+            aolTakeoffCoordinate = Coordinate(latitude: latitude, longitude: longitude)
+        }
+        // Some DJI aircraft report ground-relative zero until the airborne transition.
+        // Both known zero-height references establish a ground launch; live AOL still requires ATO.
+        if observation.grounded == true, relativeHeightReference != nil, let h=relativeHeightMeters, abs(h)<=1,
+           Date().timeIntervalSince(observation.receivedAt)>=0, Date().timeIntervalSince(observation.receivedAt)<5 {
+            aolTakeoffCoordinate=coordinate
+        }
 
         guard calibration?.seedSource != .automaticSealed,
               calibration?.seedSource != .manual,
@@ -150,7 +243,14 @@ public struct OperationalAltitudeCoordinator: Sendable {
     }
 
     public mutating func manualCalibrateAtFiftyFeet() {
-        guard let altitude = currentAltitudeMeters else { return }
+        guard hasFreshAOLTelemetry,let altitude = currentAltitudeMeters,let coordinate=currentCoordinate else { return }
+        aolTakeoffCoordinate=coordinate
+        aolState = .init(reason:"Surface calculation pending for calibrated launch reference",status:.pending)
+        aolRefreshStartedAt = nil
+        takeoffCoordinate=coordinate
+        takeoffTerrain=currentTerrainKey == Self.terrainKey(coordinate) && currentTerrain?.stale != true ? currentTerrain : nil
+        correctionMeters=nil
+
         calibration = Calibration(
             takeoffTrackAltitudeMeters: altitude - 50 * Self.feetToMeters,
             seedSource: .manual
@@ -158,7 +258,7 @@ public struct OperationalAltitudeCoordinator: Sendable {
         refreshCorrection()
     }
 
-    public var canManualCalibrate: Bool { currentAltitudeMeters != nil }
+    public var canManualCalibrate: Bool { currentAltitudeMeters != nil && currentCoordinate != nil && hasFreshAOLTelemetry }
     public var seedSource: SeedSource? { calibration?.seedSource }
 
     public var peerTrafficReference: OperationalPeerAltitudeReference? {
@@ -169,7 +269,9 @@ public struct OperationalAltitudeCoordinator: Sendable {
         )
     }
 
-    public var display: OperationalAircraftAltitudeDisplay {
+    public var display: OperationalAircraftAltitudeDisplay { display(at: Date()) }
+
+    public func display(at now: Date) -> OperationalAircraftAltitudeDisplay {
         let atoMeters: Double? = {
             guard let altitude = currentAltitudeMeters else { return nil }
             if calibration?.seedSource == .manual {
@@ -183,7 +285,7 @@ public struct OperationalAltitudeCoordinator: Sendable {
         let aglMeters: Double?
         let usesTerrain = correctionMeters != nil
         if let correctionMeters, let terrain = currentTerrain {
-            if relativeHeightReference == .takeoff,
+            if calibration?.seedSource != .manual, relativeHeightReference == .takeoff,
                let height = relativeHeightMeters,
                let calibration {
                 let takeoffGround = calibration.takeoffTrackAltitudeMeters - correctionMeters
@@ -193,6 +295,8 @@ public struct OperationalAltitudeCoordinator: Sendable {
             } else {
                 aglMeters = nil
             }
+        } else if calibration?.seedSource == .manual {
+            aglMeters=atoMeters
         } else if relativeHeightReference == .ground {
             aglMeters = relativeHeightMeters
         } else if !usesTerrain, relativeHeightReference == .takeoff {
@@ -211,12 +315,21 @@ public struct OperationalAltitudeCoordinator: Sendable {
             )?.distanceMeters
         }()
         let nonNegativeAGLMeters = aglMeters.map { max(0, $0) }
+        let freshTelemetry = hasFreshTelemetry(at: now)
+        let refreshingExpired = aolRefreshStartedAt.map { now.timeIntervalSince($0) >= 1.5 || now < $0 } ?? false
+        let displayedAOL = refreshingExpired
+            ? OperationalAOLState(reason: "Surface calculation pending for current position", status: .pending)
+            : aolState
         return OperationalAircraftAltitudeDisplay(
             atoFeet: atoMeters.map { $0 * Self.metersToFeet },
             aglFeet: nonNegativeAGLMeters.map { $0 * Self.metersToFeet },
             aglStale: usesTerrain && (currentTerrain?.stale == true || !terrainMatchesPosition),
             aglUsesTerrain: usesTerrain,
-            rangeFeet: rangeMeters.map { $0 * Self.metersToFeet }
+            rangeFeet: rangeMeters.map { $0 * Self.metersToFeet },
+            aol: freshTelemetry ? displayedAOL : .init(reason: "Aircraft position/altitude stale",status:.stale),
+            positionStale: receivedAt != nil && !freshTelemetry,
+            atoStatus: atoMeters == nil ? .unknown : .available,
+            aglStatus: usesTerrain && (currentTerrain?.stale == true || !terrainMatchesPosition) || aglMeters == nil ? (terrainPending ? .pending : .unknown) : .available
         )
     }
 

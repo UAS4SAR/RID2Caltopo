@@ -205,6 +205,14 @@ object StreamCameraTelemetryRegistry {
         samples[designator.trim().uppercase()]?.receivedAtMs ?: 0L
     }
 
+    /** Complete live DJI position and relative height; no RID observation is required. */
+    fun freshOperationalPosition(designator: String, nowMs: Long = System.currentTimeMillis()): StreamCameraTelemetrySample? =
+        fresh(designator, nowMs)?.takeIf {
+            it.latitudeDeg?.let { v -> v.isFinite() && v in -90.0..90.0 && v != 0.0 } == true &&
+            it.longitudeDeg?.let { v -> v.isFinite() && v in -180.0..180.0 && v != 0.0 } == true &&
+            it.relativeUpMeters?.let { v -> v.isFinite() && v in -1000.0..30000.0 } == true
+        }
+
     /** Once true, operational consumers must not silently downgrade this stream to RID. */
     fun isPositionAuthorityEstablished(designator: String): Boolean = synchronized(lock) {
         positionValidated.contains(designator.trim().uppercase())

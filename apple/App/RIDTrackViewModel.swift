@@ -23,7 +23,20 @@ final class RIDTrackViewModel: ObservableObject {
     @Published private(set) var latestArchiveURL: URL?
     @Published private(set) var caltopoStatus = "Publishing disabled"
     @Published private(set) var caltopoRTTMilliseconds: Int64?
-    @Published private(set) var altitudeDisplayByAircraftID: [String: OperationalAircraftAltitudeDisplay] = [:]
+    private var aolLoggedReasons: [String:String] = [:]
+    private var aolRequests: [String: UUID] = [:]
+    private var aolRequestInputs: [String: OperationalAltitudeCoordinator.AOLInput] = [:]
+    private var aolWorkGate = OperationalSurfaceWorkGate()
+    @Published private(set) var altitudeDisplayByAircraftID: [String: OperationalAircraftAltitudeDisplay] = [:] {
+        didSet {
+            for (id, display) in altitudeDisplayByAircraftID {
+                let old = oldValue[id]
+                if old?.positionStale != display.positionStale || old?.aol.status != display.aol.status {
+                    AppleLog.info("AOL", "Display transition: ATO=\(display.atoLabel) AGL=\(display.aglLabel) AOL=\(display.aolLabel) positionStale=\(display.positionStale) reason=\(display.aol.reason)")
+                }
+            }
+        }
+    }
     @Published private(set) var lastValidRIDUpdateAt: Date?
     @Published private(set) var lastRIDMessageAt: Date?
     @Published private(set) var peerTrafficTracks: [RidAircraftTrack] = []
@@ -49,7 +62,8 @@ final class RIDTrackViewModel: ObservableObject {
     private var coordinationEventTask: Task<Void, Never>?
     private var peerCoordinator: AppleTrackerCoordinator?
     private var identityProvider: ((String) -> RidAircraftIdentity?)?
-    private var publicationSuppressionProvider: ((String) -> Bool)?
+    private var publicationSuppressionProvider: ((String) -> Bool)? = { _ in true }
+    private var flightRecordingAllowed: ((String) -> Bool)?
     private var peerConfirmationConsumer: ((TrackerCoordinationIdentity) -> Void)?
     private var peerConfirmationClearer: ((String) -> Void)?
     private var peerTrafficLatestSampleAtByAircraftID: [String: Date] = [:]
@@ -84,7 +98,7 @@ final class RIDTrackViewModel: ObservableObject {
                     pairedVideoLastActivityAt: self.pairedVideoActivityProvider?() ?? [:]
                 )
                 for track in inactive {
-                    await self.archive(track)
+                    await self.archive(track, publishFlightEnd: true)
                     self.peerCoordinator?.droneLost(remoteID: track.aircraftID)
                     self.pendingPublication.removeValue(forKey: track.aircraftID)
                     self.lastSEIPublicationAtByAircraftID.removeValue(
@@ -95,8 +109,20 @@ final class RIDTrackViewModel: ObservableObject {
                     self.terrainRequestKeyByAircraftID.removeValue(forKey: track.aircraftID)
                     self.terrainResolvedKeyByAircraftID.removeValue(forKey: track.aircraftID)
                     self.lastHorizontalAccuracyCodeByAircraftID.removeValue(forKey: track.aircraftID)
+                    self.aolRequests.removeValue(forKey: track.aircraftID)
+                    self.aolRequestInputs.removeValue(forKey: track.aircraftID)
+                    self.aolLoggedReasons.removeValue(forKey: track.aircraftID)
+                    self.aolWorkGate.forget(aircraft: track.aircraftID)
                     self.altitudeCoordinatorByAircraftID.removeValue(forKey: track.aircraftID)
                     self.altitudeDisplayByAircraftID.removeValue(forKey: track.aircraftID)
+                }
+                await self.ingestFreshStreamPositions()
+                // Give aircraft that have waited longest first access to the single worker.
+                for (id, coordinator) in self.altitudeCoordinatorByAircraftID.sorted(by: {
+                    self.aolWorkGate.lastStartedAt(aircraft: $0.key) < self.aolWorkGate.lastStartedAt(aircraft: $1.key)
+                }) {
+                    self.scheduleAOL(remoteID: id, coordinator: coordinator)
+                    self.altitudeDisplayByAircraftID[id] = self.altitudeCoordinatorByAircraftID[id]?.display
                 }
                 let snapshot = await self.store.snapshot()
                 self.publishFreshSEIPositions(from: snapshot)
@@ -175,10 +201,22 @@ final class RIDTrackViewModel: ObservableObject {
     }
 
     func ingest(_ observation: RidObservation) async {
+        if observation.source != .djiVideo,
+           let accepted = lastAcceptedStreamAt[observation.aircraftId],
+           Date().timeIntervalSince(accepted) >= 0, Date().timeIntervalSince(accepted) <= 3,
+           validatedSEIPositionProvider?(tracks, Date())[observation.aircraftId] != nil { return }
         switch await store.ingest(observation) {
         case let .accepted(track):
             acceptedObservationCount += 1
-            lastValidRIDUpdateAt = max(lastValidRIDUpdateAt ?? observation.receivedAt, observation.receivedAt)
+            if observation.source == .djiVideo {
+                if lastAcceptedStreamAt[observation.aircraftId] == nil {
+                    AppleLog.info("VideoTelemetry", "First accepted stream position aircraft=\(observation.aircraftId) height=\(observation.heightMeters.map(String.init(describing:)) ?? "unknown")")
+                }
+                lastAcceptedStreamAt[observation.aircraftId] = observation.receivedAt
+            }
+            if observation.source != .djiVideo {
+                lastValidRIDUpdateAt = max(lastValidRIDUpdateAt ?? observation.receivedAt, observation.receivedAt)
+            }
             if let code = observation.horizontalAccuracyCode {
                 lastHorizontalAccuracyCodeByAircraftID[track.aircraftID] = code
             }
@@ -282,6 +320,10 @@ final class RIDTrackViewModel: ObservableObject {
         clueArchiveProvider = provider
     }
 
+    func configureFlightRecording(_ provider: @escaping (String) -> Bool) {
+        flightRecordingAllowed = provider
+    }
+
     func configurePublicationSuppression(_ provider: @escaping (String) -> Bool) {
         publicationSuppressionProvider = provider
     }
@@ -304,6 +346,7 @@ final class RIDTrackViewModel: ObservableObject {
         altitudeCoordinatorByAircraftID[remoteID] = coordinator
         altitudeDisplayByAircraftID[remoteID] = coordinator.display
         scheduleTerrain(remoteID: remoteID, coordinator: coordinator)
+        scheduleAOL(remoteID:remoteID,coordinator:coordinator)
         AppleLog.info("Terrain", "Manual ATO/AGL calibration remoteId=\(remoteID) targetFt=50")
     }
 
@@ -445,7 +488,13 @@ final class RIDTrackViewModel: ObservableObject {
             longitude: track.lastObservation.longitude
         )
         var coordinator = altitudeCoordinatorByAircraftID[track.aircraftID] ?? OperationalAltitudeCoordinator()
+        let previousAOLReference = coordinator.aolTakeoffCoordinate
         coordinator.ingest(track.lastObservation)
+        if track.lastObservation.source == .djiVideo,
+           coordinator.aolTakeoffCoordinate != previousAOLReference,
+           let reference = coordinator.aolTakeoffCoordinate {
+            AppleLog.info("AOL", "Initialized from DJI altitude reference aircraft=\(track.aircraftID) latitude=\(reference.latitude) longitude=\(reference.longitude)")
+        }
         if let requestKey = terrainRequestKey(for: coordinator),
            terrainResolvedKeyByAircraftID[track.aircraftID] != requestKey {
             coordinator.markCurrentTerrainPending()
@@ -453,6 +502,54 @@ final class RIDTrackViewModel: ObservableObject {
         altitudeCoordinatorByAircraftID[track.aircraftID] = coordinator
         altitudeDisplayByAircraftID[track.aircraftID] = coordinator.display
         scheduleTerrain(remoteID: track.aircraftID, coordinator: coordinator)
+        scheduleAOL(remoteID: track.aircraftID, coordinator: coordinator)
+    }
+
+    private func logAOLState(_ reason: String, remoteID: String) {
+        if aolLoggedReasons[remoteID] != reason {
+            aolLoggedReasons[remoteID]=reason
+            AppleLog.info("AOL", "State: \(reason)")
+        }
+    }
+    private func scheduleAOL(remoteID: String, coordinator: OperationalAltitudeCoordinator) {
+        let input = coordinator.aolInput
+        if let requested = aolRequestInputs[remoteID], requested.reference != input.reference {
+            aolRequests.removeValue(forKey: remoteID)
+            aolRequestInputs.removeValue(forKey: remoteID)
+        }
+        guard aolRequests[remoteID] == nil else { return }
+        guard coordinator.hasFreshAOLTelemetry, let c=coordinator.currentCoordinate else { return }
+        guard let t=coordinator.aolTakeoffCoordinate else {
+            var latest=altitudeCoordinatorByAircraftID[remoteID] ?? coordinator
+            let reason="Takeoff ground reference not observed; receive ground status and near-zero height before flight"
+            logAOLState(reason,remoteID:remoteID)
+            latest.applyAOL(.init(reason:reason))
+            altitudeCoordinatorByAircraftID[remoteID]=latest
+            altitudeDisplayByAircraftID[remoteID]=latest.display
+            return
+        }
+        guard aolWorkGate.begin(aircraft: remoteID, enabled: true, now: ProcessInfo.processInfo.systemUptime) else { return }
+        let request=UUID(); aolRequests[remoteID]=request
+        aolRequestInputs[remoteID]=input
+        let height=coordinator.aolHeight
+        let startedAt = Date()
+        Task { [weak self] in
+            let result=await Task.detached(priority:.utility) {
+                return await AppleSurfaceStore.shared.calculate(
+                    position:.init(latitude:c.latitude,longitude:c.longitude),
+                    takeoff:.init(latitude:t.latitude,longitude:t.longitude),height:height)
+            }.value
+            guard let self else { return }
+            self.aolWorkGate.finish()
+            guard self.aolRequests[remoteID]==request else { return }
+            self.aolRequests.removeValue(forKey: remoteID)
+            self.aolRequestInputs.removeValue(forKey: remoteID)
+            guard var latest=self.altitudeCoordinatorByAircraftID[remoteID],
+                  latest.applyCompletedAOL(result, input: input, startedAt: startedAt, now: Date()) else { return }
+            self.logAOLState(result.reason,remoteID:remoteID)
+            self.altitudeCoordinatorByAircraftID[remoteID]=latest
+            self.altitudeDisplayByAircraftID[remoteID]=latest.display
+        }
     }
 
     private func scheduleTerrain(remoteID: String, coordinator: OperationalAltitudeCoordinator) {
@@ -462,6 +559,9 @@ final class RIDTrackViewModel: ObservableObject {
         if terrainTasks[remoteID] != nil, terrainRequestKeyByAircraftID[remoteID] == requestKey { return }
         terrainTasks.removeValue(forKey: remoteID)?.cancel()
         terrainRequestKeyByAircraftID[remoteID] = requestKey
+        if var pending=altitudeCoordinatorByAircraftID[remoteID] {
+            pending.setTerrainPending(true);altitudeCoordinatorByAircraftID[remoteID]=pending;altitudeDisplayByAircraftID[remoteID]=pending.display
+        }
         terrainTasks[remoteID] = Task { [weak self, terrainService] in
             async let takeoffSample = terrainService.sample(latitude: takeoff.latitude, longitude: takeoff.longitude)
             async let currentSample = terrainService.sample(latitude: current.latitude, longitude: current.longitude)
@@ -469,6 +569,7 @@ final class RIDTrackViewModel: ObservableObject {
             guard !Task.isCancelled, let self,
                   var latest = self.altitudeCoordinatorByAircraftID[remoteID]
             else { return }
+            latest.setTerrainPending(false)
             latest.applyTakeoffTerrain(samples.0)
             latest.applyCurrentTerrain(samples.1, coordinate: current)
             self.altitudeCoordinatorByAircraftID[remoteID] = latest
@@ -788,7 +889,13 @@ final class RIDTrackViewModel: ObservableObject {
         return message
     }
 
-    private func archive(_ track: RidAircraftTrack) async {
+    private func archive(_ track: RidAircraftTrack, publishFlightEnd: Bool = false) async {
+        // Snapshot the decision before publishing flight end clears the current DCP state.
+        guard flightRecordingAllowed?(track.aircraftID) == true else {
+            if publishFlightEnd { tracks.removeAll { $0.aircraftID == track.aircraftID } }
+            AppleLog.info("DroneConfirmation", "Ignored unanswered/unconfirmed flight remoteId=\(track.aircraftID); archive and upload skipped")
+            return
+        }
         let identity = identityProvider?(track.aircraftID)
         let archiveConfiguration = archiveConfiguration
         let metadata = RidTrackArchiveMetadata(
@@ -806,6 +913,12 @@ final class RIDTrackViewModel: ObservableObject {
         )
         let start = track.points.first?.receivedAt ?? track.lastAircraftMessageAt
         let clues = clueArchiveProvider?(track.aircraftID, start, Date()) ?? []
+        if publishFlightEnd {
+            // Capture the completed flight's identity/readiness above before observers
+            // clear its confirmation. Network archive retries must not delay that reset.
+            tracks.removeAll { $0.aircraftID == track.aircraftID }
+            AppleLog.info("DroneConfirmation", "Published flight end before archive upload remoteId=\(track.aircraftID)")
+        }
         let save: () -> Void = { [self] in
             Task { @MainActor in await self.archiveRecorded(track, metadata: metadata, clues: clues) }
         }
@@ -824,6 +937,8 @@ final class RIDTrackViewModel: ObservableObject {
             archivedTrackCount += 1
             latestArchiveURL = outcome.url
             switch outcome.trackerResult {
+            case .alreadyReported:
+                archiveStatus = "Saved locally • tracker upload already processed"
             case .notConfigured:
                 archiveStatus = "Saved locally • tracker not configured"
                 trackerArchiveStatus = "Tracker archive not configured"
@@ -853,6 +968,30 @@ final class RIDTrackViewModel: ObservableObject {
         case .missingOrganization: "organization missing"
         case .organizationMismatch: "organization mismatch"
         case .unknownTeamAircraft: "aircraft not in team config"
+        }
+    }
+
+    private var lastAcceptedStreamAt: [String: Date] = [:]
+    private var lastStreamObservationAt: [String: Date] = [:]
+
+    private func ingestFreshStreamPositions() async {
+        guard let provider = validatedSEIPositionProvider else { return }
+        for (aircraftID, sample) in provider(tracks, Date()) {
+            guard sample.receivedAt > (lastStreamObservationAt[aircraftID] ?? .distantPast),
+                  let lat = sample.latitudeDegrees, let lng = sample.longitudeDegrees,
+                  let height = sample.relativeUpMeters
+            else { continue }
+            // Preserve an established altitude frame when RID preceded the stream.
+            let reference = altitudeCoordinatorByAircraftID[aircraftID]?.peerTrafficReference?.reportedGroundAltitudeMeters
+                ?? sample.referenceAltitudeMeters
+            guard let reference, reference.isFinite else { continue }
+            lastStreamObservationAt[aircraftID] = sample.receivedAt
+            await ingest(RidObservation(source: .djiVideo, aircraftId: aircraftID,
+                receivedAt: sample.receivedAt, latitude: lat, longitude: lng,
+                altitudeMeters: reference + height, heightMeters: height, heightReference: .takeoff,
+                headingDegrees: sample.courseDegrees,
+                videoReferenceLatitude: sample.referenceLatitudeDegrees,
+                videoReferenceLongitude: sample.referenceLongitudeDegrees))
         }
     }
 
@@ -903,7 +1042,7 @@ final class RIDTrackViewModel: ObservableObject {
         }
         lastSEIPublicationAtByAircraftID[track.aircraftID] = telemetry.receivedAt
         let rid = track.lastObservation
-        let takeoffAltitude = track.points.first?.altitudeMeters
+        let takeoffAltitude = altitudeCoordinatorByAircraftID[track.aircraftID]?.peerTrafficReference?.reportedGroundAltitudeMeters
         let altitude = if let takeoffAltitude,
                           let relativeUp = telemetry.relativeUpMeters,
                           takeoffAltitude.isFinite,

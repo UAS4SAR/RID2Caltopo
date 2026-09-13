@@ -16,13 +16,16 @@ import java.util.LinkedHashMap
 import java.util.concurrent.TimeUnit
 
 class CaltopoIconCacheService(context: Context) {
-    private val diskCache: BlobCacheStore = BlobCacheStoreFactory.create(
-        context = context.applicationContext,
-        namespace = "icon_cache_v${MapCachePolicy.ICON_CACHE_VERSION}",
-        dbName = MapCachePolicy.ICON_CACHE_DB,
-        maxBytes = MapCachePolicy.ICON_CACHE_MAX_BYTES,
-        defaultTtlMs = MapCachePolicy.ICON_TTL_MS
-    )
+    // Construction occurs on the UI thread; opening the store may wait for cache maintenance.
+    private val diskCache: BlobCacheStore by lazy {
+        BlobCacheStoreFactory.create(
+            context = context.applicationContext,
+            namespace = "icon_cache_v${MapCachePolicy.ICON_CACHE_VERSION}",
+            dbName = MapCachePolicy.ICON_CACHE_DB,
+            maxBytes = MapCachePolicy.ICON_CACHE_MAX_BYTES,
+            defaultTtlMs = MapCachePolicy.ICON_TTL_MS
+        )
+    }
     private val memoryCache = object : LinkedHashMap<String, Drawable>(128, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Drawable>?): Boolean {
             return size > 256

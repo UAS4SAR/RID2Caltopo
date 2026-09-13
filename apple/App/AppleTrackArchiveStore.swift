@@ -17,6 +17,7 @@ struct AppleTrackArchiveClue: Sendable {
 struct AppleTrackArchiveOutcome: Sendable {
     enum TrackerResult: Sendable {
         case notConfigured
+        case alreadyReported
         case uploaded(Int)
         case rejected(Int)
         case pending(Int)
@@ -62,6 +63,7 @@ actor AppleTrackArchiveStore {
     private let session: URLSession
     private var configuration: AppleTrackArchiveConfiguration?
     private let reportedFilename = "r2c_reported.txt"
+    private let uploadWork = TrackerArchiveUploadWork<AppleTrackArchiveOutcome.TrackerResult>()
 
     init(fileManager: FileManager = .default, session: URLSession = .shared) {
         rootURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first?
@@ -88,9 +90,7 @@ actor AppleTrackArchiveStore {
         if !clues.isEmpty {
             try writeKMZ(
                 track: track,
-                title: metadata.owner.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? (metadata.mappedID.isEmpty ? track.aircraftID : metadata.mappedID)
-                    : metadata.owner.trimmingCharacters(in: .whitespacesAndNewlines),
+                title: RidTrackGeoJSON.archiveTitle(for: track, metadata: metadata),
                 clues: clues,
                 destination: directory.appendingPathComponent(
                     RidTrackGeoJSON.suggestedClueReportFilename(for: track)
@@ -134,7 +134,7 @@ actor AppleTrackArchiveStore {
                 switch await process(data: data, file: file) {
                 case .uploaded: summary.uploaded += 1
                 case .pending: summary.pending += 1
-                case .skipped, .rejected: summary.skipped += 1
+                case .skipped, .rejected, .alreadyReported: summary.skipped += 1
                 case .notConfigured: summary.pending += 1
                 }
             }
@@ -254,6 +254,16 @@ actor AppleTrackArchiveStore {
     }
 
     private func process(data: Data, file: URL) async -> AppleTrackArchiveOutcome.TrackerResult {
+        await uploadWork.run(key: file.standardizedFileURL.path) {
+            await self.processOnce(data: data, file: file)
+        }
+    }
+
+    private func processOnce(data: Data, file: URL) async -> AppleTrackArchiveOutcome.TrackerResult {
+        // Recheck inside the coalesced operation; replay's directory snapshot can be stale.
+        guard !reportedFilenames(in: file.deletingLastPathComponent()).contains(file.lastPathComponent) else {
+            return .alreadyReported
+        }
         guard let configuration, configuration.tracker.isConfigured else { return .notConfigured }
         let knownIDs = Set(configuration.identities.keys)
         let eligibility = TrackerArchiveUploadContract.eligibility(

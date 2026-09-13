@@ -495,7 +495,7 @@ final class AppleTrackerCoordinator: ObservableObject {
 
     var coordinationRequired: Bool {
         usePeers && !trackerURLPrefix.isEmpty && !trackerAPIKey.isEmpty
-            && (!mapID.isEmpty || standaloneR2CCoordinationEnabled)
+            && !mapID.isEmpty
     }
 
     var localZoneID: String { zoneID }
@@ -614,6 +614,7 @@ final class AppleTrackerCoordinator: ObservableObject {
         let normalizedURL = trackerURLPrefix.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedKey = trackerAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedMapID = mapID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let operatingScopeChanged = self.mapID != normalizedMapID || self.trackerURLPrefix != normalizedURL || self.trackerAPIKey != normalizedKey
         AppleAircraftOrganizationAccess.operatingIncidentID = normalizedMapID
         AppleAircraftOrganizationAccess.operatingAssignment.setScope(organization: normalizedURL, incident: normalizedMapID)
         let trackerConfigurationChanged = self.trackerURLPrefix != normalizedURL
@@ -632,6 +633,7 @@ final class AppleTrackerCoordinator: ObservableObject {
         if self.trackerAPIKey != normalizedKey { AppleAircraftOrganizationAccess.operatingAssignment.end() }
         self.trackerAPIKey = normalizedKey
         self.mapID = normalizedMapID
+        if operatingScopeChanged { NotificationCenter.default.post(name: Notification.Name("operatingProfileScopeChanged"), object: nil) }
         standaloneStandbyEligible = normalizedMapID.isEmpty
             && standaloneR2CCoordinationEnabled
         if (trackerConfigurationChanged || forceReconnect)
@@ -652,6 +654,11 @@ final class AppleTrackerCoordinator: ObservableObject {
         guard usePeers else {
             status = .standalone
             statusDetail = "Peer coordination disabled by configuration"
+            return
+        }
+        guard !normalizedMapID.isEmpty else {
+            status = .standalone
+            statusDetail = "Standalone flights stay independent"
             return
         }
         guard coordinationRequired else {

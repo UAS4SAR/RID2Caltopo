@@ -172,6 +172,7 @@ public class WaypointTrack {
     private String archivedMappedId = "";
     private boolean archivedLocalOnly = false;
     private boolean archivedOkToLog = false;
+    private boolean archivedFlightConfirmed = false;
     private boolean archivedTrackerUploadAuthorized = false;
     private double archivedDistanceInFeet = 0.0;
 
@@ -264,6 +265,8 @@ public class WaypointTrack {
         archivedMappedId = droneSpec.getMappedId();
         archivedLocalOnly = droneSpec.isLocalArchiveOnly();
         archivedOkToLog = droneSpec.okToLog();
+        archivedFlightConfirmed = droneSpec.isCurrentFlightConfirmed() ||
+                CaltopoClient.IsCurrentPeerDroneConfirmed(archivedRemoteId);
         archivedDistanceInFeet = droneSpec.getDistanceInFeet();
         archivedTrackerUploadAuthorized = !archivedLocalOnly &&
                 CaltopoClient.IsKnownTeamDroneForTrackerUpload(
@@ -930,8 +933,16 @@ public class WaypointTrack {
         ReportStatsForFile(reportedFilepath, fileName);
     }
 
-    public void archive() {
+    boolean shouldRecordArchive() {
         prepareForArchive();
+        return archivedFlightConfirmed;
+    }
+
+    public void archive() {
+        if (!shouldRecordArchive()) {
+            CTDebug(TAG, "archive(): ignored unanswered/unconfirmed flight " + archivedRemoteId);
+            return;
+        }
         long numCoords = coordinates.length();
         if (numCoords <= 0) {
             CTDebug(TAG, "archive(): no waypoints.");

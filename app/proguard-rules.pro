@@ -41,3 +41,5 @@
 
 # Eclipse Paho MQTT client — uses reflection internally; preserve all classes.
 -keep class org.eclipse.paho.** { *; }
+
+-keep class org.ncssar.rid2caltopo.video.surface.SurfaceNative { *; }

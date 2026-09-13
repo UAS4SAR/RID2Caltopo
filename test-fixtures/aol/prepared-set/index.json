@@ -1,0 +1,41 @@
+{
+  "width": 161,
+  "height": 161,
+  "originLatitude": 39.0,
+  "originLongitude": -121.0,
+  "referenceGroup": "fixture-survey",
+  "schema": 1,
+  "preparedAtEpochMs": 1700000000000,
+  "entries": [
+    {
+      "file": "tile-0-0.aol",
+      "metadata": {
+        "groundSHA256": "8bd1643346b1340bbb8d6722b8c5932611edb9d147c37996045b0c1f546bf479",
+        "height": 161,
+        "horizontalCRS": "R2C_LOCAL_EQUIRECTANGULAR_WGS84",
+        "id": "synthetic-contract",
+        "layer": "top-surface",
+        "originLatitude": 39.0,
+        "originLongitude": -121.0,
+        "processingVersion": "fixture-1",
+        "quality": "SYNTHETIC: not for field use",
+        "schema": 1,
+        "sourceURL": "synthetic:test",
+        "south": -80.5,
+        "spacing": 1.0,
+        "surfaceSHA256": "dfa8c04c937d5227d63b9180adfef7532f7d77b4bd55e71be24a507d12563fe5",
+        "surveyDate": "2020-01-01",
+        "units": "metres",
+        "version": "1",
+        "verticalReference": "NAVD88 / GEOID12B / metres",
+        "west": -80.5,
+        "width": 161,
+        "referenceGroup": "fixture-survey",
+        "coreWest": -80.5,
+        "coreSouth": -80.5,
+        "coreWidth": 161,
+        "coreHeight": 161
+      }
+    }
+  ]
+}

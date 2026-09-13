@@ -28,3 +28,28 @@ final class FlightConfirmationRegressionTests: XCTestCase {
         XCTAssertEqual(guessed.preservingBlankPublishedOwnerFields(["mappedId": "1sar62Mn4Pr", "owner": ""]).pilotCallsign, "")
     }
 }
+
+extension FlightConfirmationRegressionTests {
+    func testIgnorePersistsAcrossFlightsForAppSession() {
+        var lifecycle = CurrentFlightConfirmationLifecycle()
+        var ignored: Set<String> = []
+        XCTAssertEqual(lifecycle.reconcile(orderedRemoteIDs: ["MINI"], confirmedRemoteIDs: [], ignoredRemoteIDs: ignored).candidateRemoteID, "MINI")
+        ignored.insert("MINI")
+        // A continuing video stream keeps the aircraft active despite a RID gap.
+        XCTAssertNil(lifecycle.reconcile(orderedRemoteIDs: ["MINI"], confirmedRemoteIDs: [], ignoredRemoteIDs: ignored).candidateRemoteID)
+        let ended = lifecycle.reconcile(orderedRemoteIDs: [], confirmedRemoteIDs: [], ignoredRemoteIDs: ignored)
+        XCTAssertEqual(ended.endedRemoteIDs, ["MINI"])
+        XCTAssertNil(lifecycle.reconcile(orderedRemoteIDs: ["MINI"], confirmedRemoteIDs: [], ignoredRemoteIDs: ignored).candidateRemoteID)
+    }
+
+    func testStandalonePeerConfirmationCannotSuppressLocalFlightPrompt() {
+        var lifecycle = CurrentFlightConfirmationLifecycle()
+        for mapID in ["", "  "] {
+            XCTAssertFalse(CurrentFlightConfirmationLifecycle.acceptsPeerConfirmation(mapID: mapID))
+            lifecycle.reset()
+            let peerIDs: Set<String> = CurrentFlightConfirmationLifecycle.acceptsPeerConfirmation(mapID: mapID) ? ["MATRICE"] : []
+            XCTAssertEqual(lifecycle.reconcile(orderedRemoteIDs: ["MATRICE"], confirmedRemoteIDs: peerIDs, ignoredRemoteIDs: []).candidateRemoteID, "MATRICE")
+        }
+        XCTAssertTrue(CurrentFlightConfirmationLifecycle.acceptsPeerConfirmation(mapID: "MAP1"))
+    }
+}

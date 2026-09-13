@@ -1,0 +1,9 @@
+# Standalone Apple track titles
+
+The attached iPad's flight archive starting 12 September 2026 at 16:15:22 PDT had title `1SAR7`, mapped designator `1sar7DjMtrc4td`, and an empty map ID. Evidence was copied to `outputs/standalone-track-label-20260912/flight.json`.
+
+Apple's GeoJSON writer used the pilot callsign alone. Its CalTopo publisher instead uses the aircraft display designator followed by `_HHmmssMMMdd`, based on the first published waypoint. The local archive now uses that same formatter with its first recorded waypoint. The example becomes `1sar7DjMtrc4td_161522Sep12`. This applies whether an incident map is selected or not. Pilot identity remains in the metadata. Clue KMZ report titles use the same helper. Existing saved files are not rewritten.
+
+Follow-up Android parity: Android already used its full `CtDroneSpec.trackLabel()` in local GeoJSON and CalTopo tracks, but preferred a supplied pilot callsign and otherwise transformed some designators. It now preserves the display designator exactly (Remote ID fallback), matching Apple. Timestamp formatting uses a fixed English month abbreviation on both platforms. A designator change renames the active Android track without discarding its points. Pilot callsign remains archive metadata. Android validation passed 1,060 unit tests, including standalone GeoJSON title/owner, rename continuity, and French-device-locale timestamp coverage. The connected A5 Pro update uses version 2.2.7 build 219.
+
+Regression coverage checks standalone and incident-map archive titles, first-waypoint time, aircraft-ID fallback, and preservation of pilot and map metadata. Apple package tests passed (338 Swift Testing tests plus 10 XCTest tests). Release metadata validation passed at 3994 characters. Device build/install verification is recorded in the accompanying output directory; field verification is separate.

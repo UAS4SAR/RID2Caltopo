@@ -2773,21 +2773,21 @@ private func proximityDrone(
         aglStale: false,
         rangeFeet: 420,
         headingDegrees: 273.2
-    ) == "ATO:125' AGL:90' RNG:420' HDG:273°")
+    ) == "ATO:125' AGL:90' AOL:Unk RNG:420' HDG:273°")
     #expect(OperationalAircraftDisplay.statusLabel(
         atoFeet: nil,
         aglFeet: 75,
         aglStale: true,
         rangeFeet: nil,
         headingDegrees: nil
-    ) == "ATO:--' AGL:75?' RNG:--' HDG:--°")
+    ) == "ATO:Unk AGL:Unk AOL:Unk RNG:Unk HDG:Unk")
     #expect(OperationalAircraftDisplay.statusLabel(
         atoFeet: 1_500,
         aglFeet: -1_500,
         aglStale: false,
         rangeFeet: 1_250,
         headingDegrees: 365
-    ) == "ATO:--' AGL:--' RNG:1250' HDG:5°")
+    ) == "ATO:Unk AGL:Unk AOL:Unk RNG:1250' HDG:5°")
 }
 
 @Test func operationalAircraftDisplayedPositionStalenessMatchesAndroid() {
@@ -2835,7 +2835,7 @@ private func proximityDrone(
         rangeFeet: 420,
         headingDegrees: 273.2,
         positionStale: true
-    ) == "ATO:125' AGL:90' RNG:420' HDG:273° POS?")
+    ) == "ATO:POS? AGL:POS? AOL:POS? RNG:POS? HDG:POS?")
 }
 
 @Test func operationalAircraftStreamHeaderMatchesMapEntriesAndOrder() {
@@ -2846,7 +2846,7 @@ private func proximityDrone(
         aglStale: false,
         rangeFeet: 420,
         headingDegrees: 273.2
-    ) == "1SAR7Mn4pr  ATO:125' AGL:90' RNG:420' TRK:273°")
+    ) == "1SAR7Mn4pr  ATO:125' AGL:90' AOL:Unk RNG:420' TRK:273°")
 }
 
 @Test func operationalAltitudeUsesAtoAndTerrainDeltaLikeAndroid() throws {
@@ -4412,7 +4412,9 @@ private func proximityDrone(
     #expect(coordinates[0][1] == "39.739200")
     #expect(coordinates[0][3] == "1700000000000")
     let properties = try #require(feature["properties"] as? [String: Any])
-    #expect(properties["title"] as? String == "PILOT7")
+    #expect(properties["title"] as? String == CaltopoTrackLabel.androidCompatible(
+        baseLabel: "ALPHA1", firstWaypointAt: start
+    ))
     let r2c = try #require(properties["r2c_prop"] as? [String: Any])
     #expect(r2c["rid"] as? String == "ARCHIVE01")
     #expect(r2c["mid"] as? String == "ALPHA1")
@@ -6210,4 +6212,50 @@ private func writeInt32(_ value: Int32, into bytes: inout [UInt8], at offset: In
         freshRawSEIPositionAvailable: true,
         validatedSEIPositionAvailable: true
     ))
+}
+
+@Test
+func completedOfflinePreparationRestartsIncidentMapQuietPeriod() {
+    let connectedAt = Date(timeIntervalSince1970: 1_700_000_000)
+    let endedAt = connectedAt.addingTimeInterval(900)
+    let state = IncidentMapOperationalState(
+        connectedToIncidentMap: true, activeFlightCount: 0, lastRIDMessageAt: nil,
+        mapConnectedAt: connectedAt, hasManagedVideoOrTransfer: false,
+        offlineMapPreparationActive: false, offlineMapPreparationEndedAt: endedAt
+    )
+    #expect(!IncidentMapAutoDisconnectPolicy.isOperationallyIdle(state, now: endedAt.addingTimeInterval(9)))
+    #expect(!IncidentMapAutoDisconnectPolicy.isOperationallyIdle(state, now: endedAt.addingTimeInterval(299)))
+    #expect(IncidentMapAutoDisconnectPolicy.isOperationallyIdle(state, now: endedAt.addingTimeInterval(300)))
+}
+
+@Test
+func aolHighlightRequiresNegativeNumberAndExcludesAdjacentFields() {
+    for value in ["--", "Unk", "POS?", "0'", "-0'", "25'"] {
+        #expect(OperationalAircraftDisplay.negativeAOLRange(in: "ATO:50' AOL:\(value) RNG:100'") == nil)
+    }
+    let line = "ATO:50' AOL:-25' RNG:100'"
+    let range = OperationalAircraftDisplay.negativeAOLRange(in: line)
+    #expect(range.map { String(line[$0]) } == "AOL:-25'")
+}
+
+@Test func standaloneArchiveUsesIncidentTrackNaming() async throws {
+    let start = try #require(ISO8601DateFormatter().date(from: "2026-09-12T23:15:22Z"))
+    let zone = try #require(TimeZone(identifier: "America/Los_Angeles"))
+    let store = RidTrackStore()
+    _ = await store.ingest(trackObservation(id: "RID01", at: start, latitude: 39, longitude: -121))
+    _ = await store.ingest(trackObservation(id: "RID01", at: start.addingTimeInterval(90), latitude: 39.001, longitude: -121))
+    let track = try #require(await store.snapshot().first)
+    for mapID in ["", "incident-map"] {
+        let metadata = RidTrackArchiveMetadata(mappedID: "1sar7DjMtrc4td", owner: "1SAR7", mapID: mapID)
+        #expect(RidTrackGeoJSON.archiveTitle(for: track, metadata: metadata, timeZone: zone)
+            == "1sar7DjMtrc4td_161522Sep12")
+        let root = try #require(JSONSerialization.jsonObject(with: RidTrackGeoJSON.encode(track: track, metadata: metadata)) as? [String: Any])
+        let features = try #require(root["features"] as? [[String: Any]])
+        let properties = try #require(features.first?["properties"] as? [String: Any])
+        #expect(properties["title"] as? String == CaltopoTrackLabel.androidCompatible(baseLabel: metadata.mappedID, firstWaypointAt: start))
+        let details = try #require(properties["r2c_prop"] as? [String: Any])
+        #expect(details["owner"] as? String == "1SAR7")
+        #expect(details["map_id"] as? String == mapID)
+    }
+    #expect(RidTrackGeoJSON.archiveTitle(for: track, metadata: .init(), timeZone: zone) == "RID01_161522Sep12")
 }

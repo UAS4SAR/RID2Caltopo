@@ -1,0 +1,1 @@
+The regression trace preserves relative motion and timing from a test flight. Coordinates are translated to an arbitrary origin and timestamps are relative to the first point; original location and flight time are not included. This fixture tests duplicate timeline merging, not aircraft performance.

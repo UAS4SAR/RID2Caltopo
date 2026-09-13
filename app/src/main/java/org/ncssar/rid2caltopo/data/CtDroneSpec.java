@@ -50,7 +50,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         }
     }
 
-    public enum AltSourceEnum { BARO, GEODETIC, NONE }
+    public enum AltSourceEnum { BARO, GEODETIC, NONE, DJI_STREAM }
 
     // Minimum ridHeight (metres) required before follow-up samples continue converging
     // impliedTakeoffAltM. The first ATO sample is accepted even below this gate because
@@ -68,7 +68,8 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         WIFI,
         WNAN,
         @Deprecated R2C,
-        UNKNOWN
+        UNKNOWN,
+        DJI_STREAM
     }
 
     public interface CtDroneSpecListener {
@@ -147,6 +148,13 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
     @Nullable private volatile transient Double impliedTakeoffAltM = null;
     private transient int     impliedTakeoffSampleCount = 0;
     private transient boolean impliedTakeoffSealed      = false;
+    @Nullable private transient Boolean aolReportedAirborne = null;
+    private transient long aolGroundStatusAtMsec = 0L;
+    public boolean hasFreshAolGroundStatus(long now) {
+        return Boolean.FALSE.equals(aolReportedAirborne) && now >= aolGroundStatusAtMsec && now - aolGroundStatusAtMsec < 5000L;
+    }
+    private transient long lastRidHeightReceivedAtMsec = 0L;
+    public long getLastRidHeightReceivedAtMsec() { return lastRidHeightReceivedAtMsec; }
     private transient double lastRidHeightM = -1000.0;   // drone-reported ATO or AGL, -1000 if not valid
     private transient boolean lastRidHeightIsAto = false; // true=ATO, false=AGL
     @Nullable private transient AltSourceEnum lastAltSource = null; // detect mid-flight source switch
@@ -166,6 +174,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
     private transient int stationaryRepeatCount;
     private boolean okToLog;
     private transient boolean localArchiveOnly;
+    private transient boolean currentFlightConfirmed;
     private volatile transient boolean outOfRange;
     @Nullable private transient Boolean airborne = Boolean.FALSE;
 
@@ -191,6 +200,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         retval.put(TransportTypeEnum.WIFI.name(), transportCount[TransportTypeEnum.WIFI.ordinal()]);
         retval.put(TransportTypeEnum.WNAN.name(), transportCount[TransportTypeEnum.WNAN.ordinal()]);
         retval.put(TransportTypeEnum.R2C.name(), transportCount[TransportTypeEnum.R2C.ordinal()]);
+        retval.put(TransportTypeEnum.DJI_STREAM.name(), transportCount[TransportTypeEnum.DJI_STREAM.ordinal()]);
         return retval;
     }
 
@@ -240,6 +250,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
 
 
     public void reset() {
+        currentFlightConfirmed = false;
         flightReadinessJson = null;
         outOfRange = false;
         if (trackLabel.isEmpty()) return;
@@ -286,34 +297,10 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
     //  If 1 is present, but 2 is absent, but model is present, then try to extract abbreviated info from the Model field..
     //  If 1 is present, but 2 is absent and model is absent, tack on the remoteID.
     private void updateTrackLabel() {
-        String oldTrackLabel = trackLabel;
-        String lModel, lMappedId, lCallsign;
-        String pilotCallsign = owner == null ? "" : owner.trim();
-        if (!pilotCallsign.isEmpty()) {
-            lMappedId = pilotCallsign;
-            trackLabel = String.format(Locale.US, "%s_%s", lMappedId,
-                    TimeDatestampString(startMsecTimestamp));
-            return;
-        }
-        Matcher rexMatch = CallsignOptModelPattern.matcher(mappedId);
-        if (!rexMatch.matches()) {
-            lMappedId = mappedId; // assume we're adults and there is a reason to not follow protocol.
-        } else {
-            lCallsign = rexMatch.group(1); // this part required by pattern.
-            if (null != lCallsign && !lCallsign.isEmpty()) lCallsign = lCallsign.toUpperCase(Locale.US);
-            lModel = rexMatch.group(2);  // this part is optional.
-            if (null == lModel || lModel.isEmpty()) lModel = ModelAbbreviator(model);
-            lMappedId = lCallsign + lModel;
-        }
-        trackLabel = String.format(Locale.US, "%s_%s", lMappedId,
+        // Match Apple: preserve the aircraft designator and first accepted waypoint.
+        // Pilot identity belongs in metadata, not in place of the aircraft designator.
+        trackLabel = String.format(Locale.US, "%s_%s", getDisplayLabel(),
                 TimeDatestampString(startMsecTimestamp));
-        if ((oldTrackLabel != null && oldTrackLabel.isEmpty() != trackLabel.isEmpty())
-                || mappedId.isEmpty()
-                || lMappedId.isEmpty()) {
-            CTWarn(TAG, String.format(Locale.US,
-                    "updateTrackLabel(): remoteId=%s mappedId='%s' derivedMappedId='%s' oldTrackLabel='%s' newTrackLabel='%s' startTs=%d",
-                    remoteId, mappedId, lMappedId, oldTrackLabel, trackLabel, startMsecTimestamp));
-        }
     }
 
     public void setMyLiveTrack(@Nullable CaltopoLiveTrack newTrack) {
@@ -324,6 +311,8 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
     public boolean publishingLocally() {return (null != myLiveTrack && myLiveTrack.publishingLocally());}
 
     public boolean okToLog() {return okToLog;}
+    public boolean isCurrentFlightConfirmed() { return currentFlightConfirmed; }
+    public void setCurrentFlightConfirmed(boolean confirmed) { currentFlightConfirmed = confirmed; }
     public boolean isLocalArchiveOnly() { return localArchiveOnly; }
     public void setLocalArchiveOnly(boolean localArchiveOnly) { this.localArchiveOnly = localArchiveOnly; }
 
@@ -357,6 +346,11 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
      */
     public void updateAltitudeContext(double absAltM, @NonNull AltSourceEnum source,
                                       double ridHeightM, boolean isAtoType) {
+        updateAltitudeContext(absAltM, source, ridHeightM, isAtoType, System.currentTimeMillis());
+    }
+
+    public void updateAltitudeContext(double absAltM, @NonNull AltSourceEnum source,
+                                      double ridHeightM, boolean isAtoType, long receivedAtMsec) {
         // Log source switches (baro→geodetic or vice-versa) mid-flight.
         if (lastAltSource != null
                 && lastAltSource != AltSourceEnum.NONE
@@ -370,6 +364,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
 
         // Track the drone's own reported relative height.
         if (ridHeightM != -1000.0) {
+            lastRidHeightReceivedAtMsec = receivedAtMsec;
             lastRidHeightM  = ridHeightM;
             lastRidHeightIsAto = isAtoType;
         }
@@ -714,6 +709,10 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
      *         to be recorded.
      */
     public boolean checkNewWaypoint(double lat, double lng, double altitudeInMeters, long timestampInMilliseconds, long nowWallMsec, @Nullable Boolean airborne, TransportTypeEnum transportType) {
+        if (transportType != TransportTypeEnum.DJI_STREAM) {
+            aolReportedAirborne = airborne;
+            aolGroundStatusAtMsec = nowWallMsec;
+        }
         if (null == trackLabel) trackLabel = EMPTY_STRING;
         // NOTE: do NOT set trackLabel = mappedId here — that must wait until the waypoint passes
         // all validity checks below.  Setting it early causes a "ghost active" state: even a
@@ -747,7 +746,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
             return false;
         }
 
-        if (Double.compare(lastLat, lat) == 0 && Double.compare(lastLng, lng) == 0) {
+        if (transportType != TransportTypeEnum.DJI_STREAM && Double.compare(lastLat, lat) == 0 && Double.compare(lastLng, lng) == 0) {
             if ((goodCount == 0) || (System.currentTimeMillis() - mostRecentMsecTimestamp < 3000)) {
                 updateStationaryRepeatState(lat, lng, timestampInMilliseconds);
                 mostRecentSignalMsecTimestamp = nowWallMsec;

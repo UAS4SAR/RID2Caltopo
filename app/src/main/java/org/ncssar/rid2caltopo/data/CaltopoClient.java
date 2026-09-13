@@ -1889,20 +1889,18 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     }
 
     public static void SetStandaloneR2cCoordinationEnabled(boolean flag) {
+        // Retain the legacy API for imports, but standalone flights are always local.
         ClientClassState ccs = GetState();
-        if (ccs.standaloneR2cCoordinationEnabled != flag) {
-            ccs.standaloneR2cCoordinationEnabled = flag;
-            if (!flag) {
-                CaltopoMap.StopStandaloneTrackerCoordinationIfActive();
-            }
+        if (ccs.standaloneR2cCoordinationEnabled) {
+            ccs.standaloneR2cCoordinationEnabled = false;
+            CaltopoMap.StopStandaloneTrackerCoordinationIfActive();
             NotifySettingsChanged();
-            ArchiveState("standalone r2c coordination changed to " + flag);
+            ArchiveState("standalone flights isolated");
         }
     }
 
     public static boolean GetStandaloneR2cCoordinationEnabled() {
-        ClientClassState ccs = GetState();
-        return ccs.standaloneR2cCoordinationEnabled;
+        return false;
     }
 
     public static void SetCaptureVideoStreamsFlag(boolean flag) {
@@ -2868,6 +2866,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             activeDs.setOwner(trimmedOwner);
             activeDs.setMappedId(trimmedMappedId);
         }
+        activeDs.setCurrentFlightConfirmed(true);
         boolean mappedIdChanged = !previousMappedId.equals(activeDs.getMappedId().trim());
         if (activeDs.isLocalArchiveOnly() && isTeamDroneOrg(trimmedOrg)) {
             PromoteLocalArchiveOnlyDrone(remoteId);
@@ -2913,6 +2912,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             if (!trimmedOwner.isEmpty()) activeDs.setOwner(trimmedOwner);
             if (!trimmedMappedId.isEmpty()) activeDs.setMappedId(trimmedMappedId);
         }
+        activeDs.setCurrentFlightConfirmed(true);
         activeDs.setLocalArchiveOnly(false);
 
         UpdateDroneSpecs();
@@ -2927,6 +2927,8 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             activeDs = new CtDroneSpec(remoteId);
             ccs.droneSpecTable.put(remoteId, activeDs);
         }
+        activeDs.setCurrentFlightConfirmed(false);
+        CurrentPeerConfirmedDroneRemoteIds.remove(remoteId);
         activeDs.setLocalArchiveOnly(true);
 
         UpdateDroneSpecs();
@@ -2935,7 +2937,8 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     private static boolean shouldSuppressMapTracking(@NonNull CtDroneSpec droneSpec) {
         String remoteId = droneSpec.getRemoteId().trim();
         String mappedId = droneSpec.getMappedId().trim();
-        return droneSpec.isLocalArchiveOnly()
+        return !(droneSpec.isCurrentFlightConfirmed() || IsCurrentPeerDroneConfirmed(remoteId))
+                || droneSpec.isLocalArchiveOnly()
                 || SessionUnknownDroneRemoteIds.contains(remoteId)
                 || mappedId.isEmpty()
                 || mappedId.equals(remoteId);
@@ -4373,7 +4376,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     public static String TimeDatestampString(long epochMsec) {
         // Yes, we really want the timestamp first to make it easier to spot
         // the latest track in caltopo's tiny feature window.
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("HHmmssLLLdd");
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("HHmmssMMMdd", Locale.US);
         Instant instant = Instant.ofEpochMilli(epochMsec);
         LocalDateTime localDateTime = instant.atZone(ZoneId.systemDefault()).toLocalDateTime();
         return localDateTime.format(formatter);

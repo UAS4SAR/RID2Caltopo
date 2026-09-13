@@ -680,6 +680,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         val activeRemoteIds = droneSpecs.mapNotNullTo(linkedSetOf()) { drone ->
             currentFlightRemoteId(drone)
         }
+        activeRemoteIds.addAll(liveStreamConfirmationSpecs.keys)
         promptedCurrentFlightRemoteIds.retainAll(activeRemoteIds)
         activeRemoteIds
             .filter { CaltopoClient.IsCurrentPeerDroneConfirmed(it) }
@@ -696,7 +697,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             restoreScreenAfterConfirmation()
             pendingRemoteId = null
         }
-        val pendingStillActive = droneSpecs.any { drone ->
+        val pendingStillActive = pendingRemoteId in liveStreamConfirmationSpecs || droneSpecs.any { drone ->
             pendingRemoteId == drone.remoteId && currentFlightRemoteId(drone) != null
         }
         if (!pendingStillActive) {
@@ -707,8 +708,8 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             pendingDroneConfirmationRequestedByOperator = false
         }
         if (_pendingDroneConfirmation.value == null) {
-            for (drone in droneSpecs) {
-                if (currentFlightRemoteId(drone) != null &&
+            for (drone in droneSpecs + liveStreamConfirmationSpecs.values) {
+                if ((currentFlightRemoteId(drone) != null || drone.remoteId in liveStreamConfirmationSpecs) &&
                     queueConfirmationIfNeeded(drone, "active flight")
                 ) {
                     break
@@ -722,6 +723,19 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         } else if (delayedUptimePoll.isRunning) {
             delayedUptimePoll.stop()
         }
+    }
+
+    private var liveStreamConfirmationSpecs: Map<String,CtDroneSpec> = emptyMap()
+
+    @Synchronized fun onLiveStreamDesignatorsChanged(designators: Set<String>, configured: List<CtDroneSpec> = CaltopoClient.GetPersistedDroneSpecs()) {
+        val mappings=configured.map { it.remoteId to it.mappedId }
+        val matched=designators.mapNotNull { uniqueStreamConfirmationRemoteId(it,mappings) }.toSet()
+        val previous=liveStreamConfirmationSpecs.keys
+        liveStreamConfirmationSpecs=configured.filter { it.remoteId in matched }.associateBy { it.remoteId }
+        for(id in previous-matched) {
+            if(_drones.value.none { it.remoteId==id && it.isActive }) clearFinishedFlightConfirmationState(id,"video session ended before RID")
+        }
+        for(spec in liveStreamConfirmationSpecs.values) if(queueConfirmationIfNeeded(spec,"unique configured live stream")) break
     }
 
     fun uptimePoll() {
@@ -774,7 +788,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
 
     private fun clearInactivePromptOnly(remoteId: String, reason: String) {
         val trimmedRemoteId = remoteId.trim()
-        if (trimmedRemoteId.isEmpty()) return
+        if (trimmedRemoteId.isEmpty() || trimmedRemoteId in liveStreamConfirmationSpecs) return
         val removedPrompt = promptedCurrentFlightRemoteIds.remove(trimmedRemoteId)
         if (_pendingDroneConfirmation.value?.remoteId == trimmedRemoteId) {
             CTDebug(tag, "Clearing pending confirmation for $trimmedRemoteId: $reason")
@@ -788,7 +802,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
 
     private fun clearFinishedFlightConfirmationState(remoteId: String, reason: String) {
         val trimmedRemoteId = remoteId.trim()
-        if (trimmedRemoteId.isEmpty()) return
+        if (trimmedRemoteId.isEmpty() || trimmedRemoteId in liveStreamConfirmationSpecs) return
         confirmedCurrentFlightRemoteIds.remove(trimmedRemoteId)
         CaltopoClient.ClearCurrentPeerDroneConfirmation(trimmedRemoteId)
         clearInactivePromptOnly(trimmedRemoteId, reason)

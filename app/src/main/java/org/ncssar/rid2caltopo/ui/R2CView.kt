@@ -428,7 +428,7 @@ fun DroneSpecConfirmationDialog(
 ) {
     var readiness by remember(state.remoteId) { mutableStateOf(org.ncssar.rid2caltopo.data.FlightReadiness(
         aircraft = CaltopoClient.GetPersistedDroneSpecs().firstOrNull { it.remoteId == state.remoteId }?.readiness ?: org.ncssar.rid2caltopo.data.AircraftReadiness(),
-        selectedAccessories = emptySet())) }
+        selectedAccessories = emptySet()).restoringEquipment(org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.rememberedEquipment(state.remoteId))) }
     val managedAircraft = org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.belongsToOrganization()
     val pilotCallsign = state.pilotCallsign.trim()
     val pilotMatched = org.json.JSONObject(readiness.pilotJson).optString("memberId").isNotBlank() &&
@@ -480,7 +480,8 @@ fun DroneSpecConfirmationDialog(
                         val selected = org.json.JSONObject(raw)
                         org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.rememberProfile(selected.getJSONObject("profile"))
                         if (selected.optBoolean("useForAssignment")) {
-                            org.ncssar.rid2caltopo.data.OperatingProfiles.remember(selected.getJSONObject("profile"))
+                            org.ncssar.rid2caltopo.data.OperatingProfiles.remember(selected.getJSONObject("profile"),
+                                org.ncssar.rid2caltopo.data.IncidentBriefing.fromJSON(selected.optJSONObject("incidentBriefing")))
                             selected.put("assignmentId", org.ncssar.rid2caltopo.data.OperatingProfiles.assignmentId)
                             readiness = readiness.copy(operatingProfileJson = selected.toString())
                         } else {
@@ -491,7 +492,7 @@ fun DroneSpecConfirmationDialog(
                     }
                     val recorded = readiness.resolvingPilot(pilotCallsign, org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.cachedState().optJSONArray("pilots")).confirmed()
                     CaltopoClient.GetDroneSpec(state.remoteId)?.setFlightReadinessJson(recorded.toJSON().toString())
-                    org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.rememberAccessories(state.remoteId, readiness.selectedAccessories)
+                    org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.rememberEquipment(state.remoteId, readiness)
                     onSave()
                 }
             ) {

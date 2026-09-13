@@ -154,28 +154,19 @@ struct ContentView: View {
                             ? "Double tap to enable bridge warnings"
                             : "Double tap to mute bridge warnings"
                     )
-                    Menu {
-                        Button("Live View", systemImage: "video") { showTrackMap = true }
-                        Button("Send diagnostics to developer…", systemImage: "square.and.arrow.up") {
-                            showDiagnosticLogs = true
-                        }
-                        Button("Status", systemImage: "info.circle") { showStatus = true }
-                        Button("Release Notes", systemImage: "doc.text") { showReleaseNotes = true }
-                        Divider()
-                        Button("Import Config", systemImage: "qrcode.viewfinder") { showImportConfig = true }
-                        Button("Backup & Transfer", systemImage: "shippingbox") { showConfigurationTransfer = true }
-                        Button("Settings", systemImage: "gearshape") { showCaltopoSettings = true }
-                        Button("About & Privacy", systemImage: "hand.raised") {
-                            showAboutPrivacy = true
-                        }
-                        Divider()
-                        Button("Quit", systemImage: "xmark.circle", role: .destructive) {
-                            AppleLog.info("Lifecycle", "Quit menu selected")
-                            showConfirmExit = true
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    MainScreenMenu(
+                        showTrackMap: $showTrackMap,
+                        showDiagnosticLogs: $showDiagnosticLogs,
+                        showStatus: $showStatus,
+                        showReleaseNotes: $showReleaseNotes,
+                        showImportConfig: $showImportConfig,
+                        showConfigurationTransfer: $showConfigurationTransfer,
+                        showCaltopoSettings: $showCaltopoSettings,
+                        showAboutPrivacy: $showAboutPrivacy,
+                        showConfirmExit: $showConfirmExit
+                    ).equatable()
                 }
             }
             .navigationDestination(isPresented: $showTrackMap) {
@@ -495,6 +486,7 @@ struct ContentView: View {
                         ridTracks.suppressCaltopoPublication(remoteID: request.id)
                     }
                 )
+                .onAppear { AppleLog.info("DroneConfirmation", "Confirmation panel presented remoteId=\(request.id)") }
                 .interactiveDismissDisabled()
             }
             .task {
@@ -525,11 +517,14 @@ struct ContentView: View {
                 if !ProcessInfo.processInfo.arguments.contains("--manual-radios") {
                     try? await bluetoothScanner.start()
                 }
-                ridTracks.configurePublicationSuppression(droneConfirmations.isIgnored)
+                ridTracks.configureFlightRecording(droneConfirmations.isCurrentFlightConfirmed)
+                ridTracks.configurePublicationSuppression { remoteID in
+                    !droneConfirmations.isCurrentFlightConfirmed(remoteID) || droneConfirmations.isIgnored(remoteID)
+                }
                 ridTracks.configurePairedVideoActivity(
                     { streamRegistry.flightActivityByAircraftID() },
                     validatedSEIPositionProvider: { tracks, date in
-                        streamRegistry.freshValidatedDJIPositionByAircraftID(
+                        streamRegistry.freshOperationalDJIPositionByAircraftID(
                             tracks: tracks,
                             at: date
                         )
@@ -1026,7 +1021,11 @@ struct ContentView: View {
             .onReceive(ridTracks.$tracks) { tracks in
                 updateProximityAlerts()
                 reconcileStreamFlightPairings()
-                let remoteID = droneConfirmations.reconcileActiveFlights(tracks.map(\.aircraftID))
+                // @Published emits before ridTracks.tracks is assigned. Use this snapshot,
+                // especially the empty list that ends a video-only flight.
+                let remoteID = droneConfirmations.reconcileActiveFlights(
+                    confirmationActiveRemoteIDs(tracks: tracks)
+                )
                 if !ProcessInfo.processInfo.arguments.contains("--suppress-auto-confirmation"),
                    pendingDroneConfirmation == nil,
                    let remoteID {
@@ -1404,6 +1403,7 @@ struct ContentView: View {
             if !peerCoordinator.peers.isEmpty { LabeledContent("Peer zones", value: String(peerCoordinator.peers.count)) }
             LabeledContent("Team drones", value: String(droneConfirmations.importedMappingCount))
             Button("Import Config", systemImage: "qrcode.viewfinder") { showImportConfig = true }
+                        Button("Import Surface Package (.aol)", systemImage: "mountain.2") { showImportConfig = true }
             NavigationLink {
                 AppleConfigurationTransferView(caltopo: caltopoSettings, organization: orgConfigSettings, identities: droneConfirmations)
             } label: { Label("Backup & Transfer", systemImage: "shippingbox") }
@@ -2191,7 +2191,8 @@ struct ContentView: View {
             hasManagedVideoOrTransfer:
                 peerCoordinator.hasOperationalActivityPreventingIncidentDisconnect
                 || !streamRegistry.activePublisherStreamIDs.isEmpty,
-            offlineMapPreparationActive: AppleMapOfflineManager.shared.isRunning
+            offlineMapPreparationActive: AppleMapOfflineManager.shared.isRunning,
+            offlineMapPreparationEndedAt: AppleMapOfflineManager.shared.lastPreparationEndedAt
         )
     }
 
@@ -2418,6 +2419,7 @@ struct ContentView: View {
     }
 
     private func configureTrackArchive() {
+        droneConfirmations.setPeerConfirmationMapID(caltopoSettings.mapID)
         ridTracks.configureTrackArchive(
             trackerURLPrefix: argumentValue("--tracker-url") ?? orgConfigSettings.trackerURLPrefix,
             trackerAPIKey: argumentValue("--tracker-token") ?? orgConfigSettings.trackerAPIKey,
@@ -2429,9 +2431,21 @@ struct ContentView: View {
         )
     }
 
+    private var confirmationActiveRemoteIDs: [String] {
+        confirmationActiveRemoteIDs(tracks: ridTracks.tracks)
+    }
+
+    private func confirmationActiveRemoteIDs(tracks: [RidAircraftTrack]) -> [String] {
+        let mappings=droneConfirmations.importedMappings.map { (remoteID:$0.remoteID,designator:$0.mappedID) }
+        let videoIDs=streamRegistry.activePublisherStreamIDs.compactMap {
+            OperationalStreamConfirmationMatch.remoteID(designator:$0,mappings:mappings)
+        }
+        return Array(Set(tracks.map(\.aircraftID)+videoIDs)).sorted()
+    }
+
     private func queueNextDroneConfirmation() {
         guard pendingDroneConfirmation == nil,
-              let remoteID = droneConfirmations.reconcileActiveFlights(ridTracks.tracks.map(\.aircraftID))
+              let remoteID = droneConfirmations.reconcileActiveFlights(confirmationActiveRemoteIDs)
         else { return }
         pendingDroneConfirmation = DroneConfirmationRequest(id: remoteID)
     }
@@ -2472,6 +2486,10 @@ struct ContentView: View {
     }
 
     private func reconcileStreamFlightPairings() {
+        streamRegistry.pairConfiguredPublishers(mappings: droneConfirmations.importedMappings.map {
+            (remoteID: $0.remoteID, designator: $0.mappedID)
+        })
+        if !ProcessInfo.processInfo.arguments.contains("--suppress-auto-confirmation") { queueNextDroneConfirmation() }
         let activeStreamIDs = streamRegistry.activePublisherStreamIDs
         automaticPairingOfferedStreamIDs.formIntersection(activeStreamIDs)
         for streamID in activeStreamIDs {
@@ -2693,5 +2711,47 @@ private struct ShortFlightRecordingPanel: View {
         .onAppear { gate.setActive(phase == .active) }
         .onChange(of: phase) { _, next in gate.setActive(next == .active) }
         .onDisappear { gate.setActive(false) }
+    }
+}
+
+// The menu has static contents and stable presentation bindings. Telemetry and
+// one-second status updates must not rebuild an already presented native menu.
+private struct MainScreenMenu: View, Equatable {
+    @Binding var showTrackMap: Bool
+    @Binding var showDiagnosticLogs: Bool
+    @Binding var showStatus: Bool
+    @Binding var showReleaseNotes: Bool
+    @Binding var showImportConfig: Bool
+    @Binding var showConfigurationTransfer: Bool
+    @Binding var showCaltopoSettings: Bool
+    @Binding var showAboutPrivacy: Bool
+    @Binding var showConfirmExit: Bool
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { true }
+
+    var body: some View {
+        Menu {
+            Button("Live View", systemImage: "video") { showTrackMap = true }
+            Button("Send diagnostics to developer…", systemImage: "square.and.arrow.up") {
+                showDiagnosticLogs = true
+            }
+            Button("Status", systemImage: "info.circle") { showStatus = true }
+            Button("Release Notes", systemImage: "doc.text") { showReleaseNotes = true }
+            Divider()
+            Button("Import Config", systemImage: "qrcode.viewfinder") { showImportConfig = true }
+            Button("Import Surface Package (.aol)", systemImage: "mountain.2") { showImportConfig = true }
+            Button("Backup & Transfer", systemImage: "shippingbox") { showConfigurationTransfer = true }
+            Button("Settings", systemImage: "gearshape") { showCaltopoSettings = true }
+            Button("About & Privacy", systemImage: "hand.raised") {
+                showAboutPrivacy = true
+            }
+            Divider()
+            Button("Quit", systemImage: "xmark.circle", role: .destructive) {
+                AppleLog.info("Lifecycle", "Quit menu selected")
+                showConfirmExit = true
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
     }
 }

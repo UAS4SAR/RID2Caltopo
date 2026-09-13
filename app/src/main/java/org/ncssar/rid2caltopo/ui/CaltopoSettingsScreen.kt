@@ -61,7 +61,6 @@ fun CaltopoSettingsScreen(
     val wifiRidScanningEnabled by settingsViewModel.wifiRidScanningEnabled.collectAsState()
     val remoteVideoControlEnabled by settingsViewModel.remoteVideoControlEnabled.collectAsState()
     val thumbnailRefreshSeconds by settingsViewModel.thumbnailRefreshSeconds.collectAsState()
-    val standaloneR2cCoordinationEnabled by settingsViewModel.standaloneR2cCoordinationEnabled.collectAsState()
     val predictiveHeadEnabled by settingsViewModel.predictiveHeadEnabled.collectAsState()
     val proximityAlertSpacingFeet by settingsViewModel.proximityAlertSpacingFeet.collectAsState()
     val caltopoUrl by settingsViewModel.caltopoUrl.collectAsState()
@@ -377,11 +376,7 @@ fun CaltopoSettingsScreen(
                     label = { Text("Max RID Idle Time (minutes)") },
                     modifier = Modifier.fillMaxWidth()
                 )
-                LabeledSwitch(
-                    label = "Standalone R2C coordination",
-                    checked = standaloneR2cCoordinationEnabled,
-                    onCheckedChange = settingsViewModel::onStandaloneR2cCoordinationEnabledChanged
-                )
+                Text("Standalone flights stay independent. Live aircraft coordination requires an incident map. Organization access and archive uploads remain available.")
                 Spacer(modifier = Modifier.height(8.dp))
 
                 LabeledSwitch(

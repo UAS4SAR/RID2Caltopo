@@ -618,7 +618,7 @@ internal fun buildOfflineBoundaryOptions(state: ArtifactOverlayState): List<Offl
         )
     }
     state.lines.forEachIndexed { index, line ->
-        val boundary = geoBoundaryFromPoints(line.points) ?: return@forEachIndexed
+        val boundary = geoBoundaryFromPoints(line.points,minimumPoints=2) ?: return@forEachIndexed
         options += OfflineBoundaryOption(
             id = "line:${line.id}:$index",
             label = "[Line] ${line.title}",
@@ -628,8 +628,8 @@ internal fun buildOfflineBoundaryOptions(state: ArtifactOverlayState): List<Offl
     return options
 }
 
-private fun geoBoundaryFromPoints(points: List<GeoPoint>): GeoBoundary? {
-    if (points.size < 3) return null
+private fun geoBoundaryFromPoints(points: List<GeoPoint>, minimumPoints: Int = 3): GeoBoundary? {
+    if (points.size < minimumPoints) return null
     val ring = if (points.first().latitude == points.last().latitude && points.first().longitude == points.last().longitude) {
         points
     } else {

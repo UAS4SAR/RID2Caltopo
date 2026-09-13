@@ -90,3 +90,16 @@ licenses even when they are not included in the application package.
 Product, organization, and service names are the property of their respective
 owners. Use of a name or interoperability with a service does not imply
 affiliation or endorsement.
+
+## laz-perf and GeographicLib
+
+The shared Android/Apple AOL preparer includes laz-perf 3.4.0 for streaming LAZ
+decoding and selected GeographicLib 2.7 components for coordinate conversion.
+Upstream copyright notices are retained in the vendored source.
+
+- laz-perf: https://github.com/hobuinc/laz-perf, Apache License 2.0.
+  [License](apple/Sources/CAOL/LAZPERF-LICENSE).
+- GeographicLib: https://github.com/geographiclib/geographiclib, MIT License.
+  [License](apple/Sources/CAOL/GEOGRAPHICLIB-LICENSE).
+- Pinned source provenance and build configuration:
+  [CAOL README](apple/Sources/CAOL/README.md).

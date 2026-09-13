@@ -369,7 +369,7 @@ object AppConfigStore {
         state.coordinateDisplayFormat = config.coordinateDisplayFormat.ifBlank { "decimal" }
         state.captureVideoStreamsFlag = config.captureVideoStreams
         state.usePeersFlag = config.usePeers
-        state.standaloneR2cCoordinationEnabled = config.standaloneR2CCoordinationEnabled
+        state.standaloneR2cCoordinationEnabled = false // Legacy configs cannot enable standalone flight sharing.
         state.predictiveHeadEnabled = if (config.schemaVersion >= 3) config.predictiveHeadEnabled else true
         state.proximityAlertSpacingFeet = when {
             config.proximityAlertSpacingConfigured && config.proximityAlertSpacingFeet >= 0L ->
@@ -478,7 +478,7 @@ object AppConfigStore {
             .setCoordinateDisplayFormat(state.coordinateDisplayFormat ?: "decimal")
             .setCaptureVideoStreams(state.captureVideoStreamsFlag)
             .setUsePeers(state.usePeersFlag)
-            .setStandaloneR2CCoordinationEnabled(state.standaloneR2cCoordinationEnabled)
+            .setStandaloneR2CCoordinationEnabled(false)
             .setPredictiveHeadEnabled(state.predictiveHeadEnabled)
             .setProximityAlertSpacingFeet(state.proximityAlertSpacingFeet)
             .setProximityAlertSpacingConfigured(true)

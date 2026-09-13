@@ -1135,14 +1135,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         String mappedId = droneSpec.getMappedId().trim();
         return mappedId.isEmpty()
                 ? null
-                : StreamCameraTelemetryRegistry.freshPositionAfterRidValidation(
-                        mappedId,
-                        ridLatitude,
-                        ridLongitude,
-                        ridAltitudeMeters,
-                        droneSpec.getImpliedTakeoffAltM(),
-                        System.currentTimeMillis(),
-                        StreamCameraTelemetryRegistry.DEFAULT_MAX_AGE_MS);
+                : StreamCameraTelemetryRegistry.INSTANCE.freshOperationalPosition(mappedId, System.currentTimeMillis());
     }
 
     private synchronized void publishFreshSeiPositionIfAvailable() {

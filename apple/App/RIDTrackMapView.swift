@@ -180,10 +180,9 @@ private final class AppleMapArtifactModel: ObservableObject {
     private var lastFullReconciliationAt: Date?
     private var foregroundActive = false
 
-    private static let minimumPollInterval: TimeInterval = 5
-    private static let foregroundPollInterval: Duration = .seconds(15)
+    private static let minimumPollInterval: TimeInterval = 20
+    private static let foregroundPollInterval: Duration = .seconds(20)
     private static let backgroundPollInterval: Duration = .seconds(90)
-    private static let fullReconciliationInterval: TimeInterval = 15 * 60
 
     init() {
         Self.removeLegacyPersistedVisibility()
@@ -267,7 +266,9 @@ private final class AppleMapArtifactModel: ObservableObject {
         guard foregroundActive != active else { return }
         foregroundActive = active
         guard active, let configuredSource else { return }
-        refresh(configuredSource)
+        // Resume promptly while retaining the automatic polling rate limit.
+        configurationFingerprint = ""
+        configure(configuredSource)
     }
 
     func toggleFolder(_ folder: CaltopoArtifactFolder) {
@@ -297,6 +298,10 @@ private final class AppleMapArtifactModel: ObservableObject {
             }
         }
         else { hiddenItemIDs.formUnion(ids) }
+    }
+
+    func requestSurfacePeak(_ peak: OperationalSurfacePackage.Peak) {
+        zoomRequest = ArtifactZoomRequest(title:"Mapped surface high point",coordinates:[MapCoordinate(latitude:peak.latitude,longitude:peak.longitude)])
     }
 
     func requestZoom(to item: CaltopoArtifactItem) {
@@ -356,9 +361,8 @@ private final class AppleMapArtifactModel: ObservableObject {
         do {
             let fullReconciliation = featureStore.featuresByID.isEmpty ||
                 lastSuccessfulCursorMilliseconds == 0 ||
-                lastFullReconciliationAt.map {
-                    requestStartedAt.timeIntervalSince($0) >= Self.fullReconciliationInterval
-                } ?? true
+                CaltopoArtifactSyncPolicy.fullReconciliationDue(
+                    now: requestStartedAt, lastFullSync: lastFullReconciliationAt, foreground: foregroundActive)
             let changes = try await client.fetchMapArtifactChanges(
                 sinceMilliseconds: fullReconciliation ? 0 : lastSuccessfulCursorMilliseconds,
                 now: requestStartedAt
@@ -517,6 +521,7 @@ struct RIDTrackMapView: View {
     @State private var selectedPilotSettings: PilotDisplaySelection?
     @State private var focusedAircraftID: String?
     @State private var operatorAdjustedViewport = false
+    @State private var streamFocusArrival = OperationalStreamFocusArrival()
     @State private var pendingSnapshot: PendingClueSnapshot?
     @State private var selectedClueID: UUID?
     @State private var clueSelectionCandidates: ClueSelectionCandidates?
@@ -549,7 +554,7 @@ struct RIDTrackMapView: View {
         nonmutating set { storedLayout = newValue.rawValue }
     }
 
-    var body: some View {
+    private var mapContentWithSheets: some View {
         GeometryReader { geometry in
             ZStack(alignment: .top) {
                 layoutContent(
@@ -611,6 +616,7 @@ struct RIDTrackMapView: View {
                 baseLayer: baseLayer,
                 contoursInitiallyEnabled: showContours
             )
+            .onAppear { AppleLog.info("MapDownload", "Download Map presented") }
         }
         .sheet(isPresented: $showMapManagement) {
             AppleMapCacheManagementView(
@@ -759,6 +765,16 @@ struct RIDTrackMapView: View {
             get: { clueError != nil },
             set: { if !$0 { clueError = nil } }
         )) { Button("OK") { clueError = nil } } message: { Text(clueError ?? "") }
+    }
+
+    var body: some View {
+        mapContentWithSheets
+        .onChange(of: liveFocusStreamIDs, initial: true) { _, streams in
+            handleFocusStreamArrival(streams)
+        }
+        .onChange(of: initialStreamFocusState, initial: true) { _, state in
+            handleInitialStreamFocus(state)
+        }
         .task { artifacts.configure(caltopoConfiguration) }
         .task {
             while !Task.isCancelled {
@@ -1021,13 +1037,11 @@ struct RIDTrackMapView: View {
                         })
                 }
                 if splitFraction < 1 {
-                    mapPane(inset: false)
-                        .frame(width: size.width * (1 - splitFraction))
-                        .contentShape(Rectangle())
-                        .simultaneousGesture(TapGesture().onEnded {
+                    mapPane(inset: false, onMapTap: {
                             splitFraction = 0
                             layout = OperationalMapVideoLayout.map.withPictureInPicture(videoPipEnabled)
                         })
+                        .frame(width: size.width * (1 - splitFraction))
                 }
             }
         } else {
@@ -1042,13 +1056,11 @@ struct RIDTrackMapView: View {
                         })
                 }
                 if splitFraction < 1 {
-                    mapPane(inset: false)
-                        .frame(height: size.height * (1 - splitFraction))
-                        .contentShape(Rectangle())
-                        .simultaneousGesture(TapGesture().onEnded {
+                    mapPane(inset: false, onMapTap: {
                             splitFraction = 0
                             layout = OperationalMapVideoLayout.map.withPictureInPicture(videoPipEnabled)
                         })
+                        .frame(height: size.height * (1 - splitFraction))
                 }
             }
         }
@@ -1146,7 +1158,7 @@ struct RIDTrackMapView: View {
         }
     }
 
-    private func mapPane(inset: Bool) -> some View {
+    private func mapPane(inset: Bool, onMapTap: (() -> Void)? = nil) -> some View {
         let localClueArtifactIDs = Set(clueStore.records.flatMap { clue in
             [
                 clue.caltopoMarkerID,
@@ -1236,6 +1248,9 @@ struct RIDTrackMapView: View {
                     }
                 }
             )
+            // Only map-content taps expand a split pane. Settings controls must
+            // not also change the layout and destroy their presenting view.
+            .simultaneousGesture(TapGesture().onEnded { onMapTap?() }, including: onMapTap == nil ? .none : .all)
             Text(mapAttribution(inset: inset))
                 .font(.system(size: inset ? 8 : 10))
                 .foregroundStyle(.primary)
@@ -1283,7 +1298,10 @@ struct RIDTrackMapView: View {
             }
             Button(
                 offlineMaps.downloadMenuStatus.map { "Download Map: \($0)" } ?? "Download Map…"
-            ) { showOfflinePreparation = true }
+            ) {
+                AppleLog.info("MapDownload", "Download Map selected layout=\(layout.rawValue)")
+                showOfflinePreparation = true
+            }
             Button("Map Folders…") { showMapItems = true }
                 .disabled(artifacts.snapshot.folders.isEmpty)
             Button("Map Management…") { showMapManagement = true }
@@ -1456,6 +1474,42 @@ struct RIDTrackMapView: View {
         )
     }
 
+    private var liveFocusStreamIDs: Set<String> {
+        let sessions = streamRegistry.sessions.filter { $0.id != "demo" && $0.state == .live }
+        return Set(sessions.map(\.id))
+    }
+
+    private func handleFocusStreamArrival(_ streams: Set<String>) {
+        if streamFocusArrival.observe(liveStreamIDs: streams, followEnabled: followFocusedDrone,
+                                      hasFocus: focusedAircraftID != nil) {
+            operatorAdjustedViewport = false
+            AppleLog.info("MapFocus", "New sole stream enables initial follow; waiting for aircraft position if needed")
+        }
+    }
+
+    private func handleInitialStreamFocus(_ state: OperationalInitialStreamFocusState) {
+        let streams = state.liveStreamAircraftIDs.map { $0 ?? "unresolved" }.joined(separator: ",")
+        let focus = state.focusedAircraftID ?? "none"
+        AppleLog.info("MapFocus", "Automatic focus evaluation follow=\(state.followEnabled) adjusted=\(state.operatorAdjustedViewport) focused=\(focus) streams=\(streams)")
+        if let candidate = state.candidate {
+            focusedAircraftID = candidate
+            AppleLog.info("MapFocus", "Selected sole live stream aircraft=\(candidate)")
+        }
+    }
+
+    // Resolve from the current rendered view, including preference and binding changes.
+    // A long-running task retains the view value from when that task started.
+    private var initialStreamFocusState: OperationalInitialStreamFocusState {
+        OperationalInitialStreamFocusState(
+            followEnabled: followFocusedDrone,
+            focusedAircraftID: focusedAircraftID,
+            operatorAdjustedViewport: operatorAdjustedViewport,
+            liveStreamAircraftIDs: streamRegistry.sessions
+                .filter { $0.id != "demo" && $0.state == .live }
+                .map { aircraftID(for: $0.id) }
+        )
+    }
+
     private func aircraftID(for streamID: String) -> String? {
         if let bound = streamRegistry.boundAircraftID(for: streamID),
            model.tracks.contains(where: { $0.aircraftID == bound }) {
@@ -1501,7 +1555,7 @@ struct RIDTrackMapView: View {
         seiTrackPointsByAircraftID = seiTrackPointsByAircraftID.filter {
             activeAircraftIDs.contains($0.key)
         }
-        let telemetryByAircraftID = streamRegistry.freshValidatedDJIPositionByAircraftID(
+        let telemetryByAircraftID = streamRegistry.freshOperationalDJIPositionByAircraftID(
             tracks: model.tracks,
             at: now
         )
@@ -1555,7 +1609,8 @@ struct RIDTrackMapView: View {
             aglFeet: altitude?.aglFeet,
             aglStale: altitude?.aglStale == true,
             rangeFeet: altitude?.rangeFeet,
-            headingDegrees: heading
+            headingDegrees: heading,
+            aol: altitude?.aol,atoStatus:altitude?.atoStatus ?? .unknown,aglStatus:altitude?.aglStatus ?? .unknown,telemetryStale:altitude?.positionStale == true
         )
     }
 
@@ -1582,7 +1637,8 @@ struct RIDTrackMapView: View {
 
     private func streamTelemetryPairingState(_ streamID: String) -> AppleStreamTelemetryPairingState {
         if aircraftID(for: streamID) != nil { return .paired }
-        return model.tracks.isEmpty ? .noTelemetry : .available
+        let embedded = streamRegistry.sessions.first { $0.id == streamID }?.model.freshDJICameraTelemetry() != nil
+        return model.tracks.isEmpty && !embedded ? .noTelemetry : .available
     }
 
     private func centerpointElevationFeet(
@@ -2329,8 +2385,12 @@ private struct ClueSubmissionView: View {
                         LabeledContent("Clue", value: coordinate(projection.latitude, projection.longitude))
                         LabeledContent("Heading", value: headingMeasurement(heading.degrees))
                         LabeledContent("Heading source", value: heading.sourceLabel ?? "Unavailable")
-                        LabeledContent("AGL", value: measurement(display?.aglFeet, suffix: display?.aglStale == true ? "? ft" : " ft"))
-                        LabeledContent("ATO", value: measurement(display?.atoFeet, suffix: " ft"))
+                        LabeledContent("AGL", value: display?.aglLabel ?? "Unk")
+                        LabeledContent("ATO", value: display?.atoLabel ?? "Unk")
+                        LabeledContent("AOL · 200 ft radius") {
+                            Text(display?.aolLabel ?? "Unk").foregroundStyle(display?.positionStale != true && display?.aol.status == .available && (display?.aol.feet ?? 0) < 0 ? .red : .primary)
+                        }
+                        AircraftAOLDetailsLink(details: display?.aol.details ?? OperationalAOLState.explanation)
                         LabeledContent("Distance", value: measurement(clueDistanceFeet, suffix: " ft"))
                     }
                 }
@@ -2510,10 +2570,10 @@ private struct ClueSubmissionView: View {
             "  Camera Azimuth: \(headingMeasurement(heading.degrees))",
             "  Heading source: \(heading.sourceLabel ?? "N/A")",
             "  Gimbal angle at capture: \(String(format: "%.1f°", gimbalAngle))",
-            "  AGL: \(measurement(aglMeters.map { $0 * 3.28084 }, suffix: display?.aglStale == true ? "? ft" : " ft"))",
+            "  AGL: \(display?.aglLabel ?? "Unk")",
             "  Projection height: \(measurement(projectionHeight.meters * 3.28084, suffix: " ft")) (\(projectionHeight.sourceLabel))",
             clueDemSummary(projection),
-            "  ATO: \(measurement(display?.atoFeet, suffix: " ft"))",
+            "  ATO: \(display?.atoLabel ?? "Unk")",
             "  Distance to clue: \(measurement(clueDistanceFeet, suffix: " ft"))"
         ]
         let summary = summaryLines.joined(separator: "\n")
@@ -2548,7 +2608,7 @@ private struct ClueSubmissionView: View {
     }
 
     private func measurement(_ value: Double?, suffix: String) -> String {
-        guard let value, value.isFinite else { return "--" }
+        guard let value, value.isFinite else { return "Unk" }
         return String(format: "%.0f%@", value, suffix)
     }
 
@@ -2692,6 +2752,8 @@ private struct MapItemsVisibilityView: View {
     @State private var expandedFolderIDs: Set<String> = []
     @State private var searchText = ""
 
+    @State private var surfaceBriefing: AppleSurfaceBriefing?
+    @State private var surfaceBriefingRequest=UUID()
     var body: some View {
         NavigationStack {
             List(rows) { row in
@@ -2708,6 +2770,22 @@ private struct MapItemsVisibilityView: View {
             .navigationTitle("Map Folders")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchText, prompt: "Folders and map items")
+            .sheet(item:$surfaceBriefing) { briefing in
+                NavigationStack {
+                    ScrollView { Text(briefing.text).textSelection(.enabled).padding() }
+                        .navigationTitle("Surface briefing")
+                        .toolbar {
+                            ToolbarItem(placement:.confirmationAction) { Button("Done") { surfaceBriefing=nil } }
+                            if let peak=briefing.peak {
+                                ToolbarItem(placement:.bottomBar) { Button("Show high point") {
+                                    model.requestSurfacePeak(peak)
+                                    surfaceBriefing=nil
+                                    dismiss()
+                                } }
+                            }
+                        }
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
@@ -2801,6 +2879,22 @@ private struct MapItemsVisibilityView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
+            if model.snapshot.coordinates(forItemID:item.id).count >= 2 {
+                Button("AOL") {
+                    let polygons=model.snapshot.polygons.filter{$0.itemID==item.id}
+                    let lines=model.snapshot.lines.filter{$0.itemID==item.id}
+                    guard polygons.count + lines.count == 1 else {
+                        surfaceBriefing = .init(text:"Select a single assignment polygon or route line. Multipart geometry needs separate preparation.",peak:nil)
+                        return
+                    }
+                    let points=model.snapshot.coordinates(forItemID:item.id).map { OperationalSurfacePackage.Point(latitude:$0.latitude,longitude:$0.longitude) }
+                    let request=UUID();surfaceBriefingRequest=request
+                    Task {
+                        let result=await AppleSurfaceBriefings.shared.analyze(points:points,polygon:!polygons.isEmpty)
+                        if surfaceBriefingRequest==request { surfaceBriefing=result }
+                    }
+                }.buttonStyle(.borderless).accessibilityLabel("Surface high-point briefing for \(item.title)")
+            }
             if canZoom {
                 Button {
                     onZoomToItem(item)
@@ -2880,7 +2974,7 @@ private struct AircraftTrackRenderInput: Equatable {
 
     init(track: RidAircraftTrack, seiPoints: [AppleSEIMapPoint]) {
         aircraftID = track.aircraftID
-        points = track.points.map {
+        let accepted = track.points.map {
             AircraftMapPoint(
                 latitude: $0.latitude,
                 longitude: $0.longitude,
@@ -2888,7 +2982,8 @@ private struct AircraftTrackRenderInput: Equatable {
                 headingDegrees: $0.headingDegrees,
                 receivedAt: $0.receivedAt
             )
-        } + seiPoints.map {
+        }
+        let streamed = seiPoints.map {
             AircraftMapPoint(
                 latitude: $0.latitude,
                 longitude: $0.longitude,
@@ -2897,6 +2992,7 @@ private struct AircraftTrackRenderInput: Equatable {
                 receivedAt: $0.receivedAt
             )
         }
+        points = OperationalTrackTimeline.merged(primary: accepted, supplementary: streamed, receivedAt: { $0.receivedAt })
     }
 }
 
@@ -2916,6 +3012,24 @@ private struct AircraftMapRenderState: Equatable {
     let height: Double
     let predictionSecond: Int?
     let positionIconAlphaByAircraftID: [String: Double]
+}
+
+private struct AircraftAOLDetailsLink: View {
+    let details: String
+
+    var body: some View {
+        NavigationLink("AOL details") {
+            ScrollView {
+                Text(details)
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+            }
+            .navigationTitle("AOL details")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
 }
 
 private struct PilotDisplaySettingsView: View {
@@ -2946,17 +3060,23 @@ private struct PilotDisplaySettingsView: View {
                             "Location",
                             value: String(format: "%.6f, %.6f", observation.latitude, observation.longitude)
                         )
-                        LabeledContent("Altitude MSL", value: measurement(observation.altitudeMeters, scale: 3.28084, unit: "ft"))
-                        LabeledContent("ATO", value: feet(altitudeDisplay?.atoFeet))
+                        LabeledContent("Altitude MSL", value: altitudeDisplay?.positionStale == true ? "POS?" : measurement(observation.altitudeMeters, scale: 3.28084, unit: "ft"))
+                        LabeledContent("ATO", value: altitudeDisplay?.atoLabel ?? "Unk")
+                        LabeledContent("AOL · 200 ft radius") {
+                            Text(altitudeDisplay?.aolLabel ?? "Unk")
+                                .foregroundStyle(altitudeDisplay?.positionStale != true && altitudeDisplay?.aol.status == .available && (altitudeDisplay?.aol.feet ?? 0) < 0 ? .red : .primary)
+                        }
                         LabeledContent(
                             "AGL",
-                            value: feet(altitudeDisplay?.aglFeet, stale: altitudeDisplay?.aglStale == true)
+                            value: altitudeDisplay?.aglLabel ?? "Unk"
                         )
-                        LabeledContent("Range from takeoff", value: feet(altitudeDisplay?.rangeFeet))
-                        LabeledContent("Heading", value: measurement(observation.headingDegrees, scale: 1, unit: "°"))
-                        LabeledContent("Speed", value: measurement(observation.speedMetersPerSecond, scale: 1.94384, unit: "kt"))
-                        Button("Calibrate ATO + AGL at 50 ft", action: onCalibrateAltitude)
-                            .disabled(observation.altitudeMeters == nil)
+                        LabeledContent("Range from takeoff", value: altitudeDisplay?.rangeLabel ?? "Unk")
+                        LabeledContent("Heading", value: altitudeDisplay?.positionStale == true ? "POS?" : measurement(observation.headingDegrees, scale: 1, unit: "°"))
+                        LabeledContent("Speed", value: altitudeDisplay?.positionStale == true ? "POS?" : measurement(observation.speedMetersPerSecond, scale: 1.94384, unit: "kt"))
+                        Text("Only calibrate while hovering at an independently established 50 ft directly above the launch point. This also supplies the AOL launch reference.").font(.caption)
+                        Button("Calibrate at 50 ft over launch", action: onCalibrateAltitude)
+                            .disabled(observation.altitudeMeters == nil || altitudeDisplay?.positionStale != false)
+                        AircraftAOLDetailsLink(details: altitudeDisplay?.aol.details ?? OperationalAOLState.explanation)
                     }
                 }
                 Section("Map") {
@@ -2995,12 +3115,12 @@ private struct PilotDisplaySettingsView: View {
     }
 
     private func measurement(_ value: Double?, scale: Double, unit: String) -> String {
-        guard let value, value.isFinite else { return "--" }
+        guard let value, value.isFinite else { return "Unk" }
         return String(format: "%.0f %@", value * scale, unit)
     }
 
     private func feet(_ value: Double?, stale: Bool = false) -> String {
-        guard let value, value.isFinite else { return "--" }
+        guard let value, value.isFinite else { return "Unk" }
         return String(format: "%.0f%@ ft", value, stale ? "?" : "")
     }
 
@@ -3226,6 +3346,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
         private var initialViewportSource: InitialViewportSource
         private var updating = false
         private var currentInset = false
+        private var lastCenteredFocusedAircraftID: String?
         private var currentFocusedAircraftID: String?
         private let pendingVisibleMapRect: MKMapRect?
         private var restoredViewportBounds = false
@@ -3563,7 +3684,8 @@ private struct OperationalMKMapView: UIViewRepresentable {
                         aglStale: altitude?.aglStale == true,
                         rangeFeet: altitude?.rangeFeet,
                         headingDegrees: renderInputByAircraftID[track.aircraftID]?.points.last?.headingDegrees,
-                        positionStale: (positionIconAlphaByAircraftID[track.aircraftID] ?? 1) < 1
+                        positionStale: (positionIconAlphaByAircraftID[track.aircraftID] ?? 1) < 1,
+                        aol: altitude?.aol,atoStatus:altitude?.atoStatus ?? .unknown,aglStatus:altitude?.aglStatus ?? .unknown,telemetryStale:altitude?.positionStale == true
                     )
                 )
             })
@@ -3693,6 +3815,12 @@ private struct OperationalMKMapView: UIViewRepresentable {
                let focusedAircraftID,
                let coordinate = renderCoordinates[focusedAircraftID] {
                 setCenterAndPersist(coordinate, on: map)
+                if lastCenteredFocusedAircraftID != focusedAircraftID {
+                    AppleLog.info("MapFocus", "Centered focused aircraft=\(focusedAircraftID) inset=\(inset)")
+                    lastCenteredFocusedAircraftID = focusedAircraftID
+                }
+            } else {
+                lastCenteredFocusedAircraftID = nil
             }
             }
 
@@ -3927,6 +4055,12 @@ private struct OperationalMKMapView: UIViewRepresentable {
             viewportMemory.region = map.region
             viewportMemory.visibleMapRect = validVisibleMapRect(from: map)
             viewportMemory.hasOperationalViewport = true
+            if request.title == "Mapped surface high point", let coordinate=coordinates.first {
+                let annotation=MKPointAnnotation()
+                annotation.title=request.title
+                annotation.coordinate=coordinate
+                map.addAnnotation(annotation)
+            }
             AppleLog.info("MapViewport", "Zoomed to assignment '\(request.title)' points=\(coordinates.count)")
         }
 
@@ -4082,6 +4216,9 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 let view = (mapView.dequeueReusableAnnotationView(withIdentifier: identifier) as? AircraftAnnotationView)
                     ?? AircraftAnnotationView(annotation: aircraft, reuseIdentifier: identifier)
                 view.configure(aircraft)
+                view.displayPriority = .required
+                view.zPriority = .max
+                view.selectedZPriority = .max
                 return view
             }
             if let clue = annotation as? ClueAnnotation {
@@ -4109,6 +4246,8 @@ private struct OperationalMKMapView: UIViewRepresentable {
             let view = (mapView.dequeueReusableAnnotationView(withIdentifier: identifier) as? ArtifactAnnotationView)
                 ?? ArtifactAnnotationView(annotation: artifact, reuseIdentifier: identifier)
             view.configure(artifact)
+            view.zPriority = .defaultUnselected
+            view.selectedZPriority = .defaultUnselected
             return view
         }
 
@@ -4182,6 +4321,9 @@ private struct OperationalMKMapView: UIViewRepresentable {
                       let view = map.view(for: annotation),
                       !view.isHidden
                 else { return false }
+                if view is AircraftAnnotationView {
+                    return view.point(inside: view.convert(location, from: map), with: nil)
+                }
                 return view.frame.insetBy(dx: -8, dy: -8).contains(location)
             }) {
                 return
@@ -4223,7 +4365,6 @@ private struct OperationalMKMapView: UIViewRepresentable {
 }
 
 private final class AircraftAnnotationView: MKAnnotationView {
-    private let iconView = UIImageView()
     private let nameLabel = UILabel()
     private let statusLabel = UILabel()
     private let leaderLayer = CAShapeLayer()
@@ -4232,7 +4373,9 @@ private final class AircraftAnnotationView: MKAnnotationView {
 
     override init(annotation: (any MKAnnotation)?, reuseIdentifier: String?) {
         super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
-        frame = CGRect(x: 0, y: 0, width: 800, height: 360)
+        // MapKit should position/cull the actual marker, not an oversized label canvas.
+        frame = CGRect(x: 0, y: 0, width: 50, height: 50)
+        clipsToBounds = false
         centerOffset = .zero
         canShowCallout = false
         cameraFovHaloLayer.strokeColor = UIColor.black.withAlphaComponent(0.7).cgColor
@@ -4252,9 +4395,6 @@ private final class AircraftAnnotationView: MKAnnotationView {
         leaderLayer.shadowOpacity = 0.8
         leaderLayer.shadowRadius = 1
         layer.addSublayer(leaderLayer)
-        iconView.contentMode = .center
-        iconView.clipsToBounds = true
-        addSubview(iconView)
         configureLabel(nameLabel, fontSize: 16, cornerRadius: 6)
         configureLabel(statusLabel, fontSize: 13, cornerRadius: 5)
         addSubview(nameLabel)
@@ -4275,26 +4415,27 @@ private final class AircraftAnnotationView: MKAnnotationView {
     func configure(_ aircraft: AircraftAnnotation) {
         annotation = aircraft
         let iconSize: CGFloat = aircraft.inset ? 34 : 50
-        let iconX = (bounds.width - iconSize) / 2
-        let iconY = (bounds.height - iconSize) / 2
-        iconView.frame = CGRect(x: iconX, y: iconY, width: iconSize, height: iconSize)
-        iconView.backgroundColor = .clear
-        iconView.layer.cornerRadius = 0
-        iconView.layer.borderWidth = 0
-        iconView.image = AircraftMarkerRenderer.image(
+        image = AircraftMarkerRenderer.image(
             size: iconSize,
             color: aircraft.color,
             headingDegrees: aircraft.heading,
             focused: aircraft.focused,
             positionIconAlpha: aircraft.positionIconAlpha
         )
-        iconView.transform = .identity
+        bounds = CGRect(x: 0, y: 0, width: iconSize, height: iconSize)
         configureCameraFov(aircraft.cameraFov, iconSize: iconSize)
         nameLabel.isHidden = aircraft.inset
         statusLabel.isHidden = aircraft.inset
         leaderLayer.isHidden = aircraft.inset
         nameLabel.text = aircraft.title
-        statusLabel.text = aircraft.statusText
+        let status = NSMutableAttributedString(
+            string: aircraft.statusText, attributes: [.foregroundColor: UIColor.white]
+        )
+        if let range = OperationalAircraftDisplay.negativeAOLRange(in: aircraft.statusText) {
+            status.addAttribute(.foregroundColor, value: UIColor.systemRed,
+                                range: NSRange(range, in: aircraft.statusText))
+        }
+        statusLabel.attributedText = status
         if let layout = aircraft.labelLayout {
             nameLabel.frame = localRect(layout.nameBounds, anchor: aircraft.anchorScreen)
             statusLabel.frame = localRect(layout.statusBounds, anchor: aircraft.anchorScreen)
@@ -4318,7 +4459,7 @@ private final class AircraftAnnotationView: MKAnnotationView {
     }
 
     func updateCameraFov(_ cameraFov: CameraFovBoundaryBearings?) {
-        configureCameraFov(cameraFov, iconSize: iconView.bounds.width)
+        configureCameraFov(cameraFov, iconSize: bounds.width)
     }
 
     private func configureCameraFov(
@@ -4361,7 +4502,7 @@ private final class AircraftAnnotationView: MKAnnotationView {
     }
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        iconView.frame.insetBy(dx: -10, dy: -10).contains(point)
+        bounds.insetBy(dx: -10, dy: -10).contains(point)
             || (!nameLabel.isHidden && nameLabel.frame.contains(point))
             || (!statusLabel.isHidden && statusLabel.frame.contains(point))
     }

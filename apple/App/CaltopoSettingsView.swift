@@ -215,14 +215,7 @@ struct CaltopoSettingsView: View {
                         set: { orgSettings.setUsePeers($0) }
                     )
                 )
-                Toggle(
-                    "Standalone R2C coordination",
-                    isOn: Binding(
-                        get: { orgSettings.standaloneR2CCoordinationEnabled },
-                        set: { orgSettings.setStandaloneR2CCoordinationEnabled($0) }
-                    )
-                )
-                Text("Allows tracker ownership and confirmation coordination when no CalTopo map is connected, matching Android.")
+                Text("Standalone flights stay independent. Live aircraft coordination requires an incident map. Organization access and archive uploads remain available.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Toggle(

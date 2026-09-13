@@ -31,6 +31,8 @@ import org.ncssar.rid2caltopo.data.DesignatorState
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -168,6 +170,7 @@ fun DesignatorIndicator(
                 } else {
                     OutlinedIndicatorText(
                         text = formatCompactTelemetry(droneDisplayState, cameraAzimuthDeg),
+                        highlightNegativeAol = true,
                         style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
                         maxLines = 1,
                         overflow = TextOverflow.Clip,
@@ -225,6 +228,7 @@ fun DesignatorIndicator(
         if (detailText.isNotBlank()) {
             OutlinedIndicatorText(
                 text = detailText,
+                highlightNegativeAol = true,
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = if (streamState == StreamState.ERROR) 3 else 1,
                 overflow = TextOverflow.Ellipsis,
@@ -264,6 +268,7 @@ private fun TelemetryIndicatorChip(
     ) {
         OutlinedIndicatorText(
             text = text,
+            highlightNegativeAol = true,
             style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
             maxLines = 1,
             overflow = TextOverflow.Clip,
@@ -279,12 +284,18 @@ private fun OutlinedIndicatorText(
     style: TextStyle,
     modifier: Modifier = Modifier,
     maxLines: Int = Int.MAX_VALUE,
-    overflow: TextOverflow = TextOverflow.Clip
+    overflow: TextOverflow = TextOverflow.Clip,
+    highlightNegativeAol: Boolean = false
 ) {
+    val negativeRange = if (highlightNegativeAol) negativeAolRange(text) else null
+    fun styledText(negativeColor: Color) = buildAnnotatedString {
+        append(text)
+        negativeRange?.let { addStyle(SpanStyle(color = negativeColor), it.first, it.last + 1) }
+    }
     val outlinedStyle = style.copy(fontWeight = FontWeight.Black)
     Box(modifier = modifier) {
         Text(
-            text = text,
+            text = styledText(Color.Black),
             color = palette.outlineColor,
             style = outlinedStyle.copy(drawStyle = Stroke(width = 4f, miter = 2f)),
             maxLines = maxLines,
@@ -292,7 +303,7 @@ private fun OutlinedIndicatorText(
             modifier = Modifier.align(Alignment.CenterStart)
         )
         Text(
-            text = text,
+            text = styledText(Color.Red),
             color = palette.fillColor,
             style = outlinedStyle,
             maxLines = maxLines,
@@ -322,7 +333,7 @@ internal fun designatorDetailText(
     mapStatus: String,
     interactionEnabled: Boolean
 ): String = when (designatorState) {
-    is DesignatorState.Yellow -> "Telemetry not attached (mapStatus:${mapStatus})"
+    is DesignatorState.Yellow -> if (designatorState.embeddedTelemetry) "Embedded telemetry available; aircraft not paired" else "Telemetry not attached (mapStatus:${mapStatus})"
     DesignatorState.Red -> "No telemetry available (mapStatus:${mapStatus})"
     is DesignatorState.Green -> ""
 }
@@ -333,7 +344,7 @@ internal fun telemetryChipTextFor(
     cameraAzimuthDeg: Double? = null,
 ): String = when (designatorState) {
     is DesignatorState.Green -> formatCompactTelemetry(display, cameraAzimuthDeg)
-    is DesignatorState.Yellow -> "Pair Telemetry"
+    is DesignatorState.Yellow -> if (designatorState.embeddedTelemetry) "Embedded Telemetry" else "Pair Telemetry"
     DesignatorState.Red -> "No Telemetry"
 }
 

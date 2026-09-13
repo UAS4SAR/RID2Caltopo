@@ -7,6 +7,44 @@ import org.junit.Test
 import java.time.Instant
 
 class OperatingProfilesTest {
+    @Test fun incidentBriefingReuseIsScopedAndDoesNotRewriteSnapshots() {
+        OperatingProfiles.setScope("org", "map-a")
+        val briefing = IncidentBriefing("Search 26-30", "VO at trailhead\nRTH briefed")
+        OperatingProfiles.remember(OperatingProfiles.standard(), briefing)
+        val id = OperatingProfiles.assignmentId
+        val snapshot = OperatingProfiles.snapshot(OperatingProfiles.standard(), JSONObject(), "", "", "map-a", false,
+            incidentBriefing = OperatingProfiles.incidentBriefing, organizationScope = "org")
+        OperatingProfiles.setScope("org", "map-a")
+        assertEquals(briefing, OperatingProfiles.incidentBriefing)
+        assertEquals(id, OperatingProfiles.assignmentId)
+        assertEquals(briefing, IncidentBriefing.currentFlight(snapshot, true, "org", "map-a"))
+        assertNull(IncidentBriefing.currentFlight(snapshot, false, "org", "map-a"))
+        assertNull(IncidentBriefing.currentFlight(snapshot, true, "other", "map-a"))
+        assertNull(IncidentBriefing.currentFlight(snapshot, true, "org", "map-b"))
+        OperatingProfiles.setScope("org", "map-b")
+        assertEquals(IncidentBriefing(), OperatingProfiles.incidentBriefing)
+        OperatingProfiles.setScope("org", "map-a")
+        assertEquals(IncidentBriefing(), OperatingProfiles.incidentBriefing)
+        OperatingProfiles.remember(OperatingProfiles.standard(), briefing)
+        OperatingProfiles.endAssignment()
+        assertEquals(IncidentBriefing(), OperatingProfiles.incidentBriefing)
+        assertEquals(briefing.notes, snapshot.getJSONObject("incidentBriefing").getString("notes"))
+        assertFalse(snapshot.getJSONObject("profile").has("incidentBriefing"))
+    }
+    @Test fun incidentNotesOnlyChangeRetainsHistoryAndCanBeCleared() {
+        fun flight(briefing: IncidentBriefing) = JSONObject().put("operatingProfile", OperatingProfiles.snapshot(
+            OperatingProfiles.standard(), JSONObject(), "", "", "map", false, incidentBriefing = briefing, organizationScope = "org")).toString()
+        val original = flight(IncidentBriefing("Search", "Initial briefing"))
+        val revised = flight(IncidentBriefing("Search", "New VO"))
+        val changed = OperatingProfiles.mergeHistory(original, revised)
+        assertEquals(JSONObject(original).getJSONObject("operatingProfile").toString(), JSONObject(changed).getJSONObject("operatingProfile").toString())
+        assertEquals("New VO", OperatingProfiles.active(JSONObject(changed))!!.getJSONObject("incidentBriefing").getString("notes"))
+        assertEquals(1, JSONObject(changed).getJSONArray("operatingProfileChanges").length())
+        assertEquals(1, JSONObject(OperatingProfiles.mergeHistory(changed, revised)).getJSONArray("operatingProfileChanges").length())
+        assertEquals(2, JSONObject(OperatingProfiles.mergeHistory(changed, flight(IncidentBriefing()))).getJSONArray("operatingProfileChanges").length())
+        assertEquals(4000, IncidentBriefing("a".repeat(170), "b".repeat(4100)).toJSON().getString("notes").length)
+    }
+
     private fun state(profile: JSONObject) = JSONObject().put("organizationId", "org")
         .put("fetchedAt", "2026-09-11T12:00:00Z").put("operatingProfiles", JSONObject()
             .put("defaultProfileId", profile.getString("id")).put("profiles", JSONArray().put(profile)))

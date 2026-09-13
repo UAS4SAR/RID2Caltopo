@@ -113,8 +113,14 @@ public class CaltopoMap {
     private static android.location.Location MyLocationOverride;
     private static long FirstMapUpdateTimeInSeconds = 15;
     private static long RepeatMapUpdateTimeInSeconds = 90;
-    private static final long FOREGROUND_MAP_UPDATE_TIME_IN_SECONDS = 15;
+    private static final long FOREGROUND_MAP_UPDATE_TIME_IN_SECONDS = 20;
     private static final long FULL_ARTIFACT_RECONCILE_INTERVAL_MS = 15L * 60L * 1000L;
+    private static final long FOREGROUND_ARTIFACT_RECONCILE_INTERVAL_MS = 120L * 1000L;
+
+    static boolean fullArtifactReconciliationDue(long now, long lastFullSync, boolean foreground) {
+        long interval = foreground ? FOREGROUND_ARTIFACT_RECONCILE_INTERVAL_MS : FULL_ARTIFACT_RECONCILE_INTERVAL_MS;
+        return lastFullSync == 0L || now < lastFullSync || now - lastFullSync >= interval;
+    }
     public static final CtLineProperty ArchiveLineProp =
             new CtLineProperty(2, 0.5F, "#ff00ff", "solid");
     private static final int MAX_MAP_STARTUP_DELAY_IN_SECONDS = 45;
@@ -159,6 +165,12 @@ public class CaltopoMap {
     // A developer-only "Disable MQTT" toggle in Settings can suppress it via
     // CaltopoClient.GetUsePeersFlag() — that flag is read live, not cached.
     private static long LastMapSync;
+    private static long LastMapPollStartedAt;
+
+    static long minimumMapPollDelayMs(long now, long lastRequest) {
+        if (lastRequest == 0L || now < lastRequest) return 0L;
+        return Math.max(0L, 20_000L - (now - lastRequest));
+    }
     private static final Object MapRefreshLock = new Object();
     private static boolean MapRefreshInFlight;
     private static boolean MapRefreshPending;
@@ -594,7 +606,7 @@ public class CaltopoMap {
 
     public static void SetMapUpdateDelayInSeconds(long initialDelay, long repeatDelay) {
         FirstMapUpdateTimeInSeconds = Math.max(5, initialDelay);
-        RepeatMapUpdateTimeInSeconds = Math.max(10, repeatDelay);
+        RepeatMapUpdateTimeInSeconds = Math.max(20, repeatDelay);
         CTInfo(TAG, String.format(Locale.US,
                 "SetMapUpdateDelayInSeconds(): initial=%d repeat=%d",
                 FirstMapUpdateTimeInSeconds, RepeatMapUpdateTimeInSeconds));
@@ -769,6 +781,7 @@ public class CaltopoMap {
             FullMapRefreshPending = false;
             FullMapRefreshCallbacks.clear();
             LastMapSync = 0L;
+            LastMapPollStartedAt = 0L;
             LastFullArtifactSync = 0L;
         }
         InitialMarkerPublishDelay.stop();
@@ -805,13 +818,6 @@ public class CaltopoMap {
         if (!StandaloneCoordinationStarted) return;
         if (MapStatus == MapStatusListener.mapStatus.up && MapNode != null) return;
         if (CaltopoClient.GetStandaloneR2cCoordinationEnabled()) return;
-        int activeFlightCount = CaltopoClient.GetActiveFlightCount();
-        if (activeFlightCount > 0) {
-            CTInfo(TAG, String.format(Locale.US,
-                    "StopStandaloneTrackerCoordinationIfActive(): deferring no-map tracker stop until %d active flight(s) finish.",
-                    activeFlightCount));
-            return;
-        }
         CTInfo(TAG, "StopStandaloneTrackerCoordinationIfActive(): stopping no-map tracker coordination.");
         LastStandaloneCoordinationScopeId = "";
         StandaloneCoordinationStarted = false;
@@ -1065,11 +1071,17 @@ public class CaltopoMap {
                 MapRefreshPending = true;
                 return;
             }
+            long waitMs = FullMapRefreshPending ? 0L : minimumMapPollDelayMs(requestStartedAtMs, LastMapPollStartedAt);
+            if (waitMs > 0L) {
+                MapCheckerDelay.start(CaltopoMap::PollMapUpdates, waitMs, 0L);
+                return;
+            }
+            LastMapPollStartedAt = requestStartedAtMs;
             MapRefreshInFlight = true;
             MapRefreshPending = false;
             refreshGeneration = MapRefreshGeneration;
-            fullReconcile = FullMapRefreshPending || LastFullArtifactSync == 0L ||
-                    requestStartedAtMs - LastFullArtifactSync >= FULL_ARTIFACT_RECONCILE_INTERVAL_MS;
+            fullReconcile = FullMapRefreshPending || fullArtifactReconciliationDue(
+                    requestStartedAtMs, LastFullArtifactSync, MapArtifactForegroundConsumers > 0);
             if (fullReconcile) FullMapRefreshPending = false;
             requestCursor = fullReconcile ? 0L : LastMapSync;
         }
@@ -1340,6 +1352,7 @@ public class CaltopoMap {
             synchronized (MapRefreshLock) {
                 LastMapSync = Math.max(LastMapSync, requestStartedAtMs);
                 LastFullArtifactSync = requestStartedAtMs;
+                LastMapPollStartedAt = requestStartedAtMs;
             }
         } catch (Exception e) {
             CTError(TAG, "OpenMapFinished(): parseMap() raised:", e);
@@ -1471,7 +1484,9 @@ public class CaltopoMap {
             long nowMs
     ) {
         if (CaltopoClient.IsExitRequested()) return false;
-        if (MapOfflinePrepRuntime.isActive()) return false;
+        if (MapOfflinePrepRuntime.isActive() ||
+                (MapOfflinePrepRuntime.lastActivityAtMsec() > 0L &&
+                 nowMs - MapOfflinePrepRuntime.lastActivityAtMsec() < AUTO_QUIT_FLIGHT_QUIET_MS)) return false;
         if (MapStatus != MapStatusListener.mapStatus.up || MapNode == null) return false;
         if (!hasAccuracy || accuracyMeters >= AUTO_QUIT_REQUIRED_ACCURACY_METERS) return false;
         if (CaltopoClient.GetActiveFlightCount() > 0) return false;
@@ -1496,6 +1511,8 @@ public class CaltopoMap {
         }
         long lastWaypointTimestampMs = CtDroneSpec.LastWaypointUpdateTimestampMsec();
         long nowMs = timeSource.now();
+        if (MapOfflinePrepRuntime.lastActivityAtMsec() > 0L &&
+                nowMs - MapOfflinePrepRuntime.lastActivityAtMsec() < AUTO_QUIT_FLIGHT_QUIET_MS) return false;
         if (lastWaypointTimestampMs > 0L &&
                 nowMs - lastWaypointTimestampMs < AUTO_QUIT_FLIGHT_QUIET_MS) {
             return false;
@@ -1602,21 +1619,8 @@ public class CaltopoMap {
     }
 
     private static boolean isStandaloneTrackerCoordinationAllowedForCurrentFlightWindow() {
-        if (StandaloneCoordinationStarted) return true;
-        int activeFlightCount = CaltopoClient.GetActiveFlightCount();
-        if (activeFlightCount <= 0) {
-            StandaloneCoordinationEnabledForActiveFlights = null;
-            return CaltopoClient.GetStandaloneR2cCoordinationEnabled();
-        }
-        if (StandaloneCoordinationEnabledForActiveFlights == null) {
-            StandaloneCoordinationEnabledForActiveFlights =
-                    CaltopoClient.GetStandaloneR2cCoordinationEnabled();
-            CTInfo(TAG, "isStandaloneTrackerCoordinationAllowedForCurrentFlightWindow(): " +
-                    "latching standalone R2C coordination to " +
-                    StandaloneCoordinationEnabledForActiveFlights +
-                    " for current active flight window.");
-        }
-        return StandaloneCoordinationEnabledForActiveFlights;
+        // A legacy preference or an active-flight latch must never join no-map flights.
+        return false;
     }
 
     @NonNull

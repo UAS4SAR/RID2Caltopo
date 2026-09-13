@@ -13,8 +13,10 @@ let package = Package(
         .library(name: "R2CAppleRadios", targets: ["R2CAppleRadios"]),
     ],
     targets: [
-        .target(name: "R2CCore"),
+        .target(name: "CAOL", exclude: ["README.md", "LAZPERF-LICENSE", "GEOGRAPHICLIB-LICENSE"], publicHeadersPath: "include", cxxSettings: [.define("LAZPERF_VENDORED"), .headerSearchPath("geographiclib/include")]),
+        .target(name: "R2CCore", dependencies: ["CAOL"]),
         .target(name: "R2CAppleRadios", dependencies: ["R2CCore"]),
         .testTarget(name: "R2CCoreTests", dependencies: ["R2CCore"]),
-    ]
+    ],
+    cxxLanguageStandard: .cxx17
 )

@@ -605,6 +605,17 @@ class TrackerPeerCoordinatorTest {
     }
 
     @Test
+    fun standalonePeerConfirmationDoesNotConfirmLocalFlight() {
+        coordinator.start("", "zone-alpha", "Alpha", null)
+        transport.receive(JSONObject().put("type", "drone_confirmed")
+            .put("remoteId", "DRONE9").put("confirmedByGuid", "zone-bravo")
+            .put("mappedId", "MA12Autel").put("org", "MA-SAR")
+            .put("model", "Autel Evo Max").put("ownerName", "MA12").toString())
+        assertFalse(CaltopoClient.IsCurrentPeerDroneConfirmed("DRONE9"))
+        assertFalse(CaltopoClient.IsSessionDroneConfirmed("DRONE9"))
+    }
+
+    @Test
     fun incomingDroneConfirmedAppliesSessionOnlyDroneSpec() {
         coordinator.start("MAP1", "zone-alpha", "Alpha", null)
 

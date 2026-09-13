@@ -786,6 +786,12 @@ anomaly_detector_runtime_budget_desired_render_interval_ms(
     int64_t smoothed_interval_ms =
             ((previous_interval_ms * (100 - smoothing_pct)) +
              (desired_interval_ms * smoothing_pct) + 50) / 100;
+    // Integer EMA rounding must not strand the controller a few milliseconds
+    // away from its target (e.g. 44 -> 41 at 15 percent rounds back to 44).
+    if (smoothing_pct > 0 && smoothed_interval_ms == previous_interval_ms &&
+        desired_interval_ms != previous_interval_ms) {
+        smoothed_interval_ms += desired_interval_ms > previous_interval_ms ? 1 : -1;
+    }
     smoothed_interval_ms = anomaly_detector_budget_clamp_i64(
             smoothed_interval_ms,
             min_interval_ms,

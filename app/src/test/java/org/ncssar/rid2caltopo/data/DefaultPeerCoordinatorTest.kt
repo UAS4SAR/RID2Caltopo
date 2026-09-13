@@ -120,15 +120,15 @@ class DefaultPeerCoordinatorTest {
     }
 
     @Test
-    fun statusBeforeStartNamesConfiguredTrackerCoordinator() {
+    fun legacyStandaloneOptInDoesNotEnableTracker() {
         val coordinator = DefaultPeerCoordinator.getInstance()
 
         CaltopoClient.SetStandaloneR2cCoordinationEnabled(true)
 
-        assertEquals("Tracker link degraded", coordinator.coordinationStatusText)
+        assertEquals("Tracker link disabled", coordinator.coordinationStatusText)
         assertTrue(
             coordinator.coordinationDiagnosticLines.toString(),
-            coordinator.coordinationDiagnosticLines.any { it == "Tracker coordinator waiting for map connection" }
+            coordinator.coordinationDiagnosticLines.any { it == "Standalone tracker coordination disabled" }
         )
     }
 

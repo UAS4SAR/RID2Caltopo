@@ -8,7 +8,8 @@ sealed class DesignatorState {
     ) : DesignatorState()
 
     data class Yellow(
-        val candidates: Map<String,DroneSpecState>
+        val candidates: Map<String,DroneSpecState>,
+        val embeddedTelemetry: Boolean = false
     ) : DesignatorState()
 
     object Red : DesignatorState()

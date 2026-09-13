@@ -16,6 +16,7 @@ public struct RidObservation: Sendable, Equatable {
         case wifiBeacon
         case wifiNan
         case trackerRelay
+        case djiVideo
     }
 
     public let source: Source
@@ -26,6 +27,12 @@ public struct RidObservation: Sendable, Equatable {
     public let altitudeMeters: Double?
     public let heightMeters: Double?
     public let heightReference: HeightReference?
+    /// Explicit RID ground status; nil is unknown, never assumed grounded.
+    public let grounded: Bool?
+    /// DJI tag-4 reference coordinate paired with this sample's relative height.
+    /// Separate from aircraft position and from RID ground-status evidence.
+    public let videoReferenceLatitude: Double?
+    public let videoReferenceLongitude: Double?
     /// Raw F3411 NACp horizontal-accuracy code. Codes 10...12 declare <10 m containment.
     public let horizontalAccuracyCode: UInt8?
     public let headingDegrees: Double?
@@ -44,13 +51,16 @@ public struct RidObservation: Sendable, Equatable {
         altitudeMeters: Double? = nil,
         heightMeters: Double? = nil,
         heightReference: HeightReference? = nil,
+        grounded: Bool? = nil,
         horizontalAccuracyCode: UInt8? = nil,
         headingDegrees: Double? = nil,
         speedMetersPerSecond: Double? = nil,
         operatorLatitude: Double? = nil,
         operatorLongitude: Double? = nil,
         signalStrengthDbm: Int? = nil,
-        droneScoutRelay: DroneScoutRelayMetadata? = nil
+        droneScoutRelay: DroneScoutRelayMetadata? = nil,
+        videoReferenceLatitude: Double? = nil,
+        videoReferenceLongitude: Double? = nil
     ) {
         self.source = source
         self.aircraftId = aircraftId
@@ -60,6 +70,9 @@ public struct RidObservation: Sendable, Equatable {
         self.altitudeMeters = altitudeMeters
         self.heightMeters = heightMeters
         self.heightReference = heightReference
+        self.grounded = grounded
+        self.videoReferenceLatitude = videoReferenceLatitude
+        self.videoReferenceLongitude = videoReferenceLongitude
         self.horizontalAccuracyCode = horizontalAccuracyCode
         self.headingDegrees = RidHeading.normalized(headingDegrees)
         self.speedMetersPerSecond = speedMetersPerSecond

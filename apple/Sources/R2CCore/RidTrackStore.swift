@@ -161,7 +161,7 @@ public actor RidTrackStore {
             tracksByAircraftID[aircraftID] = track
             return .signalOnly(track, reason: .duplicatePosition)
         }
-        if distance > 0, distance < policy.minimumDistanceMeters {
+        if observation.source != .djiVideo, distance > 0, distance < policy.minimumDistanceMeters {
             tracksByAircraftID[aircraftID] = track
             return .signalOnly(track, reason: .belowMinimumDistance(meters: distance))
         }
@@ -288,13 +288,16 @@ private extension RidObservation {
             altitudeMeters: altitudeMeters,
             heightMeters: heightMeters,
             heightReference: heightReference,
+            grounded: grounded,
             horizontalAccuracyCode: horizontalAccuracyCode,
             headingDegrees: headingDegrees,
             speedMetersPerSecond: speedMetersPerSecond,
             operatorLatitude: operatorLatitude,
             operatorLongitude: operatorLongitude,
             signalStrengthDbm: signalStrengthDbm,
-            droneScoutRelay: droneScoutRelay
+            droneScoutRelay: droneScoutRelay,
+            videoReferenceLatitude: videoReferenceLatitude,
+            videoReferenceLongitude: videoReferenceLongitude
         )
     }
 }

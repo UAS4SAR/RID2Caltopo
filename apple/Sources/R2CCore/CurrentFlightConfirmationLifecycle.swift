@@ -5,13 +5,18 @@ public struct CurrentFlightConfirmationReconciliation: Sendable, Equatable {
     public let candidateRemoteID: String?
 }
 
-/// Tracks prompt presentation only for the currently active flight. The caller supplies
-/// confirmed/ignored decisions so they can be discarded when a definitive flight end occurs.
+/// Tracks prompt presentation for the current flight. Caller-supplied confirmations are
+/// per flight; ignored decisions remain in force for the app session.
 public struct CurrentFlightConfirmationLifecycle: Sendable, Equatable {
     private var activeRemoteIDs: Set<String> = []
     private var promptedRemoteIDs: Set<String> = []
 
     public init() {}
+
+    /// Standalone tablets must obtain their own local flight confirmation.
+    public static func acceptsPeerConfirmation(mapID: String) -> Bool {
+        !mapID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     public mutating func reconcile(
         orderedRemoteIDs: [String],
@@ -24,8 +29,8 @@ public struct CurrentFlightConfirmationLifecycle: Sendable, Equatable {
         activeRemoteIDs = currentRemoteIDs
 
         let decisionsAfterFlightEnd = confirmedRemoteIDs
-            .union(ignoredRemoteIDs)
             .subtracting(endedRemoteIDs)
+            .union(ignoredRemoteIDs)
         let candidate = orderedRemoteIDs.first { remoteID in
             !remoteID.isEmpty
                 && !promptedRemoteIDs.contains(remoteID)

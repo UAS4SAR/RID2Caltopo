@@ -351,8 +351,7 @@ final class AppleOrgConfigSettings: ObservableObject {
         faaProxyURL = defaults.string(forKey: "org.faaProxyURL") ?? ""
         trackerEnrollmentURL = defaults.string(forKey: "org.trackerEnrollmentURL") ?? ""
         usePeers = defaults.object(forKey: "org.usePeers") as? Bool ?? true
-        standaloneR2CCoordinationEnabled =
-            defaults.object(forKey: "org.standaloneR2CCoordination") as? Bool ?? false
+        standaloneR2CCoordinationEnabled = false
         predictiveHeadEnabled = defaults.object(forKey: "org.predictiveHead") as? Bool ?? true
         proximityAlertSpacingFeet = defaults.object(forKey: "org.proximityFeet") as? Int ?? 40
         minimumTrackDistanceFeet = max(2, defaults.object(forKey: "track.minimumDistanceFeet") as? Int ?? 2)
@@ -389,9 +388,9 @@ final class AppleOrgConfigSettings: ObservableObject {
         if sourceDescription == "Managed r2c-tracker enrollment",
            !defaults.bool(forKey: Self.managedStandaloneMigrationKey) {
             usePeers = true
-            standaloneR2CCoordinationEnabled = true
+            standaloneR2CCoordinationEnabled = false
             defaults.set(true, forKey: "org.usePeers")
-            defaults.set(true, forKey: "org.standaloneR2CCoordination")
+            defaults.set(false, forKey: "org.standaloneR2CCoordination")
             defaults.set(true, forKey: Self.managedStandaloneMigrationKey)
         }
         defaults.set("Training", forKey: "org.incident")
@@ -477,7 +476,7 @@ final class AppleOrgConfigSettings: ObservableObject {
         self.faaProxyURL = faaProxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
         trackerEnrollmentURL = enrollmentURL.trimmingCharacters(in: .whitespacesAndNewlines)
         usePeers = true
-        standaloneR2CCoordinationEnabled = true
+        standaloneR2CCoordinationEnabled = false
         sourceDescription = "Managed r2c-tracker enrollment"
         defaults.set(organizationName, forKey: "org.name")
         defaults.set(self.trackerURLPrefix, forKey: "org.trackerURLPrefix")
@@ -635,9 +634,9 @@ final class AppleOrgConfigSettings: ObservableObject {
     }
 
     func setStandaloneR2CCoordinationEnabled(_ enabled: Bool) {
-        standaloneR2CCoordinationEnabled = enabled
-        defaults.set(enabled, forKey: "org.standaloneR2CCoordination")
-        AppleLog.info("TrackerPeer", "Standalone R2C coordination enabled=\(enabled)")
+        standaloneR2CCoordinationEnabled = false
+        defaults.set(false, forKey: "org.standaloneR2CCoordination")
+        AppleLog.info("TrackerPeer", "Standalone flights remain independent")
     }
 
     func setProximityAlertSpacingFeet(_ value: Int) {
@@ -778,8 +777,7 @@ final class AppleOrgConfigSettings: ObservableObject {
         teamID = object["team_id"] as? String ?? ""
         trackerURLPrefix = object["tracker_url_prefix"] as? String ?? ""
         usePeers = (object["use_peers"] as? NSNumber)?.boolValue ?? true
-        standaloneR2CCoordinationEnabled =
-            (object["standalone_r2c_coordination_enabled"] as? NSNumber)?.boolValue ?? false
+        standaloneR2CCoordinationEnabled = false
         predictiveHeadEnabled = (object["predictive_head"] as? NSNumber)?.boolValue ?? true
         proximityAlertSpacingFeet = (object["proximity_feet"] as? NSNumber)?.intValue ?? 40
         minimumTrackDistanceFeet = max(2, (object["minimum_track_distance_feet"] as? NSNumber)?.intValue ?? 2)
@@ -1133,6 +1131,11 @@ final class AppleOrgConfigImporter: ObservableObject {
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         do {
             let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            if url.pathExtension.lowercased() == "aol" {
+                let id = try await AppleSurfaceStore.shared.install(data)
+                state = .applied("Surface prepared and pinned: \(id)")
+                return
+            }
             if Self.isQRCodeImageFile(url) {
                 let decodeStartedAt = ProcessInfo.processInfo.systemUptime
                 guard let payload = try await Self.decodeQRCodePayload(from: data, fileURL: url) else {
@@ -1399,7 +1402,7 @@ struct ConfigImportView: View {
             }
             Section {
                 HStack(spacing: 12) {
-                    Button("Choose File", systemImage: "doc.badge.arrow.up") {
+                    Button("Choose Config or Surface File", systemImage: "doc.badge.arrow.up") {
                         showFileImporter = true
                     }
                     .buttonStyle(.bordered)
@@ -1456,7 +1459,7 @@ struct ConfigImportView: View {
 
     private var recognitionText: String {
         if tokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "Scan QR, paste token, or choose a QR image/JSON config file"
+            return "Scan QR, paste token, or choose a QR image, JSON config, or prepared .aol surface package"
         }
         if isTrackerEnrollment { return "Managed r2c-tracker enrollment identified"
         }

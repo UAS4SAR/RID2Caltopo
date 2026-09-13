@@ -448,7 +448,7 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
         }
         _maxIdleTimeInMinutes.value.toLongOrNull()?.let { CaltopoClient.SetMaxIdleTimeInMinutes(it) }
         CaltopoClient.SetUsePeers(_usePeers.value)
-        CaltopoClient.SetStandaloneR2cCoordinationEnabled(_standaloneR2cCoordinationEnabled.value)
+        CaltopoClient.SetStandaloneR2cCoordinationEnabled(false)
         CaltopoClient.SetCaptureVideoStreamsFlag(_captureIncomingVideo.value)
         R2CApplication.getAppCtxt()?.let { context ->
             WifiRidScanPrefs.setEnabled(context, _wifiRidScanningEnabled.value)

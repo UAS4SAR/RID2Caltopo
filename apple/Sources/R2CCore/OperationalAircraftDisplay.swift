@@ -72,6 +72,15 @@ public struct MapAircraftLabelLayout: Sendable, Equatable {
 }
 
 public enum OperationalAircraftDisplay {
+    /// Highlight only a displayed numeric clearance below zero, never a status placeholder.
+    public static func negativeAOLRange(in text: String) -> Range<String.Index>? {
+        guard let prefix = text.range(of: "AOL:") else { return nil }
+        let end = text[prefix.upperBound...].firstIndex(where: { $0.isWhitespace }) ?? text.endIndex
+        let value = text[prefix.upperBound..<end].replacingOccurrences(of: "'", with: "")
+        guard let feet = Double(value), feet.isFinite, feet < 0 else { return nil }
+        return prefix.lowerBound..<end
+    }
+
     public static let displayedPositionStaleAfter: TimeInterval = 5
     public static let displayedPositionVeryStaleAfter: TimeInterval = 10
 
@@ -105,7 +114,11 @@ public enum OperationalAircraftDisplay {
         aglFeet: Double?,
         aglStale: Bool,
         rangeFeet: Double?,
-        headingDegrees: Double?
+        headingDegrees: Double?,
+        aol: OperationalAOLState? = nil,
+        atoStatus: OperationalMeasurementStatus = .available,
+        aglStatus: OperationalMeasurementStatus? = nil,
+        telemetryStale: Bool = false
     ) -> String {
         "\(designator)  " + statusLabel(
             atoFeet: atoFeet,
@@ -113,7 +126,8 @@ public enum OperationalAircraftDisplay {
             aglStale: aglStale,
             rangeFeet: rangeFeet,
             headingDegrees: headingDegrees,
-            headingLabel: "TRK"
+            headingLabel: "TRK",
+            aol: aol,atoStatus:atoStatus,aglStatus:aglStatus,telemetryStale:telemetryStale
         )
     }
 
@@ -124,21 +138,22 @@ public enum OperationalAircraftDisplay {
         rangeFeet: Double?,
         headingDegrees: Double?,
         headingLabel: String = "HDG",
-        positionStale: Bool = false
+        positionStale: Bool = false,
+        aol: OperationalAOLState? = nil,
+        atoStatus: OperationalMeasurementStatus = .available,
+        aglStatus: OperationalMeasurementStatus? = nil,
+        telemetryStale: Bool = false
     ) -> String {
-        func feet(_ value: Double?, stale: Bool = false, capped: Bool = true) -> String {
-            guard let value, value.isFinite, !capped || abs(value) <= 1_000 else { return "--" }
-            return String(format: "%.0f%@", value, stale ? "?" : "")
+        func label(_ value:Double?,status:OperationalMeasurementStatus = .available,suffix:String="'",cap:Double = .infinity) -> String {
+            (positionStale || telemetryStale ? OperationalMeasurementStatus.stale : status).label(value,suffix:suffix,maxAbs:cap)
         }
-        let heading: String
-        if let rounded = RidHeading.roundedWholeDegrees(headingDegrees) {
-            heading = String(rounded)
-        } else {
-            heading = "--"
-        }
-        let positionStatus = positionStale ? " POS?" : ""
-        return "ATO:\(feet(atoFeet))' AGL:\(feet(aglFeet, stale: aglStale))' "
-            + "RNG:\(feet(rangeFeet, capped: false))' \(headingLabel):\(heading)°\(positionStatus)"
+        let ato=label(atoFeet,status:atoStatus,cap:1000)
+        let agl=(positionStale || telemetryStale ? OperationalMeasurementStatus.stale :
+            (aglStatus ?? (aglStale ? .unknown : .available))).label(aglFeet, suffix: "'", maxAbs: 1000, showPendingValue: true)
+        let surface=label(aol?.feet,status:aol?.status ?? .unknown)
+        let range=label(rangeFeet)
+        let heading=label(RidHeading.roundedWholeDegrees(headingDegrees).map(Double.init),suffix:"°")
+        return "ATO:\(ato) AGL:\(agl) AOL:\(surface) RNG:\(range) \(headingLabel):\(heading)"
     }
 
     public static func layoutLabels(
@@ -252,5 +267,14 @@ public enum OperationalAircraftDisplay {
             latitude: destinationLatitude * 180 / .pi,
             longitude: ((destinationLongitude * 180 / .pi + 540).truncatingRemainder(dividingBy: 360)) - 180
         )
+    }
+}
+
+public enum OperationalStreamConfirmationMatch {
+    public static func remoteID(designator: String, mappings: [(remoteID:String,designator:String)]) -> String? {
+        let key=designator.trimmingCharacters(in:.whitespacesAndNewlines).lowercased()
+        guard !key.isEmpty else { return nil }
+        let matches=Set(mappings.filter { $0.designator.trimmingCharacters(in:.whitespacesAndNewlines).lowercased()==key }.map(\.remoteID))
+        return matches.count==1 ? matches.first : nil
     }
 }

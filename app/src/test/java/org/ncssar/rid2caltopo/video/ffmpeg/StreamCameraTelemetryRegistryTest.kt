@@ -8,6 +8,27 @@ import org.junit.Test
 
 class StreamCameraTelemetryRegistryTest {
     @Test
+    fun wiredMatricePositionIsUsableWithoutAnyRidAndExpiresWithTheStream() {
+        val name = "wired-matrice-no-rid"
+        StreamCameraTelemetryRegistry.clear(name)
+        StreamCameraTelemetryRegistry.update(name, FfmpegTelemetry(
+            sourceTag = "dji-sei-245", sourceTimestampUs = 236968000,
+            latitude = 39.15308454539627, longitude = -121.13286623731256,
+            altitudeMeters = 600.939, gimbalPitchDeg = -14.56265,
+            cameraYawDeg = 353.119, horizontalFovDeg = 37.703125,
+            verticalFovDeg = 21.20703125, djiNorthMm = 57284,
+            djiEastMm = 61270, djiDownMm = -605742,
+        ), nowMs = 10000)
+        val sample = StreamCameraTelemetryRegistry.freshOperationalPosition(name, 10020)
+        assertTrue(sample != null)
+        assertEquals(4.803, sample!!.relativeUpMeters!!, 0.00001)
+        assertTrue(sample.latitudeDeg!! > 39.1535)
+        assertNull(StreamCameraTelemetryRegistry.freshOperationalPosition(name, 13001))
+        assertNull(StreamCameraTelemetryRegistry.freshOperationalPosition(name, 9999))
+        StreamCameraTelemetryRegistry.clear(name)
+    }
+
+    @Test
     fun clueRidFallbackIsBlockedForCurrentOrPreviouslyValidatedPositionalSei() {
         assertFalse(shouldBlockRidClueFallback(
             seiPositionAuthorityEstablished = false,

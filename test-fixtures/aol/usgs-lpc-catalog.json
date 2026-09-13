@@ -1,0 +1,131 @@
+{
+  "total": 9,
+  "items": [
+    {
+      "title": "USGS Lidar Point Cloud CA_NoCAL_3DEP_Supp_Funding_2018_D18 w2116n2082",
+      "sourceId": "5e21b5cae4b014c8530237d1",
+      "metaUrl": "https://www.sciencebase.gov/catalog/item/5e21b5cae4b014c8530237d1",
+      "publicationDate": "2020-01-14",
+      "sizeInBytes": 37849409,
+      "downloadURL": "https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/LPC/Projects/CA_NoCAL_3DEP_Supp_Funding_2018_D18/CA_NoCAL_Wildfires_B1_2018/LAZ/USGS_LPC_CA_NoCAL_3DEP_Supp_Funding_2018_D18_w2116n2082.laz",
+      "boundingBox": {
+        "minX": -121.03424898335874,
+        "maxX": -121.01991403695796,
+        "minY": 39.24140517192586,
+        "maxY": 39.24769735463805
+      }
+    },
+    {
+      "title": "USGS Lidar Point Cloud CA_NoCAL_3DEP_Supp_Funding_2018_D18 w2117n2082",
+      "sourceId": "5e21b5dde4b014c853023843",
+      "metaUrl": "https://www.sciencebase.gov/catalog/item/5e21b5dde4b014c853023843",
+      "publicationDate": "2020-01-14",
+      "sizeInBytes": 44952313,
+      "downloadURL": "https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/LPC/Projects/CA_NoCAL_3DEP_Supp_Funding_2018_D18/CA_NoCAL_Wildfires_B1_2018/LAZ/USGS_LPC_CA_NoCAL_3DEP_Supp_Funding_2018_D18_w2117n2082.laz",
+      "boundingBox": {
+        "minX": -121.04553988516058,
+        "maxX": -121.03120430549653,
+        "minY": 39.23908264435786,
+        "maxY": 39.24537350090343
+      }
+    },
+    {
+      "title": "USGS Lidar Point Cloud CA_NoCAL_3DEP_Supp_Funding_2018_D18 w2118n2082",
+      "sourceId": "5e21b5f0e4b014c8530238b1",
+      "metaUrl": "https://www.sciencebase.gov/catalog/item/5e21b5f0e4b014c8530238b1",
+      "publicationDate": "2020-01-14",
+      "sizeInBytes": 34388458,
+      "downloadURL": "https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/LPC/Projects/CA_NoCAL_3DEP_Supp_Funding_2018_D18/CA_NoCAL_Wildfires_B1_2018/LAZ/USGS_LPC_CA_NoCAL_3DEP_Supp_Funding_2018_D18_w2118n2082.laz",
+      "boundingBox": {
+        "minX": -121.05682995019616,
+        "maxX": -121.04249385068114,
+        "minY": 39.236759094630415,
+        "maxY": 39.24304864824797
+      }
+    },
+    {
+      "title": "USGS Lidar Point Cloud CA_SierraNevada_B22 10SFJ6844",
+      "sourceId": "655e89ebd34e3aa43a438d68",
+      "metaUrl": "https://www.sciencebase.gov/catalog/item/655e89ebd34e3aa43a438d68",
+      "publicationDate": "2023-11-18",
+      "sizeInBytes": 88311021,
+      "downloadURL": "https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/LPC/Projects/CA_SierraNevada_B22/CA_SierraNevada_2_2022/LAZ/USGS_LPC_CA_SierraNevada_B22_10SFJ6844.laz",
+      "boundingBox": {
+        "minX": -121.0536460532,
+        "maxX": -121.0418166438,
+        "minY": 39.2288557643,
+        "maxY": 39.238055582
+      }
+    },
+    {
+      "title": "USGS Lidar Point Cloud CA_SierraNevada_B22 10SFJ6845",
+      "sourceId": "655e8dbcd34e3aa43a43a455",
+      "metaUrl": "https://www.sciencebase.gov/catalog/item/655e8dbcd34e3aa43a43a455",
+      "publicationDate": "2023-11-18",
+      "sizeInBytes": 139601211,
+      "downloadURL": "https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/LPC/Projects/CA_SierraNevada_B22/CA_SierraNevada_2_2022/LAZ/USGS_LPC_CA_SierraNevada_B22_10SFJ6845.laz",
+      "boundingBox": {
+        "minX": -121.0533971387,
+        "maxX": -121.0415661386,
+        "minY": 39.2378614856,
+        "maxY": 39.2470613499
+      }
+    },
+    {
+      "title": "USGS Lidar Point Cloud CA_SierraNevada_B22 10SFJ6846",
+      "sourceId": "655e8df0d34e3aa43a43a5bc",
+      "metaUrl": "https://www.sciencebase.gov/catalog/item/655e8df0d34e3aa43a43a5bc",
+      "publicationDate": "2023-11-18",
+      "sizeInBytes": 168034303,
+      "downloadURL": "https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/LPC/Projects/CA_SierraNevada_B22/CA_SierraNevada_2_2022/LAZ/USGS_LPC_CA_SierraNevada_B22_10SFJ6846.laz",
+      "boundingBox": {
+        "minX": -121.0531481127,
+        "maxX": -121.0413155211,
+        "minY": 39.2468671915,
+        "maxY": 39.2560671025
+      }
+    },
+    {
+      "title": "USGS Lidar Point Cloud CA_SierraNevada_B22 10SFJ6944",
+      "sourceId": "655e8cbdd34e3aa43a439da1",
+      "metaUrl": "https://www.sciencebase.gov/catalog/item/655e8cbdd34e3aa43a439da1",
+      "publicationDate": "2023-11-18",
+      "sizeInBytes": 95347914,
+      "downloadURL": "https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/LPC/Projects/CA_SierraNevada_B22/CA_SierraNevada_2_2022/LAZ/USGS_LPC_CA_SierraNevada_B22_10SFJ6944.laz",
+      "boundingBox": {
+        "minX": -121.0420669185,
+        "maxX": -121.0302361428,
+        "minY": 39.2286604876,
+        "maxY": 39.2378613936
+      }
+    },
+    {
+      "title": "USGS Lidar Point Cloud CA_SierraNevada_B22 10SFJ6945",
+      "sourceId": "655e8f33d34e3aa43a43ac26",
+      "metaUrl": "https://www.sciencebase.gov/catalog/item/655e8f33d34e3aa43a43ac26",
+      "publicationDate": "2023-11-18",
+      "sizeInBytes": 126272548,
+      "downloadURL": "https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/LPC/Projects/CA_SierraNevada_B22/CA_SierraNevada_2_2022/LAZ/USGS_LPC_CA_SierraNevada_B22_10SFJ6945.laz",
+      "boundingBox": {
+        "minX": -121.0418165255,
+        "maxX": -121.0299841585,
+        "minY": 39.2376661466,
+        "maxY": 39.2468670995
+      }
+    },
+    {
+      "title": "USGS Lidar Point Cloud CA_SierraNevada_B22 10SFJ6946",
+      "sourceId": "655e8e12d34e3aa43a43a686",
+      "metaUrl": "https://www.sciencebase.gov/catalog/item/655e8e12d34e3aa43a43a686",
+      "publicationDate": "2023-11-18",
+      "sizeInBytes": 171583765,
+      "downloadURL": "https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/LPC/Projects/CA_SierraNevada_B22/CA_SierraNevada_2_2022/LAZ/USGS_LPC_CA_SierraNevada_B22_10SFJ6946.laz",
+      "boundingBox": {
+        "minX": -121.0415660203,
+        "maxX": -121.0297320612,
+        "minY": 39.2466717903,
+        "maxY": 39.2558727902
+      }
+    }
+  ]
+}

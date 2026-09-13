@@ -1,0 +1,652 @@
+[
+  {
+    "longitude": -100.0,
+    "latitude": 40.0,
+    "timestampMilliseconds": 0.0
+  },
+  {
+    "longitude": -100.0,
+    "latitude": 40.0,
+    "timestampMilliseconds": 1035.0
+  },
+  {
+    "longitude": -100.0,
+    "latitude": 40.0,
+    "timestampMilliseconds": 2102.0
+  },
+  {
+    "longitude": -100.0,
+    "latitude": 40.0,
+    "timestampMilliseconds": 3169.0
+  },
+  {
+    "longitude": -100.0,
+    "latitude": 40.0,
+    "timestampMilliseconds": 4235.0
+  },
+  {
+    "longitude": -100.0,
+    "latitude": 40.0,
+    "timestampMilliseconds": 5268.0
+  },
+  {
+    "longitude": -99.999991,
+    "latitude": 40.000003,
+    "timestampMilliseconds": 6335.0
+  },
+  {
+    "longitude": -99.999967,
+    "latitude": 40.000011,
+    "timestampMilliseconds": 7408.0
+  },
+  {
+    "longitude": -99.999941,
+    "latitude": 40.00002,
+    "timestampMilliseconds": 8505.0
+  },
+  {
+    "longitude": -99.999919,
+    "latitude": 40.000028,
+    "timestampMilliseconds": 9570.0
+  },
+  {
+    "longitude": -99.999921,
+    "latitude": 40.000028,
+    "timestampMilliseconds": 10637.0
+  },
+  {
+    "longitude": -99.999918,
+    "latitude": 40.000029,
+    "timestampMilliseconds": 11737.0
+  },
+  {
+    "longitude": -99.999919,
+    "latitude": 40.000029,
+    "timestampMilliseconds": 12806.0
+  },
+  {
+    "longitude": -99.999921,
+    "latitude": 40.000029,
+    "timestampMilliseconds": 13872.0
+  },
+  {
+    "longitude": -99.999922,
+    "latitude": 40.000028,
+    "timestampMilliseconds": 14907.0
+  },
+  {
+    "longitude": -99.999923,
+    "latitude": 40.000027,
+    "timestampMilliseconds": 16007.0
+  },
+  {
+    "longitude": -99.999921,
+    "latitude": 40.000027,
+    "timestampMilliseconds": 17139.0
+  },
+  {
+    "longitude": -99.999922,
+    "latitude": 40.000028,
+    "timestampMilliseconds": 18174.0
+  },
+  {
+    "longitude": -99.999928,
+    "latitude": 40.000023,
+    "timestampMilliseconds": 19274.0
+  },
+  {
+    "longitude": -99.999928,
+    "latitude": 40.000023,
+    "timestampMilliseconds": 20341.0
+  },
+  {
+    "longitude": -99.999928,
+    "latitude": 40.000022,
+    "timestampMilliseconds": 21374.0
+  },
+  {
+    "longitude": -99.999926,
+    "latitude": 40.000023,
+    "timestampMilliseconds": 22475.0
+  },
+  {
+    "longitude": -99.999928,
+    "latitude": 40.000025,
+    "timestampMilliseconds": 23509.0
+  },
+  {
+    "longitude": -99.999947,
+    "latitude": 40.000027,
+    "timestampMilliseconds": 24576.0
+  },
+  {
+    "longitude": -99.999975,
+    "latitude": 40.00002,
+    "timestampMilliseconds": 25676.0
+  },
+  {
+    "longitude": -99.999988,
+    "latitude": 40.000016,
+    "timestampMilliseconds": 26743.0
+  },
+  {
+    "longitude": -99.999991,
+    "latitude": 40.00001,
+    "timestampMilliseconds": 27777.0
+  },
+  {
+    "longitude": -99.999991,
+    "latitude": 40.00001,
+    "timestampMilliseconds": 28877.0
+  },
+  {
+    "longitude": -99.999991,
+    "latitude": 40.000011,
+    "timestampMilliseconds": 29911.0
+  },
+  {
+    "longitude": -99.99999,
+    "latitude": 40.000011,
+    "timestampMilliseconds": 31011.0
+  },
+  {
+    "longitude": -99.999991,
+    "latitude": 40.000012,
+    "timestampMilliseconds": 32078.0
+  },
+  {
+    "longitude": -99.999991,
+    "latitude": 40.000012,
+    "timestampMilliseconds": 33146.0
+  },
+  {
+    "longitude": -99.99999,
+    "latitude": 40.000012,
+    "timestampMilliseconds": 34246.0
+  },
+  {
+    "longitude": -99.99999,
+    "latitude": 40.000011,
+    "timestampMilliseconds": 35346.0
+  },
+  {
+    "longitude": -99.999991,
+    "latitude": 40.000012,
+    "timestampMilliseconds": 36413.0
+  },
+  {
+    "longitude": -99.999989,
+    "latitude": 40.000013,
+    "timestampMilliseconds": 37480.0
+  },
+  {
+    "longitude": -99.999989,
+    "latitude": 40.000014,
+    "timestampMilliseconds": 38548.0
+  },
+  {
+    "longitude": -99.999989,
+    "latitude": 40.000014,
+    "timestampMilliseconds": 39581.0
+  },
+  {
+    "longitude": -99.999989,
+    "latitude": 40.000014,
+    "timestampMilliseconds": 40648.0
+  },
+  {
+    "longitude": -99.999988,
+    "latitude": 40.000014,
+    "timestampMilliseconds": 41749.0
+  },
+  {
+    "longitude": -99.999988,
+    "latitude": 40.000016,
+    "timestampMilliseconds": 42816.0
+  },
+  {
+    "longitude": -99.999986,
+    "latitude": 40.000017,
+    "timestampMilliseconds": 43883.0
+  },
+  {
+    "longitude": -99.999985,
+    "latitude": 40.000018,
+    "timestampMilliseconds": 44917.0
+  },
+  {
+    "longitude": -99.999986,
+    "latitude": 40.000018,
+    "timestampMilliseconds": 46017.0
+  },
+  {
+    "longitude": -99.999986,
+    "latitude": 40.000017,
+    "timestampMilliseconds": 47084.0
+  },
+  {
+    "longitude": -99.999986,
+    "latitude": 40.000017,
+    "timestampMilliseconds": 48118.0
+  },
+  {
+    "longitude": -99.999986,
+    "latitude": 40.000017,
+    "timestampMilliseconds": 49185.0
+  },
+  {
+    "longitude": -99.999986,
+    "latitude": 40.000016,
+    "timestampMilliseconds": 50252.0
+  },
+  {
+    "longitude": -99.999985,
+    "latitude": 40.000016,
+    "timestampMilliseconds": 51319.0
+  },
+  {
+    "longitude": -99.999986,
+    "latitude": 40.000016,
+    "timestampMilliseconds": 52386.0
+  },
+  {
+    "longitude": -99.999985,
+    "latitude": 40.000015,
+    "timestampMilliseconds": 53523.0
+  },
+  {
+    "longitude": -99.999986,
+    "latitude": 40.000015,
+    "timestampMilliseconds": 54587.0
+  },
+  {
+    "longitude": -99.999987,
+    "latitude": 40.000015,
+    "timestampMilliseconds": 55671.0
+  },
+  {
+    "longitude": -99.999987,
+    "latitude": 40.000014,
+    "timestampMilliseconds": 56755.0
+  },
+  {
+    "longitude": -99.999988,
+    "latitude": 40.000015,
+    "timestampMilliseconds": 57805.0
+  },
+  {
+    "longitude": -99.999989,
+    "latitude": 40.000015,
+    "timestampMilliseconds": 58889.0
+  },
+  {
+    "longitude": -99.999987,
+    "latitude": 40.000014,
+    "timestampMilliseconds": 60023.0
+  },
+  {
+    "longitude": -99.999987,
+    "latitude": 40.000015,
+    "timestampMilliseconds": 61123.0
+  },
+  {
+    "longitude": -99.999986,
+    "latitude": 40.000015,
+    "timestampMilliseconds": 62190.0
+  },
+  {
+    "longitude": -99.999986,
+    "latitude": 40.000015,
+    "timestampMilliseconds": 63290.0
+  },
+  {
+    "longitude": -99.999987,
+    "latitude": 40.000016,
+    "timestampMilliseconds": 64357.0
+  },
+  {
+    "longitude": -99.999986,
+    "latitude": 40.000015,
+    "timestampMilliseconds": 65424.0
+  },
+  {
+    "longitude": -99.999985,
+    "latitude": 40.000015,
+    "timestampMilliseconds": 66475.0
+  },
+  {
+    "longitude": -99.999985,
+    "latitude": 40.000016,
+    "timestampMilliseconds": 67592.0
+  },
+  {
+    "longitude": -99.999986,
+    "latitude": 40.000016,
+    "timestampMilliseconds": 68659.0
+  },
+  {
+    "longitude": -99.999987,
+    "latitude": 40.000016,
+    "timestampMilliseconds": 69726.0
+  },
+  {
+    "longitude": -99.99999,
+    "latitude": 40.000014,
+    "timestampMilliseconds": 70793.0
+  },
+  {
+    "longitude": -100.000008,
+    "latitude": 40.000007,
+    "timestampMilliseconds": 71872.0
+  },
+  {
+    "longitude": -100.000042,
+    "latitude": 39.999992,
+    "timestampMilliseconds": 72927.0
+  },
+  {
+    "longitude": -100.000083,
+    "latitude": 39.999975,
+    "timestampMilliseconds": 73994.0
+  },
+  {
+    "longitude": -100.000113,
+    "latitude": 39.999962,
+    "timestampMilliseconds": 75095.0
+  },
+  {
+    "longitude": -100.000134,
+    "latitude": 39.999955,
+    "timestampMilliseconds": 76228.0
+  },
+  {
+    "longitude": -100.000148,
+    "latitude": 39.99995,
+    "timestampMilliseconds": 77295.0
+  },
+  {
+    "longitude": -100.000157,
+    "latitude": 39.999947,
+    "timestampMilliseconds": 78396.0
+  },
+  {
+    "longitude": -100.000165,
+    "latitude": 39.999945,
+    "timestampMilliseconds": 79463.0
+  },
+  {
+    "longitude": -100.000174,
+    "latitude": 39.999942,
+    "timestampMilliseconds": 80530.0
+  },
+  {
+    "longitude": -100.000181,
+    "latitude": 39.999938,
+    "timestampMilliseconds": 81597.0
+  },
+  {
+    "longitude": -100.000186,
+    "latitude": 39.999934,
+    "timestampMilliseconds": 82697.0
+  },
+  {
+    "longitude": -100.000191,
+    "latitude": 39.999931,
+    "timestampMilliseconds": 83765.0
+  },
+  {
+    "longitude": -100.000195,
+    "latitude": 39.999927,
+    "timestampMilliseconds": 84798.0
+  },
+  {
+    "longitude": -100.000194,
+    "latitude": 39.999929,
+    "timestampMilliseconds": 85899.0
+  },
+  {
+    "longitude": -100.000193,
+    "latitude": 39.999929,
+    "timestampMilliseconds": 86966.0
+  },
+  {
+    "longitude": -100.000193,
+    "latitude": 39.999929,
+    "timestampMilliseconds": 88033.0
+  },
+  {
+    "longitude": -100.000193,
+    "latitude": 39.999929,
+    "timestampMilliseconds": 89100.0
+  },
+  {
+    "longitude": -100.000193,
+    "latitude": 39.999929,
+    "timestampMilliseconds": 90200.0
+  },
+  {
+    "longitude": -100.000192,
+    "latitude": 39.999929,
+    "timestampMilliseconds": 91267.0
+  },
+  {
+    "longitude": -100.000192,
+    "latitude": 39.999929,
+    "timestampMilliseconds": 92368.0
+  },
+  {
+    "longitude": -100.000192,
+    "latitude": 39.99993,
+    "timestampMilliseconds": 93468.0
+  },
+  {
+    "longitude": -100.000192,
+    "latitude": 39.99993,
+    "timestampMilliseconds": 94535.0
+  },
+  {
+    "longitude": -100.000192,
+    "latitude": 39.99993,
+    "timestampMilliseconds": 95602.0
+  },
+  {
+    "longitude": -100.000192,
+    "latitude": 39.999931,
+    "timestampMilliseconds": 96669.0
+  },
+  {
+    "longitude": -100.000193,
+    "latitude": 39.999931,
+    "timestampMilliseconds": 97736.0
+  },
+  {
+    "longitude": -100.000193,
+    "latitude": 39.999931,
+    "timestampMilliseconds": 98803.0
+  },
+  {
+    "longitude": -100.000214,
+    "latitude": 39.999915,
+    "timestampMilliseconds": 99871.0
+  },
+  {
+    "longitude": -100.000246,
+    "latitude": 39.999872,
+    "timestampMilliseconds": 100938.0
+  },
+  {
+    "longitude": -100.000284,
+    "latitude": 39.999811,
+    "timestampMilliseconds": 102005.0
+  },
+  {
+    "longitude": -100.000321,
+    "latitude": 39.999751,
+    "timestampMilliseconds": 103072.0
+  },
+  {
+    "longitude": -100.000355,
+    "latitude": 39.999696,
+    "timestampMilliseconds": 104139.0
+  },
+  {
+    "longitude": -100.000389,
+    "latitude": 39.999644,
+    "timestampMilliseconds": 105206.0
+  },
+  {
+    "longitude": -100.000415,
+    "latitude": 39.999602,
+    "timestampMilliseconds": 106273.0
+  },
+  {
+    "longitude": -100.000434,
+    "latitude": 39.999568,
+    "timestampMilliseconds": 107340.0
+  },
+  {
+    "longitude": -100.000439,
+    "latitude": 39.999538,
+    "timestampMilliseconds": 108407.0
+  },
+  {
+    "longitude": -100.000432,
+    "latitude": 39.999515,
+    "timestampMilliseconds": 109474.0
+  },
+  {
+    "longitude": -100.000423,
+    "latitude": 39.999498,
+    "timestampMilliseconds": 110575.0
+  },
+  {
+    "longitude": -100.000411,
+    "latitude": 39.999486,
+    "timestampMilliseconds": 111708.0
+  },
+  {
+    "longitude": -100.000398,
+    "latitude": 39.99948,
+    "timestampMilliseconds": 112809.0
+  },
+  {
+    "longitude": -100.000387,
+    "latitude": 39.999478,
+    "timestampMilliseconds": 113876.0
+  },
+  {
+    "longitude": -100.000373,
+    "latitude": 39.999477,
+    "timestampMilliseconds": 114976.0
+  },
+  {
+    "longitude": -100.000354,
+    "latitude": 39.999477,
+    "timestampMilliseconds": 116077.0
+  },
+  {
+    "longitude": -100.000341,
+    "latitude": 39.999476,
+    "timestampMilliseconds": 117144.0
+  },
+  {
+    "longitude": -100.000341,
+    "latitude": 39.999476,
+    "timestampMilliseconds": 118211.0
+  },
+  {
+    "longitude": -100.000341,
+    "latitude": 39.999476,
+    "timestampMilliseconds": 119278.0
+  },
+  {
+    "longitude": -100.000342,
+    "latitude": 39.999476,
+    "timestampMilliseconds": 120378.0
+  },
+  {
+    "longitude": -100.000342,
+    "latitude": 39.999477,
+    "timestampMilliseconds": 121445.0
+  },
+  {
+    "longitude": -100.000342,
+    "latitude": 39.999477,
+    "timestampMilliseconds": 122512.0
+  },
+  {
+    "longitude": -100.000342,
+    "latitude": 39.999476,
+    "timestampMilliseconds": 123579.0
+  },
+  {
+    "longitude": -100.000343,
+    "latitude": 39.999476,
+    "timestampMilliseconds": 124680.0
+  },
+  {
+    "longitude": -100.000339,
+    "latitude": 39.999477,
+    "timestampMilliseconds": 125747.0
+  },
+  {
+    "longitude": -100.000329,
+    "latitude": 39.999478,
+    "timestampMilliseconds": 126847.0
+  },
+  {
+    "longitude": -100.000313,
+    "latitude": 39.999479,
+    "timestampMilliseconds": 127981.0
+  },
+  {
+    "longitude": -100.000296,
+    "latitude": 39.999479,
+    "timestampMilliseconds": 129082.0
+  },
+  {
+    "longitude": -100.000278,
+    "latitude": 39.999477,
+    "timestampMilliseconds": 130115.0
+  },
+  {
+    "longitude": -100.000259,
+    "latitude": 39.999476,
+    "timestampMilliseconds": 131249.0
+  },
+  {
+    "longitude": -100.000235,
+    "latitude": 39.999475,
+    "timestampMilliseconds": 132316.0
+  },
+  {
+    "longitude": -100.000207,
+    "latitude": 39.999474,
+    "timestampMilliseconds": 133417.0
+  },
+  {
+    "longitude": -100.00018,
+    "latitude": 39.999473,
+    "timestampMilliseconds": 134517.0
+  },
+  {
+    "longitude": -100.000154,
+    "latitude": 39.999472,
+    "timestampMilliseconds": 135584.0
+  },
+  {
+    "longitude": -100.00014,
+    "latitude": 39.999472,
+    "timestampMilliseconds": 136651.0
+  },
+  {
+    "longitude": -100.000141,
+    "latitude": 39.999471,
+    "timestampMilliseconds": 137751.0
+  },
+  {
+    "longitude": -100.000141,
+    "latitude": 39.999472,
+    "timestampMilliseconds": 138818.0
+  }
+]

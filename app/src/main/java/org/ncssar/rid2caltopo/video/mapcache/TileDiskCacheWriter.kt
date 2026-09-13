@@ -29,13 +29,16 @@ class TileDiskCacheWriter(context: Context) : IFilesystemCache {
         )
     }
 
-    private val diskCache: BlobCacheStore = BlobCacheStoreFactory.create(
-        context = context.applicationContext,
-        namespace = "tile_cache_v${MapCachePolicy.TILE_CACHE_VERSION}",
-        dbName = MapCachePolicy.TILE_CACHE_DB,
-        maxBytes = MapCachePolicy.tileCacheMaxBytes(context.applicationContext),
-        defaultTtlMs = MapCachePolicy.TILE_TTL_MS
-    )
+    // Construction occurs on the UI thread; opening the store may wait for cache maintenance.
+    private val diskCache: BlobCacheStore by lazy {
+        BlobCacheStoreFactory.create(
+            context = context.applicationContext,
+            namespace = "tile_cache_v${MapCachePolicy.TILE_CACHE_VERSION}",
+            dbName = MapCachePolicy.TILE_CACHE_DB,
+            maxBytes = MapCachePolicy.tileCacheMaxBytes(context.applicationContext),
+            defaultTtlMs = MapCachePolicy.TILE_TTL_MS
+        )
+    }
 
     override fun saveFile(
         pTileSourceInfo: ITileSource,

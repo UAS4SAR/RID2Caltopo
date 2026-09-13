@@ -49,9 +49,9 @@ public enum OperatingProfiles {
         }
         return issues
     }
-    public static func snapshot(_ profile: [String: Any], state: [String: Any], pilotID: String, aircraftID: String, incidentID: String, assignmentID: String, managed: Bool, checked: Set<Int>) -> [String: Any] {
+    public static func snapshot(_ profile: [String: Any], state: [String: Any], pilotID: String, aircraftID: String, incidentID: String, assignmentID: String, managed: Bool, checked: Set<Int>, incidentBriefing: IncidentBriefing = IncidentBriefing(), organizationScope: String = "") -> [String: Any] {
         ["profile": profile, "selectedAt": ISO8601DateFormatter().string(from: Date()), "organizationId": state["organizationId"] as? String ?? "",
-         "incidentId": incidentID, "assignmentId": assignmentID, "catalogRevision": (state["operatingProfiles"] as? [String: Any])?["revision"] as? Int ?? 0,
+         "incidentId": incidentID, "assignmentId": assignmentID, "organizationScope": organizationScope, "incidentBriefing": incidentBriefing.dictionary, "catalogRevision": (state["operatingProfiles"] as? [String: Any])?["revision"] as? Int ?? 0,
          "fetchedAt": state["fetchedAt"] as? String ?? "", "checkedConditions": checked.sorted(),
          "reviewIssues": warnings(profile, state: state, pilotID: pilotID, aircraftID: aircraftID, incidentID: incidentID, managed: managed) + (((profile["conditions"] as? [[String: Any]] ?? []).indices.contains { !checked.contains($0) }) ? ["One or more briefing conditions have not been acknowledged."] : [])]
     }
@@ -69,7 +69,8 @@ public enum OperatingProfiles {
         var result = next
         var changes = (try? JSONSerialization.jsonObject(with: Data((previous.operatingProfileChangesJSON ?? "[]").utf8))) as? [[String: Any]] ?? []
         let old = active(previous), selected = object(next.operatingProfileJSON)
-        if json(old["profile"] ?? [:]) != json(selected["profile"] ?? [:]) || json(old["checkedConditions"] ?? []) != json(selected["checkedConditions"] ?? []) {
+        if json(old["profile"] ?? [:]) != json(selected["profile"] ?? [:]) || json(old["checkedConditions"] ?? []) != json(selected["checkedConditions"] ?? []) ||
+            ["incidentBriefing", "incidentId", "assignmentId", "organizationScope"].contains(where: { json([old[$0] ?? NSNull()]) != json([selected[$0] ?? NSNull()]) }) {
             changes.append(["at": ISO8601DateFormatter().string(from: Date()), "before": old, "after": selected])
         }
         result.operatingProfileJSON = previous.operatingProfileJSON
@@ -83,14 +84,36 @@ public struct OperatingProfileAssignment: Sendable {
     private var scope = ""
     public private(set) var assignmentID = ""
     public private(set) var profileJSON: String?
+    public private(set) var incidentBriefing = IncidentBriefing()
     public init() {}
     public mutating func setScope(organization: String, incident: String) {
         let next = OperatingProfiles.json([organization, incident])
         if scope != next { scope = next; end() }
     }
-    public mutating func end() { assignmentID = ""; profileJSON = nil }
-    public mutating func remember(_ profile: [String: Any]) {
+    public mutating func end() { assignmentID = ""; profileJSON = nil; incidentBriefing = IncidentBriefing() }
+    public mutating func remember(_ profile: [String: Any], briefing: IncidentBriefing = IncidentBriefing()) {
         if assignmentID.isEmpty { assignmentID = UUID().uuidString }
         profileJSON = OperatingProfiles.json(profile)
+        incidentBriefing = briefing
+    }
+}
+
+/// Tablet-entered incident information, separate from the organization's standing authority.
+public struct IncidentBriefing: Sendable, Equatable {
+    public var incidentName: String
+    public var notes: String
+    public init(incidentName: String = "", notes: String = "") {
+        self.incidentName = String(incidentName.prefix(160))
+        self.notes = String(notes.prefix(4000))
+    }
+    public init(dictionary: [String: Any]) {
+        self.init(incidentName: dictionary["incidentName"] as? String ?? "", notes: dictionary["notes"] as? String ?? "")
+    }
+    public var dictionary: [String: Any] { ["incidentName": String(incidentName.prefix(160)), "notes": String(notes.prefix(4000))] }
+    public static func currentFlight(_ snapshot: [String: Any], confirmed: Bool, organization: String, incident: String) -> IncidentBriefing? {
+        guard confirmed, snapshot["organizationScope"] as? String == organization,
+              snapshot["incidentId"] as? String == incident,
+              let saved = snapshot["incidentBriefing"] as? [String: Any] else { return nil }
+        return IncidentBriefing(dictionary: saved)
     }
 }

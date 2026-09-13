@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableStateOf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.SupervisorJob
 import okhttp3.Call
 import org.ncssar.rid2caltopo.app.MapOfflineDownloadService
@@ -106,6 +107,9 @@ internal object AndroidMapOfflinePrepCoordinator {
     val inFlight = mutableStateOf(false)
     val preset = mutableStateOf(OFFLINE_PREP_PRESETS[1])
     val includeDem = mutableStateOf(true)
+    val includeAol = mutableStateOf(false)
+    val aolReport = mutableStateOf("")
+    val failureNotice = mutableStateOf<String?>(null)
     val demResolution = mutableStateOf(DemResolutionOption.MAXIMUM_1M)
     val includeContours = mutableStateOf(false)
     val maximizeThroughput = mutableStateOf(false)
@@ -146,17 +150,35 @@ internal object AndroidMapOfflinePrepCoordinator {
         cancelRequested.value = true
         progress.value = progress.value.copy(phase = "Cancelling")
         activeCalls.forEach(Call::cancel)
-        job.value?.cancel()
-        job.value = null
+        val stopping = job.value
+        if (stopping != null) {
+            // Keep the run active until native batches and temporary-file cleanup
+            // stop. A quick Cancel/Start must not overlap two preparation jobs.
+            stopping.invokeOnCompletion {
+                scope.launch {
+                    if (job.value === stopping) {
+                        job.value = null
+                        activeCalls.clear()
+                        inFlight.value = false
+                        cancelRequested.value = false
+                        progress.value = progress.value.copy(phase = "Cancelled")
+                        finish()
+                    }
+                }
+            }
+            stopping.cancel()
+        } else {
+            activeCalls.clear()
+            inFlight.value = false
+            cancelRequested.value = false
+            progress.value = progress.value.copy(phase = "Cancelled")
+            finish()
+        }
         autoCloseJob.value?.cancel()
         autoCloseJob.value = null
-        activeCalls.clear()
-        inFlight.value = false
-        cancelRequested.value = false
-        progress.value = progress.value.copy(phase = "Cancelled")
         if (hideDialog) showDialog.value = false
-        finish()
     }
+
 }
 
 internal fun offlinePrepMenuStatus(inFlight: Boolean, progress: OfflinePrepProgress): String? {

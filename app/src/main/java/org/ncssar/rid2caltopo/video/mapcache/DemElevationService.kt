@@ -52,13 +52,16 @@ internal class DemElevationService(context: Context) {
     private val demHttpCodeRegex = Regex("""dem http-fail code=(\d{3})""")
     private val networkFailCount = AtomicInteger(0)
     private val localGeoTiff = GeoTiffDemSource(context.applicationContext)
-    private val cache: BlobCacheStore = BlobCacheStoreFactory.create(
-        context = context.applicationContext,
-        namespace = "dem_point_v2",
-        dbName = "dem_point_v2.db",
-        maxBytes = 50L * 1024L * 1024L,
-        defaultTtlMs = 365L * 24L * 60L * 60L * 1000L
-    )
+    // Construction occurs on the UI thread; opening the store may wait for cache maintenance.
+    private val cache: BlobCacheStore by lazy {
+        BlobCacheStoreFactory.create(
+            context = context.applicationContext,
+            namespace = "dem_point_v2",
+            dbName = "dem_point_v2.db",
+            maxBytes = 50L * 1024L * 1024L,
+            defaultTtlMs = 365L * 24L * 60L * 60L * 1000L
+        )
+    }
     private val mem = object : LinkedHashMap<String, DemElevationSample>(512, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, DemElevationSample>?): Boolean {
             return size > 2048

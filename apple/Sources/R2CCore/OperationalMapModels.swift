@@ -9,7 +9,41 @@ public enum OperationalMapTrackFreshness {
     }
 }
 
+/// Equatable input for observing changes to stream association and operator choices.
+public struct OperationalInitialStreamFocusState: Equatable {
+    public let followEnabled: Bool
+    public let focusedAircraftID: String?
+    public let operatorAdjustedViewport: Bool
+    public let liveStreamAircraftIDs: [String?]
+
+    public init(followEnabled: Bool, focusedAircraftID: String?,
+                operatorAdjustedViewport: Bool, liveStreamAircraftIDs: [String?]) {
+        self.followEnabled = followEnabled
+        self.focusedAircraftID = focusedAircraftID
+        self.operatorAdjustedViewport = operatorAdjustedViewport
+        self.liveStreamAircraftIDs = liveStreamAircraftIDs
+    }
+
+    public var candidate: String? {
+        OperationalMapFocusPolicy.initialStreamFocus(
+            followEnabled: followEnabled, focusedAircraftID: focusedAircraftID,
+            operatorAdjustedViewport: operatorAdjustedViewport,
+            liveStreamAircraftIDs: liveStreamAircraftIDs)
+    }
+}
+
 public enum OperationalMapFocusPolicy {
+    /// Wait for a sole live stream to resolve; never override the operator's view.
+    public static func initialStreamFocus(
+        followEnabled: Bool, focusedAircraftID: String?, operatorAdjustedViewport: Bool,
+        liveStreamAircraftIDs: [String?]
+    ) -> String? {
+        guard followEnabled, focusedAircraftID == nil, !operatorAdjustedViewport,
+              liveStreamAircraftIDs.count == 1,
+              let candidate = liveStreamAircraftIDs[0], !candidate.isEmpty else { return nil }
+        return candidate
+    }
+
     public static func shouldInspectAircraft(
         focusedAircraftID: String?,
         tappedAircraftID: String
@@ -877,4 +911,16 @@ public enum CaltopoArtifactDecoder {
 
 private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+/// Each stream gets one opportunity to initiate follow in this map-view session.
+public struct OperationalStreamFocusArrival {
+    private var seen: Set<String> = []
+    public init() {}
+    public mutating func observe(liveStreamIDs: Set<String>, followEnabled: Bool, hasFocus: Bool) -> Bool {
+        defer { seen.formUnion(liveStreamIDs) }
+        guard followEnabled, !hasFocus, liveStreamIDs.count == 1,
+              let stream = liveStreamIDs.first else { return false }
+        return !seen.contains(stream)
+    }
 }

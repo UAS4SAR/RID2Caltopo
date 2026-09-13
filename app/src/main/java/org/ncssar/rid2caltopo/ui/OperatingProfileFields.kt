@@ -12,18 +12,21 @@ fun OperatingProfileFields(remoteId: String, value: FlightReadiness, state: JSON
     val mapId = CaltopoMap.GetMapId()
     val org = CaltopoClient.GetTrackerCoordinationUrlPfx()
     OperatingProfiles.setScope(org, mapId)
-    val existing = remember(remoteId) { OperatingProfiles.active(JSONObject(CaltopoClient.GetDroneSpec(remoteId)?.flightReadinessJson ?: "{}")) }
+    val existing = remember(remoteId, org, mapId) { OperatingProfiles.active(JSONObject(CaltopoClient.GetDroneSpec(remoteId)?.flightReadinessJson ?: "{}")) }
     var selected by remember(remoteId, org, mapId) { mutableStateOf(existing?.optJSONObject("profile") ?: OperatingProfiles.initial(state, AircraftOrganizationAccess.rememberedProfileId())) }
     var touched by remember(remoteId, org, mapId) { mutableStateOf(existing != null || OperatingProfiles.assignmentId.isNotEmpty()) }
     var details by remember { mutableStateOf(false) }
     var expanded by remember { mutableStateOf(false) }
-    var reuse by remember(remoteId, org, mapId) { mutableStateOf(OperatingProfiles.assignmentId.isNotEmpty()) }
-    var checked by remember(remoteId) { mutableStateOf(emptySet<Int>()) }
+    var reuse by remember(remoteId, org, mapId) { mutableStateOf(true) }
+    var briefing by remember(remoteId, org, mapId) { mutableStateOf(
+        IncidentBriefing.currentFlight(existing, CaltopoClient.GetDroneSpec(remoteId)?.isCurrentFlightConfirmed == true, org, mapId)
+            ?: OperatingProfiles.incidentBriefing) }
+    var checked by remember(remoteId, org, mapId) { mutableStateOf(emptySet<Int>()) }
     LaunchedEffect(state.toString()) { if (!touched) selected = OperatingProfiles.initial(state, AircraftOrganizationAccess.rememberedProfileId()) }
-    LaunchedEffect(selected.toString(), checked, reuse, state.toString(), value.pilotJson, value.aircraft.recordId) {
+    LaunchedEffect(selected.toString(), checked, reuse, state.toString(), value.pilotJson, value.aircraft.recordId, briefing, org, mapId) {
         onChange(value.copy(operatingProfileJson = OperatingProfiles.snapshot(selected, state,
             JSONObject(value.pilotJson).optString("memberId"), value.aircraft.recordId, mapId,
-            AircraftOrganizationAccess.belongsToOrganization(), checked).put("useForAssignment", reuse).toString()))
+            AircraftOrganizationAccess.belongsToOrganization(), checked, briefing, org).put("useForAssignment", reuse).toString()))
     }
     TextButton(onClick = { expanded = true }) { Text("Type of flight: " + selected.optString("name")) }
     DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
@@ -34,19 +37,26 @@ fun OperatingProfileFields(remoteId: String, value: FlightReadiness, state: JSON
         }
     }
     if (selected.optString("id") == "bvlos-pending") Text("BVLOS authority details not configured", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-    TextButton(onClick = { details = !details }) { Text("Authority & briefing details ${if (details) "▾" else "▸"}") }
+    TextButton(onClick = { details = !details }) { Text("Incident & briefing ${if (details) "▾" else "▸"}") }
     if (details) {
+    Text("Incident map: " + mapId.ifBlank { "Standalone — no connected map" })
+    OutlinedTextField(value = briefing.incidentName, onValueChange = { briefing = briefing.copy(incidentName = it.take(160)) },
+        label = { Text("Incident name / reference (optional)") })
+    OutlinedTextField(value = briefing.notes, onValueChange = { briefing = briefing.copy(notes = it.take(4000)) },
+        label = { Text("Briefing notes (optional)") }, minLines = 3, maxLines = 6)
+    Text("Add incident-specific details here, such as VO, operating area, limits or RTH. The connected map is recorded automatically; no Tracker edit is needed for each search.")
     Row {
         Checkbox(checked = reuse, onCheckedChange = { reuse = it })
-        Text("Use for this assignment (across batteries)")
+        Text("Remember profile and incident details across batteries")
     }
-    if (OperatingProfiles.assignmentId.isNotEmpty()) TextButton(onClick = {
-        OperatingProfiles.endAssignment(); reuse = false; touched = true
-    }) { Text("End assignment / start a different assignment") }
+    TextButton(onClick = {
+        OperatingProfiles.endAssignment(); briefing = IncidentBriefing(); checked = emptySet(); reuse = true; touched = true
+    }) { Text("New incident / clear details") }
     OperatingProfiles.warnings(selected, state, JSONObject(value.pilotJson).optString("memberId"),
         value.aircraft.recordId, mapId, AircraftOrganizationAccess.belongsToOrganization()).forEach {
         Text(it + " Continue remains available.", color = MaterialTheme.colorScheme.error)
     }
+    Text("Standard briefing from selected profile", style = MaterialTheme.typography.titleSmall)
     selected.optJSONArray("conditions").objects().forEachIndexed { index, condition ->
         Row {
             Checkbox(checked = index in checked, onCheckedChange = { checked = if (it) checked + index else checked - index })

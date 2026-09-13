@@ -48,7 +48,7 @@ final class AppleConfigurationTransferManager: ObservableObject {
         do {
             let data = try Data(contentsOf: url, options: .mappedIfSafe)
             if url.pathExtension.lowercased() == "zip" || data.starts(with: [0x50, 0x4b]) {
-                try importMutualAidPackage(data, caltopo: caltopo, organization: organization)
+                try await importMutualAidPackage(data, caltopo: caltopo, organization: organization)
             } else {
                 try restoreConfigurationBackup(data, passphrase: passphrase, caltopo: caltopo, organization: organization, identities: identities)
             }
@@ -133,7 +133,13 @@ final class AppleConfigurationTransferManager: ObservableObject {
                     demManifest.append(["tile_name": fileName, "file_name": fileName, "path": path])
                 }
             }
+            let aolFiles=try await AppleSurfaceStore.shared.exportSets(bounds)
+            for entry in aolFiles {
+                guard entry.data.count <= maximumPackageBytes-packageBytes else { throw TransferError.packageBytesTooLarge }
+                packageBytes+=entry.data.count;entries.append(entry)
+            }
             let manifest: [String: Any] = [
+                "aol_entries": aolFiles.map(\.path),
                 "format": Self.packageFormat, "version": 1,
                 "generated": ISO8601DateFormatter().string(from: Date()),
                 "package_name": packageName, "source_org": template.sourceLabel,
@@ -144,7 +150,7 @@ final class AppleConfigurationTransferManager: ObservableObject {
             status = "Building mutual-aid package…"
             let archive = try await Task.detached(priority: .utility) { try OperationalZipArchive.encode(entries) }.value
             exportURL = try writeExport(archive, name: "\(cleanName)_mutual_aid_package.zip")
-            status = "MA package ready: \(tileManifest.count) tile(s), \(demManifest.count) DEM tile(s)."
+            status = "MA package ready: \(aolFiles.filter { $0.path.hasSuffix(".aol") }.count) AOL tile(s), \(tileManifest.count) tile(s), \(demManifest.count) DEM tile(s)."
         } catch { status = "MA package export failed: \(error.localizedDescription)" }
     }
 
@@ -224,7 +230,7 @@ final class AppleConfigurationTransferManager: ObservableObject {
         _ data: Data,
         caltopo: AppleCaltopoSettings,
         organization: AppleOrgConfigSettings
-    ) throws {
+    ) async throws {
         let decoded = try OperationalZipArchive.decode(data)
         let lookup = Dictionary(uniqueKeysWithValues: decoded.map { ($0.path, $0.data) })
         guard let manifestData = lookup["manifest.json"],
@@ -266,7 +272,8 @@ final class AppleConfigurationTransferManager: ObservableObject {
             _ = try AppleMapCacheAccess.write(bytes, to: destination)
             importedDEM += 1
         }
-        status = "Imported MA package: \(importedTiles) tile(s), \(importedDEM) DEM tile(s)."
+        let importedAOL=try await AppleSurfaceStore.shared.importSets(lookup)
+        status = "Imported MA package: \(importedAOL) AOL tile(s), \(importedTiles) tile(s), \(importedDEM) DEM tile(s)."
     }
 
     private func writeExport(_ data: Data, name: String) throws -> URL {

@@ -123,6 +123,7 @@ object StreamFlightActivityRegistry {
     private val runtimeBindings = mutableMapOf<String, String>()
     private var configuredBindings: Map<String, String> = emptyMap()
     private var livePublishers: Set<String> = emptySet()
+    private val acceptedStreamPositions = mutableMapOf<String, Long>()
     private val lastPublisherActivityAtMs = mutableMapOf<String, Long>()
 
     @JvmStatic
@@ -160,6 +161,23 @@ object StreamFlightActivityRegistry {
         }
     }
 
+    fun boundRemoteId(streamDesignator: String): String? = synchronized(lock) {
+        val key = normalizeDesignator(streamDesignator)
+        runtimeBindings[key] ?: configuredBindings[key]
+    }
+
+    fun noteAcceptedPosition(remoteId: String, receivedAtMs: Long) = synchronized(lock) {
+        acceptedStreamPositions[remoteId] = receivedAtMs
+    }
+
+    @JvmStatic
+    fun hasFreshPosition(remoteId: String, nowMs: Long): Boolean = synchronized(lock) {
+        nowMs - (acceptedStreamPositions[remoteId] ?: Long.MIN_VALUE / 2) in 0..3000 &&
+        boundDesignatorsForRemoteIdLocked(remoteId).any {
+            it in livePublishers && StreamCameraTelemetryRegistry.freshOperationalPosition(it, nowMs) != null
+        }
+    }
+
     @JvmStatic
     fun activityForRemoteId(remoteId: String, nowMs: Long): PairedVideoFlightActivity {
         val remote = remoteId.trim()
@@ -194,6 +212,7 @@ object StreamFlightActivityRegistry {
             runtimeBindings.clear()
             configuredBindings = emptyMap()
             livePublishers = emptySet()
+            acceptedStreamPositions.clear()
             lastPublisherActivityAtMs.clear()
         }
     }

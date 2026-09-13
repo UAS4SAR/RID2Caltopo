@@ -324,6 +324,7 @@ internal suspend fun <T> readMutualAidPackagePreviewOffMain(
 }
 
 internal enum class ImportConfigFileKind {
+    SURFACE_PACKAGE,
     JSON_CONFIG,
     MUTUAL_AID_PACKAGE,
     QR_IMAGE,
@@ -451,6 +452,7 @@ internal fun classifyImportConfigFile(
     mimeType: String?
 ): ImportConfigFileKind {
     val normalizedName = displayName?.trim()?.lowercase().orEmpty()
+    if (normalizedName.endsWith(".aol")) return ImportConfigFileKind.SURFACE_PACKAGE
     if (normalizedName.endsWith(".json")) return ImportConfigFileKind.JSON_CONFIG
     if (normalizedName.endsWith(".zip")) return ImportConfigFileKind.MUTUAL_AID_PACKAGE
     if (
@@ -900,6 +902,18 @@ fun MainScreen(
             val displayName = resolveImportConfigDisplayName(context, uri)
             val mimeType = context.contentResolver.getType(uri)
             when (classifyImportConfigFile(displayName, mimeType)) {
+                ImportConfigFileKind.SURFACE_PACKAGE -> {
+                    coroutineScope.launch {
+                        val outcome = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            runCatching {
+                                val bytes = context.contentResolver.openInputStream(uri)!!.use { org.ncssar.rid2caltopo.video.surface.SurfacePackage.readBounded(it, org.ncssar.rid2caltopo.video.surface.SurfacePackage.MAX_BYTES + 1) }
+                                org.ncssar.rid2caltopo.video.surface.SurfaceStore.install(context, bytes)
+                            }
+                        }
+                        CaltopoClient.ShowToast(outcome.fold({ "Surface prepared and pinned: ${it.id}" }, { "Surface import failed: ${it.message}" }))
+                    }
+                    return@rememberLauncherForActivityResult
+                }
                 ImportConfigFileKind.JSON_CONFIG -> {
                     CTDebug(tag, "importConfigFileLauncher(): routing '$displayName' ($mimeType) to JSON loader")
                     try {
@@ -1206,7 +1220,7 @@ fun MainScreen(
                         Text("Op period: ${preview.opPeriod.ifBlank { "Unknown" }}")
                         Text("Map: ${preview.targetMapTitle.ifBlank { preview.targetMapId.ifBlank { "Unknown" } }}")
                         Text("Expires: $expiryText")
-                        Text("Offline cache: ${preview.tileCount} tile(s), ${preview.demCount} DEM tile(s)")
+                        Text("Offline cache: ${preview.tileCount} tile(s), ${preview.demCount} DEM tile(s), ${preview.aolCount} AOL tile(s)")
                     } else {
                         Text("Could not read MA package preview.")
                     }
@@ -1839,6 +1853,10 @@ fun MainScreen(
                                 showImportConfigDialog = true
                             }
                         )
+                        DropdownMenuItem(text = { Text("Import Surface Package (.aol)") }, onClick = {
+                            menuExpanded = false
+                            importConfigFileLauncher.launch(arrayOf("*/*"))
+                        })
                         DropdownMenuItem(text = { Text("Delete Archive Folders...") }, onClick = {
                             showArchiveCleanupDialog = true
                             loadingArchiveCleanupDirs = true

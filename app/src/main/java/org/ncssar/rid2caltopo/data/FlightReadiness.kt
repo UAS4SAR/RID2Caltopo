@@ -16,6 +16,26 @@ data class FlightReadiness(
     val operatingProfileJson: String? = null,
     val configurationVersion: Long = 0
 ) {
+    fun equipmentJSON(): JSONObject = JSONObject().apply {
+        put("selectedAccessories", JSONArray(selectedAccessories.toList()))
+        put("payloadDescription", payloadDescription)
+        put("payloadWeightGrams", payloadWeightGrams ?: JSONObject.NULL)
+    }
+    fun restoringEquipment(saved: JSONObject): FlightReadiness {
+        val ids = saved.optJSONArray("selectedAccessories") ?: JSONArray()
+        return copy(selectedAccessories = (0 until ids.length()).map { ids.getString(it) }.toSet(),
+            payloadDescription = saved.optString("payloadDescription"),
+            payloadWeightGrams = if (saved.isNull("payloadWeightGrams")) null else saved.optDouble("payloadWeightGrams").takeIf { it.isFinite() })
+    }
+    fun pilotQualificationWarning(): String {
+        return "The saved roster does not verify current Part 107 qualifications for this callsign. Review the callsign or update the pilot’s qualifications in Tracker. Recording and publishing remain available."
+    }
+    fun equipmentSummary(): String {
+        val names = aircraft.accessories.filter { it.id in selectedAccessories }.map { it.name }.toMutableList()
+        if (payloadDescription.isNotBlank()) names.add(payloadDescription)
+        else if (payloadWeightGrams != null) names.add("Payload")
+        return names.joinToString(", ").ifEmpty { "No equipment or payload selected" }
+    }
     fun toJSON(): JSONObject = JSONObject().apply {
         operatingProfileJson?.let { put("operatingProfile", JSONObject(it)) }
         put("configurationVersion", configurationVersion)

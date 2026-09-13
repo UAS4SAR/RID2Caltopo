@@ -1,3 +1,9 @@
+import org.ncssar.rid2caltopo.video.StreamFlightActivityRegistry
+import org.ncssar.rid2caltopo.video.surface.MeasurementStatus
+import org.ncssar.rid2caltopo.video.surface.AolState
+import org.ncssar.rid2caltopo.video.surface.SurfaceStore
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.delay
 import android.content.Context
 import android.location.Location
 import androidx.compose.runtime.mutableStateMapOf
@@ -45,6 +51,22 @@ internal class DroneAltitudeCoordinator(
     /** Live reference to the ViewModel's snapshot state map — observed reactively. */
     private val droneStates: Map<String, DroneSpecState>,
 ) {
+    private val aolWorkGate = org.ncssar.rid2caltopo.video.surface.SurfaceWorkGate()
+    private val aolDispatcher = java.util.concurrent.Executors.newSingleThreadExecutor { work ->
+        Thread({
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            work.run()
+        }, "Prepared AOL").apply { isDaemon = true }
+    }.asCoroutineDispatcher()
+    private val aolLoggedReasons = HashMap<String, String>()
+    private val manualAolFlight = HashMap<String,Long>()
+    private val aolAnchors = HashMap<String, Pair<Double, Double>>()
+    private val aolVideoReferences = HashMap<String, org.ncssar.rid2caltopo.video.surface.AolVideoReferenceContinuity>()
+    private val aolResults = HashMap<String, Pair<String, AolState>>()
+    private val aolRequests = HashMap<String, String>()
+    private val aolRefreshWindows = HashMap<String, org.ncssar.rid2caltopo.video.surface.AolRefreshWindow>()
+    private val aolIdentity = HashMap<String, String>()
+    private val aolReceived = HashMap<String, Long>()
     private val tag = "DroneAltCoord"
     private val applicationContext = appContext.applicationContext
 
@@ -99,6 +121,8 @@ internal class DroneAltitudeCoordinator(
         if (!lat.isFinite() || !lng.isFinite()) return@LocalTrackListener
         if (lat == 0.0 && lng == 0.0) return@LocalTrackListener
         scope.launch(Dispatchers.Main.immediate) {
+            aolIdentity[mappedId] = "${droneStates[mappedId]?.remoteId}|${droneStates[mappedId]?.flightStartMsec}"
+            aolReceived[mappedId] = System.currentTimeMillis()
             latestLocalPointByDesignator[mappedId] = LocalAltitudePoint(lat, lng, altitudeMeters)
             updateHeading(mappedId, lat, lng)
             updateCalibration(mappedId, lat, lng, altitudeMeters)
@@ -120,6 +144,12 @@ internal class DroneAltitudeCoordinator(
     }
 
     init {
+        scope.launch {
+            while (true) {
+                delay(1000)
+                if (_consumerCount.value > 0) droneStates.keys.toList().forEach { recomputeDisplayState(it) }
+            }
+        }
         // Prewarm DEM cache proactively at ViewModel creation — same work MapPane used to do,
         // now done once regardless of which view is open first.
         scope.launch(Dispatchers.IO) {
@@ -159,6 +189,13 @@ internal class DroneAltitudeCoordinator(
                     val activeDesignators = states.map { it.mappedId }.toSet()
 
                     // Prune heading maps for drones that have gone away.
+                    aolRequests.keys.filter { it !in activeDesignators }.forEach { aolWorkGate.forget(it) }
+                    aolRequests.keys.retainAll(activeDesignators)
+                    aolResults.keys.retainAll(activeDesignators)
+                    aolRefreshWindows.keys.retainAll(activeDesignators)
+                    aolLoggedReasons.keys.retainAll(activeDesignators)
+                    aolReceived.keys.retainAll(activeDesignators)
+                    aolIdentity.keys.retainAll(activeDesignators)
                     telemetryHeading.keys.retainAll(activeDesignators)
                     fallbackHeading.keys.retainAll(activeDesignators)
                     fallbackHeadingAnchor.keys.retainAll(activeDesignators)
@@ -182,6 +219,8 @@ internal class DroneAltitudeCoordinator(
                 }
         }
     }
+
+    fun close() { aolDispatcher.close() }
 
     // ── Heading ──────────────────────────────────────────────────────────────────────────────
 
@@ -213,8 +252,10 @@ internal class DroneAltitudeCoordinator(
         if (flightStartMsec <= 0L) return
         val priorFlightStartMsec = flightStartByRemoteId.put(remoteId, flightStartMsec)
         if (priorFlightStartMsec == null || priorFlightStartMsec == flightStartMsec) return
+        aolAnchors.remove(remoteId)
+        aolVideoReferences.remove(remoteId)
+        manualAolFlight.remove(remoteId)
         if (!shouldResetAutoCalibrationForFlightChange(calibrationByRemoteId[remoteId])) return
-
         calibrationByRemoteId.remove(remoteId)
         demGroundByRemoteId.remove(remoteId)
         demKeyByRemoteId.remove(remoteId)
@@ -303,7 +344,21 @@ internal class DroneAltitudeCoordinator(
      * [currentAltM].  Sets ATO so that the displayed value at [currentAltM] equals 50 ft,
      * and derives the AGL correction factor from the current DEM ground elevation.
      */
+    fun manualCalibrateOverLaunch(designator: String): Boolean {
+        val state=droneStates[designator] ?: return false
+        val point=latestLocalPointByDesignator[designator] ?: return false
+        if(System.currentTimeMillis()-state.source.mostRecentMsecTimestamp !in 0..4999 || !point.altM.isFinite() || point.altM<=-999) return false
+        aolAnchors[state.remoteId]=point.lat to point.lng
+        manualAolFlight[state.remoteId]=state.flightStartMsec
+        manualCalibrate(state.remoteId,point.altM,designator)
+        return true
+    }
+
     fun manualCalibrate(remoteId: String, currentAltM: Double, designator: String) {
+        aolVideoReferences.remove(remoteId)
+        aolRefreshWindows.remove(designator)
+        aolResults.remove(designator)
+        aolRequests.remove(designator)
         val calibratedTakeoffAltM = currentAltM - (CALIBRATE_ATO_TARGET_FT * FT_TO_METERS)
         calibrationByRemoteId[remoteId] = DroneAltitudeCalibration(
             takeoffTrackAltitudeM = calibratedTakeoffAltM,
@@ -314,7 +369,10 @@ internal class DroneAltitudeCoordinator(
         // Clears any existing correction first so it is unconditionally recomputed with the
         // fresh calibration; no stale correctionF can survive a manual recalibration.
         demCorrectionByRemoteId.remove(remoteId)
-        val demGround = demGroundByRemoteId[remoteId]?.groundM
+        val calibrationPoint=latestLocalPointByDesignator[designator]
+        val demGround = demGroundByRemoteId[remoteId]?.takeIf { sample ->
+            !sample.stale && calibrationPoint != null && demKeyByRemoteId[remoteId]==demElevationService.samplingKey(calibrationPoint.lat,calibrationPoint.lng)
+        }?.groundM
         if (demGround != null) {
             val demScaleToMeters = inferAndStoreDemScaleToMeters(remoteId, calibratedTakeoffAltM, demGround)
             val correctionF = calibratedTakeoffAltM - (demGround * demScaleToMeters)
@@ -483,9 +541,10 @@ internal class DroneAltitudeCoordinator(
     ) {
         val cal = calibrationByRemoteId[remoteId] ?: return
         val spec = droneStates[designator]?.source
-        val takeoffLat = spec?.takeoffLat ?: 0.0
-        val takeoffLng = spec?.takeoffLng ?: 0.0
-        if (spec?.hasTakeoffLocation() == true &&
+        val manualLaunch=if(manualAolFlight[remoteId]==droneStates[designator]?.flightStartMsec) aolAnchors[remoteId] else null
+        val takeoffLat = manualLaunch?.first ?: spec?.takeoffLat ?: 0.0
+        val takeoffLng = manualLaunch?.second ?: spec?.takeoffLng ?: 0.0
+        if ((manualLaunch != null || spec?.hasTakeoffLocation() == true) &&
             takeoffLat.isFinite() &&
             takeoffLng.isFinite() &&
             !(takeoffLat == 0.0 && takeoffLng == 0.0) &&
@@ -500,7 +559,7 @@ internal class DroneAltitudeCoordinator(
                         if (takeoffSample != null) {
                             takeoffDemGroundByRemoteId[remoteId] = takeoffSample.elevationMeters
                             val latestCal = calibrationByRemoteId[remoteId] ?: cal
-                            if (latestCal.seedSource != AtoSeedSource.MANUAL) {
+                            if (latestCal.seedSource != AtoSeedSource.MANUAL || (manualLaunch != null && latestCal==cal)) {
                                 setCorrectionFromDem(remoteId, latestCal, takeoffSample.elevationMeters, "takeoff")
                                 recomputeDisplayState(designator)
                             }
@@ -583,7 +642,7 @@ internal class DroneAltitudeCoordinator(
                 aglMeters * METERS_TO_FEET
             }
         } else {
-            ridHeightAtoM?.let { it * METERS_TO_FEET }
+            (if(calibration?.seedSource==AtoSeedSource.MANUAL) displayAtoMeters(altM,calibration,null) else ridHeightAtoM)?.let { it * METERS_TO_FEET }
         })?.coerceAtLeast(0.0)
 
         val atoFt = displayAtoMeters(altM, calibration, ridHeightAtoM)?.times(METERS_TO_FEET)
@@ -594,7 +653,99 @@ internal class DroneAltitudeCoordinator(
             result[0].takeIf { it.isFinite() }?.toDouble()?.times(METERS_TO_FEET)
         }
 
+        val identityMatches = aolIdentity[designator] == "$remoteId|${state.flightStartMsec}"
+        val heightFresh = identityMatches && System.currentTimeMillis() - state.source.lastRidHeightReceivedAtMsec in 0..4999
+        val manualAol = calibration?.seedSource == AtoSeedSource.MANUAL && manualAolFlight[remoteId]==state.flightStartMsec
+        val aolHeight = if(manualAol) displayAtoMeters(altM,calibration,null) else ridHeightAtoM?.takeIf { it.isFinite() && it > -999 && heightFresh }
+        val positionFresh = identityMatches && System.currentTimeMillis() - state.source.mostRecentMsecTimestamp in 0..4999
+        val videoReferenceContinuity = aolVideoReferences.getOrPut(remoteId) {
+            org.ncssar.rid2caltopo.video.surface.AolVideoReferenceContinuity()
+        }
+        val retainedVideoReference = if (manualAol) null else videoReferenceContinuity.observe(state.flightStartMsec, null)
+        var automaticVideoReference = retainedVideoReference != null
+        if (retainedVideoReference != null) aolAnchors[remoteId] = retainedVideoReference
+        if (!manualAol && !automaticVideoReference && org.ncssar.rid2caltopo.video.surface.canObserveAolLaunch(
+                state.source.hasFreshAolGroundStatus(System.currentTimeMillis()),
+                state.source.lastRidHeightM,heightFresh,positionFresh)) {
+            if (aolAnchors[remoteId] == null) CTDebug(tag,"AOL launch reference observed; heightReference=${if(state.source.isLastRidHeightAto()) "takeoff" else "ground"}")
+            aolAnchors[remoteId] = demLat to demLng
+        }
+        if (!manualAol && heightFresh && identityMatches &&
+            StreamFlightActivityRegistry.boundRemoteId(designator) == remoteId &&
+            StreamFlightActivityRegistry.hasFreshPosition(remoteId, System.currentTimeMillis())) {
+            val video = org.ncssar.rid2caltopo.video.ffmpeg.StreamCameraTelemetryRegistry.freshOperationalPosition(designator)
+            val videoReference = org.ncssar.rid2caltopo.video.surface.videoAolReference(
+                video?.referenceLatitudeDeg, video?.referenceLongitudeDeg, video?.relativeUpMeters,
+                video != null && video.receivedAtMs == state.source.lastRidHeightReceivedAtMsec)
+            if (videoReference != null) {
+                automaticVideoReference = true
+                videoReferenceContinuity.observe(state.flightStartMsec, videoReference)
+                if (aolAnchors[remoteId] != videoReference) CTDebug(tag, "AOL using DJI stream altitude reference")
+                aolAnchors[remoteId] = videoReference
+            }
+        }
+        val anchor = aolAnchors[remoteId]
+        val aolKey = "$remoteId|${state.flightStartMsec}|$demLat|$demLng|$aolHeight|$anchor|${SurfaceStore.generation}"
+        val telemetryAge = System.currentTimeMillis() - state.source.mostRecentMsecTimestamp
+        val prerequisite = org.ncssar.rid2caltopo.video.surface.aolPrerequisiteState(
+            anchor != null, aolHeight != null,
+            !manualAol && !heightFresh && state.source.lastRidHeightReceivedAtMsec > 0L)
+        val refreshWindow = aolRefreshWindows.getOrPut(designator) { org.ncssar.rid2caltopo.video.surface.AolRefreshWindow() }
+        val reference = org.ncssar.rid2caltopo.video.surface.aolRefreshReference(
+            "$remoteId|${state.flightStartMsec}", anchor, automaticVideoReference,
+            if (manualAol) calibration?.takeoffTrackAltitudeM else null, SurfaceStore.generation.toString())
+        if (prerequisite != null) {
+            aolRequests.remove(designator)
+            if (aolLoggedReasons.put(designator, prerequisite.reason) != prerequisite.reason)
+                CTDebug(tag, "AOL state: ${prerequisite.reason}; launchObserved=${anchor != null}; heightFresh=$heightFresh; positionFresh=$positionFresh")
+        }
+        if (prerequisite == null && aolResults[designator]?.first != aolKey && telemetryAge in 0..4999) {
+            // Coalesce movement while work runs; invalidating on every frame starves results.
+            val startedAt = android.os.SystemClock.elapsedRealtime()
+            if (aolWorkGate.begin(designator, true, startedAt)) {
+                aolRequests[designator] = aolKey
+                val flightStart = state.flightStartMsec
+                scope.launch {
+                    try {
+                        val result = withContext(aolDispatcher) {
+                            runCatching {
+                                if (!manualAol && !heightFresh && state.source.lastRidHeightReceivedAtMsec > 0L) {
+                                    AolState(reason = "Aircraft height stale", status = MeasurementStatus.Stale)
+                                } else if (anchor == null) {
+                                    AolState(reason = "Takeoff ground reference not observed; receive ground status and near-zero height before flight")
+                                } else {
+                                    SurfaceStore.calculate(applicationContext, demLat, demLng, anchor.first, anchor.second, aolHeight)
+                                }
+                            }.getOrElse { AolState(reason = "Surface analysis unavailable") }
+                        }
+                        if (aolRequests[designator] == aolKey && droneStates[designator]?.remoteId == remoteId &&
+                            droneStates[designator]?.flightStartMsec == flightStart) {
+                            if (aolLoggedReasons.put(designator,result.reason) != result.reason) CTDebug(tag,"AOL state: ${result.reason}; launchObserved=${anchor != null}; heightFresh=$heightFresh; positionFresh=$positionFresh")
+                            aolResults[designator] = aolKey to result
+                            refreshWindow.completed(reference, result, startedAt, android.os.SystemClock.elapsedRealtime())
+                            recomputeDisplayState(designator)
+                        }
+                    } finally { aolWorkGate.finish() }
+                }
+            }
+        }
+        val matchingResult = prerequisite ?: aolResults[designator]?.takeIf { it.first == aolKey }?.second
+        val displayedResult = refreshWindow.display(reference, matchingResult, aolHeight != null,
+            android.os.SystemClock.elapsedRealtime())
+        val aol = if (telemetryAge !in 0..4999) AolState(reason = "Aircraft position/altitude stale", status = MeasurementStatus.Stale)
+            else displayedResult
         displayStateByDesignator[designator] = DroneDisplayState(
+            aol = aol,
+            positionStale = telemetryAge !in 0..4999,
+            atoStatus = if(calibration?.seedSource != AtoSeedSource.MANUAL && ridHeightAtoM != null && !heightFresh) MeasurementStatus.Stale else if(atoFt==null) MeasurementStatus.Unknown else MeasurementStatus.Available,
+            aglStatus = when {
+                calibration?.seedSource != AtoSeedSource.MANUAL && ridHeightAtoM != null && !heightFresh -> MeasurementStatus.Stale
+                aglStale && demIsPending -> MeasurementStatus.Pending
+                aglStale -> MeasurementStatus.Unknown
+                aglFt==null && demIsPending -> MeasurementStatus.Pending
+                aglFt==null -> MeasurementStatus.Unknown
+                else -> MeasurementStatus.Available
+            },
             headingDeg = headingDeg,
             derivedHeadingDeg = fallbackHeading[designator],
             aglFt = aglFt,
@@ -648,7 +799,7 @@ internal class DroneAltitudeCoordinator(
             demScaleToMeters: Double,
         ): Double {
             val demGroundM = demGroundRaw * demScaleToMeters
-            val calculated = if (ridHeightAtoM != null && calibration != null) {
+            val calculated = if (ridHeightAtoM != null && calibration != null && calibration.seedSource != AtoSeedSource.MANUAL) {
                 val takeoffGroundM = calibration.takeoffTrackAltitudeM - correctionM
                 ridHeightAtoM + takeoffGroundM - demGroundM
             } else {

@@ -1,5 +1,7 @@
 package org.ncssar.rid2caltopo.video
 
+import org.ncssar.rid2caltopo.video.surface.MeasurementStatus
+import org.ncssar.rid2caltopo.video.surface.measurementLabel
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color as AndroidColor
@@ -405,24 +407,20 @@ internal fun droneStatusLabelText(
     headingDeg: Double?,
     headingLabel: String = "HDG",
     positionStale: Boolean = false,
+    headingStale: Boolean = positionStale,
+    atoStatus: MeasurementStatus = MeasurementStatus.Available,
+    aglStatus: MeasurementStatus = if(aglStale) MeasurementStatus.Unknown else MeasurementStatus.Available,
+    aol: org.ncssar.rid2caltopo.video.surface.AolState? = null,
 ): String {
-    val ato = atoFeet
-        ?.takeIf { kotlin.math.abs(it) <= LABEL_MAX_ABS_FEET }
-        ?.let { String.format(Locale.US, "%.0f", it) }
-        ?: "--"
-    val agl = aglFeet
-        ?.takeIf { kotlin.math.abs(it) <= LABEL_MAX_ABS_FEET }
-        ?.let { String.format(Locale.US, "%.0f%s", it, if (aglStale) "?" else "") }
-        ?: "--"
-    val range = rangeFeet
-        ?.let { String.format(Locale.US, "%.0f", it) }
-        ?: "--"
-    val heading = headingDeg
-        ?.takeIf { it.isFinite() }
-        ?.let { String.format(Locale.US, "%.0f", normalizeDegrees(it)) }
-        ?: "--"
-    val positionStatus = if (positionStale) " POS?" else ""
-    return "ATO:$ato' AGL:$agl' RNG:$range' $headingLabel:$heading°$positionStatus"
+    fun label(value:Double?, status:MeasurementStatus=MeasurementStatus.Available, suffix:String="'", cap:Double=Double.POSITIVE_INFINITY) =
+        measurementLabel(value,if(positionStale) MeasurementStatus.Stale else status,suffix,cap)
+    val ato=label(atoFeet,atoStatus,cap=LABEL_MAX_ABS_FEET)
+    val agl=measurementLabel(aglFeet, if(positionStale) MeasurementStatus.Stale else aglStatus,
+        "'", LABEL_MAX_ABS_FEET, showPendingValue = true)
+    val surface=label(aol?.feet,aol?.status ?: MeasurementStatus.Unknown)
+    val range=label(rangeFeet)
+    val heading=measurementLabel(headingDeg?.let(::normalizeDegrees), if(headingStale) MeasurementStatus.Stale else MeasurementStatus.Available, "°")
+    return "ATO:$ato AGL:$agl AOL:$surface RNG:$range $headingLabel:$heading"
 }
 
 internal fun droneDetailLines(
@@ -434,30 +432,26 @@ internal fun droneDetailLines(
     rangeFeet: Double?,
     headingDeg: Double?,
     speedKnots: Double? = null,
-    climbFpm: Double? = null
+    climbFpm: Double? = null,
+    aol: org.ncssar.rid2caltopo.video.surface.AolState? = null,
+    positionStale: Boolean = false,
+    atoStatus: MeasurementStatus = MeasurementStatus.Available,
+    aglStatus: MeasurementStatus = if(aglStale) MeasurementStatus.Unknown else MeasurementStatus.Available
 ): List<String> = buildList {
-    val ato = atoFeet
-        ?.takeIf { kotlin.math.abs(it) <= LABEL_MAX_ABS_FEET }
-        ?.let { String.format(Locale.US, "%.0f'", it) }
-        ?: "--"
-    val agl = aglFeet
-        ?.takeIf { kotlin.math.abs(it) <= LABEL_MAX_ABS_FEET }
-        ?.let { String.format(Locale.US, "%.0f%s'", it, if (aglStale) "?" else "") }
-        ?: "--"
-    val range = rangeFeet
-        ?.let { String.format(Locale.US, "%.0f'", it) }
-        ?: "--"
-    val heading = headingDeg
-        ?.takeIf { it.isFinite() }
-        ?.let { String.format(Locale.US, "%.0f°", normalizeDegrees(it)) }
-        ?: "--"
+    fun label(value:Double?, status:MeasurementStatus=MeasurementStatus.Available,suffix:String="'",cap:Double=Double.POSITIVE_INFINITY) = measurementLabel(value,if(positionStale) MeasurementStatus.Stale else status,suffix,cap)
+    val ato=label(atoFeet,atoStatus,cap=LABEL_MAX_ABS_FEET)
+    val agl=measurementLabel(aglFeet, if(positionStale) MeasurementStatus.Stale else aglStatus,
+        "'", LABEL_MAX_ABS_FEET, showPendingValue = true)
+    val range=label(rangeFeet)
+    val heading=label(headingDeg?.let(::normalizeDegrees),suffix="°")
     add("Location: $locationText ($coordinateFormatLabel)")
     add("ATO: $ato")
     add("AGL: $agl")
+    add("AOL · 200 ft radius: ${label(aol?.feet,aol?.status ?: MeasurementStatus.Unknown,suffix=" ft")}")
     add("RNG: $range")
     add("HDG: $heading")
-    speedKnots?.let { add(String.format(Locale.US, "Speed: %.1f kt", it)) }
-    climbFpm?.let { add(String.format(Locale.US, "Climb: %.0f fpm", it)) }
+    speedKnots?.let { add(if(positionStale) "Speed: POS?" else String.format(Locale.US, "Speed: %.1f kt", it)) }
+    climbFpm?.let { add(if(positionStale) "Climb: POS?" else String.format(Locale.US, "Climb: %.0f fpm", it)) }
 }
 
 internal fun bearingLineToViewportEdge(
@@ -555,6 +549,15 @@ private fun polarPoint(
     return x to y
 }
 
+/** Returns only a displayed numeric negative AOL token; placeholders are neutral. */
+internal fun negativeAolRange(text: String): IntRange? {
+    val start = text.indexOf("AOL:")
+    if (start < 0) return null
+    val end = text.indexOf(' ', start).let { if (it < 0) text.length else it }
+    val feet = text.substring(start + 4, end).removeSuffix("'").toDoubleOrNull() ?: return null
+    return if (feet.isFinite() && feet < 0) start until end else null
+}
+
 internal fun buildDroneStatusLabelDrawable(
     resources: Resources,
     text: String
@@ -583,7 +586,9 @@ internal fun buildDroneStatusLabelDrawable(
         style = Paint.Style.FILL
     }
     val fm = fillPaint.fontMetrics
-    val textWidth = fillPaint.measureText(text)
+    // Keep the strip anchored when numeric values temporarily become status tokens.
+    val reservedStatusWidth = fillPaint.measureText("ATO:POS? AGL:POS? AOL:POS? RNG:POS? HDG:POS?")
+    val textWidth = maxOf(fillPaint.measureText(text), reservedStatusWidth)
     val textHeight = fm.descent - fm.ascent
     val width = maxOf(1, (textWidth + (horizontalPaddingPx * 2f)).toInt())
     val height = maxOf(1, (textHeight + (verticalPaddingPx * 2f)).toInt())
@@ -593,6 +598,14 @@ internal fun buildDroneStatusLabelDrawable(
     canvas.drawRoundRect(RectF(0f, 0f, width.toFloat(), height.toFloat()), cornerPx, cornerPx, bgPaint)
     canvas.drawText(text, horizontalPaddingPx, baselineY, haloPaint)
     canvas.drawText(text, horizontalPaddingPx, baselineY, fillPaint)
+    val aolRange = negativeAolRange(text)
+    if (aolRange != null) {
+        val aolStart = aolRange.first
+        val end = aolRange.last + 1
+        val x = horizontalPaddingPx + fillPaint.measureText(text.substring(0, aolStart))
+        fillPaint.color = AndroidColor.RED
+        canvas.drawText(text.substring(aolStart, end), x, baselineY, fillPaint)
+    }
     return BitmapDrawable(resources, bitmap)
 }
 

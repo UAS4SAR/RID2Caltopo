@@ -46,8 +46,10 @@ final class AppleOperationalAlertCenter: ObservableObject {
     ) {
         let activeIDs = Set(tracks.map(\.aircraftID))
         exceededBridge.formIntersection(activeIDs)
-        mutedSignalFlights.formIntersection(activeIDs)
-        mutedAltitudeFlights.formIntersection(activeIDs)
+        let activeSignalMutes = mutedSignalFlights.intersection(activeIDs)
+        let activeAltitudeMutes = mutedAltitudeFlights.intersection(activeIDs)
+        if mutedSignalFlights != activeSignalMutes { mutedSignalFlights = activeSignalMutes }
+        if mutedAltitudeFlights != activeAltitudeMutes { mutedAltitudeFlights = activeAltitudeMutes }
 
         var lost: [AppleSignalLossAlert] = []
         var altitude: [AppleAltitudeComplianceAlert] = []
@@ -115,8 +117,8 @@ final class AppleOperationalAlertCenter: ObservableObject {
         }
         announceNewSignalAlerts(lost, now: now)
         announceAltitudeAlerts(altitude, now: now)
-        signalLossAlerts = lost
-        altitudeAlerts = altitude
+        if signalLossAlerts != lost { signalLossAlerts = lost }
+        if altitudeAlerts != altitude { altitudeAlerts = altitude }
     }
 
     func muteSignal(_ remoteID: String) {

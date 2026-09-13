@@ -456,6 +456,8 @@ public class OpenDroneIdDataManager {
         // filters later reject it for tracking purposes.
         droneSpec.noteRidPositionPacketReceived(nowWallMsec);
 
+        if (org.ncssar.rid2caltopo.video.StreamFlightActivityRegistry.hasFreshPosition(idStr, nowWallMsec)) return;
+
         int horizontalAccuracyCode = location.getHorizontalAccuracyCode();
         if (!isHorizontalAccuracySufficient(horizontalAccuracyCode)) {
             Integer previousCode = lastLoggedHorizontalAccuracyCode.put(idStr, horizontalAccuracyCode);

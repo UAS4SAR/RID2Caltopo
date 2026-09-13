@@ -7,6 +7,7 @@ public struct IncidentMapOperationalState: Sendable, Equatable {
     public let mapConnectedAt: Date
     public let hasManagedVideoOrTransfer: Bool
     public let offlineMapPreparationActive: Bool
+    public let offlineMapPreparationEndedAt: Date?
 
     public init(
         connectedToIncidentMap: Bool,
@@ -14,7 +15,8 @@ public struct IncidentMapOperationalState: Sendable, Equatable {
         lastRIDMessageAt: Date?,
         mapConnectedAt: Date,
         hasManagedVideoOrTransfer: Bool,
-        offlineMapPreparationActive: Bool
+        offlineMapPreparationActive: Bool,
+        offlineMapPreparationEndedAt: Date? = nil
     ) {
         self.connectedToIncidentMap = connectedToIncidentMap
         self.activeFlightCount = activeFlightCount
@@ -22,6 +24,7 @@ public struct IncidentMapOperationalState: Sendable, Equatable {
         self.mapConnectedAt = mapConnectedAt
         self.hasManagedVideoOrTransfer = hasManagedVideoOrTransfer
         self.offlineMapPreparationActive = offlineMapPreparationActive
+        self.offlineMapPreparationEndedAt = offlineMapPreparationEndedAt
     }
 }
 
@@ -40,7 +43,8 @@ public enum IncidentMapAutoDisconnectPolicy {
               !state.hasManagedVideoOrTransfer,
               !state.offlineMapPreparationActive
         else { return false }
-        let baseline = max(state.mapConnectedAt, state.lastRIDMessageAt ?? state.mapConnectedAt)
+        let baseline = max(state.mapConnectedAt, state.lastRIDMessageAt ?? state.mapConnectedAt,
+                           state.offlineMapPreparationEndedAt ?? state.mapConnectedAt)
         return now.timeIntervalSince(baseline) >= quietInterval
     }
 }

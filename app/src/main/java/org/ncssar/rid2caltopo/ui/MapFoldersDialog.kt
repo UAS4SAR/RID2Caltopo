@@ -71,6 +71,7 @@ fun MapFoldersDialog(
     onItemVisibilityChanged: (itemId: String, visible: Boolean) -> Unit,
     onAllItemsToggled: (itemIds: List<String>, visible: Boolean) -> Unit,
     onZoomToItem: (itemId: String) -> Unit,
+    onSurfaceBriefing: (itemId: String) -> Unit,
     onDismiss: () -> Unit
 ) {
     var searchText by remember { mutableStateOf("") }
@@ -149,6 +150,9 @@ fun MapFoldersDialog(
                                                 style = MaterialTheme.typography.bodySmall,
                                                 modifier = Modifier.weight(1f)
                                             )
+                                            if (itemVisible) {
+                                                androidx.compose.material3.TextButton(onClick = { onSurfaceBriefing(item.featureId); onDismiss() }) { Text("AOL") }
+                                            }
                                             if (itemVisible && item.zoomableAssignment) {
                                                 IconButton(
                                                     onClick = {

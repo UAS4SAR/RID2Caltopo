@@ -10,6 +10,20 @@ import org.ncssar.rid2caltopo.data.DesignatorState
 
 class DesignatorIndicatorTest {
     @Test
+    fun freshCameraBearingSurvivesStaleAircraftPosition() {
+        val display = DroneDisplayState(positionStale=true, headingDeg=null, aglFt=20.0, atoFt=20.0)
+        org.junit.Assert.assertEquals("ATO:POS? AGL:POS? AOL:POS? RNG:POS? CAM:91°",
+            streamTelemetryHeaderText(display, 91.0))
+    }
+
+    @Test
+    fun embeddedTelemetryDoesNotClaimNoTelemetryWithoutRid() {
+        val state = org.ncssar.rid2caltopo.data.DesignatorState.Yellow(emptyMap(), embeddedTelemetry = true)
+        org.junit.Assert.assertEquals("Embedded Telemetry", telemetryChipTextFor(state, null))
+        org.junit.Assert.assertTrue(designatorDetailText(state, "Standalone", true).contains("Embedded telemetry"))
+    }
+
+    @Test
     fun formatLiveState_reportsLiveUntilLagIsMaterial() {
         assertEquals("Starting", formatLiveState(null))
         assertEquals("lag:450ms", formatLiveState(450L))
@@ -78,7 +92,7 @@ class DesignatorIndicatorTest {
             )
         )
         assertEquals(
-            "ATO:--' AGL:--' RNG:--' TRK:--\u00b0",
+            "ATO:Unk AGL:Unk AOL:Unk RNG:Unk TRK:Unk",
             telemetryChipTextFor(
                 designatorState = DesignatorState.Green(
                     DroneSpecState(CtDroneSpec("testRemoteId"))
@@ -91,7 +105,7 @@ class DesignatorIndicatorTest {
     @Test
     fun compactLiveTelemetry_matchesMapEntriesAndOrder() {
         assertEquals(
-            "ATO:7' AGL:0' RNG:26' TRK:--\u00b0",
+            "ATO:7' AGL:0' AOL:Unk RNG:26' TRK:Unk",
             formatCompactTelemetry(
                 DroneDisplayState(
                     headingDeg = null,

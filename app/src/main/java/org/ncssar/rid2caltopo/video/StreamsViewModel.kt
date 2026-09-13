@@ -925,6 +925,10 @@ class DroneSpecState(
 
 /** Display-ready values computed by [DroneAltitudeCoordinator] for use in labels and clues. */
 data class DroneDisplayState(
+    val positionStale: Boolean = false,
+    val atoStatus: org.ncssar.rid2caltopo.video.surface.MeasurementStatus = org.ncssar.rid2caltopo.video.surface.MeasurementStatus.Available,
+    val aglStatus: org.ncssar.rid2caltopo.video.surface.MeasurementStatus = org.ncssar.rid2caltopo.video.surface.MeasurementStatus.Available,
+    val aol: org.ncssar.rid2caltopo.video.surface.AolState = org.ncssar.rid2caltopo.video.surface.AolState(),
     val headingDeg: Double?,
     val derivedHeadingDeg: Double? = null,
     val aglFt: Double?,
@@ -1014,6 +1018,7 @@ class StreamsViewModel(
                         _streamCameraTelemetryByDesignator.remove(designator)
                     } else {
                         _streamCameraTelemetryByDesignator[designator] = sample
+                        if (!isLocalPlayback(designator)) ingestEmbeddedAircraftPosition(designator, sample)
                         cameraTelemetryExpiryJobs[designator] = viewModelScope.launch(Dispatchers.Main.immediate) {
                             kotlinx.coroutines.delay(StreamCameraTelemetryRegistry.DEFAULT_MAX_AGE_MS + 1L)
                             if (_streamCameraTelemetryByDesignator[designator]?.receivedAtMs == sample.receivedAtMs) {
@@ -1203,6 +1208,7 @@ class StreamsViewModel(
 
     fun cameraAzimuthForStream(streamDesignator: String): Double? =
         _streamCameraTelemetryByDesignator[streamDesignator]
+            ?.takeIf { System.currentTimeMillis() - it.receivedAtMs in 0..3000 }
             ?.azimuthDeg
             ?.takeIf { it.isFinite() }
 
@@ -1914,6 +1920,7 @@ class StreamsViewModel(
     override fun onCleared() {
         StreamRegistry.setAdmissionGuard(null)
         CaltopoMap.RemoveMapStatusListener(this)
+        altitudeCoordinator.close()
         ffmpegProbeService?.close()
         streamSessionService.releaseAll()
         super.onCleared()
@@ -1942,6 +1949,32 @@ class StreamsViewModel(
         }
     }
 
+    private val lastEmbeddedPositionAt = mutableMapOf<String, Long>()
+
+    private fun ingestEmbeddedAircraftPosition(designator: String, sample: StreamCameraTelemetrySample) {
+        val position = StreamCameraTelemetryRegistry.freshOperationalPosition(designator) ?: return
+        if (position.receivedAtMs != sample.receivedAtMs ||
+            position.receivedAtMs <= (lastEmbeddedPositionAt[designator] ?: 0L)) return
+        val remoteId = StreamFlightActivityRegistry.boundRemoteId(designator) ?: return
+        val client = CaltopoClient.ClientForRemoteId(remoteId)
+        val spec = CaltopoClient.GetDroneSpec(remoteId) ?: return
+        val height = position.relativeUpMeters ?: return
+        val reference = spec.impliedTakeoffAltM?.takeIf { it.isFinite() && it > -999 }
+            ?: position.referenceAltitudeMeters ?: return
+        val altitude = reference + height
+        val lat = position.latitudeDeg ?: return
+        val lng = position.longitudeDeg ?: return
+        val now = position.receivedAtMs
+        lastEmbeddedPositionAt[designator] = position.receivedAtMs
+        if (!spec.checkNewWaypoint(lat, lng, altitude, position.receivedAtMs, now, null,
+                CtDroneSpec.TransportTypeEnum.DJI_STREAM)) return
+        StreamFlightActivityRegistry.noteAcceptedPosition(remoteId, position.receivedAtMs)
+        spec.updateAltitudeContext(altitude, CtDroneSpec.AltSourceEnum.DJI_STREAM, height, true, position.receivedAtMs)
+        spec.setLastPositionTelemetry(CtDroneSpec.PositionTelemetry(null, null, position.courseDeg))
+        client.newWaypoint(lat, lng, altitude,
+            position.receivedAtMs, CtDroneSpec.TransportTypeEnum.DJI_STREAM, null)
+    }
+
     fun designatorStateFor(designator: String): DesignatorState {
         if (isLocalPlayback(designator)) return DesignatorState.Red
         val resolution = resolveStreamTelemetryBinding(
@@ -1953,6 +1986,9 @@ class StreamsViewModel(
         if (resolution.status == StreamTelemetryBindingStatus.PAIRED) {
             val pairedState = pairedDroneSpecStateFor(designator)
             if (pairedState != null) return DesignatorState.Green(pairedState)
+        }
+        if (StreamCameraTelemetryRegistry.fresh(designator) != null) {
+            return DesignatorState.Yellow(droneStates, embeddedTelemetry = true)
         }
         return if (resolution.status == StreamTelemetryBindingStatus.NO_TELEMETRY) {
             DesignatorState.Red
@@ -2075,6 +2111,9 @@ class StreamsViewModel(
             automaticStreamPairingRequest = null
         }
     }
+
+    internal fun mapDesignatorForStream(streamDesignator: String): String? =
+        pairedDroneSpecStateFor(streamDesignator)?.mappedId
 
     private fun pairedDroneSpecStateFor(streamDesignator: String): DroneSpecState? {
         val remoteId = resolveStreamTelemetryBinding(

@@ -70,17 +70,33 @@ class WaypointTrackTest {
     }
 
     @Test
-    fun routingDesignatorChange_keepsPilotCallsignTrackLabel() {
+    fun routingDesignatorChange_renamesTrackWithoutLosingPoints() {
         val drone = activeDrone("RID456", "RID456")
         val oldTrackLabel = drone.trackLabel()
         WaypointTrack.AddWaypointForTrack(drone, 39.153061, -121.132946, 101L, 12_345L)
 
         drone.setMappedId("1sar7DjMn4Pr")
 
-        assertEquals(oldTrackLabel, drone.trackLabel())
+        assertEquals("1sar7DjMn4Pr_" + CaltopoClient.TimeDatestampString(1_000L), drone.trackLabel())
+        assertFalse(oldTrackLabel == drone.trackLabel())
         val points = WaypointTrack.GetTrackPointsSnapshot(drone)
         assertEquals(1, points.size)
         assertEquals(12_345L, points.single().timestampMsec)
+    }
+
+    @Test
+    fun standaloneArchiveUsesDesignatorAndFirstWaypointLikeCalTopo() {
+        val drone = activeDrone("RID-MATRICE", "1sar7DjMtrc4td", "1SAR7")
+        val expected = "1sar7DjMtrc4td_" + CaltopoClient.TimeDatestampString(1_000L)
+        assertEquals(expected, drone.trackLabel())
+        val track = WaypointTrack(drone.trackLabel(), drone)
+        track.addWaypoint(39.153, -121.132, 100L, 1_000L)
+        track.addWaypoint(39.154, -121.132, 100L, 2_000L)
+        val properties = track.getGeoJson()!!.getJSONArray("features")
+            .getJSONObject(0).getJSONObject("properties")
+        assertEquals(expected, properties.getString("title"))
+        assertEquals("1SAR7", properties.getJSONObject("r2c_prop").getString("owner"))
+        assertEquals(expected, drone.trackLabel())
     }
 
     @Test
@@ -221,6 +237,23 @@ class WaypointTrackTest {
     }
 
     @Test
+    fun mappedButUnansweredFlightDoesNotRecordAndPriorFlightConsentResets() {
+        val drone = activeDrone("RIDUNANSWERED2", "1sar7DjMtrc4td")
+        CaltopoClient.ClearCurrentPeerDroneConfirmation(drone.remoteId)
+        val unanswered = WaypointTrack(drone.trackLabel(), drone)
+        unanswered.addWaypoint(39.15, -121.13, 100L, 1000L)
+        assertFalse(unanswered.shouldRecordArchive())
+        drone.setCurrentFlightConfirmed(true)
+        assertFalse(unanswered.shouldRecordArchive()) // A later decision cannot change a finished flight.
+        val acknowledged = WaypointTrack(drone.trackLabel(), drone)
+        assertTrue(acknowledged.shouldRecordArchive())
+        drone.reset()
+        assertFalse(drone.isCurrentFlightConfirmed)
+        assertTrue(acknowledged.shouldRecordArchive()) // Captured before lifecycle reset.
+        assertFalse(WaypointTrack("next", drone).shouldRecordArchive())
+    }
+
+    @Test
     fun prepareForArchive_preservesAuthorizedUploadAfterFlightConfirmationClears() {
         CaltopoClient.SetHomeOrgName("NCSSAR")
         confirmTeamDrone("RIDSNAPSHOT1", "NCSSAR")
@@ -229,6 +262,7 @@ class WaypointTrackTest {
         track.addWaypoint(39.153000, -121.132000, 100L, 1_000L)
 
         track.prepareForArchive()
+        assertTrue(track.shouldRecordArchive())
         CaltopoClient.ClearCurrentPeerDroneConfirmation("RIDSNAPSHOT1")
         drone.reset()
 
@@ -250,7 +284,9 @@ class WaypointTrackTest {
         val track = WaypointTrack(drone.trackLabel(), drone)
 
         track.prepareForArchive()
+        assertFalse(track.shouldRecordArchive())
         confirmTeamDrone("RIDUNCONFIRMED1", "NCSSAR")
+        assertFalse(track.shouldRecordArchive())
 
         val geoJson = track.getGeoJson()!!
         val r2cProp = geoJson.getJSONArray("features")

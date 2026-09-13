@@ -13795,7 +13795,7 @@ static void test_detector_facade_runtime_budget_desired_render_interval_ms(void)
     interval = anomaly_detector_runtime_budget_desired_render_interval_ms(
             33, 33, 1500, 1000, false, 12, 40, 15);
     EXPECT(interval.desired_interval_ms == 31 &&
-           interval.render_interval_ms == 33,
+           interval.render_interval_ms == 32,
            "runtime budget render interval: moderate backlog speeds desired cadence and smooths");
 
     interval = anomaly_detector_runtime_budget_desired_render_interval_ms(
@@ -13813,7 +13813,7 @@ static void test_detector_facade_runtime_budget_desired_render_interval_ms(void)
     interval = anomaly_detector_runtime_budget_desired_render_interval_ms(
             50, 50, 0, 1000, false, 12, 40, 15);
     EXPECT(interval.desired_interval_ms == 53 &&
-           interval.render_interval_ms == 50,
+           interval.render_interval_ms == 51,
            "runtime budget render interval: underrun slows desired cadence within smoothing");
 
     interval = anomaly_detector_runtime_budget_desired_render_interval_ms(
@@ -13821,6 +13821,25 @@ static void test_detector_facade_runtime_budget_desired_render_interval_ms(void)
     EXPECT(interval.desired_interval_ms == 1 &&
            interval.render_interval_ms == 1,
            "runtime budget render interval: invalid source interval normalizes to one");
+}
+
+static void test_render_interval_smoothing_converges(void) {
+    int64_t previous = 44;
+    for (int i = 0; i < 20; ++i) {
+        anomaly_detector_runtime_budget_render_interval_t interval =
+            anomaly_detector_runtime_budget_desired_render_interval_ms(
+                41, previous, 800, 800, false, 12, 40, 15);
+        previous = interval.render_interval_ms;
+    }
+    EXPECT(previous == 41, "render interval: integer smoothing reaches target rather than sticking at 44");
+    previous = 38;
+    for (int i = 0; i < 20; ++i) {
+        anomaly_detector_runtime_budget_render_interval_t interval =
+            anomaly_detector_runtime_budget_desired_render_interval_ms(
+                41, previous, 800, 800, false, 12, 40, 15);
+        previous = interval.render_interval_ms;
+    }
+    EXPECT(previous == 41, "render interval: integer smoothing also converges upward");
 }
 
 static void test_detector_facade_runtime_budget_current_render_interval_ms(void) {
@@ -22701,6 +22720,7 @@ int main(void) {
     test_detector_facade_runtime_budget_proven_gap_ms();
     test_detector_facade_runtime_budget_decay_toward_floor_ms();
     test_detector_facade_runtime_budget_desired_render_interval_ms();
+    test_render_interval_smoothing_converges();
     test_detector_facade_runtime_budget_current_render_interval_ms();
     test_detector_facade_runtime_budget_interval_from_fps();
     test_detector_facade_runtime_budget_local_playback_target_interval_ms();

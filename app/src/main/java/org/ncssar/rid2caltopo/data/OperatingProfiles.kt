@@ -52,9 +52,10 @@ object OperatingProfiles {
         }
     }
     fun snapshot(profile: JSONObject, state: JSONObject, pilotId: String, aircraftId: String, mapId: String,
-                 managed: Boolean, checked: Set<Int> = emptySet()): JSONObject = JSONObject()
+                 managed: Boolean, checked: Set<Int> = emptySet(), incidentBriefing: IncidentBriefing = IncidentBriefing(), organizationScope: String = ""): JSONObject = JSONObject()
         .put("profile", JSONObject(profile.toString())).put("selectedAt", Instant.now().toString())
         .put("organizationId", state.optString("organizationId")).put("incidentId", mapId)
+        .put("organizationScope", organizationScope).put("incidentBriefing", incidentBriefing.toJSON())
         .put("assignmentId", assignmentId).put("catalogRevision", state.optJSONObject("operatingProfiles")?.optInt("revision") ?: 0)
         .put("fetchedAt", state.optString("fetchedAt")).put("checkedConditions", JSONArray(checked.sorted()))
         .put("reviewIssues", JSONArray(warnings(profile, state, pilotId, aircraftId, mapId, managed) +
@@ -64,14 +65,16 @@ object OperatingProfiles {
     private var scope = ""
     var assignmentId = ""; private set
     private var remembered: String? = null
+    var incidentBriefing = IncidentBriefing(); private set
     @JvmStatic @Synchronized fun setScope(org: String, incident: String) {
         val next = JSONArray(listOf(org, incident)).toString()
         if (next != scope) { scope = next; endAssignment() }
     }
-    @JvmStatic @Synchronized fun endAssignment() { assignmentId = ""; remembered = null }
-    @Synchronized fun remember(profile: JSONObject) {
+    @JvmStatic @Synchronized fun endAssignment() { assignmentId = ""; remembered = null; incidentBriefing = IncidentBriefing() }
+    @Synchronized fun remember(profile: JSONObject, briefing: IncidentBriefing = IncidentBriefing()) {
         if (assignmentId.isEmpty()) assignmentId = UUID.randomUUID().toString()
         remembered = profile.toString()
+        incidentBriefing = briefing
     }
     @Synchronized fun initial(state: JSONObject, savedId: String? = null): JSONObject = remembered?.let { JSONObject(it) } ?: preferred(state, savedId)
     fun active(readiness: JSONObject): JSONObject? = readiness.optJSONArray("operatingProfileChanges")?.objects()?.lastOrNull()?.optJSONObject("after")
@@ -82,7 +85,8 @@ object OperatingProfiles {
         if (old != null && selected != null) {
             val changes = JSONArray(before.optJSONArray("operatingProfileChanges")?.toString() ?: "[]")
             if ((old.optJSONObject("profile")?.toString() ?: "{}") != (selected.optJSONObject("profile")?.toString() ?: "{}") ||
-                (old.optJSONArray("checkedConditions")?.toString() ?: "[]") != (selected.optJSONArray("checkedConditions")?.toString() ?: "[]")) {
+                (old.optJSONArray("checkedConditions")?.toString() ?: "[]") != (selected.optJSONArray("checkedConditions")?.toString() ?: "[]") ||
+                listOf("incidentBriefing", "incidentId", "assignmentId", "organizationScope").any { old.opt(it)?.toString() != selected.opt(it)?.toString() }) {
                 changes.put(JSONObject().put("at", Instant.now().toString()).put("before", old).put("after", selected))
             }
             after.put("operatingProfile", before.getJSONObject("operatingProfile"))
@@ -95,4 +99,15 @@ object OperatingProfiles {
         after.toString()
     }.getOrDefault(next)
     fun JSONArray?.objects(): List<JSONObject> = (0 until (this?.length() ?: 0)).mapNotNull { this?.optJSONObject(it) }
+}
+
+/** Per-incident tablet entry; does not modify the organization's authority profile. */
+data class IncidentBriefing(val incidentName: String = "", val notes: String = "") {
+    fun toJSON() = JSONObject().put("incidentName", incidentName.take(160)).put("notes", notes.take(4000))
+    companion object {
+        fun fromJSON(value: JSONObject?) = IncidentBriefing(value?.optString("incidentName").orEmpty().take(160), value?.optString("notes").orEmpty().take(4000))
+        fun currentFlight(snapshot: JSONObject?, confirmed: Boolean, organization: String, incident: String): IncidentBriefing? =
+            snapshot?.takeIf { confirmed && it.optString("organizationScope") == organization && it.optString("incidentId") == incident }
+                ?.optJSONObject("incidentBriefing")?.let { fromJSON(it) }
+    }
 }

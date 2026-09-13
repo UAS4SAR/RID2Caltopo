@@ -59,3 +59,34 @@ import Testing
     #expect(RidMappingEditValidation.errors(valid, others: [valid]).contains("Remote ID is already listed."))
     #expect(RidMappingEditValidation.errors(valid, others: [valid]).contains("Model must be unique for this owner callsign."))
 }
+
+@Test func rememberedEquipmentDoesNotReuseFlightEvidence() {
+    var previous = FlightReadiness()
+    previous.selectedAccessories = ["spotlight", "speaker"]
+    previous.payloadDescription = "Water"
+    previous.payloadWeightGrams = 500
+    previous.pilotJSON = "{\"callsign\":\"OLD\"}"
+    previous.confirmedAt = "yesterday"
+    let restored = FlightReadiness().restoringEquipment(previous.equipmentDictionary)
+    #expect(restored.selectedAccessories == previous.selectedAccessories)
+    #expect(restored.payloadDescription == "Water")
+    #expect(restored.payloadWeightGrams == 500)
+    #expect(restored.pilotJSON == "{}")
+    #expect(restored.confirmedAt.isEmpty)
+    let cleared = FlightReadiness().restoringEquipment(FlightReadiness().equipmentDictionary)
+    #expect(cleared.selectedAccessories.isEmpty)
+    #expect(cleared.payloadWeightGrams == nil)
+    var catalog = AircraftReadiness()
+    catalog.accessories = [AircraftAccessory(id: "speaker", name: "Speaker")]
+    #expect(restored.withAircraft(local: catalog, published: nil).selectedAccessories == ["speaker"])
+}
+
+@Test func pilotWarningDoesNotRequireTrainingDates() {
+    var readiness = FlightReadiness()
+    readiness.pilotJSON = "{\"memberId\":\"member\",\"certificateDate\":\"2025-02-28\"}"
+    #expect(!readiness.pilotQualificationWarning.contains("Currency date not recorded"))
+    readiness.pilotJSON = "{\"callsign\":\"1SAR7\"}"
+    #expect(!readiness.pilotQualificationWarning.contains("Currency date not recorded"))
+    readiness.pilotJSON = "{\"memberId\":\"member\",\"initialKnowledgeDate\":\"2025-02-01\"}"
+    #expect(!readiness.pilotQualificationWarning.contains("Currency date not recorded"))
+}

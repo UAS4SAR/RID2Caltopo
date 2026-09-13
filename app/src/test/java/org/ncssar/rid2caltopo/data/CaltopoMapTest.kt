@@ -16,6 +16,22 @@ import java.util.Calendar
 import java.util.GregorianCalendar
 
 class CaltopoMapTest {
+    @Test fun automaticRefreshRequestsRespectTwentySecondMinimum() {
+        assertEquals(20_000L, CaltopoMap.minimumMapPollDelayMs(1_000, 1_000))
+        assertEquals(1L, CaltopoMap.minimumMapPollDelayMs(20_999, 1_000))
+        assertEquals(0L, CaltopoMap.minimumMapPollDelayMs(21_000, 1_000))
+        assertEquals(0L, CaltopoMap.minimumMapPollDelayMs(1_000, 0))
+    }
+
+    @Test fun visibleMapsReconcileMissingDeletionsWithinTwoMinutes() {
+        assertFalse(CaltopoMap.fullArtifactReconciliationDue(120_999, 1_000, true))
+        assertTrue(CaltopoMap.fullArtifactReconciliationDue(121_000, 1_000, true))
+        assertFalse(CaltopoMap.fullArtifactReconciliationDue(121_000, 1_000, false))
+        assertTrue(CaltopoMap.fullArtifactReconciliationDue(901_000, 1_000, false))
+        assertTrue(CaltopoMap.fullArtifactReconciliationDue(1_000, 0, true))
+        assertTrue(CaltopoMap.fullArtifactReconciliationDue(500, 1_000, true))
+    }
+
 
     @Test
     fun archiveFolderName_separatesTrackFolderAndDate() {
@@ -42,6 +58,7 @@ class CaltopoMapTest {
     private lateinit var appExitRequestedField: Field
     private lateinit var lastMapSyncField: Field
     private lateinit var lastFullArtifactSyncField: Field
+    private lateinit var lastMapPollStartedAtField: Field
     private lateinit var mapRefreshInFlightField: Field
     private lateinit var mapRefreshPendingField: Field
     private lateinit var fullMapRefreshPendingField: Field
@@ -71,6 +88,7 @@ class CaltopoMapTest {
     private var originalLastWaypointTimestamp: Long = 0L
     private var originalAppExitRequested: Boolean = false
     private var originalLastMapSync: Long = 0L
+    private var originalLastMapPollStartedAt: Long = 0L
     private var originalLastFullArtifactSync: Long = 0L
     private var originalMapRefreshInFlight: Boolean = false
     private var originalMapRefreshPending: Boolean = false
@@ -98,6 +116,7 @@ class CaltopoMapTest {
         lastWaypointTimestampField = CtDroneSpec::class.java.getDeclaredField("MostRecentWaypointTimestampInMsec").apply { isAccessible = true }
         appExitRequestedField = CaltopoClient::class.java.getDeclaredField("AppExitRequested").apply { isAccessible = true }
         lastMapSyncField = CaltopoMap::class.java.getDeclaredField("LastMapSync").apply { isAccessible = true }
+        lastMapPollStartedAtField = CaltopoMap::class.java.getDeclaredField("LastMapPollStartedAt").apply { isAccessible = true }
         lastFullArtifactSyncField = CaltopoMap::class.java.getDeclaredField("LastFullArtifactSync").apply { isAccessible = true }
         mapRefreshInFlightField = CaltopoMap::class.java.getDeclaredField("MapRefreshInFlight").apply { isAccessible = true }
         mapRefreshPendingField = CaltopoMap::class.java.getDeclaredField("MapRefreshPending").apply { isAccessible = true }
@@ -149,6 +168,8 @@ class CaltopoMapTest {
         originalLastWaypointTimestamp = lastWaypointTimestampField.getLong(null)
         originalAppExitRequested = appExitRequestedField.getBoolean(null)
         originalLastMapSync = lastMapSyncField.getLong(null)
+        originalLastMapPollStartedAt = lastMapPollStartedAtField.getLong(null)
+        lastMapPollStartedAtField.setLong(null, 0L)
         originalLastFullArtifactSync = lastFullArtifactSyncField.getLong(null)
         originalMapRefreshInFlight = mapRefreshInFlightField.getBoolean(null)
         originalMapRefreshPending = mapRefreshPendingField.getBoolean(null)
@@ -199,6 +220,7 @@ class CaltopoMapTest {
         lastWaypointTimestampField.setLong(null, originalLastWaypointTimestamp)
         appExitRequestedField.setBoolean(null, originalAppExitRequested)
         lastMapSyncField.setLong(null, originalLastMapSync)
+        lastMapPollStartedAtField.setLong(null, originalLastMapPollStartedAt)
         lastFullArtifactSyncField.setLong(null, originalLastFullArtifactSync)
         mapRefreshInFlightField.setBoolean(null, originalMapRefreshInFlight)
         mapRefreshPendingField.setBoolean(null, originalMapRefreshPending)
@@ -349,7 +371,7 @@ class CaltopoMapTest {
     }
 
     @Test
-    fun updateMyLocation_startsStandaloneTrackerWithEmptyMapString() {
+    fun updateMyLocation_ignoresLegacyStandaloneOptIn() {
         mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.down)
         mapNodeField.set(null, null)
         CaltopoClient.SetTrackerApiKey("tracker-token")
@@ -365,8 +387,7 @@ class CaltopoMapTest {
         CaltopoMap.UpdateMyLocation(location)
 
         val peerCoordinator = fixture.peerCoordinator as FakePeerCoordinator
-        assertTrue(peerCoordinator.isStarted())
-        assertEquals("", peerCoordinator.getStartedMapId())
+        assertFalse(peerCoordinator.isStarted())
     }
 
     @Test
@@ -390,7 +411,7 @@ class CaltopoMapTest {
     }
 
     @Test
-    fun ensureStandaloneTrackerCoordinationStarted_usesCachedLocation() {
+    fun standaloneCachedLocationDoesNotStartCoordination() {
         mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.down)
         mapNodeField.set(null, null)
         CaltopoClient.SetTrackerApiKey("tracker-token")
@@ -405,13 +426,13 @@ class CaltopoMapTest {
         CaltopoMap.EnsureStandaloneTrackerCoordinationStarted()
 
         val peerCoordinator = fixture.peerCoordinator as FakePeerCoordinator
-        assertTrue(peerCoordinator.isStarted())
-        assertEquals("", peerCoordinator.getStartedMapId())
+        assertFalse(peerCoordinator.isStarted())
+        // Location remains cached locally; the coordinator transport is not started.
         assertEquals(1, peerCoordinator.countEvents("updateMyPosition"))
     }
 
     @Test
-    fun disablingStandaloneToggleStopsActiveNoMapTrackerCoordination() {
+    fun standaloneFlightRemainsIndependentAcrossLegacySettingChanges() {
         mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.down)
         mapNodeField.set(null, null)
         CaltopoClient.SetTrackerApiKey("tracker-token")
@@ -424,12 +445,12 @@ class CaltopoMapTest {
         }
         CaltopoMap.EnsureStandaloneTrackerCoordinationStarted()
         val peerCoordinator = fixture.peerCoordinator as FakePeerCoordinator
-        assertTrue(peerCoordinator.isStarted())
+        assertFalse(peerCoordinator.isStarted())
         val drone = activateDrone("RIDTOGGLE1")
 
         CaltopoClient.SetStandaloneR2cCoordinationEnabled(false)
 
-        assertTrue(peerCoordinator.isStarted())
+        assertFalse(peerCoordinator.isStarted())
 
         drone.reset()
 
@@ -437,7 +458,7 @@ class CaltopoMapTest {
     }
 
     @Test
-    fun enablingStandaloneToggleMidFlightDoesNotStartNoMapTrackerUntilFlightWindowEnds() {
+    fun legacyOptInCannotStartCoordinationDuringOrAfterStandaloneFlight() {
         mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.down)
         mapNodeField.set(null, null)
         CaltopoClient.SetTrackerApiKey("tracker-token")
@@ -459,7 +480,7 @@ class CaltopoMapTest {
         drone.reset()
         CaltopoMap.EnsureStandaloneTrackerCoordinationStarted()
 
-        assertTrue(peerCoordinator.isStarted())
+        assertFalse(peerCoordinator.isStarted())
     }
 
     @Test
@@ -608,7 +629,25 @@ class CaltopoMapTest {
     }
 
     @Test
-    fun inactiveIncidentMapDisconnect_entersStandaloneCoordination() {
+    fun completedPreparationRestartsIncidentMapQuietPeriod() {
+        val prep = org.ncssar.rid2caltopo.video.MapOfflinePrepRuntime
+        prep.resetForTesting()
+        prep.begin(onCancel = {})
+        prep.finish()
+        val endedAt = prep.lastActivityAtMsec()
+        setLastWaypointTimestamp(0L)
+        try {
+            CaltopoMap.setTimeSourceForTesting { endedAt + 9_000L }
+            assertFalse(CaltopoMap.DisconnectIncidentMapIfInactive("display inactive"))
+            CaltopoMap.setTimeSourceForTesting { endedAt + FIVE_MINUTES_MS - 1L }
+            assertFalse(CaltopoMap.DisconnectIncidentMapIfInactive("display inactive"))
+        } finally {
+            prep.resetForTesting()
+        }
+    }
+
+    @Test
+    fun inactiveIncidentMapDisconnect_stopsCoordinationDespiteLegacyOptIn() {
         val nowMs = 1_000_000_000L
         CaltopoMap.setTimeSourceForTesting { nowMs }
         setLastWaypointTimestamp(0L)
@@ -626,8 +665,7 @@ class CaltopoMapTest {
         assertEquals(CaltopoMap.MapStatusListener.mapStatus.down, CaltopoMap.GetMapStatus())
         assertEquals(null, CaltopoMap.GetMapNode())
         val peerCoordinator = fixture.peerCoordinator as FakePeerCoordinator
-        assertTrue(peerCoordinator.isStarted())
-        assertEquals(CaltopoClient.GetTrackerCoordinationScopeId(), peerCoordinator.startedMapId)
+        assertFalse(peerCoordinator.isStarted())
     }
 
     @Test

@@ -140,3 +140,24 @@ internal fun isUsableMapViewportState(latitude: Double, longitude: Double, zoom:
     if (latitude !in -85.0..85.0 || longitude !in -180.0..180.0) return false
     return !(kotlin.math.abs(latitude) < 0.000001 && kotlin.math.abs(longitude) < 0.000001)
 }
+
+/** Wait for a sole live stream to resolve without overriding the operator's view. */
+internal fun initialStreamMapFocus(
+    followEnabled: Boolean,
+    focusedDesignator: String?,
+    operatorAdjustedViewport: Boolean,
+    liveStreamDesignators: List<String?>,
+): String? {
+    if (!followEnabled || focusedDesignator != null || operatorAdjustedViewport) return null
+    return liveStreamDesignators.singleOrNull()?.takeIf { it.isNotBlank() }
+}
+
+/** Each stream gets one opportunity to initiate follow in this map-view session. */
+internal class StreamFocusArrival {
+    private val seen = mutableSetOf<String>()
+    fun observe(liveStreamIds: Set<String>, followEnabled: Boolean, hasFocus: Boolean): Boolean {
+        val begin = followEnabled && !hasFocus && liveStreamIds.size == 1 && liveStreamIds.first() !in seen
+        seen.addAll(liveStreamIds)
+        return begin
+    }
+}

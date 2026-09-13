@@ -4,6 +4,27 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AircraftReadinessTest {
+    @Test fun pilotWarningDoesNotRequireTrainingDates() {
+        val readiness = FlightReadiness(AircraftReadiness(), pilotJson = "{\"memberId\":\"member\",\"certificateDate\":\"2025-02-28\"}")
+        assertFalse(readiness.pilotQualificationWarning().contains("Currency date not recorded"))
+        assertFalse(readiness.copy(pilotJson = "{\"callsign\":\"1SAR7\"}").pilotQualificationWarning().contains("Currency date not recorded"))
+        assertFalse(readiness.copy(pilotJson = "{\"memberId\":\"member\",\"initialKnowledgeDate\":\"2025-02-01\"}").pilotQualificationWarning().contains("Currency date not recorded"))
+    }
+
+    @Test fun rememberedEquipmentDoesNotReuseFlightEvidence() {
+        val previous = FlightReadiness(AircraftReadiness(), selectedAccessories = setOf("spotlight", "speaker"),
+            payloadDescription = "Water", payloadWeightGrams = 500.0, pilotJson = "{\"callsign\":\"OLD\"}", confirmedAt = "yesterday")
+        val restored = FlightReadiness(AircraftReadiness()).restoringEquipment(previous.equipmentJSON())
+        assertEquals(previous.selectedAccessories, restored.selectedAccessories)
+        assertEquals("Water", restored.payloadDescription)
+        assertEquals(500.0, restored.payloadWeightGrams)
+        assertEquals("{}", restored.pilotJson)
+        assertEquals("", restored.confirmedAt)
+        val cleared = restored.restoringEquipment(FlightReadiness(AircraftReadiness()).equipmentJSON())
+        assertTrue(cleared.selectedAccessories.isEmpty())
+        assertNull(cleared.payloadWeightGrams)
+    }
+
     private val aircraft = AircraftReadiness(baseWeightGrams = 1200.0,
         accessories = listOf(AircraftAccessory("std", "Standard battery", 400.0, group = "battery"),
             AircraftAccessory("ext", "Extended battery", 600.0, group = "battery")))

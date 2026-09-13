@@ -41,7 +41,8 @@ object MutualAidPackageManager {
         val targetMapTitle: String,
         val expiresAtEpochMs: Long,
         val tileCount: Int,
-        val demCount: Int
+        val demCount: Int,
+        val aolCount: Int = 0
     )
 
     internal fun exportPackage(
@@ -189,7 +190,8 @@ object MutualAidPackageManager {
                 importedDem++
             }
 
-            true to "Imported MA package: $importedTiles tile(s), $importedDem DEM tile(s)."
+            val importedAol=org.ncssar.rid2caltopo.video.surface.SurfaceStore.importSets(context,entryBytes)
+            true to "Imported MA package: $importedAol AOL tile(s), $importedTiles tile(s), $importedDem DEM tile(s)."
         } catch (e: Exception) {
             CaltopoClient.CTWarn("MutualAidPackageMgr", "importPackage() failed.", e)
             false to (e.message ?: "Failed to import MA package.")
@@ -234,7 +236,8 @@ object MutualAidPackageManager {
                 targetMapTitle = profileJson.optString("target_map_title"),
                 expiresAtEpochMs = profileJson.optLong("expires_at_epoch_ms", 0L),
                 tileCount = manifest.optJSONArray("tile_entries")?.length() ?: 0,
-                demCount = manifest.optJSONArray("dem_entries")?.length() ?: 0
+                demCount = manifest.optJSONArray("dem_entries")?.length() ?: 0,
+                aolCount = manifest.optJSONArray("aol_entries")?.let { entries -> (0 until entries.length()).count { entries.optString(it).endsWith(".aol") } } ?: 0
             )
         } catch (e: Exception) {
             CaltopoClient.CTWarn("MutualAidPackageMgr", "readPackagePreview() failed.", e)
@@ -302,6 +305,7 @@ object MutualAidPackageManager {
         if (profileEnc.isNullOrBlank()) {
             throw IllegalStateException("Configure the Mutual Aid account in Settings before exporting an MA package.")
         }
+        var aolCount=0
         ZipOutputStream(rawOut).use { zip ->
             forEachTileIndexForBounds(bounds, minZoom, maxZoom, clipBoundary) { tileIndex ->
                 val bytes = tileWriter.readTileBytes(tileSource, tileIndex) ?: return@forEachTileIndexForBounds
@@ -340,7 +344,12 @@ object MutualAidPackageManager {
                 }
             }
 
+            val aolFiles=org.ncssar.rid2caltopo.video.surface.SurfaceStore.exportSets(context,
+                org.ncssar.rid2caltopo.video.surface.SurfaceBounds(bounds.lonWest,bounds.latSouth,bounds.lonEast,bounds.latNorth))
+            aolCount=aolFiles.count { it.first.endsWith(".aol") }
+            for((path,bytes) in aolFiles) { zip.putNextEntry(ZipEntry(path));zip.write(bytes);zip.closeEntry() }
             val manifest = JSONObject()
+                .put("aol_entries", JSONArray(aolFiles.map { it.first }))
                 .put("format", FORMAT)
                 .put("version", VERSION)
                 .put("generated", CaltopoClient.TimeDatestampString(System.currentTimeMillis()))
@@ -353,7 +362,7 @@ object MutualAidPackageManager {
             zip.write(manifest.toString(2).toByteArray(Charsets.UTF_8))
             zip.closeEntry()
         }
-        return true to "Saved MA package with ${tileEntries.size} tile(s) and ${demEntries.size} DEM tile(s)."
+        return true to "Saved MA package with $aolCount AOL tile(s), ${tileEntries.size} tile(s) and ${demEntries.size} DEM tile(s)."
     }
 
     private fun forEachTileIndexForBounds(

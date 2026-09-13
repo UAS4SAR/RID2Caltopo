@@ -6,6 +6,12 @@ import org.ncssar.rid2caltopo.video.mapcache.DemElevationService
 import org.ncssar.rid2caltopo.video.mapcache.GeoTiffDemSource
 
 class DroneAltitudeCoordinatorTest {
+    @Test fun manualCalibrationOverridesReportedHeightForAgl() {
+        val takeoff=500.0-15.24
+        val result=DroneAltitudeCoordinator.calculateDemBackedAglMeters(500.0,5.0,
+            DroneAltitudeCalibration(takeoff,AtoSeedSource.MANUAL),takeoff-300.0,300.0,1.0)
+        assertEquals(15.24,result,0.00001)
+    }
     @Test
     fun shouldPreserveCalibrationOnMapReconnect_keepsLockedReferences() {
         assertTrue(

@@ -129,6 +129,7 @@ public actor OpenDroneIDTrackAssembler {
             heightReference: location.heightMeters > -999
                 ? (location.heightType == 0 ? .takeoff : .ground)
                 : nil,
+            grounded: location.status == 1 ? true : (location.status == 2 ? false : nil),
             horizontalAccuracyCode: location.horizontalAccuracyCode,
             headingDegrees: location.directionDegrees,
             speedMetersPerSecond: location.horizontalSpeedMetersPerSecond,

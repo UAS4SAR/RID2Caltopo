@@ -2208,6 +2208,10 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
     }
 
     private void onDroneConfirmedByPeer(@NonNull JSONObject jo) {
+        if (mapId == null || mapId.trim().isEmpty()) {
+            CTDebug(TAG, "Standalone requires local confirmation; ignoring peer drone_confirmed");
+            return;
+        }
         String remoteId = jo.optString("remoteId");
         if (remoteId.isEmpty()) return;
         CTDebug(TAG, String.format(Locale.US,

@@ -116,12 +116,17 @@ internal fun streamTelemetryHeaderText(
     cameraAzimuthDeg: Double? = null,
 ): String =
     droneStatusLabelText(
+        aol = displayState?.aol,
+        positionStale = displayState?.positionStale == true,
+        atoStatus = displayState?.atoStatus ?: org.ncssar.rid2caltopo.video.surface.MeasurementStatus.Unknown,
+        aglStatus = displayState?.aglStatus ?: org.ncssar.rid2caltopo.video.surface.MeasurementStatus.Unknown,
         atoFeet = displayState?.atoFt,
         aglFeet = displayState?.aglFt,
         aglStale = displayState?.aglStale == true,
         rangeFeet = displayState?.rangeFt,
         headingDeg = cameraAzimuthDeg ?: displayState?.headingDeg,
         headingLabel = if (cameraAzimuthDeg != null) "CAM" else "TRK",
+        headingStale = cameraAzimuthDeg == null && displayState?.positionStale == true,
     )
 
 internal fun isNearStreamCenter(
@@ -694,8 +699,15 @@ fun StreamTile(
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = streamTelemetryHeaderText(displayState, cameraAzimuthDeg),
+                    text = androidx.compose.ui.text.buildAnnotatedString {
+                        val line = streamTelemetryHeaderText(displayState, cameraAzimuthDeg)
+                        append(line)
+                        negativeAolRange(line)?.let { range ->
+                            addStyle(androidx.compose.ui.text.SpanStyle(color = Color.Red), range.first, range.last + 1)
+                        }
+                    },
                     color = Color.White,
+                    modifier = Modifier.semantics { contentDescription = streamTelemetryHeaderText(displayState, cameraAzimuthDeg) + "; " + (displayState?.aol?.details ?: "Surface package not prepared") },
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
                 )

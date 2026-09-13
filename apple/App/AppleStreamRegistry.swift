@@ -148,6 +148,16 @@ final class AppleStreamRegistry: ObservableObject {
         return paired
     }
 
+    func pairConfiguredPublishers(mappings: [(remoteID: String, designator: String)]) {
+        let added = flightActivity.pairConfiguredPublishers(mappings: mappings)
+        guard !added.isEmpty else { return }
+        managedPresenceRevision &+= 1
+        objectWillChange.send()
+        for (stream, aircraft) in added {
+            AppleLog.info("Streams", "Configured video telemetry binding stream=\(stream) aircraft=\(aircraft)")
+        }
+    }
+
     func unpair(streamID: String) {
         seiPositionContinuationByStreamID.removeValue(forKey: streamID)
         flightActivity.unpair(streamID: streamID)
@@ -182,40 +192,26 @@ final class AppleStreamRegistry: ObservableObject {
         seiPositionContinuationByStreamID[streamID]?.positionValidated == true
     }
 
-    func freshValidatedDJIPositionByAircraftID(
+    func freshOperationalDJIPositionByAircraftID(
         tracks: [RidAircraftTrack],
         at date: Date = Date(),
         maximumAge: TimeInterval = 3
     ) -> [String: AppleDJICameraTelemetry] {
-        let tracksByAircraftID = Dictionary(uniqueKeysWithValues: tracks.map { ($0.aircraftID, $0) })
+        // The configured stream binding supplies identity. Complete DJI position/height
+        // is an independent source and does not require a previous RID track.
         var result: [String: AppleDJICameraTelemetry] = [:]
         for session in sessions {
-            guard let aircraftID = flightActivity.boundAircraftID(for: session.id),
-                  let track = tracksByAircraftID[aircraftID],
-                  let telemetry = session.model.freshDJICameraTelemetry(now: date, maximumAge: maximumAge)
+            guard flightActivity.isPublisherActive(streamID: session.id),
+                  let aircraftID = flightActivity.boundAircraftID(for: session.id),
+                  let telemetry = session.model.freshDJICameraTelemetry(now: date, maximumAge: maximumAge),
+                  let lat = telemetry.latitudeDegrees, let lng = telemetry.longitudeDegrees,
+                  lat.isFinite, lng.isFinite, (-90...90).contains(lat), (-180...180).contains(lng),
+                  lat != 0, lng != 0,
+                  let height = telemetry.relativeUpMeters, height.isFinite,
+                  (-1000...30000).contains(height)
             else { continue }
-            var continuation = seiPositionContinuationByStreamID[session.id]
-                ?? OperationalSEIPositionContinuation()
-            let accepted = continuation.acceptHorizontalPosition(
-                latitudeDegrees: telemetry.latitudeDegrees,
-                longitudeDegrees: telemetry.longitudeDegrees,
-                ridLatitudeDegrees: track.lastObservation.latitude,
-                ridLongitudeDegrees: track.lastObservation.longitude,
-                sourceTimestampMicroseconds: telemetry.sourceTimestampMicroseconds
-            )
-            let relativeUpAccepted = continuation.acceptRelativeUp(
-                observedRelativeUpMeters: telemetry.relativeUpMeters,
-                ridAltitudeMeters: track.lastObservation.altitudeMeters,
-                takeoffReportedAltitudeMeters: track.points.first?.altitudeMeters
-            )
-            seiPositionContinuationByStreamID[session.id] = continuation
-            guard accepted else { continue }
-            if let existing = result[aircraftID], existing.receivedAt >= telemetry.receivedAt {
-                continue
-            }
-            result[aircraftID] = telemetry.replacingRelativeUpMeters(
-                relativeUpAccepted ? telemetry.relativeUpMeters : nil
-            )
+            if let existing = result[aircraftID], existing.receivedAt >= telemetry.receivedAt { continue }
+            result[aircraftID] = telemetry
         }
         return result
     }
@@ -581,6 +577,16 @@ private struct AppleStreamTile: View {
     let focused: Bool
     let fillsAvailableSpace: Bool
     let primaryLabel: String?
+    private func coloredTelemetry(_ line: String) -> AttributedString {
+        var text = AttributedString(line)
+        text.foregroundColor = .white
+        if let range = OperationalAircraftDisplay.negativeAOLRange(in: line),
+           let attributedRange = Range(range, in: text) {
+            text[attributedRange].foregroundColor = .red
+        }
+        return text
+    }
+
     let telemetryText: String?
     let coordinateText: String?
     let remoteRequesterEmail: String?
@@ -721,7 +727,9 @@ private struct AppleStreamTile: View {
             if telemetryText != nil || coordinateText != nil {
                 VStack(alignment: .leading, spacing: 2) {
                     if let telemetryText {
-                        Text(zoom > 1.01 ? "\(telemetryText)  \(zoomLabel)" : telemetryText)
+                        let line = zoom > 1.01 ? "\(telemetryText)  \(zoomLabel)" : telemetryText
+                        Text(coloredTelemetry(line))
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     if let coordinateText {
                         if let onCoordinateDisplayFormatChange {

@@ -1365,6 +1365,13 @@ class R2CActivity :
                 val pendingDroneConfirmation by localViewModel
                     .pendingDroneConfirmation
                     .collectAsState()
+                LaunchedEffect(Unit) {
+                    streamsViewModel.streams.collect { streams ->
+                        localViewModel.onLiveStreamDesignatorsChanged(streams.values.filter {
+                            it.state == org.ncssar.rid2caltopo.video.StreamState.LIVE && !it.isLocalPlayback
+                        }.map { it.designator }.toSet())
+                    }
+                }
                 val maPackageImportState by MutualAidPackageTransferManager.importState.collectAsState()
                 val confirmationToneGenerator = remember(pendingDroneConfirmation?.remoteId) {
                     try {

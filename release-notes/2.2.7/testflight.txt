@@ -1,0 +1,5 @@
+RID2Caltopo 2.2.7 (236)
+
+Test single-stream map follow with both RID-based Mini 4 Pro telemetry and embedded Matrice telemetry. Verify the DCP appears for a configured stream, saved equipment persists between flights, and Ignore remains active for the app session. Check AGL/AOL continuity, negative AOL highlighting, offline surface preparation, and CalTopo artifact deletion after about two minutes in the foreground. Test the simple tablet incident briefing fields.
+
+AOL uses prepared surface data within a 200 ft horizontal radius; missing or unmapped obstacles may not be represented. It is not a guarantee of obstacle clearance. Report the build number, aircraft, telemetry source, and retained diagnostic log for any issue.

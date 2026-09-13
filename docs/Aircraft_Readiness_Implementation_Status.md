@@ -19,7 +19,7 @@ Verified source archives and Git bundles are in `outputs/source-snapshots/202609
 - The existing records administration page links each flight to an RPIC/configuration/payload correction form. Corrections require `records_admin`, an explanation, and a matching revision. The original submission remains intact. Reimports preserve reviewed corrections, and CSV exports include current values and correction history. A completion filter identifies unresolved pilot or weight information.
 - The earlier removal of short/hover-flight import thresholds remains included.
 
-The initial knowledge date is separate because certificate issue dates are not the basis of knowledge recency. Currency checks use the recorded knowledge test/training dates and calendar-month boundaries; they do not query an FAA certification database. Reference: [FAA remote-pilot certification and recency guidance](https://www.faa.gov/uas/commercial_operators/become_a_drone_pilot).
+September 13 tracking-policy update: the certificate issue date is sufficient when no initial knowledge test/training date is recorded. Test and training dates are optional and grouped in a collapsed section. An explicit initial date remains usable, and optional recurrent training can extend the tracking period. Current-roster and flight-date checks use the same fallback and calendar-month boundaries. This is an organization tracking convention; the date is not relabeled as an actual test date, and no FAA database verification is performed.
 
 ## Local validation
 

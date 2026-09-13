@@ -21,6 +21,25 @@ class StreamTelemetryBindingTest {
     }
 
     @Test
+    fun streamPriorityRequiresAcceptedFreshPositionAndEndsOnDisconnect() {
+        StreamFlightActivityRegistry.replaceConfigured(mapOf("RED1" to "1581F8"))
+        StreamFlightActivityRegistry.replaceLivePublishers(listOf("RED1"), 10000)
+        StreamCameraTelemetryRegistry.update("RED1", FfmpegTelemetry(
+            sourceTag="dji-sei-245", gimbalPitchDeg=-14.56, cameraYawDeg=90.0,
+            horizontalFovDeg=40.0, verticalFovDeg=25.0,
+            latitude=39.0, longitude=-121.0, altitudeMeters=600.0,
+            djiNorthMm=1000, djiEastMm=2000, djiDownMm=-605000,
+        ), 10000)
+        assertEquals(false, StreamFlightActivityRegistry.hasFreshPosition("1581F8", 10001))
+        StreamFlightActivityRegistry.noteAcceptedPosition("1581F8", 10000)
+        assertEquals(true, StreamFlightActivityRegistry.hasFreshPosition("1581F8", 10001))
+        assertEquals(false, StreamFlightActivityRegistry.hasFreshPosition("OTHER", 10001))
+        assertEquals(false, StreamFlightActivityRegistry.hasFreshPosition("1581F8", 13001))
+        StreamFlightActivityRegistry.replaceLivePublishers(emptyList(), 10002)
+        assertEquals(false, StreamFlightActivityRegistry.hasFreshPosition("1581F8", 10002))
+    }
+
+    @Test
     fun manualPairingBindsStreamToRemoteIdWithoutChangingMappedId() {
         val telemetry = testTelemetry(remoteId = "1581F8", mappedId = "1SAR138DjMtrc4td")
         val bindings = mutableMapOf<String, String>()

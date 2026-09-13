@@ -118,3 +118,11 @@ else()
     target_compile_definitions(ffmpeg_bridge PRIVATE HAVE_SWSCALE=0)
     message(WARNING "FFmpeg libs not found for ${ANDROID_ABI}. Using ffmpeg_bridge stub backend.")
 endif()
+
+# Shared streaming lidar preparation. Kept separate from the video decoder.
+set(AOL_SOURCE_ROOT "${CMAKE_SOURCE_DIR}/../../../../apple/Sources/CAOL")
+file(GLOB AOL_LAZ_SOURCES "${AOL_SOURCE_ROOT}/lazperf/*.cpp" "${AOL_SOURCE_ROOT}/lazperf/detail/*.cpp" "${AOL_SOURCE_ROOT}/geographiclib/*.cpp")
+add_library(aol_prepare SHARED aol_jni.cpp "${AOL_SOURCE_ROOT}/aol_grid.cpp" ${AOL_LAZ_SOURCES})
+target_include_directories(aol_prepare PRIVATE "${AOL_SOURCE_ROOT}/include" "${AOL_SOURCE_ROOT}/geographiclib/include")
+target_compile_features(aol_prepare PRIVATE cxx_std_17)
+target_compile_definitions(aol_prepare PRIVATE LAZPERF_VENDORED)

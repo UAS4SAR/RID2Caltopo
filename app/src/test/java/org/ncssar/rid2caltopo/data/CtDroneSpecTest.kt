@@ -28,6 +28,36 @@ class CtDroneSpecTest {
     }
 
     @Test
+    fun trackTimestampMatchesAppleRegardlessOfDeviceLanguage() {
+        val oldLocale = java.util.Locale.getDefault()
+        val oldZone = java.util.TimeZone.getDefault()
+        try {
+            java.util.Locale.setDefault(java.util.Locale.FRANCE)
+            java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("America/Los_Angeles"))
+            assertEquals("161522Sep12", CaltopoClient.TimeDatestampString(1789254922680L))
+        } finally {
+            java.util.Locale.setDefault(oldLocale)
+            java.util.TimeZone.setDefault(oldZone)
+        }
+    }
+
+    @Test
+    fun embeddedVideoAcceptsHeightUpdatesWhileHoveringWithoutRid() {
+        val spec = CtDroneSpec("1581F8HGX255S00A0FZT")
+        val now = System.currentTimeMillis()
+        assertTrue(spec.checkNewWaypoint(39.1536, -121.1322, 605.742, now, now, null,
+            CtDroneSpec.TransportTypeEnum.DJI_STREAM))
+        spec.updateAltitudeContext(605.742, CtDroneSpec.AltSourceEnum.DJI_STREAM, 4.803, true)
+        assertTrue(spec.checkNewWaypoint(39.1536, -121.1322, 606.742, now + 1000, now + 1000, null,
+            CtDroneSpec.TransportTypeEnum.DJI_STREAM))
+        spec.updateAltitudeContext(606.742, CtDroneSpec.AltSourceEnum.DJI_STREAM, 5.803, true)
+        assertEquals(5.803, spec.lastRidHeightM, 0.00001)
+        assertFalse(spec.hasFreshAolGroundStatus(now + 1000))
+        assertEquals(2, spec.getTransportCount(CtDroneSpec.TransportTypeEnum.DJI_STREAM))
+        assertEquals(0, spec.getTransportCount(CtDroneSpec.TransportTypeEnum.BT5))
+    }
+
+    @Test
     fun guessMakeModel_matchesKnownSerialPrefixes() {
         assertEquals("DJI Mini 4 Pro", CtDroneSpec.GuessMakeModel("1581F6Z9C24BH0036EJL"))
         assertEquals("DJI Mavic 3 Pro", CtDroneSpec.GuessMakeModel("1581F67QE239L00A00DE"))
