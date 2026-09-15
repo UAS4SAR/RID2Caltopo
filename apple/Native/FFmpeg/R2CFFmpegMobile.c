@@ -24,6 +24,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+typedef struct {
+    double values[20]; // azimuth, tilt, FOV, attitude[9], position[7]
+    int64_t timestamp;
+    uint64_t sequence;
+} R2CFrameCamera;
+
 struct R2CFFmpegSession {
     pthread_t worker;
     pthread_mutex_t lock;
@@ -62,6 +68,9 @@ struct R2CFFmpegSession {
     int64_t latestDJISourceTimestampMicroseconds;
     uint64_t djiCameraTelemetrySequence;
     bool hasDJICameraTelemetry;
+    R2CFrameCamera cameraHistory[120];
+    unsigned cameraHistoryNext;
+    R2CFrameCamera frameCamera;
     char lastFFmpegLog[256];
 };
 
@@ -254,6 +263,17 @@ static void publish_frame(
     session->latestFrame = frame;
     session->latestSequence += 1;
     session->latestPresentationTimeMicroseconds = presentationTimeMicroseconds;
+    session->frameCamera = (R2CFrameCamera){0};
+    int64_t closest = 250001;
+    for (unsigned i = 0; i < 120; i++) {
+        R2CFrameCamera candidate = session->cameraHistory[i];
+        if (candidate.sequence == 0 || candidate.timestamp < 0) continue;
+        int64_t delta = presentationTimeMicroseconds - candidate.timestamp;
+        if (delta == 0 && delta < closest) {
+            closest = delta;
+            session->frameCamera = candidate;
+        }
+    }
     session->decodedFrameCount += 1;
     session->status = R2C_FFMPEG_STATUS_STREAMING;
     snprintf(session->detail, sizeof(session->detail), "VideoToolbox decoding");
@@ -472,6 +492,15 @@ static void *decode_worker(void *opaque) {
                     ? 0
                     : av_rescale_q(packet->pts, stream->time_base, (AVRational) {1, 1000000});
                 session->djiCameraTelemetrySequence += 1;
+                R2CFrameCamera *sample = &session->cameraHistory[session->cameraHistoryNext++ % 120];
+                sample->values[0] = session->latestDJIAzimuthDegrees;
+                sample->values[1] = session->latestDJITiltDegrees;
+                sample->values[2] = session->latestDJIHorizontalFovDegrees;
+                sample->values[3] = session->latestDJIVerticalFovDegrees;
+                memcpy(sample->values + 4, session->latestDJIAttitudeAnglesDegrees, 9 * sizeof(double));
+                memcpy(sample->values + 13, session->latestDJIPositionValues, 7 * sizeof(double));
+                sample->timestamp = session->latestDJISourceTimestampMicroseconds;
+                sample->sequence = session->djiCameraTelemetrySequence;
                 session->hasDJICameraTelemetry = true;
                 session->latestGimbalPitchDegrees = camera.tiltDegrees;
                 session->hasGimbalPitch = true;
@@ -874,6 +903,23 @@ CVPixelBufferRef R2CFFmpegSessionCopyLatestFrame(
     if (presentationTimeMicroseconds != NULL) {
         *presentationTimeMicroseconds = session->latestPresentationTimeMicroseconds;
     }
+    pthread_mutex_unlock(&session->lock);
+    return frame;
+}
+
+CVPixelBufferRef R2CFFmpegSessionCopyFrameWithCamera(
+    R2CFFmpegSession *session, uint64_t *sequence, int64_t *frameTimestamp,
+    double *values, int capacity, int64_t *cameraTimestamp, uint64_t *cameraSequence
+) {
+    if (!session || !values || capacity < 20 || !cameraTimestamp || !cameraSequence) return NULL;
+    pthread_mutex_lock(&session->lock);
+    CVPixelBufferRef frame = session->latestFrame;
+    if (frame) CVPixelBufferRetain(frame);
+    if (sequence) *sequence = session->latestSequence;
+    if (frameTimestamp) *frameTimestamp = session->latestPresentationTimeMicroseconds;
+    memcpy(values, session->frameCamera.values, 20 * sizeof(double));
+    *cameraTimestamp = session->frameCamera.timestamp;
+    *cameraSequence = session->frameCamera.sequence;
     pthread_mutex_unlock(&session->lock);
     return frame;
 }

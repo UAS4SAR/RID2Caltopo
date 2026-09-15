@@ -325,7 +325,7 @@ private final class BluetoothRIDCentral: NSObject, @unchecked Sendable {
         case .poweredOn:
             return .scanning
         case .poweredOff:
-            return .unavailable("Bluetooth is off")
+            return .bluetoothDisabled
         case .unauthorized:
             return .unavailable("Bluetooth permission denied")
         case .unsupported:
@@ -380,6 +380,7 @@ extension BluetoothRIDCentral: CBCentralManagerDelegate {
 public final class BluetoothRIDScanner: ObservableObject, RidObservationProvider {
     public enum State: Equatable, Sendable {
         case idle
+        case bluetoothDisabled
         case waitingForBluetooth
         case scanning
         case unavailable(String)

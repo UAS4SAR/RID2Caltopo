@@ -1353,7 +1353,7 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
     )
     #expect(enabled.contains("pathDefaults:\n  record: yes"))
     #expect(enabled.contains(
-        "recordPath: '/tmp/stream archive/%path/%path_%Y-%m-%d_%H-%M-%S-%f'"
+        "recordPath: '/tmp/stream archive/%Y-%m-%d/%path/%path_%Y-%m-%d_%H-%M-%S-%f'"
     ))
     #expect(enabled.contains("recordFormat: fmp4"))
 }
@@ -4018,38 +4018,15 @@ private func proximityDrone(
     ])
 }
 
-@Test func pairedVideoKeepsFlightActiveAndRestartPreservesRemoteIDBinding() async {
+@Test func publisherWithoutTelemetryCannotKeepFlightActive() async {
     let start = Date(timeIntervalSince1970: 1_700_000_000)
     let store = RidTrackStore(policy: .init(activeTimeout: 30))
-    _ = await store.ingest(RidObservation(
-        source: .bluetoothLegacy,
-        aircraftId: "RID2CALTOPO12345",
-        receivedAt: start,
-        latitude: 39.7392,
-        longitude: -104.9903
-    ))
+    _ = await store.ingest(RidObservation(source: .bluetoothLegacy, aircraftId: "RID1", receivedAt: start, latitude: 39, longitude: -121))
     var video = PairedVideoFlightActivityStore()
-    video.pair(streamID: "RC2/Red1", aircraftID: "RID2CALTOPO12345")
-    video.publisherStarted(streamID: "RC2/Red1", at: start.addingTimeInterval(5))
-
-    let whilePublishing = start.addingTimeInterval(90)
-    #expect(await store.removeInactive(
-        at: whilePublishing,
-        pairedVideoLastActivityAt: video.activityByAircraftID(at: whilePublishing)
-    ).isEmpty)
-
-    video.publisherStopped(streamID: "RC2/Red1", at: whilePublishing)
-    #expect(await store.removeInactive(
-        at: whilePublishing.addingTimeInterval(29),
-        pairedVideoLastActivityAt: video.activityByAircraftID(at: whilePublishing.addingTimeInterval(29))
-    ).isEmpty)
-
-    video.publisherStarted(streamID: "rc2/red1", at: whilePublishing.addingTimeInterval(29))
-    #expect(video.boundAircraftID(for: "RC2/RED1") == "RID2CALTOPO12345")
-    #expect(await store.removeInactive(
-        at: whilePublishing.addingTimeInterval(60),
-        pairedVideoLastActivityAt: video.activityByAircraftID(at: whilePublishing.addingTimeInterval(60))
-    ).isEmpty)
+    video.pair(streamID: "red1", aircraftID: "RID1")
+    video.publisherStarted(streamID: "red1", at: start)
+    #expect(video.activityByAircraftID(at: start.addingTimeInterval(90)).isEmpty)
+    #expect(await store.removeInactive(at: start.addingTimeInterval(30), pairedVideoLastActivityAt: video.activityByAircraftID(at: start.addingTimeInterval(30))).count == 1)
 }
 
 @Test func flightEndsThirtySecondsAfterRidAndPairedVideoAreBothAbsent() async {
@@ -4066,7 +4043,8 @@ private func proximityDrone(
     video.pair(streamID: "Red1", aircraftID: "RID2CALTOPO12345")
     let videoStoppedAt = start.addingTimeInterval(60)
     video.publisherStarted(streamID: "Red1", at: start.addingTimeInterval(5))
-    video.publisherStopped(streamID: "Red1", at: videoStoppedAt)
+    video.telemetryReceived(streamID: "Red1", at: videoStoppedAt)
+    video.publisherStopped(streamID: "Red1", at: videoStoppedAt.addingTimeInterval(20))
 
     #expect(await store.removeInactive(
         at: videoStoppedAt.addingTimeInterval(29.999),
@@ -4214,6 +4192,52 @@ private func proximityDrone(
     }
 }
 
+@Test func stationaryTelemetryRefreshDoesNotExhaustRecordedWaypointsOrMaskStaleness() async {
+    let store = RidTrackStore()
+    let start = Date(timeIntervalSince1970: 1_700_000_000)
+    var altitude = OperationalAltitudeCoordinator()
+    var recorded = 0
+    for step in 0...60 {
+        let now = start.addingTimeInterval(Double(step) / 10)
+        let sample = RidObservation(source: .wifiBeacon, aircraftId: "LIVE", receivedAt: now,
+                                    latitude: 39, longitude: -121, altitudeMeters: 100 + Double(step))
+        let result = await store.ingest(sample)
+        let track: RidAircraftTrack
+        switch result {
+        case let .accepted(value): track = value; recorded += 1
+        case let .telemetryOnly(value, _): track = value
+        default: Issue.record("Valid stationary telemetry was rejected"); return
+        }
+        #expect(track.lastObservation.altitudeMeters == 100 + Double(step))
+        #expect(track.lastObservation.receivedAt == now)
+        altitude.ingest(track.lastObservation)
+        #expect(altitude.hasFreshTelemetry(at: now))
+    }
+    #expect(recorded == 3)
+    #expect((await store.snapshot()).first?.points.count == 3)
+    #expect(!altitude.hasFreshTelemetry(at: start.addingTimeInterval(11)))
+    let invalid = await store.ingest(RidObservation(source: .wifiBeacon, aircraftId: "LIVE",
+        receivedAt: start.addingTimeInterval(10), latitude: 39, longitude: -121,
+        horizontalAccuracyCode: 9))
+    guard case let .rejectedHorizontalAccuracy(_, track) = invalid else {
+        Issue.record("Expected accuracy rejection"); return
+    }
+    #expect(track?.lastObservation.receivedAt == start.addingTimeInterval(6))
+}
+
+@Test func nearbyRecordingKeepaliveUsesRecordedAnchorNotLivePosition() async {
+    let store = RidTrackStore()
+    let start = Date(timeIntervalSince1970: 1_700_000_000)
+    for (time, delta, expectedPoints) in [(0.0, 0.0, 1), (1, 0.000002, 1),
+        (2, 0.000004, 1), (2.1, 0.000006, 2), (5.099, 0.000007, 2), (5.1, 0.000007, 3)] {
+        _ = await store.ingest(trackObservation(id: "MOVE", at: start.addingTimeInterval(time),
+            latitude: 39 + delta, longitude: -121))
+        let track = (await store.snapshot()).first!
+        #expect(track.points.count == expectedPoints)
+        #expect(track.lastObservation.receivedAt == start.addingTimeInterval(time))
+    }
+}
+
 @Test func trackStoreMatchesAndroidDedupAndSpeedPolicy() async {
     let policy = RidTrackPolicy(maximumSpeedMetersPerSecond: 90)
     let store = RidTrackStore(policy: policy)
@@ -4239,12 +4263,13 @@ private func proximityDrone(
         source: .wifiBeacon,
         signalStrengthDbm: -72
     ))
-    guard case let .signalOnly(duplicateTrack, reason) = duplicate else {
-        Issue.record("Expected duplicate to refresh signal without adding a point")
+    guard case let .telemetryOnly(duplicateTrack, reason) = duplicate else {
+        Issue.record("Expected duplicate to refresh live telemetry without adding a point")
         return
     }
     #expect(reason == .duplicatePosition)
     #expect(duplicateTrack.points.count == 1)
+    #expect(duplicateTrack.lastObservation.receivedAt == start.addingTimeInterval(1))
     #expect(duplicateTrack.lastSignalAt == start.addingTimeInterval(1))
     #expect(duplicateTrack.lastSignalSource == .wifiBeacon)
     #expect(duplicateTrack.lastSignalStrengthDbm == -72)
@@ -4265,6 +4290,7 @@ private func proximityDrone(
     }
     #expect(speed > 90)
     #expect(impossibleTrack.points.count == 1)
+    #expect(impossibleTrack.lastObservation.receivedAt == start.addingTimeInterval(1))
 }
 
 @Test func defaultTrackSpeedCeilingAllowsGpsToleranceUpToTwoHundredMilesPerHour() {
@@ -4311,12 +4337,12 @@ private func proximityDrone(
     ))
     let nearby = await store.ingest(trackObservation(
         id: "MINIMUM",
-        at: start.addingTimeInterval(5),
+        at: start.addingTimeInterval(1),
         latitude: 39.73921,
         longitude: -104.9903
     ))
-    guard case let .signalOnly(track, reason) = nearby else {
-        Issue.record("Expected a sub-threshold waypoint to be signal-only")
+    guard case let .telemetryOnly(track, reason) = nearby else {
+        Issue.record("Expected a sub-threshold waypoint to be telemetry-only")
         return
     }
     guard case let .belowMinimumDistance(meters) = reason else {
@@ -4330,8 +4356,8 @@ private func proximityDrone(
     var updated = await store.policy
     updated.activeTimeout = 10
     await store.updatePolicy(updated)
-    #expect(await store.activeSnapshot(at: start.addingTimeInterval(14)).count == 1)
-    #expect(await store.activeSnapshot(at: start.addingTimeInterval(16)).isEmpty)
+    #expect(await store.activeSnapshot(at: start.addingTimeInterval(10)).count == 1)
+    #expect(await store.activeSnapshot(at: start.addingTimeInterval(12)).isEmpty)
 }
 
 @Test func trackStoreDoesNotExtendFlightFromDistanceAlone() async {
@@ -6258,4 +6284,17 @@ func aolHighlightRequiresNegativeNumberAndExcludesAdjacentFields() {
         #expect(details["map_id"] as? String == mapID)
     }
     #expect(RidTrackGeoJSON.archiveTitle(for: track, metadata: .init(), timeZone: zone) == "RID01_161522Sep12")
+}
+
+@Test func recordedHeadingCrossingRemainsContinuousThroughMapFov() throws {
+    for declination in [0.0, 13.3] {
+        let rays = try [179.9354051, 180.6050268].map { heading in
+            let bearing = OperationalClueGeometry.djiControllerCameraAzimuthDegrees(
+                seiCameraAzimuthDegrees: heading, magneticDeclinationDegrees: declination)
+            return try #require(OperationalMapGeometry.cameraFovBoundaryBearings(
+                cameraAzimuthDegrees: bearing, horizontalFovDegrees: 37.703125))
+        }
+        #expect(abs(rays[1].leftDegrees - rays[0].leftDegrees - 0.6696217) < 1e-7)
+        #expect(abs(rays[1].rightDegrees - rays[0].rightDegrees - 0.6696217) < 1e-7)
+    }
 }

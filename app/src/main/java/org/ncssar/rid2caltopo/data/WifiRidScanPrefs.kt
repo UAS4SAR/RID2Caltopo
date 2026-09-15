@@ -9,19 +9,21 @@ import android.content.Context
 
 /** Operator preference for Android Wi-Fi Beacon and Wi-Fi NAN Remote ID discovery. */
 object WifiRidScanPrefs {
-    private const val PREFS = "wifi_rid_scanning"
+    // A new preference generation switches existing installs to Bluetooth-only
+    // discovery. An operator can still explicitly opt back into direct Wi-Fi RID.
+    private const val PREFS = "wifi_rid_scanning_bluetooth_default"
     private const val ENABLED = "enabled"
 
-    /** Existing installations retain the historical behavior: Wi-Fi RID scanning is enabled. */
+    /** Match the Apple app's Bluetooth-only discovery unless explicitly enabled. */
     internal fun resolveEnabled(hasStoredValue: Boolean, storedValue: Boolean): Boolean =
-        if (hasStoredValue) storedValue else true
+        if (hasStoredValue) storedValue else false
 
     @JvmStatic
     fun isEnabled(context: Context?): Boolean {
         val prefs = context?.applicationContext
             ?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            ?: return true
-        return resolveEnabled(prefs.contains(ENABLED), prefs.getBoolean(ENABLED, true))
+            ?: return false
+        return resolveEnabled(prefs.contains(ENABLED), prefs.getBoolean(ENABLED, false))
     }
 
     @JvmStatic

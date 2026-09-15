@@ -27,7 +27,6 @@ final class AppleClueStore: ObservableObject {
     @Published private(set) var status = "No local clues"
 
     private let root: URL
-    private let indexURL: URL
     private var client: CaltopoLiveClient?
     private var teamID = ""
     private var trackFolderName = "Drone Tracks"
@@ -38,8 +37,7 @@ final class AppleClueStore: ObservableObject {
     init(fileManager: FileManager = .default) {
         let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? fileManager.temporaryDirectory
-        root = documents.appendingPathComponent("RID2Caltopo/Clues", isDirectory: true)
-        indexURL = root.appendingPathComponent("clues.json")
+        root = documents.appendingPathComponent("RID2Caltopo/FlightStorage", isDirectory: true)
         loadIndex()
     }
 
@@ -80,8 +78,11 @@ final class AppleClueStore: ObservableObject {
         guard !jpegData.isEmpty else { throw CocoaError(.fileWriteUnknown) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let id = UUID()
-        let imageFilename = "\(id.uuidString.lowercased()).jpg"
-        let thumbnailFilename = "\(id.uuidString.lowercased())-thumb.jpg"
+        let day = AppleFlightStorage.dayName(Date())
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(day), withIntermediateDirectories: true)
+        let imageFilename = "\(day)/\(id.uuidString.lowercased()).jpg"
+        let thumbnailFilename = "\(day)/\(id.uuidString.lowercased())-thumb.jpg"
+        AppleFlightStorage.prepareWrite(Int64(jpegData.count) * 2)
         try jpegData.write(to: root.appendingPathComponent(imageFilename), options: .atomic)
         let thumbnailData = Self.thumbnailJPEG(from: jpegData) ?? jpegData
         try thumbnailData.write(to: root.appendingPathComponent(thumbnailFilename), options: .atomic)
@@ -270,20 +271,40 @@ final class AppleClueStore: ObservableObject {
     }
 
     private func loadIndex() {
-        guard let data = try? Data(contentsOf: indexURL),
-              let loaded = try? JSONDecoder().decode([OperationalClueRecord].self, from: data)
-        else {
-            records = []
-            status = "No local clues"
-            return
+        let directories = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+        records = directories.flatMap { directory -> [OperationalClueRecord] in
+            guard AppleFlightStorage.date(directory.lastPathComponent) != nil,
+                  let data = try? Data(contentsOf: directory.appendingPathComponent("clues.json")),
+                  let loaded = try? JSONDecoder().decode([OperationalClueRecord].self, from: data) else { return [] }
+            return loaded
+        }.filter { FileManager.default.fileExists(atPath: imageURL(for: $0).path) }
+            .sorted { $0.capturedAt > $1.capturedAt }
+        updateStatus()
+    }
+
+    func pruneDeletedStorage() {
+        for record in records where !FileManager.default.fileExists(atPath: imageURL(for: record).path) {
+            uploadTasks.removeValue(forKey: record.id)?.cancel()
         }
-        records = loaded.sorted { $0.capturedAt > $1.capturedAt }
+        records.removeAll { !FileManager.default.fileExists(atPath: imageURL(for: $0).path) }
         updateStatus()
     }
 
     private func persistIndex() throws {
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        try JSONEncoder().encode(records).write(to: indexURL, options: .atomic)
+        pruneDeletedStorage()
+        let grouped = Dictionary(grouping: records) { $0.imageFilename.components(separatedBy: "/")[0] }
+        let directories = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+        for directory in directories where AppleFlightStorage.date(directory.lastPathComponent) != nil {
+            let index = directory.appendingPathComponent("clues.json")
+            let dayRecords = grouped[directory.lastPathComponent] ?? []
+            guard !dayRecords.isEmpty || FileManager.default.fileExists(atPath: index.path) else { continue }
+            do {
+                try JSONEncoder().encode(dayRecords).write(to: index, options: .atomic)
+            } catch {
+                // Retention may have removed this older day since enumeration.
+                if FileManager.default.fileExists(atPath: directory.path) { throw error }
+            }
+        }
     }
 
     private func updateStatus() {

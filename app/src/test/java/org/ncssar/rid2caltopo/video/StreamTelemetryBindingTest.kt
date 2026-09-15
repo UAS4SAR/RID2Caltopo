@@ -281,30 +281,43 @@ class StreamTelemetryBindingTest {
     }
 
     @Test
-    fun pairedPublisherKeepsFlightActiveWithoutSei() {
+    fun pairedPublisherDoesNotKeepFlightActiveWithoutSei() {
         StreamFlightActivityRegistry.bindRuntime("RC2/Red1", "RID-1")
         StreamFlightActivityRegistry.replaceLivePublishers(listOf("RC2/Red1"), 10_000L)
 
         val activity = StreamFlightActivityRegistry.activityForRemoteId("RID-1", 20_000L)
 
         assertEquals(true, activity.publisherActive)
-        assertEquals(20_000L, activity.lastActivityAtMs)
+        assertEquals(0L, activity.lastActivityAtMs)
     }
 
     @Test
-    fun publisherStopStartsGraceClockAndRestartKeepsPairing() {
+    fun publisherStopAndRestartDoNotRefreshTelemetry() {
         StreamFlightActivityRegistry.bindRuntime("Red1", "RID-1")
         StreamFlightActivityRegistry.replaceLivePublishers(listOf("Red1"), 10_000L)
         StreamFlightActivityRegistry.replaceLivePublishers(emptyList(), 15_000L)
 
         val stopped = StreamFlightActivityRegistry.activityForRemoteId("RID-1", 20_000L)
         assertEquals(false, stopped.publisherActive)
-        assertEquals(15_000L, stopped.lastActivityAtMs)
+        assertEquals(0L, stopped.lastActivityAtMs)
 
         StreamFlightActivityRegistry.replaceLivePublishers(listOf("red1"), 25_000L)
         val restarted = StreamFlightActivityRegistry.activityForRemoteId("RID-1", 26_000L)
         assertEquals(true, restarted.publisherActive)
-        assertEquals(26_000L, restarted.lastActivityAtMs)
+        assertEquals(0L, restarted.lastActivityAtMs)
+    }
+
+    @Test
+    fun actualSeiReceiptExpiresEvenWithStuckPublisherAndWallClockChange() {
+        StreamFlightActivityRegistry.bindRuntime("red1", "RID-1")
+        StreamFlightActivityRegistry.replaceLivePublishers(listOf("red1"), 1000)
+        StreamFlightActivityRegistry.noteTelemetryReceived("red1", elapsedMs = 1000)
+        val before = StreamFlightActivityRegistry.activityForRemoteId("RID-1", 100_000, 30_999)
+        assertEquals(29_999L, 100_000 - before.lastActivityAtMs)
+        val after = StreamFlightActivityRegistry.activityForRemoteId("RID-1", 9_000_000, 31_000)
+        assertEquals(30_000L, 9_000_000 - after.lastActivityAtMs)
+        StreamFlightActivityRegistry.replaceLivePublishers(emptyList(), 9_000_000)
+        assertEquals(after.lastActivityAtMs, StreamFlightActivityRegistry.activityForRemoteId("RID-1", 9_000_000, 31_000).lastActivityAtMs)
     }
 
     @Test

@@ -204,7 +204,6 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
     private val promptedCurrentFlightRemoteIds = linkedSetOf<String>()
     private val confirmedCurrentFlightRemoteIds = linkedSetOf<String>()
     private var pendingDroneConfirmationRequestedByOperator = false
-    private var screenBeforeConfirmation: ActiveScreen? = null
     private var screenBeforeConnectionOverlay: ActiveScreen? = null
     private var lastDroneListSignature: List<DroneSpecUiSignature>? = null
     private var lastUnknownDroneConfirmationOrganization = ""
@@ -528,7 +527,6 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         )
         _pendingDroneConfirmation.value = buildConfirmationState(drone)
         pendingDroneConfirmationRequestedByOperator = true
-        screenBeforeConfirmation = null
         refreshPendingDroneConfirmationValidation()
     }
 
@@ -559,7 +557,6 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         CaltopoClient.SaveDroneSpecUnknownConfirmation(remoteId)
         _pendingDroneConfirmation.value = null
         pendingDroneConfirmationRequestedByOperator = false
-        restoreScreenAfterConfirmation()
     }
 
     fun savePendingDroneConfirmation(recordUnresolvedPilot: Boolean = false) {
@@ -626,7 +623,6 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         )
         _pendingDroneConfirmation.value = null
         pendingDroneConfirmationRequestedByOperator = false
-        restoreScreenAfterConfirmation()
     }
 
     fun housekeeping() {
@@ -694,7 +690,6 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             CTDebug(tag, "Clearing pending confirmation for $pendingRemoteId: confirmed by peer")
             _pendingDroneConfirmation.value = null
             pendingDroneConfirmationRequestedByOperator = false
-            restoreScreenAfterConfirmation()
             pendingRemoteId = null
         }
         val pendingStillActive = pendingRemoteId in liveStreamConfirmationSpecs || droneSpecs.any { drone ->
@@ -776,13 +771,8 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         _pendingDroneConfirmation.value = buildConfirmationState(drone)
         pendingDroneConfirmationRequestedByOperator = false
         refreshPendingDroneConfirmationValidation()
-        if (_activeScreen.value == ActiveScreen.STREAMS) {
-            screenBeforeConfirmation = _activeScreen.value
-            CaltopoClient.ShowToast("New drone needs confirmation. Returning to main screen.")
-            showMain()
-        } else {
-            screenBeforeConfirmation = null
-        }
+        // The activity hosts the dialog above every page. Keep Live View mounted so
+        // confirmation does not recreate its panels or reset the operator's map viewport.
         return true
     }
 
@@ -794,7 +784,6 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             CTDebug(tag, "Clearing pending confirmation for $trimmedRemoteId: $reason")
             _pendingDroneConfirmation.value = null
             pendingDroneConfirmationRequestedByOperator = false
-            restoreScreenAfterConfirmation()
         } else if (removedPrompt) {
             CTDebug(tag, "Clearing inactive undecided prompt state for $trimmedRemoteId: $reason")
         }
@@ -863,15 +852,6 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
     private fun hasKnownDroneSpec(drone: CtDroneSpec): Boolean {
         val cached = CaltopoClient.GetDroneSpec(drone.remoteId)
         return hasMeaningfulDroneSpec(drone) || (cached != null && hasMeaningfulDroneSpec(cached))
-    }
-
-    private fun restoreScreenAfterConfirmation() {
-        val priorScreen = screenBeforeConfirmation
-        screenBeforeConfirmation = null
-        if (priorScreen != null && _activeScreen.value == ActiveScreen.MAIN && priorScreen != ActiveScreen.MAIN) {
-            CTDebug(tag, "restoreScreenAfterConfirmation(): MAIN -> $priorScreen")
-            _activeScreen.value = priorScreen
-        }
     }
 
     private fun restoreScreenAfterConnectionOverlay(

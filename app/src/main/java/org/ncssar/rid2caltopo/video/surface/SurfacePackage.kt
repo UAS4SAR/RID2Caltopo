@@ -25,6 +25,12 @@ class SurfacePackage private constructor(val metadata: JSONObject, private val s
         val c = floor((x-west)/spacing).toInt(); val r = floor((y-south)/spacing).toInt()
         return if (c in 0 until width && r in 0 until height) ground[r*width+c].toDouble().takeIf { it.isFinite() } else null
     }
+    fun surfaceAt(latitude: Double, longitude: Double): Double? {
+        if (!latitude.isFinite() || !longitude.isFinite() || abs(latitude)>90 || abs(longitude)>180) return null
+        val (x,y) = xy(latitude,longitude)
+        val c = floor((x-west)/spacing).toInt(); val r = floor((y-south)/spacing).toInt()
+        return if (c in 0 until width && r in 0 until height) surface[r*width+c].toDouble().takeIf { it.isFinite() } else null
+    }
     data class Peak(val elevation: Double, val latitude: Double, val longitude: Double, val distance: Double, val ground: Double?)
     data class Analysis(val peak: Peak?, val complete: Boolean, val checked: Int, val missing: Int)
     fun disk(latitude: Double, longitude: Double, radius: Double = RADIUS): Analysis {
@@ -144,9 +150,13 @@ data class AolState(val feet:Double?=null, val reason:String="Surface package no
     val label:String get()=measurementLabel(feet,status)
     companion object {
         const val EXPLANATION="AOL · 200 ft radius: height above the highest mapped surface nearby. Negative is not a collision prediction. Positive does not exclude wires or unmapped obstacles. Wires may be absent; no wire clearance is inferred from AOL. Reference assumes a ground launch at the observed takeoff location; elevated launches are unsupported. Aircraft and survey uncertainty are not bounded by pixel size."
-        fun calculate(p:SurfacePackage, latitude:Double, longitude:Double, takeoffLatitude:Double, takeoffLongitude:Double, height:Double?, compatibleGround:Double?=null):AolState {
+        fun calculate(p:SurfacePackage, latitude:Double, longitude:Double, takeoffLatitude:Double, takeoffLongitude:Double, height:Double?, compatibleGround:Double?=null, pointOnly:Boolean=false):AolState {
             if(height==null || !height.isFinite()) return AolState(reason="Takeoff-relative altitude unavailable")
             val ground=compatibleGround ?: p.groundAt(takeoffLatitude,takeoffLongitude) ?: return AolState(reason="Compatible takeoff ground unavailable")
+            if (pointOnly) {
+                val surface = p.surfaceAt(latitude, longitude) ?: return AolState(reason="Point surface unavailable")
+                return AolState((ground+height-surface)/0.3048, "Available", "Point AOL: clearance above the mapped surface at the crosshair; no lateral radius.")
+            }
             val a=p.disk(latitude,longitude)
             if(!a.complete) return AolState(reason="Incomplete surface coverage (${a.missing} cells)")
             val peak=a.peak ?: return AolState(reason="Surface coverage unavailable")

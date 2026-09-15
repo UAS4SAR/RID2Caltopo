@@ -3,6 +3,7 @@ import R2CCore
 import Security
 import SwiftUI
 import UniformTypeIdentifiers
+import QuickLook
 
 struct CaltopoSettingsView: View {
     @ObservedObject var settings: AppleCaltopoSettings
@@ -20,24 +21,17 @@ struct CaltopoSettingsView: View {
     @ObservedObject private var externalDisplay = AppleExternalDisplaySettings.shared
     @ObservedObject private var spokenWarnings = AppleSpokenWarningCenter.shared
     @ObservedObject private var profileLifecycle = AppleCaltopoProfileLifecycle.shared
-    @AppStorage("video.captureStreams") private var captureStreams = false
+    @AppStorage("video.captureStreams") private var captureStreams = true
     @AppStorage("video.remoteControlEnabled") private var remoteVideoControlEnabled = false
     @AppStorage(OperationalThumbnailRefreshInterval.storageKey)
     private var thumbnailRefreshSeconds = OperationalThumbnailRefreshInterval.defaultSeconds
     @AppStorage(AppleDeviceIdentity.storedNameKey) private var deviceName = AppleDeviceIdentity.displayName
     @AppStorage(AppleDeviceIdentity.managedNameKey) private var managedDeviceName = ""
     @State private var showingTeamMaps = false
-    @State private var showingImportConfig = false
-    @State private var importConfigNotice: ConfigImportNotice?
 
     var body: some View {
         Form {
             Section("Administration") {
-                Button {
-                    showingImportConfig = true
-                } label: {
-                    Label("Import Config", systemImage: "qrcode.viewfinder")
-                }
                 NavigationLink {
                     RidMappingAdminView(
                         organization: orgSettings,
@@ -182,7 +176,7 @@ struct CaltopoSettingsView: View {
             }
             Section("Video Streams") {
                 Toggle("Capture Streams", isOn: $captureStreams)
-                Text("When enabled, incoming streams are recorded as fMP4 under Files > RID2Caltopo > CapturedStreams. Changing this setting restarts the local media server.")
+                Text("When enabled, incoming streams are recorded as fMP4 under Files > RID2Caltopo > FlightStorage. Changing this setting restarts the local media server.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Toggle("Remote Video Control", isOn: $remoteVideoControlEnabled)
@@ -353,9 +347,9 @@ struct CaltopoSettingsView: View {
             }
             Section("Local storage") {
                 NavigationLink {
-                    AppleArchiveCleanupView(trackModel: trackModel)
+                    AppleStorageManagementView(trackModel: trackModel)
                 } label: {
-                    Label("Delete Archive Folders", systemImage: "trash")
+                    Label("Manage Storage", systemImage: "externaldrive")
                 }
                 Text("Review dated folders, ages, and sizes before selecting anything to delete.")
                     .font(.footnote)
@@ -393,28 +387,6 @@ struct CaltopoSettingsView: View {
                 onSave(settings.selectMap(map))
                 showingTeamMaps = false
             }
-        }
-        .sheet(isPresented: $showingImportConfig) {
-            NavigationStack {
-                ConfigImportView(
-                    initialToken: "",
-                    importer: importer,
-                    caltopoSettings: settings,
-                    orgSettings: orgSettings,
-                    identityStore: identityStore
-                ) { notice in
-                    importConfigNotice = notice
-                }
-            }
-            .presentationDetents([.height(440), .large])
-            .presentationDragIndicator(.visible)
-        }
-        .alert(item: $importConfigNotice) { notice in
-            Alert(
-                title: Text(notice.title),
-                message: Text(notice.message),
-                dismissButton: .default(Text("OK"))
-            )
         }
     }
 }
@@ -902,6 +874,7 @@ struct AppleArchiveCleanupView: View {
     @State private var deleting = false
     @State private var status: String?
     @State private var showingConfirmation = false
+    @Environment(\.dismiss) private var dismiss
 
     private var selectedDirectories: [AppleArchiveDirectoryOption] {
         directories.filter { !$0.isToday && selected.contains($0.name) }
@@ -916,7 +889,8 @@ struct AppleArchiveCleanupView: View {
             if let status {
                 Section { Text(status).foregroundStyle(.secondary) }
             }
-            Section("Archive folders") {
+            Section { AppleFlightStorageLimits() }
+            Section("Flight folders • oldest first") {
                 if loading {
                     HStack {
                         ProgressView()
@@ -926,40 +900,42 @@ struct AppleArchiveCleanupView: View {
                     ContentUnavailableView("No dated archive folders", systemImage: "archivebox")
                 } else {
                     ForEach(directories) { directory in
-                        Toggle(
-                            isOn: Binding(
-                                get: { selected.contains(directory.name) },
-                                set: { isSelected in
-                                    if isSelected { selected.insert(directory.name) }
-                                    else { selected.remove(directory.name) }
+                        HStack {
+                            Button {
+                                if selected.contains(directory.name) { selected.remove(directory.name) }
+                                else { selected.insert(directory.name) }
+                            } label: {
+                                Image(systemName: selected.contains(directory.name) ? "checkmark.square" : "square")
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Select \(directory.name)")
+                            .accessibilityValue(selected.contains(directory.name) ? "Selected" : "Not selected")
+                            .disabled(directory.isToday || deleting)
+                            NavigationLink {
+                                AppleFlightDirectoryBrowser(directory: AppleFlightStorage.root.appendingPathComponent(directory.name))
+                            } label: {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(directory.name)
+                                    Text("Age \(directory.ageLabel) • \(directory.sizeLabel)" + (directory.isToday ? " • protected" : ""))
+                                        .font(.footnote).foregroundStyle(.secondary)
                                 }
-                            )
-                        ) {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(directory.name + (directory.isToday ? " • today" : ""))
-                                Text("Age \(directory.ageLabel) • \(directory.sizeLabel)")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                                Text("\(directory.fileCount) file\(directory.fileCount == 1 ? "" : "s")")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
                             }
                         }
-                        .disabled(directory.isToday || deleting)
                     }
                 }
             }
             Section {
-                Button("Delete Selected Archive Folders", role: .destructive) {
+                Button("Delete Selected (\(selectedSize))", role: .destructive) {
                     showingConfirmation = true
                 }
                 .disabled(selectedDirectories.isEmpty || loading || deleting)
-                Text("Deletes only selected dated folders under Files > RID2Caltopo > Tracks. Today’s active folder cannot be selected.")
+                Button("Cancel") { dismiss() }
+                Text("Deletes selected daily flight folders, including logs, tracks, clues and video. Today and active folders are protected.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
         }
-        .navigationTitle("Delete Archive Folders")
+        .navigationTitle("Delete Flight Storage")
         .task { await loadDirectories() }
         .refreshable { await loadDirectories() }
         .confirmationDialog(
@@ -1088,6 +1064,85 @@ struct CaltopoTeamMapBrowser: View {
                 else { return }
                 Task { await settings.loadTeamMaps() }
             }
+        }
+    }
+}
+
+
+struct AppleStorageManagementView: View {
+    @ObservedObject var trackModel: RIDTrackViewModel
+    @ObservedObject private var maps = AppleMapOfflineManager.shared
+    @State private var used: Int64?
+    @State private var storageStatus = ""
+    var body: some View {
+        List {
+            NavigationLink {
+                AppleStorageCacheView(manager: maps)
+            } label: {
+                Text("Map & Terrain Cache: \(gb(maps.cacheStats.bytes)), Max Size: \(gb(Int64(maps.maximumCacheGB * 1_000_000_000))), Max Age: \(maps.maximumTileAgeDays) days")
+            }
+            NavigationLink {
+                AppleArchiveCleanupView(trackModel: trackModel)
+            } label: {
+                Text("Flight Storage: \(used.map(gb) ?? "Scanning…"), Max Size: \(gb(AppleFlightStorage.maximumBytes)), Max Age: \(AppleFlightStorage.maximumDays) days")
+            }
+            if !storageStatus.isEmpty { Text(storageStatus).font(.footnote) }
+        }
+        .navigationTitle("Manage Storage")
+        .task {
+            maps.refreshStats()
+            let snapshot = await Task.detached { AppleFlightStorage.maintain(purge: false) }.value
+            used = snapshot.used
+            storageStatus = snapshot.blocked ? snapshot.message : "Cleanup runs at startup and on demand near 90% of the allowance. Today and active folders are protected."
+        }
+    }
+    private func gb(_ bytes: Int64) -> String { String(format: "%.2f GB", Double(bytes) / 1_000_000_000) }
+}
+
+struct AppleFlightStorageLimits: View {
+    @AppStorage("flight.maximumGB") private var maximumGB = FlightStoragePolicy.defaultGB
+    @AppStorage("flight.maximumDays") private var maximumDays = FlightStoragePolicy.defaultDays
+    @State private var size = ""
+    @State private var days = ""
+    @State private var message = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Max Size (GB)", text: $size).keyboardType(.decimalPad)
+            TextField("Max Age (days)", text: $days).keyboardType(.numberPad)
+            Button("Save Limits") {
+                guard let gb = Double(size), gb.isFinite, (0.1...1000).contains(gb),
+                      let age = Int(days), (1...3650).contains(age) else {
+                    message = "Enter 0.1–1,000 GB and 1–3,650 days."; return
+                }
+                maximumGB = gb; maximumDays = age
+                AppleFlightStorage.requestCheck()
+                message = "Saved. Automatic cleanup applies these limits."
+            }
+            Text(message.isEmpty ? "Default allowance: 10 GB. At 90% usage, cleanup removes older eligible folders to restore 10% free. If that is not possible, increase the allowance." : message)
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        .onAppear { size = String(format: "%.1f", maximumGB); days = String(maximumDays) }
+    }
+}
+
+struct AppleFlightDirectoryBrowser: View {
+    let directory: URL
+    @State private var entries: [URL] = []
+    @State private var preview: URL?
+    var body: some View {
+        List(entries, id: \.self) { url in
+            if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                NavigationLink(url.lastPathComponent) { AppleFlightDirectoryBrowser(directory: url) }
+            } else {
+                Button(url.lastPathComponent) { preview = url }
+            }
+        }
+        .navigationTitle(directory.lastPathComponent)
+        .quickLookPreview($preview)
+        .task {
+            entries = await Task.detached {
+                ((try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []).sorted { $0.lastPathComponent < $1.lastPathComponent }
+            }.value
         }
     }
 }

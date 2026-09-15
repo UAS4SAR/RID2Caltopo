@@ -4,13 +4,14 @@ import android.content.Context
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTWarn
 
 internal object BlobCacheStoreFactory {
-    private val instances = mutableMapOf<String, BlobCacheStore>()
+    private val instances = java.util.concurrent.ConcurrentHashMap<String, BlobCacheStore>()
     fun create(
         context: Context, namespace: String, dbName: String, maxBytes: Long,
         defaultTtlMs: Long, forceFileBacked: Boolean = false
-    ): BlobCacheStore = synchronized(UnifiedMapCache.lock) {
+    ): BlobCacheStore {
         val id = "${MapCacheRootResolver.resolveRoot(context)}:$namespace:$dbName:$forceFileBacked"
-        instances.getOrPut(id) {
+        // Opening a reader must not wait for the budget's full SD-card scan.
+        return instances.computeIfAbsent(id) {
             val raw = createRaw(context, namespace, dbName, maxBytes, defaultTtlMs, forceFileBacked)
             UnifiedMapCache.register(id, namespace, raw)
             BudgetedMapStore(context.applicationContext, raw)

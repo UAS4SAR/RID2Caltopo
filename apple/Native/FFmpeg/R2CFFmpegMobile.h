@@ -19,6 +19,12 @@ typedef enum R2CFFmpegStatus {
     R2C_FFMPEG_STATUS_STOPPED = 4,
 } R2CFFmpegStatus;
 
+// Atomically retain the displayed frame and its same-decoder camera metadata.
+CVPixelBufferRef R2CFFmpegSessionCopyFrameWithCamera(
+    R2CFFmpegSession *session, uint64_t *sequence, int64_t *frameTimestamp,
+    double *values, int capacity, int64_t *cameraTimestamp, uint64_t *cameraSequence
+);
+
 // Starts a single RTSP/H.264 decoder on a background thread. Returns NULL
 // when the session cannot be allocated or its worker cannot be started.
 R2CFFmpegSession *R2CFFmpegSessionCreate(const char *url);

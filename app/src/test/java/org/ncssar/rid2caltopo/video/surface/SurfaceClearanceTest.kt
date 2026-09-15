@@ -3,6 +3,17 @@ import org.junit.Assert.*
 import org.junit.Test
 import java.io.File
 class SurfaceClearanceTest {
+    @Test fun pointAolDoesNotIncludeNearbyPeaks() {
+        val p = fixture("complete")
+        val (lat, lon) = p.coordinate(10.0, 0.0)
+        val point = AolState.calculate(p, lat, lon, 39.0, -121.0, 15.24, pointOnly = true)
+        assertEquals(50.0, point.feet!!, 0.001)
+        assertTrue(AolState.calculate(p, lat, lon, 39.0, -121.0, 15.24).feet!! < 0)
+        assertNull(p.surfaceAt(0.0, 0.0))
+        assertNull(AolState.calculate(p,lat,lon,39.0,-121.0,null,pointOnly=true).feet)
+        assertNotNull(AolState.calculate(fixture("hole"),39.0,-121.0,39.0,-121.0,15.24,pointOnly=true).feet)
+    }
+
     @Test fun roundedZeroHasNoNegativeSign() {
         for (value in listOf(-0.49, -0.0, 0.0, 0.49)) assertEquals("0'", measurementLabel(value, suffix = "'"))
         assertEquals("-1'", measurementLabel(-0.6, suffix = "'"))

@@ -61,7 +61,7 @@ static size_t make_payload(uint8_t *payload) {
     offset += 13;
     put_u16_le(payload + offset, 4); put_u16_le(payload + offset + 2, 39); offset += 4;
     memset(payload + offset, 0, 39);
-    put_u32_le(payload + offset + 3, (uint32_t) (111.46 / 360.0 * 4294967296.0));
+    put_u32_le(payload + offset + 3, (uint32_t) (int32_t) (111.46 * 10000000.0));
     put_u32_le(payload + offset + 11, (uint32_t) (53.0 / 360.0 * 4294967296.0));
     put_split_i32_le(payload + offset, 15, 21, 98661);
     put_split_i32_le(payload + offset, 17, 23, -50350);
@@ -73,7 +73,25 @@ static size_t make_payload(uint8_t *payload) {
     return offset;
 }
 
+static void test_recorded_heading_wrap(void) {
+    uint8_t payload[128] = {0};
+    size_t size = make_payload(payload);
+    const size_t attitudeOffset = 55;
+    const int32_t recorded[] = {1799354051, -1793949732};
+    const double expected[] = {179.9354051, 180.6050268};
+    double headings[2];
+    for (size_t i = 0; i < 2; ++i) {
+        put_u32_le(payload + attitudeOffset + 3, (uint32_t) recorded[i]);
+        R2CDJICameraTelemetry sample = {0};
+        assert(R2CDJIDecodeType245Payload(payload, size, &sample));
+        headings[i] = sample.azimuthDegrees;
+        assert(fabs(headings[i] - expected[i]) < 0.0000001);
+    }
+    assert(fabs(headings[1] - headings[0] - 0.6696217) < 0.0000001);
+}
+
 int main(int argc, char **argv) {
+    test_recorded_heading_wrap();
     uint8_t payload[128] = {0};
     size_t payloadSize = make_payload(payload);
     R2CDJICameraTelemetry decoded = {0};

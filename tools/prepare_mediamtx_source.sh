@@ -18,6 +18,7 @@ media_tools_patch="$patch_dir/0004-rid2caltopo-mediamtx-tests-tools.patch"
 session_name_patch="$patch_dir/0005-rid2caltopo-nonempty-rtsp-session-name.patch"
 regression_fixes_patch="$patch_dir/0006-rid2caltopo-regression-fixes.patch"
 record_file_event_patch="$patch_dir/0007-record-file-complete-event.patch"
+avcc_diagnostic_patch="$patch_dir/0008-avcc-failure-diagnostics.patch"
 media_patch_sha="$(shasum -a 256 "$media_patch" | awk '{print $1}')"
 anet_patch_sha="$(shasum -a 256 "$anet_patch" | awk '{print $1}')"
 gortmplib_patch_sha="$(shasum -a 256 "$gortmplib_patch" | awk '{print $1}')"
@@ -25,6 +26,8 @@ media_tools_patch_sha="$(shasum -a 256 "$media_tools_patch" | awk '{print $1}')"
 session_name_patch_sha="$(shasum -a 256 "$session_name_patch" | awk '{print $1}')"
 regression_fixes_patch_sha="$(shasum -a 256 "$regression_fixes_patch" | awk '{print $1}')"
 record_file_event_patch_sha="$(shasum -a 256 "$record_file_event_patch" | awk '{print $1}')"
+
+avcc_diagnostic_patch_sha="$(shasum -a 256 "$avcc_diagnostic_patch" | awk '{print $1}')"
 
 if [[ -d "$destination" ]]; then
     if [[ -f "$marker" ]] &&
@@ -37,7 +40,8 @@ if [[ -d "$destination" ]]; then
         grep -qx "media_tools_patch_sha256=$media_tools_patch_sha" "$marker" &&
         grep -qx "session_name_patch_sha256=$session_name_patch_sha" "$marker" &&
         grep -qx "regression_fixes_patch_sha256=$regression_fixes_patch_sha" "$marker" &&
-        grep -qx "record_file_event_patch_sha256=$record_file_event_patch_sha" "$marker"; then
+        grep -qx "record_file_event_patch_sha256=$record_file_event_patch_sha" "$marker" &&
+        grep -qx "avcc_diagnostic_patch_sha256=$avcc_diagnostic_patch_sha" "$marker"; then
         printf '%s\n' "$destination"
         exit 0
     fi
@@ -97,6 +101,8 @@ git -C "$media_source" apply --check "$regression_fixes_patch"
 git -C "$media_source" apply "$regression_fixes_patch"
 git -C "$media_source" apply --check "$record_file_event_patch"
 git -C "$media_source" apply "$record_file_event_patch"
+git -C "$media_source" apply --check "$avcc_diagnostic_patch"
+git -C "$media_source" apply "$avcc_diagnostic_patch"
 (
     cd "$media_source"
     GOCACHE="$repo_root/.build/go-cache" \
@@ -115,6 +121,7 @@ media_tools_patch_sha256=$media_tools_patch_sha
 session_name_patch_sha256=$session_name_patch_sha
 regression_fixes_patch_sha256=$regression_fixes_patch_sha
 record_file_event_patch_sha256=$record_file_event_patch_sha
+avcc_diagnostic_patch_sha256=$avcc_diagnostic_patch_sha
 EOF
 
 mv "$media_source" "$destination"

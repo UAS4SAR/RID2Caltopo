@@ -95,6 +95,13 @@ public struct OperationalSurfacePackage: Sendable {
         guard (0..<metadata.width).contains(c), (0..<metadata.height).contains(r) else { return nil }
         let value=Double(ground[r*metadata.width+c]); return value.isFinite ? value : nil
     }
+    public func surfaceAt(_ p: Point) -> Double? {
+        guard p.latitude.isFinite, p.longitude.isFinite, abs(p.latitude)<=90, abs(p.longitude)<=180 else { return nil }
+        let (x,y)=xy(p)
+        let c=Int(floor((x-metadata.west)/metadata.spacing)), r=Int(floor((y-metadata.south)/metadata.spacing))
+        guard (0..<metadata.width).contains(c), (0..<metadata.height).contains(r) else { return nil }
+        let value=Double(surface[r*metadata.width+c]); return value.isFinite ? value : nil
+    }
     public func disk(_ p:Point, radius:Double=Self.radius) -> Analysis {
         guard abs(p.latitude)<=90,abs(p.longitude)<=180,radius.isFinite,radius>0,radius<=5000 else { return Analysis(peak:nil,complete:false,checked:0,missing:0) }
         let (x,y)=xy(p)
@@ -155,9 +162,13 @@ public struct OperationalAOLState: Sendable, Equatable {
     public init(feet:Double?=nil,reason:String="Surface package not prepared",details:String?=nil,status:OperationalMeasurementStatus?=nil) { self.status=status ?? (feet == nil ? .unknown : .available); self.feet=feet; self.reason=reason; self.details=details ?? reason }
     public var label:String { status.label(feet) }
     public static let explanation="AOL · 200 ft radius: height above the highest mapped surface nearby. Negative is not a collision prediction. Positive does not exclude wires or unmapped obstacles. Wires may be absent; no wire clearance is inferred from AOL. Reference assumes a ground launch at the observed takeoff location; elevated launches are unsupported. Aircraft and survey uncertainty are not bounded by pixel size."
-    public static func calculate(package p:OperationalSurfacePackage,position:OperationalSurfacePackage.Point,takeoff:OperationalSurfacePackage.Point,height:Double?,compatibleGround:Double? = nil) -> Self {
+    public static func calculate(package p:OperationalSurfacePackage,position:OperationalSurfacePackage.Point,takeoff:OperationalSurfacePackage.Point,height:Double?,compatibleGround:Double? = nil, pointOnly: Bool = false) -> Self {
         guard let height,height.isFinite else { return Self(reason:"Takeoff-relative altitude unavailable") }
         guard let ground=compatibleGround ?? p.groundAt(takeoff) else { return Self(reason:"Compatible takeoff ground unavailable") }
+        if pointOnly {
+            guard let surface = p.surfaceAt(position) else { return Self(reason: "Point surface unavailable") }
+            return Self(feet: (ground+height-surface)/0.3048, reason: "Available", details: "Point AOL: clearance above the mapped surface at the crosshair; no lateral radius.")
+        }
         let a=p.disk(position)
         guard a.complete else { return Self(reason:"Incomplete surface coverage (\(a.missing) cells)") }
         guard let peak=a.peak else { return Self(reason:"Surface coverage unavailable") }
@@ -167,10 +178,11 @@ public struct OperationalAOLState: Sendable, Equatable {
 }
 
 public enum OperationalMeasurementStatus: Sendable, Equatable {
-    case available, unknown, pending, stale
+    case available, unknown, pending, stale, calibrationRequired
     public func label(_ value: Double?, suffix: String = "", maxAbs: Double = .infinity, showPendingValue: Bool = false) -> String {
         switch self {
         case .stale: return "POS?"
+        case .calibrationRequired: return "CAL"
         case .pending:
             if showPendingValue, let value, value.isFinite, abs(value) <= maxAbs {
                 return OperationalMeasurementStatus.available.label(value, suffix: suffix, maxAbs: maxAbs) + "?"

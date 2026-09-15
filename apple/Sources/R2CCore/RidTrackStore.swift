@@ -73,6 +73,8 @@ public enum RidTrackSignalOnlyReason: Sendable, Equatable {
 
 public enum RidTrackIngestOutcome: Sendable, Equatable {
     case accepted(RidAircraftTrack)
+    /// Valid live telemetry that does not add an archived/published waypoint.
+    case telemetryOnly(RidAircraftTrack, reason: RidTrackSignalOnlyReason)
     case signalOnly(RidAircraftTrack, reason: RidTrackSignalOnlyReason)
     case rejectedHorizontalAccuracy(code: UInt8, track: RidAircraftTrack?)
     case rejectedInvalidObservation
@@ -157,19 +159,36 @@ public actor RidTrackStore {
         )
         let elapsed = observation.receivedAt.timeIntervalSince(previous.receivedAt)
 
-        if distance == 0, elapsed < policy.duplicateKeepaliveInterval {
-            tracksByAircraftID[aircraftID] = track
-            return .signalOnly(track, reason: .duplicatePosition)
-        }
-        if observation.source != .djiVideo, distance > 0, distance < policy.minimumDistanceMeters {
-            tracksByAircraftID[aircraftID] = track
-            return .signalOnly(track, reason: .belowMinimumDistance(meters: distance))
-        }
-        if distance > 0, elapsed > 0 {
-            let impliedSpeed = distance / elapsed
+        let liveDistance = Self.distanceMeters(
+            fromLatitude: track.lastObservation.latitude,
+            longitude: track.lastObservation.longitude,
+            toLatitude: observation.latitude,
+            longitude: observation.longitude
+        )
+        let liveElapsed = observation.receivedAt.timeIntervalSince(track.lastObservation.receivedAt)
+        if liveDistance > 0, liveElapsed > 0 {
+            let impliedSpeed = liveDistance / liveElapsed
             if impliedSpeed > policy.maximumSpeedMetersPerSecond {
                 tracksByAircraftID[aircraftID] = track
                 return .signalOnly(track, reason: .implausibleSpeed(metersPerSecond: impliedSpeed))
+            }
+        }
+
+        // Live telemetry freshness is independent of the last recorded waypoint.
+        track.lastObservation = observation
+        track.acceptedCountBySource[observation.source, default: 0] += 1
+        if elapsed >= 0, elapsed < policy.duplicateKeepaliveInterval {
+            let reason: RidTrackSignalOnlyReason?
+            if distance == 0 {
+                reason = .duplicatePosition
+            } else if observation.source != .djiVideo, distance < policy.minimumDistanceMeters {
+                reason = .belowMinimumDistance(meters: distance)
+            } else {
+                reason = nil
+            }
+            if let reason {
+                tracksByAircraftID[aircraftID] = track
+                return .telemetryOnly(track, reason: reason)
             }
         }
 
@@ -177,9 +196,7 @@ public actor RidTrackStore {
         if track.points.count > policy.maximumPointsPerTrack {
             track.points.removeFirst(track.points.count - policy.maximumPointsPerTrack)
         }
-        track.lastObservation = observation
         track.distanceMeters += distance
-        track.acceptedCountBySource[observation.source, default: 0] += 1
         tracksByAircraftID[aircraftID] = track
         return .accepted(track)
     }
@@ -257,7 +274,7 @@ public actor RidTrackStore {
             track.lastAircraftMessageAt,
             pairedVideoLastActivityAt[track.aircraftID] ?? .distantPast
         )
-        return date.timeIntervalSince(lastPresence) <= policy.activeTimeout
+        return date.timeIntervalSince(lastPresence) < policy.activeTimeout
     }
 
     private static func distanceMeters(

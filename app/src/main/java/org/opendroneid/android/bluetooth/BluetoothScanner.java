@@ -196,19 +196,22 @@ public class BluetoothScanner {
                     testVariant.name(), testVariant.getUsesSoftwareFilter(),
                     testVariant.getUsesLegacy1M(), periodicRestartEnabled));
             diagnosticHandler.postDelayed(diagnosticReporter, DIAGNOSTIC_REPORT_INTERVAL_MS);
-            if (periodicRestartEnabled) {
-                diagnosticHandler.postDelayed(diagnosticRestarter, DIAGNOSTIC_RESTART_INTERVAL_MS);
-            }
+        }
+        if (periodicRestartEnabled) {
+            diagnosticHandler.postDelayed(diagnosticRestarter, DIAGNOSTIC_RESTART_INTERVAL_MS);
         }
     }
 
     private void startPlatformScan() {
-        if (bluetoothLeScanner == null) return;
+        if (bluetoothLeScanner == null || bluetoothAdapter == null || !bluetoothAdapter.isEnabled()) return;
 
         List<ScanFilter> scanFilters = null;
         if (!testVariant.getUsesSoftwareFilter()) {
             ScanFilter.Builder builder = new ScanFilter.Builder();
-            builder.setServiceData(SERVICE_pUUID, OPEN_DRONE_ID_AD_CODE);
+            // Match Apple's service-scoped discovery. The parser validates the
+            // Open Drone ID application code after receipt.
+            builder.setServiceData(SERVICE_pUUID,
+                    testVariant == BluetoothRidTestPrefs.ScanVariant.PRODUCTION ? null : OPEN_DRONE_ID_AD_CODE);
             scanFilters = new ArrayList<>();
             scanFilters.add(builder.build());
         }
@@ -234,7 +237,9 @@ public class BluetoothScanner {
                 return;
             }
         }
-        CTDebug(TAG, "startScan: Calling bluetoothLeScanner.startScan variant=" + testVariant.name());
+        CTDebug(TAG, "startScan: Calling bluetoothLeScanner.startScan variant=" + testVariant.name()
+                + " legacy1M=" + testVariant.getUsesLegacy1M()
+                + " periodicRestart=" + periodicRestartEnabled);
         bluetoothLeScanner.startScan(scanFilters, scanSettings, scanCallback);
     }
 
@@ -248,7 +253,7 @@ public class BluetoothScanner {
     }
 
     private void stopPlatformScan() {
-        if (bluetoothLeScanner != null) {
+        if (bluetoothLeScanner != null && bluetoothAdapter != null && bluetoothAdapter.isEnabled()) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
                     CTError(TAG, "stopScan: Did not get BLUETOOTH_SCAN permission");

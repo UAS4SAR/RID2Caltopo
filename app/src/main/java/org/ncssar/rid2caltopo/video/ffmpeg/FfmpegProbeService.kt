@@ -302,6 +302,10 @@ class FfmpegProbeService(
         }
         val now = System.currentTimeMillis()
         if (eventType == "telemetry") {
+            // Capture metadata stays on this decoder's timeline, never the operational probe's.
+            if (telemetry.sourceTag == "dji-sei-245" && synchronized(stateLock) { managedRenderSessions.containsKey(sessionId) }) {
+                StreamCameraTelemetryRegistry.update("capture:$sessionId", telemetry, now)
+            }
             val telemetryProbeSessionId = synchronized(stateLock) {
                 telemetryProbeSessions[designator]
             }
@@ -311,6 +315,7 @@ class FfmpegProbeService(
                     telemetryProbeSessionId = telemetryProbeSessionId,
                 )
             ) {
+                org.ncssar.rid2caltopo.video.StreamFlightActivityRegistry.noteTelemetryReceived(designator)
                 StreamCameraTelemetryRegistry.update(designator, telemetry, now)
                 val sample = StreamCameraTelemetryRegistry.fresh(designator, now)
                 val shouldNotify = sample != null && synchronized(stateLock) {
@@ -1151,6 +1156,21 @@ class FfmpegProbeService(
         )
     }
 
+    data class ClueFrameCapture(
+        val bitmap: android.graphics.Bitmap,
+        val sourceTimestampUs: Long,
+        val camera: StreamCameraTelemetrySample?,
+    )
+
+    fun captureClueFrame(designator: String): ClueFrameCapture? {
+        val sessionId = synchronized(stateLock) { renderSessions[designator] } ?: return null
+        // Do not hold stateLock across JNI: the renderer reports frames under render_lock.
+        val frame = FfmpegBridge.captureRenderedFrame(sessionId) ?: return null
+        val camera = StreamCameraTelemetryRegistry.freshForFrame("capture:$sessionId", frame.sourceTimestampUs, maxFrameDeltaUs = 0)
+        CTDebug(tag, "Clue frame capture designator=$designator sessionId=$sessionId framePtsUs=${frame.sourceTimestampUs} cameraPtsUs=${camera?.sourceTimestampUs} cameraMatched=${camera != null}")
+        return ClueFrameCapture(frame.bitmap, frame.sourceTimestampUs, camera)
+    }
+
     fun renderedFrameSourceTimestampUs(designator: String): Long? = synchronized(stateLock) {
         val sessionId = renderSessions[designator] ?: suspendedRenderSessions[designator]
             ?: return@synchronized null
@@ -1670,6 +1690,7 @@ class FfmpegProbeService(
     }
 
     private fun handleSessionStopped(designator: String, sessionId: Long) {
+        StreamCameraTelemetryRegistry.clear("capture:$sessionId")
         var localPlaybackEnded = false
         synchronized(stateLock) {
             val isLocalFile = sourcePathByDesignator[designator]?.startsWith("file://", ignoreCase = true) == true

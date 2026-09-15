@@ -28,7 +28,7 @@ object BluetoothRidTestPrefs {
             get() = this == SOFTWARE_FILTER_ALL_PHY || this == SOFTWARE_FILTER_LEGACY_1M
 
         val usesLegacy1M: Boolean
-            get() = this == FILTERED_LEGACY_1M || this == SOFTWARE_FILTER_LEGACY_1M
+            get() = this == PRODUCTION || this == FILTERED_LEGACY_1M || this == SOFTWARE_FILTER_LEGACY_1M
     }
 
     internal fun resolveVariant(storedName: String?, debugBuild: Boolean): ScanVariant {
@@ -41,7 +41,8 @@ object BluetoothRidTestPrefs {
         storedValue: Boolean,
         variant: ScanVariant,
         debugBuild: Boolean
-    ): Boolean = debugBuild && variant.diagnosticsEnabled && storedValue
+    ): Boolean = variant == ScanVariant.PRODUCTION ||
+        (debugBuild && variant.diagnosticsEnabled && storedValue)
 
     @JvmStatic
     fun getVariant(context: Context?): ScanVariant {

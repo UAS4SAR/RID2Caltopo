@@ -8,6 +8,23 @@ import java.io.File
 import java.time.Instant
 
 class ManagedVideoRecordingAssociationTest {
+    @Test fun recordingAdvertisementIncludesActualSizeAndMetadata() {
+        val file = File.createTempFile("recording-source", ".mp4")
+        try {
+            file.writeBytes(ByteArray(12345))
+            val recording = ManagedVideoSessionRecording("id", "Matrice", file, Instant.EPOCH,
+                6100, 1920, 1080, 29.97, "h264", 4_000_000)
+            val advertised = ManagedVideoSessionRecordingCatalog.advertisement(recording)
+            assertEquals(12345L, advertised.sourceSizeBytes)
+            assertEquals(1920, advertised.sourceWidth)
+            assertEquals(1080, advertised.sourceHeight)
+            assertEquals(29.97, advertised.sourceFps, 0.001)
+            assertEquals(4_000_000L, advertised.sourceBitrateBps)
+            assertEquals("h264", advertised.sourceCodec)
+            assertEquals(6100L, advertised.durationMs)
+        } finally { file.delete() }
+    }
+
     @Test
     fun recordingFingerprintChangesOnlyWhenMetadataChanges() {
         val original = ManagedVideoSessionRecordingCatalog.RecordingFingerprint(

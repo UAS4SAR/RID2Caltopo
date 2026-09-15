@@ -31,6 +31,7 @@ object MediaMTXConfig {
         recordSettings.add("record: yes")
         recordSettings.add("recordPath: '${yamlSingleQuoted(recordPath)}'")
         recordSettings.add("recordFormat: $RECORD_FORMAT_FMP4")
+        recordSettings.add("recordDeleteAfter: 0s")
         return buildString {
             append(withPathDefaultsSettings(normalizedBase, recordSettings))
             append('\n')

@@ -44,6 +44,20 @@ class AndroidClueStoreTest {
         assertEquals(listOf(retained), AndroidClueStore.forDirectory(root).recordsForMap("map:alpha"))
     }
 
+    @Test
+    fun retentionRemovalHidesClueAndNextWritePrunesItsMetadata() {
+        val root = temporaryFolder.newFolder("retention")
+        val store = AndroidClueStore.forDirectory(root)
+        val old = clueRecord("old", "map:alpha")
+        store.saveEncoded(old, byteArrayOf(1), byteArrayOf(2))
+        store.imageFile(old).delete()
+        store.thumbnailFile(old).delete()
+        assertTrue(store.recordsForMap("map:alpha").isEmpty())
+        val current = clueRecord("new", "map:alpha")
+        store.saveEncoded(current, byteArrayOf(3), byteArrayOf(4))
+        assertEquals(listOf(current), AndroidClueStore.forDirectory(root).recordsForMap("map:alpha"))
+    }
+
     private fun clueRecord(id: String, mapKey: String) = AndroidClueRecord(
         id = id,
         mapKey = mapKey,

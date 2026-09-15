@@ -307,6 +307,19 @@ fun DroneItem(drone: CtDroneSpec,
             ) {}
             Column(
                 modifier = Modifier
+                    .width(R2CViewColumnLayout.seiColumnWidthDp.dp)
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(1.dp)
+                    .fillMaxHeight(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    modifier = Modifier.align(Alignment.End),
+                    text = "${drone.getTransportCount(CtDroneSpec.TransportTypeEnum.DJI_STREAM)}",
+                    textAlign = TextAlign.Right)
+            }
+            Column(
+                modifier = Modifier
                     .width(R2CViewColumnLayout.totalColumnWidthDp.dp)
                     .background(MaterialTheme.colorScheme.surface)
                     .padding(1.dp)

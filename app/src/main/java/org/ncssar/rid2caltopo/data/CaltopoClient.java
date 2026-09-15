@@ -288,7 +288,7 @@ class ClientClassState {
         trackerFaaProxyUrl = "";
         trackerEnrollmentUrl = "";
         coordinateDisplayFormat = "decimal";
-        captureVideoStreamsFlag = false;
+        captureVideoStreamsFlag = true;
         predictiveHeadEnabled = true;
         proximityAlertSpacingFeet = 40L;
         notamEnabled = true;
@@ -1108,6 +1108,8 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
                 byte[] bytes = msg.getBytes();
                 BytesWrittenToDebugOutputStream += bytes.length;
                 os.write(bytes);
+                org.ncssar.rid2caltopo.app.FlightStorage.appendCompleted(R2CApplication.getAppCtxt(),
+                        DebugLogPath == null ? null : DebugLogPath.toString(), bytes.length);
                 os.flush();
             } catch (IOException e) {
                 Log.e(TAG, String.format(Locale.US, "CTError: CTLog(): Not able to write '%s' - %s", LogFilePath, e));
@@ -1252,6 +1254,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             outputStream.write(buffer.getBytes());
             outputStream.flush();
             outputStream.close();
+            org.ncssar.rid2caltopo.app.FlightStorage.documentChanged(ctxt, dataFilepath);
             r2CActivity.openUri(dataFilepath.getUri().toString(), "text/html");
         } catch (Exception e) {
             CTError(TAG, "OpenBufferContentsInBrowser() raised. ", e);
@@ -3279,7 +3282,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         long newTrackDelayInMsec = ccs.newTrackDelayInSeconds * 1000;
         long currentTimeInMsec = System.currentTimeMillis();
         long nextAgeOutInMsec = newTrackDelayInMsec;
-        if (changedFlag || currentTimeInMsec >= PreviousEarliestAgeOutInMsec) {
+        if (changedFlag || android.os.SystemClock.elapsedRealtime() >= PreviousEarliestAgeOutInMsec) {
             DsArray.clear();
             for (CtDroneSpec ds : ccs.droneSpecTable.values()) {
                 // terminateTrack() resets the CtDroneSpec and synchronously requests another
@@ -3295,6 +3298,8 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
                         telemetryIdleInMsec,
                         currentTimeInMsec,
                         videoActivity);
+                ds.logTrackDiagnostic(currentTimeInMsec, videoActivity.getPublisherActive(),
+                        videoActivity.getLastActivityAtMs(), combinedIdleInMsec, trackDelayInMsec);
                 boolean trackAgedOut = HasTrackAgedOut(combinedIdleInMsec, trackDelayInMsec);
                 if (trackAgedOut) {
                     CaltopoClient client = (ClientMap != null) ? ClientMap.get(ds.getRemoteId()) : null;
@@ -3327,7 +3332,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
                         TrackDelayReasonSuffix(ds)));
                 DsArray.add(ds);
             }
-            PreviousEarliestAgeOutInMsec = currentTimeInMsec + nextAgeOutInMsec;
+            PreviousEarliestAgeOutInMsec = android.os.SystemClock.elapsedRealtime() + nextAgeOutInMsec;
             DsArray.sort(CtDroneSpec::compareToAge);
             long newSize = DsArray.size();
             if (!changedFlag && (DroneSpecsArraySize != newSize)) {
@@ -3383,7 +3388,6 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     private static long CombinedFlightIdleTimeInMsec(long telemetryIdleInMsec,
                                                       long currentTimeInMsec,
                                                       @NonNull PairedVideoFlightActivity videoActivity) {
-        if (videoActivity.getPublisherActive()) return 0L;
         long lastVideoActivityAtMsec = videoActivity.getLastActivityAtMs();
         if (lastVideoActivityAtMsec <= 0L) return telemetryIdleInMsec;
         long videoIdleInMsec = Math.max(0L, currentTimeInMsec - lastVideoActivityAtMsec);
@@ -3391,8 +3395,8 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     }
 
     private static long TrackDelayInMsecForDroneSpec(@NonNull CtDroneSpec ds, long newTrackDelayInMsec) {
-        // A paired live video publisher is a second presence source. Retirement occurs only
-        // after RID/peer telemetry and paired publisher activity have both been absent for this
+        // Actual paired SEI receipt is a second telemetry source. Retirement occurs only
+        // after RID/peer telemetry and paired SEI have both been absent for this
         // configured interval.
         return newTrackDelayInMsec;
     }
@@ -3927,6 +3931,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             }
 
             if (null != DebugLogPath && null != DebugOutputStream) {
+                org.ncssar.rid2caltopo.app.FlightStorage.protect(todaysArchiveDir.getName(), "diagnostic-log");
                 LogFilePath = todaysArchiveDir + "/" + filepath;
                 R2CActivity activity = R2CActivity.getR2CActivity();
                 String appVers = BuildConfig.BUILD_VERSION;
@@ -4543,6 +4548,13 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         ArrayList<CtDroneSpec> proximityDrones = new ArrayList<>(GetState().droneSpecTable.values());
         if (SessionUnknownDroneRemoteIds.contains(remoteId)) {
             droneSpec.setLocalArchiveOnly(true);
+        }
+
+        if (!droneSpec.shouldRecordWaypoint(lat, lng, droneSpec.mostRecentMsecTimestamp,
+                GetMinDistanceInFeet(), transportType)) {
+            CaltopoLiveTrack.NotifyLocalTrackPoint(droneSpec, lat, lng, altitudeInMeters, droneTimestampInMilliseconds);
+            ProximityAlertCenter.INSTANCE.updateDrones(proximityDrones);
+            return true;
         }
 
         if (shouldSuppressMapTracking(droneSpec)) {

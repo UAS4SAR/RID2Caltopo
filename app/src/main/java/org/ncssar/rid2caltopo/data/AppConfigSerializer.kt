@@ -18,7 +18,7 @@ object AppConfigSerializer : Serializer<AppConfig> {
         .setMaxIdleTimeMinutes(CaltopoClient.DEFAULT_MAX_IDLE_TIME_MINUTES)
         .setDebugLevel(-1)
         .setCoordinateDisplayFormat("decimal")
-        .setCaptureVideoStreams(false)
+        .setCaptureVideoStreams(true)
         .setUsePeers(true)
         .setCaltopoTrackFolder("Drone Tracks")
         .setCaltopoDomainAndPort("caltopo.com")

@@ -5,6 +5,17 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class InitialStreamMapFocusTest {
+    @Test fun zoomWhileWaitingForRidPreservesInitialFocusThenPanReleasesIt() {
+        var adjusted = false
+        assertNull(initialStreamMapFocus(true, null, adjusted, listOf(null)))
+        if (shouldSuspendMapFollow(OperatorMapGesture.Zoom)) adjusted = true
+        val focus = initialStreamMapFocus(true, null, adjusted, listOf("mini-rid"))
+        assertEquals("mini-rid", focus)
+        assertEquals(false, shouldReleaseFocusedDroneForMapGesture(
+            MapPanePresentationMode.Full, focus != null, OperatorMapGesture.Zoom))
+        if (shouldSuspendMapFollow(OperatorMapGesture.Pan)) adjusted = true
+        assertNull(initialStreamMapFocus(true, null, adjusted, listOf("mini-rid")))
+    }
     @Test fun arrivalAllowsDelayedRidAfterPreStreamPanButDoesNotUndoLaterPan() {
         val arrivals = StreamFocusArrival()
         var adjusted = true

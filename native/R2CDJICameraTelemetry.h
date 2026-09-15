@@ -134,7 +134,11 @@ static inline bool R2CDJIDecodeType245Payload(
         telemetry->attitudeAnglesDegrees[index] =
             (double) R2CDJIReadUInt32LE(attitude + 3 + index * 4) * 360.0 / fullTurn;
     }
-    double azimuth = (double) R2CDJIReadUInt32LE(attitude + 3) * 360.0 / fullTurn;
+    // Matrice 4TD capture 2026-09-15 crosses +1799354051 to -1793949732.
+    // This is signed degrees * 1e7, not an unsigned full-turn binary angle.
+    // Normalize only after decoding to preserve continuity at +/-180 degrees.
+    double signedAzimuth = (double) R2CDJIReadSigned32LE(attitude + 3) / 10000000.0;
+    double azimuth = fmod(signedAzimuth + 360.0, 360.0);
     double tiltEncoder = (double) R2CDJIReadUInt32LE(attitude + 11) * 360.0 / fullTurn;
     double tilt = fmod(tiltEncoder - 90.0 + 540.0, 360.0) - 180.0;
     double horizontalFov = (double) R2CDJIReadUInt32LE(optics + 1) / 256.0;

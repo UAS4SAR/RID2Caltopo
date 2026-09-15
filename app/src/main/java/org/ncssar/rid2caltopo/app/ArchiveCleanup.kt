@@ -13,7 +13,7 @@ import java.util.Date
 import java.util.Locale
 
 private const val ARCHIVE_DIR_PREFIX = "tracks-"
-private val archiveDirDateFormat = SimpleDateFormat("ddMMMyyyy", Locale.US).apply {
+private val archiveDirDateFormat get() = SimpleDateFormat("ddMMMyyyy", Locale.US).apply {
     isLenient = false
 }
 
@@ -146,7 +146,7 @@ internal fun buildArchiveCleanupOption(
     todayName: String = todayArchiveDirectoryName(),
 ): ArchiveCleanupDirectoryOption? {
     val parsedDateMs = parseArchiveDirectoryDateMs(directoryName) ?: return null
-    val ageBaseMs = lastModifiedMs.takeIf { it > 0L } ?: parsedDateMs
+    val ageBaseMs = parsedDateMs
     val summary = summarizeArchiveEntries(entries)
     val ageMs = (nowMs - ageBaseMs).coerceAtLeast(0L)
     return ArchiveCleanupDirectoryOption(
@@ -159,7 +159,7 @@ internal fun buildArchiveCleanupOption(
         kmzCount = summary.kmzCount,
         videoCount = summary.videoCount,
         lastModifiedMs = lastModifiedMs,
-        isToday = directoryName == todayName,
+        isToday = directoryName == todayName || FlightStorage.isProtected(directoryName),
     )
 }
 

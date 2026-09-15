@@ -13,6 +13,15 @@ object AircraftOrganizationAccess {
     @Volatile private var verifiedToken = ""
     @Volatile private var verifiedScope = ""
     @Volatile private var username = ""
+    @Volatile private var accessMessage = "Account has not been verified. Refresh access while online."
+    @Volatile private var messageToken = ""
+    @Volatile private var messageScope = ""
+    fun accessStatus(): String = when {
+        !belongsToOrganization() -> "Local aircraft entries. No organization account is signed in."
+        messageToken != CaltopoClient.GetTrackerCoordinationApiKey() || messageScope != scope() ->
+            "Account has not been verified. Refresh access while online."
+        else -> accessMessage
+    }
     fun organizationUser(): String? = username.takeIf {
         it.isNotBlank() && belongsToOrganization() && verifiedToken == CaltopoClient.GetTrackerCoordinationApiKey() && verifiedScope == scope()
     }
@@ -72,6 +81,9 @@ object AircraftOrganizationAccess {
         val token = CaltopoClient.GetTrackerCoordinationApiKey()
         val requestedScope = scope()
         val endpoint = requestedScope + "/api/v1/aircraft-readiness"
+        messageToken = token; messageScope = requestedScope
+        accessMessage = "Checking organization account and RID editing access…"
+        changes.value = changes.value + 1
         return runCatching {
             val request = Request.Builder().url(endpoint).header("X-SAR-Token", token).build()
             CaltopoSession.MyOkHttpClient.newCall(request).execute().use { response ->
@@ -80,7 +92,13 @@ object AircraftOrganizationAccess {
                     preferences().edit().remove(requestedScope).apply()
                     changes.value = changes.value + 1
                 }
-                check(response.isSuccessful)
+                if (!response.isSuccessful) {
+                    accessMessage = when (response.code) {
+                        401, 403 -> "Tracker could not verify this tablet's enrollment (HTTP ${response.code}). Re-enroll using the current organization QR and sign in."
+                        else -> "Tracker could not verify your account (HTTP ${response.code}). Try Refresh access again."
+                    }
+                    return@use false
+                }
                 val body = JSONObject(response.body?.string().orEmpty())
                 verifiedToken = token; verifiedScope = requestedScope; username = body.optString("username")
                 preferences().edit().putString(requestedScope, body.toString()).apply()
@@ -88,8 +106,21 @@ object AircraftOrganizationAccess {
                 if (body.optBoolean("canEditAircraft")) {
                     authorizedToken = token; validUntil = System.currentTimeMillis() + 300_000
                 }
+                accessMessage = if (body.optBoolean("canEditAircraft")) {
+                    "RID editing allowed · config_admin verified."
+                } else {
+                    "Read-only · this account does not have config_admin. Contact an organization administrator."
+                }
                 canEdit()
             }
-        }.getOrDefault(false).also { changes.value = changes.value + 1 }
+        }.getOrElse { failure ->
+            if (token == CaltopoClient.GetTrackerCoordinationApiKey() && requestedScope == scope()) {
+                accessMessage = when (failure) {
+                    is java.io.IOException -> "Unable to reach Tracker to verify your account. Check your connection and try Refresh access again."
+                    else -> "Tracker account verification could not be completed. Try Refresh access again."
+                }
+            }
+            false
+        }.also { changes.value = changes.value + 1 }
     }
 }

@@ -825,39 +825,25 @@ final class AppleVideoFrameSource: ObservableObject {
         if let ffmpegSession {
             var sequence: UInt64 = 0
             var presentationTimeMicroseconds: Int64 = 0
-            guard let retainedPixelBuffer = R2CFFmpegSessionCopyLatestFrame(
-                ffmpegSession,
-                &sequence,
-                &presentationTimeMicroseconds
-            ) else { return }
+            var cameraValues = [Double](repeating: .nan, count: 20)
+            var djiSourceTimestampMicroseconds: Int64 = 0
+            var djiTelemetrySequence: UInt64 = 0
+            let retainedPixelBuffer = cameraValues.withUnsafeMutableBufferPointer { values in
+                R2CFFmpegSessionCopyFrameWithCamera(ffmpegSession, &sequence,
+                    &presentationTimeMicroseconds, values.baseAddress, Int32(values.count),
+                    &djiSourceTimestampMicroseconds, &djiTelemetrySequence)
+            }
+            guard let retainedPixelBuffer else { return }
             let pixelBuffer = retainedPixelBuffer.takeRetainedValue()
             guard sequence != ffmpegFrameSequence else { return }
             ffmpegFrameSequence = sequence
-            var djiAzimuthDegrees = 0.0
-            var djiTiltDegrees = 0.0
-            var djiHorizontalFovDegrees = 0.0
-            var djiVerticalFovDegrees = 0.0
-            var djiTelemetrySequence: UInt64 = 0
-            var djiAttitudeAngles = [Double](repeating: .nan, count: 9)
-            var djiPositionValues = [Double](repeating: .nan, count: 7)
-            var djiSourceTimestampMicroseconds: Int64 = 0
-            let copiedDJITelemetry = djiAttitudeAngles.withUnsafeMutableBufferPointer { angles in
-                djiPositionValues.withUnsafeMutableBufferPointer { position in
-                    R2CFFmpegSessionCopyLatestDJICameraTelemetry(
-                        ffmpegSession,
-                        &djiAzimuthDegrees,
-                        &djiTiltDegrees,
-                        &djiHorizontalFovDegrees,
-                        &djiVerticalFovDegrees,
-                        angles.baseAddress,
-                        Int32(angles.count),
-                        position.baseAddress,
-                        Int32(position.count),
-                        &djiSourceTimestampMicroseconds,
-                        &djiTelemetrySequence
-                    )
-                }
-            }
+            let djiAzimuthDegrees = cameraValues[0]
+            let djiTiltDegrees = cameraValues[1]
+            let djiHorizontalFovDegrees = cameraValues[2]
+            let djiVerticalFovDegrees = cameraValues[3]
+            let djiAttitudeAngles = Array(cameraValues[4..<13])
+            let djiPositionValues = Array(cameraValues[13..<20])
+            let copiedDJITelemetry = djiTelemetrySequence > 0
             if copiedDJITelemetry,
                djiTelemetrySequence != ffmpegDJICameraTelemetrySequence {
                 ffmpegDJICameraTelemetrySequence = djiTelemetrySequence
@@ -996,7 +982,12 @@ final class AppleVideoFrameSource: ObservableObject {
         latestPixelBuffer = pixelBuffer
         latestFrameCapturedAt = Date()
         latestFrameSourceTimestampMicroseconds = sourceTimestampMicroseconds
-        latestFrameDJICameraTelemetry = latestDJICameraTelemetry
+        latestFrameDJICameraTelemetry = latestDJICameraTelemetry.flatMap { sample in
+            guard renderNatively, let framePTS = sourceTimestampMicroseconds,
+                  let cameraPTS = sample.sourceTimestampMicroseconds,
+                  framePTS == cameraPTS else { return nil }
+            return sample
+        }
         managedVideoFrameConsumer?.consumeDecodedVideoFrame(
             pixelBuffer,
             timestampNanoseconds: Int64(CACurrentMediaTime() * 1_000_000_000)

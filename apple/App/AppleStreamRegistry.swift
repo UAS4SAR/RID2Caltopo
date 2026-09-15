@@ -107,6 +107,9 @@ final class AppleStreamRegistry: ObservableObject {
         case let .streamStopped(path, publisherID), let .rtmpSessionClosed(path, publisherID, _):
             if let stoppedSession = stop(path: path, publisherID: publisherID) {
                 seiPositionContinuationByStreamID.removeValue(forKey: stoppedSession.id)
+                if let receivedAt = stoppedSession.model.latestDJICameraTelemetry?.receivedAt {
+                    flightActivity.telemetryReceived(streamID: stoppedSession.id, at: receivedAt)
+                }
                 flightActivity.publisherStopped(streamID: stoppedSession.id, at: observedAt)
             }
         case let .streamError(path, publisherID, detail):
@@ -175,7 +178,12 @@ final class AppleStreamRegistry: ObservableObject {
     }
 
     func flightActivityByAircraftID(at date: Date = Date()) -> [String: Date] {
-        flightActivity.activityByAircraftID(at: date)
+        for session in sessions where flightActivity.isPublisherActive(streamID: session.id) {
+            if let receivedAt = session.model.latestDJICameraTelemetry?.receivedAt {
+                flightActivity.telemetryReceived(streamID: session.id, at: receivedAt)
+            }
+        }
+        return flightActivity.activityByAircraftID(at: date)
     }
 
     func djiSEILastActivityByAircraftID() -> [String: Date] {
@@ -424,6 +432,7 @@ struct AppleStreamsGridView: View {
     var onRestartStreams: (() -> Void)? = nil
     var primaryLabel: ((String) -> String?)? = nil
     var telemetryText: ((String) -> String?)? = nil
+    var onCalibrationRequested: ((String) -> Void)? = nil
     var coordinateText: ((String) -> String?)? = nil
     var remoteRequesterEmail: ((String) -> String?)? = nil
     var coordinateDisplayFormat: OperationalCoordinateDisplayFormat = .decimal
@@ -499,6 +508,7 @@ struct AppleStreamsGridView: View {
             fillsAvailableSpace: fillsAvailableSpace,
             primaryLabel: primaryLabel?(session.id),
             telemetryText: telemetryText?(session.id),
+            onCalibrationRequested: onCalibrationRequested.map { callback in { callback(session.id) } },
             coordinateText: coordinateText?(session.id),
             remoteRequesterEmail: remoteRequesterEmail?(session.id),
             coordinateDisplayFormat: coordinateDisplayFormat,
@@ -571,7 +581,6 @@ private struct AppleStreamTile: View {
     @State private var centerpointElevationSample: OperationalCenterpointElevation.Sample?
     @State private var centerpointReferenceElevationFeet: Int?
     @State private var centerpointDisplayMode: OperationalCenterpointElevation.DisplayMode = .msl
-    @State private var latestTouchLocation: CGPoint?
     let ingestAddress: String?
     let networkSSID: String?
     let focused: Bool
@@ -584,10 +593,14 @@ private struct AppleStreamTile: View {
            let attributedRange = Range(range, in: text) {
             text[attributedRange].foregroundColor = .red
         }
+        for match in (try? NSRegularExpression(pattern: "\\bCAL\\b"))?.matches(in: line, range: NSRange(line.startIndex..., in: line)) ?? [] {
+            if let range = Range(match.range, in: line), let attributedRange = Range(range, in: text) { text[attributedRange].foregroundColor = .orange }
+        }
         return text
     }
 
     let telemetryText: String?
+    let onCalibrationRequested: (() -> Void)?
     let coordinateText: String?
     let remoteRequesterEmail: String?
     let coordinateDisplayFormat: OperationalCoordinateDisplayFormat
@@ -608,6 +621,7 @@ private struct AppleStreamTile: View {
         fillsAvailableSpace: Bool,
         primaryLabel: String?,
         telemetryText: String?,
+        onCalibrationRequested: (() -> Void)? = nil,
         coordinateText: String?,
         remoteRequesterEmail: String?,
         coordinateDisplayFormat: OperationalCoordinateDisplayFormat,
@@ -628,6 +642,7 @@ private struct AppleStreamTile: View {
         self.fillsAvailableSpace = fillsAvailableSpace
         self.primaryLabel = primaryLabel
         self.telemetryText = telemetryText
+        self.onCalibrationRequested = onCalibrationRequested
         self.coordinateText = coordinateText
         self.remoteRequesterEmail = remoteRequesterEmail
         self.coordinateDisplayFormat = coordinateDisplayFormat
@@ -684,6 +699,28 @@ private struct AppleStreamTile: View {
             .scaleEffect(zoom)
             .offset(pan)
             .clipped()
+            // One input surface above native video and below all actual controls.
+            AppleStreamGestureSurface(
+                onTap: handleStreamTap,
+                onDoubleTap: { location in
+                    AppleLog.info("StreamGesture", "Double tap stream=\(session.id) x=\(Int(location.x)) y=\(Int(location.y))")
+                    onDoubleTap(Double(zoom), CGPoint(
+                        x: tileSize.width > 0 ? pan.width / tileSize.width : 0,
+                        y: tileSize.height > 0 ? pan.height / tileSize.height : 0))
+                },
+                onLongPress: handleStreamLongPress,
+                onPinch: { scale, ended in
+                    zoom = min(4, max(1, zoomAtGestureStart * scale))
+                    pan = clampedPan(pan, scale: zoom, size: tileSize)
+                    if ended { zoomAtGestureStart = zoom; panAtGestureStart = pan }
+                },
+                onPan: { translation, ended in
+                    guard zoom > 1 else { return }
+                    pan = clampedPan(CGSize(width: panAtGestureStart.width + translation.x,
+                                           height: panAtGestureStart.height + translation.y), scale: zoom, size: tileSize)
+                    if ended { panAtGestureStart = pan }
+                }
+            )
             HStack {
                 AppleLiveVideoIndicator(
                     model: model,
@@ -728,8 +765,15 @@ private struct AppleStreamTile: View {
                 VStack(alignment: .leading, spacing: 2) {
                     if let telemetryText {
                         let line = zoom > 1.01 ? "\(telemetryText)  \(zoomLabel)" : telemetryText
-                        Text(coloredTelemetry(line))
-                            .fixedSize(horizontal: false, vertical: true)
+                        if line.contains("CAL") {
+                            Button { onCalibrationRequested?() } label: {
+                                Text(coloredTelemetry(line)).fixedSize(horizontal: false, vertical: true)
+                            }.buttonStyle(.plain)
+                        } else {
+                            Text(coloredTelemetry(line))
+                                .fixedSize(horizontal: false, vertical: true)
+                                .allowsHitTesting(false)
+                        }
                     }
                     if let coordinateText {
                         if let onCoordinateDisplayFormatChange {
@@ -817,95 +861,6 @@ private struct AppleStreamTile: View {
         }
         .overlay(RoundedRectangle(cornerRadius: 5).stroke(focused ? .yellow : .gray, lineWidth: focused ? 3 : 1))
         .contentShape(Rectangle())
-        .simultaneousGesture(
-            MagnificationGesture()
-                .onChanged { value in
-                    zoom = min(4, max(1, zoomAtGestureStart * value))
-                    pan = clampedPan(pan, scale: zoom, size: tileSize)
-                }
-                .onEnded { _ in
-                    zoomAtGestureStart = zoom
-                    panAtGestureStart = pan
-                }
-        )
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 8)
-                .onChanged { value in
-                    guard zoom > 1 else { return }
-                    pan = clampedPan(CGSize(
-                        width: panAtGestureStart.width + value.translation.width,
-                        height: panAtGestureStart.height + value.translation.height
-                    ), scale: zoom, size: tileSize)
-                }
-                .onEnded { _ in
-                    panAtGestureStart = pan
-                }
-        )
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { value in
-                    latestTouchLocation = value.startLocation
-                }
-        )
-        .onTapGesture(count: 2) {
-            onDoubleTap(
-                Double(zoom),
-                CGPoint(
-                    x: tileSize.width > 0 ? pan.width / tileSize.width : 0,
-                    y: tileSize.height > 0 ? pan.height / tileSize.height : 0
-                )
-            )
-        }
-        .onTapGesture { location in
-            let minimumDimension = min(tileSize.width, tileSize.height)
-            let radius = min(96, max(48, minimumDimension * 0.20))
-            if focused, OperationalCenterpointElevation.isNearCenter(
-                x: location.x,
-                y: location.y,
-                width: tileSize.width,
-                height: tileSize.height,
-                radius: radius
-            ) {
-                centerpointElevationEnabled.toggle()
-                if centerpointElevationEnabled {
-                    centerpointElevationSample = nil
-                    zoom = 1
-                    zoomAtGestureStart = 1
-                    pan = .zero
-                    panAtGestureStart = .zero
-                }
-            } else {
-                onFocus()
-            }
-        }
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.5)
-                .onEnded { _ in
-                    let minimumDimension = min(tileSize.width, tileSize.height)
-                    let radius = min(96, max(48, minimumDimension * 0.20))
-                    let pressNearCenter = latestTouchLocation.map {
-                        OperationalCenterpointElevation.isNearCenter(
-                            x: $0.x,
-                            y: $0.y,
-                            width: tileSize.width,
-                            height: tileSize.height,
-                            radius: radius
-                        )
-                    } ?? false
-                    if OperationalCenterpointElevation.shouldSetReference(
-                        focused: focused,
-                        elevationEnabled: centerpointElevationEnabled,
-                        pressNearCenter: pressNearCenter
-                    ) {
-                        if let sample = centerpointElevationSample {
-                            centerpointReferenceElevationFeet = sample.elevationFeet
-                            centerpointDisplayMode = .reference
-                        }
-                    } else {
-                        onLongPress()
-                    }
-                }
-        )
         .onChange(of: focused) { _, isFocused in
             if !isFocused {
                 centerpointElevationEnabled = false
@@ -915,9 +870,8 @@ private struct AppleStreamTile: View {
         .task(id: centerpointElevationEnabled && focused) {
             guard centerpointElevationEnabled, focused, let centerpointElevation else { return }
             while !Task.isCancelled {
-                if let updated = await centerpointElevation(), updated != centerpointElevationSample {
-                    centerpointElevationSample = updated
-                }
+                let updated = await centerpointElevation()
+                if updated != centerpointElevationSample { centerpointElevationSample = updated }
                 try? await Task.sleep(for: .milliseconds(500))
             }
         }
@@ -973,6 +927,36 @@ private struct AppleStreamTile: View {
 
     private var zoomLabel: String {
         zoom >= 3.95 ? "4x" : String(format: "%.1fx", zoom)
+    }
+
+    private func nearStreamCenter(_ point: CGPoint) -> Bool {
+        OperationalCenterpointElevation.isNearCenter(x: point.x, y: point.y,
+            width: tileSize.width, height: tileSize.height,
+            radius: min(96, max(48, min(tileSize.width, tileSize.height) * 0.20)))
+    }
+
+    private func handleStreamTap(_ location: CGPoint) {
+        let nearCenter = nearStreamCenter(location)
+        AppleLog.info("StreamGesture", "Single tap stream=\(session.id) focused=\(focused) center=\(nearCenter) x=\(Int(location.x)) y=\(Int(location.y))")
+        if focused && nearCenter {
+            centerpointElevationEnabled.toggle()
+            if centerpointElevationEnabled {
+                centerpointElevationSample = nil
+                zoom = 1; zoomAtGestureStart = 1; pan = .zero; panAtGestureStart = .zero
+            }
+        } else { onFocus() }
+    }
+
+    private func handleStreamLongPress(_ location: CGPoint) {
+        let setsReference = OperationalCenterpointElevation.shouldSetReference(
+            focused: focused, elevationEnabled: centerpointElevationEnabled, pressNearCenter: nearStreamCenter(location))
+        AppleLog.info("StreamGesture", "Long press stream=\(session.id) reference=\(setsReference) sampleAvailable=\(centerpointElevationSample != nil)")
+        if setsReference {
+            if let sample = centerpointElevationSample {
+                centerpointReferenceElevationFeet = sample.elevationFeet
+                centerpointDisplayMode = .reference
+            }
+        } else { onLongPress() }
     }
 
     private func clampedPan(_ candidate: CGSize, scale: CGFloat, size: CGSize) -> CGSize {
@@ -1277,5 +1261,60 @@ final class AppleExternalDisplaySceneDelegate: UIResponder, UIWindowSceneDelegat
     func sceneDidDisconnect(_ scene: UIScene) {
         Task { @MainActor in AppleLog.info("ExternalDisplay", "External display disconnected") }
         window = nil
+    }
+}
+
+/// Explicit recognizer precedence prevents touch-location tracking from consuming taps.
+@MainActor
+private struct AppleStreamGestureSurface: UIViewRepresentable {
+    let onTap: (CGPoint) -> Void
+    let onDoubleTap: (CGPoint) -> Void
+    let onLongPress: (CGPoint) -> Void
+    let onPinch: (CGFloat, Bool) -> Void
+    let onPan: (CGPoint, Bool) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        view.isMultipleTouchEnabled = true
+        view.accessibilityIdentifier = "stream-gesture-surface"
+        let coordinator = context.coordinator
+        let single = UITapGestureRecognizer(target: coordinator, action: #selector(Coordinator.tap(_:)))
+        let double = UITapGestureRecognizer(target: coordinator, action: #selector(Coordinator.doubleTap(_:)))
+        double.numberOfTapsRequired = 2
+        let hold = UILongPressGestureRecognizer(target: coordinator, action: #selector(Coordinator.hold(_:)))
+        hold.minimumPressDuration = 0.5
+        let pinch = UIPinchGestureRecognizer(target: coordinator, action: #selector(Coordinator.pinch(_:)))
+        let pan = UIPanGestureRecognizer(target: coordinator, action: #selector(Coordinator.pan(_:)))
+        single.require(toFail: double)
+        single.require(toFail: hold)
+        for recognizer in [single, double, hold, pinch, pan] {
+            recognizer.delegate = coordinator
+            view.addGestureRecognizer(recognizer)
+        }
+        return view
+    }
+    func updateUIView(_ view: UIView, context: Context) { context.coordinator.owner = self }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var owner: AppleStreamGestureSurface
+        init(_ owner: AppleStreamGestureSurface) { self.owner = owner }
+        @objc func tap(_ gesture: UITapGestureRecognizer) { owner.onTap(gesture.location(in: gesture.view)) }
+        @objc func doubleTap(_ gesture: UITapGestureRecognizer) { owner.onDoubleTap(gesture.location(in: gesture.view)) }
+        @objc func hold(_ gesture: UILongPressGestureRecognizer) {
+            if gesture.state == .began { owner.onLongPress(gesture.location(in: gesture.view)) }
+        }
+        @objc func pinch(_ gesture: UIPinchGestureRecognizer) {
+            owner.onPinch(gesture.scale, gesture.state == .ended || gesture.state == .cancelled)
+        }
+        @objc func pan(_ gesture: UIPanGestureRecognizer) {
+            owner.onPan(gesture.translation(in: gesture.view), gesture.state == .ended || gesture.state == .cancelled)
+        }
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            (gestureRecognizer is UIPinchGestureRecognizer && otherGestureRecognizer is UIPanGestureRecognizer) ||
+            (gestureRecognizer is UIPanGestureRecognizer && otherGestureRecognizer is UIPinchGestureRecognizer)
+        }
     }
 }

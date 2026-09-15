@@ -68,7 +68,7 @@ actor AppleTrackArchiveStore {
     init(fileManager: FileManager = .default, session: URLSession = .shared) {
         rootURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first?
             .appendingPathComponent("RID2Caltopo", isDirectory: true)
-            .appendingPathComponent("Tracks", isDirectory: true)
+            .appendingPathComponent("FlightStorage", isDirectory: true)
         self.session = session
     }
 
@@ -86,7 +86,9 @@ actor AppleTrackArchiveStore {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let destination = directory.appendingPathComponent(RidTrackGeoJSON.suggestedFilename(for: track))
         let data = try RidTrackGeoJSON.encode(track: track, metadata: metadata)
+        AppleFlightStorage.prepareWrite(Int64(data.count))
         try data.write(to: destination, options: .atomic)
+        AppleFlightStorage.fileChanged(destination)
         if !clues.isEmpty {
             try writeKMZ(
                 track: track,
@@ -116,8 +118,11 @@ actor AppleTrackArchiveStore {
                 at: directory,
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles]
-            )) ?? []).filter { $0.pathExtension.lowercased() == "json" }
+            )) ?? []).filter { $0.pathExtension.lowercased() == "json" && $0.lastPathComponent != "clues.json" && !$0.lastPathComponent.hasSuffix(".review.json") }
             for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                let owner = "upload-" + UUID().uuidString
+                AppleFlightStorage.protect(directory.lastPathComponent, owner: owner)
+                defer { AppleFlightStorage.release(owner: owner) }
                 guard var data = try? Data(contentsOf: file) else {
                     guard !reported.contains(file.lastPathComponent) else { continue }
                     summary.checked += 1
@@ -204,17 +209,17 @@ actor AppleTrackArchiveStore {
                 bytes += Int64(values.fileSize ?? 0)
             }
             guard let datedFolder = archiveDate(from: directory.lastPathComponent) else { return nil }
-            let ageBase = directoryValues.contentModificationDate ?? datedFolder
+            let ageBase = datedFolder
             return AppleArchiveDirectoryOption(
                 name: directory.lastPathComponent,
                 ageLabel: ArchiveFolderDisplay.age(now.timeIntervalSince(ageBase)),
                 byteCount: bytes,
                 sizeLabel: ArchiveFolderDisplay.size(bytes),
                 fileCount: files,
-                isToday: directory.lastPathComponent == today
+                isToday: directory.lastPathComponent == today || AppleFlightStorage.isProtected(directory.lastPathComponent)
             )
         }
-        .sorted { $0.name > $1.name }
+        .sorted { $0.name < $1.name }
     }
 
     func deleteArchiveDirectories(_ names: Set<String>, now: Date = Date()) -> [String] {
@@ -222,7 +227,7 @@ actor AppleTrackArchiveStore {
         let today = dayDirectoryName(for: now)
         var failed: [String] = []
         for name in names.sorted() {
-            guard name != today,
+            guard name != today, !AppleFlightStorage.isProtected(name),
                   !name.isEmpty,
                   name != ".",
                   name != "..",
@@ -240,7 +245,7 @@ actor AppleTrackArchiveStore {
                 continue
             }
             do {
-                try FileManager.default.removeItem(at: target)
+                try AppleFlightStorage.deleteDay(name)
                 AppleLog.info("Archive", "Deleted local archive folder name=\(name)")
             } catch {
                 failed.append(name)
@@ -445,7 +450,9 @@ actor AppleTrackArchiveStore {
             }
         }
         let archive = try OperationalZipArchive.encode(entries, compress: true)
+        AppleFlightStorage.prepareWrite(Int64(archive.count))
         try archive.write(to: destination, options: .atomic)
+        AppleFlightStorage.fileChanged(destination)
         AppleLog.info(
             "Archive",
             "Wrote clue KMZ file=\(destination.lastPathComponent) clues=\(clues.count)"

@@ -21,9 +21,10 @@ internal fun canObserveAolLaunch(grounded: Boolean, height: Double?, heightFresh
     grounded && heightFresh && positionFresh && height != null && height.isFinite() && kotlin.math.abs(height)<=1.0
 
 /** No unit suffix is attached to a status word. */
-enum class MeasurementStatus { Available, Unknown, Pending, Stale }
+enum class MeasurementStatus { Available, Unknown, Pending, Stale, CalibrationRequired }
 fun measurementLabel(value: Double?, status: MeasurementStatus = MeasurementStatus.Available, suffix: String = "", maxAbs: Double = Double.POSITIVE_INFINITY, showPendingValue: Boolean = false): String = when {
     status == MeasurementStatus.Stale -> "POS?"
+    status == MeasurementStatus.CalibrationRequired -> "CAL"
     status == MeasurementStatus.Pending -> if (showPendingValue && value != null && value.isFinite() && kotlin.math.abs(value) <= maxAbs)
         measurementLabel(value, MeasurementStatus.Available, suffix, maxAbs) + "?" else "--"
     status == MeasurementStatus.Unknown || value == null || !value.isFinite() || kotlin.math.abs(value)>maxAbs -> "Unk"
@@ -33,7 +34,7 @@ fun measurementLabel(value: Double?, status: MeasurementStatus = MeasurementStat
 /** Missing prerequisites are unavailable immediately, never queued surface work. */
 internal fun aolPrerequisiteState(hasLaunchReference: Boolean, hasHeight: Boolean, heightStale: Boolean): AolState? = when {
     heightStale -> AolState(reason = "Aircraft height stale", status = MeasurementStatus.Stale)
-    !hasLaunchReference -> AolState(reason = "Takeoff ground reference not observed; receive ground status and near-zero height before flight")
+    !hasLaunchReference -> AolState(reason = "Takeoff ground reference not observed; receive ground status and near-zero height before flight", status = MeasurementStatus.CalibrationRequired)
     !hasHeight -> AolState(reason = "Takeoff-relative altitude unavailable")
     else -> null
 }

@@ -25,6 +25,26 @@ import Testing
     ))
 }
 
+@Test func zoomPreservesFocusAndVideoFirstPendingFollow() {
+    var adjusted = false
+    // A simultaneous MapKit pan recognizer during pinch must not suspend follow,
+    // even when video is waiting for its first RID position.
+    if OperationalMapFocusPolicy.shouldSuspendFollow(
+        isOperatorGesture: true, isZoomGesture: true
+    ) { adjusted = true }
+    #expect(!adjusted)
+    #expect(OperationalMapFocusPolicy.initialStreamFocus(
+        followEnabled: true, focusedAircraftID: nil, operatorAdjustedViewport: adjusted,
+        liveStreamAircraftIDs: [nil]) == nil)
+    #expect(OperationalMapFocusPolicy.initialStreamFocus(
+        followEnabled: true, focusedAircraftID: nil, operatorAdjustedViewport: adjusted,
+        liveStreamAircraftIDs: ["mini-rid"]) == "mini-rid")
+    #expect(!OperationalMapFocusPolicy.shouldReleaseFocus(
+        hasFocusedAircraft: true, isOperatorGesture: true, isZoomGesture: true))
+    #expect(OperationalMapFocusPolicy.shouldReleaseFocus(
+        hasFocusedAircraft: true, isOperatorGesture: true, isZoomGesture: false))
+}
+
 @Test func singleLiveStreamInitiallyFocusesWithoutOverridingOperator() {
     func candidate(_ streams: [String?], follow: Bool = true, focus: String? = nil,
                    adjusted: Bool = false) -> String? {

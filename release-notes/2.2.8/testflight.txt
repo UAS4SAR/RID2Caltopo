@@ -1,0 +1,17 @@
+RID2Caltopo 2.2.8 — coordinated field retest
+
+Install in place and preserve app data. New iPad files are under Files > On My iPad > RID2Caltopo > FlightStorage > local date. Older CapturedStreams, Tracks, Logs and Clues folders remain; no uninstall or migration is required.
+
+Priority: with matching Tracker changes deployed, record Mini 4 Pro and Matrice 4TD flights and confirm that both tablets advertise resolution, frame rate, codec, bitrate, duration and file size. Tracker should show MB beside resolution/frame rate and refresh details without a manual reload. Check newly completed files and recordings retained across app restart. Missing optional metadata must not hide recordings. Verify advertised size against the actual file; Tracker uses decimal MB (1,000,000 bytes).
+
+Repeat the Matrice compass-heading crossing near east with gimbal at 0 and -90 degrees. Check smooth map FOV rotation and absolute alignment with the controller. The recorded boundary is covered by regression tests; final compass alignment remains a field check.
+
+Verify single-tap crosshair, double-tap clue capture, long-press reference, gear menu, pinch and pan. Confirm measured angles are used when present and Assumed down 90 degrees appears only when angle metadata is absent. Check terrain MSL, REF, point AOL without a 200-foot lateral addition, and the unchanged main AOL radius. Verify orange CAL, Calibrate 50' ATO and Disregard with missing launch coordinates.
+
+Check confirmed-drone focus after video/RID arrival; pan releases follow and zoom retains it. Disable Bluetooth while video/SEI continues and verify the warning. Compare Android/iPad legacy Bluetooth reception and map-tile availability. Verify AOL tiles round-trip through an MA package, top-level Manage Storage, and version(build) in the header.
+
+Storage: inspect daily contents before confirming deletion. Test size/age limits, today's/active-file protection, cleanup near 90% usage, Increase Allowance, capture pause/resume and finalization across local midnight. Map/terrain has a separate allowance. New and legacy iPad folders must remain accessible.
+
+Retest short recording startup/reconnect and two-way voice with explicit mute/unmute. Capture pause/resume can restart the media server. iOS can suspend processing in the background.
+
+See verification.md for the exact installed-versus-pending state and existing evidence. Report platform, installed version/build, controller, recording name and matching diagnostic log. Source/build checks do not establish field acceptance.

@@ -197,8 +197,8 @@ class MapPanePresentationModeTest {
     }
 
     @Test
-    fun operatorPanOrZoom_releasesFocusedDroneOnlyOnInteractiveMap() {
-        listOf(OperatorMapGesture.Pan, OperatorMapGesture.Zoom).forEach { gesture ->
+    fun operatorPan_releasesFocusedDroneOnlyOnInteractiveMap() {
+        listOf(OperatorMapGesture.Pan).forEach { gesture ->
             assertTrue(
                 shouldReleaseFocusedDroneForMapGesture(
                     presentationMode = MapPanePresentationMode.Full,
@@ -218,6 +218,13 @@ class MapPanePresentationModeTest {
 
     @Test
     fun operatorTapOrMissingFocus_doesNotReleaseDroneFocus() {
+        assertFalse(
+            shouldReleaseFocusedDroneForMapGesture(
+                presentationMode = MapPanePresentationMode.Full,
+                hasFocusedDrone = true,
+                gesture = OperatorMapGesture.Zoom
+            )
+        )
         assertFalse(
             shouldReleaseFocusedDroneForMapGesture(
                 presentationMode = MapPanePresentationMode.Full,

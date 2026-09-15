@@ -1,6 +1,8 @@
 package org.ncssar.rid2caltopo.data;
 
+import android.Manifest;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
 import android.os.Build;
@@ -11,6 +13,7 @@ import androidx.annotation.Nullable;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.ncssar.rid2caltopo.video.ffmpeg.FfmpegBridge;
+import org.webrtc.audio.JavaAudioDeviceModule;
 import org.webrtc.AudioSource;
 import org.webrtc.AudioTrack;
 import org.webrtc.DataChannel;
@@ -69,6 +72,7 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
         void onMetrics(@NonNull Metrics metrics);
         void onFailure(@NonNull String requestId, @NonNull String reason);
         void onMicrophoneState(@NonNull String requestId, boolean enabled, @Nullable String error);
+        void onReady(@NonNull String requestId);
     }
 
     public static final class Metrics {
@@ -122,6 +126,11 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
     private long previousStatsAtMs;
     private long lastDiagnosticAtMs;
     private final AtomicBoolean closed = new AtomicBoolean(true);
+    private Context applicationContext;
+    private volatile boolean microphoneRequested;
+    private volatile boolean microphoneRecording;
+    private volatile String microphoneFailure;
+    private ManagedVideoPlaybackStartGate playbackStartGate = new ManagedVideoPlaybackStartGate();
 
     public ManagedVideoMediaPeer(@NonNull Sink sink) {
         this.sink = sink;
@@ -134,8 +143,10 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
             int width,
             int height,
             double fps,
-            long bitrateBps) {
+            long bitrateBps,
+            boolean deferredRecording) {
         closePeer();
+        playbackStartGate = new ManagedVideoPlaybackStartGate();
         requestId = offer.requestId;
         ffmpegSessionId = sessionId;
         selectedWidth = width & ~1;
@@ -151,12 +162,16 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
         closed.set(false);
         CaltopoClient.CTDebug(TAG, "Starting media peer request=" + requestId
                 + " thread=" + Thread.currentThread().getName());
-        if (sessionId <= 0 || selectedWidth < 2 || selectedHeight < 2) {
+        if ((!deferredRecording && sessionId <= 0) || selectedWidth < 2 || selectedHeight < 2) {
             fail("The selected drone video source is not available.");
             return false;
         }
         try {
-            configureCommunicationAudio(context.getApplicationContext());
+            applicationContext = context.getApplicationContext();
+            microphoneRequested = false;
+            microphoneRecording = false;
+            microphoneFailure = null;
+            configureCommunicationAudio(applicationContext);
             initializeFactory(context.getApplicationContext());
             PeerConnection.RTCConfiguration configuration =
                     new PeerConnection.RTCConfiguration(parseIceServers(offer.iceServers));
@@ -176,6 +191,9 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
                 fail("Unable to create WebRTC media peer.");
                 return false;
             }
+            // A disabled track still allows WebRTC to open AudioRecord. Keep
+            // capture off until the operator enables it after granting permission.
+            peer.setAudioRecording(false);
             CaltopoClient.CTDebug(TAG, "Media peer created request=" + requestId);
             videoSource = factory.createVideoSource(false);
             videoSource.adaptOutputFormat(selectedWidth, selectedHeight, (int) Math.round(selectedFps));
@@ -194,18 +212,20 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
                         }
                     },
                     new SessionDescription(SessionDescription.Type.OFFER, normalizedOfferSdp));
-            FfmpegBridge.RemoteVideoFrameLease lease = FfmpegBridge.INSTANCE.startRemoteVideoFrames(
-                    sessionId,
-                    selectedWidth,
-                    selectedHeight,
-                    selectedFps,
-                    FfmpegBridge.RemoteVideoFramePurpose.LIVE_SHARE,
-                    this::onDecodedFrame);
-            if (lease == null) {
-                fail("Unable to attach the approved drone video source.");
-                return false;
+            if (!deferredRecording) {
+                FfmpegBridge.RemoteVideoFrameLease lease = FfmpegBridge.INSTANCE.startRemoteVideoFrames(
+                        sessionId,
+                        selectedWidth,
+                        selectedHeight,
+                        selectedFps,
+                        FfmpegBridge.RemoteVideoFramePurpose.LIVE_SHARE,
+                        this::onDecodedFrame);
+                if (lease == null) {
+                    fail("Unable to attach the approved drone video source.");
+                    return false;
+                }
+                videoFrameLease = lease;
             }
-            videoFrameLease = lease;
             statsTask = executor.scheduleAtFixedRate(
                     this::collectStats,
                     2L,
@@ -263,10 +283,56 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
                 eglBase.getEglBaseContext(), true, true);
         DefaultVideoDecoderFactory decoderFactory = new DefaultVideoDecoderFactory(
                 eglBase.getEglBaseContext());
-        factory = PeerConnectionFactory.builder()
-                .setVideoEncoderFactory(encoderFactory)
-                .setVideoDecoderFactory(decoderFactory)
-                .createPeerConnectionFactory();
+        JavaAudioDeviceModule audioModule = JavaAudioDeviceModule.builder(context)
+                .setAudioRecordErrorCallback(new JavaAudioDeviceModule.AudioRecordErrorCallback() {
+                    @Override public void onWebRtcAudioRecordInitError(String error) {
+                        reportMicrophoneFailure(error);
+                    }
+                    @Override public void onWebRtcAudioRecordStartError(
+                            JavaAudioDeviceModule.AudioRecordStartErrorCode code, String error) {
+                        reportMicrophoneFailure(error);
+                    }
+                    @Override public void onWebRtcAudioRecordError(String error) {
+                        reportMicrophoneFailure(error);
+                    }
+                })
+                .setAudioRecordStateCallback(new JavaAudioDeviceModule.AudioRecordStateCallback() {
+                    @Override public void onWebRtcAudioRecordStart() {
+                        microphoneRecording = true;
+                        if (!closed.get() && microphoneRequested && microphoneFailure == null) {
+                            sink.onMicrophoneState(requestId, true, null);
+                        }
+                    }
+                    @Override public void onWebRtcAudioRecordStop() {
+                        microphoneRecording = false;
+                        if (!closed.get()) sink.onMicrophoneState(requestId, false, microphoneFailure);
+                    }
+                })
+                .createAudioDeviceModule();
+        try {
+            factory = PeerConnectionFactory.builder()
+                    .setAudioDeviceModule(audioModule)
+                    .setVideoEncoderFactory(encoderFactory)
+                    .setVideoDecoderFactory(decoderFactory)
+                    .createPeerConnectionFactory();
+        } finally {
+            audioModule.release();
+        }
+    }
+
+    private void reportMicrophoneFailure(String detail) {
+        microphoneFailure = "Microphone could not start. End remote viewing and reconnect to retry.";
+        microphoneRecording = false;
+        CaltopoClient.CTWarn(TAG, "Microphone capture failed request=" + requestId + " " + detail);
+        // Audio callbacks run on a native worker. Never call back into WebRTC
+        // there: its signaling thread may be waiting for that worker.
+        try {
+            executor.execute(() -> {
+                if (closed.get()) return;
+                setMicrophoneEnabled(false);
+                sink.onMicrophoneState(requestId, false, microphoneFailure);
+            });
+        } catch (RejectedExecutionException ignored) { }
     }
 
     private void applySenderLimits() {
@@ -303,7 +369,25 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
             if (transceiver.getMediaType() == MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO) {
                 transceiver.setDirection(RtpTransceiver.RtpTransceiverDirection.SEND_RECV);
                 audioSender = transceiver.getSender();
+                // Negotiate the tablet-to-browser track in the initial answer.
+                // Adding it only when the operator unmutes can require another
+                // negotiation, which this media session does not perform.
+                org.webrtc.MediaConstraints constraints = new org.webrtc.MediaConstraints();
+                constraints.optional.add(new org.webrtc.MediaConstraints.KeyValuePair(
+                        "googEchoCancellation", "true"));
+                constraints.optional.add(new org.webrtc.MediaConstraints.KeyValuePair(
+                        "googAutoGainControl", "true"));
+                constraints.optional.add(new org.webrtc.MediaConstraints.KeyValuePair(
+                        "googNoiseSuppression", "true"));
+                audioSource = factory.createAudioSource(constraints);
+                audioTrack = factory.createAudioTrack("r2c-audio", audioSource);
+                audioTrack.setEnabled(false);
+                if (!audioSender.setTrack(audioTrack, false)) {
+                    deferFailure("Unable to negotiate the tablet microphone.", null);
+                    return;
+                }
                 setAudioSenderActive(false);
+                CaltopoClient.CTDebug(TAG, "Negotiated muted tablet audio track request=" + requestId);
                 return;
             }
         }
@@ -368,39 +452,30 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
     public synchronized void setMicrophoneEnabled(boolean enabled) {
         RtpSender sender = audioSender;
         PeerConnectionFactory activeFactory = factory;
-        if (sender == null || activeFactory == null || closed.get()) {
+        if (sender == null || activeFactory == null || audioTrack == null || closed.get()) {
             sink.onMicrophoneState(requestId, false, "VoIP audio path unavailable");
             return;
         }
-        if (enabled) {
-            if (audioTrack == null) {
-                org.webrtc.MediaConstraints constraints = new org.webrtc.MediaConstraints();
-                constraints.optional.add(new org.webrtc.MediaConstraints.KeyValuePair(
-                        "googEchoCancellation", "true"));
-                constraints.optional.add(new org.webrtc.MediaConstraints.KeyValuePair(
-                        "googAutoGainControl", "true"));
-                constraints.optional.add(new org.webrtc.MediaConstraints.KeyValuePair(
-                        "googNoiseSuppression", "true"));
-                audioSource = activeFactory.createAudioSource(constraints);
-                audioTrack = activeFactory.createAudioTrack("r2c-audio", audioSource);
-            }
-            audioTrack.setEnabled(true);
-            if (!sender.setTrack(audioTrack, false)) {
-                sink.onMicrophoneState(requestId, false, "Unable to activate VoIP microphone");
-                return;
-            }
-            if (!setAudioSenderActive(true)) {
-                sender.setTrack(null, false);
-                audioTrack.setEnabled(false);
-                sink.onMicrophoneState(requestId, false, "Unable to activate VoIP microphone");
-                return;
-            }
-        } else {
-            setAudioSenderActive(false);
-            sender.setTrack(null, false);
-            if (audioTrack != null) audioTrack.setEnabled(false);
+        if (enabled && (applicationContext.checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED || microphoneFailure != null)) {
+            sink.onMicrophoneState(requestId, false, microphoneFailure != null
+                    ? microphoneFailure : "Microphone permission denied");
+            return;
         }
-        sink.onMicrophoneState(requestId, enabled, null);
+        microphoneRequested = enabled;
+        if (!enabled) peer.setAudioRecording(false);
+        // Keep the negotiated track attached across mute/unmute cycles.
+        // Mute locally first; a failed RTP update must never leave a live mic.
+        boolean applied = ManagedVideoMicrophoneControl.setEnabled(enabled,
+                value -> audioTrack.setEnabled(value), this::setAudioSenderActive);
+        if (!applied) {
+            microphoneRequested = false;
+            sink.onMicrophoneState(requestId, false, "Unable to activate VoIP microphone");
+            return;
+        }
+        if (enabled) peer.setAudioRecording(true);
+        sink.onMicrophoneState(requestId, enabled && microphoneRecording && microphoneFailure == null,
+                microphoneFailure);
     }
 
     private void onDecodedFrame(long sessionId, int width, int height, long timestampUs,
@@ -520,6 +595,8 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
     private void consumeStats(@NonNull RTCStatsReport report) {
         long bytes = 0L;
         long frames = 0L;
+        long audioBytesSent = 0L;
+        long audioBytesReceived = 0L;
         int width = selectedWidth;
         int height = selectedHeight;
         long packetsLost = 0L;
@@ -531,6 +608,10 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
         for (RTCStats stat : report.getStatsMap().values()) {
             Object kind = stat.getMembers().get("kind");
             Object mediaType = stat.getMembers().get("mediaType");
+            if ("audio".equals(String.valueOf(kind)) || "audio".equals(String.valueOf(mediaType))) {
+                if ("outbound-rtp".equals(stat.getType())) audioBytesSent += longValue(stat, "bytesSent", 0L);
+                if ("inbound-rtp".equals(stat.getType())) audioBytesReceived += longValue(stat, "bytesReceived", 0L);
+            }
             if (!"video".equals(String.valueOf(kind)) && !"video".equals(String.valueOf(mediaType))) continue;
             if ("outbound-rtp".equals(stat.getType())) {
                 bytes = longValue(stat, "bytesSent", bytes);
@@ -563,6 +644,7 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
                     + String.format(java.util.Locale.US, "%.1f", Math.max(0.0, actualFps))
                     + " bitrate=" + actualBitrate + " target=" + selectedBitrateBps
                     + " bytes=" + bytes + " frames=" + frames
+                    + " audioSent=" + audioBytesSent + " audioReceived=" + audioBytesReceived
                     + " qualityLimit=" + qualityLimitationReason
                     + " rttMs=" + (roundTripTimeSeconds < 0.0
                         ? -1L : Math.round(roundTripTimeSeconds * 1_000.0))
@@ -656,6 +738,7 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
     }
 
     private synchronized void closePeer() {
+        playbackStartGate.cancel();
         if (closed.getAndSet(true) && peer == null && factory == null) return;
         FfmpegBridge.RemoteVideoFrameLease activeVideoFrameLease = videoFrameLease;
         videoFrameLease = null;
@@ -678,7 +761,10 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
         videoSource = null;
         PeerConnection activePeer = peer;
         peer = null;
-        if (activePeer != null) activePeer.close();
+        microphoneRequested = false;
+        microphoneRecording = false;
+        // Native close dispatches signaling callbacks. Release this monitor
+        // before closing so those callbacks cannot deadlock session cleanup.
         restoreCommunicationAudio();
         PeerConnectionFactory activeFactory = factory;
         factory = null;
@@ -687,7 +773,10 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
         if (activePeer != null || activeFactory != null || activeEgl != null) {
             try {
                 executor.schedule(() -> {
-                    if (activePeer != null) activePeer.dispose();
+                    if (activePeer != null) {
+                        activePeer.close();
+                        activePeer.dispose();
+                    }
                     if (activeAudioTrack != null) activeAudioTrack.dispose();
                     if (activeAudioSource != null) activeAudioSource.dispose();
                     if (track != null) track.dispose();
@@ -721,6 +810,16 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
     }
 
     private final class PeerObserver implements PeerConnection.Observer {
+        @Override public void onConnectionChange(PeerConnection.PeerConnectionState state) {
+            if (closed.get() || state != PeerConnection.PeerConnectionState.CONNECTED) return;
+            synchronized (ManagedVideoMediaPeer.this) {
+                if (closed.get() || !playbackStartGate.shouldStart(
+                        state == PeerConnection.PeerConnectionState.CONNECTED)) return;
+                CaltopoClient.CTDebug(TAG, "Media transport ready request=" + requestId);
+                sink.onReady(requestId);
+            }
+        }
+
         @Override public void onSignalingChange(PeerConnection.SignalingState state) { }
         @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) {
             if (!closed.get() && state == PeerConnection.IceConnectionState.FAILED) {

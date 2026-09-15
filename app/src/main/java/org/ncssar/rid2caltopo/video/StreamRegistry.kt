@@ -700,6 +700,17 @@ object StreamRegistry {
         CTDebug(TAG, "onStreamStopped(${parsed.sourcePath} -> ${parsed.designator}): state:${StreamState.STOPPED.name}")
     }
 
+    @JvmStatic
+    fun onServerStopped() {
+        synchronized(lock) {
+            var state = snapshotLocked()
+            state.active.values.filter { !it.isLocalPlayback }.forEach {
+                state = StreamAdmissionPolicy.markStopped(state, it.designator).state
+            }
+            applyStateLocked(state)
+        }
+    }
+
     internal fun resetForTests() {
         synchronized(lock) {
             _streams.value = emptyMap()

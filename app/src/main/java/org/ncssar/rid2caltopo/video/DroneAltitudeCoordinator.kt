@@ -344,6 +344,27 @@ internal class DroneAltitudeCoordinator(
      * [currentAltM].  Sets ATO so that the displayed value at [currentAltM] equals 50 ft,
      * and derives the AGL correction factor from the current DEM ground elevation.
      */
+    suspend fun pointAolFeet(remoteId: String, latitude: Double, longitude: Double): Double? {
+        val entry = droneStates.entries.firstOrNull { it.value.remoteId == remoteId } ?: return null
+        val display = displayStateByDesignator[entry.key] ?: return null
+        if (display.positionStale || display.atoStatus != MeasurementStatus.Available) return null
+        val anchor = aolAnchors[remoteId] ?: return null
+        val manual = calibrationByRemoteId[remoteId]?.seedSource == AtoSeedSource.MANUAL && manualAolFlight[remoteId] == entry.value.flightStartMsec
+        if (!manual && (!entry.value.source.isLastRidHeightAto() || System.currentTimeMillis() - entry.value.source.lastRidHeightReceivedAtMsec !in 0..4999)) return null
+        val height = display.atoFt?.times(FT_TO_METERS) ?: return null
+        val flight = entry.value.flightStartMsec
+        val result = withContext(aolDispatcher) {
+            runCatching { SurfaceStore.calculate(applicationContext, latitude, longitude, anchor.first, anchor.second, height, pointOnly = true).feet }.getOrNull()
+        }
+        return result.takeIf { droneStates[entry.key]?.flightStartMsec == flight && aolAnchors[remoteId] == anchor && System.currentTimeMillis() - entry.value.source.mostRecentMsecTimestamp in 0..4999 }
+    }
+
+    fun canCalibrateOverLaunch(designator: String): Boolean {
+        val state = droneStates[designator] ?: return false
+        val point = latestLocalPointByDesignator[designator] ?: return false
+        return System.currentTimeMillis() - state.source.mostRecentMsecTimestamp in 0..4999 && point.altM.isFinite() && point.altM > -999
+    }
+
     fun manualCalibrateOverLaunch(designator: String): Boolean {
         val state=droneStates[designator] ?: return false
         val point=latestLocalPointByDesignator[designator] ?: return false
@@ -740,6 +761,7 @@ internal class DroneAltitudeCoordinator(
             atoStatus = if(calibration?.seedSource != AtoSeedSource.MANUAL && ridHeightAtoM != null && !heightFresh) MeasurementStatus.Stale else if(atoFt==null) MeasurementStatus.Unknown else MeasurementStatus.Available,
             aglStatus = when {
                 calibration?.seedSource != AtoSeedSource.MANUAL && ridHeightAtoM != null && !heightFresh -> MeasurementStatus.Stale
+                anchor == null && !(heightFresh && state.source.lastRidHeightM.isFinite() && !state.source.isLastRidHeightAto()) -> MeasurementStatus.CalibrationRequired
                 aglStale && demIsPending -> MeasurementStatus.Pending
                 aglStale -> MeasurementStatus.Unknown
                 aglFt==null && demIsPending -> MeasurementStatus.Pending

@@ -9,19 +9,6 @@ import java.io.File
 
 class ClueCaptureSummaryTest {
     @Test
-    fun clueCaptureUsesFrameAssociatedSeiWithoutPerReadRidAnchoring() {
-        val source = sequenceOf(
-            File("src/main/java/org/ncssar/rid2caltopo/video/StreamsViewModel.kt"),
-            File("app/src/main/java/org/ncssar/rid2caltopo/video/StreamsViewModel.kt"),
-        ).first(File::isFile).readText()
-
-        assertTrue(source.contains("renderedFrameSourceTimestampUs(designator)"))
-        assertTrue(source.contains("StreamCameraTelemetryRegistry.freshForFrame("))
-        assertTrue(!source.contains("StreamCameraTelemetryRegistry.freshPositionAfterRidValidation("))
-        assertTrue(!source.contains("StreamCameraTelemetryRegistry.freshAnchored("))
-    }
-
-    @Test
     fun videoMslAgl_prefersPlausibleAltitudeDifference() {
         assertEquals(64.595, videoMslAglMeters(574.595, 510.0) ?: 0.0, 0.000001)
         assertNull(videoMslAglMeters(500.0, 600.0))

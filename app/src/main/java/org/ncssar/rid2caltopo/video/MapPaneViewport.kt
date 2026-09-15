@@ -93,6 +93,9 @@ internal enum class OperatorMapGesture {
     Tap
 }
 
+internal fun shouldSuspendMapFollow(gesture: OperatorMapGesture): Boolean =
+    gesture == OperatorMapGesture.Pan
+
 internal fun shouldReleaseFocusedDroneForMapGesture(
     presentationMode: MapPanePresentationMode,
     hasFocusedDrone: Boolean,
@@ -100,7 +103,7 @@ internal fun shouldReleaseFocusedDroneForMapGesture(
 ): Boolean =
     presentationMode == MapPanePresentationMode.Full &&
         hasFocusedDrone &&
-        gesture != OperatorMapGesture.Tap
+        shouldSuspendMapFollow(gesture)
 
 internal fun mapPaneShouldReplayCachedArtifacts(
     presentationMode: MapPanePresentationMode,

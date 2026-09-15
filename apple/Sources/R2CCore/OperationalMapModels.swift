@@ -53,9 +53,14 @@ public enum OperationalMapFocusPolicy {
 
     public static func shouldReleaseFocus(
         hasFocusedAircraft: Bool,
-        isOperatorGesture: Bool
+        isOperatorGesture: Bool,
+        isZoomGesture: Bool = false
     ) -> Bool {
-        hasFocusedAircraft && isOperatorGesture
+        hasFocusedAircraft && shouldSuspendFollow(isOperatorGesture: isOperatorGesture, isZoomGesture: isZoomGesture)
+    }
+
+    public static func shouldSuspendFollow(isOperatorGesture: Bool, isZoomGesture: Bool) -> Bool {
+        isOperatorGesture && !isZoomGesture
     }
 }
 

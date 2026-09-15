@@ -1328,6 +1328,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                 advertised.put("sourceHeight", stream.sourceHeight);
                 advertised.put("sourceFps", stream.sourceFps);
                 advertised.put("sourceBitrateBps", stream.sourceBitrateBps);
+                advertised.put("sourceSizeBytes", stream.sourceSizeBytes);
                 advertised.put("sourceCodec", stream.sourceCodec);
                 advertised.put("mediaKind", stream.mediaKind);
                 if (stream.recordedAt != null && !stream.recordedAt.isEmpty()) {

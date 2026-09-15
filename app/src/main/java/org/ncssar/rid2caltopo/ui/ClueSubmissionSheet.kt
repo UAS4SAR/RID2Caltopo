@@ -131,6 +131,10 @@ fun ClueSheetContent (
             keyboardController?.show()
             return
         }
+        if (!clue.gimbalAngleConfirmed) {
+            submissionFeedback = "Camera angle unavailable for this frame. Set or confirm the gimbal angle."
+            return
+        }
         if (clue.projectionHeightMeters == null) {
             submissionFeedback = "Clue projection needs fresh AGL or a valid relative altitude."
             return
@@ -289,9 +293,14 @@ fun ClueSheetContent (
                     modifier = Modifier.fillMaxWidth()
                 )
                 Text(
-                    text = "Gimbal angle: ${clue.gimbalAngleDeg.toInt()}°",
+                    text = if (clue.gimbalAngleConfirmed) "Gimbal angle: ${clue.gimbalAngleDeg.toInt()}°" else "Camera angle unavailable — set or confirm below",
                     style = MaterialTheme.typography.bodyLarge
                 )
+                if (!clue.gimbalAngleConfirmed) {
+                    TextButton(onClick = { onGimbalAngleChange(clue.gimbalAngleDeg) }) {
+                        Text("Use ${clue.gimbalAngleDeg.toInt()}° manually")
+                    }
+                }
                 Slider(
                     value = clue.gimbalAngleDeg.toFloat(),
                     onValueChange = { onGimbalAngleChange(it.toDouble()) },

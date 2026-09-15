@@ -78,7 +78,6 @@ internal object SurfacePreparation {
         if(SurfaceStore.reusable(context,plan.bounds)) return@withContext "AOL already prepared — using cached tiles"
         check(!plan.reused) { "Cached AOL coverage expired or changed. Reopen Download Map to refresh the plan." }
         SurfaceTiming("aol-prepare").use { timing ->
-        val root=File(context.noBackupFilesDir,"surface_v1");root.mkdirs()
         context.cacheDir.listFiles().orEmpty().filter { it.isDirectory && it.name.startsWith("aol-prep-") }.forEach { it.deleteRecursively() }
         val scratch=File(context.cacheDir,"aol-prep-${UUID.randomUUID()}");scratch.mkdirs()
         val staged=File(scratch,"prepared");staged.mkdirs()

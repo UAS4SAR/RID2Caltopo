@@ -350,6 +350,15 @@ fun RidmapHeader() {
                     fontSize = 18.sp
                 )
                 Text(
+                    text = "SEI:",
+                    modifier = Modifier
+                        .width(R2CViewColumnLayout.seiColumnWidthDp.dp)
+                        .height(25.dp)
+                        .background(MaterialTheme.colorScheme.surface),
+                    textAlign = TextAlign.Right,
+                    fontSize = 18.sp
+                )
+                Text(
                     text = "Total:",
                     modifier = Modifier
                         .width(R2CViewColumnLayout.totalColumnWidthDp.dp)

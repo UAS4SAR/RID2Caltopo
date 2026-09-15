@@ -88,6 +88,7 @@ private func fixture(_ name:String) throws -> OperationalSurfacePackage {
 
 @Test func terrainPendingIsNotConfusedWithMissingDataOrStaleTelemetry() {
     var c=OperationalAltitudeCoordinator()
+    c.ingest(.init(source:.bluetoothLegacy,aircraftId:"a",receivedAt:Date(),latitude:39,longitude:-121,altitudeMeters:400,heightMeters:0,heightReference:.ground,grounded:true))
     c.ingest(.init(source:.bluetoothLegacy,aircraftId:"a",receivedAt:Date(),latitude:39,longitude:-121,altitudeMeters:400))
     c.setTerrainPending(true)
     #expect(c.display.aglLabel=="--")
@@ -169,7 +170,7 @@ private func fixture(_ name:String) throws -> OperationalSurfacePackage {
     #expect(stale.aolLabel == "POS?" && stale.atoLabel == "POS?" && stale.aglLabel == "POS?")
 }
 
-@Test func videoWithoutLaunchReferenceStaysUnknownAcrossMovingSamplesUntilCalibration() {
+@Test func videoWithoutLaunchReferenceShowsCALAcrossMovingSamplesUntilCalibration() {
     var coordinator = OperationalAltitudeCoordinator()
     let now = Date().addingTimeInterval(-2)
     for index in 0..<20 {
@@ -178,7 +179,7 @@ private func fixture(_ name:String) throws -> OperationalSurfacePackage {
             latitude: 39 + Double(index) / 100000, longitude: -121,
             altitudeMeters: 500 + Double(index), heightMeters: 10 + Double(index), heightReference: .takeoff))
         let display = coordinator.display(at: date)
-        #expect(display.aolLabel == "Unk")
+        #expect(display.aolLabel == "CAL")
         #expect(display.atoFeet != nil)
     }
     coordinator.manualCalibrateAtFiftyFeet()
@@ -282,4 +283,45 @@ private func fixture(_ name:String) throws -> OperationalSurfacePackage {
     #expect(OperationalMeasurementStatus.pending.label(112) == "--")
     #expect(OperationalMeasurementStatus.stale.label(112, showPendingValue: true) == "POS?")
     #expect(OperationalMeasurementStatus.unknown.label(112, showPendingValue: true) == "Unk")
+}
+
+@Test func missingLaunchShowsCalibrationUntilGroundOrManualReference() {
+    let now = Date()
+    var coordinator = OperationalAltitudeCoordinator()
+    coordinator.ingest(.init(source: .bluetoothLegacy, aircraftId: "cal", receivedAt: now,
+        latitude: 39, longitude: -121, altitudeMeters: 521, heightMeters: 10,
+        heightReference: .takeoff, grounded: false))
+    #expect(coordinator.display(at: now).atoLabel == "33 ft")
+    #expect(coordinator.display(at: now).aglLabel == "CAL")
+    #expect(coordinator.display(at: now).aolLabel == "CAL")
+    #expect(coordinator.display(at: now.addingTimeInterval(6)).aolLabel == "POS?")
+    #expect(coordinator.display(at: now.addingTimeInterval(6)).aglLabel == "POS?")
+    coordinator.manualCalibrateAtFiftyFeet()
+    #expect(coordinator.display.atoLabel == "50 ft")
+    #expect(coordinator.display.aglLabel != "CAL")
+    #expect(coordinator.display.aolLabel != "CAL")
+}
+
+@Test func directlyReportedGroundHeightDoesNotRequireCalibration() {
+    let now = Date()
+    var coordinator = OperationalAltitudeCoordinator()
+    coordinator.ingest(.init(source: .bluetoothLegacy, aircraftId: "cal", receivedAt: now,
+        latitude: 39, longitude: -121, altitudeMeters: 521, heightMeters: 10,
+        heightReference: .ground, grounded: false))
+    #expect(coordinator.display(at: now).aglLabel == "33 ft")
+    #expect(coordinator.display(at: now).aolLabel == "CAL")
+}
+
+@Test func pointAolExcludesNearbyPeaksAndPreservesReference() throws {
+    let p = try fixture("complete"), point = p.coordinate(10,0)
+    let launch = OperationalSurfacePackage.Point(latitude:39,longitude:-121)
+    let result = OperationalAOLState.calculate(package:p,position:point,takeoff:launch,height:15.24,pointOnly:true)
+    #expect(abs(result.feet!-50)<0.001)
+    #expect(OperationalAOLState.calculate(package:p,position:point,takeoff:launch,height:15.24).feet! < 0)
+    #expect(p.surfaceAt(.init(latitude:0,longitude:0)) == nil)
+    #expect(OperationalAOLState.calculate(package:p,position:point,takeoff:launch,height:nil,pointOnly:true).feet == nil)
+    #expect(OperationalAOLState.calculate(package:try fixture("hole"),position:launch,takeoff:launch,height:15.24,pointOnly:true).feet != nil)
+    let sample = OperationalCenterpointElevation.Sample(elevationFeet:1000,demResolutionMeters:1,assumedNadir:true,pointAolFeet:50)
+    #expect(OperationalCenterpointElevation.displayText(sample) == "1000' MSL · 1m DEM · AOL 50' · Assumed ↓90°")
+    #expect(OperationalCenterpointElevation.displayText(sample,referenceElevationFeet:990,mode:.reference) == "+10' REF · 1m DEM · AOL 50' · Assumed ↓90°")
 }

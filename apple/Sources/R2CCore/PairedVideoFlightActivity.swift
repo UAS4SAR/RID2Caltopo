@@ -6,7 +6,7 @@ public struct PairedVideoFlightActivityStore: Sendable, Equatable {
     private var aircraftIDByStreamID: [String: String] = [:]
     private var manuallyUnpairedStreamIDs: Set<String> = []
     private var livePublisherStreamIDs: Set<String> = []
-    private var lastPublisherActivityAtByStreamID: [String: Date] = [:]
+    private var lastTelemetryAtByStreamID: [String: Date] = [:]
 
     public init() {}
 
@@ -44,14 +44,18 @@ public struct PairedVideoFlightActivityStore: Sendable, Equatable {
         let stream = Self.normalized(streamID)
         guard !stream.isEmpty else { return }
         livePublisherStreamIDs.insert(stream)
-        lastPublisherActivityAtByStreamID[stream] = date
     }
 
     public mutating func publisherStopped(streamID: String, at date: Date) {
         let stream = Self.normalized(streamID)
         guard !stream.isEmpty else { return }
         livePublisherStreamIDs.remove(stream)
-        lastPublisherActivityAtByStreamID[stream] = date
+    }
+
+    public mutating func telemetryReceived(streamID: String, at date: Date) {
+        let stream = Self.normalized(streamID)
+        guard livePublisherStreamIDs.contains(stream) else { return }
+        lastTelemetryAtByStreamID[stream] = max(lastTelemetryAtByStreamID[stream] ?? .distantPast, date)
     }
 
     public func isPublisherActive(streamID: String) -> Bool {
@@ -79,9 +83,7 @@ public struct PairedVideoFlightActivityStore: Sendable, Equatable {
     public func activityByAircraftID(at date: Date) -> [String: Date] {
         aircraftIDByStreamID.reduce(into: [:]) { result, entry in
             let (streamID, aircraftID) = entry
-            let activity = livePublisherStreamIDs.contains(streamID)
-                ? date
-                : lastPublisherActivityAtByStreamID[streamID]
+            let activity = lastTelemetryAtByStreamID[streamID]
             guard let activity else { return }
             result[aircraftID] = max(result[aircraftID] ?? .distantPast, activity)
         }

@@ -12,6 +12,16 @@ enum AppleAircraftOrganizationAccess {
     private static var verifiedToken = ""
     private static var verifiedScope = ""
     private static var username = ""
+    private static var accessMessage = "Account has not been verified. Refresh access while online."
+    private static var messageToken = ""
+    private static var messageScope = ""
+    static var accessStatus: String {
+        guard belongsToOrganization else { return "Local aircraft entries. No organization account is signed in." }
+        guard messageToken == AppleOrgConfigSettings.loadTrackerAPIKey(), messageScope == scope else {
+            return "Account has not been verified. Refresh access while online."
+        }
+        return accessMessage
+    }
     static var organizationUser: String? {
         guard belongsToOrganization, verifiedToken == AppleOrgConfigSettings.loadTrackerAPIKey(), verifiedScope == scope, !username.isEmpty else { return nil }
         return username
@@ -34,7 +44,13 @@ enum AppleAircraftOrganizationAccess {
         defer { NotificationCenter.default.post(name: Notification.Name("aircraftReadinessUpdated"), object: nil) }
         if !belongsToOrganization { return true }
         let token = AppleOrgConfigSettings.loadTrackerAPIKey() ?? ""
-        guard let base = URL(string: baseURL) else { return false }
+        messageToken = token; messageScope = baseURL
+        accessMessage = "Checking organization account and RID editing access…"
+        NotificationCenter.default.post(name: Notification.Name("aircraftReadinessUpdated"), object: nil)
+        guard let base = URL(string: baseURL) else {
+            accessMessage = "Tracker account verification could not be completed. Check the organization Tracker address."
+            return false
+        }
         var request = URLRequest(url: base.appendingPathComponent("api/v1/aircraft-readiness"))
         request.setValue(token, forHTTPHeaderField: "X-SAR-Token")
         request.timeoutInterval = 20
@@ -45,26 +61,47 @@ enum AppleAircraftOrganizationAccess {
                 UserDefaults.standard.removeObject(forKey: "readiness:" + baseURL)
                 NotificationCenter.default.post(name: Notification.Name("aircraftReadinessUpdated"), object: nil)
             }
-            guard (response as? HTTPURLResponse)?.statusCode == 200,
-                  let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard status == 200 else {
+                accessMessage = [401, 403].contains(status)
+                    ? "Tracker could not verify this tablet's enrollment (HTTP \(status)). Re-enroll using the current organization QR and sign in."
+                    : "Tracker could not verify your account (HTTP \(status)). Try Refresh access again."
+                return false
+            }
+            guard let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                accessMessage = "Tracker account verification could not be completed. Try Refresh access again."
+                return false
+            }
             verifiedToken = token; verifiedScope = baseURL
             username = value["username"] as? String ?? ""
             UserDefaults.standard.set(data, forKey: "readiness:" + baseURL)
             NotificationCenter.default.post(name: Notification.Name("aircraftReadinessUpdated"), object: nil)
-            guard value["canEditAircraft"] as? Bool == true else { return false }
+            guard value["canEditAircraft"] as? Bool == true else {
+                accessMessage = "Read-only · this account does not have config_admin. Contact an organization administrator."
+                return false
+            }
+            accessMessage = "RID editing allowed · config_admin verified."
             authorizedToken = token; expires = Date().addingTimeInterval(300)
             return canEdit
-        } catch { return false }
+        } catch {
+            if token == AppleOrgConfigSettings.loadTrackerAPIKey(), baseURL == scope {
+                accessMessage = error is URLError
+                    ? "Unable to reach Tracker to verify your account. Check your connection and try Refresh access again."
+                    : "Tracker account verification could not be completed. Try Refresh access again."
+            }
+            return false
+        }
     }
 }
 
 struct AppleOrganizationUserLabel: View {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var username: String?
     var body: some View {
         let currentUser = username == AppleAircraftOrganizationAccess.organizationUser ? username : nil
         return Group {
             if AppleAircraftOrganizationAccess.belongsToOrganization {
-                Text("Org user: " + (currentUser ?? "not verified"))
+                Text("Organization account: " + (currentUser ?? "Not verified"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -74,6 +111,15 @@ struct AppleOrganizationUserLabel: View {
         .task(id: AppleAircraftOrganizationAccess.scope + (AppleOrgConfigSettings.loadTrackerAPIKey() ?? "")) {
             _ = await AppleAircraftOrganizationAccess.refresh(baseURL: AppleAircraftOrganizationAccess.scope)
             username = AppleAircraftOrganizationAccess.organizationUser
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Browser sign-in changes server authorization without changing the device token.
+            if phase == .active {
+                Task {
+                    _ = await AppleAircraftOrganizationAccess.refresh(baseURL: AppleAircraftOrganizationAccess.scope)
+                    username = AppleAircraftOrganizationAccess.organizationUser
+                }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("aircraftReadinessUpdated"))) { _ in
             username = AppleAircraftOrganizationAccess.organizationUser
@@ -336,6 +382,9 @@ enum AppleTrackerEnrollmentClient {
 
 struct RidMappingAdminView: View {
     @State private var canEdit = AppleAircraftOrganizationAccess.canEdit
+    @State private var refreshingAccess = false
+    @State private var accountName = AppleAircraftOrganizationAccess.organizationUser
+    @State private var accessStatus = AppleAircraftOrganizationAccess.accessStatus
     @ObservedObject var organization: AppleOrgConfigSettings
     @ObservedObject var identities: AppleDroneConfirmationStore
     @State private var organizationName: String
@@ -361,11 +410,24 @@ struct RidMappingAdminView: View {
         _mappings = State(initialValue: identities.importedMappings.map { AppleRidMappingDraft(identity: $0) })
     }
 
+    private func refreshAccess() async {
+        refreshingAccess = true
+        defer { refreshingAccess = false }
+        canEdit = await AppleAircraftOrganizationAccess.refresh(baseURL: organization.trackerURLPrefix)
+        accountName = AppleAircraftOrganizationAccess.organizationUser
+        accessStatus = AppleAircraftOrganizationAccess.accessStatus
+    }
+
     var body: some View {
         Form {
-            if !canEdit {
-                Text("Organization aircraft entries are read-only. Editing requires organization administrator access.")
-                Button("Refresh access") { Task { canEdit = await AppleAircraftOrganizationAccess.refresh(baseURL: organization.trackerURLPrefix) } }
+            if AppleAircraftOrganizationAccess.belongsToOrganization {
+                Section("Organization account") {
+                    Text(accountName ?? "Not verified").font(.headline)
+                    Text(accessStatus).font(.caption)
+                    Button(refreshingAccess ? "Checking access…" : "Refresh access") {
+                        Task { await refreshAccess() }
+                    }.disabled(refreshingAccess)
+                }
             }
             if selectedID == nil {
                 Section("Aircraft") {
@@ -451,7 +513,12 @@ struct RidMappingAdminView: View {
             }
         }
         .id(selectedID)
-        .task { canEdit = await AppleAircraftOrganizationAccess.refresh(baseURL: organization.trackerURLPrefix) }
+        .task { await refreshAccess() }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("aircraftReadinessUpdated"))) { _ in
+            accountName = AppleAircraftOrganizationAccess.organizationUser
+            accessStatus = AppleAircraftOrganizationAccess.accessStatus
+            canEdit = AppleAircraftOrganizationAccess.canEdit
+        }
         .alert("RID entries were not saved", isPresented: $showingValidationErrors) {
             Button("Review Fields", role: .cancel) {}
         } message: {

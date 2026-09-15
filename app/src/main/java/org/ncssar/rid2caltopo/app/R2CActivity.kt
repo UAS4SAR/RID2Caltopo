@@ -430,19 +430,18 @@ private fun ConfirmAppExitDialog(
 @Composable
 private fun BluetoothDisabledDialog(
     onOpenBluetoothSettings: () -> Unit,
-    onQuit: () -> Unit,
+    onContinue: () -> Unit,
 ) {
     AlertDialog(
-        onDismissRequest = {},
+        onDismissRequest = onContinue,
         properties = DialogProperties(
             dismissOnBackPress = false,
             dismissOnClickOutside = false,
         ),
-        title = { Text("bluetooth disabled") },
+        title = { Text("Bluetooth is disabled") },
         text = {
             Text(
-                "Bluetooth is disabled. RID2Caltopo needs Bluetooth enabled to receive " +
-                    "Bluetooth Remote ID broadcasts."
+                "Bluetooth is disabled. Bluetooth Remote ID broadcasts, including those relayed by a bridge, will not be detected. Video and SEI telemetry can continue."
             )
         },
         confirmButton = {
@@ -451,8 +450,8 @@ private fun BluetoothDisabledDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onQuit) {
-                Text("Quit")
+            TextButton(onClick = onContinue) {
+                Text("Continue")
             }
         },
     )
@@ -754,6 +753,7 @@ class R2CActivity :
     private var externalDisplayPresentation: ExternalDisplayPresentation? = null
     private var displayManager: DisplayManager? = null
     private var bluetoothDisabled by mutableStateOf(false)
+    private var bluetoothDisabledAcknowledged by mutableStateOf(false)
     private var launchDisclaimerAccepted by mutableStateOf(false)
     private var organizationAccessState by mutableStateOf(OrganizationAccessState.LOCKED)
     private var organizationAccessError by mutableStateOf<String?>(null)
@@ -816,6 +816,9 @@ class R2CActivity :
                 setBluetoothDisabledPanelVisible(true, "state changed: $state")
             } else if (state == BluetoothAdapter.STATE_ON || state == BluetoothAdapter.STATE_TURNING_ON) {
                 setBluetoothDisabledPanelVisible(false, "state changed: $state")
+                if (state == BluetoothAdapter.STATE_ON && ScanningService.IsRunning()) {
+                    ScanningService.requestBluetoothRidTestRefresh(this@R2CActivity)
+                }
             } else {
                 refreshBluetoothDisabledState("state changed: $state")
             }
@@ -888,49 +891,11 @@ class R2CActivity :
     }
 
     suspend fun listArchiveCleanupDirectories(): List<ArchiveCleanupDirectoryOption> = withContext(Dispatchers.IO) {
-        val archiveDir = CaltopoClient.GetArchiveDir() ?: return@withContext emptyList()
-        val nowMs = System.currentTimeMillis()
-        val todayDirName = todayArchiveDirectoryName()
-        archiveDir.listFiles()
-            .asSequence()
-            .filter { it.isDirectory && isDatedArchiveDirectoryName(it.name) }
-            .mapNotNull { dir ->
-                val dirName = dir.name ?: return@mapNotNull null
-                buildArchiveCleanupOption(
-                    directoryName = dirName,
-                    lastModifiedMs = dir.lastModified(),
-                    entries = dir.listFiles().map(::documentFileToArchiveEntry),
-                    nowMs = nowMs,
-                    todayName = todayDirName,
-                )
-            }
-            .sortedWith(
-                compareByDescending<ArchiveCleanupDirectoryOption> { it.ageMs }
-                    .thenBy { it.directoryName }
-            )
-            .toList()
+        FlightStorage.directories(this@R2CActivity)
     }
 
     suspend fun deleteArchiveCleanupDirectories(directoryNames: List<String>): ArchiveCleanupDeleteResult = withContext(Dispatchers.IO) {
-        val archiveDir = CaltopoClient.GetArchiveDir() ?: run {
-            CTError(TAG, "deleteArchiveCleanupDirectories(): archive dir unavailable")
-            return@withContext ArchiveCleanupDeleteResult(0, directoryNames.distinct())
-        }
-        val todayDirName = todayArchiveDirectoryName()
-        var deletedCount = 0
-        val failedNames = mutableListOf<String>()
-        directoryNames
-            .distinct()
-            .filter { it != todayDirName && isDatedArchiveDirectoryName(it) }
-            .forEach { dirName ->
-                val dir = archiveDir.findFile(dirName)
-                if (dir?.isDirectory == true && dir.delete()) {
-                    deletedCount++
-                } else {
-                    failedNames.add(dirName)
-                }
-            }
-        ArchiveCleanupDeleteResult(deletedCount, failedNames)
+        FlightStorage.deleteDays(this@R2CActivity, directoryNames)
     }
 
     /**
@@ -1709,12 +1674,10 @@ class R2CActivity :
                         onCancel = { MutualAidPackageTransferManager.cancelImport() }
                     )
                 }
-                if (bluetoothDisabled) {
+                if (bluetoothDisabled && !bluetoothDisabledAcknowledged) {
                     BluetoothDisabledDialog(
                         onOpenBluetoothSettings = { openBluetoothSettings() },
-                        onQuit = {
-                            requestAppExit(AppExitRequestSource.BLUETOOTH_DISABLED)
-                        },
+                        onContinue = { bluetoothDisabledAcknowledged = true },
                     )
                 }
                 pendingTrackerReauthenticationUrl?.let {
@@ -2066,6 +2029,7 @@ class R2CActivity :
     }
 
     private fun setBluetoothDisabledPanelVisible(visible: Boolean, reason: String) {
+        if (!visible) bluetoothDisabledAcknowledged = false
         if (bluetoothDisabled != visible) {
             CTDebug(TAG, "bluetooth disabled panel visible=$visible ($reason)")
         }
@@ -2768,6 +2732,8 @@ class R2CActivity :
                 activeRemoteVideoRequest = null
                 activeRemoteVideoSelection = null
                 activeRemoteVideoOfferSdp = null
+                activeRemoteVideoMicrophoneEnabled = false
+                activeRemoteVideoMicrophoneError = null
                 activeRemoteVideoMetrics = null
             }
         }
@@ -2835,14 +2801,10 @@ class R2CActivity :
                 null
             }
             stopManagedVideoRecordingDecoder()
-            val sessionId = recording?.let {
-                streamsViewModel.startManagedVideoRecordingSession(
-                    it.droneDesignator,
-                    Uri.fromFile(it.file).toString(),
-                )?.also { decoderSessionId ->
-                        managedVideoRecordingDecoderSessionId = decoderSessionId
-                    }
-            } ?: liveSourceDesignator?.let(streamsViewModel::managedVideoRenderSessionId)
+            // Finite recordings must not advance while SDP/ICE/DTLS negotiates.
+            // Attach their decoder from onReady after the media transport connects.
+            val sessionId = if (recording != null) 0L else
+                liveSourceDesignator?.let(streamsViewModel::managedVideoRenderSessionId)
             if (sessionId == null) {
                 approvedVideoSelections.remove(offer.requestId)
                 releaseManagedVideoLiveSource(offer.requestId)
@@ -2873,6 +2835,26 @@ class R2CActivity :
             )
             lateinit var peer: ManagedVideoMediaPeer
             peer = ManagedVideoMediaPeer(object : ManagedVideoMediaPeer.Sink {
+                override fun onReady(requestId: String) {
+                    runOnUiThread {
+                        if (managedVideoMediaPeer !== peer ||
+                            activeRemoteVideoRequest?.requestId != requestId || recording == null
+                        ) return@runOnUiThread
+                        val decoder = streamsViewModel.startManagedVideoRecordingSession(
+                            recording.droneDesignator,
+                            Uri.fromFile(recording.file).toString(),
+                        )
+                        managedVideoRecordingDecoderSessionId = decoder
+                        if (decoder == null || !peer.rebindVideoSource(decoder)) {
+                            onFailure(requestId, "Unable to start the selected recording.")
+                            peer.close()
+                            return@runOnUiThread
+                        }
+                        CaltopoClient.CTDebug("ManagedVideoMedia",
+                            "Recording playback started after media handshake request=$requestId file=${recording.file.name}")
+                    }
+                }
+
                 override fun sendAnswer(requestId: String, sdp: String) {
                     if (managedVideoMediaPeer !== peer) return
                     approvedVideoSelections.remove(requestId)
@@ -2900,6 +2882,7 @@ class R2CActivity :
                             val localSourceDesignator =
                                 managedVideoLiveSourcesByRequestId[requestId]
                             val sourceEndedNormally =
+                                recording == null &&
                                 managedVideoRecordingDecoderSessionId == null &&
                                 StreamRegistry.streams.value[localSourceDesignator]?.state !=
                                 org.ncssar.rid2caltopo.video.StreamState.LIVE
@@ -2915,6 +2898,8 @@ class R2CActivity :
                             activeRemoteVideoRequest = null
                             activeRemoteVideoSelection = null
                             activeRemoteVideoOfferSdp = null
+                            activeRemoteVideoMicrophoneEnabled = false
+                            activeRemoteVideoMicrophoneError = null
                             activeRemoteVideoMetrics = null
                             activeRemoteVideoFailure = if (sourceEndedNormally) {
                                 null
@@ -2954,6 +2939,7 @@ class R2CActivity :
                         approved.quality.height,
                         approved.quality.fps,
                         approved.quality.bitrateBps,
+                        recording != null,
                     )
                 if (!started) {
                     withContext(Dispatchers.Main) {
@@ -3173,7 +3159,7 @@ class R2CActivity :
 
         @JvmStatic
         fun getMyAppVersion(): String {
-            return String.format(Locale.US,"%s",BuildConfig.BUILD_VERSION)
+            return "${BuildConfig.BUILD_VERSION}(${BuildConfig.VERSION_CODE})"
         }
     }
 }

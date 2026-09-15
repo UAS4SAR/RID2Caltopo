@@ -120,9 +120,18 @@ class AnalyzeSEITests(unittest.TestCase):
         self.assertEqual(candidate["first_if_scaled_degrees"], 216.13)
         self.assertEqual(candidate["last_if_scaled_degrees"], 216.2)
 
+    def test_recorded_signed_heading_boundary(self):
+        headings = []
+        for raw in (1799354051, -1793949732):
+            attitude = bytearray(39)
+            attitude[3:7] = raw.to_bytes(4, "little", signed=True)
+            decoded = decode_caltopo_camera_candidates([PrivateTLV(4, bytes(attitude))])
+            headings.append(decoded["camera:azimuth"])
+        self.assertAlmostEqual(headings[1] - headings[0], 0.6696217, places=5)
+
     def test_decodes_expected_caltopo_camera_field_candidates(self):
         attitude = bytearray(39)
-        azimuth_raw = round(111.46 / 360.0 * (1 << 32))
+        azimuth_raw = round(111.46 * 10_000_000)
         tilt_raw = round((90.0 - 37.0) / 360.0 * (1 << 32))
         attitude[3:7] = azimuth_raw.to_bytes(4, "little")
         attitude[11:15] = tilt_raw.to_bytes(4, "little")
@@ -136,7 +145,7 @@ class AnalyzeSEITests(unittest.TestCase):
         ])
         self.assertAlmostEqual(decoded["camera:azimuth"], 111.46, places=5)
         self.assertAlmostEqual(decoded["camera:tilt"], -37.0, places=5)
-        self.assertAlmostEqual(decoded["diagnostic:tag4_angle_offset_3"], 111.46, places=5)
+        self.assertAlmostEqual(decoded["diagnostic:tag4_angle_offset_3"], azimuth_raw * 360 / (1 << 32), places=5)
         self.assertEqual(decoded["camera:fov_width"], 37.703125)
         self.assertEqual(decoded["camera:fov_height"], 21.207031)
 

@@ -87,6 +87,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.Dispatchers
@@ -167,12 +168,13 @@ internal fun centerpointElevationLabel(
     val suffix = sample?.demResolutionMeters?.let { "${it}m DEM" }
         ?: "USGS DEM"
     if (sample == null) return "--' MSL"
+    val extras = (sample.pointAolFeet?.let { " · AOL $it'" } ?: "") + if (sample.assumedNadir) " · Assumed ↓90°" else ""
     if (displayMode == CenterpointElevationDisplayMode.REFERENCE && referenceElevationFeet != null) {
         val delta = sample.elevationFeet - referenceElevationFeet
         val signedDelta = if (delta >= 0) "+$delta" else delta.toString()
-        return "$signedDelta' REF · $suffix"
+        return "$signedDelta' REF · $suffix$extras"
     }
-    return "${sample.elevationFeet}' MSL · $suffix"
+    return "${sample.elevationFeet}' MSL · $suffix$extras"
 }
 
 @Composable
@@ -218,6 +220,7 @@ private fun CenterpointElevationOverlay(
                 .align(Alignment.Center)
                 .offset(x = 42.dp, y = 28.dp)
                 .clip(RoundedCornerShape(4.dp))
+                .background(Color.Black.copy(alpha = 0.72f))
                 .pointerInput(referenceElevationFeet, displayMode) {
                     detectTapGestures(
                         onTap = {
@@ -228,13 +231,6 @@ private fun CenterpointElevationOverlay(
                 }
                 .padding(horizontal = 4.dp, vertical = 2.dp),
         ) {
-            Text(
-                text = label,
-                color = Color.Black,
-                fontSize = 17.sp,
-                fontWeight = FontWeight.Bold,
-                style = TextStyle(drawStyle = Stroke(width = 5f)),
-            )
             Text(
                 text = label,
                 color = CenterpointTurquoise,
@@ -278,6 +274,14 @@ fun StreamTile(
     var anomalyMenuExpanded by remember { mutableStateOf(false) }
     var showAnomalySettingsDialog by remember { mutableStateOf(false) }
     var showAdHelpDialog by remember { mutableStateOf(false) }
+    var showTakeoffCalibration by remember(streamDesignator) { mutableStateOf(false) }
+    if (showTakeoffCalibration) {
+        val altitude = viewModel.droneDisplayStateFor(streamDesignator)
+        AltitudeCalibrationDialog(altitude != null && !altitude.positionStale && viewModel.altitudeCoordinator.canCalibrateOverLaunch(streamDesignator), {
+            if (viewModel.altitudeCoordinator.manualCalibrateOverLaunch(streamDesignator)) showTakeoffCalibration = false
+            else CaltopoClient.ShowToast("Fresh aircraft position and altitude are required")
+        }, { showTakeoffCalibration = false })
+    }
     val focusedPath by viewModel.focusedPath.collectAsStateWithLifecycle()
 
     // Keep the altitude coordinator active while this tile is on screen.
@@ -391,9 +395,8 @@ fun StreamTile(
     LaunchedEffect(centerpointElevationEnabled, isFocused, streamState) {
         if (!centerpointElevationEnabled || !isFocused || streamState != StreamState.LIVE) return@LaunchedEffect
         while (true) {
-            viewModel.centerpointElevationForStream(streamDesignator)?.let { updated ->
-                if (centerpointElevation != updated) centerpointElevation = updated
-            }
+            val updated = viewModel.centerpointElevationForStream(streamDesignator)
+            if (centerpointElevation != updated) centerpointElevation = updated
             delay(500L)
         }
     }
@@ -488,7 +491,8 @@ fun StreamTile(
         }
 
         val captureStartedAtMs = System.currentTimeMillis()
-        val bitmap = captureTarget.textureView.bitmap
+        val capturedFrame = viewModel.captureClueFrame(streamDesignator)
+        val bitmap = capturedFrame?.bitmap
         logClueTapIfSlow(
             "${captureTarget.label}.bitmap",
             System.currentTimeMillis() - captureStartedAtMs,
@@ -515,7 +519,7 @@ fun StreamTile(
             clueBitmap
         )
         val viewModelStartedAtMs = System.currentTimeMillis()
-        viewModel.onSnapshotCaptured(streamDesignator, clueBitmap)
+        viewModel.onSnapshotCaptured(streamDesignator, clueBitmap, capturedFrame.camera)
         logClueTapIfSlow(
             "StreamsViewModel.onSnapshotCaptured",
             System.currentTimeMillis() - viewModelStartedAtMs,
@@ -702,12 +706,15 @@ fun StreamTile(
                     text = androidx.compose.ui.text.buildAnnotatedString {
                         val line = streamTelemetryHeaderText(displayState, cameraAzimuthDeg)
                         append(line)
+                        Regex("\\bCAL\\b").findAll(line).forEach { match ->
+                            addStyle(androidx.compose.ui.text.SpanStyle(color = Color(0xFFFF9800)), match.range.first, match.range.last + 1)
+                        }
                         negativeAolRange(line)?.let { range ->
                             addStyle(androidx.compose.ui.text.SpanStyle(color = Color.Red), range.first, range.last + 1)
                         }
                     },
                     color = Color.White,
-                    modifier = Modifier.semantics { contentDescription = streamTelemetryHeaderText(displayState, cameraAzimuthDeg) + "; " + (displayState?.aol?.details ?: "Surface package not prepared") },
+                    modifier = Modifier.clickable(enabled = streamTelemetryHeaderText(displayState, cameraAzimuthDeg).contains("CAL")) { showTakeoffCalibration = true }.semantics { contentDescription = streamTelemetryHeaderText(displayState, cameraAzimuthDeg) + "; " + (displayState?.aol?.details ?: "Surface package not prepared") },
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
                 )

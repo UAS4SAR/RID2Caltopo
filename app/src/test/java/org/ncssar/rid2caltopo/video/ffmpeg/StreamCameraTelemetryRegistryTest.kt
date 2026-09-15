@@ -7,6 +7,34 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StreamCameraTelemetryRegistryTest {
+    @Test fun partialCameraTiltIsRetainedWithoutHeadingOrFov() {
+        val key = "partial-camera"
+        StreamCameraTelemetryRegistry.update(key,FfmpegTelemetry(sourceTag="dji-sei-245",gimbalPitchDeg=-45.0),1000)
+        assertNotNullTilt(StreamCameraTelemetryRegistry.freshTilt(key,1100))
+        assertNull(StreamCameraTelemetryRegistry.fresh(key,1100))
+        assertNull(StreamCameraTelemetryRegistry.freshTilt(key,4001))
+        StreamCameraTelemetryRegistry.clear(key)
+        assertNull(StreamCameraTelemetryRegistry.freshTilt(key,1100))
+    }
+    private fun assertNotNullTilt(value: Double?) { assertTrue(value != null && value > -89.9) }
+
+    @Test
+    fun captureUsesItsOwnDecoderTimelineAndCannotBorrowFutureOrOtherSessionPose() {
+        val packet = FfmpegTelemetry(sourceTag = "dji-sei-245", sourceTimestampUs = 139_521_000,
+            gimbalPitchDeg = -59.374, cameraYawDeg = 352.2, horizontalFovDeg = 31.46, verticalFovDeg = 17.7)
+        StreamCameraTelemetryRegistry.update("operational-matrice", packet, 1000)
+        StreamCameraTelemetryRegistry.update("capture:13", packet.copy(sourceTimestampUs = 133_300_000), 1000)
+        val frame = StreamCameraTelemetryRegistry.freshForFrame("capture:13", 133_300_000, 1100, maxFrameDeltaUs = 0)
+        assertEquals(-59.374, frame!!.rawTiltDeg, 0.00001)
+        assertNull(StreamCameraTelemetryRegistry.freshForFrame("operational-matrice", 133_300_000, 1100))
+        assertNull(StreamCameraTelemetryRegistry.freshForFrame("capture:14", 133_300_000, 1100))
+        assertNull(StreamCameraTelemetryRegistry.freshForFrame("capture:13", 133_299_000, 1100))
+        assertNull(StreamCameraTelemetryRegistry.freshForFrame("capture:13", 133_301_000, 1100, maxFrameDeltaUs = 0))
+        StreamCameraTelemetryRegistry.clear("capture:13")
+        assertNull(StreamCameraTelemetryRegistry.freshForFrame("capture:13", 133_300_000, 1100, maxFrameDeltaUs = 0))
+        StreamCameraTelemetryRegistry.clear("operational-matrice")
+    }
+
     @Test
     fun wiredMatricePositionIsUsableWithoutAnyRidAndExpiresWithTheStream() {
         val name = "wired-matrice-no-rid"

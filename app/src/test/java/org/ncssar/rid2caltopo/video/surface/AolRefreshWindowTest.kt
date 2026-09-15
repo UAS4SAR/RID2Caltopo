@@ -72,7 +72,8 @@ class AolRefreshWindowTest {
         val window = AolRefreshWindow()
         for (time in 0L..3000L step 100) {
             val blocked = aolPrerequisiteState(false, true, false)
-            assertEquals(MeasurementStatus.Unknown, window.display("no anchor", blocked, true, time).status)
+            assertEquals(MeasurementStatus.CalibrationRequired, window.display("no anchor", blocked, true, time).status)
+            assertEquals("CAL", measurementLabel(null, blocked!!.status, " ft"))
         }
         assertEquals(null, aolPrerequisiteState(true, true, false))
         assertEquals(MeasurementStatus.Pending, window.display("calibrated", null, true, 3100).status)

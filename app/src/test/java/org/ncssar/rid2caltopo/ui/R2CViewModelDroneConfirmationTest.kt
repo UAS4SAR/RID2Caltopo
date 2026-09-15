@@ -20,7 +20,9 @@ class R2CViewModelDroneConfirmationTest {
     @Test fun uniqueVideoOpensConfirmationBeforeRidAndDoesNotRepeatOnRidArrival() {
         val drone=CtDroneSpec("VIDEO1","1sar7Mn4Pr","NCSSAR","DJI Mini 4 Pro","1SAR7")
         val model=R2CViewModel(SimpleTimer())
+        model.showStreams()
         model.onLiveStreamDesignatorsChanged(setOf(" 1SAR7MN4PR "),listOf(drone))
+        assertEquals(ActiveScreen.STREAMS, model.activeScreen.value)
         assertEquals("VIDEO1",model.pendingDroneConfirmation.value?.remoteId)
         model.onDroneSpecsChanged(emptyList())
         assertNotNull(model.pendingDroneConfirmation.value)
@@ -28,6 +30,36 @@ class R2CViewModelDroneConfirmationTest {
         model.onDroneConfirmationCandidate(drone)
         assertNull(model.pendingDroneConfirmation.value)
     }
+    @Test
+    fun automaticConfirmationKeepsLiveViewOpenThroughSaveAndIgnore() {
+        for (save in listOf(false, true)) {
+            val model = R2CViewModel(SimpleTimer())
+            val drone = CtDroneSpec(if (save) "CONTEXTSAVE" else "CONTEXTIGNORE")
+            model.showStreams()
+
+            model.onDroneConfirmationCandidate(drone)
+
+            assertNotNull(model.pendingDroneConfirmation.value)
+            assertEquals(ActiveScreen.STREAMS, model.activeScreen.value)
+            if (save) model.savePendingDroneConfirmation() else model.markPendingDroneConfirmationUnknown()
+            assertNull(model.pendingDroneConfirmation.value)
+            assertEquals(ActiveScreen.STREAMS, model.activeScreen.value)
+        }
+    }
+
+    @Test
+    fun activeFlightConfirmationKeepsLiveViewOpenWhenFlightEnds() {
+        val model = R2CViewModel(SimpleTimer())
+        model.showStreams()
+        model.onDroneSpecsChanged(listOf(activeDrone("CONTEXTEND", waypointTimestampMsec = 1234L)))
+
+        assertNotNull(model.pendingDroneConfirmation.value)
+        assertEquals(ActiveScreen.STREAMS, model.activeScreen.value)
+        model.onLocalTrackFinished("CONTEXTEND", "", "test flight ended")
+        assertNull(model.pendingDroneConfirmation.value)
+        assertEquals(ActiveScreen.STREAMS, model.activeScreen.value)
+    }
+
     @Test fun ambiguousVideoDoesNotChooseAnAircraft() {
         assertNull(uniqueStreamConfirmationRemoteId("same",listOf("A" to "Same","B" to "same")))
         assertNull(uniqueStreamConfirmationRemoteId("missing",listOf("A" to "Same")))

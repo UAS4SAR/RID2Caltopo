@@ -30,8 +30,8 @@ actor AppleDiagnosticLogStore {
         let appRoot = documents
             .appendingPathComponent("RID2Caltopo", isDirectory: true)
         let root = appRoot
-            .appendingPathComponent("Logs", isDirectory: true)
-        let trackRoot = appRoot.appendingPathComponent("Tracks", isDirectory: true)
+            .appendingPathComponent("FlightStorage", isDirectory: true)
+        let trackRoot = root
         let day = Self.dayName(for: Date())
         let directory = root.appendingPathComponent(day, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -43,6 +43,7 @@ actor AppleDiagnosticLogStore {
         self.rootURL = root
         self.trackRootURL = trackRoot
         self.currentURL = destination
+        AppleFlightStorage.protect(day, owner: "diagnostic-log")
         self.handle = handle
 
         try append("########################################################################\n")
@@ -136,7 +137,7 @@ actor AppleDiagnosticLogStore {
                     at: trackDirectory,
                     includingPropertiesForKeys: nil,
                     options: [.skipsHiddenFiles]
-                )) ?? []).filter { $0.pathExtension.lowercased() == "json" }
+                )) ?? []).filter { $0.pathExtension.lowercased() == "json" && $0.lastPathComponent != "clues.json" && !$0.lastPathComponent.hasSuffix(".review.json") }
                     .sorted { $0.lastPathComponent < $1.lastPathComponent }
                 for track in tracks {
                     entries.append(.init(
@@ -156,6 +157,7 @@ actor AppleDiagnosticLogStore {
 
     private func append(_ text: String) throws {
         try handle?.write(contentsOf: Data(text.utf8))
+        if let currentURL { AppleFlightStorage.fileChanged(currentURL) }
     }
 
     private static func dayName(for date: Date) -> String {

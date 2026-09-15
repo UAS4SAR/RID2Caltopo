@@ -369,9 +369,9 @@ def decode_caltopo_camera_candidates(
                 angle_raw * 360.0 / full_turn,
                 6,
             )
-        camera_azimuth_raw = struct.unpack_from("<I", attitude, 3)[0]
+        camera_azimuth_raw = struct.unpack_from("<i", attitude, 3)[0]
         camera_tilt_raw = struct.unpack_from("<I", attitude, 11)[0]
-        camera_azimuth = camera_azimuth_raw * 360.0 / full_turn
+        camera_azimuth = (camera_azimuth_raw / 10_000_000.0) % 360.0
         camera_tilt_encoder = camera_tilt_raw * 360.0 / full_turn
         camera_tilt = ((camera_tilt_encoder - 90.0 + 180.0) % 360.0) - 180.0
         values["camera:azimuth"] = round(camera_azimuth, 6)

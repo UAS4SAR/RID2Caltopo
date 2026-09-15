@@ -11,8 +11,9 @@ import org.junit.Test
 
 class WifiRidScanPrefsTest {
     @Test
-    fun existingInstallDefaultsToEnabled() {
-        assertTrue(WifiRidScanPrefs.resolveEnabled(hasStoredValue = false, storedValue = false))
+    fun bluetoothDiscoveryProfileDefaultsToWifiRidDisabled() {
+        assertFalse(WifiRidScanPrefs.resolveEnabled(hasStoredValue = false, storedValue = false))
+        assertFalse(WifiRidScanPrefs.resolveEnabled(hasStoredValue = false, storedValue = true))
     }
 
     @Test

@@ -422,10 +422,14 @@ object MediaMTXRecordingSync {
             throw IllegalStateException("Unable to create recording file '$targetName'")
         }
 
+        org.ncssar.rid2caltopo.app.R2CApplication.getAppCtxt()?.let { org.ncssar.rid2caltopo.app.FlightStorage.prepareWrite(it, sourceFile.length()) }
         FileInputStream(sourceFile).use { input ->
             resolver.openOutputStream(target.uri, "w")?.use { output ->
                 input.copyTo(output)
             } ?: throw IllegalStateException("Unable to open output stream for '$targetName'")
+        }
+        org.ncssar.rid2caltopo.app.R2CApplication.getAppCtxt()?.let { context ->
+            org.ncssar.rid2caltopo.app.FlightStorage.documentChanged(context, target)
         }
     }
 

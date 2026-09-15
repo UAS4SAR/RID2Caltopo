@@ -611,7 +611,11 @@ public enum OperationalCenterpointElevation {
         public let elevationFeet: Int
         public let demResolutionMeters: Int?
 
-        public init(elevationFeet: Int, demResolutionMeters: Int?) {
+        public let assumedNadir: Bool
+        public let pointAolFeet: Int?
+        public init(elevationFeet: Int, demResolutionMeters: Int?, assumedNadir: Bool = false, pointAolFeet: Int? = nil) {
+            self.assumedNadir = assumedNadir
+            self.pointAolFeet = pointAolFeet
             self.elevationFeet = elevationFeet
             self.demResolutionMeters = demResolutionMeters
         }
@@ -623,13 +627,14 @@ public enum OperationalCenterpointElevation {
         mode: DisplayMode = .msl
     ) -> String {
         guard let sample else { return "--' MSL" }
+        let extras = (sample.pointAolFeet.map { " · AOL \($0)'" } ?? "") + (sample.assumedNadir ? " · Assumed ↓90°" : "")
         let suffix = sample.demResolutionMeters.map { "\($0)m DEM" } ?? "USGS DEM"
         if mode == .reference, let referenceElevationFeet {
             let delta = sample.elevationFeet - referenceElevationFeet
             let signedDelta = delta >= 0 ? "+\(delta)" : "\(delta)"
-            return "\(signedDelta)' REF · \(suffix)"
+            return "\(signedDelta)' REF · \(suffix)\(extras)"
         }
-        return "\(sample.elevationFeet)' MSL · \(suffix)"
+        return "\(sample.elevationFeet)' MSL · \(suffix)\(extras)"
     }
 
     public static func shouldSetReference(

@@ -100,6 +100,24 @@ object FfmpegBridge {
         return nativeStartRender(designator, rtspUrl)
     }
 
+    data class CapturedFrame(val bitmap: android.graphics.Bitmap, val sourceTimestampUs: Long)
+
+    fun captureRenderedFrame(sessionId: Long): CapturedFrame? {
+        if (!nativeLoaded || sessionId <= 0L) return null
+        val bytes = nativeCaptureRenderedFrame(sessionId) ?: return null
+        val buffer = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.nativeOrder())
+        if (buffer.remaining() < 16) return null
+        val timestamp = buffer.long
+        val width = buffer.int
+        val height = buffer.int
+        if (width <= 0 || height <= 0 || width.toLong() * height * 4 != buffer.remaining().toLong()) return null
+        val bitmap = android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
+        bitmap.copyPixelsFromBuffer(buffer)
+        return CapturedFrame(bitmap, timestamp)
+    }
+
+    private external fun nativeCaptureRenderedFrame(sessionId: Long): ByteArray?
+
     fun attachSurface(sessionId: Long, surface: Surface): Boolean {
         if (!nativeLoaded || sessionId <= 0L) return false
         return nativeAttachSurface(sessionId, surface)

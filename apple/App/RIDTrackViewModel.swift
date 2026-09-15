@@ -236,6 +236,23 @@ final class RIDTrackViewModel: ObservableObject {
                     pendingPublication[track.aircraftID] = queued
                 }
             }
+        case let .telemetryOnly(track, reason):
+            acceptedObservationCount += 1
+            if observation.source == .djiVideo {
+                lastAcceptedStreamAt[observation.aircraftId] = observation.receivedAt
+            } else {
+                lastValidRIDUpdateAt = max(lastValidRIDUpdateAt ?? observation.receivedAt, observation.receivedAt)
+            }
+            if let code = observation.horizontalAccuracyCode {
+                lastHorizontalAccuracyCodeByAircraftID[track.aircraftID] = code
+            }
+            updateAltitude(for: track)
+            switch reason {
+            case .duplicatePosition: duplicatePositionFilterCount += 1
+            case .belowMinimumDistance: minimumDistanceFilterCount += 1
+            case .implausibleSpeed: break
+            }
+        // Rejected quality samples update signal presence only, never altitude/freshness.
         case let .signalOnly(track, reason):
             filteredObservationCount += 1
             switch reason {
@@ -340,6 +357,10 @@ final class RIDTrackViewModel: ObservableObject {
         }
     }
 
+    func canCalibrateAltitude(remoteID: String) -> Bool {
+        altitudeCoordinatorByAircraftID[remoteID]?.canManualCalibrate == true
+    }
+
     func manualCalibrateAltitude(remoteID: String) {
         guard var coordinator = altitudeCoordinatorByAircraftID[remoteID], coordinator.canManualCalibrate else { return }
         coordinator.manualCalibrateAtFiftyFeet()
@@ -394,46 +415,40 @@ final class RIDTrackViewModel: ObservableObject {
     }
 
     func centerpointElevationFeet(
-        streamID: String,
-        observation: RidObservation,
-        headingDegrees: Double,
-        aglMeters: Double,
-        gimbalAngleDegrees: Double
+        streamID: String, observation: RidObservation,
+        headingDegrees: Double?, aglMeters: Double?, gimbalAngleDegrees: Double?
     ) async -> OperationalCenterpointElevation.Sample? {
-        guard headingDegrees.isFinite, aglMeters.isFinite, aglMeters >= 0,
-              gimbalAngleDegrees.isFinite, gimbalAngleDegrees < -0.1,
-              let altitudeMeters = observation.altitudeMeters, altitudeMeters.isFinite
-        else { return nil }
-        let latitudeKey = Int64((observation.latitude * 100_000).rounded())
-        let longitudeKey = Int64((observation.longitude * 100_000).rounded())
-        let altitudeKey = Int64((altitudeMeters * 2).rounded())
-        let aglKey = Int64((aglMeters * 2).rounded())
-        let headingKey = Int64((headingDegrees * 5).rounded())
-        let gimbalKey = Int64((gimbalAngleDegrees * 5).rounded())
-        let inputKey = "\(latitudeKey)|\(longitudeKey)|\(altitudeKey)|\(aglKey)|\(headingKey)|\(gimbalKey)"
-        if let cached = centerpointElevationCache[streamID], cached.inputKey == inputKey {
-            return cached.sample
+        func fresh() -> Bool { let age = Date().timeIntervalSince(observation.receivedAt); return age >= 0 && age < 5 }
+        guard fresh(), observation.latitude.isFinite, observation.longitude.isFinite,
+              abs(observation.latitude)<=90, abs(observation.longitude)<=180 else { return nil }
+        let tilt = gimbalAngleDegrees ?? -90
+        guard tilt.isFinite, tilt < -0.1 else { return nil }
+        let latitude: Double, longitude: Double
+        if tilt <= -89.9 {
+            latitude = observation.latitude; longitude = observation.longitude
+        } else {
+            guard let headingDegrees, headingDegrees.isFinite, let aglMeters, aglMeters.isFinite, aglMeters>=0,
+                  let altitude = observation.altitudeMeters, altitude.isFinite else { return nil }
+            let projection = await projectClueWithTerrain(observation: observation, headingDegrees: headingDegrees,
+                aglMeters: aglMeters, gimbalAngleDegrees: tilt)
+            latitude = projection.latitude; longitude = projection.longitude
         }
-        let projection = await projectClueWithTerrain(
-            observation: observation,
-            headingDegrees: headingDegrees,
-            aglMeters: aglMeters,
-            gimbalAngleDegrees: gimbalAngleDegrees
-        )
-        guard let terrain = await terrainService.sample(
-            latitude: projection.latitude,
-            longitude: projection.longitude
-        ), terrain.elevationMeters.isFinite else { return nil }
-        let elevationFeet = Int((terrain.elevationMeters * 3.28084).rounded())
-        let resolution = terrain.horizontalResolutionMeters.flatMap { value in
-            value.isFinite && value > 0 ? max(1, Int(value.rounded())) : nil
+        guard let terrain = await terrainService.sample(latitude: latitude, longitude: longitude),
+              terrain.elevationMeters.isFinite, fresh() else { return nil }
+        var pointAol: Int?
+        if let coordinator = altitudeCoordinatorByAircraftID[observation.aircraftId], coordinator.hasFreshAOLTelemetry {
+            let input = coordinator.aolInput
+            if let takeoff = input.takeoff, let height = input.height {
+                let value = await AppleSurfaceStore.shared.calculate(position: .init(latitude: latitude, longitude: longitude),
+                    takeoff: .init(latitude: takeoff.latitude, longitude: takeoff.longitude), height: height, pointOnly: true)
+                if altitudeCoordinatorByAircraftID[observation.aircraftId]?.aolInput.reference == input.reference,
+                   value.status == .available, let feet = value.feet, feet.isFinite { pointAol = Int(feet.rounded()) }
+            }
         }
-        let sample = OperationalCenterpointElevation.Sample(
-            elevationFeet: elevationFeet,
-            demResolutionMeters: resolution
-        )
-        centerpointElevationCache[streamID] = (inputKey, sample)
-        return sample
+        guard fresh() else { return nil }
+        return .init(elevationFeet: Int((terrain.elevationMeters * 3.28084).rounded()),
+            demResolutionMeters: terrain.horizontalResolutionMeters.flatMap { $0.isFinite && $0>0 ? max(1,Int($0.rounded())) : nil },
+            assumedNadir: gimbalAngleDegrees == nil, pointAolFeet: pointAol)
     }
 
     func terrainDerivedAglMeters(

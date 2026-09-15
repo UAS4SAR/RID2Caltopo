@@ -145,6 +145,7 @@ public class MediaMTXService extends Service {
             CTDebug(TAG, "Ignoring expected MediaMTX exit during app-requested restart.");
             return;
         }
+        org.ncssar.rid2caltopo.video.StreamRegistry.onServerStopped();
         processPid = 0;
         serviceRunning = false;
         String description;
@@ -160,9 +161,19 @@ public class MediaMTXService extends Service {
         MediaMTXStatus.onServerExited(description);
     }
 
+    private volatile boolean storageCaptureBlocked = false;
+
     public void onCreate() {
         super.onCreate();
         createNotificationChannel();
+        FlightStorage.observe(getApplicationContext(), () -> {
+            if (isServiceDestroying()) return;
+            boolean blocked = FlightStorage.INSTANCE.getCaptureBlocked();
+            if (storageCaptureBlocked != blocked) {
+                storageCaptureBlocked = blocked;
+                if (CaltopoClient.GetCaptureVideoStreamsFlag()) enqueueNativeControl(NativeControlAction.RESTART);
+            }
+        });
         Intent launchIntent = new Intent(this, R2CActivity.class);
         launchIntent.setFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
                 | Intent.FLAG_ACTIVITY_NEW_TASK
@@ -234,6 +245,8 @@ public class MediaMTXService extends Service {
 
     @Override
     public void onDestroy() {
+        org.ncssar.rid2caltopo.video.StreamRegistry.onServerStopped();
+        FlightStorage.stopObserving();
         synchronized (nativeControlLock) {
             serviceDestroying = true;
             pendingNativeControlAction = null;
@@ -356,6 +369,7 @@ public class MediaMTXService extends Service {
         if (restartingPid > 0) {
             expectedRestartExitPid = restartingPid;
         }
+        org.ncssar.rid2caltopo.video.StreamRegistry.onServerStopped();
         MediaMTXNative.stop();
         if (!waitForNativeServerStop(restartingPid)) {
             expectedRestartExitPid = 0;
@@ -603,9 +617,14 @@ public class MediaMTXService extends Service {
         if (!recordingRoot.exists() && !recordingRoot.mkdirs()) {
             CTError(TAG, "Unable to create MediaMTX recording staging dir " + recordingRoot);
         }
+        FlightStorage.Snapshot storage = FlightStorage.maintain(getApplicationContext());
+        storageCaptureBlocked = storage.getBlocked();
+        if (storage.getBlocked() && CaltopoClient.GetCaptureVideoStreamsFlag()) {
+            CaltopoClient.ShowToast(storage.getMessage());
+        }
         String runtimeConfig = MediaMTXConfig.buildRuntimeConfig(
                 baseConfig,
-                CaltopoClient.GetCaptureVideoStreamsFlag(),
+                CaltopoClient.GetCaptureVideoStreamsFlag() && !FlightStorage.INSTANCE.getCaptureBlocked(),
                 recordingRoot
         );
         try (OutputStream out = new FileOutputStream(outFile)) {

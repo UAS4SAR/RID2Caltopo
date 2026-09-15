@@ -326,10 +326,10 @@ public struct OperationalAltitudeCoordinator: Sendable {
             aglStale: usesTerrain && (currentTerrain?.stale == true || !terrainMatchesPosition),
             aglUsesTerrain: usesTerrain,
             rangeFeet: rangeMeters.map { $0 * Self.metersToFeet },
-            aol: freshTelemetry ? displayedAOL : .init(reason: "Aircraft position/altitude stale",status:.stale),
+            aol: !freshTelemetry ? .init(reason: "Aircraft position/altitude stale",status:.stale) : aolTakeoffCoordinate == nil ? .init(reason: "Takeoff ground reference not observed", status: .calibrationRequired) : displayedAOL,
             positionStale: receivedAt != nil && !freshTelemetry,
             atoStatus: atoMeters == nil ? .unknown : .available,
-            aglStatus: usesTerrain && (currentTerrain?.stale == true || !terrainMatchesPosition) || aglMeters == nil ? (terrainPending ? .pending : .unknown) : .available
+            aglStatus: aolTakeoffCoordinate == nil && relativeHeightReference != .ground ? .calibrationRequired : usesTerrain && (currentTerrain?.stale == true || !terrainMatchesPosition) || aglMeters == nil ? (terrainPending ? .pending : .unknown) : .available
         )
     }
 

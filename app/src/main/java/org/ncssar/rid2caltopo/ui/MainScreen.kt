@@ -693,6 +693,8 @@ fun MainScreen(
     var showProximityDebugDialog by remember { mutableStateOf(false) }
     var showLogArchiveDialog by remember { mutableStateOf(false) }
     var showArchiveCleanupDialog by remember { mutableStateOf(false) }
+    var showStorageManagement by remember { mutableStateOf(false) }
+    var browseFlightFolder by remember { mutableStateOf<String?>(null) }
     var showArchiveDeleteConfirmDialog by remember { mutableStateOf(false) }
     var showTestingToolsDialog by remember { mutableStateOf(false) }
     var showResetPersistentStateDialog by remember { mutableStateOf(false) }
@@ -1853,22 +1855,9 @@ fun MainScreen(
                                 showImportConfigDialog = true
                             }
                         )
-                        DropdownMenuItem(text = { Text("Import Surface Package (.aol)") }, onClick = {
+                        DropdownMenuItem(text = { Text("Manage Storage...") }, onClick = {
+                            showStorageManagement = true
                             menuExpanded = false
-                            importConfigFileLauncher.launch(arrayOf("*/*"))
-                        })
-                        DropdownMenuItem(text = { Text("Delete Archive Folders...") }, onClick = {
-                            showArchiveCleanupDialog = true
-                            loadingArchiveCleanupDirs = true
-                            deletingArchiveCleanupDirs = false
-                            archiveCleanupDirs = emptyList()
-                            selectedArchiveCleanupDirs = defaultSelectedArchiveCleanupDirectories()
-                            archiveCleanupDeleteMessage = null
-                            menuExpanded = false
-                            coroutineScope.launch {
-                                archiveCleanupDirs = availableArchiveCleanupDirectoriesProvider()
-                                loadingArchiveCleanupDirs = false
-                            }
                         })
                         DropdownMenuItem(text = { Text("Archive Storage...") }, onClick = {
                             archiveDirPromptSuppressed = false
@@ -2186,6 +2175,49 @@ fun MainScreen(
         )
     }
 
+    val flightPressure by org.ncssar.rid2caltopo.app.FlightStorage.pressure.collectAsStateWithLifecycle()
+    flightPressure?.let { message ->
+        AlertDialog(
+            onDismissRequest = { org.ncssar.rid2caltopo.app.FlightStorage.pressure.value = null },
+            title = { Text("Flight Storage") },
+            text = { Text(message) },
+            confirmButton = {
+                TextButton(onClick = {
+                    org.ncssar.rid2caltopo.app.FlightStorage.pressure.value = null
+                    if (message.startsWith("Cleanup")) {
+                        showStorageManagement = false
+                        showArchiveCleanupDialog = true
+                        loadingArchiveCleanupDirs = true
+                        selectedArchiveCleanupDirs = emptySet()
+                        coroutineScope.launch {
+                            archiveCleanupDirs = availableArchiveCleanupDirectoriesProvider()
+                            loadingArchiveCleanupDirs = false
+                        }
+                    } else { showStorageManagement = true }
+                }) { Text(if (message.startsWith("Cleanup")) "Increase Allowance" else "Manage Storage") }
+            },
+            dismissButton = { TextButton(onClick = { org.ncssar.rid2caltopo.app.FlightStorage.pressure.value = null }) { Text("Later") } }
+        )
+    }
+
+    if (showStorageManagement) {
+        StorageManagementDialog(onDismiss = { showStorageManagement = false }, onFlight = {
+            showStorageManagement = false
+            showArchiveCleanupDialog = true
+            loadingArchiveCleanupDirs = true
+            deletingArchiveCleanupDirs = false
+            archiveCleanupDirs = emptyList()
+            selectedArchiveCleanupDirs = defaultSelectedArchiveCleanupDirectories()
+            archiveCleanupDeleteMessage = null
+            menuExpanded = false
+            coroutineScope.launch {
+                archiveCleanupDirs = availableArchiveCleanupDirectoriesProvider()
+                loadingArchiveCleanupDirs = false
+            }
+        })
+    }
+    browseFlightFolder?.let { folder -> FlightDirectoryBrowser(folder) { browseFlightFolder = null } }
+
     if (showArchiveCleanupDialog) {
         val deleteEnabled = canDeleteArchiveCleanupSelection(archiveCleanupDirs, selectedArchiveCleanupDirs)
         AlertDialog(
@@ -2195,11 +2227,12 @@ fun MainScreen(
                     showArchiveDeleteConfirmDialog = false
                 }
             },
-            title = { Text("Delete Archive Folders") },
+            title = { Text("Delete Flight Storage") },
             text = {
                 Column(
                     modifier = Modifier.verticalScroll(rememberScrollState()),
                 ) {
+                    FlightStorageLimits()
                     archiveCleanupDeleteMessage?.let { message ->
                         Text(
                             text = message,
@@ -2240,9 +2273,11 @@ fun MainScreen(
                                     }
                                 )
                                 Column(modifier = Modifier.padding(start = 8.dp)) {
-                                    Text(option.directoryName)
+                                    TextButton(onClick = {
+                                        browseFlightFolder = option.directoryName
+                                    }) { Text(option.directoryName) }
                                     Text(
-                                        text = "Age ${option.ageLabel} • ${option.sizeLabel}${if (option.isToday) " • today" else ""}",
+                                        text = "Age ${option.ageLabel} • ${option.sizeLabel}${if (option.isToday) " • protected" else ""}",
                                         style = MaterialTheme.typography.bodySmall
                                     )
                                     Text(
@@ -2260,7 +2295,7 @@ fun MainScreen(
                     onClick = { showArchiveDeleteConfirmDialog = true },
                     enabled = !loadingArchiveCleanupDirs && !deletingArchiveCleanupDirs && deleteEnabled
                 ) {
-                    Text("Delete...")
+                    Text("Delete (${formatArchiveSize(archiveCleanupDirs.filter { !it.isToday && it.directoryName in selectedArchiveCleanupDirs }.sumOf { it.totalBytes })})")
                 }
             },
             dismissButton = {

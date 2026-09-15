@@ -2148,11 +2148,11 @@ actor AppleSurfaceStore {
         }
         return nil
     }
-    func calculate(position: OperationalSurfacePackage.Point,takeoff: OperationalSurfacePackage.Point,height: Double?) -> OperationalAOLState {
+    func calculate(position: OperationalSurfacePackage.Point,takeoff: OperationalSurfacePackage.Point,height: Double?, pointOnly: Bool = false) -> OperationalAOLState {
         guard let p=selected(position) ?? current() else { return .init() }
         var ground=p.groundAt(takeoff)
         if ground==nil,let reference=p.metadata.referenceGroup,let other=selected(takeoff,reference:reference),other.metadata.sourceCRS==p.metadata.sourceCRS { ground=other.groundAt(takeoff) }
-        return .calculate(package:p,position:position,takeoff:takeoff,height:height,compatibleGround:ground)
+        return .calculate(package:p,position:position,takeoff:takeoff,height:height,compatibleGround:ground,pointOnly:pointOnly)
     }
     func preparedBriefing(points:[OperationalSurfacePackage.Point],polygon:Bool) -> (OperationalSurfacePackage,OperationalSurfacePackage.Analysis)? {
         guard !points.isEmpty else { return nil }
@@ -2361,5 +2361,23 @@ private final class AppleOfflineTiming {
         let now = ProcessInfo.processInfo.systemUptime
         AppleLog.info("OfflineTiming", "id=\(id) stage=\(stage) elapsedSeconds=\(String(format: "%.3f", now-start)) stageSeconds=\(String(format: "%.3f", now-last))")
         last = now
+    }
+}
+
+
+struct AppleStorageCacheView: View {
+    @ObservedObject var manager: AppleMapOfflineManager
+    @State private var editor: AppleMapCacheSetting?
+    var body: some View {
+        List {
+            Text("Used: \(AppleMapOfflineManager.formatBytes(manager.cacheStats.bytes))")
+            Button("Max Size: \(String(format: "%.1f", manager.maximumCacheGB)) GB") { editor = .cacheSize }
+            Button("Max Age: \(manager.maximumTileAgeDays) days") { editor = .tileAge }
+            Text("Includes map imagery, terrain, AOL packages and supporting caches. AOL and active terrain are protected from ordinary trimming.")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        .navigationTitle("Cache Management")
+        .sheet(item: $editor) { AppleMapCacheSettingEditor(manager: manager, setting: $0) }
+        .onAppear { manager.refreshStats() }
     }
 }

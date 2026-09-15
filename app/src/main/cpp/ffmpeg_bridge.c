@@ -363,6 +363,9 @@ typedef struct ffmpeg_session_t {
     int local_playback_history_offset;
     struct SwsContext *sws;
     AVFrame *rgba_frame;
+    AVFrame *capture_overlay_frame;
+    bool capture_frame_valid;
+    int64_t capture_source_ts_us;
     uint8_t *rgba_buffer;
     int rgba_buffer_size;
     int rgba_width;
@@ -935,6 +938,8 @@ static void ensure_rgba_resources(ffmpeg_session_t *session, int width, int heig
         return;
     }
 
+    session->capture_frame_valid = false;
+    av_frame_free(&session->capture_overlay_frame);
     if (session->sws != NULL) {
         sws_freeContext(session->sws);
         session->sws = NULL;
@@ -948,6 +953,9 @@ static void ensure_rgba_resources(ffmpeg_session_t *session, int width, int heig
     }
     session->rgba_frame = av_frame_alloc();
     if (session->rgba_frame == NULL) return;
+    session->rgba_frame->width = width;
+    session->rgba_frame->height = height;
+    session->rgba_frame->format = AV_PIX_FMT_RGBA;
 
     session->rgba_buffer_size = av_image_get_buffer_size(AV_PIX_FMT_RGBA, width, height, 1);
     if (session->rgba_buffer_size <= 0) return;
@@ -2460,6 +2468,8 @@ static void render_frame_to_surface(ffmpeg_session_t *session,
     if (use_render_lock) {
         pthread_mutex_lock(&session->render_lock);
     }
+    session->capture_frame_valid = false;
+    av_frame_free(&session->capture_overlay_frame);
     if (overlay_frame == NULL) {
         ensure_rgba_resources(session, decoded->width, decoded->height, decoded->format);
     }
@@ -2516,6 +2526,11 @@ static void render_frame_to_surface(ffmpeg_session_t *session,
         }
         ANativeWindow_unlockAndPost(window);
         session->last_render_post_at_ms = monotonic_ms();
+        // Normal RGBA remains protected by render_lock until the next surface post.
+        // Retain overlays separately because their queue slot is released after rendering.
+        session->capture_overlay_frame = overlay_frame != NULL ? av_frame_clone(display_rgba) : NULL;
+        session->capture_source_ts_us = source_ts_us;
+        session->capture_frame_valid = overlay_frame == NULL || session->capture_overlay_frame != NULL;
         if (overlay_frame != NULL) {
             ct_debug(TAG,
                      "render posted overlay id=%lld designator=%s ts=%.3fs analyzed=%d latencyMs=%lld",
@@ -5716,6 +5731,8 @@ static void close_decoder(ffmpeg_session_t *session) {
     if (session->render_sync_ready) {
         pthread_mutex_lock(&session->render_lock);
     }
+    session->capture_frame_valid = false;
+    av_frame_free(&session->capture_overlay_frame);
     if (session->sws != NULL) {
         sws_freeContext(session->sws);
         session->sws = NULL;
@@ -7067,6 +7084,61 @@ Java_org_ncssar_rid2caltopo_video_ffmpeg_FfmpegBridge_nativeAttachSurface(
     dispatch_probe_event(session->designator, "surface_attached", session->session_id, 0,
                          NAN, NAN, NAN, NAN, NAN, NAN);
     return JNI_TRUE;
+}
+
+// One immutable snapshot: header (PTS, width, height) followed by packed RGBA.
+JNIEXPORT jbyteArray JNICALL
+Java_org_ncssar_rid2caltopo_video_ffmpeg_FfmpegBridge_nativeCaptureRenderedFrame(
+        JNIEnv *env, jobject thiz, jlong session_id) {
+    (void) thiz;
+    jbyteArray result = NULL;
+#if HAVE_FFMPEG && HAVE_SWSCALE
+    ffmpeg_session_t *session = NULL;
+    // Never wait for render_lock while holding g_lock: the renderer calls back into Java.
+    // Retry briefly between posts; g_lock then pins the session for the pixel copy.
+    bool locked = false;
+    for (int attempt = 0; attempt < 50; attempt++) {
+        pthread_mutex_lock(&g_lock);
+        session = find_session_locked(session_id);
+        if (session == NULL || !session->active || !session->render_sync_ready) {
+            pthread_mutex_unlock(&g_lock);
+            return NULL;
+        }
+        if (pthread_mutex_trylock(&session->render_lock) == 0) {
+            locked = true;
+            break;
+        }
+        pthread_mutex_unlock(&g_lock);
+        usleep(1000);
+    }
+    if (!locked) return NULL;
+    {
+        AVFrame *frame = session->capture_overlay_frame != NULL
+                ? session->capture_overlay_frame : session->rgba_frame;
+        if (session->capture_frame_valid && frame != NULL && frame->data[0] != NULL &&
+            frame->width > 0 && frame->height > 0 &&
+            (is_local_file_source(session) || monotonic_ms() - session->last_render_post_at_ms <= 3000)) {
+            int64_t byte_count = (int64_t) frame->width * frame->height * 4;
+            if (byte_count > 0 && byte_count < INT32_MAX - 16) {
+                result = (*env)->NewByteArray(env, (jsize) byte_count + 16);
+                if (result != NULL) {
+                    int64_t pts = session->capture_source_ts_us;
+                    int32_t width = frame->width, height = frame->height;
+                    (*env)->SetByteArrayRegion(env, result, 0, 8, (const jbyte *) &pts);
+                    (*env)->SetByteArrayRegion(env, result, 8, 4, (const jbyte *) &width);
+                    (*env)->SetByteArrayRegion(env, result, 12, 4, (const jbyte *) &height);
+                    for (int y = 0; y < height && !(*env)->ExceptionCheck(env); y++) {
+                        (*env)->SetByteArrayRegion(env, result, 16 + y * width * 4, width * 4,
+                                (const jbyte *) (frame->data[0] + y * frame->linesize[0]));
+                    }
+                }
+            }
+        }
+        pthread_mutex_unlock(&session->render_lock);
+    }
+    pthread_mutex_unlock(&g_lock);
+#endif
+    return result;
 }
 
 JNIEXPORT void JNICALL

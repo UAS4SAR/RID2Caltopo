@@ -606,6 +606,10 @@ internal fun buildDroneStatusLabelDrawable(
         fillPaint.color = AndroidColor.RED
         canvas.drawText(text.substring(aolStart, end), x, baselineY, fillPaint)
     }
+    Regex("\\bCAL\\b").findAll(text).forEach { match ->
+        fillPaint.color = AndroidColor.rgb(255, 152, 0)
+        canvas.drawText("CAL", horizontalPaddingPx + fillPaint.measureText(text.substring(0, match.range.first)), baselineY, fillPaint)
+    }
     return BitmapDrawable(resources, bitmap)
 }
 

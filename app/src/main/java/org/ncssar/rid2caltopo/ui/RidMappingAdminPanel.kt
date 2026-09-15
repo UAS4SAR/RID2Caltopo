@@ -31,6 +31,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.Composable
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -76,7 +79,15 @@ private data class RidMappingDraft(
 @Composable
 fun RidMappingAdminDialog(onDismiss: () -> Unit) {
     var canEdit by remember { mutableStateOf(AircraftOrganizationAccess.canEdit()) }
-    LaunchedEffect(Unit) { canEdit = withContext(Dispatchers.IO) { AircraftOrganizationAccess.refresh() } }
+    var refreshingAccess by remember { mutableStateOf(false) }
+    val accessChange by AircraftOrganizationAccess.changes.collectAsState()
+    LaunchedEffect(accessChange) { canEdit = AircraftOrganizationAccess.canEdit() }
+    suspend fun refreshAccess() {
+        refreshingAccess = true
+        try { canEdit = withContext(Dispatchers.IO) { AircraftOrganizationAccess.refresh() } }
+        finally { refreshingAccess = false }
+    }
+    LaunchedEffect(Unit) { refreshAccess() }
     val scope = rememberCoroutineScope()
     var saving by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -205,11 +216,15 @@ fun RidMappingAdminDialog(onDismiss: () -> Unit) {
                 tonalElevation = 6.dp
             ) {
                 Column(modifier = Modifier.padding(20.dp)) {
-                    if (!canEdit) {
-                        Text("Organization aircraft entries are read-only. Editing requires organization administrator access.")
-                        TextButton(onClick = { scope.launch { canEdit = withContext(Dispatchers.IO) { AircraftOrganizationAccess.refresh() } } }) { Text("Refresh access") }
-                    }
                     Text(if (selectedKey == null) "RID Map Entries" else "Aircraft details", style = MaterialTheme.typography.headlineSmall)
+                    if (AircraftOrganizationAccess.belongsToOrganization()) {
+                        Text("Organization account: " + (AircraftOrganizationAccess.organizationUser() ?: "Not verified"),
+                            style = MaterialTheme.typography.titleMedium)
+                        Text(AircraftOrganizationAccess.accessStatus(), style = MaterialTheme.typography.bodySmall)
+                        TextButton(enabled = !refreshingAccess, onClick = { scope.launch { refreshAccess() } }) {
+                            Text(if (refreshingAccess) "Checking access…" else "Refresh access")
+                        }
+                    }
                     Spacer(Modifier.height(12.dp))
                     Column(
                         modifier = Modifier
@@ -452,9 +467,21 @@ fun OrganizationUserLabel() {
     val endpoint = CaltopoClient.GetTrackerCoordinationUrlPfx()
     val credential = CaltopoClient.GetTrackerCoordinationApiKey()
     LaunchedEffect(endpoint, credential) { withContext(Dispatchers.IO) { AircraftOrganizationAccess.refresh() } }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
+    DisposableEffect(lifecycleOwner, endpoint, credential) {
+        // Browser sign-in changes server authorization without changing the device token.
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                scope.launch { withContext(Dispatchers.IO) { AircraftOrganizationAccess.refresh() } }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     val username = remember(change, endpoint, credential) { AircraftOrganizationAccess.organizationUser() }
     if (AircraftOrganizationAccess.belongsToOrganization()) {
-        Text("Org user: " + (username ?: "not verified"), style = MaterialTheme.typography.bodySmall,
+        Text("Organization account: " + (username ?: "Not verified"), style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(6.dp))
     }
 }

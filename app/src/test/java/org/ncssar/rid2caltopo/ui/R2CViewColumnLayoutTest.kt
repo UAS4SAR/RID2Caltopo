@@ -17,6 +17,7 @@ class R2CViewColumnLayoutTest {
         assertEquals(
             R2CViewColumnLayout.transportColumnWidthsDp.sum() +
                 R2CViewColumnLayout.r2cWaypointColumnWidthDp +
+                R2CViewColumnLayout.seiColumnWidthDp +
                 R2CViewColumnLayout.totalColumnWidthDp,
             R2CViewColumnLayout.waypointsReceivedHeaderWidthDp
         )

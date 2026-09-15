@@ -319,7 +319,7 @@ fun CaltopoSettingsScreen(
                     onCheckedChange = settingsViewModel::onWifiRidScanningEnabledChanged
                 )
                 Text(
-                    "Controls Android Wi-Fi Beacon and Wi-Fi NAN RID discovery only. " +
+                    "Off by default to match Apple Bluetooth-only RID discovery. Controls Android Wi-Fi Beacon and Wi-Fi NAN RID discovery only. " +
                         "Bluetooth RID, DS100 bridge reception, and normal Wi-Fi remain active.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

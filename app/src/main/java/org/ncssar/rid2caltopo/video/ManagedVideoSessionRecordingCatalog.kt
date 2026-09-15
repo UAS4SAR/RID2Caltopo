@@ -2,6 +2,8 @@ package org.ncssar.rid2caltopo.video
 
 import android.content.Context
 import android.media.MediaMetadataRetriever
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.util.Base64
 import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +29,7 @@ data class ManagedVideoSessionRecording(
     val height: Int,
     val fps: Double,
     val codec: String,
+    val bitrateBps: Long = 0L,
 )
 
 /**
@@ -320,13 +323,14 @@ object ManagedVideoSessionRecordingCatalog {
         recording.width,
         recording.height,
         recording.fps,
-        0L,
+        recording.bitrateBps,
         recording.codec,
         "recording",
         recording.recordedAt.toString(),
         recording.durationMs,
         thumbnail?.revision.orEmpty(),
         thumbnail?.jpegBytes?.let { Base64.encodeToString(it, Base64.NO_WRAP) },
+        recording.file.length(),
     )
 
     private fun readRecording(file: File): ManagedVideoSessionRecording? {
@@ -348,11 +352,34 @@ object ManagedVideoSessionRecordingCatalog {
                 ?.toIntOrNull()
                 ?.coerceAtLeast(0)
                 ?: 0
-            val fps = retriever
+            val extractor = MediaExtractor()
+            var formatFps = 0.0
+            var codec = ""
+            try {
+                extractor.setDataSource(file.absolutePath)
+                for (index in 0 until extractor.trackCount) {
+                    val format = extractor.getTrackFormat(index)
+                    val mime = format.getString(MediaFormat.KEY_MIME).orEmpty()
+                    if (!mime.startsWith("video/")) continue
+                    codec = when (mime) { "video/avc" -> "h264"; "video/hevc" -> "hevc"; else -> mime.removePrefix("video/") }
+                    formatFps = format.getNumber(MediaFormat.KEY_FRAME_RATE)?.toDouble() ?: 0.0
+                    break
+                }
+            } catch (error: Exception) {
+                // Optional source details must not hide an otherwise readable recording.
+                CaltopoClient.CTWarn(TAG, "Unable to read video track details for ${file.name}: ${error.message}")
+            } finally { extractor.release() }
+            val frameCount = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT)?.toDoubleOrNull() ?: 0.0
+            val rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+            val bitrate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toLongOrNull()?.coerceAtLeast(0) ?: 0L
+            val captureFps = retriever
                 .extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE)
                 ?.toDoubleOrNull()
                 ?.takeIf { it.isFinite() && it > 0.0 }
                 ?: 0.0
+            val fps = listOf(formatFps, captureFps, if (durationMs > 0) frameCount * 1000 / durationMs else 0.0)
+                .firstOrNull { it.isFinite() && it > 0 } ?: 0.0
+            val rotated = ((rotation % 180) + 180) % 180 == 90
             val nameParts = file.name.split("__", limit = 3)
             val designator = nameParts.firstOrNull().orEmpty().ifBlank { "Recording" }
             val embeddedSessionId = nameParts.getOrNull(1)
@@ -363,10 +390,11 @@ object ManagedVideoSessionRecordingCatalog {
                 file = file,
                 recordedAt = Instant.ofEpochMilli(file.lastModified()),
                 durationMs = durationMs,
-                width = width,
-                height = height,
+                width = if (rotated) height else width,
+                height = if (rotated) width else height,
                 fps = fps,
-                codec = "h264",
+                codec = codec,
+                bitrateBps = bitrate,
             )
         } catch (error: Exception) {
             CaltopoClient.CTWarn(TAG, "Unable to inspect ${file.name}: ${error.message}")

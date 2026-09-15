@@ -6,7 +6,7 @@
 
 package org.ncssar.rid2caltopo.data;
 
-import static org.ncssar.rid2caltopo.data.CaltopoClient.CTInfo;
+import static org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug;
 
 import android.content.Context;
 import android.net.ConnectivityManager;
@@ -66,7 +66,7 @@ public final class NetworkDiagnostics {
             snapshotId = "net-" + nextSnapshotNumber++;
             currentSnapshotId = snapshotId;
         }
-        CTInfo(TAG, String.format(Locale.US,
+        CTDebug(TAG, String.format(Locale.US,
                 "Network snapshotId=%s reason=%s ssid=%s bssidHash=%s ipv4=%s " +
                         "wifiRssiDbm=%s frequencyMhz=%s validated=%b captivePortal=%b metered=%b",
                 snapshotId, reason, snapshot.ssid, snapshot.bssidHash,
@@ -74,6 +74,26 @@ public final class NetworkDiagnostics {
                 snapshot.wifiRssi == null ? "unavailable" : snapshot.wifiRssi,
                 snapshot.frequencyMhz == null ? "unavailable" : snapshot.frequencyMhz,
                 snapshot.validated, snapshot.captivePortal, snapshot.metered));
+        CTDebug(TAG, "Network routes snapshotId=" + snapshotId + " " + describeRoutes(connectivityManager));
+    }
+
+    /** Includes non-default networks: controller traffic need not follow the Internet route. */
+    @NonNull
+    private static String describeRoutes(ConnectivityManager manager) {
+        ArrayList<String> descriptions = new ArrayList<>();
+        try {
+            Network active = manager.getActiveNetwork();
+            for (Network network : manager.getAllNetworks()) {
+                LinkProperties links = manager.getLinkProperties(network);
+                if (links == null) continue;
+                descriptions.add("network=" + network + " default=" + network.equals(active) +
+                        " interface=" + links.getInterfaceName() + " addresses=" + links.getLinkAddresses() +
+                        " routes=" + links.getRoutes());
+            }
+        } catch (Exception ignored) {
+            descriptions.add("routes=unavailable");
+        }
+        return String.join("; ", descriptions);
     }
 
     static boolean shouldLogTransition(

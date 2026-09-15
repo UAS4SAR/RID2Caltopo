@@ -28,6 +28,74 @@ class CtDroneSpecTest {
     }
 
     @Test
+    fun stationaryRidRefreshesTelemetryButRecordsOnlyEveryThreeSeconds() {
+        val spec = CtDroneSpec("RIDLIVE")
+        val source = CtDroneSpec.TransportTypeEnum.WIFI
+        var recorded = 0
+        for (step in 0..60) {
+            val now = 10_000L + step * 100L
+            assertTrue(spec.checkNewWaypoint(39.0, -121.0, 100.0 + step, now, now, true, source))
+            spec.updateAltitudeContext(100.0 + step, CtDroneSpec.AltSourceEnum.BARO, step.toDouble(), true, now)
+            if (spec.shouldRecordWaypoint(39.0, -121.0, now, 2.0, source)) recorded++
+            assertEquals(now, spec.mostRecentMsecTimestamp)
+            assertEquals(step.toDouble(), spec.lastRidHeightM, 0.00001)
+        }
+        assertEquals(3, recorded) // 0, 3, 6 seconds; suppressed reports never move the recording clock.
+        assertFalse(spec.checkNewWaypoint(40.0, -121.0, 500.0, 16_100, 16_100, true, source))
+        assertEquals(16_000L, spec.mostRecentMsecTimestamp)
+        assertTrue(spec.trackDiagnosticSummary(21_000, false, 0, 0, 30_000).contains("positionAgeMs=5000"))
+        spec.reset()
+        assertTrue(spec.checkNewWaypoint(39.0, -121.0, 100.0, 16_200, 16_200, true, source))
+        assertTrue(spec.shouldRecordWaypoint(39.0, -121.0, 16_200, 2.0, source))
+    }
+
+    @Test
+    fun recordingMeasuresMovementFromLastRecordedPointAndKeepsNearbyKeepalive() {
+        val spec = CtDroneSpec("RIDMOVE")
+        val source = CtDroneSpec.TransportTypeEnum.BT5
+        assertTrue(spec.shouldRecordWaypoint(39.0, -121.0, 10_000, 2.0, source))
+        assertFalse(spec.shouldRecordWaypoint(39.000002, -121.0, 11_000, 2.0, source))
+        assertFalse(spec.shouldRecordWaypoint(39.000004, -121.0, 12_000, 2.0, source))
+        assertTrue(spec.shouldRecordWaypoint(39.000006, -121.0, 12_100, 2.0, source))
+        assertFalse(spec.shouldRecordWaypoint(39.000007, -121.0, 15_099, 2.0, source))
+        assertTrue(spec.shouldRecordWaypoint(39.000007, -121.0, 15_100, 2.0, source))
+    }
+
+    @Test
+    fun invalidCoordinatesNeverRefreshLiveTelemetry() {
+        val spec = CtDroneSpec("RIDINVALID")
+        val source = CtDroneSpec.TransportTypeEnum.WIFI
+        for ((lat, lon) in listOf(Double.NaN to -121.0, 39.0 to Double.POSITIVE_INFINITY,
+                91.0 to -121.0, 39.0 to -181.0, 0.0 to -121.0)) {
+            assertFalse(spec.checkNewWaypoint(lat, lon, 100.0, 10_000, 10_000, true, source))
+        }
+        assertEquals(0, spec.goodCount)
+    }
+
+    @Test
+    fun diagnosticSeparatesAircraftPresenceFromMissingPositionWithoutCoordinates() {
+        val spec = CtDroneSpec("1748FEV2HN7824041047")
+        val now = System.currentTimeMillis()
+        assertTrue(spec.checkNewWaypoint(39.1, -121.1, 600.0, now, now, true,
+            CtDroneSpec.TransportTypeEnum.WIFI))
+        assertFalse(spec.checkNewWaypoint(0.0, 0.0, 600.0, now + 1000, now + 1000, false,
+            CtDroneSpec.TransportTypeEnum.WIFI))
+        spec.noteAircraftMessageReceived(now + 19_000)
+        val summary = spec.trackDiagnosticSummary(now + 20_000, true, now + 20_000, 0, 30_000)
+        assertTrue(summary.contains("accepted=1 invalid=1"))
+        assertTrue(summary.contains("positionAgeMs=20000"))
+        assertTrue(summary.contains("aircraftMessageAgeMs=1000"))
+        assertTrue(summary.contains("publisherActive=true"))
+        assertTrue(summary.contains("reportedAirborne=false"))
+        assertEquals(summary, CaltopoClient.RedactLocationFromDiagnosticMessage(summary))
+        assertFalse(summary.contains("39.1"))
+        assertFalse(summary.contains("-121.1"))
+        spec.reset()
+        assertTrue(spec.trackDiagnosticSummary(now + 20_001, false, 0, 0, 30_000)
+            .contains("accepted=0 invalid=0"))
+    }
+
+    @Test
     fun trackTimestampMatchesAppleRegardlessOfDeviceLanguage() {
         val oldLocale = java.util.Locale.getDefault()
         val oldZone = java.util.TimeZone.getDefault()
@@ -219,7 +287,7 @@ class CtDroneSpecTest {
 
         assertEquals(9_500L, drone.idleTimeInMsec(10_500L))
         assertEquals(500L, drone.signalIdleTimeInMsec(10_500L))
-        assertEquals(500L, drone.trackTelemetryIdleTimeInMsec(10_500L))
+        assertEquals(500L, drone.trackTelemetryIdleTimeInMsec(10_500L, android.os.SystemClock.elapsedRealtime() + 500L))
     }
 
     @Test
@@ -239,7 +307,7 @@ class CtDroneSpecTest {
 
         assertEquals(9_500L, drone.idleTimeInMsec(10_500L))
         assertEquals(9_500L, drone.signalIdleTimeInMsec(10_500L))
-        assertEquals(500L, drone.trackTelemetryIdleTimeInMsec(10_500L))
+        assertEquals(500L, drone.trackTelemetryIdleTimeInMsec(10_500L, android.os.SystemClock.elapsedRealtime() + 500L))
     }
 
     @Test
@@ -258,7 +326,16 @@ class CtDroneSpecTest {
         drone.noteAircraftMessageReceived(10_000L)
 
         assertEquals(9_500L, drone.signalIdleTimeInMsec(10_500L))
-        assertEquals(500L, drone.trackTelemetryIdleTimeInMsec(10_500L))
+        assertEquals(500L, drone.trackTelemetryIdleTimeInMsec(10_500L, android.os.SystemClock.elapsedRealtime() + 500L))
+    }
+
+    @Test
+    fun trackExpiryUsesElapsedReceiptTimeAcrossWallClockChanges() {
+        val drone = CtDroneSpec("CLOCK-RID")
+        drone.noteAircraftMessageReceived(1_000_000)
+        val receipt = android.os.SystemClock.elapsedRealtime()
+        assertEquals(30_000L, drone.trackTelemetryIdleTimeInMsec(1, receipt + 30_000))
+        assertEquals(30_000L, drone.trackTelemetryIdleTimeInMsec(9_000_000, receipt + 30_000))
     }
 
     @Test
@@ -574,9 +651,9 @@ class CtDroneSpecTest {
     }
 
     @Test
-    fun flightIdle_withActivePairedPublisher_staysActiveWithoutSei() {
-        assertEquals(0L, CaltopoClient.CombinedFlightIdleTimeInMsecForTests(
-            60_000L, 100_000L, true, 100_000L
+    fun flightIdle_withActivePairedPublisher_expiresWithoutSei() {
+        assertEquals(60_000L, CaltopoClient.CombinedFlightIdleTimeInMsecForTests(
+            60_000L, 100_000L, true, 0L
         ))
     }
 

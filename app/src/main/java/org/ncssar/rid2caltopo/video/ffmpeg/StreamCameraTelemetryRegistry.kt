@@ -46,12 +46,13 @@ internal fun shouldBlockRidClueFallback(
 object StreamCameraTelemetryRegistry {
     const val DEFAULT_MAX_AGE_MS = 3_000L
     private const val MAX_FRAME_TELEMETRY_DELTA_US = 250_000L
-    private const val HISTORY_LIMIT = 120
+    private const val HISTORY_LIMIT = 360
     private const val EARTH_RADIUS_METERS = 6_378_137.0
     private const val MAX_RID_ANCHOR_RESIDUAL_METERS = 30.0
     private const val MAX_RID_VERTICAL_RESIDUAL_METERS = 20.0
     private const val COURSE_BASELINE_METERS = 3.0
     private val lock = Any()
+    private val tiltSamples = mutableMapOf<String, Pair<Double, Long>>()
     private val samples = mutableMapOf<String, StreamCameraTelemetrySample>()
     private val sampleHistory = mutableMapOf<String, MutableList<StreamCameraTelemetrySample>>()
     private val courseStates = mutableMapOf<String, CourseState>()
@@ -77,9 +78,10 @@ object StreamCameraTelemetryRegistry {
 
     fun update(designator: String, telemetry: FfmpegTelemetry, nowMs: Long = System.currentTimeMillis()) {
         if (telemetry.sourceTag != "dji-sei-245") return
-        val rawAzimuth = telemetry.cameraYawDeg?.takeIf { it.isFinite() } ?: return
         val rawTilt = telemetry.gimbalPitchDeg?.takeIf { it.isFinite() } ?: return
         val tilt = DjiCameraOrientation.calibratedTiltDeg(rawTilt) ?: return
+        synchronized(lock) { tiltSamples[designator.trim().uppercase()] = tilt to nowMs }
+        val rawAzimuth = telemetry.cameraYawDeg?.takeIf { it.isFinite() } ?: return
         val width = telemetry.horizontalFovDeg?.takeIf { it.isFinite() && it > 0.0 } ?: return
         val height = telemetry.verticalFovDeg?.takeIf { it.isFinite() && it > 0.0 } ?: return
         val referenceLatitude = telemetry.latitude?.takeIf { it.isFinite() && it in -90.0..90.0 }
@@ -184,20 +186,17 @@ object StreamCameraTelemetryRegistry {
         frameTimestampUs: Long?,
         nowMs: Long = System.currentTimeMillis(),
         maxAgeMs: Long = DEFAULT_MAX_AGE_MS,
+        maxFrameDeltaUs: Long = MAX_FRAME_TELEMETRY_DELTA_US,
     ): StreamCameraTelemetrySample? = synchronized(lock) {
         val key = designator.trim().uppercase()
-        if (frameTimestampUs == null || frameTimestampUs <= 0L) {
-            return@synchronized samples[key]?.takeIf {
-                nowMs >= it.receivedAtMs && nowMs - it.receivedAtMs <= maxAgeMs
-            }
-        }
+        if (frameTimestampUs == null || frameTimestampUs < 0L) return@synchronized null
         sampleHistory[key]
             ?.asSequence()
-            ?.filter { nowMs >= it.receivedAtMs && nowMs - it.receivedAtMs <= maxAgeMs }
+            ?.filter { nowMs >= it.receivedAtMs && nowMs - it.receivedAtMs <= maxAgeMs && checkNotNull(it.sourceTimestampUs) <= frameTimestampUs }
             ?.minByOrNull { kotlin.math.abs(checkNotNull(it.sourceTimestampUs) - frameTimestampUs) }
             ?.takeIf {
                 kotlin.math.abs(checkNotNull(it.sourceTimestampUs) - frameTimestampUs) <=
-                    MAX_FRAME_TELEMETRY_DELTA_US
+                    maxFrameDeltaUs
             }
     }
 
@@ -271,9 +270,14 @@ object StreamCameraTelemetryRegistry {
         }
     }
 
+    fun freshTilt(designator: String, nowMs: Long): Double? = synchronized(lock) {
+        tiltSamples[designator.trim().uppercase()]?.takeIf { nowMs - it.second in 0..DEFAULT_MAX_AGE_MS }?.first
+    }
+
     fun clear(designator: String) {
         synchronized(lock) {
             val key = designator.trim().uppercase()
+            tiltSamples.remove(key)
             samples.remove(key)
             sampleHistory.remove(key)
             courseStates.remove(key)

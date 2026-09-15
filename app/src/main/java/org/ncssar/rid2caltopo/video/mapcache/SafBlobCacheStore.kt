@@ -6,6 +6,7 @@ import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteDatabaseLockedException
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import java.io.File
 import java.security.MessageDigest
@@ -248,20 +249,23 @@ internal class SafBlobCacheStore(
         if (prewarmed) return
         synchronized(prewarmLock) {
             if (prewarmed) return
+            val startedMs = System.currentTimeMillis()
+            MapCacheDebug.debug(MapCacheDebug.TAG_TILE, "cache index start ns=$namespace")
             val nsDir = getNamespaceDir()
             if (nsDir == null) {
                 MapCacheDebug.log("saf prewarm ns=$namespace skipped(no namespace dir)")
                 prewarmed = true
                 return
             }
-            val fileIndex = buildNamespaceFileIndex(nsDir)
+            val sizes = HashMap<String, Long>()
+            val fileIndex = buildNamespaceFileIndex(nsDir, sizes)
             val indexedFiles = fileIndex.mapNotNull { (relativePath, file) ->
                 relativePathToCacheKey(relativePath)?.let { cacheKey ->
                     IndexedFile(
                         cacheKey = cacheKey,
                         relativePath = relativePath,
                         uri = file.uri.toString(),
-                        sizeBytes = file.length().coerceAtLeast(0L)
+                        sizeBytes = sizes.getValue(relativePath)
                     )
                 }
             }
@@ -272,6 +276,8 @@ internal class SafBlobCacheStore(
                 MapCacheDebug.log("saf prewarm ns=$namespace ready files=${namespaceFileIndex?.size ?: 0}")
             }
             prewarmed = true
+            MapCacheDebug.debug(MapCacheDebug.TAG_TILE,
+                "cache index ready ns=$namespace files=${fileIndex.size} elapsedMs=${System.currentTimeMillis() - startedMs}")
         }
     }
 
@@ -515,14 +521,14 @@ internal class SafBlobCacheStore(
         return index
     }
 
-    private fun buildNamespaceFileIndex(nsDir: DocumentFile): MutableMap<String, DocumentFile> {
+    private fun buildNamespaceFileIndex(
+        nsDir: DocumentFile,
+        sizes: MutableMap<String, Long> = HashMap()
+    ): MutableMap<String, DocumentFile> {
         val startNs = System.nanoTime()
         val index = HashMap<String, DocumentFile>()
-        try {
-            indexNamespaceFiles(nsDir, "", index)
-        } catch (e: Exception) {
-            MapCacheDebug.log("saf index-build list-failed ns=$namespace err=${e.javaClass.simpleName}")
-        }
+        // A partial listing must not replace the database's complete index.
+        indexNamespaceFiles(nsDir, "", index, sizes)
         val elapsedMs = (System.nanoTime() - startNs) / 1_000_000.0
         MapCacheDebug.log(
             "saf index-build ns=$namespace files=${index.size} elapsedMs=${"%.1f".format(Locale.US, elapsedMs)}"
@@ -692,17 +698,39 @@ internal class SafBlobCacheStore(
     private fun indexNamespaceFiles(
         dir: DocumentFile,
         prefix: String,
-        index: MutableMap<String, DocumentFile>
+        index: MutableMap<String, DocumentFile>,
+        sizes: MutableMap<String, Long>
     ) {
-        dir.listFiles().forEach { file ->
-            val name = file.name ?: return@forEach
-            val relative = if (prefix.isEmpty()) name else "$prefix/$name"
-            if (file.isFile) {
-                index[relative] = file
-            } else if (file.isDirectory) {
-                indexNamespaceFiles(file, relative, index)
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+            dir.uri, DocumentsContract.getDocumentId(dir.uri)
+        )
+        val columns = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE
+        )
+        val directories = ArrayList<Pair<DocumentFile, String>>()
+        // Fetch metadata once per directory. DocumentFile.name/isFile/length
+        // each issue a separate provider query, which stalls large SD caches.
+        val cursor = appContext.contentResolver.query(childrenUri, columns, null, null, null)
+            ?: throw java.io.IOException("Unable to list map-cache directory: ${dir.uri}")
+        cursor.use {
+            while (it.moveToNext()) {
+                val name = it.getString(1) ?: continue
+                val relative = if (prefix.isEmpty()) name else "$prefix/$name"
+                val uri = DocumentsContract.buildDocumentUriUsingTree(dir.uri, it.getString(0))
+                val file = DocumentFile.fromTreeUri(appContext, uri)
+                    ?: throw java.io.IOException("Invalid map-cache document: $uri")
+                if (it.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR) {
+                    directories.add(file to relative)
+                } else {
+                    index[relative] = file
+                    sizes[relative] = it.getLong(3).coerceAtLeast(0L)
+                }
             }
         }
+        directories.forEach { (file, relative) -> indexNamespaceFiles(file, relative, index, sizes) }
     }
 
     private fun deleteRecursively(file: DocumentFile) {

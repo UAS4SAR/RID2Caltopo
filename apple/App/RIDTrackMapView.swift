@@ -524,6 +524,8 @@ struct RIDTrackMapView: View {
     @State private var streamFocusArrival = OperationalStreamFocusArrival()
     @State private var pendingSnapshot: PendingClueSnapshot?
     @State private var selectedClueID: UUID?
+    @State private var showTakeoffCalibration = false
+    @State private var calibrationRemoteID: String?
     @State private var clueSelectionCandidates: ClueSelectionCandidates?
     @State private var selectedArtifactInspection: ArtifactInspection?
     @State private var capturingSnapshot = false
@@ -721,6 +723,10 @@ struct RIDTrackMapView: View {
                 organization: orgSettings
             )
         }
+        .takeoffCalibrationPanel(isPresented: $showTakeoffCalibration,
+            enabled: calibrationRemoteID.map { model.canCalibrateAltitude(remoteID: $0) } ?? false) {
+                if let id = calibrationRemoteID { model.manualCalibrateAltitude(remoteID: id) }
+            }
         .sheet(item: $selectedPilotSettings) { selection in
             PilotDisplaySettingsView(
                 selection: selection,
@@ -1220,6 +1226,11 @@ struct RIDTrackMapView: View {
                     focusedAircraftID = remoteID
                     if !inspect { operatorAdjustedViewport = false }
                     guard inspect, !inset else { return }
+                    if model.altitudeDisplayByAircraftID[remoteID]?.aolLabel == "CAL" {
+                        calibrationRemoteID = remoteID
+                        showTakeoffCalibration = true
+                        return
+                    }
                     let identity = identityStore.identity(for: remoteID)
                     selectedPilotSettings = PilotDisplaySelection(
                         id: remoteID,
@@ -1231,7 +1242,7 @@ struct RIDTrackMapView: View {
                 onOperatorViewportGesture: {
                     guard focusedAircraftID != nil else { return }
                     focusedAircraftID = nil
-                    AppleLog.info("MapViewport", "Operator gesture released focused drone")
+                    AppleLog.info("MapViewport", "Operator pan released focused drone")
                 },
                 onLongPressTile: { zoom, x, y in
                     Task {
@@ -1395,6 +1406,10 @@ struct RIDTrackMapView: View {
                 onRestartStreams: onRestartStreams,
                 primaryLabel: streamPrimaryLabel,
                 telemetryText: streamTelemetryText,
+                onCalibrationRequested: { streamID in
+                    calibrationRemoteID = aircraftID(for: streamID)
+                    showTakeoffCalibration = calibrationRemoteID != nil
+                },
                 coordinateText: streamCoordinateText,
                 remoteRequesterEmail: peerCoordinator.activeRemoteVideoRequesterEmail,
                 coordinateDisplayFormat: coordinateDisplayFormat,
@@ -1641,26 +1656,16 @@ struct RIDTrackMapView: View {
         return model.tracks.isEmpty && !embedded ? .noTelemetry : .available
     }
 
-    private func centerpointElevationFeet(
-        _ streamID: String
-    ) async -> OperationalCenterpointElevation.Sample? {
+    private func centerpointElevationFeet(_ streamID: String) async -> OperationalCenterpointElevation.Sample? {
         guard let aircraftID = aircraftID(for: streamID),
-              let observation = model.tracks
-                .first(where: { $0.aircraftID == aircraftID })?
-                .lastObservation,
-              let aglFeet = model.altitudeDisplayByAircraftID[aircraftID]?.aglFeet,
-              aglFeet.isFinite,
-              let session = streamRegistry.sessions.first(where: { $0.id == streamID }),
-              let camera = session.model.freshDJICameraTelemetry(),
-              let bearing = camera.cameraAzimuthDegrees
+              let observation = model.tracks.first(where: { $0.aircraftID == aircraftID })?.lastObservation
         else { return nil }
-        return await model.centerpointElevationFeet(
-            streamID: streamID,
-            observation: observation,
-            headingDegrees: bearing,
-            aglMeters: aglFeet / 3.28084,
-            gimbalAngleDegrees: camera.tiltDegrees
-        )
+        let camera = streamRegistry.sessions.first(where: { $0.id == streamID })?.model.freshDJICameraTelemetry()
+        let altitude = model.altitudeDisplayByAircraftID[aircraftID]
+        return await model.centerpointElevationFeet(streamID: streamID, observation: observation,
+            headingDegrees: camera?.cameraAzimuthDegrees,
+            aglMeters: altitude?.aglStatus == .available ? altitude?.aglFeet.map { $0 / 3.28084 } : nil,
+            gimbalAngleDegrees: camera?.tiltDegrees)
     }
 
     private func beginSnapshotCapture(
@@ -1728,17 +1733,12 @@ struct RIDTrackMapView: View {
                     signalStrengthDbm: ridCaptureObservation.signalStrengthDbm,
                     droneScoutRelay: ridCaptureObservation.droneScoutRelay
                 )
-                let captureGimbalPitch = completeSEITelemetry?.tiltDegrees
-                    ?? (frameTelemetry == nil ? session.model.latestGimbalPitchDegrees : nil)
+                let captureGimbalPitch = frameTelemetry?.tiltDegrees
                 let captureHeading = OperationalClueGeometry.selectedHeading(
-                    cameraAzimuthDegrees: completeSEITelemetry?.cameraAzimuthDegrees,
-                    videoCourseDegrees: completeSEITelemetry?.courseDegrees,
-                    cameraYawDegrees: frameTelemetry == nil
-                        ? session.model.latestCameraYawDegrees
-                        : nil,
-                    streamHeadingDegrees: frameTelemetry == nil
-                        ? session.model.latestStreamHeadingDegrees
-                        : nil,
+                    cameraAzimuthDegrees: frameTelemetry?.cameraAzimuthDegrees,
+                    videoCourseDegrees: frameTelemetry?.courseDegrees,
+                    cameraYawDegrees: nil,
+                    streamHeadingDegrees: nil,
                     ridHeadingDegrees: captureObservation.headingDegrees,
                     derivedHeadingDegrees: OperationalMapGeometry.travelBearingDegrees(
                         points: captureTrack.points
@@ -1750,6 +1750,7 @@ struct RIDTrackMapView: View {
                     gimbalAngleDegrees: OperationalClueGeometry.selectedGimbalAngleDegrees(
                         streamPitchDegrees: captureGimbalPitch
                     ),
+                    gimbalAngleConfirmed: captureGimbalPitch != nil,
                     observation: captureObservation,
                     altitudeDisplay: captureAltitudeDisplay,
                     heading: captureHeading,
@@ -2212,6 +2213,7 @@ private struct PendingClueSnapshot: Identifiable {
     let snapshot: AppleVideoSnapshot
     let defaultAircraftID: String
     let gimbalAngleDegrees: Double
+    let gimbalAngleConfirmed: Bool
     let observation: RidObservation
     let altitudeDisplay: OperationalAircraftAltitudeDisplay?
     let heading: OperationalClueHeadingSelection
@@ -2221,6 +2223,7 @@ private struct PendingClueSnapshot: Identifiable {
         snapshot: AppleVideoSnapshot,
         defaultAircraftID: String,
         gimbalAngleDegrees: Double,
+        gimbalAngleConfirmed: Bool = true,
         observation: RidObservation,
         altitudeDisplay: OperationalAircraftAltitudeDisplay?,
         heading: OperationalClueHeadingSelection,
@@ -2229,6 +2232,7 @@ private struct PendingClueSnapshot: Identifiable {
         self.snapshot = snapshot
         self.defaultAircraftID = defaultAircraftID
         self.gimbalAngleDegrees = gimbalAngleDegrees
+        self.gimbalAngleConfirmed = gimbalAngleConfirmed
         self.observation = observation
         self.altitudeDisplay = altitudeDisplay
         self.heading = heading
@@ -2255,6 +2259,7 @@ private struct ClueSubmissionView: View {
     @State private var title: String
     @State private var description: String
     @State private var gimbalAngle: Double
+    @State private var gimbalAngleConfirmed: Bool
     @State private var cameraHeadingDegrees: Double
     @State private var cameraHeadingSource: String
     @State private var terrainProjection: OperationalClueProjection?
@@ -2282,6 +2287,7 @@ private struct ClueSubmissionView: View {
         self.onCancel = onCancel
         _selectedAircraftID = State(initialValue: pending.defaultAircraftID)
         _gimbalAngle = State(initialValue: pending.gimbalAngleDegrees)
+        _gimbalAngleConfirmed = State(initialValue: pending.gimbalAngleConfirmed)
         _cameraHeadingDegrees = State(initialValue: pending.heading.degrees ?? 0)
         _cameraHeadingSource = State(initialValue: Self.headingSourceLabel(pending.heading))
         // Android deliberately opens on an empty, focused title so the
@@ -2404,7 +2410,11 @@ private struct ClueSubmissionView: View {
                         }
                     ), in: 0 ... 359, step: 1)
                     LabeledContent("Gimbal angle", value: "\(Int(gimbalAngle.rounded()))°")
-                    Slider(value: $gimbalAngle, in: -90 ... 90, step: 1)
+                    if !gimbalAngleConfirmed {
+                        Text("Camera angle unavailable for this frame. Set or confirm the angle.")
+                        Button("Use \(Int(gimbalAngle))° manually") { gimbalAngleConfirmed = true }
+                    }
+                    Slider(value: Binding(get: { gimbalAngle }, set: { gimbalAngle = $0; gimbalAngleConfirmed = true }), in: -90 ... 90, step: 1)
                     Text("-90° is straight down; 0° is the horizon; positive angles look upward.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -2451,7 +2461,7 @@ private struct ClueSubmissionView: View {
                     Button("Local Marker Only", systemImage: "mappin.and.ellipse") {
                         submit(publish: false)
                     }
-                    .disabled(projectionHeight == nil)
+                    .disabled(projectionHeight == nil || !gimbalAngleConfirmed)
                     Button {
                         submit(publish: true)
                     } label: {
@@ -2459,7 +2469,7 @@ private struct ClueSubmissionView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(projectionHeight == nil)
+                    .disabled(projectionHeight == nil || !gimbalAngleConfirmed)
                 } footer: {
                     Text("Submit saves the clue locally before starting its CalTopo upload.")
                 }
@@ -2525,6 +2535,7 @@ private struct ClueSubmissionView: View {
     }
 
     private func submit(publish: Bool) {
+        guard gimbalAngleConfirmed else { return }
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         AppleLog.info(
             "Clue",
@@ -2974,7 +2985,7 @@ private struct AircraftTrackRenderInput: Equatable {
 
     init(track: RidAircraftTrack, seiPoints: [AppleSEIMapPoint]) {
         aircraftID = track.aircraftID
-        let accepted = track.points.map {
+        var accepted = track.points.map {
             AircraftMapPoint(
                 latitude: $0.latitude,
                 longitude: $0.longitude,
@@ -2982,6 +2993,17 @@ private struct AircraftTrackRenderInput: Equatable {
                 headingDegrees: $0.headingDegrees,
                 receivedAt: $0.receivedAt
             )
+        }
+        // Add the live head for rendering only; it is not an archived/published waypoint.
+        let live = track.lastObservation
+        if accepted.last?.receivedAt != live.receivedAt {
+            accepted.append(AircraftMapPoint(
+                latitude: live.latitude,
+                longitude: live.longitude,
+                altitudeMeters: live.altitudeMeters,
+                headingDegrees: live.headingDegrees,
+                receivedAt: live.receivedAt
+            ))
         }
         let streamed = seiPoints.map {
             AircraftMapPoint(
@@ -3037,6 +3059,7 @@ private struct PilotDisplaySettingsView: View {
     let track: RidAircraftTrack?
     let altitudeDisplay: OperationalAircraftAltitudeDisplay?
     @Binding var followFocusedDrone: Bool
+    @State private var showTakeoffCalibration = false
     let onCalibrateAltitude: () -> Void
     @ObservedObject var store: ApplePilotDisplayStore
     @Environment(\.dismiss) private var dismiss
@@ -3063,18 +3086,25 @@ private struct PilotDisplaySettingsView: View {
                         LabeledContent("Altitude MSL", value: altitudeDisplay?.positionStale == true ? "POS?" : measurement(observation.altitudeMeters, scale: 3.28084, unit: "ft"))
                         LabeledContent("ATO", value: altitudeDisplay?.atoLabel ?? "Unk")
                         LabeledContent("AOL · 200 ft radius") {
-                            Text(altitudeDisplay?.aolLabel ?? "Unk")
-                                .foregroundStyle(altitudeDisplay?.positionStale != true && altitudeDisplay?.aol.status == .available && (altitudeDisplay?.aol.feet ?? 0) < 0 ? .red : .primary)
+                            Button(altitudeDisplay?.aolLabel ?? "Unk") { showTakeoffCalibration = true }
+                                .buttonStyle(.plain)
+                                .disabled(altitudeDisplay?.aolLabel != "CAL")
+                                .foregroundStyle(altitudeDisplay?.aolLabel == "CAL" ? Color.orange : altitudeDisplay?.positionStale != true && altitudeDisplay?.aol.status == .available && (altitudeDisplay?.aol.feet ?? 0) < 0 ? Color.red : Color.primary)
                         }
-                        LabeledContent(
-                            "AGL",
-                            value: altitudeDisplay?.aglLabel ?? "Unk"
-                        )
+                        LabeledContent("AGL") {
+                            Button(altitudeDisplay?.aglLabel ?? "Unk") { showTakeoffCalibration = true }
+                                .buttonStyle(.plain)
+                                .disabled(altitudeDisplay?.aglLabel != "CAL")
+                                .foregroundStyle(altitudeDisplay?.aglLabel == "CAL" ? Color.orange : Color.primary)
+                        }
                         LabeledContent("Range from takeoff", value: altitudeDisplay?.rangeLabel ?? "Unk")
                         LabeledContent("Heading", value: altitudeDisplay?.positionStale == true ? "POS?" : measurement(observation.headingDegrees, scale: 1, unit: "°"))
                         LabeledContent("Speed", value: altitudeDisplay?.positionStale == true ? "POS?" : measurement(observation.speedMetersPerSecond, scale: 1.94384, unit: "kt"))
                         Text("Only calibrate while hovering at an independently established 50 ft directly above the launch point. This also supplies the AOL launch reference.").font(.caption)
-                        Button("Calibrate at 50 ft over launch", action: onCalibrateAltitude)
+                        Button("Calibrate 50' ATO") { showTakeoffCalibration = true }
+                            .takeoffCalibrationPanel(isPresented: $showTakeoffCalibration,
+                                enabled: observation.altitudeMeters != nil && altitudeDisplay?.positionStale == false,
+                                calibrate: onCalibrateAltitude)
                             .disabled(observation.altitudeMeters == nil || altitudeDisplay?.positionStale != false)
                         AircraftAOLDetailsLink(details: altitudeDisplay?.aol.details ?? OperationalAOLState.explanation)
                     }
@@ -3348,6 +3378,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
         private var currentInset = false
         private var lastCenteredFocusedAircraftID: String?
         private var currentFocusedAircraftID: String?
+        private var viewportGestureIncludesZoom = false
         private let pendingVisibleMapRect: MKMapRect?
         private var restoredViewportBounds = false
         private var regionChangeWasUserGesture = false
@@ -3814,7 +3845,9 @@ private struct OperationalMKMapView: UIViewRepresentable {
             if followFocusedDrone,
                let focusedAircraftID,
                let coordinate = renderCoordinates[focusedAircraftID] {
-                setCenterAndPersist(coordinate, on: map)
+                if !hasActiveViewportGesture(in: map) {
+                    setCenterAndPersist(coordinate, on: map)
+                }
                 if lastCenteredFocusedAircraftID != focusedAircraftID {
                     AppleLog.info("MapFocus", "Centered focused aircraft=\(focusedAircraftID) inset=\(inset)")
                     lastCenteredFocusedAircraftID = focusedAircraftID
@@ -3996,11 +4029,15 @@ private struct OperationalMKMapView: UIViewRepresentable {
             guard !updating else { return }
             persistViewport(from: mapView)
             regionChangeWasUserGesture = false
+            if !hasActiveViewportGesture(in: mapView) { viewportGestureIncludesZoom = false }
         }
 
         func mapViewDidChangeVisibleRegion(_ mapView: MKMapView) {
             guard !updating, hasActiveViewportGesture(in: mapView) else { return }
-            releaseFocusedAircraftForOperatorGesture()
+            if hasActivePanGesture(in: mapView) {
+                releaseFocusedAircraftForOperatorGesture()
+                operatorAdjustedViewport = true
+            }
             regionChangeWasUserGesture = true
             persistViewport(from: mapView)
         }
@@ -4134,7 +4171,10 @@ private struct OperationalMKMapView: UIViewRepresentable {
         func mapView(_ mapView: MKMapView, regionWillChangeAnimated animated: Bool) {
             let userGesture = hasActiveViewportGesture(in: mapView)
             regionChangeWasUserGesture = userGesture
-            guard userGesture else { return }
+            guard userGesture, hasActivePanGesture(in: mapView) else { return }
+            if !operatorAdjustedViewport {
+                AppleLog.info("MapFocus", "Operator pan suspends automatic follow")
+            }
             releaseFocusedAircraftForOperatorGesture()
             operatorAdjustedViewport = true
             viewportMemory.hasOperationalViewport = true
@@ -4163,6 +4203,31 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 return true
             }
             return view.subviews.contains(where: hasActiveViewportGesture)
+        }
+
+        private func hasActivePanGesture(in view: UIView) -> Bool {
+            // MapKit can recognize a pan alongside a pinch. Give zoom precedence
+            // so changing scale never cancels pending or established follow.
+            func containsGesture(_ view: UIView, matching predicate: (UIGestureRecognizer) -> Bool) -> Bool {
+                (view.gestureRecognizers?.contains(where: predicate) ?? false)
+                    || view.subviews.contains { containsGesture($0, matching: predicate) }
+            }
+            let zoom = containsGesture(view) { gesture in
+                if gesture is UIPinchGestureRecognizer {
+                    return gesture.state == .began || gesture.state == .changed
+                }
+                if let tap = gesture as? UITapGestureRecognizer {
+                    return tap.numberOfTapsRequired >= 2 && gesture.state == .ended
+                }
+                return false
+            }
+            viewportGestureIncludesZoom = viewportGestureIncludesZoom || zoom
+            let pan = containsGesture(view) { gesture in
+                guard let pan = gesture as? UIPanGestureRecognizer else { return false }
+                return pan.numberOfTouches == 1 && (pan.state == .began || pan.state == .changed)
+            }
+            return OperationalMapFocusPolicy.shouldSuspendFollow(
+                isOperatorGesture: pan, isZoomGesture: viewportGestureIncludesZoom)
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
@@ -4434,6 +4499,9 @@ private final class AircraftAnnotationView: MKAnnotationView {
         if let range = OperationalAircraftDisplay.negativeAOLRange(in: aircraft.statusText) {
             status.addAttribute(.foregroundColor, value: UIColor.systemRed,
                                 range: NSRange(range, in: aircraft.statusText))
+        }
+        for match in (try? NSRegularExpression(pattern: "\\bCAL\\b"))?.matches(in: aircraft.statusText, range: NSRange(aircraft.statusText.startIndex..., in: aircraft.statusText)) ?? [] {
+            status.addAttribute(.foregroundColor, value: UIColor.systemOrange, range: match.range)
         }
         statusLabel.attributedText = status
         if let layout = aircraft.labelLayout {
@@ -5346,6 +5414,17 @@ private extension UIColor {
             )
         default:
             return nil
+        }
+    }
+}
+
+private extension View {
+    func takeoffCalibrationPanel(isPresented: Binding<Bool>, enabled: Bool, calibrate: @escaping () -> Void) -> some View {
+        alert("Altitude calibration", isPresented: isPresented) {
+            Button("Calibrate 50' ATO", action: calibrate).disabled(!enabled)
+            Button("Disregard", role: .cancel) {}
+        } message: {
+            Text("Take-off coordinates not established at launch. Please hover 50' above take-off and press:")
         }
     }
 }

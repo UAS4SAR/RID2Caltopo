@@ -1,3 +1,4 @@
+import AVFoundation
 import Combine
 import CoreLocation
 import CryptoKit
@@ -60,6 +61,7 @@ private struct AppleManagedVideoStreamAdvertisement: Codable, Equatable {
     let sourceHeight: Int
     let sourceFps: Double
     let sourceBitrateBps: Int64
+    var sourceSizeBytes: Int64 = 0
     let sourceCodec: String
     let mediaKind: String
     let recordedAt: String?
@@ -75,6 +77,7 @@ private struct AppleManagedVideoStreamAdvertisement: Codable, Equatable {
             sourceHeight: sourceHeight,
             sourceFps: sourceFps,
             sourceBitrateBps: sourceBitrateBps,
+            sourceSizeBytes: sourceSizeBytes,
             sourceCodec: sourceCodec,
             mediaKind: mediaKind,
             recordedAt: recordedAt,
@@ -92,11 +95,86 @@ private struct AppleManagedVideoRecording: Equatable {
     let startedAt: Date
     let recordedAt: Date
     let durationMs: Int64
+    let metadata: AppleRecordingMetadata?
+    let sizeBytes: Int64
 }
 
+private struct AppleRecordingMetadata: Equatable {
+    let width: Int
+    let height: Int
+    let fps: Double
+    let durationMs: Int64
+    let bitrateBps: Int64
+    let codec: String
+    static func read(_ url: URL) async throws -> Self? {
+        let asset = AVURLAsset(url: url)
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else {
+            return nil
+        }
+        let size = try await track.load(.naturalSize)
+        let transform = try await track.load(.preferredTransform)
+        let displayed = size.applying(transform)
+        let fps = Double(try await track.load(.nominalFrameRate))
+        let duration = try await asset.load(.duration).seconds
+        let bitrate = Double(try await track.load(.estimatedDataRate))
+        let formats = try await track.load(.formatDescriptions)
+        let subtype = formats.first.map { CMFormatDescriptionGetMediaSubType($0) } ?? 0
+        let codec = subtype == kCMVideoCodecType_H264 ? "h264"
+            : subtype == kCMVideoCodecType_HEVC ? "hevc" : ""
+        guard displayed.width.isFinite, displayed.height.isFinite,
+              abs(displayed.width) > 0, abs(displayed.height) > 0,
+              duration.isFinite, duration > 0 else {
+            return nil
+        }
+        return AppleRecordingMetadata(
+            width: Int(abs(displayed.width).rounded()), height: Int(abs(displayed.height).rounded()),
+            fps: fps.isFinite ? max(0, fps) : 0,
+            durationMs: Int64(min(duration * 1000, Double(Int64.max / 2))),
+            bitrateBps: bitrate.isFinite ? Int64(min(max(0, bitrate), 1_000_000_000)) : 0,
+            codec: codec)
+    }
+
+}
+
+@MainActor
 private enum AppleManagedVideoRecordingCatalog {
+    private struct Fingerprint: Hashable {
+        let url: URL
+        let size: Int
+        let modified: Date
+    }
+    private static var metadataCache: [Fingerprint: AppleRecordingMetadata] = [:]
+    private static var pending: Set<Fingerprint> = []
+    private static var retryAfter: [Fingerprint: Date] = [:]
+
+    private static func metadata(for key: Fingerprint, now: Date) -> AppleRecordingMetadata? {
+        if let value = metadataCache[key] { return value }
+        guard pending.count < 2, !pending.contains(key),
+              retryAfter[key].map({ $0 <= now }) ?? true else { return nil }
+        pending.insert(key)
+        Task {
+            defer { pending.remove(key) }
+            do {
+                guard let loaded = try await AppleRecordingMetadata.read(key.url) else {
+                    retryAfter[key] = Date().addingTimeInterval(30)
+                    return
+                }
+                let current = try key.url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                guard current.fileSize == key.size, current.contentModificationDate == key.modified else { return }
+                metadataCache = metadataCache.filter { $0.key.url != key.url }
+                metadataCache[key] = loaded
+                retryAfter.removeValue(forKey: key)
+                AppleLog.info("RecordingCatalog", "Read recording metadata file=\(key.url.lastPathComponent) sizeBytes=\(key.size)")
+            } catch {
+                retryAfter[key] = Date().addingTimeInterval(30)
+                AppleLog.error("RecordingCatalog", "Unable to read recording metadata file=\(key.url.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+        return nil
+    }
+
     static func snapshot(sessionStartedAt: Date, now: Date = Date()) -> [AppleManagedVideoRecording] {
-        guard UserDefaults.standard.bool(forKey: "video.captureStreams"),
+        guard (UserDefaults.standard.object(forKey: "video.captureStreams") as? Bool ?? true),
               let documents = try? FileManager.default.url(
                   for: .documentDirectory,
                   in: .userDomainMask,
@@ -105,7 +183,7 @@ private enum AppleManagedVideoRecordingCatalog {
               )
         else { return [] }
         let root = documents.appendingPathComponent(
-            "RID2Caltopo/CapturedStreams",
+            "RID2Caltopo/FlightStorage",
             isDirectory: true
         )
         guard let enumerator = FileManager.default.enumerator(
@@ -132,6 +210,7 @@ private enum AppleManagedVideoRecordingCatalog {
                   modified >= sessionStartedAt,
                   now.timeIntervalSince(modified) >= 3
             else { return nil }
+            let metadata = metadata(for: Fingerprint(url: url, size: values.fileSize ?? 0, modified: modified), now: now)
             let designator = url.deletingLastPathComponent().lastPathComponent
             let startedAt = min(
                 ManagedVideoRecordingIdentity.recordingStartedAt(forPath: url.path) ?? modified,
@@ -143,7 +222,9 @@ private enum AppleManagedVideoRecordingCatalog {
                 url: url,
                 startedAt: startedAt,
                 recordedAt: modified,
-                durationMs: max(0, Int64(modified.timeIntervalSince(startedAt) * 1_000))
+                durationMs: metadata?.durationMs ?? max(0, Int64(modified.timeIntervalSince(startedAt) * 1_000)),
+                metadata: metadata,
+                sizeBytes: Int64(values.fileSize ?? 0)
             )
         }
         .sorted { $0.recordedAt > $1.recordedAt }
@@ -1574,11 +1655,12 @@ final class AppleTrackerCoordinator: ObservableObject {
             return AppleManagedVideoStreamAdvertisement(
                 sessionId: recording.sessionId,
                 droneDesignator: recording.droneDesignator,
-                sourceWidth: 0,
-                sourceHeight: 0,
-                sourceFps: 0,
-                sourceBitrateBps: 0,
-                sourceCodec: "h264",
+                sourceWidth: recording.metadata?.width ?? 0,
+                sourceHeight: recording.metadata?.height ?? 0,
+                sourceFps: recording.metadata?.fps ?? 0,
+                sourceBitrateBps: recording.metadata?.bitrateBps ?? 0,
+                sourceSizeBytes: recording.sizeBytes,
+                sourceCodec: recording.metadata?.codec ?? "",
                 mediaKind: "recording",
                 recordedAt: ISO8601DateFormatter().string(from: recording.recordedAt),
                 durationMs: recording.durationMs,
@@ -2060,9 +2142,8 @@ final class AppleTrackerCoordinator: ObservableObject {
             // browser reconnects instead of reusing the just-stopped source
             // retained briefly by the presence snapshot.
             let source: AppleVideoFrameSource
-            if let recording {
+            if recording != nil {
                 let playback = AppleVideoFrameSource()
-                playback.startPlayback(url: recording.url)
                 source = playback
             } else if let liveSource {
                 source = liveSource
@@ -2102,6 +2183,17 @@ final class AppleTrackerCoordinator: ObservableObject {
                         else { return }
                         self.remoteVideoMicrophoneEnabled = enabled
                         self.remoteVideoMicrophoneError = error
+                    }
+                },
+                readySink: { [weak self] requestID in
+                    Task { @MainActor [weak self] in
+                        guard let self,
+                              self.mediaAttemptIDByRequestID[requestID] == mediaAttemptID,
+                              let recording,
+                              let source = self.mediaSourcesByRequestID[requestID]
+                        else { return }
+                        source.startPlayback(url: recording.url)
+                        AppleLog.info("TrackerPeer", "Recording playback started after media handshake request=\(requestID) file=\(recording.url.lastPathComponent)")
                     }
                 }
             )
@@ -2709,7 +2801,8 @@ final class AppleTrackerCoordinator: ObservableObject {
                     "sourceHeight": height,
                     "sourceFps": frameRate,
                     "sourceBitrateBps": $0.sourceBitrateBps,
-                    "sourceCodec": width > 0 ? "H264" : $0.sourceCodec,
+                    "sourceSizeBytes": $0.sourceSizeBytes,
+                    "sourceCodec": $0.mediaKind == "recording" ? $0.sourceCodec : (width > 0 ? "H264" : $0.sourceCodec),
                     "mediaKind": $0.mediaKind,
                     "durationMs": $0.durationMs,
                     "thumbnailRevision": $0.thumbnailRevision,

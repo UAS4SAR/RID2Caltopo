@@ -36,8 +36,9 @@ data class AndroidClueRecord(
  */
 class AndroidClueStore private constructor(
     private val root: File,
+    private val context: Context? = null,
 ) {
-    constructor(context: Context) : this(File(context.applicationContext.filesDir, "clues"))
+    constructor(context: Context) : this(File(context.applicationContext.filesDir, "clues"), context.applicationContext)
 
     private val indexFile = File(root, "clues.json")
     private val records = LinkedHashMap<String, AndroidClueRecord>()
@@ -49,7 +50,7 @@ class AndroidClueStore private constructor(
     @Synchronized
     fun recordsForMap(mapKey: String): List<AndroidClueRecord> =
         records.values
-            .filter { it.mapKey == mapKey }
+            .filter { it.mapKey == mapKey && imageFile(it).isFile }
             .sortedByDescending { it.createdAtMs }
 
     @Synchronized
@@ -97,6 +98,7 @@ class AndroidClueStore private constructor(
         require(record.lat.isFinite() && record.lng.isFinite()) { "Clue location is invalid" }
         require(imageBytes.isNotEmpty()) { "Clue image is empty" }
         require(thumbnailBytes.isNotEmpty()) { "Clue thumbnail is empty" }
+        context?.let { org.ncssar.rid2caltopo.app.FlightStorage.prepareWrite(it, imageBytes.size.toLong() + thumbnailBytes.size) }
         root.mkdirs()
         val imageFile = imageFile(record)
         val thumbnailFile = thumbnailFile(record)
@@ -148,6 +150,7 @@ class AndroidClueStore private constructor(
 
     @Synchronized
     private fun persistIndex() {
+        records.entries.removeAll { !imageFile(it.value).isFile }
         root.mkdirs()
         val array = JSONArray()
         records.values.forEach { array.put(it.toJson()) }

@@ -8,6 +8,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StreamPipInsetFrameTest {
+    @Test fun centerpointPointAolStaysAbsoluteWhenTerrainReferenceChanges() {
+        val sample = CenterpointElevationSample(39.0,-121.0,1000,1,true,50)
+        assertEquals("1000' MSL · 1m DEM · AOL 50' · Assumed ↓90°",centerpointElevationLabel(sample))
+        assertEquals("+10' REF · 1m DEM · AOL 50' · Assumed ↓90°",centerpointElevationLabel(sample,990,CenterpointElevationDisplayMode.REFERENCE))
+    }
+
     @Test
     fun collapsedSplitDividerGetsFullEdgeRestoreTarget() {
         assertEquals(192, splitDividerTouchHeightDp(0f))

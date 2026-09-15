@@ -124,7 +124,7 @@ object StreamFlightActivityRegistry {
     private var configuredBindings: Map<String, String> = emptyMap()
     private var livePublishers: Set<String> = emptySet()
     private val acceptedStreamPositions = mutableMapOf<String, Long>()
-    private val lastPublisherActivityAtMs = mutableMapOf<String, Long>()
+    private val lastTelemetryElapsedMs = mutableMapOf<String, Long>()
 
     @JvmStatic
     fun bindRuntime(streamDesignator: String, remoteId: String) {
@@ -155,8 +155,6 @@ object StreamFlightActivityRegistry {
     fun replaceLivePublishers(designators: Collection<String>, observedAtMs: Long) {
         val normalized = designators.map(::normalizeDesignator).filter(String::isNotEmpty).toSet()
         synchronized(lock) {
-            (livePublishers - normalized).forEach { lastPublisherActivityAtMs[it] = observedAtMs }
-            normalized.forEach { lastPublisherActivityAtMs[it] = observedAtMs }
             livePublishers = normalized
         }
     }
@@ -179,16 +177,23 @@ object StreamFlightActivityRegistry {
     }
 
     @JvmStatic
-    fun activityForRemoteId(remoteId: String, nowMs: Long): PairedVideoFlightActivity {
+    @JvmOverloads
+    fun activityForRemoteId(remoteId: String, nowMs: Long, elapsed: Long = android.os.SystemClock.elapsedRealtime()): PairedVideoFlightActivity {
         val remote = remoteId.trim()
         if (remote.isEmpty()) return PairedVideoFlightActivity(false, 0L)
         synchronized(lock) {
             val designators = boundDesignatorsForRemoteIdLocked(remote)
             val active = designators.any { it in livePublishers }
-            val lastActivity = if (active) nowMs else designators.maxOfOrNull {
-                lastPublisherActivityAtMs[it] ?: 0L
-            } ?: 0L
+            val lastActivity = designators.mapNotNull { lastTelemetryElapsedMs[it] }
+                .maxOrNull()?.let { nowMs - (elapsed - it).coerceAtLeast(0L) } ?: 0L
             return PairedVideoFlightActivity(active, lastActivity)
+        }
+    }
+
+    fun noteTelemetryReceived(streamDesignator: String, elapsedMs: Long = android.os.SystemClock.elapsedRealtime()) {
+        synchronized(lock) {
+            val key = normalizeDesignator(streamDesignator)
+            if (key in livePublishers) lastTelemetryElapsedMs[key] = elapsedMs
         }
     }
 
@@ -213,7 +218,7 @@ object StreamFlightActivityRegistry {
             configuredBindings = emptyMap()
             livePublishers = emptySet()
             acceptedStreamPositions.clear()
-            lastPublisherActivityAtMs.clear()
+            lastTelemetryElapsedMs.clear()
         }
     }
 

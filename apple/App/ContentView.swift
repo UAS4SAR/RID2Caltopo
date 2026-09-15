@@ -49,6 +49,8 @@ struct ContentView: View {
     @StateObject private var ridTracks = RIDTrackViewModel()
     @StateObject private var locationProvider = AppleLocationProvider()
     @StateObject private var caltopoSettings = AppleCaltopoSettings()
+    @State private var showingFlightAllowance = false
+    @State private var showingBluetoothDisabled = false
     @StateObject private var clueStore = AppleClueStore()
     @StateObject private var diagnostics = AppleDiagnosticsCenter()
     @StateObject private var droneConfirmations = AppleDroneConfirmationStore()
@@ -73,6 +75,7 @@ struct ContentView: View {
     @State private var showImportConfig = false
     @State private var importConfigNotice: ConfigImportNotice?
     @State private var showConfigurationTransfer = false
+    @State private var showStorageManagement = false
     @State private var showTeamMaps = false
     @State private var showMapOptions = false
     @State private var showConfirmExit = false
@@ -103,7 +106,7 @@ struct ContentView: View {
     @State private var incidentMapBackgroundedAt: Date?
     @State private var incidentMapBackgroundDisconnectTask: Task<Void, Never>?
     @State private var incidentMapRelocationGuard = IncidentMapRelocationGuard()
-    @AppStorage("video.captureStreams") private var captureStreams = false
+    @AppStorage("video.captureStreams") private var captureStreams = true
 
     private var startupRoot: some View {
         rootScreen
@@ -163,6 +166,7 @@ struct ContentView: View {
                         showReleaseNotes: $showReleaseNotes,
                         showImportConfig: $showImportConfig,
                         showConfigurationTransfer: $showConfigurationTransfer,
+                        showStorageManagement: $showStorageManagement,
                         showCaltopoSettings: $showCaltopoSettings,
                         showAboutPrivacy: $showAboutPrivacy,
                         showConfirmExit: $showConfirmExit
@@ -209,6 +213,9 @@ struct ContentView: View {
                     organization: orgConfigSettings,
                     identities: droneConfirmations
                 )
+            }
+            .navigationDestination(isPresented: $showStorageManagement) {
+                AppleStorageManagementView(trackModel: ridTracks)
             }
             .navigationDestination(isPresented: $showDiagnosticLogs) {
                 DiagnosticLogView(diagnostics: diagnostics)
@@ -732,6 +739,27 @@ struct ContentView: View {
 
     private var lifecycleRoot: some View {
         startupRoot
+            .alert("Flight Storage", isPresented: Binding(
+                get: { mediaMTX.storageWarning != nil },
+                set: { if !$0 { mediaMTX.storageWarning = nil } }
+            )) {
+                Button(mediaMTX.storageNeedsAllowance ? "Increase Allowance" : "Manage Storage") { mediaMTX.storageWarning = nil; showingFlightAllowance = true }
+                Button("Later", role: .cancel) { mediaMTX.storageWarning = nil }
+            } message: {
+                Text(mediaMTX.storageWarning ?? "")
+            }
+            .sheet(isPresented: $showingFlightAllowance) {
+                NavigationStack {
+                    Group {
+                        if mediaMTX.storageNeedsAllowance {
+                            Form { AppleFlightStorageLimits() }.navigationTitle("Flight Storage Allowance")
+                        } else {
+                            AppleStorageManagementView(trackModel: ridTracks)
+                        }
+                    }
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingFlightAllowance = false } } }
+                }
+            }
             .task {
                 await monitorOperationalState()
             }
@@ -750,6 +778,7 @@ struct ContentView: View {
                 while !Task.isCancelled,
                       !AppleApplicationCleanupCenter.shared.isShutdownRequested {
                     mediaMTX.ensureHealthy(captureStreams: captureStreams)
+                    clueStore.pruneDeletedStorage()
                     try? await Task.sleep(for: .seconds(15))
                 }
             }
@@ -826,6 +855,15 @@ struct ContentView: View {
 
     private var mediaMonitoredRoot: some View {
         lifecycleRoot
+            .onChange(of: bluetoothScanner.state, initial: true) { _, state in
+                if state == .bluetoothDisabled { showingBluetoothDisabled = true }
+                else if state == .scanning { showingBluetoothDisabled = false }
+            }
+            .alert("Bluetooth is disabled", isPresented: $showingBluetoothDisabled) {
+                Button("Continue", role: .cancel) { }
+            } message: {
+                Text("Bluetooth is disabled. Bluetooth Remote ID broadcasts, including those relayed by a bridge, will not be detected. Video and SEI telemetry can continue.")
+            }
             .onChange(of: bluetoothStatus) { _, status in
                 AppleLog.info("BluetoothRID", status)
             }
@@ -1374,6 +1412,7 @@ struct ContentView: View {
         switch bluetoothScanner.state {
         case .idle: "Idle"
         case .waitingForBluetooth: "Waiting"
+        case .bluetoothDisabled: "Bluetooth is disabled"
         case .scanning: "Scanning"
         case let .unavailable(reason): reason
         }
@@ -1403,7 +1442,6 @@ struct ContentView: View {
             if !peerCoordinator.peers.isEmpty { LabeledContent("Peer zones", value: String(peerCoordinator.peers.count)) }
             LabeledContent("Team drones", value: String(droneConfirmations.importedMappingCount))
             Button("Import Config", systemImage: "qrcode.viewfinder") { showImportConfig = true }
-                        Button("Import Surface Package (.aol)", systemImage: "mountain.2") { showImportConfig = true }
             NavigationLink {
                 AppleConfigurationTransferView(caltopo: caltopoSettings, organization: orgConfigSettings, identities: droneConfirmations)
             } label: { Label("Backup & Transfer", systemImage: "shippingbox") }
@@ -1616,13 +1654,14 @@ struct ContentView: View {
             VStack(spacing: 1) {
                 Text("Waypoints Received")
                     .font(.caption.bold())
-                    .frame(width: 400, height: 24)
+                    .frame(width: 484, height: 24)
                     .background(Color.accentColor.opacity(0.16))
                 HStack(spacing: 1) {
                     ForEach(["BT4:", "BT5:"], id: \.self) { label in
                         androidTableHeader(label, width: 120)
                     }
                     androidTableHeader("R2C:", width: 80)
+                    androidTableHeader("SEI:", width: 80)
                     androidTableHeader("Total:", width: 80)
                 }
             }
@@ -1667,6 +1706,7 @@ struct ContentView: View {
             androidTransportCell(track, source: .bluetoothLegacy)
             androidTransportCell(track, source: .bluetoothExtended)
             androidTableValue("\(sourceCount(track, .trackerRelay))", width: 80)
+            androidTableValue("\(sourceCount(track, .djiVideo))", width: 80)
             androidTableValue("\(track.points.count)", width: 80)
             androidTableValue(flightDuration(track), width: 125)
             androidTableValue("", width: 125)
@@ -1762,7 +1802,8 @@ struct ContentView: View {
 
     private var deviceVersionText: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
-        return "\(AppleDeviceIdentity.displayName)\n\(version)"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return "\(AppleDeviceIdentity.displayName)\n\(version)(\(build))"
     }
 
     private var appUptimeText: String {
@@ -1929,7 +1970,7 @@ struct ContentView: View {
             LabeledContent("Archived tracks", value: String(ridTracks.archivedTrackCount))
             Text(ridTracks.archiveStatus).font(.caption).foregroundStyle(.secondary)
             LabeledContent("Tracker archive", value: ridTracks.trackerArchiveStatus)
-            Text("Files › On My iPad › RID2Caltopo › RID2Caltopo › Tracks")
+            Text("Files › On My iPad › RID2Caltopo › RID2Caltopo › FlightStorage")
                 .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             if let url = ridTracks.latestArchiveURL {
                 ShareLink(item: url) { Label("Export Latest Track", systemImage: "square.and.arrow.up") }
@@ -2101,6 +2142,7 @@ struct ContentView: View {
               !showReleaseNotes,
               !showAboutPrivacy,
               !showConfigurationTransfer,
+              !showStorageManagement,
               selectedAircraftID == nil
         else { return }
         AppleLog.info("Navigation", "Top bar double tap: opening Live View")
@@ -2723,6 +2765,7 @@ private struct MainScreenMenu: View, Equatable {
     @Binding var showReleaseNotes: Bool
     @Binding var showImportConfig: Bool
     @Binding var showConfigurationTransfer: Bool
+    @Binding var showStorageManagement: Bool
     @Binding var showCaltopoSettings: Bool
     @Binding var showAboutPrivacy: Bool
     @Binding var showConfirmExit: Bool
@@ -2739,8 +2782,8 @@ private struct MainScreenMenu: View, Equatable {
             Button("Release Notes", systemImage: "doc.text") { showReleaseNotes = true }
             Divider()
             Button("Import Config", systemImage: "qrcode.viewfinder") { showImportConfig = true }
-            Button("Import Surface Package (.aol)", systemImage: "mountain.2") { showImportConfig = true }
             Button("Backup & Transfer", systemImage: "shippingbox") { showConfigurationTransfer = true }
+            Button("Manage Storage...", systemImage: "externaldrive") { showStorageManagement = true }
             Button("Settings", systemImage: "gearshape") { showCaltopoSettings = true }
             Button("About & Privacy", systemImage: "hand.raised") {
                 showAboutPrivacy = true

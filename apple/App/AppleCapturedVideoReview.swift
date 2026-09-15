@@ -1,3 +1,4 @@
+import R2CCore
 import AVKit
 import CoreVideo
 import CryptoKit
@@ -208,6 +209,7 @@ final class AppleCapturedVideoReviewModel: ObservableObject {
         openGeneration += 1
         let generation = openGeneration
         closePlayback(deleteStagedVideo: true)
+        if let day = sourceURL.pathComponents.first(where: { AppleFlightStorage.date($0) != nil }) { AppleFlightStorage.protect(day, owner: "video-review") }
         displayName = sourceURL.lastPathComponent
         state = "Preparing captured video…"
         isStaging = true
@@ -362,9 +364,8 @@ final class AppleCapturedVideoReviewModel: ObservableObject {
         }
 
         let digest = SHA256.hash(data: Data(original.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined()
-        let root = (FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-                    ?? FileManager.default.temporaryDirectory)
-            .appendingPathComponent("RID2Caltopo/CapturedVideoReviews", isDirectory: true)
+        let originalDay = original.pathComponents.first { AppleFlightStorage.date($0) != nil }
+        let root = AppleFlightStorage.root.appendingPathComponent(originalDay ?? AppleFlightStorage.dayName(Date()))
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         sidecarURL = root.appendingPathComponent("\(digest).review.json")
         if let sidecarURL, let data = try? Data(contentsOf: sidecarURL),
@@ -424,6 +425,7 @@ final class AppleCapturedVideoReviewModel: ObservableObject {
     }
 
     private func closePlayback(deleteStagedVideo: Bool) {
+        AppleFlightStorage.release(owner: "video-review")
         player?.pause()
         if let timeObserver, let player { player.removeTimeObserver(timeObserver) }
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }

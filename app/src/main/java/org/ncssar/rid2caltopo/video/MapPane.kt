@@ -2470,6 +2470,14 @@ internal fun SplitMapPane(
         )
     }
 
+    var calibrationDesignator by remember { mutableStateOf<String?>(null) }
+    calibrationDesignator?.let { target ->
+        val altitude = viewModel.droneDisplayStateFor(target)
+        AltitudeCalibrationDialog(altitude != null && !altitude.positionStale && viewModel.altitudeCoordinator.canCalibrateOverLaunch(target), {
+            if (viewModel.altitudeCoordinator.manualCalibrateOverLaunch(target)) calibrationDesignator = null
+            else CaltopoClient.ShowToast("Fresh aircraft position and altitude are required")
+        }, { calibrationDesignator = null })
+    }
     openBubbleDesignator?.takeIf { colorPickerTarget == null }?.let { designator ->
         val point = dronePoints.firstOrNull { it.designator == designator }
         if (point != null) {
@@ -2537,17 +2545,17 @@ internal fun SplitMapPane(
                                 (bubbleDisplayState.aol.feet ?: 0.0) < 0
                             Text(androidx.compose.ui.text.buildAnnotatedString {
                                 append(line)
+                                if (line.contains("CAL")) addStyle(androidx.compose.ui.text.SpanStyle(color = androidx.compose.ui.graphics.Color(0xFFFF9800)), line.indexOf("CAL"), line.indexOf("CAL") + 3)
                                 if (negativeAol) addStyle(
                                     androidx.compose.ui.text.SpanStyle(color = androidx.compose.ui.graphics.Color.Red),
                                     line.indexOf(": ") + 2, line.length
                                 )
-                            })
+                            }, modifier = Modifier.clickable(enabled = line.contains("CAL")) { calibrationDesignator = point.designator })
                         }
                         Text("Only calibrate while hovering at an independently established 50 ft directly above the launch point. This also supplies the AOL launch reference.",fontSize=12.sp)
                         TextButton(enabled=bubbleDisplayState != null && !bubbleDisplayState.positionStale,onClick={
-                            val applied=viewModel.altitudeCoordinator.manualCalibrateOverLaunch(point.designator)
-                            CaltopoClient.ShowToast(if(applied) "50 ft launch calibration applied" else "Fresh aircraft position and altitude are required")
-                        }) { Text("Calibrate at 50 ft over launch") }
+                            calibrationDesignator = point.designator
+                        }) { Text("Calibrate 50' ATO") }
                         TextButton(onClick = { showAolDetails = true }) { Text("AOL details") }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(
@@ -2805,6 +2813,7 @@ internal fun SplitMapPane(
     ) {
         val operatorMapGestureHandler by rememberUpdatedState<(OperatorMapGesture) -> Unit> { gesture ->
             if (isInsetMode) return@rememberUpdatedState
+            if (!shouldSuspendMapFollow(gesture)) return@rememberUpdatedState
             if (!operatorAdjustedViewport) {
                 operatorAdjustedViewport = true
                 CTDebug(MAP_PANE_TAG, "Map viewport operator-adjusted by ${gesture.name.lowercase()}")
@@ -2844,6 +2853,7 @@ internal fun SplitMapPane(
                     var touchDownX = 0f
                     var touchDownY = 0f
                     var panGestureStarted = false
+                    var multiTouchGesture = false
                     val doubleTapDetector = GestureDetector(
                         context,
                         object : GestureDetector.SimpleOnGestureListener() {
@@ -2863,12 +2873,14 @@ internal fun SplitMapPane(
                                 touchDownX = event.x
                                 touchDownY = event.y
                                 panGestureStarted = false
+                                multiTouchGesture = false
                             }
                             MotionEvent.ACTION_POINTER_DOWN -> {
+                                multiTouchGesture = true
                                 operatorMapGestureHandler(OperatorMapGesture.Zoom)
                             }
                             MotionEvent.ACTION_MOVE -> {
-                                if (!panGestureStarted &&
+                                if (!multiTouchGesture && !panGestureStarted &&
                                     hypot(event.x - touchDownX, event.y - touchDownY) >= touchSlop
                                 ) {
                                     panGestureStarted = true
@@ -3760,7 +3772,8 @@ internal fun SplitMapPane(
                         if (!isInsetMode) {
                             setOnMarkerClickListener { _, _ ->
                                 if (sameMapDrone(latestFocusedPath, point.designator)) {
-                                    openBubbleDesignator = point.designator
+                                    if (viewModel.droneDisplayStateFor(point.designator)?.let { !it.positionStale && it.aol.status == org.ncssar.rid2caltopo.video.surface.MeasurementStatus.CalibrationRequired } == true) calibrationDesignator = point.designator
+                                    else openBubbleDesignator = point.designator
                                 } else {
                                     openBubbleDesignator = null
                                     operatorAdjustedViewport = false

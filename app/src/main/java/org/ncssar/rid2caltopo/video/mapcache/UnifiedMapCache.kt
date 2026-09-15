@@ -15,7 +15,7 @@ internal object UnifiedMapCache {
     val lock = Any()
     private data class Store(val namespace: String, val cache: BlobCacheStore)
     private data class Entry(val bytes: Long, val terrain: Boolean, val name: String, val modified: Long, val delete: () -> Boolean)
-    private val stores = linkedMapOf<String, Store>()
+    private val stores = java.util.concurrent.ConcurrentHashMap<String, Store>()
     private val files = linkedMapOf<String, Entry>()
     private val protectedTerrain = mutableSetOf<String>()
     private val touched = mutableMapOf<String, Long>()
@@ -25,7 +25,7 @@ internal object UnifiedMapCache {
     @Volatile var generation = 0L; private set
     @Volatile var blocked = false; private set
 
-    fun register(id: String, namespace: String, store: BlobCacheStore) = synchronized(lock) {
+    fun register(id: String, namespace: String, store: BlobCacheStore) {
         stores[id] = Store(namespace, store)
     }
 
@@ -50,7 +50,15 @@ internal object UnifiedMapCache {
                     .forEach { remember(it) }
             }
             context.noBackupFilesDir.resolve("dem_blocks_v2").walkTopDown().filter { it.isFile }.forEach { remember(it) }
-            context.noBackupFilesDir.resolve("surface_v1").walkTopDown().filter { it.isFile }.forEach { remember(it) }
+            when (val selected = MapCacheRootResolver.resolveRoot(context)) {
+                is MapCacheRoot.FileBacked -> selected.dir.resolve("surface_v1").walkTopDown().filter { it.isFile }.forEach { remember(it) }
+                is MapCacheRoot.SafBacked -> {
+                    fun scan(dir: DocumentFile) {
+                        dir.listFiles().forEach { if (it.isDirectory) scan(it) else rememberSurface(it) }
+                    }
+                    selected.dir.findFile("surface_v1")?.let(::scan)
+                }
+            }
             scannedRoot = root
         }
     }
@@ -77,7 +85,7 @@ internal object UnifiedMapCache {
         // Merge the oldest entries across every store; keep small batches to avoid full DB scans.
         val queues = stores.values.associateWith { ArrayDeque(it.cache.oldestEntries()) }.toMutableMap()
         val eligible = files.entries.filter { (path, entry) ->
-            !path.contains("/surface_v1/") && !entry.name.endsWith(".aol") && (!entry.terrain || (entry.name !in protectedTerrain && (touched[entry.name] ?: 0) < System.currentTimeMillis() - 60_000))
+            !path.contains("/surface_v1/") && !path.contains("surface_v1%2F", true) && !entry.name.startsWith("surface_v1/") && !entry.name.endsWith(".aol") && (!entry.terrain || (entry.name !in protectedTerrain && (touched[entry.name] ?: 0) < System.currentTimeMillis() - 60_000))
         }.sortedBy { maxOf(it.value.modified, touched[it.value.name] ?: 0) }.toMutableList()
         while (used > target) {
             val store = queues.filterValues { it.isNotEmpty() }.minByOrNull { it.value.first().accessed }?.key
@@ -141,6 +149,9 @@ internal object UnifiedMapCache {
     }
     fun remember(file: DocumentFile) = synchronized(lock) {
         files[file.uri.toString()] = Entry(file.length(), true, file.name.orEmpty(), file.lastModified(), { !file.exists() || file.delete() })
+    }
+    fun rememberSurface(file: DocumentFile) = synchronized(lock) {
+        files[file.uri.toString()] = Entry(file.length(), false, "surface_v1/" + file.name.orEmpty(), file.lastModified(), { !file.exists() || file.delete() })
     }
     fun forget(file: DocumentFile) = synchronized(lock) { files.remove(file.uri.toString()); Unit }
 }

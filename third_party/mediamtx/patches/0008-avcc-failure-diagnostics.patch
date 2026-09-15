@@ -1,0 +1,128 @@
+--- a/vendor/github.com/bluenviron/gortmplib/reader.go
++++ b/vendor/github.com/bluenviron/gortmplib/reader.go
+@@ -630,7 +630,7 @@
+ 					if errors.Is(err, h264.ErrAVCCNoNALUs) {
+ 						return nil
+ 					}
+-					return fmt.Errorf("unable to decode AVCC: %w", err)
++					return avccDiagnosticError(err, msg.AU, msg.DTS, fmt.Sprintf("%T", msg))
+ 				}
+ 
+ 				cb(msg.DTS+msg.PTSDelta, msg.DTS, au)
+@@ -645,7 +645,7 @@
+ 				if errors.Is(err, h264.ErrAVCCNoNALUs) {
+ 					return nil
+ 				}
+-				return fmt.Errorf("unable to decode AVCC: %w", err)
++				return avccDiagnosticError(err, msg.Payload, msg.DTS, fmt.Sprintf("%T", msg))
+ 			}
+ 
+ 			cb(msg.DTS, msg.DTS, au)
+@@ -657,7 +657,7 @@
+ 				if errors.Is(err, h264.ErrAVCCNoNALUs) {
+ 					return nil
+ 				}
+-				return fmt.Errorf("unable to decode AVCC: %w", err)
++				return avccDiagnosticError(err, msg.Payload, msg.DTS, fmt.Sprintf("%T", msg))
+ 			}
+ 
+ 			cb(msg.DTS+msg.PTSDelta, msg.DTS, au)
+@@ -694,7 +694,7 @@
+ 					if errors.Is(err, h264.ErrAVCCNoNALUs) {
+ 						return nil
+ 					}
+-					return fmt.Errorf("unable to decode AVCC: %w", err)
++					return avccDiagnosticError(err, msg.AU, msg.DTS, fmt.Sprintf("%T", msg))
+ 				}
+ 
+ 				cb(msg.DTS+msg.PTSDelta, msg.DTS, au)
+@@ -709,7 +709,7 @@
+ 				if errors.Is(err, h264.ErrAVCCNoNALUs) {
+ 					return nil
+ 				}
+-				return fmt.Errorf("unable to decode AVCC: %w", err)
++				return avccDiagnosticError(err, msg.Payload, msg.DTS, fmt.Sprintf("%T", msg))
+ 			}
+ 
+ 			cb(msg.DTS, msg.DTS, au)
+@@ -721,7 +721,7 @@
+ 				if errors.Is(err, h264.ErrAVCCNoNALUs) {
+ 					return nil
+ 				}
+-				return fmt.Errorf("unable to decode AVCC: %w", err)
++				return avccDiagnosticError(err, msg.Payload, msg.DTS, fmt.Sprintf("%T", msg))
+ 			}
+ 
+ 			cb(msg.DTS+msg.PTSDelta, msg.DTS, au)
+--- /dev/null
++++ b/vendor/github.com/bluenviron/gortmplib/avcc_diagnostic.go
+@@ -0,0 +1,34 @@
++package gortmplib
++
++import (
++	"encoding/binary"
++	"fmt"
++	"time"
++)
++
++// avccDiagnosticError reports framing only, never compressed media or credentials.
++// Limit the walk even for adversarial input; this runs only after decoding failed.
++func avccDiagnosticError(cause error, payload []byte, dts time.Duration, messageType string) error {
++	offset := 0
++	units := 0
++	for units < 64 {
++		remaining := len(payload) - offset
++		if remaining < 4 {
++			return fmt.Errorf("unable to decode AVCC: %w (message=%s dtsMs=%d payloadBytes=%d naluIndex=%d offset=%d prefixBytes=%d)",
++				cause, messageType, dts.Milliseconds(), len(payload), units, offset, remaining)
++		}
++		declared := uint64(binary.BigEndian.Uint32(payload[offset : offset+4]))
++		available := remaining - 4
++		if declared > uint64(available) {
++			return fmt.Errorf("unable to decode AVCC: %w (message=%s dtsMs=%d payloadBytes=%d naluIndex=%d offset=%d declaredBytes=%d availableBytes=%d)",
++				cause, messageType, dts.Milliseconds(), len(payload), units, offset, declared, available)
++		}
++		offset += 4 + int(declared)
++		units++
++		if offset == len(payload) {
++			break
++		}
++	}
++	return fmt.Errorf("unable to decode AVCC: %w (message=%s dtsMs=%d payloadBytes=%d inspectedUnits=%d inspectedBytes=%d)",
++		cause, messageType, dts.Milliseconds(), len(payload), units, offset)
++}
+--- /dev/null
++++ b/vendor/github.com/bluenviron/gortmplib/avcc_diagnostic_test.go
+@@ -0,0 +1,32 @@
++package gortmplib
++
++import (
++	"errors"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestAVCCDiagnosticError(t *testing.T) {
++	cause := errors.New("invalid length")
++	cases := []struct {
++		name    string
++		payload []byte
++		want    string
++	}{
++		{"empty", nil, "offset=0 prefixBytes=0"},
++		{"short prefix", []byte{0, 0, 1}, "offset=0 prefixBytes=3"},
++		{"oversized length", []byte{255, 255, 255, 255, 1}, "declaredBytes=4294967295 availableBytes=1"},
++		{"trailing prefix", []byte{0, 0, 0, 1, 42, 0}, "naluIndex=1 offset=5 prefixBytes=1"},
++		{"second unit truncated", []byte{0, 0, 0, 1, 42, 0, 0, 0, 2, 43}, "naluIndex=1 offset=5 declaredBytes=2 availableBytes=1"},
++		{"bounded zero units", make([]byte, 400), "inspectedUnits=64 inspectedBytes=256"},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			err := avccDiagnosticError(cause, tc.payload, 123*time.Millisecond, "Video")
++			if !errors.Is(err, cause) || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "dtsMs=123") {
++				t.Fatalf("unexpected diagnostic: %v", err)
++			}
++		})
++	}
++}

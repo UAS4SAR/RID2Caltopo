@@ -45,8 +45,14 @@ are accepted. Oversized or unsupported selections fail with an explanation.
 
 Prepared output is pinned within the shared map-cache budget. Repeated preparation
 retains previous regions; individual region removal is not yet exposed in the UI.
-Prepared data becomes available to live AOL automatically. Legacy **Import Surface Package** remains available
-for externally prepared `.aol` files; a failed import preserves the previous import.
+Prepared data becomes available to live AOL automatically. Share prepared regions
+through the existing **MA package export/import** workflow on Android and Apple.
+MA export includes complete prepared AOL sets intersecting the selected area,
+regardless of the DEM checkbox; MA import restores those sets for local use.
+The export/import report shows the AOL tile count. Prepare the source area before
+exporting; an MA package does not create missing surface coverage.
+Standalone `.aol` files remain supported by the legacy file importer, but there is
+no separate surface-package menu entry.
 
 Native preparation supports explicit NAVD88 metre heights with CONUS Albers
 (EPSG:6350), NAD83/NAD83(2011) northern UTM zones and WGS84 northern UTM zones.

@@ -3,35 +3,46 @@ package org.ncssar.rid2caltopo.video.surface
 import android.content.Context
 import org.ncssar.rid2caltopo.video.mapcache.UnifiedMapCache
 import java.io.File
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 
-/** Prepared assignment is pinned within the shared budget; updates validate before atomic replacement. */
+/** Prepared assignments share the map cache root and budget; publication follows verification. */
 internal object SurfaceStore {
-    private var regions: List<Pair<File, org.json.JSONObject>>? = null
+    private var regions: List<Pair<SurfaceCacheFile, org.json.JSONObject>>? = null
     private var loaded:SurfacePackage?=null
     private var loadedPath:String?=null
     @Volatile var generation=0L; private set
-    private fun file(context:Context)=File(context.noBackupFilesDir,"surface_v1/active.aol")
+    private var rootId: String? = null
+    private fun root(context: Context): SurfaceCacheFile {
+        val root = SurfaceCacheFile.root(context)
+        if (rootId != root.path) {
+            rootId = root.path; regions = null; releaseMemory(); generation++
+        }
+        return root
+    }
+    private fun file(context:Context): SurfaceCacheFile {
+        val root = root(context)
+        return root.child("single").listFiles().filter { it.child("complete").exists() }
+            .sortedByDescending { it.name }.firstOrNull()?.child("active.aol") ?: root.child("active.aol")
+    }
     @Synchronized fun releaseMemory() { loaded = null; loadedPath = null }
     @Synchronized fun current(context:Context):SurfacePackage? {
         val f=file(context)
         if(loadedPath!=f.path) {
             loaded=if(f.exists() && f.length()<=SurfacePackage.MAX_BYTES) runCatching { SurfacePackage.decode(f.readBytes()) }.getOrNull() else null
             loadedPath=f.path
-            if(f.exists()) UnifiedMapCache.remember(f)
+            if(f.exists()) f.remember()
         }
         return loaded
     }
-    private fun catalog(context: Context): List<Pair<File, org.json.JSONObject>> {
+    private fun catalog(context: Context): List<Pair<SurfaceCacheFile, org.json.JSONObject>> {
+        val sets = root(context).child("sets")
         regions?.let { return it }
-        return File(context.noBackupFilesDir,"surface_v1/sets").listFiles().orEmpty()
-            .filter { it.isDirectory }.sortedByDescending { it.name }.mapNotNull { dir ->
-                val f=File(dir,"index.json")
+        return sets.listFiles()
+            .filter { it.isDirectory && it.child("complete").exists() }.sortedByDescending { it.name }.mapNotNull { dir ->
+                val f=dir.child("index.json")
                 if(!f.exists() || f.length()>2_000_000) null else runCatching { dir to org.json.JSONObject(f.readText()) }.getOrNull()
             }.also { regions=it }
     }
-    private fun preparedAt(dir: File, index: org.json.JSONObject): Long =
+    private fun preparedAt(dir: SurfaceCacheFile, index: org.json.JSONObject): Long =
         index.optLong("preparedAtEpochMs", dir.name.substringBefore('-').toLongOrNull() ?: 0L)
 
     /** Whole prepared sets preserve their overlap and survey reference when shared. */
@@ -41,13 +52,13 @@ internal object SurfaceStore {
             val (west,south)=xy(index,bounds.south,bounds.west)
             val (east,north)=xy(index,bounds.north,bounds.east)
             if(east < -index.getInt("width")/2.0 || west > index.getInt("width")/2.0 || north < -index.getInt("height")/2.0 || south > index.getInt("height")/2.0) continue
-            SurfacePreparedSet.validate(index) { name -> File(dir,name).readBytes() }
+            SurfacePreparedSet.validate(index) { name -> dir.child(name).readBytes() }
             val copy=org.json.JSONObject(index.toString()).put("preparedAtEpochMs",preparedAt(dir,index))
             val entries=copy.getJSONArray("entries")
             for(i in 0 until entries.length()) {
                 val name=entries.getJSONObject(i).getString("file")
                 require(name.matches(Regex("tile-[0-9]+-[0-9]+\\.aol")))
-                val f=File(dir,name);require(f.length() in 1..SurfacePackage.MAX_BYTES.toLong())
+                val f=dir.child(name);require(f.length() in 1..SurfacePackage.MAX_BYTES.toLong())
                 val bytes=f.readBytes();SurfacePackage.decode(bytes)
                 result += "aol/${dir.name}/$name" to bytes
             }
@@ -61,7 +72,7 @@ internal object SurfaceStore {
             val (west,south)=xy(index,bounds.south,bounds.west);val (east,north)=xy(index,bounds.north,bounds.east)
             if(!SurfacePreparedSet.contains(index.getInt("width"),index.getInt("height"),west,south,east,north)) return@runCatching false
             SurfacePreparedSet.validate(index) { name ->
-                val f=File(dir,name);require(f.length() in 1..SurfacePackage.MAX_BYTES.toLong());f.readBytes()
+                val f=dir.child(name);require(f.length() in 1..SurfacePackage.MAX_BYTES.toLong());f.readBytes()
             }
             true
         }.getOrDefault(false)
@@ -87,8 +98,8 @@ internal object SurfaceStore {
                 require(entries.size==list.length()+1) { "Unexpected AOL set contents" }
                 require(index.getInt("width") in 1..4000 && index.getInt("height") in 1..4000)
                 File(staged,"index.json").writeText(index.toString())
-                val target=File(context.noBackupFilesDir,"surface_v1/sets/$id")
-                if(!target.exists()) UnifiedMapCache.reserveWithoutEviction(context,staged.listFiles()!!.sumOf { it.length() }).use {
+                val target=root(context).child("sets").child(id)
+                if(!target.child("complete").exists()) UnifiedMapCache.reserveWithoutEviction(context,staged.listFiles()!!.sumOf { it.length() }).use {
                     installPrepared(context,staged,id,it)
                 }
                 count+=list.length()
@@ -96,7 +107,7 @@ internal object SurfaceStore {
         }
         return count
     }
-    private fun loadTile(file: File): SurfacePackage? {
+    private fun loadTile(file: SurfaceCacheFile): SurfacePackage? {
         if(loadedPath!=file.path) {
             loaded=if(file.exists() && file.length()<=SurfacePackage.MAX_BYTES) runCatching { SurfacePackage.decode(file.readBytes()) }.getOrNull() else null
             loadedPath=file.path
@@ -113,17 +124,17 @@ internal object SurfaceStore {
                 val entry=entries.getJSONObject(i);val m=entry.getJSONObject("metadata");val (x,y)=xy(m,lat,lon)
                 if(x>=m.getDouble("coreWest") && x<m.getDouble("coreWest")+m.getInt("coreWidth") && y>=m.getDouble("coreSouth") && y<m.getDouble("coreSouth")+m.getInt("coreHeight")) {
                     val name=entry.getString("file")
-                    if(name.matches(Regex("tile-[0-9]+-[0-9]+\\.aol"))) return loadTile(File(dir,name))
+                    if(name.matches(Regex("tile-[0-9]+-[0-9]+\\.aol"))) return loadTile(dir.child(name))
                 }
             }
         }
         return null
     }
-    @Synchronized fun calculate(context: Context,lat: Double,lon: Double,takeoffLat: Double,takeoffLon: Double,height: Double?): AolState {
+    @Synchronized fun calculate(context: Context,lat: Double,lon: Double,takeoffLat: Double,takeoffLon: Double,height: Double?,pointOnly: Boolean = false): AolState {
         val p=selected(context,lat,lon) ?: current(context) ?: return AolState()
         val group=p.metadata.optString("referenceGroup").takeIf { it.isNotBlank() }
         val ground=p.groundAt(takeoffLat,takeoffLon) ?: group?.let { selected(context,takeoffLat,takeoffLon,it)?.takeIf { other -> other.metadata.optString("sourceCRS")==p.metadata.optString("sourceCRS") }?.groundAt(takeoffLat,takeoffLon) }
-        return AolState.calculate(p,lat,lon,takeoffLat,takeoffLon,height,ground)
+        return AolState.calculate(p,lat,lon,takeoffLat,takeoffLon,height,ground,pointOnly)
     }
     @Synchronized fun preparedBriefing(context: Context,points: List<Pair<Double,Double>>,polygon: Boolean): Pair<SurfacePackage,SurfacePackage.Analysis>? {
         if(points.isEmpty()) return null
@@ -134,7 +145,7 @@ internal object SurfaceStore {
             for(i in 0 until entries.length()) {
                 val name=entries.getJSONObject(i).getString("file")
                 if(!name.matches(Regex("tile-[0-9]+-[0-9]+\\.aol"))) return null
-                val p=loadTile(File(dir,name)) ?: return null
+                val p=loadTile(dir.child(name)) ?: return null
                 if(first==null) first=p
                 val a=p.briefing(points,60.96,polygon,coreOnly=true);checked+=a.checked;missing+=a.missing
                 if(a.peak!=null && (peak==null || a.peak.elevation>peak.elevation)) peak=a.peak
@@ -145,26 +156,23 @@ internal object SurfaceStore {
     }
     @Synchronized fun installPrepared(context: Context,staged: File,id: String,reservation: UnifiedMapCache.Reservation) {
         require(id.matches(Regex("[0-9a-fA-F-]+")))
-        val root=File(context.noBackupFilesDir,"surface_v1/sets");root.mkdirs()
-        Files.move(staged.toPath(),File(root,id).toPath(),StandardCopyOption.ATOMIC_MOVE)
-        synchronized(UnifiedMapCache.lock) {
-            File(root,id).listFiles().orEmpty().forEach { UnifiedMapCache.remember(it) }
-            reservation.close()
-        }
+        val target = root(context).child("sets").child(id)
+        SurfaceCachePublication.publishSet(staged, target)
+        target.listFiles().forEach { it.remember() }
+        reservation.close()
         regions=null;releaseMemory();generation++
     }
     @Synchronized fun install(context:Context,bytes:ByteArray):SurfacePackage {
         val packageData=SurfacePackage.decode(bytes)
-        val f=file(context); f.parentFile!!.mkdirs()
-        synchronized(UnifiedMapCache.lock) {
-            UnifiedMapCache.reserve(context,bytes.size.toLong()).use {
-                val part=File(f.parentFile,"incoming.part")
-                try {
-                    part.outputStream().use { it.write(bytes); it.fd.sync() }
-                    Files.move(part.toPath(),f.toPath(),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING)
-                    UnifiedMapCache.remember(f)
-                } finally { part.delete() }
-            }
+        val target = root(context).child("single").child("${System.currentTimeMillis()}-${java.util.UUID.randomUUID()}")
+        val f = target.child("active.aol")
+        UnifiedMapCache.reserve(context,bytes.size.toLong()).use {
+            try {
+                f.writeBytes(bytes)
+                require(f.readBytes().contentEquals(bytes)) { "AOL write verification failed" }
+                target.child("complete").writeBytes(byteArrayOf(1))
+                f.remember()
+            } catch (e: Exception) { target.delete(); throw e }
         }
         loaded=packageData; loadedPath=if (loaded != null) f.path else null; generation++
         return packageData

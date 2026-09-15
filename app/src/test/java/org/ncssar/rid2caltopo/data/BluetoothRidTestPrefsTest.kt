@@ -32,7 +32,7 @@ class BluetoothRidTestPrefsTest {
     }
 
     @Test
-    fun periodicRestartRequiresDebugDiagnosticMode() {
+    fun productionRestartsScanAndExperimentsRetainTheirOverride() {
         assertTrue(
             BluetoothRidTestPrefs.resolvePeriodicRestart(
                 storedValue = true,
@@ -40,7 +40,7 @@ class BluetoothRidTestPrefsTest {
                 debugBuild = true
             )
         )
-        assertFalse(
+        assertTrue(
             BluetoothRidTestPrefs.resolvePeriodicRestart(
                 storedValue = true,
                 variant = BluetoothRidTestPrefs.ScanVariant.PRODUCTION,
@@ -58,6 +58,10 @@ class BluetoothRidTestPrefsTest {
 
     @Test
     fun variantsExposeIndependentFilterAndPhyFactors() {
+        assertTrue(BluetoothRidTestPrefs.ScanVariant.PRODUCTION.usesLegacy1M)
+        assertFalse(BluetoothRidTestPrefs.ScanVariant.PRODUCTION.usesSoftwareFilter)
+        assertTrue(BluetoothRidTestPrefs.resolvePeriodicRestart(false,
+            BluetoothRidTestPrefs.ScanVariant.PRODUCTION, debugBuild = false))
         assertFalse(BluetoothRidTestPrefs.ScanVariant.FILTERED_ALL_PHY.usesSoftwareFilter)
         assertFalse(BluetoothRidTestPrefs.ScanVariant.FILTERED_ALL_PHY.usesLegacy1M)
         assertFalse(BluetoothRidTestPrefs.ScanVariant.FILTERED_LEGACY_1M.usesSoftwareFilter)

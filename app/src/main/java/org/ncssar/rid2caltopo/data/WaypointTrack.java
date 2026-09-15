@@ -467,6 +467,7 @@ public class WaypointTrack {
                 writer.flush();
                 writer.close();
                 os.close();
+                org.ncssar.rid2caltopo.app.FlightStorage.documentChanged(ctxt, reportedFilepath);
                 CTDebug(TAG, "ReportStatsForFile() logged for " + filename);
             }
         } catch (Exception e) {
@@ -827,85 +828,91 @@ public class WaypointTrack {
         for (DocumentFile trackDir : archiveDir.listFiles()) {
             if (!trackDir.isDirectory()) continue;
             if (trackDir.getName().equals("cache")) continue;
-            CTInfo(TAG, "BgPollUnreportedTracks() Checking " + trackDir.getName());
-            Handler mainThreadHandler = new Handler(Looper.getMainLooper());
-            DocumentFile reportedFilepath = DocumentFileCompat.findFileIncludingLegacyDuplicateExtension(
-                    trackDir, "text/plain", ReportedFilenames);
-            HashSet<String> reportedFilenames = null;
-            if (null == reportedFilepath) {
-                reportedFilepath = DocumentFileCompat.createFileWithExactName(
+            String storageOwner = "archive-upload-" + java.util.UUID.randomUUID();
+            org.ncssar.rid2caltopo.app.FlightStorage.protect(trackDir.getName(), storageOwner);
+            try {
+                CTInfo(TAG, "BgPollUnreportedTracks() Checking " + trackDir.getName());
+                Handler mainThreadHandler = new Handler(Looper.getMainLooper());
+                DocumentFile reportedFilepath = DocumentFileCompat.findFileIncludingLegacyDuplicateExtension(
                         trackDir, "text/plain", ReportedFilenames);
+                HashSet<String> reportedFilenames = null;
                 if (null == reportedFilepath) {
-                    CTError(TAG, String.format(Locale.US, "Couldn't create '%s' in '%s'",
-                            ReportedFilenames, trackDir.getUri()));
-                    continue;
-                }
-            } else {
-                reportedFilenames = ReadFilenamesFromDocFile(reportedFilepath);
-            }
-            for (DocumentFile file : trackDir.listFiles()) {
-                String filename = file.getName();
-                DocumentFile finalReportedFilepath = reportedFilepath;
-
-                if (null == filename || !filename.endsWith(".json")) {
-                    CTInfo(TAG, "BgPollUnreportedTracks() skipping non geo-json file " + filename);
-                    continue;
-                }
-                if (IsTrackFileActive(file.lastModified(), System.currentTimeMillis())) {
-                    CTInfo(TAG, "BgPollUnreportedTracks() skipping file that appears to still be active: " + filename);
-                    continue;
-                }
-                CTInfo(TAG, "BgPollUnreportedTracks() found geo-json file " + filename);
-                if ((null != reportedFilenames) && reportedFilenames.contains(filename)) {
-                    CTInfo(TAG, "BgPollUnreportedTracks() skipping already reported file " + filename);
-                    continue;
-                }
-                // then filename should contain a geo-json file associated with an unreported track.
-                JSONObject waypointTrack = null;
-                try {
-                    waypointTrack = ReadGeoJson(file);
-                } catch (Exception e) {
-                    CTWarn(TAG, "Not able to read " + filename, e);
-                    // Ignore unreadable/empty files during future launches.
-                    ReportStatsForFile(finalReportedFilepath, filename);
-                    continue;
-                }
-                if (null == waypointTrack) continue;
-                if (IsLocalArchiveOnly(waypointTrack)) {
-                    CTInfo(TAG, "BgPollUnreportedTracks() skipping local-archive-only file " + filename);
-                    ReportStatsForFile(finalReportedFilepath, filename);
-                    continue;
-                }
-                TrackerUploadEligibility eligibility = GetTrackerUploadEligibility(waypointTrack);
-                if (eligibility != TrackerUploadEligibility.ELIGIBLE) {
-                    CTInfo(TAG, "BgPollUnreportedTracks() skipping ineligible tracker file " + filename);
-                    if (eligibility == TrackerUploadEligibility.PERMANENTLY_INELIGIBLE) {
-                        ReportStatsForFile(finalReportedFilepath, filename);
-                    }
-                    continue;
-                }
-                String geoJsonString = waypointTrack.toString();
-                CTDebug(TAG, "BgPollUnreportedTracks() publishing " + filename);
-                int responseCode = PublishGeoJsonStatsWithRetry(
-                        geoJsonString,
-                        String.format(Locale.US, "BgPollUnreportedTracks(%s)", filename));
-                if (!ShouldMarkGeoJsonStatsReportedForResponse(responseCode)) {
-                    consecutiveFails++;
-                    if (consecutiveFails > 2) {
-                        CTDebug(TAG, "BgPollUnreportedTracks(): suspending ops due to 2 consecutive failures to publish");
-                        break;
+                    reportedFilepath = DocumentFileCompat.createFileWithExactName(
+                            trackDir, "text/plain", ReportedFilenames);
+                    if (null == reportedFilepath) {
+                        CTError(TAG, String.format(Locale.US, "Couldn't create '%s' in '%s'",
+                                ReportedFilenames, trackDir.getUri()));
+                        continue;
                     }
                 } else {
-                    consecutiveFails = 0;
-                    mainThreadHandler.post(() -> ReportStatsForFile(finalReportedFilepath, filename));
+                    reportedFilenames = ReadFilenamesFromDocFile(reportedFilepath);
                 }
+                for (DocumentFile file : trackDir.listFiles()) {
+                    String filename = file.getName();
+                    DocumentFile finalReportedFilepath = reportedFilepath;
 
-                // Take a breather - give main thread and network a chance to do something.
-                try {
-                    Thread.sleep(500);
-                } catch (Exception e) {
-                    Thread.currentThread().interrupt(); // restore interrupted status
+                    if (null == filename || !filename.endsWith(".json")) {
+                        CTInfo(TAG, "BgPollUnreportedTracks() skipping non geo-json file " + filename);
+                        continue;
+                    }
+                    if (IsTrackFileActive(file.lastModified(), System.currentTimeMillis())) {
+                        CTInfo(TAG, "BgPollUnreportedTracks() skipping file that appears to still be active: " + filename);
+                        continue;
+                    }
+                    CTInfo(TAG, "BgPollUnreportedTracks() found geo-json file " + filename);
+                    if ((null != reportedFilenames) && reportedFilenames.contains(filename)) {
+                        CTInfo(TAG, "BgPollUnreportedTracks() skipping already reported file " + filename);
+                        continue;
+                    }
+                    // then filename should contain a geo-json file associated with an unreported track.
+                    JSONObject waypointTrack = null;
+                    try {
+                        waypointTrack = ReadGeoJson(file);
+                    } catch (Exception e) {
+                        CTWarn(TAG, "Not able to read " + filename, e);
+                        // Ignore unreadable/empty files during future launches.
+                        ReportStatsForFile(finalReportedFilepath, filename);
+                        continue;
+                    }
+                    if (null == waypointTrack) continue;
+                    if (IsLocalArchiveOnly(waypointTrack)) {
+                        CTInfo(TAG, "BgPollUnreportedTracks() skipping local-archive-only file " + filename);
+                        ReportStatsForFile(finalReportedFilepath, filename);
+                        continue;
+                    }
+                    TrackerUploadEligibility eligibility = GetTrackerUploadEligibility(waypointTrack);
+                    if (eligibility != TrackerUploadEligibility.ELIGIBLE) {
+                        CTInfo(TAG, "BgPollUnreportedTracks() skipping ineligible tracker file " + filename);
+                        if (eligibility == TrackerUploadEligibility.PERMANENTLY_INELIGIBLE) {
+                            ReportStatsForFile(finalReportedFilepath, filename);
+                        }
+                        continue;
+                    }
+                    String geoJsonString = waypointTrack.toString();
+                    CTDebug(TAG, "BgPollUnreportedTracks() publishing " + filename);
+                    int responseCode = PublishGeoJsonStatsWithRetry(
+                            geoJsonString,
+                            String.format(Locale.US, "BgPollUnreportedTracks(%s)", filename));
+                    if (!ShouldMarkGeoJsonStatsReportedForResponse(responseCode)) {
+                        consecutiveFails++;
+                        if (consecutiveFails > 2) {
+                            CTDebug(TAG, "BgPollUnreportedTracks(): suspending ops due to 2 consecutive failures to publish");
+                            break;
+                        }
+                    } else {
+                        consecutiveFails = 0;
+                        mainThreadHandler.post(() -> ReportStatsForFile(finalReportedFilepath, filename));
+                    }
+
+                    // Take a breather - give main thread and network a chance to do something.
+                    try {
+                        Thread.sleep(500);
+                    } catch (Exception e) {
+                        Thread.currentThread().interrupt(); // restore interrupted status
+                    }
                 }
+            } finally {
+                org.ncssar.rid2caltopo.app.FlightStorage.release(storageOwner);
             }
         }
         CTDebug(TAG, "BgPollUnreportedTracks(): Finished processing archiveDir. Terminating.");
@@ -973,6 +980,7 @@ public class WaypointTrack {
                 return;
             }
             ContentResolver resolver = ctxt.getContentResolver();
+            org.ncssar.rid2caltopo.app.FlightStorage.prepareWrite(ctxt, geoJsonString.getBytes().length);
             try (OutputStream outputStream = resolver.openOutputStream(dataFilepath.getUri(), "wt")) {
                 if (outputStream == null) {
                     CTError(TAG, "archive(): unable to open output stream for " + dataFilepath.getUri());
@@ -981,6 +989,7 @@ public class WaypointTrack {
                 outputStream.write(geoJsonString.getBytes());
                 outputStream.flush();
             }
+            org.ncssar.rid2caltopo.app.FlightStorage.documentChanged(ctxt, dataFilepath);
             CTDebug(TAG, String.format(Locale.US, "archive(): wrote %d coordinates to %s",
                     numCoords, dataFilepath.getUri()));
             if (archivedOkToLog && !archivedLocalOnly) {
@@ -1150,6 +1159,7 @@ public class WaypointTrack {
             }
             zos.finish();
             zos.close();
+            org.ncssar.rid2caltopo.app.FlightStorage.documentChanged(ctxt, kmzFile);
             CTDebug(TAG, String.format(Locale.US,
                     "archiveKmz(): wrote %s with %d clue(s).", kmzFileName, clues.size()));
         } catch (Exception e) {

@@ -35,7 +35,7 @@ Offsets below are relative to the beginning of the 39-byte tag value.
 | Offset | Size | Current interpretation | Conversion | Confidence |
 | ---: | ---: | --- | --- | --- |
 | 0 | 3 bytes | Header or flags | Not decoded | Unknown |
-| 3 | 4 bytes | Camera/world azimuth candidate | `u32 * 360 / 2^32` degrees | Strong candidate |
+| 3 | 4 bytes | Camera/world azimuth candidate | `i32 / 10^7` degrees, normalized to 0–360 | Confirmed signed boundary in 2026-09-15 capture |
 | 7 | 4 bytes | Stabilized camera roll candidate | `u32 * 360 / 2^32`, normalized signed | Unproven |
 | 11 | 4 bytes | Camera tilt encoder | `u32 * 360 / 2^32 - 90`, normalized signed | Strong |
 | 15 | 2 bytes | Relative north, low word | Part of split signed 32-bit millimeters | High |
@@ -129,3 +129,13 @@ must be checked before either source is used.
   opaque fields.
 - Retain raw type-245 payloads during research captures so future interpretations
   can be validated without relabeling overlapping bytes.
+
+### Heading boundary correction (2026-09-15)
+
+The iPad Matrice 4TD recording at 22.400–22.433 seconds contains tag-4 offset-3
+values +1799354051 and -1793949732. Signed degrees scaled by 10^7 decode these
+as 179.9354051° and 180.6050268° after normalization, a 0.6696217° turn.
+The former unsigned binary-angle interpretation produced a 58.812757° jump.
+This correction applies to the shared heading decoder; other tag-4 fields retain
+their separate existing interpretations. Absolute compass alignment still needs
+a controller comparison in the field.

@@ -224,6 +224,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         mostRecentSignalMsecTimestamp = 0;
         mostRecentAircraftMessageMsecTimestamp = 0;
         mostRecentMeshTelemetryMsecTimestamp = 0;
+        lastTrackReceiptElapsedMs = -1;
         learnedSignalIntervalMs = 0;
         learnedSignalIntervalSamples = 0;
         impliedTakeoffAltM        = null;
@@ -256,7 +257,10 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         if (trackLabel.isEmpty()) return;
         CTDebug(TAG, "reset(): Advising dronespec inactive: " + trackLabel);
         trackLabel = EMPTY_STRING;
+        hasRecordedWaypoint = false;
         goodCount = 0;
+        diagnosticInvalidPositions = diagnosticDuplicatePositions = diagnosticDistantPositions = diagnosticSpeedRejectedPositions = 0;
+        lastTrackDiagnosticAtMs = 0;
         totalCount = 0;
         distanceInFeet = 0.0F;
         stationaryRepeatCount = 0;
@@ -282,6 +286,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         mostRecentSignalMsecTimestamp = 0;
         mostRecentAircraftMessageMsecTimestamp = 0;
         mostRecentMeshTelemetryMsecTimestamp = 0;
+        lastTrackReceiptElapsedMs = -1;
         learnedSignalIntervalMs = 0;
         learnedSignalIntervalSamples = 0;
         int length = TransportTypeEnum.values().length;
@@ -705,8 +710,8 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
      *
      * @param lat new lattitude
      * @param lng new longitude
-     * @return returns true if the waypoint is far enough away from the previous waypoint
-     *         to be recorded.
+     * @return true when the sample passes position sanity checks and refreshes live telemetry.
+     *         Recording/publication sampling is separate.
      */
     public boolean checkNewWaypoint(double lat, double lng, double altitudeInMeters, long timestampInMilliseconds, long nowWallMsec, @Nullable Boolean airborne, TransportTypeEnum transportType) {
         if (transportType != TransportTypeEnum.DJI_STREAM) {
@@ -730,13 +735,11 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
             return false;
         }
 ***/
-        // We don't want to waste resources (storage/bandwidth) recording a bunch of waypoints
-        // that are right on top of each other, but at the same time we do want to let the world
-        // know that we're still active.
-        // Note that most remoteID modules will send out dozens of RemoteID updates with the exact
-        // same lat,long & timestamp many times while in transit.
-        // efficiently filter out bogus or duplicate location updates because there will be a lot of them.
-        if (0.0 == lat || 0.0 == lng) {
+        // Validate every position report, including stationary reports carrying new height.
+        // Archive/publication sampling happens after live telemetry has been refreshed.
+        if (!Double.isFinite(lat) || !Double.isFinite(lng) ||
+                Math.abs(lat) > 90 || Math.abs(lng) > 180 || 0.0 == lat || 0.0 == lng) {
+            diagnosticInvalidPositions++;
             if (false && CaltopoClient.CTDebugEnabled(ICON_LATENCY_TAG)) {            // We see a lot of these.
                 CaltopoClient.CTDebug(ICON_LATENCY_TAG, String.format(Locale.US,
                         "rid_drop remoteId=%s reason=invalid wall=%d droneTs=%d lat=%.6f lng=%.6f transport=%s",
@@ -744,19 +747,6 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
             }
             nonCount++;
             return false;
-        }
-
-        if (transportType != TransportTypeEnum.DJI_STREAM && Double.compare(lastLat, lat) == 0 && Double.compare(lastLng, lng) == 0) {
-            if ((goodCount == 0) || (System.currentTimeMillis() - mostRecentMsecTimestamp < 3000)) {
-                updateStationaryRepeatState(lat, lng, timestampInMilliseconds);
-                mostRecentSignalMsecTimestamp = nowWallMsec;
-                if (false && CaltopoClient.CTDebugEnabled(ICON_LATENCY_TAG)) {            // these too.
-                    CaltopoClient.CTDebug(ICON_LATENCY_TAG, String.format(Locale.US,
-                            "rid_drop remoteId=%s reason=dedup wall=%d droneTs=%d lat=%.6f lng=%.6f transport=%s",
-                            mappedId, nowWallMsec, timestampInMilliseconds, lat, lng, transportType));
-                }
-                return false;
-            } // OK to let dupes thru at a rate of once every three seconds just to keep the wheels on.
         }
 
         Location myLocation = CaltopoMap.GetMyLocation();
@@ -771,6 +761,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         //   in the same ballpark.
         if (MyLat != 0.0F) { // 0.1 degrees about 6 miles at 40 degrees latitude
             if ((Math.abs(MyLat - lat) > 0.1F) || (Math.abs(MyLng - lng) > 0.1F)) {
+                diagnosticDistantPositions++;
                 CTDebug(TAG, String.format(Locale.US,
                         "checkNewWaypoint(%s/%s) Ignoring spurious waypoint %.7f, %.7f.",
                         mappedId, transportType, lat, lng));
@@ -788,6 +779,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
             if (elapsedMsec > 0) {
                 float speedFps = lDistanceInFeet / (elapsedMsec / 1000.0f);
                 if (speedFps > MAX_WAYPOINT_SPEED_FPS) {
+                    diagnosticSpeedRejectedPositions++;
                     CTDebug(TAG, String.format(Locale.US,
                             "checkNewWaypoint(%s/%s) Ignoring implausible speed: %.0f fps (%.0f mph) from %.7f,%.7f to %.7f,%.7f",
                             mappedId, transportType, speedFps, speedFps * 3600.0f / 5280.0f,
@@ -802,14 +794,16 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         updateStationaryRepeatState(lat, lng, timestampInMilliseconds);
         mostRecentSignalMsecTimestamp = nowWallMsec;
         MostRecentWaypointTimestampInMsec = mostRecentMsecTimestamp = nowWallMsec;
+        lastTrackReceiptElapsedMs = android.os.SystemClock.elapsedRealtime();
         long acceptedWaypointTimestampMsec =
                 (timestampInMilliseconds > 0) ? timestampInMilliseconds : nowWallMsec;
 
         // All validity checks passed — this is an accepted waypoint.
         // Activate the drone (set the trackLabel) only now, so that invalid/filtered packets
-        // (lat=0, dedup, spurious coordinates, implausible speed) cannot ghost-activate it
+        // (lat=0, spurious coordinates, implausible speed) cannot ghost-activate it
         // and trigger an infinite terminate-and-revive loop in ProcessSortedCurrentDroneSpecArray.
         if (trackLabel.isEmpty()) {
+            hasRecordedWaypoint = false;
             trackLabel = getDisplayLabel();
             // Notify CaltopoClient so it (re)starts UiUpdatePoll and the drone appears in R2CView.
             // Without this, drones that never broadcast airborne=true are silently ignored: the
@@ -843,6 +837,29 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
                     mappedId, goodCount, System.currentTimeMillis(), timestampInMilliseconds, lat, lng, altitudeInMeters, transportType, getLastRssi(transportType), airborne, lDistanceInFeet, distanceInFeet, getDurationInSecAsString()));
         }
 
+        return true;
+    }
+
+    // Recording has its own anchor. Suppressed samples must never move this anchor or
+    // postpone the keepalive, and must not prevent live position/altitude refresh.
+    private transient boolean hasRecordedWaypoint;
+    private transient double recordedLatitude, recordedLongitude;
+    private transient long recordedAtMsec;
+
+    public synchronized boolean shouldRecordWaypoint(double lat, double lng, long receivedAtMsec,
+                                        double minimumDistanceFeet, TransportTypeEnum source) {
+        if (hasRecordedWaypoint && source != TransportTypeEnum.DJI_STREAM) {
+            double distance = DistanceFeetBetween(recordedLatitude, recordedLongitude, lat, lng);
+            long elapsed = receivedAtMsec - recordedAtMsec;
+            if ((distance == 0 || distance < minimumDistanceFeet) && elapsed >= 0 && elapsed < 3000) {
+                diagnosticDuplicatePositions++;
+                return false;
+            }
+        }
+        hasRecordedWaypoint = true;
+        recordedLatitude = lat;
+        recordedLongitude = lng;
+        recordedAtMsec = receivedAtMsec;
         return true;
     }
 
@@ -905,6 +922,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
     /** Record any RID message that can be associated with this active aircraft. Location
      * freshness remains position-only, but flight lifecycle aging uses this broader timestamp. */
     public void noteAircraftMessageReceived(long nowWallMsec) {
+        lastTrackReceiptElapsedMs = android.os.SystemClock.elapsedRealtime();
         mostRecentAircraftMessageMsecTimestamp = Math.max(
                 mostRecentAircraftMessageMsecTimestamp,
                 nowWallMsec);
@@ -924,7 +942,41 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
      * signal-loss semantics.
      */
     public void notePeerTelemetryReceived(long nowWallMsec) {
+        lastTrackReceiptElapsedMs = android.os.SystemClock.elapsedRealtime();
         mostRecentMeshTelemetryMsecTimestamp = nowWallMsec;
+    }
+
+    // Diagnostic counters contain no coordinates and do not change acceptance or retirement.
+    private transient long diagnosticInvalidPositions;
+    private transient long diagnosticDuplicatePositions;
+    private transient long diagnosticDistantPositions;
+    private transient long diagnosticSpeedRejectedPositions;
+    private transient long lastTrackDiagnosticAtMs;
+
+    public void logTrackDiagnostic(long nowMs, boolean publisherActive, long videoActivityAtMs,
+                                   long combinedIdleMs, long timeoutMs) {
+        if (!CaltopoClient.CTDebugEnabled("TrackDiagnostics")) return;
+        if (lastTrackDiagnosticAtMs > 0 && nowMs - lastTrackDiagnosticAtMs < 10_000L) return;
+        lastTrackDiagnosticAtMs = nowMs;
+        CTDebug("TrackDiagnostics", trackDiagnosticSummary(nowMs, publisherActive, videoActivityAtMs, combinedIdleMs, timeoutMs));
+    }
+
+    String trackDiagnosticSummary(long nowMs, boolean publisherActive, long videoActivityAtMs,
+                                  long combinedIdleMs, long timeoutMs) {
+        return String.format(Locale.US,
+                "Track evidence remoteId=%s track=%s accepted=%d invalid=%d duplicate=%d distant=%d speedRejected=%d " +
+                "positionAgeMs=%d ridPositionAgeMs=%d aircraftMessageAgeMs=%d peerAgeMs=%d " +
+                "publisherActive=%s videoActivityAgeMs=%d combinedIdleMs=%d timeoutMs=%d airborne=%s reportedAirborne=%s groundStatusAgeMs=%d networkSnapshotId=%s",
+                remoteId, trackLabel, goodCount, diagnosticInvalidPositions, diagnosticDuplicatePositions,
+                diagnosticDistantPositions, diagnosticSpeedRejectedPositions,
+                diagnosticAge(nowMs, mostRecentMsecTimestamp), diagnosticAge(nowMs, mostRecentSignalMsecTimestamp),
+                diagnosticAge(nowMs, mostRecentAircraftMessageMsecTimestamp), diagnosticAge(nowMs, mostRecentMeshTelemetryMsecTimestamp),
+                publisherActive, diagnosticAge(nowMs, videoActivityAtMs), combinedIdleMs, timeoutMs, airborne,
+                aolReportedAirborne, diagnosticAge(nowMs, aolGroundStatusAtMsec), NetworkDiagnostics.getCurrentSnapshotId());
+    }
+
+    private static long diagnosticAge(long nowMs, long timestampMs) {
+        return timestampMs > 0 ? Math.max(0L, nowMs - timestampMs) : -1L;
     }
 
     /** idleTimeInMsec()
@@ -955,7 +1007,16 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
      * @return duration in milliseconds since this aircraft was last heard locally or via peer
      *         telemetry. Unlike signalIdleTimeInMsec(), this includes mesh-relayed sightings.
      */
+    private transient long lastTrackReceiptElapsedMs = -1;
+
     public long trackTelemetryIdleTimeInMsec(long currentTimeInMsec) {
+        return trackTelemetryIdleTimeInMsec(currentTimeInMsec, android.os.SystemClock.elapsedRealtime());
+    }
+
+    public long trackTelemetryIdleTimeInMsec(long currentTimeInMsec, long nowElapsedMs) {
+        if (lastTrackReceiptElapsedMs >= 0) {
+            return Math.max(0, nowElapsedMs - lastTrackReceiptElapsedMs);
+        }
         long referenceTimestamp = Math.max(mostRecentMsecTimestamp, mostRecentSignalMsecTimestamp);
         referenceTimestamp = Math.max(referenceTimestamp, mostRecentAircraftMessageMsecTimestamp);
         referenceTimestamp = Math.max(referenceTimestamp, mostRecentMeshTelemetryMsecTimestamp);

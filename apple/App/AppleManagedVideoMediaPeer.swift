@@ -26,6 +26,7 @@ final class AppleManagedVideoMediaPeer: NSObject, @unchecked Sendable {
     typealias MetricsSink = @Sendable (String, AppleManagedVideoMediaMetrics) -> Void
     typealias FailureSink = @Sendable (String, String) -> Void
     typealias MicrophoneStateSink = @Sendable (String, Bool, String?) -> Void
+    typealias ReadySink = @Sendable (String) -> Void
 
     private static let sslInitialized = RTCInitializeSSL()
     private let queue = DispatchQueue(label: "org.ncssar.r2c.video-media")
@@ -34,6 +35,8 @@ final class AppleManagedVideoMediaPeer: NSObject, @unchecked Sendable {
     private let metricsSink: MetricsSink
     private let failureSink: FailureSink
     private let microphoneStateSink: MicrophoneStateSink
+    private let readySink: ReadySink
+    private var playbackStartGate = ManagedVideoPlaybackStartGate()
 
     private var requestID = ""
     private var peer: RTCPeerConnection?
@@ -63,7 +66,8 @@ final class AppleManagedVideoMediaPeer: NSObject, @unchecked Sendable {
         answerSink: @escaping AnswerSink,
         metricsSink: @escaping MetricsSink,
         failureSink: @escaping FailureSink,
-        microphoneStateSink: @escaping MicrophoneStateSink
+        microphoneStateSink: @escaping MicrophoneStateSink,
+        readySink: @escaping ReadySink
     ) {
         _ = Self.sslInitialized
         factory = RTCPeerConnectionFactory()
@@ -71,6 +75,7 @@ final class AppleManagedVideoMediaPeer: NSObject, @unchecked Sendable {
         self.metricsSink = metricsSink
         self.failureSink = failureSink
         self.microphoneStateSink = microphoneStateSink
+        self.readySink = readySink
     }
 
     func start(
@@ -153,6 +158,7 @@ final class AppleManagedVideoMediaPeer: NSObject, @unchecked Sendable {
         bitrateBps: Int64
     ) {
         closeOnQueue()
+        playbackStartGate = ManagedVideoPlaybackStartGate()
         configureWebRTCAudioRoutingOnQueue(microphoneEnabled: false)
         self.requestID = requestID
         selectedWidth = max(2, width)
@@ -567,6 +573,7 @@ final class AppleManagedVideoMediaPeer: NSObject, @unchecked Sendable {
     }
 
     private func closeOnQueue() {
+        playbackStartGate.cancel()
         statsTimer?.cancel()
         statsTimer = nil
         let closingPeer = peer
@@ -616,6 +623,18 @@ final class AppleManagedVideoMediaPeer: NSObject, @unchecked Sendable {
 extension AppleManagedVideoMediaPeer: AppleDecodedVideoFrameConsumer {}
 
 extension AppleManagedVideoMediaPeer: RTCPeerConnectionDelegate {
+    func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCPeerConnectionState) {
+        queue.async { [weak self] in
+            guard let self, self.peer === peerConnection else { return }
+            // ICE alone does not establish the DTLS media transport. Start a
+            // finite recording only after the whole connection is ready.
+            if self.playbackStartGate.shouldStart(connected: newState == .connected) {
+                AppleLog.info("VideoMedia", "request=\(self.requestID) media transport ready")
+                self.readySink(self.requestID)
+            }
+        }
+    }
+
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {}
     func peerConnection(_ peerConnection: RTCPeerConnection, didAdd stream: RTCMediaStream) {}
     func peerConnection(_ peerConnection: RTCPeerConnection, didRemove stream: RTCMediaStream) {}
@@ -624,7 +643,7 @@ extension AppleManagedVideoMediaPeer: RTCPeerConnectionDelegate {
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceConnectionState) {
         queue.async { [weak self] in
             guard let self else { return }
-            guard self.peer != nil else { return }
+            guard self.peer === peerConnection else { return }
             AppleLog.info(
                 "VideoMedia",
                 "request=\(self.requestID) ICE state=\(String(describing: newState))"

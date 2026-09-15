@@ -139,6 +139,7 @@ data class PendingClue(
     val terrainReferenceLongitude: Double? = null,
     val seiRelativeUpMeters: Double? = null,
     val gimbalAngleDeg: Double,
+    val gimbalAngleConfirmed: Boolean = true,
     val timestamp: Long,
     val bitmap: Bitmap?,
     val preview: Bitmap?,
@@ -183,6 +184,8 @@ internal data class CenterpointElevationSample(
     val longitude: Double,
     val elevationFeet: Int,
     val demResolutionMeters: Int?,
+    val assumedNadir: Boolean = false,
+    val pointAolFeet: Int? = null,
 )
 
 private data class CenterpointElevationInputKey(
@@ -1216,67 +1219,32 @@ class StreamsViewModel(
         streamDesignator: String,
         nowMs: Long = System.currentTimeMillis(),
     ): CenterpointElevationSample? {
-        val droneState = pairedDroneSpecStateFor(streamDesignator) ?: droneStates[streamDesignator]
-        val droneSpec = droneState?.source ?: return null
-        val camera = StreamCameraTelemetryRegistry.fresh(
-            designator = streamDesignator,
-            nowMs = nowMs,
-        ) ?: return null
-        val bearing = (camera.fovAzimuthDeg ?: camera.azimuthDeg)
-            ?.takeIf { it.isFinite() }
-            ?: return null
-        val tilt = camera.tiltDeg.takeIf { it.isFinite() && it < -0.1 } ?: return null
-        val displayState = streamTelemetryDisplayState(
-            streamDesignator = streamDesignator,
-            pairedMappedId = droneSpec.mappedId,
-            displayStateByDesignator = altitudeCoordinator.displayStateByDesignator,
-        )
-        val aglMeters = displayState?.aglFt
-            ?.takeIf { it.isFinite() && it >= 0.0 }
-            ?.div(METERS_TO_FEET)
-            ?: return null
-        val latitude = droneSpec.lastLat.takeIf { it.isFinite() && it in -90.0..90.0 } ?: return null
-        val longitude = droneSpec.lastLng.takeIf { it.isFinite() && it in -180.0..180.0 } ?: return null
-        val altitudeMeters = droneSpec.lastAlt.takeIf { it.isFinite() } ?: return null
-        val inputKey = CenterpointElevationInputKey(
-            latitudeE5 = kotlin.math.round(latitude * 100_000.0).toLong(),
-            longitudeE5 = kotlin.math.round(longitude * 100_000.0).toLong(),
-            altitudeHalfMeters = kotlin.math.round(altitudeMeters * 2.0).toLong(),
-            aglHalfMeters = kotlin.math.round(aglMeters * 2.0).toLong(),
-            bearingFifths = kotlin.math.round(bearing * 5.0).toLong(),
-            tiltFifths = kotlin.math.round(tilt * 5.0).toLong(),
-        )
-        centerpointElevationCache[streamDesignator]
-            ?.takeIf { it.first == inputKey }
-            ?.let { return it.second }
-
+        val spec = (pairedDroneSpecStateFor(streamDesignator) ?: droneStates[streamDesignator])?.source ?: return null
+        if (nowMs - spec.mostRecentMsecTimestamp !in 0..4999) return null
+        val latitude = spec.lastLat.takeIf { it.isFinite() && it in -90.0..90.0 } ?: return null
+        val longitude = spec.lastLng.takeIf { it.isFinite() && it in -180.0..180.0 } ?: return null
+        val camera = StreamCameraTelemetryRegistry.fresh(streamDesignator, nowMs)
+        val reportedTilt = StreamCameraTelemetryRegistry.freshTilt(streamDesignator, nowMs)
+        val tilt = reportedTilt ?: -90.0
+        if (tilt >= -0.1) return null
         val projected = if (tilt <= -89.9) {
-            ClueProjection(latitude, longitude, altitudeMeters - aglMeters)
+            ClueProjection(latitude, longitude, 0.0)
         } else {
-            projectClueLocationWithDem(
-                demElevationService = altitudeCoordinator.demElevationService,
-                droneLat = latitude,
-                droneLng = longitude,
-                droneAlt = altitudeMeters,
-                headingDeg = bearing,
-                aglMeters = aglMeters,
-                gimbalAngleDeg = tilt,
-            )
+            val bearing = (camera?.fovAzimuthDeg ?: camera?.azimuthDeg)?.takeIf { it.isFinite() } ?: return null
+            val display = streamTelemetryDisplayState(streamDesignator, spec.mappedId, altitudeCoordinator.displayStateByDesignator)
+            if (display == null || display.positionStale || display.aglStatus != org.ncssar.rid2caltopo.video.surface.MeasurementStatus.Available) return null
+            val agl = display.aglFt?.takeIf { it.isFinite() && it >= 0 }?.div(METERS_TO_FEET) ?: return null
+            val altitude = spec.lastAlt.takeIf { it.isFinite() && it > -999 } ?: return null
+            projectClueLocationWithDem(altitudeCoordinator.demElevationService, latitude, longitude, altitude, bearing, agl, tilt)
         }
-        val terrain = altitudeCoordinator.demElevationService.sampleElevationMeters(
-            projected.lat,
-            projected.lng,
-        ) ?: return null
-        val result = CenterpointElevationSample(
-            latitude = projected.lat,
-            longitude = projected.lng,
-            elevationFeet = kotlin.math.round(terrain.elevationMeters * METERS_TO_FEET).toInt(),
-            demResolutionMeters = terrain.horizontalResolutionMeters
-                ?.takeIf { it.isFinite() && it > 0.0 }
-                ?.let { kotlin.math.round(it).toInt().coerceAtLeast(1) },
-        )
-        centerpointElevationCache[streamDesignator] = inputKey to result
-        return result
+        val terrain = altitudeCoordinator.demElevationService.sampleElevationMeters(projected.lat, projected.lng) ?: return null
+        if (!terrain.elevationMeters.isFinite() || System.currentTimeMillis() - spec.mostRecentMsecTimestamp !in 0..4999) return null
+        val pointAol = altitudeCoordinator.pointAolFeet(spec.remoteId, projected.lat, projected.lng)
+        if (System.currentTimeMillis() - nowMs !in 0..4999) return null
+        return CenterpointElevationSample(projected.lat, projected.lng,
+            kotlin.math.round(terrain.elevationMeters * METERS_TO_FEET).toInt(),
+            terrain.horizontalResolutionMeters?.takeIf { it.isFinite() && it > 0 }?.let { kotlin.math.round(it).toInt().coerceAtLeast(1) },
+            reportedTilt == null, pointAol?.let { kotlin.math.round(it).toInt() })
     }
 
     /**
@@ -2251,7 +2219,9 @@ class StreamsViewModel(
         )
     }
 
-    fun onSnapshotCaptured(designator: String, bitmap: Bitmap) {
+    fun captureClueFrame(designator: String) = ffmpegProbeService?.captureClueFrame(designator)
+
+    fun onSnapshotCaptured(designator: String, bitmap: Bitmap, capturedCamera: StreamCameraTelemetrySample? = null) {
         val startedAtMs = System.currentTimeMillis()
         fun logSnapshotIfSlow(step: String, elapsedMs: Long) {
             if (elapsedMs < 250L) return
@@ -2279,13 +2249,19 @@ class StreamsViewModel(
         }
 
         val telemetryStartedAtMs = System.currentTimeMillis()
-        val telemetry = ffmpegProbeService?.telemetrySnapshot(designator)
+        val telemetry = capturedCamera?.let { camera ->
+            StreamTelemetrySnapshot(
+                sourceTag = "dji-sei-245", confidence = 0.95,
+                sourceTimestampUs = camera.sourceTimestampUs,
+                latitude = camera.referenceLatitudeDeg, longitude = camera.referenceLongitudeDeg,
+                altitudeMeters = camera.referenceAltitudeMeters,
+                gimbalPitchDeg = camera.rawTiltDeg, cameraYawDeg = camera.rawCameraAzimuthDeg,
+                horizontalFovDeg = camera.horizontalFovDeg, verticalFovDeg = camera.verticalFovDeg,
+                djiAttitudeAnglesDeg = camera.attitudeAnglesDeg,
+            )
+        }
         logSnapshotIfSlow("telemetrySnapshot", System.currentTimeMillis() - telemetryStartedAtMs)
-        val renderedFrameTimestampUs = ffmpegProbeService?.renderedFrameSourceTimestampUs(designator)
-        val freshDjiCamera = StreamCameraTelemetryRegistry.freshForFrame(
-            designator = designator,
-            frameTimestampUs = renderedFrameTimestampUs,
-        )?.takeIf {
+        val freshDjiCamera = capturedCamera?.takeIf {
             it.latitudeDeg != null && it.longitudeDeg != null &&
                 it.relativeUpMeters?.isFinite() == true &&
                 it.referenceLatitudeDeg != null && it.referenceLongitudeDeg != null
@@ -2310,8 +2286,8 @@ class StreamsViewModel(
             displayStateByDesignator = altitudeCoordinator.displayStateByDesignator
         )
         val headingSelection = selectClueHeading(
-            djiCameraAzimuthDeg = freshDjiCamera?.azimuthDeg,
-            djiVideoCourseDeg = freshDjiCamera?.courseDeg,
+            djiCameraAzimuthDeg = capturedCamera?.azimuthDeg,
+            djiVideoCourseDeg = capturedCamera?.courseDeg,
             telemetry = nonDjiTelemetry,
             derivedHeadingDeg = displayState?.derivedHeadingDeg,
             ridTrackDeg = droneSpec.lastPositionTelemetry?.aircraftTrackDeg,
@@ -2324,11 +2300,9 @@ class StreamsViewModel(
             atoMeters = clueAtoMeters,
             validatedDjiRelativeUpMeters = freshDjiCamera?.relativeUpMeters,
         )
-        val clueGimbalAngle = freshDjiCamera?.tiltDeg
-            ?: nonDjiTelemetry?.gimbalPitchDeg
-                ?.takeIf { it.isFinite() }
-                ?.coerceIn(-90.0, 90.0)
-            ?: DEFAULT_CLUE_GIMBAL_ANGLE_DEG
+        val capturedGimbalAngle = capturedCamera?.tiltDeg?.takeIf { it.isFinite() }
+        // A manual angle is required when no frame-associated camera sample exists.
+        val clueGimbalAngle = capturedGimbalAngle ?: DEFAULT_CLUE_GIMBAL_ANGLE_DEG
         val projectionStartedAtMs = System.currentTimeMillis()
         val projectedLocation = projectClueLocation(
             droneLat = clueLat,
@@ -2387,6 +2361,7 @@ class StreamsViewModel(
             terrainReferenceLongitude = freshDjiCamera?.referenceLongitudeDeg,
             seiRelativeUpMeters = freshDjiCamera?.relativeUpMeters,
             gimbalAngleDeg = clueGimbalAngle,
+            gimbalAngleConfirmed = capturedGimbalAngle != null,
             timestamp = clueTimestamp,
             bitmap = bitmap,
             preview = null,
@@ -2545,6 +2520,7 @@ class StreamsViewModel(
                 lng = projection.lng,
                 alt = projection.alt,
                 gimbalAngleDeg = gimbalAngleDeg,
+                gimbalAngleConfirmed = gimbalAngleDeg.isFinite() && gimbalAngleDeg in -90.0..90.0,
                 terrainProjectionApplied = false,
                 demSource = null,
                 demResolutionMeters = null,
@@ -2580,6 +2556,10 @@ class StreamsViewModel(
 
     fun submitClue() {
         val clue = pendingClue ?: return
+        if (!clue.gimbalAngleConfirmed) {
+            CaltopoClient.ShowToast("Camera angle unavailable. Set or confirm the gimbal angle.")
+            return
+        }
         if (clue.projectionHeightMeters == null) {
             CaltopoClient.ShowToast("Clue projection needs fresh AGL or a valid relative altitude.")
             CTWarn(tag, "Clue submission blocked: projection height unavailable")
@@ -2623,6 +2603,10 @@ class StreamsViewModel(
 
     fun submitLocalMarkerOnly() {
         val clue = pendingClue ?: return
+        if (!clue.gimbalAngleConfirmed) {
+            CaltopoClient.ShowToast("Camera angle unavailable. Set or confirm the gimbal angle.")
+            return
+        }
         if (clue.projectionHeightMeters == null) {
             CaltopoClient.ShowToast("Clue projection needs fresh AGL or a valid relative altitude.")
             CTWarn(tag, "Local clue submission blocked: projection height unavailable")
@@ -2687,6 +2671,7 @@ class StreamsViewModel(
 
     private fun requestDemClueProjectionRefresh(designator: String) {
         val clue = _pendingClue.value ?: return
+        if (!clue.gimbalAngleConfirmed) return
         if (clue.designator != designator) return
         clueProjectionJob?.cancel()
         clueProjectionJob = viewModelScope.launch(Dispatchers.Default) {
@@ -3885,6 +3870,11 @@ class StreamsViewModel(
     }
 
     init {
+        viewModelScope.launch {
+            org.ncssar.rid2caltopo.app.FlightStorage.changes.collect { generation ->
+                if (generation > 0) hydrateLocalClues(currentLocalClueMapKey())
+            }
+        }
         defaultAnomalyConfig = AnomalyPrefs.loadSessionDefaults(application.applicationContext)
         refreshConfiguredStreamBindings()
         CaltopoMap.AddMapStatusListener(this)

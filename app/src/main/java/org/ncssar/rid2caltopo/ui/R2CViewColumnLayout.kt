@@ -7,6 +7,7 @@ internal object R2CViewColumnLayout {
     const val transportCountColumnWidthDp = 80
     const val transportSignalColumnWidthDp = 40
     const val r2cWaypointColumnWidthDp = 80
+    const val seiColumnWidthDp = 80
     const val totalColumnWidthDp = 80
     const val flightDurationColumnWidthDp = 125
     const val r2cRttColumnWidthDp = 125
@@ -22,10 +23,10 @@ internal object R2CViewColumnLayout {
         transportSignalColumnWidthDp
     )
     val waypointsReceivedHeaderWidthDp =
-        transportColumnWidthsDp.sum() + r2cWaypointColumnWidthDp + totalColumnWidthDp
+        transportColumnWidthsDp.sum() + r2cWaypointColumnWidthDp + seiColumnWidthDp + totalColumnWidthDp
     val headerColumnWidthsDp =
         listOf(publishStatusColumnWidthDp, trackLabelColumnWidthDp, remoteIdColumnWidthDp) +
             transportColumnWidthsDp +
-            listOf(r2cWaypointColumnWidthDp, totalColumnWidthDp, flightDurationColumnWidthDp, r2cRttColumnWidthDp)
+            listOf(r2cWaypointColumnWidthDp, seiColumnWidthDp, totalColumnWidthDp, flightDurationColumnWidthDp, r2cRttColumnWidthDp)
     val droneItemColumnWidthsDp = headerColumnWidthsDp
 }

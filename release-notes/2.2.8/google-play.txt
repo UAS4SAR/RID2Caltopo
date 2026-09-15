@@ -1,0 +1,1 @@
+Improved flight storage and cleanup, map follow, terrain and AOL tools, Matrice camera heading, and clue capture. Completed recordings now share richer details with Tracker. Fixed two-way voice startup and remote-viewing status after a stream ends. Includes Bluetooth, map-cache and recording-playback improvements. Updates preserve existing app data.

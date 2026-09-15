@@ -10,6 +10,7 @@ public final class ManagedVideoStreamAdvertisement {
     public final int sourceHeight;
     public final double sourceFps;
     public final long sourceBitrateBps;
+    public final long sourceSizeBytes;
     @NonNull public final String sourceCodec;
     @NonNull public final String mediaKind;
     @Nullable public final String recordedAt;
@@ -42,6 +43,19 @@ public final class ManagedVideoStreamAdvertisement {
             long durationMs,
             @NonNull String thumbnailRevision,
             @Nullable String thumbnailJpegBase64) {
+        this(sessionId, droneDesignator, sourceWidth, sourceHeight, sourceFps,
+                sourceBitrateBps, sourceCodec, mediaKind, recordedAt, durationMs,
+                thumbnailRevision, thumbnailJpegBase64, 0L);
+    }
+
+    public ManagedVideoStreamAdvertisement(
+            @NonNull String sessionId, @NonNull String droneDesignator,
+            int sourceWidth, int sourceHeight, double sourceFps, long sourceBitrateBps,
+            @NonNull String sourceCodec, @NonNull String mediaKind,
+            @Nullable String recordedAt, long durationMs,
+            @NonNull String thumbnailRevision, @Nullable String thumbnailJpegBase64,
+            long sourceSizeBytes) {
+        this.sourceSizeBytes = Math.max(0L, sourceSizeBytes);
         this.sessionId = sessionId;
         this.droneDesignator = droneDesignator;
         this.sourceWidth = sourceWidth;
