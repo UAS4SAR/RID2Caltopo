@@ -1,0 +1,11 @@
+RID2Caltopo 2.2.9 (241) — MA package retest
+
+Check Export MA Package with Include shared map access off (the default). Generate without MA account credentials, then import into an iPad already using an incident-map bookmark. Confirm cached imagery, DEM and AOL data are available and the recipient's account, selected map and bookmark access remain unchanged. Repeat with shared map access enabled and confirm the intended temporary profile and expiry.
+
+From an Android sender, test the current MA QR with Apple Main Screen > Menu > Import Config, a pasted token, a saved QR image, and the system camera link. Also import the ZIP through Choose File. Android hosts QR transfers; Apple continues exporting ZIP files through the share sheet.
+
+Keep the sender's QR panel open and both devices on a reachable Wi-Fi network or hotspot. Test local Wi-Fi without internet, initial Local Network permission denial followed by approval, interrupted download followed by Retry, expired QR, and a newly generated share after the sender's address or session changes. Apple QR downloads are limited to 512 MB; use a smaller area for larger packages.
+
+Verify invalid certificates and corrupted/incomplete downloads do not import package data. Verify existing organization, FAA, tracker-enrollment, JSON and surface imports remain available.
+
+Automated macOS TLS tests and app builds are documented in verification.md. Physical iPhone/iPad transfer and camera behavior still require this retest; no Apple device installation or store publication was performed during preparation. Android v2.2.9 was installed on the S11U and A5 Pro; the A5 Pro also received the later archive-setup/storage-warning correction. Android validation and installation details are in verification.md.

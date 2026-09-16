@@ -53,6 +53,7 @@
 				<string>r2creauth</string>
 				<string>r2cfaa1</string>
 				<string>r2cma1</string>
+				<string>r2cmapkg1</string>
 			</array>
 		</dict>
 	</array>
@@ -74,7 +75,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>RID2Caltopo scans configuration codes, aircraft serial numbers, and CalTopo account values.</string>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>RID2Caltopo receives drone telemetry and video streams over the local network.</string>
+    <string>RID2Caltopo receives drone telemetry, video streams, and shared MA map packages over the local network.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>RID2Caltopo uses location while an incident map is connected so it can map Remote ID observations and safely disconnect a relocated tablet after the display turns off.</string>
 	<key>NSFaceIDUsageDescription</key>

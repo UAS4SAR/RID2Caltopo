@@ -1012,6 +1012,16 @@ final class AppleOrgConfigImporter: ObservableObject {
         orgSettings: AppleOrgConfigSettings,
         identityStore: AppleDroneConfirmationStore
     ) async {
+        if let package = MutualAidPackageTransferToken.decode(rawToken) {
+            state = .downloading
+            do {
+                let data = try await MutualAidPackageDownloader.download(package, receiverName: AppleDeviceIdentity.displayName)
+                try await importMAPackageData(data, caltopoSettings: caltopoSettings, orgSettings: orgSettings)
+            } catch let error as URLError {
+                state = .failed("Could not download from the sharing device. Connect both devices to the same Wi-Fi or hotspot, allow Local Network access for RID2Caltopo in Settings, and keep the sender’s QR panel open. If sharing restarted, scan its new QR. \(error.localizedDescription)")
+            } catch { state = .failed(error.localizedDescription) }
+            return
+        }
         let normalized = AndroidConfigTokenCodec.normalize(rawToken)
         guard let token = AndroidConfigTokenCodec.decode(normalized), token.version == 2 else {
             state = .failed("Token not recognised or unsupported.")
@@ -1115,6 +1125,17 @@ final class AppleOrgConfigImporter: ObservableObject {
         }
     }
 
+    private func importMAPackageData(
+        _ data: Data,
+        caltopoSettings: AppleCaltopoSettings,
+        orgSettings: AppleOrgConfigSettings
+    ) async throws {
+        let manager = AppleConfigurationTransferManager()
+        let changedProfile = try await manager.importMutualAidPackage(data, caltopo: caltopoSettings, organization: orgSettings)
+        if changedProfile { caltopoConfigurationHandler?(caltopoSettings.configuration) }
+        state = .applied(manager.status)
+    }
+
     func importFile(
         _ url: URL,
         caltopoSettings: AppleCaltopoSettings,
@@ -1131,6 +1152,10 @@ final class AppleOrgConfigImporter: ObservableObject {
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         do {
             let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            if url.pathExtension.lowercased() == "zip" || data.starts(with: [0x50, 0x4b]) {
+                try await importMAPackageData(data, caltopoSettings: caltopoSettings, orgSettings: orgSettings)
+                return
+            }
             if url.pathExtension.lowercased() == "aol" {
                 let id = try await AppleSurfaceStore.shared.install(data)
                 state = .applied("Surface prepared and pinned: \(id)")
@@ -1154,7 +1179,7 @@ final class AppleOrgConfigImporter: ObservableObject {
                         orgSettings: orgSettings,
                         identityStore: identityStore
                     )
-                } else if AndroidConfigTokenCodec.decode(payload) != nil {
+                } else if AndroidConfigTokenCodec.decode(payload) != nil || MutualAidPackageTransferToken.decode(payload) != nil {
                     await importToken(
                         payload,
                         caltopoSettings: caltopoSettings,
@@ -1372,7 +1397,7 @@ struct ConfigImportView: View {
     var body: some View {
         Form {
             Section {
-                Text("Scan or choose an image of an R2C2 organization QR or a direct r2c-tracker enrollment QR. R2C1 organization tokens are no longer accepted.")
+                Text("Scan or choose an MA package, R2C2 organization, or r2c-tracker enrollment QR. R2C1 organization tokens are no longer accepted.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 HStack(alignment: .top, spacing: 10) {
@@ -1382,6 +1407,7 @@ struct ConfigImportView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .textFieldStyle(.roundedBorder)
+                        .disabled(submitting)
                     Button {
                         showScanner = true
                     } label: {
@@ -1400,9 +1426,15 @@ struct ConfigImportView: View {
                     .font(.footnote)
                     .foregroundStyle(recognitionColor)
             }
+            if packageToken != nil {
+                Section("MA package transfer") {
+                    if submitting { ProgressView("Downloading and importing…") }
+                    if isFailed { Text(importer.statusText).foregroundStyle(.red) }
+                }
+            }
             Section {
                 HStack(spacing: 12) {
-                    Button("Choose Config or Surface File", systemImage: "doc.badge.arrow.up") {
+                    Button("Choose File", systemImage: "doc.badge.arrow.up") {
                         showFileImporter = true
                     }
                     .buttonStyle(.bordered)
@@ -1414,12 +1446,13 @@ struct ConfigImportView: View {
                         .buttonStyle(.bordered)
                         .disabled(submitting)
 
-                    Button("Import") { submitToken() }
+                    Button(packageToken != nil && isFailed ? "Retry" : "Import") { submitToken() }
                         .buttonStyle(.borderedProminent)
                         .disabled(!canImport)
                 }
             }
         }
+        .interactiveDismissDisabled(submitting)
         .navigationTitle("Import Config")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
@@ -1436,13 +1469,18 @@ struct ConfigImportView: View {
         }
         .fileImporter(
             isPresented: $showFileImporter,
-            allowedContentTypes: [.image, .json, .plainText, .data]
+            allowedContentTypes: [.image, .json, .zip, .plainText, .data]
         ) { result in
             guard case let .success(url) = result else { return }
             submitFile(url)
         }
     }
 
+    private var packageToken: MutualAidPackageTransferToken? { MutualAidPackageTransferToken.decode(tokenText) }
+    private var isFailed: Bool {
+        if case .failed = importer.state { return true }
+        return false
+    }
     private var decodedToken: AndroidConfigJoinToken? { AndroidConfigTokenCodec.decode(tokenText) }
     private var trackerEnrollmentURL: String? {
         AppleTrackerEnrollmentClient.normalizedEnrollmentURL(tokenText)
@@ -1454,13 +1492,14 @@ struct ConfigImportView: View {
     private var canImport: Bool {
         !submitting
             && importer.state != .downloading
-            && (isTrackerEnrollment || decodedToken != nil)
+            && (isTrackerEnrollment || decodedToken != nil || packageToken != nil)
     }
 
     private var recognitionText: String {
         if tokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "Scan QR, paste token, or choose a QR image, JSON config, or prepared .aol surface package"
+            return "Scan QR, paste token, or choose a QR image, JSON config, MA ZIP, or prepared .aol surface package"
         }
+        if let packageToken { return "MA package: \(packageToken.packageName). Connect to the sender’s Wi-Fi or hotspot and keep its QR panel open." }
         if isTrackerEnrollment { return "Managed r2c-tracker enrollment identified"
         }
         if let decodedToken {
@@ -1483,6 +1522,7 @@ struct ConfigImportView: View {
         guard canImport else { return }
         submitting = true
         let value = tokenText
+        let isPackage = packageToken != nil
         let normalizedTrackerEnrollment = trackerEnrollmentURL
         Task { @MainActor in
             if let normalizedTrackerEnrollment {
@@ -1500,9 +1540,13 @@ struct ConfigImportView: View {
                     identityStore: identityStore
                 )
             }
-            reportResult()
+            submitting = false
+            if !isPackage || !isFailed {
+                reportResult()
+                if isPackage { dismiss() }
+            }
         }
-        dismiss()
+        if !isPackage { dismiss() }
     }
 
     private func submitFile(_ url: URL) {

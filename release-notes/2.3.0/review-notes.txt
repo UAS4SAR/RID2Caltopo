@@ -1,0 +1,11 @@
+RID2Caltopo 2.3.0, build 242. This build is intended for both internal TestFlight testing and App Store distribution.
+
+No account is required for Bluetooth Remote ID reception, local mapping, archives, or diagnostic review. These features remain inspectable without nearby aircraft. Optional CalTopo and tracker coordination require organization-supplied configuration. Publishing is disabled by default and operator-controlled.
+
+Aircraft locations and camera telemetry come from incoming Remote ID broadcasts or controller video SEI metadata. Tablet location provides approximate operator-relative context. The app provides supplementary situational awareness to trained operators; it does not control aircraft or replace independent navigation, flight safety, communications, or incident-command decisions.
+
+For controller video, send an RTMP stream to the address shown in the app from a publisher on the same local network. Video and anomaly processing may be suspended by iOS when backgrounded or locked.
+
+This release adds cache-only mutual-aid map/terrain package sharing without sharing incident-map credentials, Apple import of Android-hosted MA transfer QRs, retry guidance, and optional gimbal adjustment for clue submission. Missing camera-angle telemetry is explicitly labeled as an assumed -90-degree (straight-down) angle. Apple exports MA ZIP packages through its share sheet; QR transfer hosting is Android-only.
+
+Review steps: launch the app and allow Bluetooth/location access when prompted; inspect Nearby Aircraft, Live View, Status, and Settings. Main Screen > Menu > Import Config accepts organization/configuration and MA transfer tokens or ZIP files. Live View map controls expose MA package export; Include shared map access is off by default.

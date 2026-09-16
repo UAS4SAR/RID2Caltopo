@@ -36,6 +36,10 @@ import android.view.Display
 import android.view.View
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.runtime.saveable.rememberSaveable
+import org.ncssar.rid2caltopo.video.OpenCapturedVideoDocument
+import org.ncssar.rid2caltopo.video.resolveCapturedVideoDisplayName
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -203,6 +207,7 @@ internal fun organizationAccessAuthenticationRequired(
 internal enum class OrganizationExternalFlow {
     ARCHIVE_DIRECTORY_PICKER,
     CONFIG_QR_SCANNER,
+    CAPTURED_VIDEO_PICKER,
     TRACKER_REAUTHENTICATION_BROWSER,
 }
 
@@ -1250,6 +1255,45 @@ class R2CActivity :
 
         setContent {
             RID2CaltopoTheme content@ {
+                // Keep the registry callback mounted across the access gate and Live View
+                // layout changes. A selection received while locked waits for authentication.
+                var pendingCapturedVideoUri by rememberSaveable { mutableStateOf<String?>(null) }
+                val capturedVideoLauncher = rememberLauncherForActivityResult(
+                    contract = OpenCapturedVideoDocument(),
+                ) { uri ->
+                    organizationAccessSession.completeTrustedExternalFlow(
+                        OrganizationExternalFlow.CAPTURED_VIDEO_PICKER
+                    )
+                    CTDebug(TAG, "Captured video picker returned: ${if (uri == null) "cancelled" else "selected"}")
+                    if (uri != null) {
+                        try {
+                            contentResolver.takePersistableUriPermission(
+                                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            )
+                        } catch (_: SecurityException) {
+                            // Some providers grant access only for the current Activity lifetime.
+                        }
+                        pendingCapturedVideoUri = uri.toString()
+                    }
+                }
+                val playCapturedVideo: () -> Unit = {
+                    if (beginTrustedExternalFlowWhenRequired(configuredAccessAuthenticationRequired()) {
+                        organizationAccessSession.beginTrustedExternalFlow(
+                            OrganizationExternalFlow.CAPTURED_VIDEO_PICKER
+                        )
+                    }) {
+                        try {
+                            CTDebug(TAG, "Opening captured video picker")
+                            capturedVideoLauncher.launch(streamsViewModel.capturedVideoPickerInitialUri())
+                        } catch (error: Exception) {
+                            organizationAccessSession.completeTrustedExternalFlow(
+                                OrganizationExternalFlow.CAPTURED_VIDEO_PICKER
+                            )
+                            CTError(TAG, "Unable to open captured video picker", error)
+                            CaltopoClient.ShowToast("Unable to open the video picker. Please try again.")
+                        }
+                    }
+                }
                 var pendingAppExitSource by remember {
                     mutableStateOf<AppExitRequestSource?>(null)
                 }
@@ -1314,6 +1358,17 @@ class R2CActivity :
                         onQuit = { CaltopoClient.QuitApplication() },
                     )
                     return@content
+                }
+                LaunchedEffect(pendingCapturedVideoUri) {
+                    pendingCapturedVideoUri?.let { value ->
+                        pendingCapturedVideoUri = null
+                        val uri = Uri.parse(value)
+                        CTDebug(TAG, "Opening selected captured video after access check")
+                        streamsViewModel.openCapturedVideo(
+                            uri, resolveCapturedVideoDisplayName(this@R2CActivity, uri)
+                        )
+                        localViewModel.showStreams()
+                    }
                 }
                 val localContext = LocalContext.current
                 val activeScreen by localViewModel
@@ -1497,6 +1552,7 @@ class R2CActivity :
                     }
                     ActiveScreen.STREAMS -> {
                         StreamsScreen(
+                            onPlayCapturedVideo = playCapturedVideo,
                             onBack = { localViewModel.showMain() },
                             onMapStatusTap = { localViewModel.openConnectionOverlayFromCurrentScreen() },
                             viewModel = streamsViewModel,
@@ -1671,7 +1727,8 @@ class R2CActivity :
                     MutualAidPackageImportDialog(
                         state = maPackageImportState,
                         onDismiss = { MutualAidPackageTransferManager.dismissImportState() },
-                        onCancel = { MutualAidPackageTransferManager.cancelImport() }
+                        onCancel = { MutualAidPackageTransferManager.cancelImport() },
+                        onRetry = { MutualAidPackageTransferManager.retryImport(this@R2CActivity) }
                     )
                 }
                 if (bluetoothDisabled && !bluetoothDisabledAcknowledged) {

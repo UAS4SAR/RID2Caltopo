@@ -45,6 +45,7 @@ echo "$schemes" | grep -q "r2c2"
 echo "$schemes" | grep -q "r2cenroll"
 echo "$schemes" | grep -q "r2cfaa1"
 echo "$schemes" | grep -q "r2cma1"
+echo "$schemes" | grep -q "r2cmapkg1"
 
 privacy_types=$(/usr/libexec/PlistBuddy -c 'Print :NSPrivacyCollectedDataTypes' "$privacy")
 echo "$privacy_types" | grep -q "NSPrivacyCollectedDataTypePreciseLocation"

@@ -698,6 +698,7 @@ internal fun SplitMapPane(
     var maPackageMapTitle by remember { mutableStateOf(CaltopoMap.GetMapName()) }
     var maPackageExpiryDateText by remember { mutableStateOf(defaultPackageExpiry.format(packageDateFormatter)) }
     var maPackageExpiryTimeText by remember { mutableStateOf(defaultPackageExpiry.format(packageTimeFormatter)) }
+    var maPackageIncludeMapAccess by remember { mutableStateOf(false) }
     var maPackageUseMapPaneExtents by remember { mutableStateOf(true) }
     val activeShareSession by MutualAidPackageTransferManager.shareSession.collectAsState()
     var preparingMutualAidShare by remember { mutableStateOf(false) }
@@ -1456,6 +1457,7 @@ internal fun SplitMapPane(
                 maxZoom = offlinePrepPreset.maxZoom,
                 tileSource = selectedTileSource(),
                 includeDem = offlinePrepIncludeDem,
+                includeMapAccess = maPackageIncludeMapAccess,
                 clipBoundary = boundary
             )
             val result = if (exportResult.first && exportResult.second != null) {
@@ -1476,6 +1478,7 @@ internal fun SplitMapPane(
         maPackageMapId = CaltopoMap.GetMapId()
         maPackageMapTitle = CaltopoMap.GetMapName()
         maPackageUseMapPaneExtents = true
+        maPackageIncludeMapAccess = false
         val nextMidnight = LocalDateTime.ofInstant(
             Instant.ofEpochMilli(MutualAidProfileManager.defaultExpiryAtNextMidnight()),
             packageZoneId
@@ -4377,13 +4380,7 @@ internal fun SplitMapPane(
                 },
                 onOpenMutualAidPackage = {
                     mapManagementMenuExpanded = false
-                    if (!CaltopoClient.HasMutualAidTemplate()) {
-                        CaltopoClient.ShowToast("Configure the Mutual Aid account in Settings before exporting an MA package.")
-                    } else if (CaltopoMap.GetMapId().isBlank()) {
-                        CaltopoClient.ShowToast("Connect to a CalTopo map before exporting an MA package.")
-                    } else {
-                        openMutualAidPackageDialog()
-                    }
+                    openMutualAidPackageDialog()
                 },
                 onToggleAutoRemoveBadTiles = {
                     autoRemoveBadTiles = !autoRemoveBadTiles
@@ -4420,6 +4417,8 @@ internal fun SplitMapPane(
             showPackageDialog = showMutualAidPackageDialog,
             onShowPackageDialogChange = { showMutualAidPackageDialog = it },
             sourceLabel = CaltopoClient.GetMutualAidSourceLabel(),
+            includeMapAccess = maPackageIncludeMapAccess,
+            onIncludeMapAccessChange = { maPackageIncludeMapAccess = it },
             displayName = maPackageDisplayName,
             onDisplayNameChange = { maPackageDisplayName = it },
             incident = maPackageIncident,

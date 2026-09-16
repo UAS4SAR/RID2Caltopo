@@ -48,6 +48,8 @@ internal fun MapPaneMutualAidDialogs(
     showPackageDialog: Boolean,
     onShowPackageDialogChange: (Boolean) -> Unit,
     sourceLabel: String,
+    includeMapAccess: Boolean,
+    onIncludeMapAccessChange: (Boolean) -> Unit,
     displayName: String,
     onDisplayNameChange: (String) -> Unit,
     incident: String,
@@ -86,7 +88,15 @@ internal fun MapPaneMutualAidDialogs(
                         fontSize = 12.sp
                     )
                     Spacer(Modifier.height(12.dp))
-                    Text("Source org: ${sourceLabel.ifBlank { "Not configured in Settings" }}")
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = includeMapAccess, onCheckedChange = onIncludeMapAccessChange)
+                        Text("Include shared map access")
+                    }
+                    Text("Leave off for tiles only: cached map and terrain data, without account credentials or changes to the recipient’s map/bookmark.", fontSize = 12.sp)
+                    if (includeMapAccess && !CaltopoClient.HasMutualAidTemplate()) {
+                        Text("Configure the Mutual Aid account in Settings to include map access.", color = MaterialTheme.colorScheme.error)
+                    }
+                    if (includeMapAccess) Text("Source org: ${sourceLabel.ifBlank { "Not configured in Settings" }}")
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = displayName,
@@ -112,22 +122,24 @@ internal fun MapPaneMutualAidDialogs(
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = mapId,
-                        onValueChange = onMapIdChange,
-                        label = { Text("Map ID") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = mapTitle,
-                        onValueChange = onMapTitleChange,
-                        label = { Text("Map title") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(8.dp))
+                    if (includeMapAccess) {
+                        OutlinedTextField(
+                            value = mapId,
+                            onValueChange = onMapIdChange,
+                            label = { Text("Map ID") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = mapTitle,
+                            onValueChange = onMapTitleChange,
+                            label = { Text("Map title") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(
                             checked = useMapPaneExtents,
@@ -144,7 +156,7 @@ internal fun MapPaneMutualAidDialogs(
                         fontSize = 11.sp
                     )
                     Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (includeMapAccess) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
                             value = expiryDateText,
                             onValueChange = onExpiryDateTextChange,
@@ -160,7 +172,7 @@ internal fun MapPaneMutualAidDialogs(
                             modifier = Modifier.weight(1f)
                         )
                     }
-                    if (parsedExpiryEpochMs <= nowMs) {
+                    if (includeMapAccess && parsedExpiryEpochMs <= nowMs) {
                         Spacer(Modifier.height(8.dp))
                         Text(
                             "Expiry must be a future local date/time in yyyy-MM-dd and HH:mm format.",
@@ -172,11 +184,10 @@ internal fun MapPaneMutualAidDialogs(
             },
             confirmButton = {
                 TextButton(
-                    enabled = sourceLabel.isNotBlank() &&
-                        incident.isNotBlank() &&
-                        opPeriod.isNotBlank() &&
-                        mapId.isNotBlank() &&
-                        parsedExpiryEpochMs > nowMs &&
+                    enabled = (!includeMapAccess || (CaltopoClient.HasMutualAidTemplate() &&
+                        sourceLabel.isNotBlank() && incident.isNotBlank() &&
+                        opPeriod.isNotBlank() && mapId.isNotBlank() &&
+                        parsedExpiryEpochMs > nowMs)) &&
                         !preparingShare,
                     onClick = {
                         onShowPackageDialogChange(false)

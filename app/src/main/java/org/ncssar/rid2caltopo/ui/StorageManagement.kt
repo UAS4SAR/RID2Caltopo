@@ -34,9 +34,12 @@ internal fun StorageManagementDialog(onDismiss: () -> Unit, onFlight: () -> Unit
         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Text("Map & Terrain Cache: ${mapBytes?.let(MapCacheSettings::formatDecimalGb) ?: "Scanning…"}, Max Size: ${MapCacheSettings.formatDecimalGb(MapCacheSettings.maxCacheBytes(context))}, Max Age: ${MapCacheSettings.maxTileAgeDays(context)} days",
                 modifier = Modifier.clickable { showCache = true }, color = MaterialTheme.colorScheme.primary)
-            Text("Flight Storage: ${flight?.used?.let(MapCacheSettings::formatDecimalGb) ?: "Scanning…"}, Max Size: ${MapCacheSettings.formatDecimalGb(FlightStorage.maximumBytes(context))}, Max Age: ${FlightStorage.maximumDays(context)} days",
+            Text("Flight Storage: ${flight?.let { if (it.archiveReady) MapCacheSettings.formatDecimalGb(it.used) else "Archive usage unavailable" } ?: "Scanning…"}, Max Size: ${MapCacheSettings.formatDecimalGb(FlightStorage.maximumBytes(context))}, Max Age: ${FlightStorage.maximumDays(context)} days",
                 modifier = Modifier.clickable(onClick = onFlight), color = MaterialTheme.colorScheme.primary)
+            Text("These limits are app allowances, not the device’s total capacity.", style = MaterialTheme.typography.bodySmall)
             flight?.let {
+                Text("Device free space: ${MapCacheSettings.formatDecimalGb(it.deviceAvailable)}")
+                if (!it.archiveReady) Text("Map cache usage currently covers accessible local data only; archive caches are not included until the folder is connected.", style = MaterialTheme.typography.bodySmall)
                 Text("Includes ${MapCacheSettings.formatDecimalGb(it.auxiliary)} of local clue files and recording working copies.", style = MaterialTheme.typography.bodySmall)
                 if (it.blocked) Text(it.message)
             }

@@ -6,6 +6,23 @@ import org.junit.Test
 
 class FlightRetentionPolicyTest {
     private val today = LocalDate.of(2026, 9, 14)
+    @Test fun missingArchiveRequiresSetupWithoutLowStorageNotification() {
+        val issue = flightStorageIssue(archiveReady = false, deviceLow = false, allowanceInsufficient = false)
+        assertEquals(FlightStorageIssue.ARCHIVE_REQUIRED, issue)
+        assertFalse(issue!!.shouldNotify)
+        assertFalse(issue.message.contains("storage is low"))
+    }
+    @Test fun connectingArchiveClearsSetupBlockWhenCapacityIsHealthy() {
+        assertNotNull(flightStorageIssue(false, false, false))
+        assertNull(flightStorageIssue(true, false, false))
+    }
+    @Test fun realDevicePressureIsDistinctFromAppAllowance() {
+        assertEquals(FlightStorageIssue.DEVICE_LOW, flightStorageIssue(true, true, false))
+        assertEquals(FlightStorageIssue.DEVICE_LOW, flightStorageIssue(true, true, true))
+        assertEquals(FlightStorageIssue.ALLOWANCE, flightStorageIssue(true, false, true))
+        assertTrue(FlightStorageIssue.DEVICE_LOW.shouldNotify)
+        assertTrue(FlightStorageIssue.ALLOWANCE.shouldNotify)
+    }
     @Test fun ninetyPercentIncludesPlannedWritesAndLargerAllowanceRelievesPressure() {
         val limit = 10_000_000_000L
         assertEquals(limit, FlightStorage.DEFAULT_MAX_BYTES)

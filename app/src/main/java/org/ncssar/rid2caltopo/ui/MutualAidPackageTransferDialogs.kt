@@ -93,7 +93,7 @@ fun MutualAidPackageShareDialog(
                     .verticalScroll(rememberScrollState())
             ) {
                 Text(
-                    "Scan this QR from the receiving RID2Caltopo device to import the MA package directly.",
+                    "Connect both devices to the same Wi-Fi or hotspot. Keep this panel open while receivers scan and download. Cellular alone cannot reach this share.",
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth()
@@ -143,7 +143,8 @@ fun MutualAidPackageShareDialog(
 fun MutualAidPackageImportDialog(
     state: MutualAidPackageImportState,
     onDismiss: () -> Unit,
-    onCancel: () -> Unit
+    onCancel: () -> Unit,
+    onRetry: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = {
@@ -192,7 +193,12 @@ fun MutualAidPackageImportDialog(
         },
         confirmButton = {
             if (state is MutualAidPackageImportState.Success || state is MutualAidPackageImportState.Error) {
-                TextButton(onClick = onDismiss) { Text("Done") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (state is MutualAidPackageImportState.Error) {
+                        TextButton(onClick = onRetry) { Text("Retry") }
+                    }
+                    TextButton(onClick = onDismiss) { Text("Done") }
+                }
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = onDismiss) { Text("Hide") }

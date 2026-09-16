@@ -1151,6 +1151,10 @@ fun MainScreen(
                     NotamCenter.requestImmediateRefresh()
                 }
             },
+            onPackageJoin = { token ->
+                showImportConfigDialog = false
+                org.ncssar.rid2caltopo.data.MutualAidPackageTransferManager.importFromToken(context, token)
+            },
             onMutualAidJoin = { token ->
                 showImportConfigDialog = false
                 MutualAidProfileManager.joinFromToken(context, token) { _, message ->
@@ -1216,12 +1220,16 @@ fun MainScreen(
                 Column(modifier = Modifier.fillMaxWidth()) {
                     if (preview != null) {
                         Text("Package: ${preview.packageName.ifBlank { "MA Package" }}")
-                        Text("Source org: ${preview.sourceOrg.ifBlank { "Unknown" }}")
-                        Text("Display name: ${preview.displayName.ifBlank { "Mutual Aid" }}")
-                        Text("Incident: ${preview.incident.ifBlank { "Unknown" }}")
-                        Text("Op period: ${preview.opPeriod.ifBlank { "Unknown" }}")
-                        Text("Map: ${preview.targetMapTitle.ifBlank { preview.targetMapId.ifBlank { "Unknown" } }}")
-                        Text("Expires: $expiryText")
+                        if (preview.includesMapAccess) {
+                            Text("Source org: ${preview.sourceOrg.ifBlank { "Unknown" }}")
+                            Text("Display name: ${preview.displayName.ifBlank { "Mutual Aid" }}")
+                            Text("Incident: ${preview.incident.ifBlank { "Unknown" }}")
+                            Text("Op period: ${preview.opPeriod.ifBlank { "Unknown" }}")
+                            Text("Map: ${preview.targetMapTitle.ifBlank { preview.targetMapId.ifBlank { "Unknown" } }}")
+                            Text("Expires: $expiryText")
+                        } else {
+                            Text("Tiles only — your account and selected map will stay unchanged.")
+                        }
                         Text("Offline cache: ${preview.tileCount} tile(s), ${preview.demCount} DEM tile(s), ${preview.aolCount} AOL tile(s)")
                     } else {
                         Text("Could not read MA package preview.")

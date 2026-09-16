@@ -3964,6 +3964,8 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             ArchiveState("archivePath changed.");
             InitArchiveDir();
         }
+        Context ctxt = R2CApplication.getAppCtxt();
+        if (ctxt != null) org.ncssar.rid2caltopo.app.FlightStorage.requestCheck(ctxt);
     }
 
     public static boolean UseTemporaryArchiveDirForSession() {
@@ -3982,6 +3984,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         ArchivePermissionMissingFlag = false;
         CTWarn(TAG, "Using temporary archive directory for this app session: " + root);
         InitArchiveDir();
+        org.ncssar.rid2caltopo.app.FlightStorage.requestCheck(ctxt);
         return true;
     }
 

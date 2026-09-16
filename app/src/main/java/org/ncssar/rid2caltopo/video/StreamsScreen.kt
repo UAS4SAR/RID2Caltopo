@@ -4,10 +4,6 @@ import OverLimitDroneUiState
 import StreamsLayoutMode
 import StreamsViewModel
 import android.app.Activity
-import android.content.Intent
-import android.net.Uri
-import android.provider.DocumentsContract
-import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
@@ -92,7 +88,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -122,7 +117,6 @@ import org.ncssar.rid2caltopo.ui.SignalStrengthBars
 import org.ncssar.rid2caltopo.ui.SignalLossAlertButton
 import org.ncssar.rid2caltopo.ui.SignalLossAlertDialog
 import org.opendroneid.android.bluetooth.DroneScoutBridgeMonitor
-import androidx.documentfile.provider.DocumentFile
 
 private const val EMPTY_STREAMS_SETTINGS_DESIGNATOR = "__empty_streams_defaults__"
 private const val STREAM_PIP_FRAME_PADDING_DP = 24f
@@ -238,43 +232,6 @@ internal fun streamTileFocusPresentation(
     )
 }
 
-private class OpenCapturedVideoDocument : ActivityResultContract<Uri?, Uri?>() {
-    override fun createIntent(context: android.content.Context, input: Uri?): Intent {
-        return Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "video/*"
-            putExtra(Intent.EXTRA_LOCAL_ONLY, true)
-            putExtra("android.content.extra.NO_CACHE", true)
-            if (input != null) {
-                putExtra(DocumentsContract.EXTRA_INITIAL_URI, input)
-            }
-        }
-    }
-
-    override fun parseResult(resultCode: Int, intent: Intent?): Uri? {
-        return if (resultCode == android.app.Activity.RESULT_OK) intent?.data else null
-    }
-}
-
-private fun resolveCapturedVideoDisplayName(
-    context: android.content.Context,
-    uri: Uri,
-): String {
-    try {
-        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-            if (nameIndex >= 0 && cursor.moveToFirst()) {
-                val name = cursor.getString(nameIndex)?.trim().orEmpty()
-                if (name.isNotEmpty()) return name
-            }
-        }
-    } catch (_: Exception) {
-    }
-    return DocumentFile.fromSingleUri(context, uri)?.name?.takeIf { it.isNotBlank() }
-        ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
-        ?: "Captured Video"
-}
-
 private fun restartMediaMtxServer(context: android.content.Context) {
     val appContext = context.applicationContext
     MediaMTXService.requestRestart(appContext)
@@ -288,6 +245,7 @@ fun StreamsScreen(
     viewModel: StreamsViewModel = viewModel(),
     onBack: () -> Unit,
     onMapStatusTap: () -> Unit = {},
+    onPlayCapturedVideo: (() -> Unit)? = null,
     showNavigation: Boolean = true,
     externalContentMode: ExternalDisplayContentMode? = null,
     allowModalDialogs: Boolean = true,
@@ -591,7 +549,7 @@ fun StreamsScreen(
                     }
                     SplitStreamsAndMap(
                         viewModel = viewModel,
-                        allowCapturedVideoPicker = allowModalDialogs,
+                        onPlayCapturedVideo = onPlayCapturedVideo.takeIf { allowModalDialogs },
                         splitFraction = effectiveSplitFraction,
                         onSplitFractionChange = { next ->
                             splitFraction = next
@@ -614,7 +572,7 @@ fun StreamsScreen(
                         StreamsLayoutMode.Both -> {
                             SplitStreamsAndMap(
                                 viewModel = viewModel,
-                                allowCapturedVideoPicker = allowModalDialogs,
+                                onPlayCapturedVideo = onPlayCapturedVideo.takeIf { allowModalDialogs },
                                 splitFraction = splitFraction,
                                 onSplitFractionChange = { splitFraction = it },
                                 onMapStatusTap = onMapStatusTap,
@@ -628,7 +586,7 @@ fun StreamsScreen(
                         StreamsLayoutMode.Streams -> {
                             StreamsGrid(
                                 viewModel = viewModel,
-                                allowCapturedVideoPicker = allowModalDialogs,
+                                onPlayCapturedVideo = onPlayCapturedVideo.takeIf { allowModalDialogs },
                                 onMapStatusTap = onMapStatusTap,
                                 fullScreenContent = fullScreenChrome.showExitChip,
                                 remoteVideoDesignator = remoteVideoDesignator,
@@ -684,7 +642,7 @@ fun StreamsScreen(
                     ) {
                         StreamsGrid(
                             viewModel = viewModel,
-                            allowCapturedVideoPicker = false,
+                            onPlayCapturedVideo = null,
                             onMapStatusTap = onMapStatusTap,
                             showTileControls = false,
                             remoteVideoDesignator = remoteVideoDesignator,
@@ -1105,7 +1063,7 @@ internal fun snappedSplitFraction(
 @Composable
 private fun SplitStreamsAndMap(
     viewModel: StreamsViewModel,
-    allowCapturedVideoPicker: Boolean,
+    onPlayCapturedVideo: (() -> Unit)?,
     splitFraction: Float,
     onSplitFractionChange: (Float) -> Unit,
     onMapStatusTap: () -> Unit,
@@ -1159,7 +1117,7 @@ private fun SplitStreamsAndMap(
                 ) {
                     StreamsGrid(
                         viewModel = viewModel,
-                        allowCapturedVideoPicker = allowCapturedVideoPicker,
+                        onPlayCapturedVideo = onPlayCapturedVideo,
                         onMapStatusTap = onMapStatusTap,
                         onStreamTileSingleTap = onStreamsPaneTap,
                         remoteVideoDesignator = remoteVideoDesignator,
@@ -1257,7 +1215,7 @@ private fun SplitStreamsAndMap(
                 ) {
                     StreamsGrid(
                         viewModel = viewModel,
-                        allowCapturedVideoPicker = allowCapturedVideoPicker,
+                        onPlayCapturedVideo = onPlayCapturedVideo,
                         onMapStatusTap = onMapStatusTap,
                         onStreamTileSingleTap = onStreamsPaneTap,
                         remoteVideoDesignator = remoteVideoDesignator,
@@ -1492,7 +1450,7 @@ fun <T> List<T>.padTo(size: Int): List<T?> =
 @Composable
 private fun StreamsGrid(
     viewModel: StreamsViewModel,
-    allowCapturedVideoPicker: Boolean,
+    onPlayCapturedVideo: (() -> Unit)?,
     onMapStatusTap: () -> Unit,
     onStreamTileSingleTap: (() -> Unit)? = null,
     showTileControls: Boolean = true,
@@ -1519,31 +1477,6 @@ private fun StreamsGrid(
     val singleVisibleDesignator = remember(visibleEntries, focusedPath) {
         if (focusedPath == null && visibleEntries.size == 1) visibleEntries[0].key else null
     }
-    val onPlayCapturedVideo =
-        if (allowCapturedVideoPicker) {
-            val capturedVideoLauncher = rememberLauncherForActivityResult(
-                contract = OpenCapturedVideoDocument(),
-                onResult = { uri ->
-                    if (uri == null) return@rememberLauncherForActivityResult
-                    try {
-                        context.contentResolver.takePersistableUriPermission(
-                            uri,
-                            Intent.FLAG_GRANT_READ_URI_PERMISSION
-                        )
-                    } catch (_: SecurityException) {
-                    }
-                    viewModel.openCapturedVideo(
-                        uri = uri,
-                        displayName = resolveCapturedVideoDisplayName(context, uri)
-                    )
-                }
-            )
-            remember(viewModel, capturedVideoLauncher) {
-                { capturedVideoLauncher.launch(viewModel.capturedVideoPickerInitialUri()) }
-            }
-        } else {
-            null
-        }
     val pendingReviewExport = viewModel.pendingLocalPlaybackReviewExport()
     val reviewExportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json"),

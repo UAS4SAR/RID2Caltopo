@@ -2410,10 +2410,6 @@ private struct ClueSubmissionView: View {
                         }
                     ), in: 0 ... 359, step: 1)
                     LabeledContent("Gimbal angle", value: "\(Int(gimbalAngle.rounded()))°")
-                    if !gimbalAngleConfirmed {
-                        Text("Camera angle unavailable for this frame. Set or confirm the angle.")
-                        Button("Use \(Int(gimbalAngle))° manually") { gimbalAngleConfirmed = true }
-                    }
                     Slider(value: Binding(get: { gimbalAngle }, set: { gimbalAngle = $0; gimbalAngleConfirmed = true }), in: -90 ... 90, step: 1)
                     Text("-90° is straight down; 0° is the horizon; positive angles look upward.")
                         .font(.caption)
@@ -2458,10 +2454,15 @@ private struct ClueSubmissionView: View {
                     }
                 }
                 Section {
+                    if !gimbalAngleConfirmed {
+                        Label("No current camera angle telemetry. Assuming −90° (straight down). Adjust the gimbal angle if needed.", systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                     Button("Local Marker Only", systemImage: "mappin.and.ellipse") {
                         submit(publish: false)
                     }
-                    .disabled(projectionHeight == nil || !gimbalAngleConfirmed)
+                    .disabled(projectionHeight == nil)
                     Button {
                         submit(publish: true)
                     } label: {
@@ -2469,7 +2470,7 @@ private struct ClueSubmissionView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(projectionHeight == nil || !gimbalAngleConfirmed)
+                    .disabled(projectionHeight == nil)
                 } footer: {
                     Text("Submit saves the clue locally before starting its CalTopo upload.")
                 }
@@ -2535,7 +2536,6 @@ private struct ClueSubmissionView: View {
     }
 
     private func submit(publish: Bool) {
-        guard gimbalAngleConfirmed else { return }
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         AppleLog.info(
             "Clue",

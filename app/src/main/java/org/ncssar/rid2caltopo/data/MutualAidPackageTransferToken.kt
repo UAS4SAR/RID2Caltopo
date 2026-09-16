@@ -1,6 +1,6 @@
 package org.ncssar.rid2caltopo.data
 
-import android.util.Base64
+import java.util.Base64
 import org.json.JSONObject
 
 object MutualAidPackageTransferToken {
@@ -31,7 +31,7 @@ object MutualAidPackageTransferToken {
             .put("v", config.version)
             .toString()
         val xored = xorBytes(json.toByteArray(Charsets.UTF_8))
-        val b64 = Base64.encodeToString(xored, Base64.NO_WRAP)
+        val b64 = Base64.getEncoder().encodeToString(xored)
         val remapped = buildString(b64.length) {
             for (c in b64) {
                 val idx = STD_ALPHABET.indexOf(c)
@@ -43,15 +43,16 @@ object MutualAidPackageTransferToken {
 
     fun decode(token: String): Config? {
         return try {
-            if (!token.startsWith(MAGIC_PREFIX)) return null
-            val encoded = token.removePrefix(MAGIC_PREFIX)
+            val normalized = normalize(token)
+            if (!normalized.startsWith(MAGIC_PREFIX)) return null
+            val encoded = normalized.removePrefix(MAGIC_PREFIX)
             val remapped = buildString(encoded.length) {
                 for (c in encoded) {
                     val idx = CUSTOM_ALPHABET.indexOf(c)
                     append(if (idx >= 0) STD_ALPHABET[idx] else c)
                 }
             }
-            val xored = Base64.decode(remapped, Base64.NO_WRAP)
+            val xored = Base64.getDecoder().decode(remapped)
             val json = JSONObject(String(xorBytes(xored), Charsets.UTF_8))
             Config(
                 host = json.optString("h", ""),
@@ -74,6 +75,13 @@ object MutualAidPackageTransferToken {
         } catch (_: Exception) {
             null
         }
+    }
+
+    fun normalize(raw: String): String {
+        val trimmed = raw.trim()
+        return if (trimmed.startsWith("r2cmapkg1://", ignoreCase = true)) {
+            MAGIC_PREFIX + trimmed.substringAfter("://")
+        } else trimmed
     }
 
     fun isValidToken(token: String): Boolean = decode(token.trim()) != null

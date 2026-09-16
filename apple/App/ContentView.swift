@@ -845,7 +845,7 @@ struct ContentView: View {
             showImportConfig = true
             return
         }
-        guard AndroidConfigTokenCodec.decode(rawValue) != nil else {
+        guard AndroidConfigTokenCodec.decode(rawValue) != nil || MutualAidPackageTransferToken.decode(rawValue) != nil else {
             AppleLog.error("OrgConfig", "Ignored unrecognised URL scheme payload")
             return
         }

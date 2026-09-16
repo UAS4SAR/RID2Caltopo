@@ -66,6 +66,31 @@ class OrganizationAccessPolicyTest {
     }
 
     @Test
+    fun capturedVideoPickerPreservesAccessUntilSelectionOrCancellation() {
+        val session = OrganizationAccessSession()
+        session.markAuthenticated()
+        assertTrue(session.beginTrustedExternalFlow(OrganizationExternalFlow.CAPTURED_VIDEO_PICKER))
+        assertTrue(session.activityStopped(isChangingConfigurations = false))
+        session.completeTrustedExternalFlow(OrganizationExternalFlow.CAPTURED_VIDEO_PICKER)
+        assertTrue(session.isAuthenticated())
+        // Completing or cancelling the picker must not exempt future backgrounding.
+        assertFalse(session.activityStopped(isChangingConfigurations = false))
+    }
+
+    @Test
+    fun capturedVideoPickerResultCannotUnlockARealScreenLock() {
+        val session = OrganizationAccessSession()
+        session.markAuthenticated()
+        assertTrue(session.beginTrustedExternalFlow(OrganizationExternalFlow.CAPTURED_VIDEO_PICKER))
+        assertFalse(session.activityStopped(false, screenOffElapsedRealtimeMs = 1_000L))
+        session.completeTrustedExternalFlow(OrganizationExternalFlow.CAPTURED_VIDEO_PICKER)
+        assertFalse(session.isAuthenticated())
+        assertTrue(session.authenticateFromSystemUnlock(1_100L, deviceLocked = false))
+        // A fresh selection can be launched after returning from the lock.
+        assertTrue(session.beginTrustedExternalFlow(OrganizationExternalFlow.CAPTURED_VIDEO_PICKER))
+    }
+
+    @Test
     fun authenticatedSessionSurvivesTrackerReauthenticationBrowserUntilReturn() {
         val session = OrganizationAccessSession()
         session.markAuthenticated()

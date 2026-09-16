@@ -126,7 +126,7 @@ import Testing
     #expect(importer.contains("AppleManagedOrganizationConfig.apply"))
     #expect(importer.contains("AppleTrackerEnrollmentClient.normalizedEnrollmentURL(tokenText)"))
     #expect(importer.contains("importTrackerEnrollment(\n                    normalizedTrackerEnrollment,"))
-    #expect(importer.contains("allowedContentTypes: [.image, .json, .plainText, .data]"))
+    #expect(importer.contains("allowedContentTypes: [.image, .json, .zip, .plainText, .data]"))
     #expect(importer.contains("VNDetectBarcodesRequest()"))
     #expect(importer.contains("request.symbologies = [.qr]"))
     #expect(importer.contains("AppleTrackerEnrollmentClient.normalizedEnrollmentURL(payload)"))

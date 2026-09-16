@@ -36,6 +36,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -129,10 +130,6 @@ fun ClueSheetContent (
             submissionFeedback = "Title required."
             titleFocusRequester.requestFocus()
             keyboardController?.show()
-            return
-        }
-        if (!clue.gimbalAngleConfirmed) {
-            submissionFeedback = "Camera angle unavailable for this frame. Set or confirm the gimbal angle."
             return
         }
         if (clue.projectionHeightMeters == null) {
@@ -293,14 +290,9 @@ fun ClueSheetContent (
                     modifier = Modifier.fillMaxWidth()
                 )
                 Text(
-                    text = if (clue.gimbalAngleConfirmed) "Gimbal angle: ${clue.gimbalAngleDeg.toInt()}°" else "Camera angle unavailable — set or confirm below",
+                    text = "Gimbal angle: ${clue.gimbalAngleDeg.toInt()}°",
                     style = MaterialTheme.typography.bodyLarge
                 )
-                if (!clue.gimbalAngleConfirmed) {
-                    TextButton(onClick = { onGimbalAngleChange(clue.gimbalAngleDeg) }) {
-                        Text("Use ${clue.gimbalAngleDeg.toInt()}° manually")
-                    }
-                }
                 Slider(
                     value = clue.gimbalAngleDeg.toFloat(),
                     onValueChange = { onGimbalAngleChange(it.toDouble()) },
@@ -397,6 +389,13 @@ fun ClueSheetContent (
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                if (!clue.gimbalAngleConfirmed) {
+                    Text(
+                        text = "No current camera angle telemetry. Assuming −90° (straight down). Adjust the gimbal angle if needed.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFFFF9800)
+                    )
+                }
                 OutlinedButton(
                     modifier = Modifier.fillMaxWidth(),
                     enabled = clue.projectionHeightMeters != null,

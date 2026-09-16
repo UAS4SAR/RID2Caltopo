@@ -616,6 +616,7 @@ fun ImportConfigDialog(
     onJoin: (token: String) -> Unit,
     onFaaJoin: (token: String) -> Unit,
     onMutualAidJoin: (token: String) -> Unit,
+    onPackageJoin: (token: String) -> Unit,
     onTrackerJoin: (url: String) -> Unit,
     onScannerStarted: () -> Boolean,
     onScannerFinished: () -> Unit,
@@ -631,7 +632,8 @@ fun ImportConfigDialog(
         normalizedTrackerEnrollmentImport(normalizedToken)
     }
     val trackerEnrollment = trackerEnrollmentUrl != null
-    val isValid = orgDecoded != null || faaDecoded != null || mutualAidDecoded != null || trackerEnrollment
+    val packageDecoded = remember(normalizedToken) { org.ncssar.rid2caltopo.data.MutualAidPackageTransferToken.decode(normalizedToken) }
+    val isValid = packageDecoded != null || orgDecoded != null || faaDecoded != null || mutualAidDecoded != null || trackerEnrollment
 
     var scannerOpening by remember { mutableStateOf(false) }
     val scannerOptions = remember {
@@ -660,7 +662,7 @@ fun ImportConfigDialog(
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    "Scan an R2C2 organization QR or a direct r2c-tracker enrollment QR. R2C1 organization tokens are no longer accepted.",
+                    "Scan an MA package, R2C2 organization, or r2c-tracker enrollment QR. R2C1 organization tokens are no longer accepted.",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(Modifier.height(12.dp))
@@ -728,6 +730,7 @@ fun ImportConfigDialog(
                             faaDecoded != null -> Text(
                                 "FAA: ${faaDecoded.label.ifBlank { "Shared NOTAM credentials" }}"
                             )
+                            packageDecoded != null -> Text("MA package: ${packageDecoded.packageName}")
                             mutualAidDecoded != null -> Text("MA: ${mutualAidDecoded.sourceOrg}")
                             trackerEnrollment -> Text("Managed r2c-tracker enrollment")
                             else -> Text(
@@ -745,6 +748,7 @@ fun ImportConfigDialog(
                 enabled = isValid,
                 onClick = {
                     when {
+                        packageDecoded != null -> onPackageJoin(normalizedToken)
                         trackerEnrollmentUrl != null -> onTrackerJoin(trackerEnrollmentUrl)
                         faaDecoded != null -> onFaaJoin(normalizedToken)
                         mutualAidDecoded != null -> onMutualAidJoin(normalizedToken)

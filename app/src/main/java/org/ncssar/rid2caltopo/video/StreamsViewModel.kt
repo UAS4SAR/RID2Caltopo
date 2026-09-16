@@ -2556,10 +2556,6 @@ class StreamsViewModel(
 
     fun submitClue() {
         val clue = pendingClue ?: return
-        if (!clue.gimbalAngleConfirmed) {
-            CaltopoClient.ShowToast("Camera angle unavailable. Set or confirm the gimbal angle.")
-            return
-        }
         if (clue.projectionHeightMeters == null) {
             CaltopoClient.ShowToast("Clue projection needs fresh AGL or a valid relative altitude.")
             CTWarn(tag, "Clue submission blocked: projection height unavailable")
@@ -2603,10 +2599,6 @@ class StreamsViewModel(
 
     fun submitLocalMarkerOnly() {
         val clue = pendingClue ?: return
-        if (!clue.gimbalAngleConfirmed) {
-            CaltopoClient.ShowToast("Camera angle unavailable. Set or confirm the gimbal angle.")
-            return
-        }
         if (clue.projectionHeightMeters == null) {
             CaltopoClient.ShowToast("Clue projection needs fresh AGL or a valid relative altitude.")
             CTWarn(tag, "Local clue submission blocked: projection height unavailable")
@@ -2671,7 +2663,6 @@ class StreamsViewModel(
 
     private fun requestDemClueProjectionRefresh(designator: String) {
         val clue = _pendingClue.value ?: return
-        if (!clue.gimbalAngleConfirmed) return
         if (clue.designator != designator) return
         clueProjectionJob?.cancel()
         clueProjectionJob = viewModelScope.launch(Dispatchers.Default) {

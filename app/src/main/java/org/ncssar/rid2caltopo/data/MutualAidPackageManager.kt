@@ -42,7 +42,8 @@ object MutualAidPackageManager {
         val expiresAtEpochMs: Long,
         val tileCount: Int,
         val demCount: Int,
-        val aolCount: Int = 0
+        val aolCount: Int = 0,
+        val includesMapAccess: Boolean = true
     )
 
     internal fun exportPackage(
@@ -60,6 +61,7 @@ object MutualAidPackageManager {
         maxZoom: Int,
         tileSource: ITileSource,
         includeDem: Boolean,
+        includeMapAccess: Boolean = true,
         clipBoundary: GeoBoundary? = null
     ): Pair<Boolean, String> {
         return try {
@@ -80,6 +82,7 @@ object MutualAidPackageManager {
                     maxZoom = maxZoom,
                     tileSource = tileSource,
                     includeDem = includeDem,
+                    includeMapAccess = includeMapAccess,
                     clipBoundary = clipBoundary
                 )
             } ?: return false to "Could not open destination for MA package export."
@@ -104,12 +107,12 @@ object MutualAidPackageManager {
         maxZoom: Int,
         tileSource: ITileSource,
         includeDem: Boolean,
+        includeMapAccess: Boolean = true,
         clipBoundary: GeoBoundary? = null
     ): Pair<Boolean, File?> {
         return try {
             val tempDir = context.cacheDir.resolve("ma-transfer").apply { mkdirs() }
-            val file = File(tempDir, "${sanitizePath(packageName)}_mutual_aid_package.zip")
-            if (file.exists()) file.delete()
+            val file = File.createTempFile("${sanitizePath(packageName)}_mutual_aid_package_", ".zip", tempDir)
             file.outputStream().use { rawOut ->
                 writePackage(
                     context = context,
@@ -126,6 +129,7 @@ object MutualAidPackageManager {
                     maxZoom = maxZoom,
                     tileSource = tileSource,
                     includeDem = includeDem,
+                    includeMapAccess = includeMapAccess,
                     clipBoundary = clipBoundary
                 )
             }
@@ -228,6 +232,7 @@ object MutualAidPackageManager {
             }
             true to PackagePreview(
                 packageName = manifest.optString("package_name"),
+                includesMapAccess = profileEnc.isNotBlank(),
                 sourceOrg = profileJson.optString("source_label", manifest.optString("source_org")),
                 displayName = profileJson.optString("display_name"),
                 incident = profileJson.optString("incident"),
@@ -286,6 +291,7 @@ object MutualAidPackageManager {
         maxZoom: Int,
         tileSource: ITileSource,
         includeDem: Boolean,
+        includeMapAccess: Boolean,
         clipBoundary: GeoBoundary?
     ): Pair<Boolean, String> {
         val resolver = context.contentResolver
@@ -294,7 +300,7 @@ object MutualAidPackageManager {
         val demEntries = ArrayList<JSONObject>()
         val archiveDir = CaltopoClient.GetArchiveDir()
         val demDir = archiveDir?.findFile("cache")?.findFile("dem")
-        val profileEnc = MutualAidProfileManager.buildEncryptedProfilePayloadForCurrentIncident(
+        val profileEnc = if (includeMapAccess) MutualAidProfileManager.buildEncryptedProfilePayloadForCurrentIncident(
             displayName = displayName,
             incident = incident,
             opPeriod = opPeriod,
@@ -302,7 +308,8 @@ object MutualAidPackageManager {
             targetMapTitle = targetMapTitle,
             expiresAtEpochMs = expiresAtEpochMs
         )
-        if (profileEnc.isNullOrBlank()) {
+        else ""
+        if (includeMapAccess && profileEnc.isNullOrBlank()) {
             throw IllegalStateException("Configure the Mutual Aid account in Settings before exporting an MA package.")
         }
         var aolCount=0

@@ -23,6 +23,21 @@ internal object FlightRetentionPolicy {
     }
 }
 
+enum class FlightStorageIssue(val message: String) {
+    ARCHIVE_REQUIRED("Choose or reconnect your archive folder to check its usage and enable flight recording. The previous folder may be suggested, but access must be granted again."),
+    DEVICE_LOW("Device storage is low. Free device space in Manage Storage or Android Settings. Increasing the allowance will not create free device space."),
+    ALLOWANCE("Cleanup could not restore 10% free within the Flight Storage allowance. Today and active files stay protected. Please increase the allowance.");
+
+    val shouldNotify: Boolean get() = this != ARCHIVE_REQUIRED
+}
+
+internal fun flightStorageIssue(archiveReady: Boolean, deviceLow: Boolean, allowanceInsufficient: Boolean): FlightStorageIssue? = when {
+    !archiveReady -> FlightStorageIssue.ARCHIVE_REQUIRED
+    deviceLow -> FlightStorageIssue.DEVICE_LOW
+    allowanceInsufficient -> FlightStorageIssue.ALLOWANCE
+    else -> null
+}
+
 /** Owns retention for the selected document-provider archive and local recording working copies. */
 object FlightStorage {
     const val DEFAULT_MAX_BYTES = 10_000_000_000L
@@ -40,6 +55,7 @@ object FlightStorage {
     private var sweepUsed = 0L
     private var sweepAvailable: Long? = null
     private var lastSweepDay = ""
+    private var lastIssue: FlightStorageIssue? = null
     private var checkQueued = false
     private var forceQueued = false
     private val fileSizes = mutableMapOf<String, Long>()
@@ -114,10 +130,11 @@ object FlightStorage {
     }
     private const val RESERVE = 1_000_000_000L
     @Volatile var captureBlocked = false; private set
-    data class Snapshot(val used: Long, val auxiliary: Long, val blocked: Boolean, val failures: List<String>, val allowanceInsufficient: Boolean) {
-        val message: String get() = if (allowanceInsufficient)
-            "Cleanup could not restore 10% free within the Flight Storage allowance. Today and active files stay protected. Please increase the allowance."
-        else "Device storage is low or the archive is unavailable. Free device space or restore archive access in Manage Storage. Increasing the allowance will not create free device space."
+    data class Snapshot(val used: Long, val auxiliary: Long, val failures: List<String>,
+                        val issue: FlightStorageIssue?, val archiveReady: Boolean, val deviceAvailable: Long) {
+        val blocked: Boolean get() = issue != null
+        val allowanceInsufficient: Boolean get() = issue == FlightStorageIssue.ALLOWANCE
+        val message: String get() = issue?.message.orEmpty()
     }
     private fun prefs(context: Context) = context.getSharedPreferences("flight_storage", Context.MODE_PRIVATE)
     fun maximumBytes(context: Context) = prefs(context).getLong("maximum_bytes", DEFAULT_MAX_BYTES).coerceIn(100_000_000L, 1_000_000_000_000L)
@@ -219,16 +236,25 @@ object FlightStorage {
         if (purge && used != sizes.values.sum()) changes.value++
         // Local staging and provider storage can be on different volumes: check both.
         val free = availableBytes(context, archive)
-        val blocked = archive == null || !archive.canRead() || used + reserving > maximumBytes(context) * 9 / 10 || context.filesDir.usableSpace - reserving < RESERVE || (free != null && free - reserving < RESERVE)
-        val result = Snapshot(used, auxiliary.filter { it.exists() }.sumOf { it.length() }, blocked, failures, used + reserving > maximumBytes(context) * 9 / 10)
+        val archiveReady = archive != null && archive.isDirectory && archive.canRead() && archive.canWrite()
+        val deviceAvailable = context.filesDir.usableSpace
+        val issue = flightStorageIssue(
+            archiveReady = archiveReady,
+            deviceLow = deviceAvailable - reserving < RESERVE || (free != null && free - reserving < RESERVE),
+            allowanceInsufficient = used + reserving > maximumBytes(context) * 9 / 10,
+        )
+        val result = Snapshot(used, auxiliary.filter { it.exists() }.sumOf { it.length() }, failures, issue, archiveReady, deviceAvailable)
+        val blocked = result.blocked
         if (purge) {
             val wasBlocked = captureBlocked
             captureBlocked = blocked
             sweepUsed = used; sweepAvailable = minOf(context.filesDir.usableSpace, free ?: Long.MAX_VALUE)
             initialized = true; estimatedUsed = used; lastSweepDay = todayArchiveDirectoryName()
             fileSizes.clear(); fileSizes.putAll(ledger)
-            if (blocked && !wasBlocked) pressure.value = result.message
-            if (!blocked) pressure.value = null
+            if (issue?.shouldNotify == true) {
+                if (!wasBlocked || lastIssue != issue) pressure.value = result.message
+            } else pressure.value = null
+            lastIssue = issue
         }
         result
     }

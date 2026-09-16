@@ -1,6 +1,8 @@
 package org.ncssar.rid2caltopo.data
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import okhttp3.Call
 import okhttp3.OkHttpClient
@@ -11,6 +13,7 @@ import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.InterruptedIOException
+import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
@@ -107,6 +110,7 @@ object MutualAidPackageTransferManager {
     private const val IMPORT_IDLE_TIMEOUT_MS = 30_000L
     private const val IMPORT_MAX_ATTEMPTS = 3
     private const val IMPORT_RETRY_BASE_DELAY_MS = 1_500L
+    private val serverExecutor = Executors.newSingleThreadExecutor()
     private val ioExecutor = Executors.newSingleThreadExecutor()
     private val _shareSession = MutableStateFlow<MutualAidPackageShareSession?>(null)
     val shareSession: StateFlow<MutualAidPackageShareSession?> = _shareSession.asStateFlow()
@@ -168,7 +172,7 @@ object MutualAidPackageTransferManager {
                 TAG,
                 "Share session ready host=$host port=$port file='${packageFile.name}' size=${packageFile.length()} sha256=$sha256"
             )
-            ioExecutor.execute { runServerLoop(serverSocket, sessionId, packageFile) }
+            serverExecutor.execute { runServerLoop(serverSocket, sessionId, packageFile) }
             true to "MA package ready to share."
         } catch (e: Exception) {
             CaltopoClient.CTWarn(TAG, "startShareSession() failed.", e)
@@ -182,6 +186,12 @@ object MutualAidPackageTransferManager {
         currentServedFile.getAndSet(null)?.delete()
         currentServerSocket.getAndSet(null)?.runCatching { close() }
         _shareSession.value = null
+    }
+
+    private var lastImportToken: String? = null
+
+    fun retryImport(context: Context) {
+        lastImportToken?.let { importFromToken(context, it) }
     }
 
     fun dismissImportState() {
@@ -205,6 +215,7 @@ object MutualAidPackageTransferManager {
             return
         }
         cancelImport()
+        lastImportToken = token
         val appContext = context.applicationContext
         currentImportSessionId.set(config.sessionId)
         ioExecutor.execute {
@@ -215,7 +226,7 @@ object MutualAidPackageTransferManager {
             }
             currentImportTempFile.set(tempFile)
             try {
-                downloadPackageWithRetries(config, packageName, tempFile)
+                downloadPackageWithRetries(appContext, config, packageName, tempFile)
                 if (currentImportSessionId.get() != config.sessionId) return@execute
                 val actualSha = sha256Hex(tempFile)
                 if (!actualSha.equals(config.sha256, ignoreCase = true)) {
@@ -238,7 +249,9 @@ object MutualAidPackageTransferManager {
                 tempFile.delete()
                 if (currentImportSessionId.get() == config.sessionId) {
                     CaltopoClient.CTWarn(TAG, "importFromToken() failed.", e)
-                    _importState.value = MutualAidPackageImportState.Error(packageName, e.message ?: "MA package transfer failed.")
+                    _importState.value = MutualAidPackageImportState.Error(packageName, if (isRetryableImportException(e)) {
+                        "Could not reach the sharing device at ${config.host}:${config.port}. Connect both devices to the same Wi-Fi or hotspot and keep the sender’s MA Package QR panel open. Then retry. If sharing was restarted or its address changed, scan the new QR.\n\n${e.message.orEmpty()}"
+                    } else e.message ?: "MA package transfer failed.")
                 } else {
                     CaltopoClient.CTDebug(TAG, "importFromToken(): ignoring late failure from canceled sid=${config.sessionId}")
                 }
@@ -251,19 +264,22 @@ object MutualAidPackageTransferManager {
     }
 
     private fun downloadPackageWithRetries(
+        context: Context,
         config: MutualAidPackageTransferToken.Config,
         packageName: String,
         tempFile: File
     ) {
         var attempt = 1
         while (true) {
+            if (currentImportSessionId.get() != config.sessionId) throw InterruptedIOException("Transfer canceled.")
+            if (System.currentTimeMillis() >= config.expiresAtEpochMs) throw IllegalStateException("This MA share has expired. Ask the sender to prepare a new share and scan its QR.")
             tempFile.delete()
             try {
-                downloadPackage(config, packageName, tempFile, attempt)
+                downloadPackage(context, config, packageName, tempFile, attempt)
                 return
             } catch (e: Exception) {
                 val retryable = isRetryableImportException(e)
-                if (!retryable || attempt >= IMPORT_MAX_ATTEMPTS) throw e
+                if (currentImportSessionId.get() != config.sessionId || !retryable || attempt >= IMPORT_MAX_ATTEMPTS) throw e
                 val delayMs = IMPORT_RETRY_BASE_DELAY_MS * attempt
                 CaltopoClient.CTWarn(
                     TAG,
@@ -284,12 +300,13 @@ object MutualAidPackageTransferManager {
     }
 
     private fun downloadPackage(
+        context: Context,
         config: MutualAidPackageTransferToken.Config,
         packageName: String,
         tempFile: File,
         attempt: Int
     ) {
-        val httpClient = createPinnedClient(config)
+        val httpClient = createPinnedClient(context, config)
         val receiverName = localDeviceName()
         val request = Request.Builder()
             .url("https://${config.host}:${config.port}$HTTP_PATH?sid=${config.sessionId}")
@@ -428,7 +445,7 @@ object MutualAidPackageTransferManager {
         )
     }
 
-    private fun createPinnedClient(config: MutualAidPackageTransferToken.Config): OkHttpClient {
+    private fun createPinnedClient(context: Context, config: MutualAidPackageTransferToken.Config): OkHttpClient {
         val trustManager = object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {
                 throw CertificateException("Client auth not supported.")
@@ -449,7 +466,20 @@ object MutualAidPackageTransferManager {
         val sslContext = SSLContext.getInstance("TLS").apply {
             init(null, arrayOf<TrustManager>(trustManager), SecureRandom())
         }
+        // Use the directly connected LAN even when Android prefers cellular for internet access.
+        val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val address = InetAddress.getByName(config.host)
+        val localNetwork = manager.allNetworks.firstOrNull { network ->
+            val capabilities = manager.getNetworkCapabilities(network)
+            val localTransport = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true ||
+                capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
+            localTransport && capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) != true &&
+                manager.getLinkProperties(network)?.routes.orEmpty().any {
+                !it.isDefaultRoute && it.matches(address)
+            }
+        }
         return OkHttpClient.Builder()
+            .apply { localNetwork?.let { socketFactory(it.socketFactory) } }
             .sslSocketFactory(sslContext.socketFactory, trustManager)
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(IMPORT_IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
@@ -480,13 +510,14 @@ object MutualAidPackageTransferManager {
     }
 
     private fun serveSocket(socket: Socket, sessionId: String, packageFile: File) {
+        socket.soTimeout = 30_000
         socket.keepAlive = true
         socket.tcpNoDelay = true
         runCatching { socket.sendBufferSize = TRANSFER_BUFFER_SIZE }
         runCatching { socket.receiveBufferSize = TRANSFER_BUFFER_SIZE }
         if (socket is SSLSocket) {
             runCatching { socket.enableSessionCreation = true }
-            runCatching { socket.startHandshake() }
+            socket.startHandshake()
             runCatching {
                 CaltopoClient.CTDebug(
                     TAG,

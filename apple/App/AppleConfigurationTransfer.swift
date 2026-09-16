@@ -48,11 +48,16 @@ final class AppleConfigurationTransferManager: ObservableObject {
         do {
             let data = try Data(contentsOf: url, options: .mappedIfSafe)
             if url.pathExtension.lowercased() == "zip" || data.starts(with: [0x50, 0x4b]) {
-                try await importMutualAidPackage(data, caltopo: caltopo, organization: organization)
+                _ = try await importMutualAidPackage(data, caltopo: caltopo, organization: organization)
             } else {
                 try restoreConfigurationBackup(data, passphrase: passphrase, caltopo: caltopo, organization: organization, identities: identities)
             }
         } catch { status = "Import failed: \(error.localizedDescription)" }
+    }
+
+    func discardPreparedPackage() {
+        exportURL = nil
+        status = "Prepare the package with the selected options."
     }
 
     func prepareMutualAidPackage(
@@ -60,13 +65,15 @@ final class AppleConfigurationTransferManager: ObservableObject {
         preset: OperationalOfflinePreset,
         layer: OperationalMapBaseLayer,
         includeDEM: Bool,
+        includeMapAccess: Bool = true,
         packageName: String,
         displayName: String,
         expiresAt: Date,
         caltopo: AppleCaltopoConfiguration,
         organization: AppleOrgConfigSettings
     ) async {
-        guard let template = organization.mutualAidTemplate else {
+        exportURL = nil
+        if includeMapAccess && organization.mutualAidTemplate == nil {
             status = "Configure the Mutual Aid account in Settings before exporting an MA package."
             return
         }
@@ -79,30 +86,33 @@ final class AppleConfigurationTransferManager: ObservableObject {
             ) else { throw TransferError.packageTooLarge }
             let trackerAPIKey = organization.trackerAPIKey
             let cleanName = sanitize(packageName.isEmpty ? displayName : packageName)
-            let profile: [String: Any] = [
-                "profile_id": "mai-\(sanitize(template.sourceLabel))-\(sanitize(organization.incident))-op\(sanitize(organization.operationalPeriod))",
-                "display_name": displayName.isEmpty ? "\(template.sourceLabel) \(organization.incident)" : displayName,
-                "team_id": template.teamID,
-                "credential_id": template.credentialID,
-                "credential_secret": template.credentialSecret,
-                "domain_and_port": template.domainAndPort,
-                "connect_key": template.connectKey,
-                "track_folder": organization.trackFolder,
-                "incident": organization.incident,
-                "op_period": organization.operationalPeriod,
-                "tracker_api_key": trackerAPIKey,
-                "tracker_url_prefix": organization.trackerURLPrefix,
-                "auto_connect": true,
-                "expires_at_epoch_ms": Int64(expiresAt.timeIntervalSince1970 * 1_000),
-                "quiet_remove_on_expiry": true,
-                "source_label": template.sourceLabel,
-                "target_map_id": caltopo.mapID,
-                "target_map_title": organization.incident,
-                "target_folder_hint": template.targetFolderHint,
-                "imported_at_epoch_ms": Int64(Date().timeIntervalSince1970 * 1_000),
-                "import_dedupe_key": "\(template.sourceLabel)|\(organization.incident)|\(organization.operationalPeriod)",
-            ]
-            let profileEncrypted = try AndroidConfigTokenCodec.encryptMutualAidProfile(profile)
+            var profileEncrypted = ""
+            if includeMapAccess, let template = organization.mutualAidTemplate {
+                let profile: [String: Any] = [
+                    "profile_id": "mai-\(sanitize(template.sourceLabel))-\(sanitize(organization.incident))-op\(sanitize(organization.operationalPeriod))",
+                    "display_name": displayName.isEmpty ? "\(template.sourceLabel) \(organization.incident)" : displayName,
+                    "team_id": template.teamID,
+                    "credential_id": template.credentialID,
+                    "credential_secret": template.credentialSecret,
+                    "domain_and_port": template.domainAndPort,
+                    "connect_key": template.connectKey,
+                    "track_folder": organization.trackFolder,
+                    "incident": organization.incident,
+                    "op_period": organization.operationalPeriod,
+                    "tracker_api_key": trackerAPIKey,
+                    "tracker_url_prefix": organization.trackerURLPrefix,
+                    "auto_connect": true,
+                    "expires_at_epoch_ms": Int64(expiresAt.timeIntervalSince1970 * 1_000),
+                    "quiet_remove_on_expiry": true,
+                    "source_label": template.sourceLabel,
+                    "target_map_id": caltopo.mapID,
+                    "target_map_title": organization.incident,
+                    "target_folder_hint": template.targetFolderHint,
+                    "imported_at_epoch_ms": Int64(Date().timeIntervalSince1970 * 1_000),
+                    "import_dedupe_key": "\(template.sourceLabel)|\(organization.incident)|\(organization.operationalPeriod)",
+                ]
+                profileEncrypted = try AndroidConfigTokenCodec.encryptMutualAidProfile(profile)
+            }
             var entries: [OperationalZipArchive.Entry] = []
             let maximumPackageBytes = 512 * 1_024 * 1_024
             var packageBytes = 0
@@ -142,7 +152,7 @@ final class AppleConfigurationTransferManager: ObservableObject {
                 "aol_entries": aolFiles.map(\.path),
                 "format": Self.packageFormat, "version": 1,
                 "generated": ISO8601DateFormatter().string(from: Date()),
-                "package_name": packageName, "source_org": template.sourceLabel,
+                "package_name": packageName, "source_org": includeMapAccess ? (organization.mutualAidTemplate?.sourceLabel ?? "") : "",
                 "profile_enc": profileEncrypted,
                 "tile_entries": tileManifest, "dem_entries": demManifest,
             ]
@@ -226,31 +236,32 @@ final class AppleConfigurationTransferManager: ObservableObject {
         status = "Configuration restored. Reconnect tracker and CalTopo services to apply it."
     }
 
-    private func importMutualAidPackage(
+    func importMutualAidPackage(
         _ data: Data,
         caltopo: AppleCaltopoSettings,
         organization: AppleOrgConfigSettings
-    ) async throws {
+    ) async throws -> Bool {
         let decoded = try OperationalZipArchive.decode(data)
         let lookup = Dictionary(uniqueKeysWithValues: decoded.map { ($0.path, $0.data) })
         guard let manifestData = lookup["manifest.json"],
               let manifest = try JSONSerialization.jsonObject(with: manifestData) as? [String: Any],
-              manifest["format"] as? String == Self.packageFormat,
-              let profileEncrypted = manifest["profile_enc"] as? String
+              manifest["format"] as? String == Self.packageFormat
         else { throw TransferError.invalidPackage }
-        let profile = try AndroidConfigTokenCodec.decryptMutualAidProfile(profileEncrypted)
-        if profile.expiresAtEpochMilliseconds > 0,
-           Date().timeIntervalSince1970 * 1_000 >= Double(profile.expiresAtEpochMilliseconds) {
-            throw TransferError.expiredPackage
+        if let profileEncrypted = manifest["profile_enc"] as? String, !profileEncrypted.isEmpty {
+            let profile = try AndroidConfigTokenCodec.decryptMutualAidProfile(profileEncrypted)
+            if profile.expiresAtEpochMilliseconds > 0,
+               Date().timeIntervalSince1970 * 1_000 >= Double(profile.expiresAtEpochMilliseconds) {
+                throw TransferError.expiredPackage
+            }
+            let active = try AppleCaltopoProfileLifecycle.shared.install(
+                profile,
+                org: organization,
+                caltopo: caltopo
+            )
+            guard active else { throw TransferError.expiredPackage }
+            try organization.apply(mutualAid: profile, normalizedToken: "local-ma-package")
+            try caltopo.applyImported(mutualAid: profile)
         }
-        let active = try AppleCaltopoProfileLifecycle.shared.install(
-            profile,
-            org: organization,
-            caltopo: caltopo
-        )
-        guard active else { throw TransferError.expiredPackage }
-        try organization.apply(mutualAid: profile, normalizedToken: "local-ma-package")
-        try caltopo.applyImported(mutualAid: profile)
         var importedTiles = 0
         for item in manifest["tile_entries"] as? [[String: Any]] ?? [] {
             guard let path = item["path"] as? String, let bytes = lookup[path],
@@ -274,6 +285,7 @@ final class AppleConfigurationTransferManager: ObservableObject {
         }
         let importedAOL=try await AppleSurfaceStore.shared.importSets(lookup)
         status = "Imported MA package: \(importedAOL) AOL tile(s), \(importedTiles) tile(s), \(importedDEM) DEM tile(s)."
+        return !(manifest["profile_enc"] as? String ?? "").isEmpty
     }
 
     private func writeExport(_ data: Data, name: String) throws -> URL {
@@ -579,7 +591,7 @@ struct AppleConfigurationTransferView: View {
             Section("Restore or join") {
                 Button("Import Backup or MA Package…", systemImage: "square.and.arrow.down") { importing = true }
                     .disabled(manager.isWorking)
-                Text("Configuration backups require their passphrase. Android-compatible mutual-aid packages install their incident profile plus cached map and DEM data without a passphrase.")
+                Text("Configuration backups require their passphrase. Mutual-aid packages import cached map and terrain data without a passphrase. Packages with shared map access also install their incident profile.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section("Status") {
@@ -605,6 +617,7 @@ struct AppleMutualAidExportView: View {
     @StateObject private var manager = AppleConfigurationTransferManager()
     @State private var preset = OperationalOfflinePreset.operations
     @State private var includeDEM = true
+    @State private var includeMapAccess = false
     @State private var packageName = "Mutual Aid"
     @State private var displayName = "Mutual Aid"
     @State private var expiresAt = Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
@@ -615,7 +628,10 @@ struct AppleMutualAidExportView: View {
                 Section("Package") {
                     TextField("Package name", text: $packageName)
                     TextField("Display name", text: $displayName)
-                    DatePicker("Expires", selection: $expiresAt, in: Date()...)
+                    Toggle("Include shared map access", isOn: $includeMapAccess)
+                        .onChange(of: includeMapAccess) { _, _ in manager.discardPreparedPackage() }
+                    Text("Leave off for tiles only: cached map and terrain data, without account credentials or changes to your map/bookmark.").font(.footnote)
+                    if includeMapAccess { DatePicker("Access expires", selection: $expiresAt, in: Date()...) }
                     Picker("Map detail", selection: $preset) {
                         ForEach(OperationalOfflinePreset.all) { Text($0.label).tag($0) }
                     }
@@ -631,18 +647,19 @@ struct AppleMutualAidExportView: View {
                     Button("Prepare MA Package", systemImage: "shippingbox") {
                         Task {
                             await manager.prepareMutualAidPackage(
-                                bounds: bounds, preset: preset, layer: layer, includeDEM: includeDEM,
+                                bounds: bounds, preset: preset, layer: layer, includeDEM: includeDEM, includeMapAccess: includeMapAccess,
                                 packageName: packageName, displayName: displayName, expiresAt: expiresAt,
                                 caltopo: caltopo, organization: organization
                             )
                         }
                     }
-                    .disabled(manager.isWorking || caltopo.mapID.isEmpty || organization.mutualAidTemplate == nil)
+                    .disabled(manager.isWorking || (includeMapAccess && (caltopo.mapID.isEmpty || organization.mutualAidTemplate == nil)))
                     if let url = manager.exportURL { ShareLink(item: url) { Label("Share MA Package", systemImage: "square.and.arrow.up") } }
                     if manager.isWorking { ProgressView() }
                     Text(manager.status).font(.footnote).foregroundStyle(.secondary)
                 }
             }
+            .disabled(manager.isWorking)
             .navigationTitle("Export MA Package")
         }
     }

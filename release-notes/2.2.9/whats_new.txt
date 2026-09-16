@@ -1,5 +1,4 @@
 Latest changes:
-- Submit clues using RID telemetry without touching or confirming the gimbal control. When current camera-angle telemetry is unavailable, assume -90 degrees (straight down) and show an orange warning beside submission. Operators can still adjust the angle. This applies to Submit and Local Marker Only on Android and Apple.
 - Export MA packages without sharing map access. The new Include shared map access option is off by default, so cached imagery and terrain can be shared while recipients keep their own account and incident-map bookmark.
 - Enable shared map access when a package should also install a temporary incident profile. Access credentials and expiry settings are required only for that option.
 - Import MA packages from Main Screen > Menu > Import Config using a transfer QR, pasted token, saved QR image, or ZIP file. Keep existing organization, FAA, tracker-enrollment and configuration-file imports available.
