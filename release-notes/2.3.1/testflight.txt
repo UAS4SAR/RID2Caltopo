@@ -1,3 +1,5 @@
-RID2Caltopo 2.3.1 (243)
+RID2Caltopo 2.3.1rc2 (244)
 
 Add an unassociated Remote ID directly to the RID map from the Main Screen. The edit panel preserves the broadcast Remote ID and lets you save the aircraft mapping.
+
+Map Folders visibility choices now persist when leaving and returning to the map pane.

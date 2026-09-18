@@ -516,7 +516,9 @@ public struct CaltopoArtifactSnapshot: Codable, Sendable, Equatable {
 
 public enum CaltopoArtifactVisibilityPolicy {
     public static func legacyPersistedSelectionKeys(_ keys: [String]) -> [String] {
-        keys.filter { $0.hasPrefix("map.visibility.") }.sorted()
+        keys.filter {
+            $0.hasPrefix("map.visibility.") && !$0.hasPrefix("map.visibility.v2.")
+        }.sorted()
     }
 
     /// Combines local/server hidden state while keeping explicit operator choices

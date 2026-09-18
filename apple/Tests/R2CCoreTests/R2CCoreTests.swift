@@ -3397,6 +3397,7 @@ private func proximityDrone(
     let keys = CaltopoArtifactVisibilityPolicy.legacyPersistedSelectionKeys([
         "map.visibility.GF7A7ER.items",
         "map.visibility.GF7A7ER.folders",
+        "map.visibility.v2.GF7A7ER",
         "map.pilotDisplay.N1234.active",
         "caltopo.mapID",
     ])

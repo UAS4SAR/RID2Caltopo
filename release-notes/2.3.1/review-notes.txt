@@ -1,1 +1,1 @@
-RID2Caltopo 2.3.1, build 243. This release adds a direct Add to RID Map action for unassociated Remote IDs on Android and Apple while preserving the existing confirmation and mapping workflow.
+RID2Caltopo 2.3.1rc2, build 244. This release preserves Map Folders visibility choices when the Apple map pane is recreated or revisited. It also includes the direct Add to RID Map action for unassociated Remote IDs on Android and Apple while preserving the existing confirmation and mapping workflow.

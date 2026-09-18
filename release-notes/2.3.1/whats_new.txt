@@ -3,6 +3,7 @@ Latest changes:
 - Show a distance scale in the lower-left corner of the map with distance values matched to the map projection.
 - Display the drone designator in the Track Label instead of the pilot callsign.
 - Keep protected access authenticated while switching between windowed and full-screen map views.
+- Preserve Map Folders visibility choices when the Apple map pane is recreated or revisited.
 
 Platform-specific changes:
 - Android labels an unassociated aircraft action "Add to RID Map" and uses a matching edit-panel title.

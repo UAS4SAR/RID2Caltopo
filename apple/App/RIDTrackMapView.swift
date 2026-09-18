@@ -174,6 +174,8 @@ private final class AppleMapArtifactModel: ObservableObject {
     private var configuredSource: AppleCaltopoConfiguration?
     private var visibilityInitialized = false
     private var folderVisibilityOverrides: [String: Bool] = [:]
+    private var persistedHiddenFolderIDs: Set<String> = []
+    private var persistedHiddenItemIDs: Set<String> = []
     private var lastPollAtByMapID: [String: Date] = [:]
     private var featureStore = CaltopoArtifactFeatureStore()
     private var lastSuccessfulCursorMilliseconds: Int64 = 0
@@ -205,10 +207,13 @@ private final class AppleMapArtifactModel: ObservableObject {
         configuredMapID = configuration.mapID
         configuredSource = configuration
         refreshTask?.cancel()
-        hiddenFolderIDs = []
-        hiddenItemIDs = []
         if mapSessionChanged {
-            folderVisibilityOverrides = [:]
+            let persisted = Self.loadPersistedVisibility(mapID: configuration.mapID)
+            persistedHiddenFolderIDs = persisted.hiddenFolderIDs
+            persistedHiddenItemIDs = persisted.hiddenItemIDs
+            folderVisibilityOverrides = persisted.folderVisibilityOverrides
+            hiddenFolderIDs = persistedHiddenFolderIDs
+            hiddenItemIDs = persistedHiddenItemIDs
             featureStore = CaltopoArtifactFeatureStore()
             lastSuccessfulCursorMilliseconds = 0
             lastFullReconciliationAt = nil
@@ -275,29 +280,39 @@ private final class AppleMapArtifactModel: ObservableObject {
         if isFolderEffectivelyVisible(folder) {
             hiddenFolderIDs.insert(folder.id)
             folderVisibilityOverrides[folder.id] = false
+            persistedHiddenFolderIDs.insert(folder.id)
         } else {
             unhideFolderAndAncestors(folder.id, recordOperatorOverride: true)
         }
+        persistVisibility()
     }
 
     func toggleItem(_ item: CaltopoArtifactItem) {
         if isItemEffectivelyVisible(item) {
             hiddenItemIDs.insert(item.id)
+            persistedHiddenItemIDs.insert(item.id)
         } else {
             hiddenItemIDs.remove(item.id)
+            persistedHiddenItemIDs.remove(item.id)
             unhideFolderAndAncestors(item.folderID, recordOperatorOverride: true)
         }
+        persistVisibility()
     }
 
     func setItems(_ items: [CaltopoArtifactItem], visible: Bool) {
         let ids = Set(items.map(\.id))
         if visible {
             hiddenItemIDs.subtract(ids)
+            persistedHiddenItemIDs.subtract(ids)
             if let folderID = items.first?.folderID {
                 unhideFolderAndAncestors(folderID, recordOperatorOverride: true)
             }
         }
-        else { hiddenItemIDs.formUnion(ids) }
+        else {
+            hiddenItemIDs.formUnion(ids)
+            persistedHiddenItemIDs.formUnion(ids)
+        }
+        persistVisibility()
     }
 
     func requestSurfacePeak(_ peak: OperationalSurfacePackage.Peak) {
@@ -334,6 +349,7 @@ private final class AppleMapArtifactModel: ObservableObject {
             hiddenFolderIDs.remove(id)
             if recordOperatorOverride {
                 folderVisibilityOverrides[id] = true
+                persistedHiddenFolderIDs.remove(id)
             }
             currentID = snapshot.folders.first { $0.id == id }?.parentID
         }
@@ -413,13 +429,67 @@ private final class AppleMapArtifactModel: ObservableObject {
     }
 
     private func initializeVisibility(fallbackFolders: [CaltopoArtifactFolder]) {
-        hiddenFolderIDs = Set(fallbackFolders.filter { !$0.initiallyVisible }.map(\.id))
-        hiddenItemIDs = []
+        let defaultHiddenFolderIDs = Set(fallbackFolders.filter { !$0.initiallyVisible }.map(\.id))
+        hiddenFolderIDs = persistedHiddenFolderIDs.union(defaultHiddenFolderIDs)
+        hiddenItemIDs = persistedHiddenItemIDs
         visibilityInitialized = !fallbackFolders.isEmpty
         hiddenFolderIDs = CaltopoArtifactVisibilityPolicy.hiddenFolderIDs(
             localHidden: hiddenFolderIDs,
             defaultHidden: [],
             operatorVisibilityOverrides: folderVisibilityOverrides
+        )
+    }
+
+    private struct PersistedVisibility {
+        let hiddenFolderIDs: Set<String>
+        let hiddenItemIDs: Set<String>
+        let folderVisibilityOverrides: [String: Bool]
+    }
+
+    private func persistVisibility() {
+        guard !configuredMapID.isEmpty else { return }
+        persistedHiddenFolderIDs = hiddenFolderIDs
+        persistedHiddenItemIDs = hiddenItemIDs
+        Self.savePersistedVisibility(
+            mapID: configuredMapID,
+            hiddenFolderIDs: persistedHiddenFolderIDs,
+            hiddenItemIDs: persistedHiddenItemIDs,
+            folderVisibilityOverrides: folderVisibilityOverrides
+        )
+    }
+
+    private static func visibilityStorageKey(mapID: String) -> String {
+        let safeMapID = mapID.filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
+        return "map.visibility.v2.\(safeMapID.isEmpty ? "map" : safeMapID)"
+    }
+
+    private static func loadPersistedVisibility(mapID: String) -> PersistedVisibility {
+        guard let value = UserDefaults.standard.dictionary(forKey: visibilityStorageKey(mapID: mapID)) else {
+            return PersistedVisibility(hiddenFolderIDs: [], hiddenItemIDs: [], folderVisibilityOverrides: [:])
+        }
+        let folders = Set(value["hiddenFolders"] as? [String] ?? [])
+        let items = Set(value["hiddenItems"] as? [String] ?? [])
+        let overrides = value["folderOverrides"] as? [String: Bool] ?? [:]
+        return PersistedVisibility(
+            hiddenFolderIDs: folders,
+            hiddenItemIDs: items,
+            folderVisibilityOverrides: overrides
+        )
+    }
+
+    private static func savePersistedVisibility(
+        mapID: String,
+        hiddenFolderIDs: Set<String>,
+        hiddenItemIDs: Set<String>,
+        folderVisibilityOverrides: [String: Bool]
+    ) {
+        UserDefaults.standard.set(
+            [
+                "hiddenFolders": Array(hiddenFolderIDs).sorted(),
+                "hiddenItems": Array(hiddenItemIDs).sorted(),
+                "folderOverrides": folderVisibilityOverrides,
+            ],
+            forKey: visibilityStorageKey(mapID: mapID)
         )
     }
 
