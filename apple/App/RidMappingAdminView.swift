@@ -387,6 +387,7 @@ struct RidMappingAdminView: View {
     @State private var accessStatus = AppleAircraftOrganizationAccess.accessStatus
     @ObservedObject var organization: AppleOrgConfigSettings
     @ObservedObject var identities: AppleDroneConfirmationStore
+    private let onSaved: ((String) -> Void)?
     @State private var organizationName: String
     @State private var mappings: [AppleRidMappingDraft]
     @State private var errors: [String] = []
@@ -402,12 +403,36 @@ struct RidMappingAdminView: View {
 
     init(
         organization: AppleOrgConfigSettings,
-        identities: AppleDroneConfirmationStore
+        identities: AppleDroneConfirmationStore,
+        initialRemoteID: String? = nil,
+        onSaved: ((String) -> Void)? = nil
     ) {
         self.organization = organization
         self.identities = identities
+        self.onSaved = onSaved
         _organizationName = State(initialValue: organization.organizationName)
-        _mappings = State(initialValue: identities.importedMappings.map { AppleRidMappingDraft(identity: $0) })
+        var initialMappings = identities.importedMappings.map { AppleRidMappingDraft(identity: $0) }
+        let normalizedRemoteID = initialRemoteID?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() ?? ""
+        var selected: UUID?
+        if !normalizedRemoteID.isEmpty {
+            if let existing = initialMappings.first(where: { $0.remoteID.caseInsensitiveCompare(normalizedRemoteID) == .orderedSame }) {
+                selected = existing.id
+            } else {
+                var draft = AppleRidMappingDraft(identity: RidAircraftIdentity(
+                    remoteID: normalizedRemoteID,
+                    organization: organization.organizationName,
+                    pilotCallsign: "",
+                    droneDescription: ""
+                ))
+                draft.readiness.serialNumber = normalizedRemoteID
+                selected = draft.id
+                initialMappings.append(draft)
+            }
+        }
+        _mappings = State(initialValue: initialMappings)
+        _selectedID = State(initialValue: selected)
+        _baseline = State(initialValue: initialMappings)
+        _baselineOrganization = State(initialValue: organization.organizationName)
     }
 
     private func refreshAccess() async {
@@ -472,6 +497,11 @@ struct RidMappingAdminView: View {
                                     text: $mapping.remoteID,
                                     mode: .remoteID
                                 )
+                                .onChange(of: mapping.remoteID) { _, value in
+                                    if mapping.readiness.serialNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                        mapping.readiness.serialNumber = value.uppercased()
+                                    }
+                                }
                             }
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("Owner name")
@@ -571,11 +601,14 @@ struct RidMappingAdminView: View {
         }
         saving = true
         defer { saving = false }
-        guard await AppleAircraftOrganizationAccess.refresh(baseURL: organization.trackerURLPrefix) else {
-            errors = ["Editing permission could not be verified. Check your connection and organization administrator access, then try Save again. Your edits are retained."]
-            showingValidationErrors = true
-            return false
+        if !canEdit {
+            guard await AppleAircraftOrganizationAccess.refresh(baseURL: organization.trackerURLPrefix) else {
+                errors = ["Editing permission could not be verified. Check your connection and organization administrator access, then try Save again. Your edits are retained."]
+                showingValidationErrors = true
+                return false
+            }
         }
+        let savedRemoteID = mappings.first(where: { $0.id == selectedID })?.remoteID
         do {
             let originals = identities.importedMappings
             try identities.replacePersistedMappings(mappings.map { mapping in
@@ -589,6 +622,9 @@ struct RidMappingAdminView: View {
         UserDefaults.standard.removeObject(forKey: Self.draftBaselineRemoteIDsKey)
         organization.setOrganizationNameForRidMappings(organizationName)
         selectedID = nil
+        if let savedRemoteID, !savedRemoteID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            onSaved?(savedRemoteID.uppercased())
+        }
         return true
     }
 

@@ -27,6 +27,7 @@ import android.media.ToneGenerator
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.Looper
 import android.os.CancellationSignal
 import android.os.PowerManager
@@ -305,6 +306,8 @@ internal fun beginTrustedExternalFlowWhenRequired(
 ): Boolean = !authenticationRequired || beginAuthenticatedFlow()
 
 private val organizationAccessSession = OrganizationAccessSession()
+
+private const val ORGANIZATION_ACCESS_STOP_GRACE_MS = 1_000L
 
 private fun configuredAccessAuthenticationRequired(): Boolean =
     CaltopoClient.GetCaltopoCredentials().let { credentials ->
@@ -747,6 +750,15 @@ class R2CActivity :
     AppCompatActivity(),
     R2CMqttManager.PeerListChangedListener,
     PeerCoordinator.VideoStreamRequestListener {
+    private val organizationAccessStopHandler = Handler(Looper.getMainLooper())
+    private val invalidateOrganizationAccessAfterStop = Runnable {
+        if (!isFinishing && !isChangingConfigurations) {
+            organizationAccessSession.activityStopped(isChangingConfigurations = false)
+            if (!organizationAccessSession.isAuthenticated()) {
+                organizationAccessState = OrganizationAccessState.LOCKED
+            }
+        }
+    }
     var locationRequest: LocationRequest? = null
     var locationCallback: LocationCallback? = null
     var mFusedLocationClient: FusedLocationProviderClient? = null
@@ -1139,6 +1151,11 @@ class R2CActivity :
         }
     }
 
+    override fun onStart() {
+        organizationAccessStopHandler.removeCallbacks(invalidateOrganizationAccessAfterStop)
+        super.onStart()
+    }
+
     override fun onResume() {
         super.onResume()
         val returnedFromTrackerReauthentication = trackerReauthenticationBrowserOpen
@@ -1203,11 +1220,21 @@ class R2CActivity :
             } else {
                 null
             }
-            val remainsAuthenticated = organizationAccessSession.activityStopped(
-                isChangingConfigurations = isChangingConfigurations,
-                screenOffElapsedRealtimeMs = screenOffElapsedRealtimeMs,
-            )
-            if (!remainsAuthenticated) organizationAccessState = OrganizationAccessState.LOCKED
+            if (screenOffElapsedRealtimeMs != null || isFinishing || isChangingConfigurations) {
+                val remainsAuthenticated = organizationAccessSession.activityStopped(
+                    isChangingConfigurations = isChangingConfigurations,
+                    screenOffElapsedRealtimeMs = screenOffElapsedRealtimeMs,
+                )
+                if (!remainsAuthenticated) organizationAccessState = OrganizationAccessState.LOCKED
+            } else {
+                // Hiding/showing system bars for the in-app full-screen view can
+                // produce a brief stop on some Android builds. Defer invalidation
+                // long enough for that transition to resume the same activity.
+                organizationAccessStopHandler.postDelayed(
+                    invalidateOrganizationAccessAfterStop,
+                    ORGANIZATION_ACCESS_STOP_GRACE_MS,
+                )
+            }
         }
         super.onStop()
     }
@@ -2550,6 +2577,7 @@ class R2CActivity :
     }
 
     public override fun onDestroy() {
+        organizationAccessStopHandler.removeCallbacks(invalidateOrganizationAccessAfterStop)
         deviceReconciliationDialog?.dismiss()
         deviceReconciliationDialog = null
         managedVideoMediaPeer?.close()

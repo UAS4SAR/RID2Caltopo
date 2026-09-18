@@ -270,6 +270,12 @@ final class AppleDroneConfirmationStore: ObservableObject {
         sessionIdentities[remoteID] != nil || peerIdentities[remoteID] != nil
     }
 
+    func isUnassociated(_ remoteID: String) -> Bool {
+        guard let trackIdentity = identity(for: remoteID) else { return true }
+        return trackIdentity.mappedID == remoteID &&
+            trackIdentity.organization.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     func activePilotCallsignConflict(remoteID: String, callsign: String) -> RidAircraftIdentity? {
         let active = sessionIdentities.merging(peerIdentities) { peer, _ in peer }
         return active.values.first { identity in
@@ -448,6 +454,7 @@ struct DroneConfirmationView: View {
     let onConfirm: (RidAircraftIdentity) -> Void
     let onIgnore: (() -> Void)?
     private let mappedIDOverride: String?
+    private let existingIdentity: RidAircraftIdentity?
     @Environment(\.dismiss) private var dismiss
     @State private var organization: String
     @State private var pilotCallsign: String
@@ -465,6 +472,7 @@ struct DroneConfirmationView: View {
         self.identityStore = identityStore
         self.onConfirm = onConfirm
         self.onIgnore = onIgnore
+        existingIdentity = existing
         mappedIDOverride = existing.flatMap { identity in
             identity.mappedID == remoteID ? nil : identity.mappedID
         }
@@ -546,7 +554,7 @@ struct DroneConfirmationView: View {
                 applyReadinessState()
             }
             .onChange(of: pilotCallsign) { _, _ in matchReportedPilot() }
-            .navigationTitle("Confirm Drone")
+            .navigationTitle(existingIdentity == nil ? "Add to RID Map" : "Update Saved Drone")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

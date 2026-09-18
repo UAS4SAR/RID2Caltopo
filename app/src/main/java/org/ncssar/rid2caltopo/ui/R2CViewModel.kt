@@ -530,6 +530,28 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         refreshPendingDroneConfirmationValidation()
     }
 
+    /** Apply a just-saved RID mapping to the live row and immediately offer confirmation. */
+    fun onRidMappingSaved(remoteId: String) {
+        val persisted = CaltopoClient.GetPersistedDroneSpecs()
+            .firstOrNull { it.remoteId.equals(remoteId, ignoreCase = true) } ?: return
+        val live = _drones.value.firstOrNull { it.remoteId.equals(remoteId, ignoreCase = true) }
+        if (live != null) {
+            // Recompute from the saved source fields so a stale active object cannot
+            // leave the track label at the old callsign-only value.
+            val mappedId = CtDroneSpec.BuildMappedId(persisted.owner, persisted.model, persisted.remoteId)
+            live.setMappedId(mappedId)
+            live.setOrg(persisted.org)
+            live.setOwner(persisted.owner)
+            live.setOwnerName(persisted.ownerName)
+            live.setModel(persisted.model)
+            live.setReadiness(persisted.readiness)
+            onDroneSpecsChanged(_drones.value)
+            requestDroneConfirmation(live)
+        } else {
+            requestDroneConfirmation(persisted)
+        }
+    }
+
     fun updatePendingDroneConfirmation(
         organization: String? = null,
         pilotCallsign: String? = null,

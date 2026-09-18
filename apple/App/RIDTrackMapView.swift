@@ -3239,7 +3239,20 @@ private struct OperationalMKMapView: UIViewRepresentable {
         let map = ViewportPreservingMKMapView()
         map.delegate = context.coordinator
         map.showsCompass = false
-        map.showsScale = !inset
+        map.showsScale = false
+        let scale = MKScaleView(mapView: map)
+        scale.scaleVisibility = .visible
+        scale.accessibilityIdentifier = "RID2CaltopoMapScale"
+        scale.isHidden = false
+        scale.alpha = 1
+        scale.translatesAutoresizingMaskIntoConstraints = false
+        scale.isUserInteractionEnabled = false
+        map.addSubview(scale)
+        NSLayoutConstraint.activate([
+            scale.leadingAnchor.constraint(equalTo: map.safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            // Keep the legal attribution/link clear below the scale control.
+            scale.bottomAnchor.constraint(equalTo: map.safeAreaLayoutGuide.bottomAnchor, constant: -48),
+        ])
         map.pointOfInterestFilter = .excludingAll
         map.setRegion(viewportMemory.region, animated: false)
         if !inset {
@@ -3273,6 +3286,11 @@ private struct OperationalMKMapView: UIViewRepresentable {
 
     func updateUIView(_ map: MKMapView, context: Context) {
         context.coordinator.onSelectAircraft = onSelectAircraft
+        if let scale = map.subviews.first(where: { $0.accessibilityIdentifier == "RID2CaltopoMapScale" }) {
+            scale.isHidden = false
+            scale.alpha = 1
+            map.bringSubviewToFront(scale)
+        }
         context.coordinator.onSelectClue = onSelectClue
         context.coordinator.onSelectArtifact = onSelectArtifact
         context.coordinator.onOperatorViewportGesture = onOperatorViewportGesture

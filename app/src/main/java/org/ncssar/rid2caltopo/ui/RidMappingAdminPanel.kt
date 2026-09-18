@@ -77,7 +77,11 @@ private data class RidMappingDraft(
 )
 
 @Composable
-fun RidMappingAdminDialog(onDismiss: () -> Unit) {
+fun RidMappingAdminDialog(
+    onDismiss: () -> Unit,
+    initialRemoteId: String? = null,
+    onSaved: (String) -> Unit = {}
+) {
     var canEdit by remember { mutableStateOf(AircraftOrganizationAccess.canEdit()) }
     var refreshingAccess by remember { mutableStateOf(false) }
     val accessChange by AircraftOrganizationAccess.changes.collectAsState()
@@ -118,10 +122,24 @@ fun RidMappingAdminDialog(onDismiss: () -> Unit) {
                     readiness = spec.readiness
                 )
             }
+            initialRemoteId?.trim()?.takeIf { it.isNotEmpty() }?.let { remoteId ->
+                val normalizedRemoteId = remoteId.uppercase()
+                drafts += RidMappingDraft(
+                    key = nextKey++,
+                    remoteId = normalizedRemoteId,
+                    ownerName = "",
+                    ownerCallsign = "",
+                    model = "",
+                    readiness = AircraftReadiness(serialNumber = normalizedRemoteId)
+                )
+            }
         }
     }
-    var selectedKey by remember { mutableStateOf<Long?>(null) }
-    var baseline by remember { mutableStateOf<List<RidMappingDraft>>(emptyList()) }
+    val initialKey = mappings.firstOrNull {
+        initialRemoteId?.trim()?.equals(it.remoteId, ignoreCase = true) == true
+    }?.key
+    var selectedKey by remember(initialKey) { mutableStateOf(initialKey) }
+    var baseline by remember { mutableStateOf(mappings.toList()) }
     var baselineOrganization by remember { mutableStateOf(organization) }
     fun beginEdit(key: Long) {
         baseline = mappings.toList()
@@ -149,10 +167,17 @@ fun RidMappingAdminDialog(onDismiss: () -> Unit) {
                 error = "Editing permission could not be verified. Check your connection and organization administrator access, then try Save again. Your edits are retained."
                 return false
             }
+            val savedRemoteId = entry?.let { values[index].remoteId }
             return runCatching {
                 if (entry != null) CaltopoClient.SavePersistedDroneSpec(organization, baseline.find { it.key == entry.key }?.remoteId, values[index])
                 else baseline.find { it.key == selectedKey }?.let { CaltopoClient.RemovePersistedDroneSpec(it.remoteId) }
-            }.fold(onSuccess = { selectedKey = null; error = null; scanTargetIndex = null; true },
+            }.fold(onSuccess = {
+                    selectedKey = null
+                    error = null
+                    scanTargetIndex = null
+                    savedRemoteId?.let(onSaved)
+                    true
+                },
                 onFailure = { error = it.message; false })
         } finally { saving = false }
     }
@@ -270,7 +295,12 @@ fun RidMappingAdminDialog(onDismiss: () -> Unit) {
                             enabled = canEdit && !saving,
                                         value = draft.remoteId,
                                         onValueChange = {
-                                            mappings[index] = draft.copy(remoteId = it.uppercase())
+                                            val normalized = it.uppercase()
+                                            val serial = draft.readiness.serialNumber.ifBlank { normalized }
+                                            mappings[index] = draft.copy(
+                                                remoteId = normalized,
+                                                readiness = draft.readiness.copy(serialNumber = serial)
+                                            )
                                         },
                                         label = { Text("Remote ID") },
                                         singleLine = true,

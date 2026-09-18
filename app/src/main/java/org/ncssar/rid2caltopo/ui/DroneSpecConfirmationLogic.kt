@@ -11,7 +11,8 @@ data class DroneSpecConfirmationUiState(
     val initialDroneDescription: String = droneDescription,
     val warning: String? = null,
     val pilotCallsignWarning: String? = null,
-    val usesUnknownOrganizationDefault: Boolean = false
+    val usesUnknownOrganizationDefault: Boolean = false,
+    val mappedIdIsRemoteId: Boolean = false
 )
 
 object DroneSpecConfirmationLogic {
@@ -51,7 +52,8 @@ object DroneSpecConfirmationLogic {
             initialPilotCallsign = pilotCallsign,
             initialDroneDescription = droneDescription,
             warning = warning,
-            usesUnknownOrganizationDefault = usesUnknownOrganizationDefault
+            usesUnknownOrganizationDefault = usesUnknownOrganizationDefault,
+            mappedIdIsRemoteId = drone.mappedId == drone.remoteId
         )
     }
 

@@ -1,0 +1,1 @@
+RID2Caltopo 2.3.1, build 243. This release adds a direct Add to RID Map action for unassociated Remote IDs on Android and Apple while preserving the existing confirmation and mapping workflow.

@@ -1,0 +1,1 @@
+Add an unassociated Remote ID directly to the RID map from the Main Screen. The edit panel preserves the broadcast Remote ID and lets you save the aircraft mapping.

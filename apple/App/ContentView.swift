@@ -81,6 +81,7 @@ struct ContentView: View {
     @State private var showConfirmExit = false
     @State private var pendingImportToken = ""
     @State private var selectedAircraftID: String?
+    @State private var addRidMapRemoteID: String?
     @State private var pendingDroneConfirmation: DroneConfirmationRequest?
     @State private var automaticStreamPairingAircraftID: String?
     @State private var automaticPairingOfferedStreamIDs: Set<String> = []
@@ -231,6 +232,17 @@ struct ContentView: View {
             }
             .navigationDestination(item: $selectedAircraftID) { aircraftID in
                 aircraftDestination(aircraftID)
+            }
+            .navigationDestination(item: $addRidMapRemoteID) { remoteID in
+                RidMappingAdminView(
+                    organization: orgConfigSettings,
+                    identities: droneConfirmations,
+                    initialRemoteID: remoteID,
+                    onSaved: { savedRemoteID in
+                        addRidMapRemoteID = nil
+                        pendingDroneConfirmation = DroneConfirmationRequest(id: savedRemoteID)
+                    }
+                )
             }
             .sheet(isPresented: $showImportConfig) {
                 NavigationStack {
@@ -1066,7 +1078,8 @@ struct ContentView: View {
                 )
                 if !ProcessInfo.processInfo.arguments.contains("--suppress-auto-confirmation"),
                    pendingDroneConfirmation == nil,
-                   let remoteID {
+                   let remoteID,
+                   !droneConfirmations.isUnassociated(remoteID) {
                     pendingDroneConfirmation = DroneConfirmationRequest(id: remoteID)
                 }
             }
@@ -1682,7 +1695,16 @@ struct ContentView: View {
             }
                 .frame(width: 28, height: 42)
                 .background(Color(uiColor: .secondarySystemBackground))
-            Button(identity?.displayLabel ?? "Confirm Drone") { selectedAircraftID = track.aircraftID }
+            Button(
+                identity?.displayLabel
+                    ?? (droneConfirmations.isUnassociated(track.aircraftID) ? "Add to RID Map" : "Confirm Drone")
+            ) {
+                if droneConfirmations.isUnassociated(track.aircraftID) {
+                    addRidMapRemoteID = track.aircraftID
+                } else {
+                    selectedAircraftID = track.aircraftID
+                }
+            }
                 .font(.caption.monospaced())
                 .lineLimit(1)
                 .buttonStyle(.bordered)
@@ -2487,7 +2509,8 @@ struct ContentView: View {
 
     private func queueNextDroneConfirmation() {
         guard pendingDroneConfirmation == nil,
-              let remoteID = droneConfirmations.reconcileActiveFlights(confirmationActiveRemoteIDs)
+              let remoteID = droneConfirmations.reconcileActiveFlights(confirmationActiveRemoteIDs),
+              !droneConfirmations.isUnassociated(remoteID)
         else { return }
         pendingDroneConfirmation = DroneConfirmationRequest(id: remoteID)
     }

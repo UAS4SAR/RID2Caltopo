@@ -656,6 +656,7 @@ fun MainScreen(
     var menuExpanded by remember { mutableStateOf(false) }
     var credentialMenuExpanded by remember { mutableStateOf(false) }
     var showConfirmDialog by remember { mutableStateOf(false) }
+    var addRidMapRemoteId by remember { mutableStateOf<String?>(null) }
     var showAboutPrivacyDialog by remember { mutableStateOf(false) }
     var showDebugTagDialog by remember { mutableStateOf(false) }
     var knownDebugTags by remember { mutableStateOf(listOf<String>()) }
@@ -1932,7 +1933,11 @@ fun MainScreen(
                                 appUptime = appUptime,
                                 viewModel = item.viewModel,
                                 onConfirmDrone = { drone ->
-                                    item.viewModel.requestDroneConfirmation(drone)
+                                    if (drone.mappedId == drone.remoteId) {
+                                        addRidMapRemoteId = drone.remoteId
+                                    } else {
+                                        item.viewModel.requestDroneConfirmation(drone)
+                                    }
                                 }
                             )
                         }
@@ -2724,6 +2729,16 @@ fun MainScreen(
                 TextButton(onClick = { showResetPersistentStateDialog = false }) {
                     Text("Cancel")
                 }
+            }
+        )
+    }
+    addRidMapRemoteId?.let { remoteId ->
+        RidMappingAdminDialog(
+            initialRemoteId = remoteId,
+            onDismiss = { addRidMapRemoteId = null },
+            onSaved = { savedRemoteId ->
+                addRidMapRemoteId = null
+                localViewModel.onRidMappingSaved(savedRemoteId)
             }
         )
     }

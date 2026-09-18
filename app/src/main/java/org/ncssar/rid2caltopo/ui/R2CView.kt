@@ -447,7 +447,11 @@ fun DroneSpecConfirmationDialog(
     AlertDialog(
         onDismissRequest = {},
         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
-        title = { Text("Confirm Drone") },
+        title = {
+            Text(
+                if (state.mappedIdIsRemoteId) "Add to RID Map" else "Update Saved Drone"
+            )
+        },
         text = {
             Column(
                 modifier = Modifier

@@ -24,6 +24,7 @@ import android.widget.TextView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.rememberScrollState
@@ -79,6 +80,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -681,6 +685,19 @@ internal fun SplitMapPane(
     var offlinePrepAutoCloseJob by offlinePrepCoordinator.autoCloseJob
     val offlinePrepActiveCalls = offlinePrepCoordinator.activeCalls
     var mapBounds by remember { mutableStateOf<BoundingBox?>(null) }
+    var mapScaleBar by remember { mutableStateOf<MapScaleBarState?>(null) }
+    fun updateMapScaleBar(mapView: MapView) {
+        val density = mapView.resources.displayMetrics.density
+        val samplePx = minOf(180f * density, mapView.width * 0.35f).toInt()
+        if (samplePx <= 0 || mapView.height <= 0) { mapScaleBar = null; return }
+        val x = (12 * density).toInt()
+        val y = (mapView.height - 16 * density).toInt()
+        val start = mapView.projection.fromPixels(x, y)
+        val end = mapView.projection.fromPixels(x + samplePx, y)
+        val distance = FloatArray(1)
+        Location.distanceBetween(start.latitude, start.longitude, end.latitude, end.longitude, distance)
+        mapScaleBar = mapScaleBarState(distance[0].toDouble() / samplePx, samplePx.toDouble())
+    }
 
     val packageZoneId = remember { ZoneId.systemDefault() }
     val packageDateFormatter = remember { DateTimeFormatter.ofPattern("yyyy-MM-dd") }
@@ -1026,6 +1043,14 @@ internal fun SplitMapPane(
     val liveMapStreamIds = mapStreams.values
         .filter { it.state == StreamState.LIVE && !it.isLocalPlayback }
         .map { it.designator.lowercase(java.util.Locale.US) }.toSet()
+    val droneDesignatorByMappedId = mapStreams.values
+        .filter { it.state == StreamState.LIVE && !it.isLocalPlayback }
+        .mapNotNull { stream ->
+            viewModel.mapDesignatorForStream(stream.designator)?.let { mappedId ->
+                mappedId to stream.designator
+            }
+        }
+        .toMap()
     LaunchedEffect(liveMapStreamIds) {
         if (!isInsetMode && streamFocusArrival.observe(liveMapStreamIds, followFocusedDroneEnabled, focusedPath != null)) {
             operatorAdjustedViewport = false
@@ -2840,6 +2865,7 @@ internal fun SplitMapPane(
                 configureOsmdroid(context)
                 MapView(context).apply {
                     currentMapView = this
+                    addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateMapScaleBar(this) }
                     setMultiTouchControls(!isInsetMode)
                     setTileProvider(tileMapProvider)
                     // This provider is rendered by a separate TilesOverlay, so MapView does not
@@ -2914,6 +2940,7 @@ internal fun SplitMapPane(
                                 if (!isInsetMode) {
                                     persistFullMapViewport(this@apply)
                                 }
+                                updateMapScaleBar(this@apply)
                                 return false
                             }
 
@@ -2921,6 +2948,7 @@ internal fun SplitMapPane(
                                 if (!isInsetMode) {
                                     persistFullMapViewport(this@apply)
                                 }
+                                updateMapScaleBar(this@apply)
                                 val eventZoom = event?.zoomLevel ?: zoomLevelDouble
                                 val eventTileZoom = TileSystem.getInputTileZoomLevel(eventZoom)
                                 if (visibleTileZoom != eventTileZoom) {
@@ -2960,6 +2988,7 @@ internal fun SplitMapPane(
                 }
                 val uiNowWallMsec = System.currentTimeMillis()
                 mapBounds = mapView.boundingBox
+                updateMapScaleBar(mapView)
                 val tileSource = baseTileSource
                 val maxZoom = MAP_DISPLAY_MAX_ZOOM
                 if (mapView.maxZoomLevel != maxZoom) {
@@ -3806,7 +3835,7 @@ internal fun SplitMapPane(
                         )
                         val nameDrawable = buildDroneNameLabelDrawable(
                             context.resources,
-                            point.droneSpec?.displayLabel ?: point.designator
+                            droneDesignatorByMappedId[point.designator] ?: point.designator
                         )
                         val statusDrawable = buildDroneStatusLabelDrawable(context.resources, labelText)
                         droneLabelSpecs.add(
@@ -4269,6 +4298,35 @@ internal fun SplitMapPane(
                         progress = { progress },
                         modifier = Modifier.fillMaxWidth()
                     )
+                }
+            }
+        }
+
+        mapScaleBar?.let { scale ->
+            val density = LocalDensity.current
+            val barWidth = with(density) { scale.widthPx.toFloat().toDp() }
+            Canvas(Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 44.dp)
+                .width(barWidth + 8.dp).height(30.dp)) {
+                val x = 2.dp.toPx()
+                val end = x + scale.widthPx.toFloat()
+                val y = size.height - 2.dp.toPx()
+                for ((color, stroke) in listOf(Color.Black to 8.dp.toPx(), Color.White to 4.dp.toPx())) {
+                    drawLine(color, androidx.compose.ui.geometry.Offset(x, y), androidx.compose.ui.geometry.Offset(end, y), stroke, StrokeCap.Round)
+                    drawLine(color, androidx.compose.ui.geometry.Offset(x, y - 5.dp.toPx()), androidx.compose.ui.geometry.Offset(x, y), stroke, StrokeCap.Round)
+                    drawLine(color, androidx.compose.ui.geometry.Offset(end, y - 5.dp.toPx()), androidx.compose.ui.geometry.Offset(end, y), stroke, StrokeCap.Round)
+                }
+                drawIntoCanvas { canvas ->
+                    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                        textSize = 11.sp.toPx()
+                        typeface = android.graphics.Typeface.DEFAULT_BOLD
+                        color = AndroidColor.BLACK
+                        style = android.graphics.Paint.Style.STROKE
+                        strokeWidth = 3.dp.toPx()
+                    }
+                    canvas.nativeCanvas.drawText(scale.label, x, y - 9.dp.toPx(), paint)
+                    paint.style = android.graphics.Paint.Style.FILL
+                    paint.color = AndroidColor.WHITE
+                    canvas.nativeCanvas.drawText(scale.label, x, y - 9.dp.toPx(), paint)
                 }
             }
         }
