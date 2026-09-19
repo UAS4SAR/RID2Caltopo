@@ -1,15 +1,12 @@
 Latest changes:
-- Add an unassociated Remote ID directly to the RID map from the Main Screen. The edit panel opens with the broadcast Remote ID preserved and the mapped ID initially set to that Remote ID.
-- Show a distance scale in the lower-left corner of the map with distance values matched to the map projection.
-- Display the drone designator in the Track Label instead of the pilot callsign.
-- Keep protected access authenticated while switching between windowed and full-screen map views.
-- Preserve Map Folders visibility choices when the Apple map pane is recreated or revisited.
+- Align the user-facing drone designator name and sorting across Android and Apple Status views.
+- Make the default RTMP setup designator actionable and show registered designators in a sorted picker.
 
 Platform-specific changes:
-- Android labels an unassociated aircraft action "Add to RID Map" and uses a matching edit-panel title.
-- Apple labels an unassociated aircraft action "Add to RID Map" and uses a matching edit-panel title.
-- Apple positions the map scale above the legal attribution link.
+- Android renders a visible scrollbar for the registered designator list.
+- Apple presents the registered designators in a scrollable list sheet.
+- Both platforms retitle the list to “droneDesig's for registered drones” and provide an Add aircraft action that opens the aircraft details editor.
+- iOS keeps the first tap on the designator link in the split stream view from collapsing the map pane.
 
 Known platform differences:
-- Android and Apple retain their existing flight confirmation, organization, and pilot-readiness fields after the new entry point.
-- Android and Apple use their native map rendering controls for scale placement and presentation.
+- Android and Apple retain their native Status and stream setup presentation.
