@@ -439,6 +439,10 @@ struct AppleStreamsGridView: View {
     var onCoordinateDisplayFormatChange: ((OperationalCoordinateDisplayFormat) -> Void)? = nil
     var telemetryPairingState: ((String) -> AppleStreamTelemetryPairingState) = { _ in .noTelemetry }
     var centerpointElevationFeet: ((String) async -> OperationalCenterpointElevation.Sample?)? = nil
+    var registeredDroneDesignators: [String] = []
+    var aircraftDetailsView: (() -> AnyView)? = nil
+    @State private var showRegisteredDesignators = false
+    @State private var showAircraftDetails = false
 
     private var visibleSessions: [AppleLiveStreamSession] {
         let operational = registry.sessions.filter { $0.id != "demo" }
@@ -459,8 +463,10 @@ struct AppleStreamsGridView: View {
                 if showsSetupHeader {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Controller RTMP setup").font(.caption.bold())
-                        AppleControllerConnectionURLs().font(.headline.monospaced())
-                        Text("Replace <droneDesig> with the aircraft designator. Use the address for the network connecting this device and the controller.")
+                        AppleControllerConnectionURLs(onDesignatorsTapped: {
+                            showRegisteredDesignators = true
+                        }).font(.headline.monospaced())
+                        Text("Replace droneDesig with the aircraft designator. Use the address for the network connecting this device and the controller.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -494,6 +500,20 @@ struct AppleStreamsGridView: View {
             .background(.black)
         }
         .modifier(StreamGridNavigationTitle(enabled: showsNavigationTitle))
+        .sheet(isPresented: $showRegisteredDesignators) {
+            RegisteredDroneDesignatorsView(
+                values: registeredDroneDesignators,
+                onAddAircraft: aircraftDetailsView.map { _ in
+                    {
+                        showRegisteredDesignators = false
+                        showAircraftDetails = true
+                    }
+                }
+            )
+        }
+        .sheet(isPresented: $showAircraftDetails) {
+            aircraftDetailsView?() ?? AnyView(EmptyView())
+        }
     }
 
     private func streamTile(
@@ -504,6 +524,9 @@ struct AppleStreamsGridView: View {
             session: session,
             ingestAddress: ingestAddress,
             networkSSID: currentNetworkSSID,
+            onDesignatorsTapped: {
+                showRegisteredDesignators = true
+            },
             focused: registry.focusedID == session.id,
             fillsAvailableSpace: fillsAvailableSpace,
             primaryLabel: primaryLabel?(session.id),
@@ -583,6 +606,7 @@ private struct AppleStreamTile: View {
     @State private var centerpointDisplayMode: OperationalCenterpointElevation.DisplayMode = .msl
     let ingestAddress: String?
     let networkSSID: String?
+    let onDesignatorsTapped: (() -> Void)?
     let focused: Bool
     let fillsAvailableSpace: Bool
     let primaryLabel: String?
@@ -617,6 +641,7 @@ private struct AppleStreamTile: View {
         session: AppleLiveStreamSession,
         ingestAddress: String?,
         networkSSID: String?,
+        onDesignatorsTapped: (() -> Void)? = nil,
         focused: Bool,
         fillsAvailableSpace: Bool,
         primaryLabel: String?,
@@ -638,6 +663,7 @@ private struct AppleStreamTile: View {
         _model = ObservedObject(wrappedValue: session.model)
         self.ingestAddress = ingestAddress
         self.networkSSID = networkSSID
+        self.onDesignatorsTapped = onDesignatorsTapped
         self.focused = focused
         self.fillsAvailableSpace = fillsAvailableSpace
         self.primaryLabel = primaryLabel
@@ -721,6 +747,7 @@ private struct AppleStreamTile: View {
                     if ended { panAtGestureStart = pan }
                 }
             )
+            .allowsHitTesting(session.id != "demo")
             HStack {
                 AppleLiveVideoIndicator(
                     model: model,
@@ -916,7 +943,7 @@ private struct AppleStreamTile: View {
             Text("Waiting for controller to connect")
                 .font(.headline)
             if session.id == "demo" {
-                AppleControllerConnectionURLs()
+                AppleControllerConnectionURLs(onDesignatorsTapped: onDesignatorsTapped)
                     .font(.subheadline.monospaced())
                     .multilineTextAlignment(.center)
             }
@@ -1184,6 +1211,43 @@ struct AppleExternalDisplayView: View {
             ForEach(data.aircraft, id: \.id) { item in
                 Annotation(item.id, coordinate: item.coordinate) { Image(systemName: "airplane").padding(8).background(.red).foregroundStyle(.white).clipShape(Circle()) }
             }
+        }
+    }
+}
+
+private struct RegisteredDroneDesignatorsView: View {
+    let values: [String]
+    let onAddAircraft: (() -> Void)?
+
+    private var sortedValues: [String] {
+        values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .reduce(into: [String]()) { result, value in
+                if !result.contains(where: { $0.caseInsensitiveCompare(value) == .orderedSame }) {
+                    result.append(value)
+                }
+            }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if sortedValues.isEmpty {
+                    Text("No registered droneDesig values.").foregroundStyle(.secondary)
+                } else {
+                    ForEach(sortedValues, id: \.self) { Text($0) }
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if let onAddAircraft {
+                    Button("Add aircraft", systemImage: "plus", action: onAddAircraft)
+                        .buttonStyle(.borderedProminent)
+                        .padding(.vertical, 8)
+                }
+            }
+            .navigationTitle("droneDesig's for registered drones")
+            .navigationBarTitleDisplayMode(.inline)
         }
     }
 }

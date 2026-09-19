@@ -405,6 +405,7 @@ struct RidMappingAdminView: View {
         organization: AppleOrgConfigSettings,
         identities: AppleDroneConfirmationStore,
         initialRemoteID: String? = nil,
+        startWithAddAircraft: Bool = false,
         onSaved: ((String) -> Void)? = nil
     ) {
         self.organization = organization
@@ -428,6 +429,10 @@ struct RidMappingAdminView: View {
                 selected = draft.id
                 initialMappings.append(draft)
             }
+        } else if startWithAddAircraft {
+            let draft = AppleRidMappingDraft()
+            selected = draft.id
+            initialMappings.append(draft)
         }
         _mappings = State(initialValue: initialMappings)
         _selectedID = State(initialValue: selected)

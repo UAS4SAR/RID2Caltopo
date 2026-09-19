@@ -2060,7 +2060,15 @@ struct ContentView: View {
                 AppleStreamsGridView(
                     registry: streamRegistry,
                     ingestAddress: controllerRTMPURL,
-                    networkSSID: controllerWiFiSSID
+                    networkSSID: controllerWiFiSSID,
+                    registeredDroneDesignators: droneConfirmations.importedMappings.map(\.mappedID),
+                    aircraftDetailsView: {
+                        AnyView(RidMappingAdminView(
+                            organization: orgConfigSettings,
+                            identities: droneConfirmations,
+                            startWithAddAircraft: true
+                        ))
+                    }
                 )
             } label: {
                 LabeledContent("Live streams", value: String(liveStreamCount) + " / " + String(AppleStreamRegistry.maximumStreams))

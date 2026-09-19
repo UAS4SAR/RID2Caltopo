@@ -10,7 +10,7 @@ class ControllerNetworkTest {
         assertEquals(listOf(wifi, wired), controllerEndpoints(listOf(wired, wifi)))
         assertEquals(listOf(wifi), controllerEndpoints(listOf(wifi)))
         assertTrue(controllerEndpoints(emptyList()).isEmpty())
-        assertEquals("Wi-Fi: rtmp://192.168.50.12/<droneDesig>\nEthernet: rtmp://169.254.10.2/<droneDesig>",
+        assertEquals("Wi-Fi: rtmp://192.168.50.12/droneDesig\nEthernet: rtmp://169.254.10.2/droneDesig",
             controllerEndpointInstructions(controllerEndpoints(listOf(wired, wifi))))
         assertEquals("Wi-Fi: Not connected", controllerEndpointInstructions(emptyList()))
         assertEquals("Ethernet", wired.label)

@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.launch
+import java.util.Locale
 import org.ncssar.rid2caltopo.BuildConfig
 import org.ncssar.rid2caltopo.app.R2CActivity
 import org.ncssar.rid2caltopo.data.CaltopoClient
@@ -120,9 +121,9 @@ fun ScannerScreen(
                                 if (persistedDroneSpecs.isEmpty()) {
                                     Text("No persisted CtDroneSpecs.")
                                 } else {
-                                    persistedDroneSpecs.forEach { spec ->
+                                    persistedDroneSpecs.sortedBy { it.mappedId.orEmpty().lowercase(Locale.US) }.forEach { spec ->
                                         Text(
-                                            "remoteId: ${spec.remoteId}    mappedId: ${spec.mappedId}    org: ${spec.org.orEmpty()}    owner: ${spec.owner.orEmpty()}    model: ${spec.model.orEmpty()}",
+                                            "remoteId: ${spec.remoteId}    droneDesig: ${spec.mappedId}    org: ${spec.org.orEmpty()}    owner: ${spec.owner.orEmpty()}    model: ${spec.model.orEmpty()}",
                                             style = MaterialTheme.typography.bodyMedium,
                                             modifier = Modifier.padding(vertical = 6.dp)
                                         )
@@ -226,9 +227,9 @@ internal fun buildStatusText(persistedDroneSpecs: List<org.ncssar.rid2caltopo.da
     if (persistedDroneSpecs.isEmpty()) {
         builder.append("No persisted CtDroneSpecs.")
     } else {
-        persistedDroneSpecs.forEach { spec ->
+        persistedDroneSpecs.sortedBy { it.mappedId.orEmpty().lowercase(Locale.US) }.forEach { spec ->
             builder.appendLine(
-                "remoteId: ${spec.remoteId}    mappedId: ${spec.mappedId}    org: ${spec.org.orEmpty()}    owner: ${spec.owner.orEmpty()}    model: ${spec.model.orEmpty()}"
+                "remoteId: ${spec.remoteId}    droneDesig: ${spec.mappedId}    org: ${spec.org.orEmpty()}    owner: ${spec.owner.orEmpty()}    model: ${spec.model.orEmpty()}"
             )
         }
     }

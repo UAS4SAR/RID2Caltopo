@@ -1,0 +1,12 @@
+Latest changes:
+- Align the user-facing drone designator name and sorting across Android and Apple Status views.
+- Make the default RTMP setup designator actionable and show registered designators in a sorted picker.
+
+Platform-specific changes:
+- Android renders a visible scrollbar for the registered designator list.
+- Apple presents the registered designators in a scrollable list sheet.
+- Both platforms retitle the list to “droneDesig's for registered drones” and provide an Add aircraft action that opens the aircraft details editor.
+- iOS keeps the first tap on the designator link in the split stream view from collapsing the map pane.
+
+Known platform differences:
+- Android and Apple retain their native Status and stream setup presentation.

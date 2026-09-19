@@ -348,14 +348,31 @@ enum AppleDeviceIdentity {
 
 struct AppleControllerConnectionURLs: View {
     @ObservedObject private var network = AppleNetworkDiagnosticCenter.shared
+    var onDesignatorsTapped: (() -> Void)? = nil
+
+    @ViewBuilder
+    private func endpointLine(label: String, address: String) -> some View {
+        HStack(spacing: 0) {
+            Text("\(label): rtmp://\(address)/")
+            if let onDesignatorsTapped {
+                Button("droneDesig", action: onDesignatorsTapped)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.tint)
+            } else {
+                Text("droneDesig")
+            }
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(network.currentControllerIPv4Address.map {
-                "Wi-Fi: rtmp://\($0)/<droneDesig>"
-            } ?? "Wi-Fi: Not connected")
+            if let address = network.currentControllerIPv4Address {
+                endpointLine(label: "Wi-Fi", address: address)
+            } else {
+                Text("Wi-Fi: Not connected")
+            }
             if let wired = network.currentWiredIPv4Address {
-                Text("Ethernet: rtmp://\(wired)/<droneDesig>")
+                endpointLine(label: "Ethernet", address: wired)
             }
         }
         .fixedSize(horizontal: false, vertical: true)

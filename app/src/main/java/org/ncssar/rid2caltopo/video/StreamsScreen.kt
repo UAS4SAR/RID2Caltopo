@@ -3,6 +3,7 @@ package org.ncssar.rid2caltopo.video
 import OverLimitDroneUiState
 import StreamsLayoutMode
 import StreamsViewModel
+import org.ncssar.rid2caltopo.ui.RidMappingAdminDialog
 import android.app.Activity
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -1660,6 +1661,8 @@ private fun EmptyStreamsView(
     var anomalyMenuExpanded by remember { mutableStateOf(false) }
     var showAnomalySettingsDialog by remember { mutableStateOf(false) }
     var showAdHelpDialog by remember { mutableStateOf(false) }
+    var showRegisteredDesignators by remember { mutableStateOf(false) }
+    var showAircraftDetails by remember { mutableStateOf(false) }
     val settingsDesignator = EMPTY_STREAMS_SETTINGS_DESIGNATOR
     val anomalyConfig = viewModel.anomalyConfigFor(settingsDesignator)
     Box(
@@ -1714,7 +1717,10 @@ private fun EmptyStreamsView(
             verticalArrangement = Arrangement.Center
         ) {
             val endpoints = rememberControllerEndpoints()
-            Text(controllerEndpointInstructions(endpoints))
+            ControllerEndpointInstructions(
+                endpoints = endpoints,
+                onDesignatorsClick = { showRegisteredDesignators = true },
+            )
             Spacer(modifier = Modifier.height(12.dp))
             StreamsMapStatusButton(
                 mapName = mapName,
@@ -1735,5 +1741,85 @@ private fun EmptyStreamsView(
             showAdHelpDialog = showAdHelpDialog,
             onDismissAdHelpDialog = { showAdHelpDialog = false },
         )
+
+        if (showRegisteredDesignators) {
+            val designators = remember {
+                CaltopoClient.GetPersistedDroneSpecs()
+                    .map { it.mappedId.orEmpty().trim() }
+                    .filter { it.isNotEmpty() }
+                    .distinctBy { it.lowercase(java.util.Locale.US) }
+                    .sortedBy { it.lowercase(java.util.Locale.US) }
+            }
+            AlertDialog(
+                onDismissRequest = { showRegisteredDesignators = false },
+                title = { Text("droneDesig's for registered drones") },
+                text = {
+                    if (designators.isEmpty()) {
+                        Text("No registered droneDesig values.")
+                    } else {
+                        val designatorScrollState = rememberScrollState()
+                        val density = LocalDensity.current
+                        BoxWithConstraints(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(280.dp),
+                        ) {
+                            val viewportHeight = maxHeight
+                            val maxScroll = designatorScrollState.maxValue
+                            val maxScrollDp = with(density) { maxScroll.toDp() }
+                            val thumbHeight = (viewportHeight *
+                                (viewportHeight / (viewportHeight + maxScrollDp)))
+                                .coerceIn(32.dp, viewportHeight)
+                            val thumbOffset = if (maxScroll == 0) {
+                                0.dp
+                            } else {
+                                (viewportHeight - thumbHeight) *
+                                    (designatorScrollState.value.toFloat() / maxScroll)
+                            }
+                            Row(modifier = Modifier.fillMaxSize()) {
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxHeight()
+                                        .verticalScroll(designatorScrollState),
+                                ) {
+                                    designators.forEach { designator -> Text(designator) }
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .padding(start = 8.dp)
+                                        .width(6.dp)
+                                        .fillMaxHeight()
+                                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(thumbHeight)
+                                            .offset(y = thumbOffset)
+                                            .background(MaterialTheme.colorScheme.primary),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Row {
+                        TextButton(onClick = {
+                            showRegisteredDesignators = false
+                            showAircraftDetails = true
+                        }) { Text("Add aircraft") }
+                        TextButton(onClick = { showRegisteredDesignators = false }) { Text("Close") }
+                    }
+                },
+            )
+        }
+        if (showAircraftDetails) {
+            RidMappingAdminDialog(
+                onDismiss = { showAircraftDetails = false },
+                startWithAddAircraft = true,
+            )
+        }
     }
 }

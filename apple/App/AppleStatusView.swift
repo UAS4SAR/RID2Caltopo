@@ -47,6 +47,9 @@ struct AppleStatusSnapshot {
     }
 
     var copyText: String {
+        let sortedMappings = importedMappings.sorted {
+            $0.mappedID.localizedCaseInsensitiveCompare($1.mappedID) == .orderedAscending
+        }
         var lines = [
             "RID2Caltopo Apple Status",
             "BUILD_VERSION: \(buildVersion)",
@@ -95,8 +98,8 @@ struct AppleStatusSnapshot {
         if importedMappings.isEmpty {
             lines.append("No persisted drone mappings.")
         } else {
-            lines.append(contentsOf: importedMappings.map { identity in
-                "remoteId: \(identity.remoteID)    mappedId: \(identity.mappedID)    org: \(identity.organization)    owner: \(identity.pilotCallsign)    model: \(identity.droneDescription)"
+            lines.append(contentsOf: sortedMappings.map { identity in
+                "remoteId: \(identity.remoteID)    droneDesig: \(identity.mappedID)    org: \(identity.organization)    owner: \(identity.pilotCallsign)    model: \(identity.droneDescription)"
             })
         }
         return lines.joined(separator: "\n")
@@ -173,10 +176,12 @@ struct AppleStatusView: View {
                     Text("No persisted drone mappings.")
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(snapshot.importedMappings, id: \.remoteID) { identity in
+                    ForEach(snapshot.importedMappings.sorted { lhs, rhs in
+                        lhs.mappedID.localizedCaseInsensitiveCompare(rhs.mappedID) == .orderedAscending
+                    }, id: \.remoteID) { identity in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(identity.remoteID).font(.headline)
-                            Text(identity.mappedID)
+                            Text("droneDesig: \(identity.mappedID)")
                             Text(mappingDetail(identity))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)

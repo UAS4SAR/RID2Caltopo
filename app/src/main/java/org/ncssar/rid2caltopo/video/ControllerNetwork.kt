@@ -9,6 +9,13 @@ import android.os.Handler
 import android.os.Looper
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import java.net.Inet4Address
 
 internal data class ControllerEndpoint(val address: String, val wired: Boolean) {
@@ -25,8 +32,32 @@ internal fun controllerEndpoints(candidates: List<ControllerEndpoint>): List<Con
 
 internal fun controllerEndpointInstructions(endpoints: List<ControllerEndpoint>): String =
     (if (endpoints.none { !it.wired }) listOf("Wi-Fi: Not connected") else emptyList())
-        .plus(endpoints.map { "${it.label}: rtmp://${it.address}/<droneDesig>" })
+        .plus(endpoints.map { "${it.label}: rtmp://${it.address}/droneDesig" })
         .joinToString("\n")
+
+@Composable
+internal fun ControllerEndpointInstructions(
+    endpoints: List<ControllerEndpoint>,
+    onDesignatorsClick: () -> Unit,
+) {
+    val visibleEndpoints = endpoints
+    Column {
+        if (visibleEndpoints.none { !it.wired }) {
+            Text("Wi-Fi: Not connected")
+        }
+        visibleEndpoints.forEach { endpoint ->
+            Row {
+                Text("${endpoint.label}: rtmp://${endpoint.address}/")
+                Text(
+                    text = "droneDesig",
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.clickable(onClick = onDesignatorsClick),
+                )
+            }
+        }
+    }
+}
 
 /** Observe all local networks, including Ethernet without an Internet route. */
 @Composable

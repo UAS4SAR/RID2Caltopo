@@ -1107,7 +1107,7 @@ struct RIDTrackMapView: View {
                     videoPane
                         .frame(width: size.width * splitFraction)
                         .contentShape(Rectangle())
-                        .simultaneousGesture(TapGesture().onEnded {
+                        .gesture(TapGesture().onEnded {
                             splitFraction = 1
                             layout = OperationalMapVideoLayout.video.withPictureInPicture(videoPipEnabled)
                         })
@@ -1126,7 +1126,7 @@ struct RIDTrackMapView: View {
                     videoPane
                         .frame(height: size.height * splitFraction)
                         .contentShape(Rectangle())
-                        .simultaneousGesture(TapGesture().onEnded {
+                        .gesture(TapGesture().onEnded {
                             splitFraction = 1
                             layout = OperationalMapVideoLayout.video.withPictureInPicture(videoPipEnabled)
                         })
@@ -1485,7 +1485,15 @@ struct RIDTrackMapView: View {
                 coordinateDisplayFormat: coordinateDisplayFormat,
                 onCoordinateDisplayFormatChange: { coordinateDisplayFormat = $0 },
                 telemetryPairingState: streamTelemetryPairingState,
-                centerpointElevationFeet: centerpointElevationFeet
+                centerpointElevationFeet: centerpointElevationFeet,
+                registeredDroneDesignators: identityStore.importedMappings.map(\.mappedID),
+                aircraftDetailsView: {
+                    AnyView(RidMappingAdminView(
+                        organization: orgSettings,
+                        identities: identityStore,
+                        startWithAddAircraft: true
+                    ))
+                }
             )
             VStack {
                 Spacer()

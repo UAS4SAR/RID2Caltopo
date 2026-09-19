@@ -1598,11 +1598,11 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
     #expect(OperationalStreamSetupPresentation.instruction(
         ingestAddress: "rtmp://192.168.1.5:1935",
         networkSSID: "Incident Wi-Fi"
-    ) == "Stream video to: rtmp://192.168.1.5:1935/<droneDesig> on Incident Wi-Fi network")
+    ) == "Stream video to: rtmp://192.168.1.5:1935/droneDesig on Incident Wi-Fi network")
     #expect(OperationalStreamSetupPresentation.instruction(
         ingestAddress: "rtmp://192.168.1.5:1935/",
         networkSSID: " "
-    ) == "Stream video to: rtmp://192.168.1.5:1935/<droneDesig> on Wi-Fi name unavailable network")
+    ) == "Stream video to: rtmp://192.168.1.5:1935/droneDesig on Wi-Fi name unavailable network")
 }
 
 @Test func controllerIPv4SelectionPrefersEthernetAndNeverFallsBackToCellular() {

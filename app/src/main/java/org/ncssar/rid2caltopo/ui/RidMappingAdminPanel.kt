@@ -80,6 +80,7 @@ private data class RidMappingDraft(
 fun RidMappingAdminDialog(
     onDismiss: () -> Unit,
     initialRemoteId: String? = null,
+    startWithAddAircraft: Boolean = false,
     onSaved: (String) -> Unit = {}
 ) {
     var canEdit by remember { mutableStateOf(AircraftOrganizationAccess.canEdit()) }
@@ -138,7 +139,16 @@ fun RidMappingAdminDialog(
     val initialKey = mappings.firstOrNull {
         initialRemoteId?.trim()?.equals(it.remoteId, ignoreCase = true) == true
     }?.key
-    var selectedKey by remember(initialKey) { mutableStateOf(initialKey) }
+    val addAircraftKey = remember(startWithAddAircraft, initialKey) {
+        if (startWithAddAircraft && initialKey == null) {
+            val draft = RidMappingDraft(nextKey++, "", "", "", "")
+            mappings += draft
+            draft.key
+        } else null
+    }
+    var selectedKey by remember(initialKey, addAircraftKey) {
+        mutableStateOf(initialKey ?: addAircraftKey)
+    }
     var baseline by remember { mutableStateOf(mappings.toList()) }
     var baselineOrganization by remember { mutableStateOf(organization) }
     fun beginEdit(key: Long) {
