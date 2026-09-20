@@ -58,6 +58,7 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import org.ncssar.rid2caltopo.data.CaltopoClient
 import org.ncssar.rid2caltopo.data.EditableRidMapping
 import org.ncssar.rid2caltopo.data.RidMappingRules
+import org.ncssar.rid2caltopo.data.TabletPilotCallsignPrefs
 import java.io.File
 import org.ncssar.rid2caltopo.data.AircraftReadiness
 import org.ncssar.rid2caltopo.data.AircraftOrganizationAccess
@@ -129,7 +130,7 @@ fun RidMappingAdminDialog(
                     key = nextKey++,
                     remoteId = normalizedRemoteId,
                     ownerName = "",
-                    ownerCallsign = "",
+                    ownerCallsign = TabletPilotCallsignPrefs.load(context),
                     model = "",
                     readiness = AircraftReadiness(serialNumber = normalizedRemoteId)
                 )
@@ -141,7 +142,7 @@ fun RidMappingAdminDialog(
     }?.key
     val addAircraftKey = remember(startWithAddAircraft, initialKey) {
         if (startWithAddAircraft && initialKey == null) {
-            val draft = RidMappingDraft(nextKey++, "", "", "", "")
+            val draft = RidMappingDraft(nextKey++, "", "", TabletPilotCallsignPrefs.load(context), "")
             mappings += draft
             draft.key
         } else null
@@ -379,7 +380,7 @@ fun RidMappingAdminDialog(
                         OutlinedButton(
                             enabled = canEdit && !saving,
                             onClick = {
-                                val draft = RidMappingDraft(nextKey++, "", "", "", "")
+                                val draft = RidMappingDraft(nextKey++, "", "", TabletPilotCallsignPrefs.load(context), "")
                                 beginEdit(draft.key)
                                 mappings += draft
                             },

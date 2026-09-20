@@ -4117,7 +4117,7 @@ private func proximityDrone(
 }
 
 @Test func trackStoreRejectsPoorHorizontalAccuracyBeforeTakeoffAndAltitudeSeed() async throws {
-    let store = RidTrackStore()
+    let store = RidTrackStore(policy: RidTrackPolicy(minimumHorizontalAccuracyCode: 10))
     let start = Date(timeIntervalSince1970: 1_700_000_000)
     let stale = RidObservation(
         source: .bluetoothLegacy,
@@ -4219,7 +4219,7 @@ private func proximityDrone(
     #expect(!altitude.hasFreshTelemetry(at: start.addingTimeInterval(11)))
     let invalid = await store.ingest(RidObservation(source: .wifiBeacon, aircraftId: "LIVE",
         receivedAt: start.addingTimeInterval(10), latitude: 39, longitude: -121,
-        horizontalAccuracyCode: 9))
+        horizontalAccuracyCode: 8))
     guard case let .rejectedHorizontalAccuracy(_, track) = invalid else {
         Issue.record("Expected accuracy rejection"); return
     }

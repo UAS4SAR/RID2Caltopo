@@ -35,6 +35,8 @@ public struct BluetoothRIDIngressDiagnostic: Equatable, Sendable {
     public let lastMessageCounter: UInt8?
     public let lastMessageKinds: String
     public let lastRSSIDbm: Int
+    public let serviceDataSummary: String
+    public let manufacturerDataSummary: String
 }
 
 private struct BluetoothRIDRawPacket: Sendable {
@@ -45,6 +47,8 @@ private struct BluetoothRIDRawPacket: Sendable {
     let transmitterID: UUID
     let rssi: Int
     let receivedAt: Date
+    let serviceDataSummary: String
+    let manufacturerDataSummary: String
 }
 
 private struct BluetoothRIDBridgePacket: Sendable {
@@ -211,7 +215,9 @@ private actor BluetoothRIDPacketPipeline {
             lastTransmitterID: packet.transmitterID,
             lastMessageCounter: messageCounter,
             lastMessageKinds: messageKinds.joined(separator: ","),
-            lastRSSIDbm: packet.rssi
+            lastRSSIDbm: packet.rssi,
+            serviceDataSummary: packet.serviceDataSummary,
+            manufacturerDataSummary: packet.manufacturerDataSummary
         )
     }
 }
@@ -279,7 +285,14 @@ private final class BluetoothRIDCentral: NSObject, @unchecked Sendable {
             return
         }
         manager.scanForPeripherals(
-            withServices: [Self.serviceUUID],
+            // Remote ID's FFFA value is carried in the Service Data AD structure.
+            // CoreBluetooth's service filter matches the advertised-service list,
+            // which some transmitters (including standalone broadcast modules)
+            // do not populate even though their packet contains FFFA service data.
+            // Scan broadly and keep the exact FFFA/service-data check in
+            // didDiscover below. This is also how we retain visibility into
+            // non-RID callbacks for field diagnostics.
+            withServices: nil,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
         )
         scheduleHighPriorityRestart()
@@ -311,7 +324,7 @@ private final class BluetoothRIDCentral: NSObject, @unchecked Sendable {
 
         manager.stopScan()
         manager.scanForPeripherals(
-            withServices: [Self.serviceUUID],
+            withServices: nil,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
         )
         restartCount &+= 1
@@ -356,14 +369,30 @@ extension BluetoothRIDCentral: CBCentralManagerDelegate {
     ) {
         discoveryCallbacks &+= 1
         guard let serviceData = advertisementData[CBAdvertisementDataServiceDataKey]
-            as? [CBUUID: Data],
-            let remoteIDData = serviceData[Self.serviceUUID]
+            as? [CBUUID: Data]
         else {
             nonRemoteIDCallbacks &+= 1
             return
         }
 
+        guard let remoteIDData = serviceData[Self.serviceUUID] else {
+            nonRemoteIDCallbacks &+= 1
+            return
+        }
+
         sequence &+= 1
+        let serviceSummary = serviceData
+            .map { key, value in
+                "\(key.uuidString)=len\(value.count):\(value.prefix(4).map { String(format: "%02X", $0) }.joined())"
+            }
+            .sorted()
+            .joined(separator: ";")
+        let manufacturerSummary: String
+        if let manufacturer = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data {
+            manufacturerSummary = "len\(manufacturer.count):\(manufacturer.prefix(8).map { String(format: "%02X", $0) }.joined())"
+        } else {
+            manufacturerSummary = "none"
+        }
         packetHandler(BluetoothRIDRawPacket(
             discoveryCallbacks: discoveryCallbacks,
             nonRemoteIDCallbacks: nonRemoteIDCallbacks,
@@ -371,7 +400,9 @@ extension BluetoothRIDCentral: CBCentralManagerDelegate {
             serviceData: remoteIDData,
             transmitterID: peripheral.identifier,
             rssi: RSSI.intValue,
-            receivedAt: Date()
+            receivedAt: Date(),
+            serviceDataSummary: serviceSummary,
+            manufacturerDataSummary: manufacturerSummary
         ))
     }
 }

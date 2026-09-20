@@ -186,10 +186,10 @@ private struct AppleRidMappingDraft: Identifiable, Codable, Equatable {
     var model: String
     var readiness: AircraftReadiness
 
-    init(identity: RidAircraftIdentity? = nil) {
+    init(identity: RidAircraftIdentity? = nil, defaultPilotCallsign: String = "") {
         remoteID = identity?.remoteID ?? ""
         ownerName = identity?.ownerName ?? ""
-        ownerCallsign = identity?.pilotCallsign ?? ""
+        ownerCallsign = identity?.pilotCallsign ?? defaultPilotCallsign
         model = identity?.droneDescription ?? ""
         readiness = identity?.readiness ?? AircraftReadiness()
     }
@@ -422,7 +422,7 @@ struct RidMappingAdminView: View {
                 var draft = AppleRidMappingDraft(identity: RidAircraftIdentity(
                     remoteID: normalizedRemoteID,
                     organization: organization.organizationName,
-                    pilotCallsign: "",
+                    pilotCallsign: identities.preferredPilotCallsign,
                     droneDescription: ""
                 ))
                 draft.readiness.serialNumber = normalizedRemoteID
@@ -430,7 +430,7 @@ struct RidMappingAdminView: View {
                 initialMappings.append(draft)
             }
         } else if startWithAddAircraft {
-            let draft = AppleRidMappingDraft()
+            let draft = AppleRidMappingDraft(defaultPilotCallsign: identities.preferredPilotCallsign)
             selected = draft.id
             initialMappings.append(draft)
         }
@@ -472,7 +472,7 @@ struct RidMappingAdminView: View {
                         }.foregroundStyle(.primary)
                     }
                     Button("Add aircraft", systemImage: "plus") {
-                        let draft = AppleRidMappingDraft()
+                        let draft = AppleRidMappingDraft(defaultPilotCallsign: identities.preferredPilotCallsign)
                         beginEdit(draft.id)
                         mappings.append(draft)
                     }.disabled(!canEdit || saving)

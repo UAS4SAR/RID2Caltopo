@@ -21,6 +21,8 @@ import org.opendroneid.android.data.SelfIdData;
 import org.opendroneid.android.data.SystemData;
 import org.opendroneid.android.data.OperatorIdData;
 import org.ncssar.rid2caltopo.data.CaltopoClient;
+import org.ncssar.rid2caltopo.data.RidLocationAccuracyPrefs;
+import org.ncssar.rid2caltopo.app.R2CApplication;
 
 import java.util.Arrays;
 import java.util.Locale;
@@ -155,9 +157,10 @@ public class OpenDroneIdDataManager {
         return altitudeMeters != RID_INVALID_ALTITUDE_METERS && Double.isFinite(altitudeMeters);
     }
 
-    /** F3411-19 Table 2: NACp codes 10-12 declare a 95% horizontal bound under 10 m. */
+    /** F3411-19 Table 2: NACp codes 9-12 are supported, subject to the saved minimum threshold. */
     static boolean isHorizontalAccuracySufficient(int horizontalAccuracyCode) {
-        return horizontalAccuracyCode >= 10 && horizontalAccuracyCode <= 12;
+        return horizontalAccuracyCode >= RidLocationAccuracyPrefs.getMinimumCode(R2CApplication.getAppCtxt())
+                && horizontalAccuracyCode <= 12;
     }
 
     @Nullable
@@ -460,11 +463,16 @@ public class OpenDroneIdDataManager {
 
         int horizontalAccuracyCode = location.getHorizontalAccuracyCode();
         if (!isHorizontalAccuracySufficient(horizontalAccuracyCode)) {
+            // The packet was received and decoded, but its position quality is below
+            // the operator-selected threshold. Count it in the operator-facing invalid
+            // RID total as well as the detailed accuracy diagnostic.
+            CtDroneSpec.BumpInvalidWaypointCount();
             Integer previousCode = lastLoggedHorizontalAccuracyCode.put(idStr, horizontalAccuracyCode);
             if (previousCode == null || previousCode != horizontalAccuracyCode) {
                 CaltopoClient.CTDebug(TAG, String.format(Locale.US,
-                        "rid_filter remoteId=%s reason=horizontal_accuracy code=%d requiredCode=10",
-                        idStr, horizontalAccuracyCode));
+                                "rid_filter remoteId=%s reason=horizontal_accuracy code=%d requiredCode=%d",
+                                idStr, horizontalAccuracyCode,
+                                RidLocationAccuracyPrefs.getMinimumCode(R2CApplication.getAppCtxt())));
             }
             return;
         }

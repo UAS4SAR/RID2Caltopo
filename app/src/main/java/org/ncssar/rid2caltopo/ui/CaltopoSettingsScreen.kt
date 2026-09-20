@@ -24,6 +24,7 @@ import org.ncssar.rid2caltopo.data.CaltopoClient
 import org.ncssar.rid2caltopo.data.ExternalDisplayAlertRouting
 import org.ncssar.rid2caltopo.data.ExternalDisplayContentMode
 import org.ncssar.rid2caltopo.data.ExternalDisplayMode
+import org.ncssar.rid2caltopo.data.RidLocationAccuracyPrefs
 
 @Composable
 fun CaltopoSettingsScreen(
@@ -54,6 +55,8 @@ fun CaltopoSettingsScreen(
     val usePeers by settingsViewModel.usePeers.collectAsState()
     val minDistance by settingsViewModel.minDistance.collectAsState()
     val newTrackDelay by settingsViewModel.newTrackDelay.collectAsState()
+    val minimumLocationAccuracyCode by settingsViewModel.minimumLocationAccuracyCode.collectAsState()
+    var showMinimumLocationAccuracyDialog by remember { mutableStateOf(false) }
     val bridgeCheckDistanceFeet by settingsViewModel.bridgeCheckDistanceFeet.collectAsState()
     val alarmVolumePercent by settingsViewModel.alarmVolumePercent.collectAsState()
     val maxIdleTimeInMinutes by settingsViewModel.maxIdleTimeInMinutes.collectAsState()
@@ -338,6 +341,18 @@ fun CaltopoSettingsScreen(
                     onValueChange = { settingsViewModel.onNewTrackDelayChanged(it) },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                     label = { Text("New Track Delay (s)") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Button(
+                    onClick = { showMinimumLocationAccuracyDialog = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Minimum Location Accuracy: ${RidLocationAccuracyPrefs.labelForCode(minimumLocationAccuracyCode)}")
+                }
+                Text(
+                    "RID positions less accurate than this threshold are retained as signal but are not added to the track.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
@@ -634,6 +649,32 @@ fun CaltopoSettingsScreen(
     }
     if (showRidMappingAdmin) {
         RidMappingAdminDialog(onDismiss = { showRidMappingAdmin = false })
+    }
+    if (showMinimumLocationAccuracyDialog) {
+        AlertDialog(
+            onDismissRequest = { showMinimumLocationAccuracyDialog = false },
+            title = { Text("Minimum Location Accuracy") },
+            text = {
+                Column {
+                    listOf(9, 10, 11, 12).forEach { code ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = minimumLocationAccuracyCode == code,
+                                onClick = {
+                                    settingsViewModel.onMinimumLocationAccuracyCodeChanged(code)
+                                    showMinimumLocationAccuracyDialog = false
+                                }
+                            )
+                            Text(RidLocationAccuracyPrefs.labelForCode(code))
+                        }
+                    }
+                }
+            },
+            confirmButton = {}
+        )
     }
 }
 

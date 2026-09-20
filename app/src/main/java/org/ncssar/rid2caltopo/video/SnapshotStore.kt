@@ -133,8 +133,18 @@ class AndroidClueStore private constructor(
 
     fun thumbnailFile(record: AndroidClueRecord): File = File(root, record.thumbnailFilename)
 
-    fun loadThumbnail(record: AndroidClueRecord): Bitmap? =
-        BitmapFactory.decodeFile(thumbnailFile(record).absolutePath)
+    fun loadThumbnail(record: AndroidClueRecord): Bitmap? {
+        val path = thumbnailFile(record).absolutePath
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = thumbnailSampleSize(bounds.outWidth, bounds.outHeight)
+            inPreferredConfig = Bitmap.Config.RGB_565
+        }
+        return BitmapFactory.decodeFile(path, options)
+    }
 
     @Synchronized
     private fun loadIndex() {
@@ -188,10 +198,21 @@ class AndroidClueStore private constructor(
     }
 
     companion object {
+        private const val THUMBNAIL_MAX_SIDE = 180
+
         internal fun forDirectory(root: File): AndroidClueStore = AndroidClueStore(root)
 
+        private fun thumbnailSampleSize(width: Int, height: Int): Int {
+            val longest = maxOf(width, height)
+            var sampleSize = 1
+            while (longest / sampleSize > THUMBNAIL_MAX_SIDE) {
+                sampleSize *= 2
+            }
+            return sampleSize
+        }
+
         private fun clueThumbnail(bitmap: Bitmap): Bitmap {
-            val maxSide = 180
+            val maxSide = THUMBNAIL_MAX_SIDE
             val longest = maxOf(bitmap.width, bitmap.height)
             if (longest <= maxSide) return bitmap
             val scale = maxSide.toDouble() / longest.toDouble()

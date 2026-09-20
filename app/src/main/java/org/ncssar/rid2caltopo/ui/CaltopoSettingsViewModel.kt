@@ -24,6 +24,7 @@ import org.ncssar.rid2caltopo.data.RemoteVideoControlPrefs
 import org.ncssar.rid2caltopo.data.VideoThumbnailRefreshPolicy
 import org.ncssar.rid2caltopo.data.VideoThumbnailRefreshPrefs
 import org.ncssar.rid2caltopo.data.WifiRidScanPrefs
+import org.ncssar.rid2caltopo.data.RidLocationAccuracyPrefs
 import org.ncssar.rid2caltopo.notam.NotamAuthManager
 import org.ncssar.rid2caltopo.notam.NotamCenter
 import org.ncssar.rid2caltopo.landrestrictions.LandRestrictionCenter
@@ -58,6 +59,11 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
 
     private val _newTrackDelay = MutableStateFlow(CaltopoClient.GetNewTrackDelayInSeconds().toString())
     val newTrackDelay = _newTrackDelay.asStateFlow()
+
+    private val _minimumLocationAccuracyCode = MutableStateFlow(
+        RidLocationAccuracyPrefs.getMinimumCode(R2CApplication.getAppCtxt())
+    )
+    val minimumLocationAccuracyCode = _minimumLocationAccuracyCode.asStateFlow()
 
     private val _maxFlatlineToneDuration = MutableStateFlow(CaltopoClient.GetMaxFlatlineToneDurationInSeconds().toString())
     val maxFlatlineToneDuration = _maxFlatlineToneDuration.asStateFlow()
@@ -246,6 +252,10 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
 
     fun onMinDistanceChanged(newMinDistance: String) {
         _minDistance.value = newMinDistance
+    }
+
+    fun onMinimumLocationAccuracyCodeChanged(code: Int) {
+        _minimumLocationAccuracyCode.value = code.coerceIn(9, 12)
     }
 
     fun onOrganizationNameChanged(value: String) { _organizationName.value = value }
@@ -438,6 +448,7 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
         )
         _minDistance.value.toLongOrNull()?.let { CaltopoClient.setMinDistanceInFeet(it) }
         _newTrackDelay.value.toLongOrNull()?.let { CaltopoClient.SetNewTrackDelayInSeconds(it) }
+        RidLocationAccuracyPrefs.setMinimumCode(R2CApplication.getAppCtxt(), _minimumLocationAccuracyCode.value)
         (_maxFlatlineToneDuration.value.toLongOrNull()
             ?: CaltopoClient.DEFAULT_MAX_FLATLINE_TONE_DURATION_SECONDS).let {
             CaltopoClient.SetMaxFlatlineToneDurationInSeconds(it)

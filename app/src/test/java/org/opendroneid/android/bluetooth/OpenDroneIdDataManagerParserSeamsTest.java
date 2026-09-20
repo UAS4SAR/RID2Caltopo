@@ -17,9 +17,10 @@ import static org.junit.Assert.assertNotNull;
 public class OpenDroneIdDataManagerParserSeamsTest {
 
     @Test
-    public void horizontalAccuracy_requiresF3411TenMeterContainment() {
+    public void horizontalAccuracy_respectsDefaultThirtyMeterContainment() {
         assertEquals(false, OpenDroneIdDataManager.isHorizontalAccuracySufficient(0));
-        assertEquals(false, OpenDroneIdDataManager.isHorizontalAccuracySufficient(9));
+        assertEquals(false, OpenDroneIdDataManager.isHorizontalAccuracySufficient(8));
+        assertEquals(true, OpenDroneIdDataManager.isHorizontalAccuracySufficient(9));
         assertEquals(true, OpenDroneIdDataManager.isHorizontalAccuracySufficient(10));
         assertEquals(true, OpenDroneIdDataManager.isHorizontalAccuracySufficient(11));
         assertEquals(true, OpenDroneIdDataManager.isHorizontalAccuracySufficient(12));

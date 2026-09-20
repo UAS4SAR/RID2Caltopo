@@ -307,7 +307,9 @@ internal fun beginTrustedExternalFlowWhenRequired(
 
 private val organizationAccessSession = OrganizationAccessSession()
 
-private const val ORGANIZATION_ACCESS_STOP_GRACE_MS = 1_000L
+// Keep protected access through a brief app switch, but still invalidate promptly when the
+// device actually locks. Returning within this window does not require another prompt.
+private const val ORGANIZATION_ACCESS_STOP_GRACE_MS = 15_000L
 
 private fun configuredAccessAuthenticationRequired(): Boolean =
     CaltopoClient.GetCaltopoCredentials().let { credentials ->
@@ -1262,6 +1264,10 @@ class R2CActivity :
             }
         }
         AppActivity = this
+        // Start the idle watchdog before the launch disclaimer is accepted. Otherwise a
+        // device left overnight on the safety screen has no alarm, then exits immediately
+        // when the user taps Agree because the stale session baseline has already expired.
+        CaltopoClient.CheckIdle()
         R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator.setPeerListChangedListener(this)
         R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator
             .setVideoStreamRequestListener(this)

@@ -277,11 +277,14 @@ final class RIDTrackViewModel: ObservableObject {
         case let .rejectedHorizontalAccuracy(code, track):
             filteredObservationCount += 1
             horizontalAccuracyFilterCount += 1
+            // The location message was received and decoded, but rejected by the
+            // configured quality threshold; include it in the operator-facing invalid total.
+            invalidObservationCount += 1
             let remoteID = track?.aircraftID ?? RidTrackStore.canonicalAircraftID(observation.aircraftId)
             if lastHorizontalAccuracyCodeByAircraftID[remoteID] != code {
                 AppleLog.warning(
                     "RemoteID",
-                    "rid_filter remoteId=\(remoteID) reason=horizontal_accuracy code=\(code) requiredCode=10 transport=\(observation.source.rawValue)"
+                    "rid_filter remoteId=\(remoteID) reason=horizontal_accuracy code=\(code) requiredCode=\(await store.policy.minimumHorizontalAccuracyCode) transport=\(observation.source.rawValue)"
                 )
             }
             lastHorizontalAccuracyCodeByAircraftID[remoteID] = code
@@ -308,12 +311,18 @@ final class RIDTrackViewModel: ObservableObject {
         )
     }
 
-    func configureTrackPolicy(minimumDistanceFeet: Int, activeTimeoutSeconds: Int) {
-        Task { [store] in
+    func configureTrackPolicy(
+        minimumDistanceFeet: Int,
+        activeTimeoutSeconds: Int,
+        minimumHorizontalAccuracyCode: UInt8 = 9
+    ) {
+        Task { [store, peerTrafficStore] in
             var policy = await store.policy
             policy.minimumDistanceMeters = Double(max(2, minimumDistanceFeet)) * 0.3048
             policy.activeTimeout = TimeInterval(max(1, activeTimeoutSeconds))
+            policy.minimumHorizontalAccuracyCode = min(max(minimumHorizontalAccuracyCode, 9), 12)
             await store.updatePolicy(policy)
+            await peerTrafficStore.updatePolicy(policy)
         }
     }
 

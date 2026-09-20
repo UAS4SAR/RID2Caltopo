@@ -9,19 +9,23 @@ public struct RidTrackPolicy: Sendable, Equatable {
     public var duplicateKeepaliveInterval: TimeInterval
     public var activeTimeout: TimeInterval
     public var maximumPointsPerTrack: Int
+    /// Minimum accepted F3411 NACp horizontal-accuracy code. Code 10 is 10 m.
+    public var minimumHorizontalAccuracyCode: UInt8
 
     public init(
         maximumSpeedMetersPerSecond: Double = 89.408,
         minimumDistanceMeters: Double = 0.6096,
         duplicateKeepaliveInterval: TimeInterval = 3,
         activeTimeout: TimeInterval = 30,
-        maximumPointsPerTrack: Int = 5_000
+        maximumPointsPerTrack: Int = 5_000,
+        minimumHorizontalAccuracyCode: UInt8 = 9
     ) {
         self.maximumSpeedMetersPerSecond = maximumSpeedMetersPerSecond
         self.minimumDistanceMeters = minimumDistanceMeters
         self.duplicateKeepaliveInterval = duplicateKeepaliveInterval
         self.activeTimeout = activeTimeout
         self.maximumPointsPerTrack = maximumPointsPerTrack
+        self.minimumHorizontalAccuracyCode = min(max(minimumHorizontalAccuracyCode, 9), 12)
     }
 }
 
@@ -107,7 +111,7 @@ public actor RidTrackStore {
 
         let observation = rawObservation.withAircraftID(aircraftID)
         if let code = observation.horizontalAccuracyCode,
-           !(10 ... 12).contains(code) {
+           !(policy.minimumHorizontalAccuracyCode ... 12).contains(code) {
             guard var track = tracksByAircraftID[aircraftID] else {
                 return .rejectedHorizontalAccuracy(code: code, track: nil)
             }

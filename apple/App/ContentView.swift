@@ -108,6 +108,7 @@ struct ContentView: View {
     @State private var incidentMapBackgroundDisconnectTask: Task<Void, Never>?
     @State private var incidentMapRelocationGuard = IncidentMapRelocationGuard()
     @AppStorage("video.captureStreams") private var captureStreams = true
+    @AppStorage("rid.minimumHorizontalAccuracyCode") private var minimumHorizontalAccuracyCode = 9
 
     private var startupRoot: some View {
         rootScreen
@@ -915,7 +916,9 @@ struct ContentView: View {
                         "lastSequence=\(diagnostic.lastSequence) " +
                         "lastTransmitter=\(diagnostic.lastTransmitterID.uuidString) " +
                         "lastCounter=\(diagnostic.lastMessageCounter.map(String.init) ?? "unavailable") " +
-                        "lastKinds=\(diagnostic.lastMessageKinds) rssi=\(diagnostic.lastRSSIDbm)"
+                        "lastKinds=\(diagnostic.lastMessageKinds) rssi=\(diagnostic.lastRSSIDbm) " +
+                        "serviceData=\(diagnostic.serviceDataSummary) " +
+                        "manufacturerData=\(diagnostic.manufacturerDataSummary)"
                 )
             }
             .onChange(of: bluetoothScanner.scanRestartCount) { _, count in
@@ -2618,7 +2621,7 @@ struct ContentView: View {
     }
 
     private var trackPolicyConfigurationFingerprint: String {
-        "\(orgConfigSettings.minimumTrackDistanceFeet)|\(orgConfigSettings.newTrackDelaySeconds)|\(orgConfigSettings.bridgeCheckDistanceFeet)"
+        "\(orgConfigSettings.minimumTrackDistanceFeet)|\(orgConfigSettings.newTrackDelaySeconds)|\(orgConfigSettings.bridgeCheckDistanceFeet)|\(minimumHorizontalAccuracyCode)"
     }
 
     private var updateAdvisoryPresented: Binding<Bool> {
@@ -2643,7 +2646,8 @@ struct ContentView: View {
     private func configureTrackPolicy() {
         ridTracks.configureTrackPolicy(
             minimumDistanceFeet: orgConfigSettings.minimumTrackDistanceFeet,
-            activeTimeoutSeconds: orgConfigSettings.newTrackDelaySeconds
+            activeTimeoutSeconds: orgConfigSettings.newTrackDelaySeconds,
+            minimumHorizontalAccuracyCode: UInt8(minimumHorizontalAccuracyCode)
         )
     }
 

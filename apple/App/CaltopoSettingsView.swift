@@ -27,6 +27,7 @@ struct CaltopoSettingsView: View {
     private var thumbnailRefreshSeconds = OperationalThumbnailRefreshInterval.defaultSeconds
     @AppStorage(AppleDeviceIdentity.storedNameKey) private var deviceName = AppleDeviceIdentity.displayName
     @AppStorage(AppleDeviceIdentity.managedNameKey) private var managedDeviceName = ""
+    @AppStorage("rid.minimumHorizontalAccuracyCode") private var minimumHorizontalAccuracyCode = 9
     @State private var showingTeamMaps = false
 
     var body: some View {
@@ -245,6 +246,16 @@ struct CaltopoSettingsView: View {
                     ),
                     in: 1 ... 600
                 )
+                Picker("Minimum Location Accuracy", selection: $minimumHorizontalAccuracyCode) {
+                    Text("30 m").tag(9)
+                    Text("10 m").tag(10)
+                    Text("3 m").tag(11)
+                    Text("1 m").tag(12)
+                }
+                .pickerStyle(.menu)
+                Text("RID positions less accurate than this threshold remain signal-only and are not added to the track.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 Stepper(
                     "Bridge Check Distance: \(orgSettings.bridgeCheckDistanceFeet) ft",
                     value: Binding(
