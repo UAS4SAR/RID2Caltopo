@@ -126,8 +126,7 @@ struct ContentView: View {
                                     }
                                 } icon: {
                                     Image(systemName: profile.id == profileLifecycle.activeProfileID
-                                        ? "checkmark.circle.fill"
-                                        : "circle")
+                                        ? "checkmark.circle.fill" : "circle")
                                 }
                             }
                         }
@@ -180,9 +179,7 @@ struct ContentView: View {
                     .navigationBarBackButtonHidden(true)
                     .toolbar {
                         ToolbarItem(placement: .topBarLeading) {
-                            Button(action: closeLiveView) {
-                                Label("Main Screen", systemImage: "chevron.left")
-                            }
+                            LiveViewBackButton(onDismiss: closeLiveView)
                         }
                     }
                     .onDisappear {
@@ -729,8 +726,10 @@ struct ContentView: View {
                 )
             }
             .task {
-                while !Task.isCancelled,
-                      !AppleApplicationCleanupCenter.shared.isShutdownRequested {
+                while !Task.isCancelled {
+                    if AppleApplicationCleanupCenter.shared.isShutdownRequested {
+                        break
+                    }
                     peerCoordinator.updateManagedVideoStreams(
                         incidentName: currentIncidentName,
                         incidentKey: currentIncidentKey,
@@ -1233,6 +1232,18 @@ struct ContentView: View {
                     organizationAccessObscured = false
                     reconcileOrganizationAuthentication()
                 }
+            }
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: UIApplication.protectedDataWillBecomeUnavailableNotification
+                )
+            ) { _ in
+                guard organizationAuthenticationRequired else { return }
+                organizationAccessGranted = false
+                organizationAccessObscured = true
+                organizationAccessBackgroundedAt = nil
+                organizationAuthenticationError = nil
+                AppleLog.info("OrganizationAccess", "Protected access locked by device lock")
             }
     }
 
@@ -2141,6 +2152,8 @@ struct ContentView: View {
                 applyCaltopoConfiguration(caltopoSettings.disconnectMap())
             },
             onRestartStreams: {
+                AppleLog.info("MediaMTX", "Operator restart streams requested from Live View")
+                streamRegistry.shutdown()
                 mediaMTX.restart(captureStreams: captureStreams)
             }
         )
@@ -2793,6 +2806,23 @@ private struct ShortFlightRecordingPanel: View {
 
 // The menu has static contents and stable presentation bindings. Telemetry and
 // one-second status updates must not rebuild an already presented native menu.
+private struct LiveViewBackButton: View {
+    @Environment(\.dismiss) private var dismiss
+    let onDismiss: () -> Void
+
+    var body: some View {
+        Button {
+            // Explicitly pop the destination on iPad, then synchronize the
+            // source presentation flag for programmatic navigation.
+            dismiss()
+            onDismiss()
+        } label: {
+            Label("Main Screen", systemImage: "chevron.left")
+        }
+        .accessibilityIdentifier("live-view-back")
+    }
+}
+
 private struct MainScreenMenu: View, Equatable {
     @Binding var showTrackMap: Bool
     @Binding var showDiagnosticLogs: Bool

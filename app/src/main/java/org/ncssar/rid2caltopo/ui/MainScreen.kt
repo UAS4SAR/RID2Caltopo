@@ -655,6 +655,23 @@ fun MainScreen(
     }
     var menuExpanded by remember { mutableStateOf(false) }
     var credentialMenuExpanded by remember { mutableStateOf(false) }
+    var pendingProfileRemoval by remember { mutableStateOf<OperationalProfileUiOption?>(null) }
+    pendingProfileRemoval?.let { profile ->
+        AlertDialog(
+            onDismissRequest = { pendingProfileRemoval = null },
+            title = { Text("Remove mutual-aid profile?") },
+            text = { Text("Remove ${profile.credentialLabel} from this device? If selected, the app will disconnect from its map and return to Home. Cached maps and the Home configuration are preserved.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    localViewModel.removeMutualAidProfile(profile.profileId)
+                    pendingProfileRemoval = null
+                }) { Text("Remove") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingProfileRemoval = null }) { Text("Cancel") }
+            }
+        )
+    }
     var showConfirmDialog by remember { mutableStateOf(false) }
     var addRidMapRemoteId by remember { mutableStateOf<String?>(null) }
     var showAboutPrivacyDialog by remember { mutableStateOf(false) }
@@ -1779,8 +1796,16 @@ fun MainScreen(
                                         }
                                     },
                                     trailingIcon = {
-                                        if (profile.profileId == localViewModel.selectedOperationalProfileId) {
-                                            Icon(Icons.Default.Check, contentDescription = "Selected")
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            if (profile.profileId == localViewModel.selectedOperationalProfileId) {
+                                                Icon(Icons.Default.Check, contentDescription = "Selected")
+                                            }
+                                            if (profile.isMutualAid) {
+                                                TextButton(onClick = {
+                                                    credentialMenuExpanded = false
+                                                    pendingProfileRemoval = profile
+                                                }) { Text("Remove") }
+                                            }
                                         }
                                     },
                                     onClick = {

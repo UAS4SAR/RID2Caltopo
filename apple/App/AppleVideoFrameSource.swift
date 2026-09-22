@@ -1170,7 +1170,6 @@ final class AppleVideoFrameSource: ObservableObject {
         guard let latestPixelBuffer, let capturedAt = latestFrameCapturedAt else {
             throw AppleVideoSnapshotError.noDecodedFrame
         }
-        let transfer = PixelBufferTransfer(value: latestPixelBuffer)
         let width = CVPixelBufferGetWidth(latestPixelBuffer)
         let height = CVPixelBufferGetHeight(latestPixelBuffer)
         let frameSequence = frameCount
@@ -1181,6 +1180,10 @@ final class AppleVideoFrameSource: ObservableObject {
             normalizedPanX: normalizedPan.x,
             normalizedPanY: normalizedPan.y
         )
+        // Keep all pixel conversion off the main actor. The decoder buffer is
+        // retained for the detached operation and the frame metadata above is
+        // captured at the camera event.
+        let transfer = PixelBufferTransfer(value: latestPixelBuffer)
         let data = try await Task.detached(priority: .userInitiated) {
             let context = CIContext(options: [.cacheIntermediates: false])
             let extent = CGRect(x: 0, y: 0, width: width, height: height)
@@ -1198,7 +1201,7 @@ final class AppleVideoFrameSource: ObservableObject {
                 image = image.transformed(by: transform).composited(over: background).cropped(to: extent)
             }
             guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-                  let jpeg = context.jpegRepresentation(
+              let jpeg = context.jpegRepresentation(
                     of: image,
                     colorSpace: colorSpace,
                     options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.85]

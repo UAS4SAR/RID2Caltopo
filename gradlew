@@ -142,6 +142,35 @@ location of your Java installation."
     fi
 fi
 
+# Gradle 9 requires Java 17 or newer. On Apple Silicon development machines,
+# Android Studio's arm64 JDK may be cached by Gradle even when the shell falls
+# back to an old system Java (for example, Oracle Java 8). Prefer that cached
+# JDK when the selected launcher is too old so clean shells and stopped daemons
+# use the same toolchain as recent successful builds.
+if [ "$darwin" = "true" ] && [ "$(uname -m)" = "arm64" ]; then
+    java_version="$($JAVACMD -version 2>&1 | sed -n 's/.*version "\([0-9][0-9]*\).*/\1/p' | head -1)"
+    if [ "$java_version" = "1" ]; then
+        java_version="$($JAVACMD -version 2>&1 | sed -n 's/.*version "1\.\([0-9][0-9]*\).*/\1/p' | head -1)"
+    fi
+    case "$java_version" in
+        ''|[0-9]|1[0-6])
+            cached_java=""
+            for candidate in $(find "$HOME/.gradle/jdks" -path '*aarch64*/Contents/Home/bin/java' -type f -perm -111 2>/dev/null); do
+                if [ -x "$candidate" ]; then
+                    cached_java="$candidate"
+                    break
+                fi
+            done
+            if [ -n "$cached_java" ]; then
+                JAVACMD="$cached_java"
+                JAVA_HOME=${cached_java%/bin/java}
+                export JAVA_HOME
+                echo "Using cached arm64 JDK: $JAVA_HOME" >&2
+            fi
+            ;;
+    esac
+fi
+
 # Increase the maximum file descriptors if we can.
 if ! "$cygwin" && ! "$darwin" && ! "$nonstop" ; then
     case $MAX_FD in #(

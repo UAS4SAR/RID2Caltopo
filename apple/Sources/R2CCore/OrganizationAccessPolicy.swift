@@ -1,8 +1,6 @@
 import Foundation
 
 public enum OrganizationAccessPolicy {
-    public static let backgroundAuthenticationGraceInterval: TimeInterval = 15
-
     public static func requiresDeviceOwnerAuthentication(
         organizationName: String,
         trackerURLPrefix: String = "",
@@ -34,9 +32,10 @@ public enum OrganizationAccessPolicy {
         backgroundedAt: Date?,
         resumedAt: Date
     ) -> Bool {
-        guard accessWasGranted else { return false }
-        guard let backgroundedAt else { return true }
-        return max(0, resumedAt.timeIntervalSince(backgroundedAt)) <
-            backgroundAuthenticationGraceInterval
+        // The operating system protects an unlocked device from access by a non-owner.
+        // Keep the app session across ordinary backgrounding; the app clears access when
+        // iOS reports that protected data became unavailable (device lock), and a fresh
+        // process still starts locked.
+        accessWasGranted
     }
 }

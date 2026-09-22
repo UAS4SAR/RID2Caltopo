@@ -60,6 +60,8 @@ final class AppleStreamRegistry: ObservableObject {
     private var presenceEligibility: [ObjectIdentifier: Bool] = [:]
     private var flightActivity = PairedVideoFlightActivityStore()
     private var seiPositionContinuationByStreamID: [String: OperationalSEIPositionContinuation] = [:]
+    private var manuallyClosedPublisherIDs: Set<String> = []
+    private var manuallyClosedPaths: Set<String> = []
 
     let primaryModel: AppleVideoFrameSource
 
@@ -87,8 +89,14 @@ final class AppleStreamRegistry: ObservableObject {
         let observedAt = Date()
         switch event {
         case let .streamConnecting(path):
+            if manuallyClosedPaths.contains(path) { break }
             admit(path: path, state: .connecting, publisherID: nil)?.model.handleMediaServerEvent(event)
         case let .streamStarted(path, publisherID), let .streamPublisherHandoff(path, publisherID):
+            if let publisherID, manuallyClosedPublisherIDs.contains(publisherID) {
+                AppleLog.info("Streams", "Ignoring publisher callback for manually closed connection path=\(path)")
+                break
+            }
+            manuallyClosedPaths.remove(path)
             let session = admit(path: path, state: .live, publisherID: publisherID)
             if let session {
                 seiPositionContinuationByStreamID.removeValue(forKey: session.id)
@@ -105,6 +113,8 @@ final class AppleStreamRegistry: ObservableObject {
             session.model.handleMediaServerEvent(event)
             startDecoderIfNeeded(for: session)
         case let .streamStopped(path, publisherID), let .rtmpSessionClosed(path, publisherID, _):
+            if let publisherID { manuallyClosedPublisherIDs.remove(publisherID) }
+            manuallyClosedPaths.remove(path)
             if let stoppedSession = stop(path: path, publisherID: publisherID) {
                 seiPositionContinuationByStreamID.removeValue(forKey: stoppedSession.id)
                 if let receivedAt = stoppedSession.model.latestDJICameraTelemetry?.receivedAt {
@@ -114,6 +124,8 @@ final class AppleStreamRegistry: ObservableObject {
             }
         case let .streamError(path, publisherID, detail):
             guard let path else { return }
+            if let publisherID { manuallyClosedPublisherIDs.remove(publisherID) }
+            manuallyClosedPaths.remove(path)
             if let session = matching(path) {
                 if let publisherID, let current = session.publisherConnectionID, publisherID != current { return }
                 session.state = .error
@@ -240,6 +252,11 @@ final class AppleStreamRegistry: ObservableObject {
 
     func close(_ id: String) {
         guard let session = sessions.first(where: { $0.id == id }) else { return }
+        AppleLog.info("Streams", "Operator close requested stream \(session.sourcePath)")
+        if let publisherID = session.publisherConnectionID {
+            manuallyClosedPublisherIDs.insert(publisherID)
+        }
+        manuallyClosedPaths.insert(session.sourcePath)
         seiPositionContinuationByStreamID.removeValue(forKey: id)
         session.model.stop()
         if id == Self.placeholderID {
@@ -255,12 +272,40 @@ final class AppleStreamRegistry: ObservableObject {
         )
     }
 
+    /// Remove a tile when MediaMTX missed the publisher-stop event but the
+    /// decoder has conclusively lost its publisher. This keeps a dead stream
+    /// from remaining onscreen forever in its reconnect loop.
+    func reconcileStaleSessions(now: Date = Date()) {
+        let stale = sessions.filter { session in
+            guard session.id != Self.placeholderID else { return false }
+            let decoderLost: Bool
+            switch session.model.state {
+            case .failed, .waitingForPublisher:
+                decoderLost = true
+            default:
+                decoderLost = false
+            }
+            guard decoderLost else { return false }
+            return (session.model.decodedFrameAgeSeconds ?? .infinity) > 8
+                && now.timeIntervalSince(session.changedAt) > 8
+        }
+        for session in stale {
+            AppleLog.warning(
+                "Streams",
+                "Pruning stale stream after publisher event was missed path=\(session.sourcePath)"
+            )
+            close(session.id)
+        }
+    }
+
     func shutdown() {
         sessions.forEach { $0.model.stop() }
         presenceSubscriptions.values.forEach { $0.cancel() }
         presenceSubscriptions.removeAll()
         presenceEligibility.removeAll()
         rejectedPaths.removeAll()
+        manuallyClosedPublisherIDs.removeAll()
+        manuallyClosedPaths.removeAll()
         flightActivity = PairedVideoFlightActivityStore()
         seiPositionContinuationByStreamID.removeAll()
         sessions = [AppleLiveStreamSession(path: "demo", model: primaryModel, state: .stopped)]

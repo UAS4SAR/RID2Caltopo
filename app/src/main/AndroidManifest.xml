@@ -114,6 +114,16 @@
                 <data android:scheme="r2cfaa1" />
             </intent-filter>
         </activity>
+        <!-- Scanner windows follow the device/window orientation, including tablets.
+             ScanOptions also disables JourneyApps' runtime orientation lock. -->
+        <activity
+            android:name="com.journeyapps.barcodescanner.CaptureActivity"
+            android:screenOrientation="unspecified"
+            tools:replace="android:screenOrientation" />
+        <activity
+            android:name="com.google.mlkit.vision.codescanner.internal.GmsBarcodeScanningDelegateActivity"
+            android:screenOrientation="unspecified"
+            tools:replace="android:screenOrientation" />
         <activity
             android:name="net.openid.appauth.RedirectUriReceiverActivity"
             android:exported="true"

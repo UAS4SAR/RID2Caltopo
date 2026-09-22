@@ -29,7 +29,7 @@ import Testing
     ))
 }
 
-@Test func organizationAuthenticationSurvivesOnlyBriefBackgroundInactivity() {
+@Test func organizationAuthenticationSurvivesOrdinaryBackgroundingUntilDeviceLock() {
     let backgroundedAt = Date(timeIntervalSince1970: 1_000)
     #expect(OrganizationAccessPolicy.authenticatedSessionRemainsValid(
         accessWasGranted: true,
@@ -39,12 +39,7 @@ import Testing
     #expect(OrganizationAccessPolicy.authenticatedSessionRemainsValid(
         accessWasGranted: true,
         backgroundedAt: backgroundedAt,
-        resumedAt: backgroundedAt.addingTimeInterval(14.999)
-    ))
-    #expect(!OrganizationAccessPolicy.authenticatedSessionRemainsValid(
-        accessWasGranted: true,
-        backgroundedAt: backgroundedAt,
-        resumedAt: backgroundedAt.addingTimeInterval(15)
+        resumedAt: backgroundedAt.addingTimeInterval(3600)
     ))
     #expect(!OrganizationAccessPolicy.authenticatedSessionRemainsValid(
         accessWasGranted: false,
@@ -4237,6 +4232,32 @@ private func proximityDrone(
         #expect(track.points.count == expectedPoints)
         #expect(track.lastObservation.receivedAt == start.addingTimeInterval(time))
     }
+}
+
+@Test func movingTelemetryArrivingWithinOneSecondIsLiveOnly() async {
+    let store = RidTrackStore()
+    let start = Date(timeIntervalSince1970: 1_700_000_000)
+    _ = await store.ingest(trackObservation(id: "FAST", at: start, latitude: 39, longitude: -121))
+    let result = await store.ingest(trackObservation(
+        id: "FAST", at: start.addingTimeInterval(0.5), latitude: 39.0001, longitude: -121
+    ))
+    guard case let .telemetryOnly(track, reason) = result else {
+        Issue.record("Expected a sub-second moving waypoint to remain live-only")
+        return
+    }
+    guard case let .tooFrequentWaypoint(interval) = reason else {
+        Issue.record("Expected a too-frequent waypoint reason")
+        return
+    }
+    #expect(interval == 0.5)
+    #expect(track.points.count == 1)
+    #expect(track.lastObservation.receivedAt == start.addingTimeInterval(0.5))
+}
+
+@Test func defaultTrackPolicyDoesNotCapArchivedPointsAtCaltopoLimit() {
+    let policy = RidTrackPolicy()
+    #expect(policy.maximumPointsPerTrack == Int.max)
+    #expect(policy.minimumWaypointInterval == 1)
 }
 
 @Test func trackStoreMatchesAndroidDedupAndSpeedPolicy() async {

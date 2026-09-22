@@ -1,0 +1,1 @@
+Keep protected access during app switching and require authentication after device lock. Remove mutual-aid profiles from the Teams menu while preserving Home and cached maps. Reduce redundant recorded Remote ID points while keeping live telemetry current. Allow QR and barcode scanner windows to follow device orientation.

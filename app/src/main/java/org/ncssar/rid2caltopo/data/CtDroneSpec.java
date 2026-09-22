@@ -851,6 +851,13 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         if (hasRecordedWaypoint && source != TransportTypeEnum.DJI_STREAM) {
             double distance = DistanceFeetBetween(recordedLatitude, recordedLongitude, lat, lng);
             long elapsed = receivedAtMsec - recordedAtMsec;
+            // Keep live telemetry current, but do not let sub-second arrivals consume
+            // archive/publication points. CalTopo LiveTrack keeps its own first-3,000
+            // point window; local recording remains complete.
+            if (elapsed >= 0 && elapsed < 1000) {
+                diagnosticDuplicatePositions++;
+                return false;
+            }
             if ((distance == 0 || distance < minimumDistanceFeet) && elapsed >= 0 && elapsed < 3000) {
                 diagnosticDuplicatePositions++;
                 return false;

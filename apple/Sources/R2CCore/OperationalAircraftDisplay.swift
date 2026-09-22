@@ -152,7 +152,13 @@ public enum OperationalAircraftDisplay {
             (aglStatus ?? (aglStale ? .unknown : .available))).label(aglFeet, suffix: "'", maxAbs: 1000, showPendingValue: true)
         let surface=label(aol?.feet,status:aol?.status ?? .unknown)
         let range=label(rangeFeet)
-        let heading=label(RidHeading.roundedWholeDegrees(headingDegrees).map(Double.init),suffix:"°")
+        // Preserve a valid recent heading when altitude/other telemetry ages out.
+        // The map's bearing line uses the same recent motion, so the label should
+        // not become `Unk` solely because the altitude coordinator is stale.
+        let heading = (positionStale ? OperationalMeasurementStatus.stale : .available).label(
+            RidHeading.roundedWholeDegrees(headingDegrees).map(Double.init),
+            suffix: "°"
+        )
         return "ATO:\(ato) AGL:\(agl) AOL:\(surface) RNG:\(range) \(headingLabel):\(heading)"
     }
 

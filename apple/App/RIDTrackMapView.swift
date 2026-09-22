@@ -856,6 +856,7 @@ struct RIDTrackMapView: View {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(250))
                 guard !Task.isCancelled else { break }
+                streamRegistry.reconcileStaleSessions()
                 refreshSEIMapTails()
                 cameraTelemetryRefreshToken &+= 1
             }
@@ -3810,7 +3811,9 @@ private struct OperationalMKMapView: UIViewRepresentable {
                         aglFeet: altitude?.aglFeet,
                         aglStale: altitude?.aglStale == true,
                         rangeFeet: altitude?.rangeFeet,
-                        headingDegrees: renderInputByAircraftID[track.aircraftID]?.points.last?.headingDegrees,
+                        headingDegrees: renderInputByAircraftID[track.aircraftID].flatMap {
+                            aircraftTravelBearingDegrees(points: $0.points)
+                        },
                         positionStale: (positionIconAlphaByAircraftID[track.aircraftID] ?? 1) < 1,
                         aol: altitude?.aol,atoStatus:altitude?.atoStatus ?? .unknown,aglStatus:altitude?.aglStatus ?? .unknown,telemetryStale:altitude?.positionStale == true
                     )

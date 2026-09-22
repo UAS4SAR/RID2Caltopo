@@ -249,6 +249,7 @@ final class RIDTrackViewModel: ObservableObject {
             updateAltitude(for: track)
             switch reason {
             case .duplicatePosition: duplicatePositionFilterCount += 1
+            case .tooFrequentWaypoint: break
             case .belowMinimumDistance: minimumDistanceFilterCount += 1
             case .implausibleSpeed: break
             }
@@ -258,6 +259,8 @@ final class RIDTrackViewModel: ObservableObject {
             switch reason {
             case .duplicatePosition:
                 duplicatePositionFilterCount += 1
+            case .tooFrequentWaypoint:
+                break
             case .belowMinimumDistance:
                 minimumDistanceFilterCount += 1
             case let .implausibleSpeed(metersPerSecond):

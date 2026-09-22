@@ -59,6 +59,12 @@ in-app notes and the App Store metadata mirror, not only the source file.
 
 Before either store upload:
 
+- inspect Google Play Console's **Test and release** page and expand every
+  finding for the latest release; record the affected version/build, exact
+  APIs and activities, and the disposition in the candidate's verification
+  notes. Check the merged release manifest and matching R8 mapping for
+  dependency findings; the app's source manifest alone is not sufficient.
+  Advisory severity does not establish that a finding is unfounded;
 - merge only reviewed release changes;
 - review `git status --short`, the complete diff, and all untracked files;
 - confirm no signing material, credentials, operational logs, recordings, or
@@ -276,6 +282,7 @@ move a published tag.
 - [ ] Mobile release owner and platform publishers named
 - [ ] One version/build selected in Android and both Xcode configurations
 - [ ] Unified notes created, synchronized, rendered, and reviewed
+- [ ] Google Play Test and release findings expanded, investigated, and recorded
 - [ ] Complete diff/untracked-file and secret-hygiene review finished
 - [ ] Android full gate, AAB signature, and artifact hashes recorded
 - [ ] Apple full gate, IPA signature, and artifact hash recorded

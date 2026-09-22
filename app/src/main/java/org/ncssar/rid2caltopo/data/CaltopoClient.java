@@ -1436,7 +1436,8 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
                     profile.profileId != null ? profile.profileId : "",
                     credentialLabel,
                     mutualAid ? "Mutual Aid" : "Home organization",
-                    Long.toString(profile.expiresAtEpochMs)
+                    Long.toString(profile.expiresAtEpochMs),
+                    Boolean.toString(mutualAid)
             });
         }
         return options;
@@ -1515,6 +1516,12 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         }
         ScheduleCaltopoProfileExpiry();
         NotifySettingsChanged();
+    }
+
+    public static boolean RemoveMutualAidProfile(@NonNull String profileId, boolean reconnect) {
+        CaltopoProfileRecord profile = GetCaltopoProfileById(profileId);
+        if (profile == null || !"MUTUAL_AID".equals(profile.profileType)) return false;
+        return RemoveCaltopoProfile(profileId, true, reconnect);
     }
 
     public static boolean RemoveCaltopoProfile(

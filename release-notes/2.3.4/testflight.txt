@@ -1,0 +1,9 @@
+RID2Caltopo 2.3.4 (246)
+
+Test returning from Live View to Main Screen, closing a stream, restarting streams, and publisher disconnects. Verify stopped streams do not leave stale tiles.
+
+Check ordinary app switching preserves protected access and a real device lock requires authentication again.
+
+Verify recent aircraft heading remains visible when altitude ages out. Check live Remote ID telemetry remains current while recorded waypoints are limited to one per second, and long local tracks retain more than 5,000 points.
+
+Physical workflow and field checks remain separate from automated release qualification.

@@ -6,6 +6,9 @@ public struct RidTrackPolicy: Sendable, Equatable {
     public var maximumSpeedMetersPerSecond: Double
     /// Matches Android's minimum accepted waypoint spacing (2 ft by default).
     public var minimumDistanceMeters: Double
+    /// Minimum time between archived waypoints. Live telemetry still refreshes at
+    /// the source rate; this only limits redundant archive/publish points.
+    public var minimumWaypointInterval: TimeInterval
     public var duplicateKeepaliveInterval: TimeInterval
     public var activeTimeout: TimeInterval
     public var maximumPointsPerTrack: Int
@@ -15,13 +18,17 @@ public struct RidTrackPolicy: Sendable, Equatable {
     public init(
         maximumSpeedMetersPerSecond: Double = 89.408,
         minimumDistanceMeters: Double = 0.6096,
+        minimumWaypointInterval: TimeInterval = 1,
         duplicateKeepaliveInterval: TimeInterval = 3,
         activeTimeout: TimeInterval = 30,
-        maximumPointsPerTrack: Int = 5_000,
+        // Keep all locally recorded points. CalTopo LiveTrack applies its own
+        // first-3,000-point limit; the client must not truncate the archive.
+        maximumPointsPerTrack: Int = Int.max,
         minimumHorizontalAccuracyCode: UInt8 = 9
     ) {
         self.maximumSpeedMetersPerSecond = maximumSpeedMetersPerSecond
         self.minimumDistanceMeters = minimumDistanceMeters
+        self.minimumWaypointInterval = max(0, minimumWaypointInterval)
         self.duplicateKeepaliveInterval = duplicateKeepaliveInterval
         self.activeTimeout = activeTimeout
         self.maximumPointsPerTrack = maximumPointsPerTrack
@@ -71,6 +78,7 @@ public struct RidAircraftTrack: Sendable, Equatable, Identifiable {
 
 public enum RidTrackSignalOnlyReason: Sendable, Equatable {
     case duplicatePosition
+    case tooFrequentWaypoint(interval: TimeInterval)
     case belowMinimumDistance(meters: Double)
     case implausibleSpeed(metersPerSecond: Double)
 }
@@ -185,6 +193,8 @@ public actor RidTrackStore {
             let reason: RidTrackSignalOnlyReason?
             if distance == 0 {
                 reason = .duplicatePosition
+            } else if elapsed < policy.minimumWaypointInterval {
+                reason = .tooFrequentWaypoint(interval: elapsed)
             } else if observation.source != .djiVideo, distance < policy.minimumDistanceMeters {
                 reason = .belowMinimumDistance(meters: distance)
             } else {

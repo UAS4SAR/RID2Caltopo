@@ -103,7 +103,8 @@ data class OperationalProfileUiOption(
     val profileId: String,
     val credentialLabel: String,
     val description: String,
-    val expiresAtEpochMs: Long
+    val expiresAtEpochMs: Long,
+    val isMutualAid: Boolean = false
 )
 
 data class PendingProfileSwitchUiState(
@@ -263,10 +264,17 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                     profileId = fields[0],
                     credentialLabel = fields[1],
                     description = fields[2],
-                    expiresAtEpochMs = fields[3].toLongOrNull() ?: 0L
+                    expiresAtEpochMs = fields[3].toLongOrNull() ?: 0L,
+                    isMutualAid = fields.getOrNull(4).toBoolean()
                 )
             }
         selectedOperationalProfileId = CaltopoClient.GetActiveCaltopoProfileId().orEmpty()
+    }
+
+    fun removeMutualAidProfile(profileId: String) {
+        if (CaltopoClient.RemoveMutualAidProfile(profileId, true)) {
+            refreshMapBrowserProfiles()
+        }
     }
 
     fun selectOperationalProfile(profileId: String) {

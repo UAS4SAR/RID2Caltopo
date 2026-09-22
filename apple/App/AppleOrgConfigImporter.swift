@@ -34,6 +34,7 @@ struct AppleOperationalProfileOption: Identifiable, Equatable {
     let credentialLabel: String
     let description: String
     let expiresAt: Date?
+    var isMutualAid: Bool = false
 }
 
 @MainActor
@@ -218,6 +219,24 @@ final class AppleCaltopoProfileLifecycle: ObservableObject {
         return true
     }
 
+    @discardableResult
+    func removeMutualAid(profileID: String, org: AppleOrgConfigSettings,
+                         caltopo: AppleCaltopoSettings) throws -> Bool {
+        guard let profile = try? Self.load(account: Self.mutualAidAccount),
+              profile.profileID == profileID, profile.profileType == "MUTUAL_AID"
+        else { return false }
+        // Restore Home before deleting the active profile so a restore failure retains it.
+        if activeProfileID == profileID {
+            guard try activate(profileID: "home", org: org, caltopo: caltopo) else { return false }
+        }
+        try Self.delete(account: Self.mutualAidAccount)
+        mutualAidDisplayName = nil
+        mutualAidExpiresAt = nil
+        refreshPublishedProfiles()
+        AppleLog.info("OrgConfig", "Removed mutual-aid profile id='\(profileID)'")
+        return true
+    }
+
     private func setActive(_ profileID: String) {
         activeProfileID = profileID
         defaults.set(profileID, forKey: Self.activeKey)
@@ -251,7 +270,8 @@ final class AppleCaltopoProfileLifecycle: ObservableObject {
             id: profile.profileID,
             credentialLabel: label,
             description: profile.profileType == "MUTUAL_AID" ? "Mutual Aid" : "Home organization",
-            expiresAt: expiry
+            expiresAt: expiry,
+            isMutualAid: profile.profileType == "MUTUAL_AID"
         )
     }
 

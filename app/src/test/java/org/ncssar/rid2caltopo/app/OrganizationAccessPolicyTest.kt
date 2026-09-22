@@ -73,8 +73,9 @@ class OrganizationAccessPolicyTest {
         assertTrue(session.activityStopped(isChangingConfigurations = false))
         session.completeTrustedExternalFlow(OrganizationExternalFlow.CAPTURED_VIDEO_PICKER)
         assertTrue(session.isAuthenticated())
-        // Completing or cancelling the picker must not exempt future backgrounding.
-        assertFalse(session.activityStopped(isChangingConfigurations = false))
+        // Completing or cancelling the picker still preserves access while the device
+        // remains unlocked; a real screen lock invalidates it.
+        assertTrue(session.activityStopped(isChangingConfigurations = false))
     }
 
     @Test
@@ -110,12 +111,12 @@ class OrganizationAccessPolicyTest {
     }
 
     @Test
-    fun ordinaryBackgroundingInvalidatesAuthenticatedSession() {
+    fun ordinaryBackgroundingPreservesAuthenticatedSessionUntilDeviceLock() {
         val session = OrganizationAccessSession()
         session.markAuthenticated()
 
-        assertFalse(session.activityStopped(isChangingConfigurations = false))
-        assertFalse(session.isAuthenticated())
+        assertTrue(session.activityStopped(isChangingConfigurations = false))
+        assertTrue(session.isAuthenticated())
     }
 
     @Test

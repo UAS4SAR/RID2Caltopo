@@ -62,6 +62,15 @@ class CtDroneSpecTest {
     }
 
     @Test
+    fun movingWaypointArrivingWithinOneSecondIsSuppressed() {
+        val spec = CtDroneSpec("RIDFAST")
+        val source = CtDroneSpec.TransportTypeEnum.BT5
+        assertTrue(spec.shouldRecordWaypoint(39.0, -121.0, 10_000, 2.0, source))
+        assertFalse(spec.shouldRecordWaypoint(39.0001, -121.0, 10_500, 2.0, source))
+        assertTrue(spec.shouldRecordWaypoint(39.0002, -121.0, 11_000, 2.0, source))
+    }
+
+    @Test
     fun invalidCoordinatesNeverRefreshLiveTelemetry() {
         val spec = CtDroneSpec("RIDINVALID")
         val source = CtDroneSpec.TransportTypeEnum.WIFI
