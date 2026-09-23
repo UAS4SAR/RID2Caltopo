@@ -178,7 +178,7 @@ internal class NotamRepository {
         }
         synchronized(resetLock) {
             if (refreshGeneration != resetGeneration) return
-            lastRefreshLocation = location?.let { Location(it) }
+            if (configured && lastErrorMessage == null) lastRefreshLocation = location?.let { Location(it) }
             lastRefreshAtMs = now
             if (configured && lastErrorMessage == null) {
                 CaltopoClient.SetNotamLastUpdatedEpochMs(now)
@@ -855,9 +855,9 @@ internal class NotamRepository {
         val nearestHiddenNotice = sorted.firstOrNull { notice ->
             notice !in visibleNotices
         }
-        val lastUpdatedMs = maxOf(CaltopoClient.GetNotamLastUpdatedEpochMs(), lastRefreshAtMs)
-        val stale = if (lastUpdatedMs == 0L) false else System.currentTimeMillis() - lastUpdatedMs > 180_000L
-        val hasError = lastErrorMessage != null
+        val lastUpdatedMs = lastSuccessfulFetchAtMs
+        val stale = NotamPolicy.isStale(lastUpdatedMs, System.currentTimeMillis(), CaltopoClient.GetNotamRefreshIntervalSeconds())
+        val hasError = lastErrorMessage != null || stale || lastUpdatedMs == 0L
         val chipSeverity = NotamPolicy.effectiveChipSeverity(
             notices = visibleNotices,
             configured = configured,
@@ -916,9 +916,9 @@ internal class NotamRepository {
 
     private fun formatLastUpdated(epochMs: Long, stale: Boolean): String? {
         if (epochMs <= 0L) return null
-        val formatter = DateTimeFormatter.ofPattern("HH:mm:ss", Locale.US)
+        val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", Locale.US)
             .withZone(ZoneId.systemDefault())
-        val prefix = if (stale) "Stale since " else "Updated "
+        val prefix = if (stale) "Stale • last successful check " else "Last successful check "
         return prefix + formatter.format(Instant.ofEpochMilli(epochMs))
     }
 

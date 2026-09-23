@@ -11,6 +11,10 @@ internal object NotamPolicy {
         NotamChipSeverity.Neutral -> 3
     }
 
+    fun isStale(lastSuccessfulAtMs: Long, nowMs: Long, refreshIntervalSeconds: Int): Boolean =
+        lastSuccessfulAtMs > 0L && nowMs - lastSuccessfulAtMs >
+            maxOf(600_000L, refreshIntervalSeconds.toLong().coerceAtLeast(30L) * 2_000L)
+
     fun sort(notices: List<NearbyNotam>): List<NearbyNotam> {
         return notices.sortedWith(
             compareBy<NearbyNotam>(
@@ -56,8 +60,9 @@ internal object NotamPolicy {
         hasError: Boolean
     ): String {
         if (loading) return "NOTAMs updating..."
-        if (hasError && notices.isEmpty()) return "NOTAMs unavailable"
         if (!configured) return "NOTAMs not configured"
+        if (hasError && notices.isEmpty()) return "NOTAMs unavailable"
+        if (hasError) return "NOTAMs stale • review"
 
         val restrictiveHere = notices.firstOrNull {
             it.intersectsPilotBubble && it.severity == NotamChipSeverity.Danger
@@ -72,7 +77,7 @@ internal object NotamPolicy {
         }
 
         if (notices.isNotEmpty()) return "NOTAMs: ${notices.size} nearby"
-        return if (configured) "NOTAMs clear" else "NOTAMs not configured"
+        return if (configured) "No notices returned" else "NOTAMs not configured"
     }
 
     private fun formatDistance(notice: NearbyNotam): String =

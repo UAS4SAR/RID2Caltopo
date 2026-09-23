@@ -35,11 +35,15 @@ object LandRestrictionCenter {
     private var lastAttemptEpochMs = 0L
     private var oldestDataEpochMs: Long? = null
 
+    internal val isMonitoring: Boolean get() = refreshJob?.isActive == true
+
+    @Synchronized
     fun initialize(context: Context) {
-        if (initialized) return
+        if (initialized && isMonitoring) return
         repository = LandRestrictionRepository(context.applicationContext)
         initialized = true
         startLoop()
+        org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("LandRules", "Monitoring started or resumed")
     }
 
     fun requestImmediateRefresh() {
@@ -50,6 +54,7 @@ object LandRestrictionCenter {
         if (initialized) scope.launch { refresh(force = true) }
     }
 
+    @Synchronized
     fun shutdown() {
         refreshJob?.cancel()
         refreshJob = null

@@ -66,6 +66,7 @@ import org.ncssar.rid2caltopo.app.R2CActivity;
 import org.ncssar.rid2caltopo.app.R2CApplication;
 import org.ncssar.rid2caltopo.app.ScanningService;
 import org.ncssar.rid2caltopo.notam.NotamCenter;
+import org.ncssar.rid2caltopo.airspace.AirspaceCenter;
 import org.ncssar.rid2caltopo.landrestrictions.LandRestrictionCenter;
 import org.ncssar.rid2caltopo.ui.ProximityAlertCenter;
 import org.ncssar.rid2caltopo.video.PairedVideoFlightActivity;
@@ -4180,6 +4181,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         }
         long shutdownDebugLogGeneration = CaptureDebugLogGeneration();
         try {
+            AirspaceCenter.INSTANCE.shutdown();
             NotamCenter.INSTANCE.shutdown();
             LandRestrictionCenter.INSTANCE.shutdown();
             if (Ccstate != null) {

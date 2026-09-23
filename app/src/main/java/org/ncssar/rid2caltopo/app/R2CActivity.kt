@@ -1142,6 +1142,11 @@ class R2CActivity :
 
     override fun onStart() {
         super.onStart()
+        // Application.onCreate does not run when a finished Activity reopens in
+        // the same process. Restore monitors stopped by CaltopoClient.Shutdown.
+        AirspaceCenter.initialize(applicationContext)
+        NotamCenter.initialize(applicationContext)
+        LandRestrictionCenter.initialize(applicationContext)
     }
 
     override fun onResume() {

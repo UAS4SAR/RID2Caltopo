@@ -7,10 +7,11 @@ public enum OperationalStatusChipText {
         severity: OperationalAirspaceSeverity,
         detailedLabel: String
     ) -> String {
-        switch severity {
+        if ["updating", "unavailable", "stale", "pending"].contains(where: { detailedLabel.lowercased().contains($0) }) { return detailedLabel }
+        return switch severity {
         case .danger: "Authorization required"
         case .caution: "Airspace nearby"
-        case .normal: "Airspace clear"
+        case .normal: detailedLabel
         case .neutral: conciseNeutral(detailedLabel, fallback: "Airspace status")
         }
     }
@@ -19,10 +20,11 @@ public enum OperationalStatusChipText {
         severity: OperationalNotamSeverity,
         detailedLabel: String
     ) -> String {
-        switch severity {
+        if ["updating", "unavailable", "stale", "pending"].contains(where: { detailedLabel.lowercased().contains($0) }) { return detailedLabel }
+        return switch severity {
         case .danger: "NOTAM warning"
         case .caution: "NOTAMs nearby"
-        case .normal: "NOTAMs clear"
+        case .normal: detailedLabel
         case .neutral: conciseNeutral(detailedLabel, fallback: "NOTAM status")
         }
     }

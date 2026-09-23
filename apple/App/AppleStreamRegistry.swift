@@ -728,6 +728,13 @@ private struct AppleStreamTile: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            AppleVideoSafetyNotice()
+            videoContent
+        }
+    }
+
+    private var videoContent: some View {
         ZStack(alignment: .topLeading) {
             Color.black
             GeometryReader { geometry in

@@ -26,13 +26,13 @@ class DesignatorIndicatorTest {
     @Test
     fun formatLiveState_reportsLiveUntilLagIsMaterial() {
         assertEquals("Starting", formatLiveState(null))
-        assertEquals("lag:450ms", formatLiveState(450L))
+        assertEquals("local:450ms", formatLiveState(450L))
     }
 
     @Test
     fun formatLiveState_formatsSubsecondAndSecondLag() {
-        assertEquals("lag:750ms", formatLiveState(750L))
-        assertEquals("lag:2.3s", formatLiveState(2_250L))
+        assertEquals("local:750ms", formatLiveState(750L))
+        assertEquals("local:2.3s", formatLiveState(2_250L))
     }
 
     @Test

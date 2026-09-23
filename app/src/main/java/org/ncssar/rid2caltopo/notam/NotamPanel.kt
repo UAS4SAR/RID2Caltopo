@@ -15,6 +15,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import org.ncssar.rid2caltopo.airspace.AirspaceUiState
@@ -60,7 +61,10 @@ fun NotamPanel(
             }
         },
         title = {
-            Text("Nearby NOTAMs")
+            Column {
+                Text("Nearby NOTAMs")
+                Text("Not flight authorization. Verify independently.", style = MaterialTheme.typography.labelMedium)
+            }
         },
         text = {
             Column(
@@ -68,6 +72,7 @@ fun NotamPanel(
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
             ) {
+                AirspaceSafetyNotice()
                 Text("Location: $currentLocationText")
                 queryLocationText?.let {
                     Text("NOTAM query used: $it")
@@ -85,6 +90,7 @@ fun NotamPanel(
                 airspaceState?.takeIf { it.summary.isNotBlank() || it.detail.isNotBlank() }?.let {
                     Spacer(Modifier.height(10.dp))
                     Text("Airspace", fontWeight = FontWeight.SemiBold)
+                    AirspaceQueryMetadata(it)
                     if (it.summary.isNotBlank()) {
                         Text(it.summary, color = MaterialTheme.colorScheme.onSurface)
                     }
@@ -177,7 +183,7 @@ fun NotamPanel(
                             }
                         }
                         state.configured -> {
-                            Text("No nearby NOTAM restrictions were found in the current state.")
+                            Text("No notices are displayed. Check query status above; this is not a flight clearance.")
                         }
                         else -> {
                             Text("NOTAM monitoring is enabled, but credentials have not been loaded yet.")
@@ -275,7 +281,10 @@ private fun AirspaceRestrictionsPanel(
             }
         },
         title = {
-            Text("Nearby Airspace Restrictions")
+            Column {
+                Text("Nearby Airspace Restrictions")
+                Text("Not flight authorization. Verify independently.", style = MaterialTheme.typography.labelMedium)
+            }
         },
         text = {
             Column(
@@ -283,8 +292,10 @@ private fun AirspaceRestrictionsPanel(
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
             ) {
+                AirspaceSafetyNotice()
                 Text("Location: $currentLocationText")
                 Text("Operating area: 1 statute mile")
+                AirspaceQueryMetadata(state)
                 Spacer(Modifier.height(10.dp))
                 if (state.summary.isNotBlank()) {
                     Text(state.summary, fontWeight = FontWeight.SemiBold)
@@ -310,6 +321,11 @@ private fun AirspaceRestrictionsPanel(
                 )
                 Spacer(Modifier.height(14.dp))
                 Text("Nearby NOTAMs", fontWeight = FontWeight.SemiBold)
+                Text("Query radius: ${notamState.radiusStatuteMiles} statute mile(s)")
+                notamState.lastUpdatedText?.let { Text(it) }
+                if (notamState.queryLatitude != null && notamState.queryLongitude != null) {
+                    Text("Query location: " + CoordinateFormatter.format(notamState.queryLatitude, notamState.queryLongitude, coordinateDisplayFormat))
+                }
                 Text(
                     notamState.chipLabel,
                     color = MaterialTheme.colorScheme.onSurface
@@ -329,7 +345,7 @@ private fun AirspaceRestrictionsPanel(
                             !notamState.enabled -> "Nearby NOTAM monitoring is disabled."
                             !notamState.configured ->
                                 "Import the r2c-tracker organization QR code to enable NOTAM queries."
-                            else -> "No nearby NOTAM notices were returned."
+                            else -> "No notices are displayed. Check query status above; this is not a flight clearance."
                         },
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -353,4 +369,19 @@ private fun AirspaceRestrictionsPanel(
             }
         }
     )
+}
+
+@Composable
+private fun AirspaceSafetyNotice() {
+    val uriHandler = LocalUriHandler.current
+    Text("Not flight authorization. Verify restrictions and operational conditions independently.", fontWeight = FontWeight.SemiBold)
+    Text("These queries do not establish that flight is safe. Firefighting aircraft may be present even without a TFR. Emergency-response flights require applicable authorization and incident air-operations coordination.")
+    TextButton(onClick = { uriHandler.openUri("https://www.faa.gov/pilots/safety/notams_tfr") }) { Text("FAA NOTAM / TFR resources") }
+    TextButton(onClick = { uriHandler.openUri("https://www.faa.gov/uas/getting_started/b4ufly") }) { Text("FAA-approved planning providers") }
+}
+
+@Composable
+private fun AirspaceQueryMetadata(state: AirspaceUiState) {
+    Text("Last successful facility-map check: ${state.lastSuccessfulCheck}")
+    state.queryCoordinate?.let { Text("Query location: %.5f, %.5f • radius: 1 statute mile".format(java.util.Locale.US, it.latitude, it.longitude)) }
 }

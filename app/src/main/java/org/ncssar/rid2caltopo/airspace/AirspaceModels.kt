@@ -32,5 +32,7 @@ data class AirspaceUiState(
     val summary: String = "",
     val detail: String = "",
     val records: List<FaaUasFacilityMapRecord> = emptyList(),
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val lastSuccessfulCheck: String = "No successful check this session",
+    val queryCoordinate: AirspaceCoordinate? = null
 )

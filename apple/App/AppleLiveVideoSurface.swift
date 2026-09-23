@@ -43,12 +43,15 @@ struct AppleLiveVideoIndicator: View {
     }
 
     private var statusLabel: String {
-        switch model.state {
+        if model.state == .streaming, let age = model.decodedFrameAgeSeconds, age >= 3 {
+            return "No new frames • " + String(format: "%.0fs", age)
+        }
+        return switch model.state {
         case .idle: "Stopped"
         case .connecting: "Connecting..."
         case .waitingForPublisher: "Waiting"
         case .failed: "Reconnecting"
-        case .streaming: LiveVideoLagEstimator.label(milliseconds: model.renderDelayMilliseconds)
+        case .streaming: "Streaming • local delay \(LiveVideoLagEstimator.label(milliseconds: model.renderDelayMilliseconds))"
         }
     }
 }
@@ -90,5 +93,15 @@ final class LiveVideoSurfaceView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         videoLayer.frame = bounds
+    }
+}
+
+struct AppleVideoSafetyNotice: View {
+    var body: some View {
+        Text("Observation only — do not pilot using this video. Images may be delayed or frozen. Use the aircraft’s flight-control system and maintain required visual observation.")
+            .font(.caption.weight(.bold)).foregroundStyle(Color(red: 1, green: 0.835, blue: 0.31))
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(6).background(.black)
     }
 }

@@ -114,6 +114,16 @@ class AirspacePolicyTest {
         assertEquals("Airspace unavailable", state.chipLabel)
     }
 
+    @Test
+    fun cachedRestrictionSurvivesFailureWithStaleHeading() {
+        val cached = record(1L, 100)
+        val state = AirspacePolicy.buildUiState(listOf(cached), false, "Offline", pilotCoordinate)
+        assertEquals(AirspaceChipSeverity.Danger, state.chipSeverity)
+        assertEquals("Airspace stale • review", state.chipLabel)
+        assertEquals(listOf(cached), state.records)
+        assertTrue(state.detail.contains("authorization is required"))
+    }
+
     private fun record(objectId: Long, ceilingFeet: Int) = FaaUasFacilityMapRecord(
         objectId = objectId,
         ceilingFeet = ceilingFeet,

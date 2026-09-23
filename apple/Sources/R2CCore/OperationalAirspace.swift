@@ -148,6 +148,12 @@ public enum OperationalFacilityMap {
         errorMessage: String?,
         pilotCoordinate: OperationalAirspaceCoordinate? = nil
     ) -> OperationalAirspaceState {
+        if let errorMessage, !records.isEmpty {
+            var cached = state(records: records, loading: false, errorMessage: nil, pilotCoordinate: pilotCoordinate)
+            cached.chipLabel = "Airspace stale • review"
+            cached.errorMessage = errorMessage
+            return cached
+        }
         if loading {
             return .init(loading: true, chipLabel: "Airspace updating…", records: records, errorMessage: errorMessage)
         }
@@ -191,8 +197,8 @@ public enum OperationalFacilityMap {
         }
         return .init(
             severity: .normal,
-            chipLabel: "Airspace clear",
-            summary: "No FAA UAS Facility Map grid within the \(operatingAreaLabel)",
+            chipLabel: records.isEmpty ? "No facility grids returned" : "Facility grids: review",
+            summary: "No classified FAA facility-map grids returned for the \(operatingAreaLabel). This is not a complete airspace assessment.",
             records: records,
             errorMessage: errorMessage
         )

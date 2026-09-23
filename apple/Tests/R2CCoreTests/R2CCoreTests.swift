@@ -1464,6 +1464,11 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
     #expect(state.chipLabel.contains("Authorization required"))
     #expect(state.chipLabel.contains("FAA grid limit 200 ft AGL"))
     #expect(state.detail.contains("not the top of the controlled-airspace class"))
+    let stale = OperationalFacilityMap.state(records: records, loading: false, errorMessage: "Offline", pilotCoordinate: .init(latitude: 39.75, longitude: -104.97))
+    #expect(stale.severity == .danger)
+    #expect(stale.chipLabel == "Airspace stale • review")
+    #expect(stale.records == records)
+
 }
 
 @Test func operationalFacilityMapUsesLowestGridLimitRegardlessOfResponseOrder() {
@@ -1658,7 +1663,7 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
 @Test func operationalFacilityMapPreservesAndroidClearAndFailureStates() throws {
     let clear = OperationalFacilityMap.state(records: [], loading: false, errorMessage: nil)
     #expect(clear.severity == .normal)
-    #expect(clear.chipLabel == "Airspace clear")
+    #expect(clear.chipLabel == "No facility grids returned")
     let unavailable = OperationalFacilityMap.state(records: [], loading: false, errorMessage: "offline")
     #expect(unavailable.severity == .neutral)
     #expect(unavailable.chipLabel == "Airspace unavailable")
@@ -6319,4 +6324,15 @@ func aolHighlightRequiresNegativeNumberAndExcludesAdjacentFields() {
         #expect(abs(rays[1].leftDegrees - rays[0].leftDegrees - 0.6696217) < 1e-7)
         #expect(abs(rays[1].rightDegrees - rays[0].rightDegrees - 0.6696217) < 1e-7)
     }
+}
+
+@Test func safetyChipLabelsPreserveDataAndCachedWarnings() {
+    #expect(OperationalStatusChipText.notam(severity: .normal, detailedLabel: "NOTAMs: 2 nearby") == "NOTAMs: 2 nearby")
+    #expect(OperationalStatusChipText.notam(severity: .danger, detailedLabel: "NOTAMs stale • review") == "NOTAMs stale • review")
+    #expect(OperationalStatusChipText.notam(severity: .normal, detailedLabel: "NOTAMs updating…") == "NOTAMs updating…")
+    #expect(OperationalNotamPolicy.chipLabel(notices: [], configured: true, loading: false, hasError: false) == "No notices returned")
+    #expect(OperationalNotamPolicy.chipLabel(notices: [], configured: true, loading: false, hasError: true) == "NOTAMs unavailable")
+    let cached = OperationalNotam(id: "tfr", title: "TFR", summary: "Restriction", distanceNM: 0, intersectsPilotArea: true, severity: .danger)
+    #expect(OperationalNotamPolicy.chipSeverity(notices: [cached], configured: true, hasError: true) == .danger)
+    #expect(OperationalNotamPolicy.chipLabel(notices: [cached], configured: true, loading: false, hasError: true) == "NOTAMs stale • review")
 }

@@ -565,16 +565,27 @@ fun StreamTile(
         }
     }
 
-    Box(
+    Column(
         modifier = Modifier
             .border(
                 width = if (drawFocusBorder) 3.dp else 0.dp,
                 color = if (drawFocusBorder) Color.Yellow else Color.Transparent
             )
             .then(if (fillContainer) Modifier.fillMaxSize() else Modifier.aspectRatio(16f / 9f))
-            .onSizeChanged { streamTileSize = it }
             .clipToBounds()
-            .transformable(zoomTransformState)
+    ) {
+        Text(
+            text = "Observation only — do not pilot using this video. Images may be delayed or frozen. Use the aircraft’s flight-control system and maintain required visual observation.",
+            modifier = Modifier.fillMaxWidth().background(Color.Black).padding(horizontal = 8.dp, vertical = 5.dp),
+            color = Color(0xFFFFD54F),
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold
+        )
+        Box(
+            modifier = Modifier.weight(1f).fillMaxWidth()
+                .onSizeChanged { streamTileSize = it }
+                .clipToBounds()
+                .transformable(zoomTransformState)
         ) {
         Box(
             modifier = Modifier
@@ -1140,6 +1151,7 @@ fun StreamTile(
                 }
             )
         }
+    }
     }
 }
 

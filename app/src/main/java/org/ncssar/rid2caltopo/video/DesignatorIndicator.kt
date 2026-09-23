@@ -353,11 +353,11 @@ internal fun formatLiveState(
     playbackIndicatorState: PlaybackIndicatorState? = null,
 ): String {
     if (playbackIndicatorState == PlaybackIndicatorState.BUFFERING) return "Buffering"
-    if (playbackIndicatorState == PlaybackIndicatorState.LIVE_UNMEASURED) return "Live"
+    if (playbackIndicatorState == PlaybackIndicatorState.LIVE_UNMEASURED) return "Streaming • delay unknown"
     val delayMs = renderDelayMs ?: return "Starting"
     if (delayMs >= 5_000L) return "Stalled"
-    if (delayMs < 1_000L) return "lag:${delayMs}ms"
-    return String.format(Locale.US, "lag:%.1fs", delayMs / 1000.0)
+    if (delayMs < 1_000L) return "local:${delayMs}ms"
+    return String.format(Locale.US, "local:%.1fs", delayMs / 1000.0)
 }
 
 internal fun formatCompactTelemetry(

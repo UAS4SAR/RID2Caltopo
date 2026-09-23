@@ -139,7 +139,9 @@ public enum OperationalNotamPolicy {
         hasError: Bool
     ) -> String {
         if loading { return "NOTAMs updating…" }
+        if !configured { return "NOTAMs not configured" }
         if hasError, notices.isEmpty { return "NOTAMs unavailable" }
+        if hasError { return "NOTAMs stale • review" }
         if let notice = notices.first(where: { $0.intersectsPilotArea && $0.severity == .danger }) {
             return "NOTAMs: RESTRICTED \(distanceLabel(notice))"
         }
@@ -147,7 +149,7 @@ public enum OperationalNotamPolicy {
             return "NOTAMs: NOTICE \(distanceLabel(notice))"
         }
         if !notices.isEmpty { return "NOTAMs: \(notices.count) nearby" }
-        return configured ? "NOTAMs clear" : "NOTAMs not configured"
+        return configured ? "No notices returned" : "NOTAMs not configured"
     }
 
     public static func inferSeverity(text: String, intersectsPilotArea: Bool) -> OperationalNotamSeverity {

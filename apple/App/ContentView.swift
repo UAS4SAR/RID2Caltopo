@@ -1632,7 +1632,7 @@ struct ContentView: View {
         switch notams.state.chipSeverity {
         case .danger: .danger
         case .caution: .caution
-        case .normal: .normal
+        case .normal: .neutral
         case .neutral: .neutral
         }
     }
@@ -1641,7 +1641,7 @@ struct ContentView: View {
         switch airspace.state.severity {
         case .danger: .danger
         case .caution: .caution
-        case .normal: .normal
+        case .normal: .neutral
         case .neutral: .neutral
         }
     }

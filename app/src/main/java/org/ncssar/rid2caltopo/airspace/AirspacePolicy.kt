@@ -11,6 +11,11 @@ object AirspacePolicy {
         errorMessage: String?,
         pilotCoordinate: AirspaceCoordinate? = null
     ): AirspaceUiState {
+        if (errorMessage != null && records.isNotEmpty()) {
+            return buildUiState(records, false, null, pilotCoordinate).copy(
+                chipLabel = "Airspace stale • review", errorMessage = errorMessage
+            )
+        }
         if (loading) {
             return AirspaceUiState(
                 loading = true,
@@ -65,8 +70,8 @@ object AirspacePolicy {
         }
         return AirspaceUiState(
             chipSeverity = AirspaceChipSeverity.Normal,
-            chipLabel = "Airspace clear",
-            summary = "No FAA UAS Facility Map grid within the ${OperatingArea.displayLabel}",
+            chipLabel = if (records.isEmpty()) "No facility grids returned" else "Facility grids: review",
+            summary = "No classified FAA facility-map grids returned for the ${OperatingArea.displayLabel}. This is not a complete airspace assessment.",
             records = records,
             errorMessage = errorMessage
         )

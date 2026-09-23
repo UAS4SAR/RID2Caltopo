@@ -53,8 +53,8 @@ fun NotamStatusChip(
             labelColor = Color.White
         )
         NotamChipSeverity.Normal -> AssistChipDefaults.assistChipColors(
-            containerColor = Color(0xFF2E7D32),
-            labelColor = Color.White
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            labelColor = MaterialTheme.colorScheme.onSurfaceVariant
         )
         NotamChipSeverity.Neutral -> AssistChipDefaults.assistChipColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant,
@@ -92,13 +92,15 @@ internal fun conciseSafetyStatusLabel(
     severity: NotamChipSeverity,
     detailedLabel: String
 ): String = when {
+    detailedLabel.contains("updating", true) || detailedLabel.contains("unavailable", true) ||
+        detailedLabel.contains("stale", true) || detailedLabel.contains("pending", true) -> detailedLabel
     useAirspaceLabel && severity == NotamChipSeverity.Danger -> "Authorization required"
     useAirspaceLabel && severity == NotamChipSeverity.Caution -> "Airspace nearby"
-    useAirspaceLabel && severity == NotamChipSeverity.Normal -> "Airspace clear"
+    useAirspaceLabel && severity == NotamChipSeverity.Normal -> detailedLabel
     useAirspaceLabel -> conciseNeutralLabel(detailedLabel, "Airspace status")
     severity == NotamChipSeverity.Danger -> "NOTAM warning"
     severity == NotamChipSeverity.Caution -> "NOTAMs nearby"
-    severity == NotamChipSeverity.Normal -> "NOTAMs clear"
+    severity == NotamChipSeverity.Normal -> detailedLabel
     else -> conciseNeutralLabel(detailedLabel, "NOTAM status")
 }
 

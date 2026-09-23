@@ -10,6 +10,27 @@ import org.junit.Test
 
 class NotamPolicyTest {
     @Test
+    fun expiryDoesNotPrecedeTheConfiguredRefreshInterval() {
+        assertFalse(NotamPolicy.isStale(1_000L, 181_001L, 1_800))
+        assertFalse(NotamPolicy.isStale(1_000L, 3_601_000L, 1_800))
+        assertTrue(NotamPolicy.isStale(1_000L, 3_601_001L, 1_800))
+        assertTrue(NotamPolicy.isStale(1_000L, 601_001L, 30))
+        assertFalse(NotamPolicy.isStale(0L, 9_999_999L, 30))
+    }
+
+    @Test
+    fun compactLabelsPreserveQueryResultsAndFailureInsteadOfClaimingClear() {
+        assertEquals("NOTAMs: 2 nearby", conciseSafetyStatusLabel(false, NotamChipSeverity.Normal, "NOTAMs: 2 nearby"))
+        assertEquals("NOTAMs stale • review", conciseSafetyStatusLabel(false, NotamChipSeverity.Danger, "NOTAMs stale • review"))
+        assertEquals("NOTAMs updating...", conciseSafetyStatusLabel(false, NotamChipSeverity.Normal, "NOTAMs updating..."))
+        assertEquals("No notices returned", NotamPolicy.chipLabel(emptyList(), true, false, false))
+        assertEquals("NOTAMs unavailable", NotamPolicy.chipLabel(emptyList(), true, false, true))
+        val cached = NearbyNotam(id = "tfr", title = "TFR", summary = "Restriction", distanceNm = 0.0, intersectsPilotBubble = true, severity = NotamChipSeverity.Danger)
+        assertEquals(NotamChipSeverity.Danger, NotamPolicy.effectiveChipSeverity(listOf(cached), true, true))
+        assertEquals("NOTAMs stale • review", NotamPolicy.chipLabel(listOf(cached), true, false, true))
+    }
+
+    @Test
     fun runtimeResetClearsNotamResultAndRequiresConfigurationAgain() {
         CaltopoClient.ResetPersistedClientState()
 
@@ -57,7 +78,7 @@ class NotamPolicyTest {
                 notamVisible = true,
                 airspaceState = AirspaceUiState(
                     chipSeverity = AirspaceChipSeverity.Normal,
-                    chipLabel = "Airspace clear"
+                    chipLabel = "No facility grids returned"
                 )
             )
         )
@@ -70,7 +91,7 @@ class NotamPolicyTest {
                 notamVisible = true,
                 airspaceState = AirspaceUiState(
                     chipSeverity = AirspaceChipSeverity.Normal,
-                    chipLabel = "Airspace clear"
+                    chipLabel = "No facility grids returned"
                 )
             )
         )

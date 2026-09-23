@@ -222,11 +222,11 @@ final class AppleNotamCenter: ObservableObject {
             configured: configured,
             loading: loading,
             stale: stale,
-            chipSeverity: OperationalNotamPolicy.chipSeverity(notices: filtered.visible, configured: configured, hasError: error != nil),
-            chipLabel: OperationalNotamPolicy.chipLabel(notices: filtered.visible, configured: configured, loading: loading, hasError: error != nil),
+            chipSeverity: OperationalNotamPolicy.chipSeverity(notices: filtered.visible, configured: configured, hasError: error != nil || stale || updated == nil),
+            chipLabel: OperationalNotamPolicy.chipLabel(notices: filtered.visible, configured: configured, loading: loading, hasError: error != nil || stale || updated == nil),
             statusLine: statusLine(configured: configured, loading: loading, count: filtered.visible.count, error: error),
             lastUpdated: updated,
-            queryCoordinate: coordinate,
+            queryCoordinate: lastFetchCoordinate,
             radiusStatuteMiles: radiusStatuteMiles,
             notices: filtered.visible,
             suppressedCount: filtered.suppressed,
@@ -346,12 +346,15 @@ struct AppleNotamPanel: View {
     var body: some View {
         NavigationStack {
             List {
+                AppleAirspaceSafetyNotice()
                 Section("Status") {
+                    Text("Query radius: \(center.state.radiusStatuteMiles) statute mile(s)")
+                    if let coordinate = center.state.queryCoordinate { Text(String(format: "Query location: %.5f, %.5f", coordinate.latitude, coordinate.longitude)).font(.caption) }
                     Label(center.state.chipLabel, systemImage: "airplane.departure")
                         .foregroundStyle(color(center.state.chipSeverity))
                     Text(center.state.statusLine).font(.caption).foregroundStyle(.secondary)
                     if let date = center.state.lastUpdated {
-                        LabeledContent("Updated", value: date.formatted(date: .omitted, time: .standard))
+                        LabeledContent("Last successful check", value: date.formatted(date: .numeric, time: .standard))
                     }
                     if center.state.stale { Label("Results are stale", systemImage: "clock.badge.exclamationmark").foregroundStyle(.orange) }
                     Button("Refresh Now") { center.refreshNow(location: location) }
@@ -363,7 +366,7 @@ struct AppleNotamPanel: View {
                             !center.state.enabled
                                 ? "Nearby NOTAM monitoring is disabled."
                                 : (center.state.configured
-                                    ? "No nearby notices."
+                                    ? "No notices are displayed. Check query status above; this is not a flight clearance."
                                     : "Load the organization tracker configuration to enable queries.")
                         )
                             .foregroundStyle(.secondary)
@@ -386,6 +389,10 @@ struct AppleNotamPanel: View {
                     }
                 }
             }
+            .safeAreaInset(edge: .bottom) {
+                Text("Not flight authorization. Verify restrictions and operational conditions independently.")
+                    .font(.caption).padding(8).frame(maxWidth: .infinity).background(.bar)
+            }
             .navigationTitle("Nearby NOTAMs")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
@@ -395,7 +402,7 @@ struct AppleNotamPanel: View {
         switch severity {
         case .danger: .red
         case .caution: .orange
-        case .normal: .green
+        case .normal: .secondary
         case .neutral: .secondary
         }
     }

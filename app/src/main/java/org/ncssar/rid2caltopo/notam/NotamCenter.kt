@@ -19,10 +19,14 @@ object NotamCenter {
     private var initialized = false
     private var refreshJob: Job? = null
 
+    internal val isMonitoring: Boolean get() = refreshJob?.isActive == true
+
+    @Synchronized
     fun initialize(context: Context) {
-        if (initialized) return
+        if (initialized && isMonitoring) return
         initialized = true
         startLoop()
+        org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("NotamREST", "Monitoring started or resumed")
     }
 
     fun requestImmediateRefresh() {
@@ -36,6 +40,7 @@ object NotamCenter {
         repository.resetRuntimeState()
     }
 
+    @Synchronized
     fun shutdown() {
         refreshJob?.cancel()
         refreshJob = null
