@@ -265,7 +265,7 @@ public enum OperationalLandRestriction {
         let nearby = areas.filter(\.intersectsOperatingArea).count
         if nearby > 0 { return "Land rules: \(nearby) nearby" }
         if hasError { return "Land rules unavailable" }
-        return "Land rules clear"
+        return "No mapped restrictions"
     }
 
     private static func firstString(_ keys: [String], in properties: [String: Any]) -> String? {

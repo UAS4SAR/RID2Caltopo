@@ -14,13 +14,16 @@ data class AppUpdateAdvisoryState(
 }
 
 object AppUpdateAdvisory {
+    private var playRecommendedVersionCode = 0
     private val _state = MutableStateFlow(AppUpdateAdvisoryState())
     val state: StateFlow<AppUpdateAdvisoryState> = _state
 
     @JvmStatic
     fun onTrackerRecommendation(recommendedVersionCode: Int, updateUrl: String?) {
-        val normalizedCode = recommendedVersionCode.coerceAtLeast(0)
-        val normalizedUrl = updateUrl?.trim().orEmpty()
+        val normalizedCode = maxOf(recommendedVersionCode, playRecommendedVersionCode, 0)
+        val normalizedUrl = if (playRecommendedVersionCode > 0 && playRecommendedVersionCode >= recommendedVersionCode) {
+            "https://play.google.com/store/apps/details?id=${BuildConfig.APPLICATION_ID}"
+        } else updateUrl?.trim().orEmpty()
         val current = _state.value
         val preserveDismissal = current.dismissedForSession &&
             current.recommendedVersionCode == normalizedCode &&
@@ -32,12 +35,18 @@ object AppUpdateAdvisory {
         )
     }
 
+    fun onPlayRecommendation(versionCode: Int) {
+        playRecommendedVersionCode = maxOf(playRecommendedVersionCode, versionCode)
+        onTrackerRecommendation(_state.value.recommendedVersionCode, _state.value.updateUrl)
+    }
+
     fun dismissForSession() {
         _state.value = _state.value.copy(dismissedForSession = true)
     }
 
     @JvmStatic
     fun resetForTesting() {
+        playRecommendedVersionCode = 0
         _state.value = AppUpdateAdvisoryState()
     }
 }

@@ -2,13 +2,13 @@ RID2Caltopo helps search-and-rescue and incident teams receive and organize dron
 
 The app receives ASTM Remote ID over Bluetooth, including Wi-Fi Beacon and Wi-Fi NAN aircraft bridged by a DS110 wireless relay. Nearby aircraft, tracks, transport details, signal strength, altitude, range, and traffic separation are presented in an operator-focused interface.
 
-Android-compatible organization, FAA, and mutual-aid QR configurations can be imported by camera or pasted text. Imported Remote ID mappings give team aircraft familiar operational labels.
+Organization, FAA, and mutual-aid QR configurations can be imported by camera or pasted text. Imported Remote ID mappings give team aircraft familiar operational labels.
 
 Optional tracker coordination lets multiple field devices coordinate aircraft ownership. Operator-confirmed tracks can be published to a configured CalTopo team map while non-owner devices relay observations instead of publishing duplicates.
 
 RID2Caltopo also embeds MediaMTX for local controller-video ingest. Live video can be viewed with the anomaly detector disabled, or analyzed with visible-light Color Uniqueness and infrared detector modes.
 
-Daily diagnostic logs and Android-compatible GeoJSON track archives remain on the device until the operator explicitly exports or shares them.
+Daily diagnostic logs and GeoJSON track archives remain on the device until the operator explicitly exports or shares them.
 
 RID2Caltopo is intended for trained incident personnel. It does not replace visual observation, see-and-avoid responsibilities, or compliance with aviation regulations.
 

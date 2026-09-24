@@ -3,11 +3,15 @@
 `release-notes/<version>/whats_new.txt` is the authoritative operator-facing
 release note for both Android and Apple builds.
 
-Use these sections in this order:
+Use one `Latest changes:` section for operator-visible improvements. Do not include
+`Platform-specific changes:` or `Known platform differences:` in public notes.
+Keep platform names and comparisons out of the shared public text.
 
-1. `Latest changes:` for behavior shared by both platforms.
-2. `Platform-specific changes:` for changes that apply to only Android or iOS.
-3. `Known platform differences:` for intentional operating-system differences.
+Maintain differences and their resolution history in the project-only,
+cumulative [platform parity ledger](../docs/PLATFORM_PARITY_LEDGER.md).
+Update that ledger during each release; keep resolved items with evidence and
+the resolution version so progress toward parity remains traceable.
+Historical shipped release sources remain unchanged for provenance.
 
 Keep the wording concise, user-facing, and limited to one visible change per
 bullet. Technical Git history belongs in build diagnostics, not in this file.
@@ -25,8 +29,9 @@ release gate verifies both. When preparing a new version:
 tools/sync_release_notes.sh <version>
 ```
 
-The platform release gates reject missing canonical notes, missing sections,
-version mismatches, and stale App Store metadata.
+The platform release gates reject missing canonical notes, a missing
+`Latest changes:` section, private platform sections, version mismatches,
+and stale App Store metadata.
 
 See the [mobile release runbook](../RELEASE.md) for the complete Android and
 Apple build, qualification, tagging, store-staging, and recovery procedure.

@@ -89,7 +89,7 @@ fun PilotCallsignField(modifier: Modifier = Modifier) {
         modifier = modifier.onFocusChanged { focusState ->
             if (!focusState.isFocused) persist()
         },
-        label = { Text("Pilot Callsign") },
+        label = { Text("Pilot Callsign/Name") },
         singleLine = true,
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
         keyboardActions = KeyboardActions(

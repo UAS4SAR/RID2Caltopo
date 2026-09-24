@@ -28,7 +28,8 @@ fun LandRestrictionStatusChip(
             containerColor = Color(0xFFF57C00), labelColor = Color.White
         )
         LandRestrictionSeverity.Normal -> AssistChipDefaults.assistChipColors(
-            containerColor = Color(0xFF2E7D32), labelColor = Color.White
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            labelColor = MaterialTheme.colorScheme.onSurfaceVariant
         )
         LandRestrictionSeverity.Neutral -> AssistChipDefaults.assistChipColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant,
@@ -51,10 +52,11 @@ fun LandRestrictionStatusChip(
 }
 
 internal fun conciseLandStatusLabel(state: LandRestrictionUiState): String =
-    when (state.severity) {
+    if (listOf("updating", "unavailable", "stale", "pending").any { state.chipLabel.contains(it, ignoreCase = true) }) state.chipLabel
+    else when (state.severity) {
         LandRestrictionSeverity.Danger -> "Land restricted"
         LandRestrictionSeverity.Caution -> "Land rules nearby"
-        LandRestrictionSeverity.Normal -> "Land rules clear"
+        LandRestrictionSeverity.Normal -> "No mapped restrictions"
         LandRestrictionSeverity.Neutral ->
             state.chipLabel.trim().takeIf { it.length <= 24 } ?: "Land status"
     }

@@ -55,9 +55,14 @@ def generateReleaseNotes = tasks.register("generateReleaseNotes") {
             throw new GradleException("Missing canonical release notes for ${appVersionName}: ${canonicalReleaseNotesFile}")
         }
         def notes = canonicalReleaseNotesFile.getText("UTF-8")
-        ["Latest changes:", "Platform-specific changes:", "Known platform differences:"].each { heading ->
+        ["Latest changes:"].each { heading ->
             if (!notes.readLines().contains(heading)) {
                 throw new GradleException("Canonical release notes are missing '${heading}': ${canonicalReleaseNotesFile}")
+            }
+        }
+        ["Platform-specific changes:", "Known platform differences:"].each { heading ->
+            if (notes.readLines().contains(heading)) {
+                throw new GradleException("Keep '${heading}' in docs/PLATFORM_PARITY_LEDGER.md, not public release notes")
             }
         }
         releaseNotesFile.bytes = canonicalReleaseNotesFile.bytes
@@ -366,6 +371,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.appauth)
+    implementation("com.google.android.play:app-update:2.1.0")
     implementation(libs.google.play.services.auth)
     implementation(libs.google.play.services.location)
     implementation(libs.squareup.okhttp)

@@ -7,6 +7,16 @@ import org.junit.Test
 
 class LandRestrictionParserTest {
     @Test
+    fun emptyLandQueryIsNotClearanceAndUpdatingStateSurvivesCompactLabel() {
+        val label = LandRestrictionPolicy.chipLabel(emptyList(), false, false)
+        assertEquals("No mapped restrictions", label)
+        assertEquals(label, conciseLandStatusLabel(LandRestrictionUiState(
+            severity = LandRestrictionSeverity.Normal, chipLabel = label)))
+        assertEquals("Land rules updating…", conciseLandStatusLabel(LandRestrictionUiState(
+            severity = LandRestrictionSeverity.Normal, chipLabel = "Land rules updating…")))
+    }
+
+    @Test
     fun disabledLandRestrictionState_keepsOffChipVisible() {
         val state = disabledLandRestrictionUiState()
 

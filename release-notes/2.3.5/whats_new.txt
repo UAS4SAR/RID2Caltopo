@@ -1,10 +1,15 @@
 Latest changes:
+- Improved update detection when Tracker authorization needs repair, with a prompt to open the store rather than automatically install.
+- Saved flight uploads remain pending when Tracker authorization needs repair or an app update is required.
+- Rejected flight uploads show guidance for restoring organization access and resubmitting saved tracks.
+- Land-rule results use neutral wording with a reminder to verify current landowner and agency permissions.
+- Media-server access is restricted by default: controller streaming and tablet playback continue, while direct viewing from other devices requires opting in.
 - Airspace and NOTAM results use neutral query labels, retain stale warnings, and show successful-check details and FAA verification links.
 - Video tiles show a contrasting observation-only warning against piloting from delayed or frozen images.
-
-Platform-specific changes:
-- Android resumes airspace, NOTAM, and land-rule monitoring when the app reopens and aligns NOTAM expiry with Apple.
-- Apple identifies local video delay and frame inactivity.
-
-Known platform differences:
-- Android and Apple use native layouts. These data displays do not provide flight authorization.
+- Local RID map entries can be saved without configuring an organization.
+- RID map entries accept pilot names or callsigns, with distinct model descriptions for multiple aircraft owned by the same pilot.
+- Aircraft entry fields have larger touch areas and respond without a scrolling touch delay.
+- Required aircraft fields are marked with a red asterisk, and the main screen labels pilot entry as Pilot Callsign/Name.
+- Swipe the title bar to move between Main Screen and Live View, with visible transition feedback.
+- Operational monitoring resumes when the app reopens.
+- Live video identifies local playback delay and inactive frames.

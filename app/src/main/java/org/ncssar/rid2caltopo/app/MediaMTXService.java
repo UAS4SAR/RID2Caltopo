@@ -625,7 +625,8 @@ public class MediaMTXService extends Service {
         String runtimeConfig = MediaMTXConfig.buildRuntimeConfig(
                 baseConfig,
                 CaltopoClient.GetCaptureVideoStreamsFlag() && !FlightStorage.INSTANCE.getCaptureBlocked(),
-                recordingRoot
+                recordingRoot,
+                org.ncssar.rid2caltopo.data.MediaServerAccessPrefs.isRestricted(getApplicationContext())
         );
         try (OutputStream out = new FileOutputStream(outFile)) {
             out.write(runtimeConfig.getBytes(StandardCharsets.UTF_8));

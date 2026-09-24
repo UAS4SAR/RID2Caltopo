@@ -170,7 +170,7 @@ fun RidMappingAdminDialog(
         val index = mappings.indexOfFirst { it.key == selectedKey }
         val entry = mappings.getOrNull(index)
         val values = mappings.map { EditableRidMapping(it.remoteId, it.ownerName, it.ownerCallsign, it.model, it.readiness) }
-        val errors = if (entry == null) emptyList() else RidMappingRules.validateEntry(organization, values[index], values.filterIndexed { i, _ -> i != index })
+        val errors = if (entry == null) emptyList() else RidMappingRules.validateEntry(organization, values[index], values.filterIndexed { i, _ -> i != index }, requireOrganization = AircraftOrganizationAccess.belongsToOrganization())
         if (errors.isNotEmpty()) { error = errors.joinToString("\n"); return false }
         saving = true
         try {
@@ -269,17 +269,23 @@ fun RidMappingAdminDialog(
                             .verticalScroll(remember(selectedKey) { ScrollState(0) })
                     ) {
                         if (selectedKey != null) {
+                        Row {
+                            Text("* ", color = androidx.compose.ui.graphics.Color.Red)
+                            Text("Required Fields", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Spacer(Modifier.height(8.dp))
                         Text(
-                            "Entries imported from the organization QR code can be reviewed or edited here. " +
-                                "Organization is stored once and applied to every aircraft. " +
-                                "Mapped ID is generated from owner callsign and model.",
+                            (if (AircraftOrganizationAccess.belongsToOrganization())
+                                "Entries imported from the organization QR code can be reviewed or edited here. Organization is stored once and applied to every aircraft. "
+                            else "Organization is optional for local aircraft entries. No organization configuration is needed. ") +
+                                "droneDesig is generated from owner callsign and model.",
                             style = MaterialTheme.typography.bodySmall
                         )
                         OutlinedTextField(
                             enabled = false,
                             value = organization,
                             onValueChange = { organization = it },
-                            label = { Text("Organization designator") },
+                            label = { RidRequiredFieldLabel("Organization designator", AircraftOrganizationAccess.belongsToOrganization()) },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -313,7 +319,7 @@ fun RidMappingAdminDialog(
                                                 readiness = draft.readiness.copy(serialNumber = serial)
                                             )
                                         },
-                                        label = { Text("Remote ID") },
+                                        label = { RidRequiredFieldLabel("Remote ID") },
                                         singleLine = true,
                                         trailingIcon = {
                                             IconButton(enabled = canEdit && !saving, onClick = {
@@ -340,7 +346,7 @@ fun RidMappingAdminDialog(
                             enabled = canEdit && !saving,
                                         value = draft.ownerCallsign,
                                         onValueChange = { mappings[index] = draft.copy(ownerCallsign = it) },
-                                        label = { Text("Owner callsign (for example 1SAR7)") },
+                                        label = { RidRequiredFieldLabel("Pilot callsign / name") },
                                         singleLine = true,
                                         modifier = Modifier.fillMaxWidth()
                                     )
@@ -348,7 +354,7 @@ fun RidMappingAdminDialog(
                             enabled = canEdit && !saving,
                                         value = draft.model,
                                         onValueChange = { mappings[index] = draft.copy(model = it) },
-                                        label = { Text("Model") },
+                                        label = { RidRequiredFieldLabel("Model") },
                                         singleLine = true,
                                         modifier = Modifier.fillMaxWidth()
                                     )
@@ -524,5 +530,13 @@ fun OrganizationUserLabel() {
     if (AircraftOrganizationAccess.belongsToOrganization()) {
         Text("Organization account: " + (username ?: "Not verified"), style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(6.dp))
+    }
+}
+
+@Composable
+internal fun RidRequiredFieldLabel(title: String, required: Boolean = true) {
+    Row {
+        Text(title)
+        if (required) Text(" *", color = androidx.compose.ui.graphics.Color.Red)
     }
 }

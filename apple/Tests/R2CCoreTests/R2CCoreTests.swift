@@ -4576,7 +4576,11 @@ private func proximityDrone(
     #expect(TrackerArchiveUploadContract.isTransient(statusCode: 429))
     #expect(TrackerArchiveUploadContract.isTransient(statusCode: 503))
     #expect(!TrackerArchiveUploadContract.shouldMarkReported(statusCode: 503))
-    #expect(TrackerArchiveUploadContract.shouldMarkReported(statusCode: 401))
+    for status in [401, 403, 426, 499] {
+        #expect(!TrackerArchiveUploadContract.shouldMarkReported(statusCode: status))
+    }
+    #expect(TrackerArchiveUploadContract.shouldMarkReported(statusCode: 200))
+    #expect(TrackerArchiveUploadContract.shouldMarkReported(statusCode: 409))
 }
 
 @Test func caltopoSignerMatchesAndroidHmacContract() throws {
@@ -6335,4 +6339,51 @@ func aolHighlightRequiresNegativeNumberAndExcludesAdjacentFields() {
     let cached = OperationalNotam(id: "tfr", title: "TFR", summary: "Restriction", distanceNM: 0, intersectsPilotArea: true, severity: .danger)
     #expect(OperationalNotamPolicy.chipSeverity(notices: [cached], configured: true, hasError: true) == .danger)
     #expect(OperationalNotamPolicy.chipLabel(notices: [cached], configured: true, loading: false, hasError: true) == "NOTAMs stale • review")
+}
+
+@Test func landQueryDoesNotImplyPermissionAndKeepsUpdatingLabel() {
+    let label = OperationalLandRestriction.chipLabel([], loading: false, hasError: false)
+    #expect(label == "No mapped restrictions")
+    #expect(OperationalStatusChipText.land(severity: .normal, detailedLabel: label) == label)
+    #expect(OperationalStatusChipText.land(severity: .normal, detailedLabel: "Land rules updating…") == "Land rules updating…")
+}
+
+@Test func mediaServerAccessDefaultsToLocalReadersAndCanBeExplicitlyOpened() throws {
+    let base = Data("""
+    rtmp: yes
+    rtspAddress: :8554
+    hlsAddress: :8888
+    authInternalUsers:
+      - user: any
+        ips: []
+        permissions:
+          - action: read
+    paths:
+      all_others:
+        source: publisher
+    """.utf8)
+    let root = URL(fileURLWithPath: "/tmp/r2c-access-recordings")
+    let restricted = String(decoding: try MediaMTXRuntimeConfiguration.build(
+        base: base, captureStreams: true, recordingRoot: root), as: UTF8.self)
+    let open = String(decoding: try MediaMTXRuntimeConfiguration.build(
+        base: base, captureStreams: true, restrictNetworkAccess: false, recordingRoot: root), as: UTF8.self)
+    #expect(restricted.contains("rtmpAddress: :1935"))
+    #expect(restricted.contains("rtspAddress: 127.0.0.1:8554"))
+    #expect(restricted.contains("hlsAddress: 127.0.0.1:8888"))
+    #expect(restricted.contains("rtspTransports: [tcp]"))
+    #expect(restricted.contains("webrtc: no"))
+    #expect(restricted.contains("srt: no"))
+    #expect(restricted.contains("record: yes"))
+    #expect(restricted.components(separatedBy: "authInternalUsers:").count == 2)
+    let remote = restricted.components(separatedBy: "authInternalUsers:").last!
+        .components(separatedBy: "ips: [127.0.0.1").first!
+    #expect(remote.contains("action: publish"))
+    #expect(!remote.contains("action: read"))
+    #expect(!remote.contains("action: playback"))
+    #expect(open.contains("rtspAddress: :8554"))
+    #expect(open.contains("hlsAddress: :8888"))
+    #expect(open.contains("apiAddress: 127.0.0.1:9997"))
+    #expect(MediaMTXRuntimeConfiguration.withNetworkAccess(open, restricted: true)
+        .components(separatedBy: "authInternalUsers:").last == restricted
+        .components(separatedBy: "authInternalUsers:").last?.components(separatedBy: "pathDefaults:").first)
 }

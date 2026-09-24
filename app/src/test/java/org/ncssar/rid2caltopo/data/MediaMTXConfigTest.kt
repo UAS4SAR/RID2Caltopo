@@ -9,6 +9,45 @@ import org.ncssar.rid2caltopo.video.ManagedVideoSessionRecordingCatalog
 
 class MediaMTXConfigTest {
     @Test
+    fun accessPolicyDefaultsToIngestOnlyAndReplacesPermissiveBaseBlocks() {
+        assertTrue(MediaServerAccessPrefs.isRestricted(null))
+        val base = File("src/main/assets/mediamtx.yml").readText() + """
+
+            authInternalUsers:
+              - user: any
+                ips: []
+                permissions:
+                  - action: read
+            """.trimIndent()
+        val restricted = MediaMTXConfig.buildRuntimeConfig(base, true, File("/tmp/r2c-access-recordings"))
+        val open = MediaMTXConfig.buildRuntimeConfig(base, true, File("/tmp/r2c-access-recordings"), false)
+        assertTrue(restricted.contains("rtmpAddress: :1935"))
+        assertTrue(restricted.contains("rtspAddress: 127.0.0.1:8554"))
+        assertTrue(restricted.contains("hlsAddress: 127.0.0.1:8888"))
+        assertTrue(restricted.contains("rtspTransports: [tcp]"))
+        assertTrue(restricted.contains("webrtc: no"))
+        assertTrue(restricted.contains("srt: no"))
+        assertTrue(restricted.contains("record: yes"))
+        assertTrue(restricted.split("authInternalUsers:").size == 2)
+        val remotePermissions = restricted.substringAfter("authInternalUsers:").substringBefore("ips: [127.0.0.1")
+        assertTrue(remotePermissions.contains("action: publish"))
+        assertFalse(remotePermissions.contains("action: read"))
+        assertFalse(remotePermissions.contains("action: playback"))
+        assertTrue(open.contains("rtspAddress: :8554"))
+        assertTrue(open.contains("hlsAddress: :8888"))
+        assertTrue(open.substringAfter("authInternalUsers:").substringBefore("ips: [127.0.0.1").contains("action: read"))
+        assertTrue(open.contains("apiAddress: 127.0.0.1:9997"))
+        val securedAgain = MediaMTXConfig.withNetworkAccess(open, true)
+        assertTrue(securedAgain.substringAfter("authInternalUsers:").trim() ==
+            restricted.substringAfter("authInternalUsers:").substringBefore("\nlogLevel:").trim())
+        assertTrue(securedAgain.contains("rtspAddress: 127.0.0.1:8554"))
+        // Feed these exact generated configurations into the native-server socket test.
+        File("build/test-media-access").mkdirs()
+        File("build/test-media-access/android-restricted.yml").writeText(restricted)
+        File("build/test-media-access/android-open.yml").writeText(open)
+    }
+
+    @Test
     fun buildRuntimeConfig_disablesRecordingWhenCaptureOff() {
         val config = MediaMTXConfig.buildRuntimeConfig(
             baseConfig = "logLevel: debug\nrtmp: yes\n",

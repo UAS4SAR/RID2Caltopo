@@ -41,9 +41,15 @@ object RidMappingRules {
         val legacy = legacyOwner?.trim().orEmpty()
         val derivedCallsign = CtDroneSpec.GuessPilotCallsign(mappedId, model, remoteId)
 
-        val resolvedCallsign = sequenceOf(explicitCallsign, legacy, derivedCallsign)
-            .firstOrNull(::looksLikeCallsign)
-            .orEmpty()
+        // Explicit modern values may be a name or any callsign. Pattern matching
+        // is only a heuristic for ambiguous legacy owner fields.
+        val legacyTeamOwnerInCallsign = explicitName.isEmpty() && explicitCallsign == legacy &&
+            explicitCallsign.isNotEmpty() && !looksLikeCallsign(explicitCallsign) &&
+            looksLikeCallsign(derivedCallsign) &&
+            !mappedId.equals(CtDroneSpec.BuildMappedId(explicitCallsign, model, remoteId), true)
+        val resolvedCallsign = if (legacyTeamOwnerInCallsign) derivedCallsign else explicitCallsign.ifEmpty {
+            sequenceOf(legacy, derivedCallsign).firstOrNull(::looksLikeCallsign).orEmpty()
+        }
         val resolvedName = sequenceOf(explicitName, legacy, explicitCallsign)
             .firstOrNull { it.isNotEmpty() && !looksLikeCallsign(it) }
             .orEmpty()
@@ -62,8 +68,9 @@ object RidMappingRules {
         return value.takeUnless { it.lowercase(Locale.US) in placeholders }.orEmpty()
     }
 
-    fun validateEntry(organization: String, entry: EditableRidMapping, others: List<EditableRidMapping>): List<String> {
-        val errors = validate(organization, listOf(entry)).toMutableList()
+    @JvmOverloads
+    fun validateEntry(organization: String, entry: EditableRidMapping, others: List<EditableRidMapping>, requireOrganization: Boolean = true): List<String> {
+        val errors = validate(organization, listOf(entry), requireOrganization).toMutableList()
         if (others.any { normalizeRemoteId(it.remoteId) == normalizeRemoteId(entry.remoteId) })
             errors += "Remote ID is already listed."
         if (others.any { it.ownerCallsign.trim().equals(entry.ownerCallsign.trim(), true) && it.model.trim().equals(entry.model.trim(), true) })
@@ -71,12 +78,14 @@ object RidMappingRules {
         return errors.map { it.removePrefix("Aircraft 1: ") }
     }
 
+    @JvmOverloads
     fun validate(
         organization: String,
-        mappings: List<EditableRidMapping>
+        mappings: List<EditableRidMapping>,
+        requireOrganization: Boolean = true
     ): List<String> {
         val errors = mutableListOf<String>()
-        if (normalizeOrganization(organization).isEmpty()) {
+        if (requireOrganization && normalizeOrganization(organization).isEmpty()) {
             errors += "Organization is required."
         }
         val remoteIds = mutableSetOf<String>()
@@ -92,8 +101,8 @@ object RidMappingRules {
             } else if (!remoteIds.add(remoteId)) {
                 errors += "Aircraft $row: Remote ID is already listed."
             }
-            if (!callsignPattern.matches(callsign)) {
-                errors += "Aircraft $row: Owner callsign must look like 1SAR7."
+            if (callsign.isEmpty()) {
+                errors += "Aircraft $row: Pilot callsign or name is required."
             }
             if (model.isEmpty()) {
                 errors += "Aircraft $row: Model is required."

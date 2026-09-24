@@ -2029,7 +2029,7 @@ struct RIDTrackMapView: View {
         switch notams.state.chipSeverity {
         case .danger: .danger
         case .caution: .caution
-        case .normal: .normal
+        case .normal: .neutral
         case .neutral: .neutral
         }
     }
@@ -2038,7 +2038,7 @@ struct RIDTrackMapView: View {
         switch airspace.state.severity {
         case .danger: .danger
         case .caution: .caution
-        case .normal: .normal
+        case .normal: .neutral
         case .neutral: .neutral
         }
     }
@@ -2047,7 +2047,7 @@ struct RIDTrackMapView: View {
         switch landRestrictions.state.severity {
         case .danger: .danger
         case .caution: .caution
-        case .normal: .normal
+        case .normal: .neutral
         case .neutral: .neutral
         }
     }

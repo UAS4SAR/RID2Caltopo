@@ -574,13 +574,7 @@ fun StreamTile(
             .then(if (fillContainer) Modifier.fillMaxSize() else Modifier.aspectRatio(16f / 9f))
             .clipToBounds()
     ) {
-        Text(
-            text = "Observation only — do not pilot using this video. Images may be delayed or frozen. Use the aircraft’s flight-control system and maintain required visual observation.",
-            modifier = Modifier.fillMaxWidth().background(Color.Black).padding(horizontal = 8.dp, vertical = 5.dp),
-            color = Color(0xFFFFD54F),
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.Bold
-        )
+        VideoSafetyNotice()
         Box(
             modifier = Modifier.weight(1f).fillMaxWidth()
                 .onSizeChanged { streamTileSize = it }
@@ -2294,4 +2288,16 @@ fun StreamPlayer(
             attachedTextureView = null
         }
     }
+}
+
+
+@Composable
+internal fun VideoSafetyNotice() {
+    Text(
+        text = "Observation only — do not pilot using this video. Images may be delayed or frozen. Use the aircraft’s flight-control system and maintain required visual observation.",
+        modifier = Modifier.fillMaxWidth().background(Color.Black).padding(horizontal = 8.dp, vertical = 5.dp),
+        color = Color(0xFFFFD54F),
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.Bold
+    )
 }

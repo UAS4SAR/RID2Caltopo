@@ -5,27 +5,18 @@ import org.junit.Test
 
 class ReleaseNotesTest {
     @Test
-    fun parseReleaseNotes_formatsUnifiedCrossPlatformSections() {
+    fun parseReleaseNotes_formatsPublicLatestChanges() {
         val entries = parseReleaseNotes(
             "Latest changes:\n" +
-                "- Improved shared behavior.\n\n" +
-                "Platform-specific changes:\n" +
-                "- Android: Added controller diagnostics.\n" +
-                "- iOS: Added Files integration.\n\n" +
-                "Known platform differences:\n" +
-                "- iOS does not expose Wi-Fi RSSI.\n"
+                "- Improved live video viewing.\n" +
+                "- Clarified map status messages.\n"
         )
 
+        assertEquals(listOf("Latest changes"), entries.map { it.title })
         assertEquals(
-            listOf("Latest changes", "Platform-specific changes", "Known platform differences"),
-            entries.map { it.title }
+            listOf("Improved live video viewing.", "Clarified map status messages."),
+            entries.single().changeLines
         )
-        assertEquals(listOf("Improved shared behavior."), entries[0].changeLines)
-        assertEquals(
-            listOf("Android: Added controller diagnostics.", "iOS: Added Files integration."),
-            entries[1].changeLines
-        )
-        assertEquals(listOf("iOS does not expose Wi-Fi RSSI."), entries[2].changeLines)
     }
 
     @Test

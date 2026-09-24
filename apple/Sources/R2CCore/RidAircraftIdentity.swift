@@ -125,14 +125,14 @@ public struct RidAircraftIdentity: Sendable, Equatable {
 
 /// Validate one aircraft while using the remaining entries only for uniqueness.
 public enum RidMappingEditValidation {
-    public static func errors(_ entry: RidAircraftIdentity, others: [RidAircraftIdentity]) -> [String] {
+    public static func errors(_ entry: RidAircraftIdentity, others: [RidAircraftIdentity], requireOrganization: Bool = true) -> [String] {
         var errors: [String] = []
         let rid = entry.remoteID.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         let callsign = entry.pilotCallsign.trimmingCharacters(in: .whitespacesAndNewlines)
         let model = entry.droneDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-        if entry.organization.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { errors.append("Organization is required.") }
+        if requireOrganization && entry.organization.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { errors.append("Organization is required.") }
         if rid.range(of: #"^[A-Z0-9]+$"#, options: .regularExpression) == nil { errors.append("Remote ID must contain only A-Z and 0-9.") }
-        if callsign.range(of: #"^[0-9]+[A-Za-z]+[0-9]+(?:-[0-9]+)?$"#, options: .regularExpression) == nil { errors.append("Owner callsign must look like 1SAR7 or 1SAR7-2.") }
+        if callsign.isEmpty { errors.append("Pilot callsign or name is required.") }
         if model.isEmpty { errors.append("Model is required.") }
         if others.contains(where: { $0.remoteID.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == rid }) { errors.append("Remote ID is already listed.") }
         if others.contains(where: { $0.pilotCallsign.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == callsign.lowercased() && $0.droneDescription.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == model.lowercased() }) { errors.append("Model must be unique for this owner callsign.") }

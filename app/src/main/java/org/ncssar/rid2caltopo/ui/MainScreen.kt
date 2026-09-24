@@ -1748,7 +1748,7 @@ fun MainScreen(
         contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             CenterAlignedTopAppBar(
-                modifier = Modifier.pointerInput(localViewModel) {
+                modifier = Modifier.pageNavigationSwipe(toLiveView = true, enabled = !menuExpanded && !credentialMenuExpanded && !showNotamPanel && !showLandRestrictionPanel) { localViewModel.showStreams() }.pointerInput(localViewModel) {
                     detectTapGestures(
                         onDoubleTap = {
                             localViewModel.showStreams()
@@ -1923,7 +1923,7 @@ fun MainScreen(
         ) {
             LazyColumn(modifier = Modifier.padding(paddingValues)) {
                 item(key = "notam_chip") {
-                    Row {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         NotamStatusChip(
                             state = notamUiState,
                             airspaceState = airspaceUiState,

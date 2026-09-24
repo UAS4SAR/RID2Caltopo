@@ -111,6 +111,6 @@ object LandRestrictionPolicy {
         areas.count { it.intersectsOperatingArea } > 0 ->
             "Land rules: ${areas.count { it.intersectsOperatingArea }} nearby"
         hasError -> "Land rules unavailable"
-        else -> "Land rules clear"
+        else -> "No mapped restrictions"
     }
 }

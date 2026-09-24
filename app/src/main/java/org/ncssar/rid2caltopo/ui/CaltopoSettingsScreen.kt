@@ -61,6 +61,7 @@ fun CaltopoSettingsScreen(
     val alarmVolumePercent by settingsViewModel.alarmVolumePercent.collectAsState()
     val maxIdleTimeInMinutes by settingsViewModel.maxIdleTimeInMinutes.collectAsState()
     val captureIncomingVideo by settingsViewModel.captureIncomingVideo.collectAsState()
+    val mediaServerRestricted by settingsViewModel.mediaServerRestricted.collectAsState()
     val wifiRidScanningEnabled by settingsViewModel.wifiRidScanningEnabled.collectAsState()
     val remoteVideoControlEnabled by settingsViewModel.remoteVideoControlEnabled.collectAsState()
     val thumbnailRefreshSeconds by settingsViewModel.thumbnailRefreshSeconds.collectAsState()
@@ -418,6 +419,12 @@ fun CaltopoSettingsScreen(
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.fillMaxWidth()
                 )
+                LabeledSwitch(
+                    label = "Restrict media server access",
+                    checked = mediaServerRestricted,
+                    onCheckedChange = settingsViewModel::onMediaServerRestrictedChanged
+                )
+                Text("Accept controller RTMP streams while blocking direct media-server viewing from other devices. Playback and recording on this tablet and authorized R2C sharing remain available. Turn off only for trusted local viewers. Changing this setting restarts video.")
                 LabeledSwitch(
                     label = "Capture Streams",
                     checked = captureIncomingVideo,

@@ -20,6 +20,7 @@ import org.ncssar.rid2caltopo.data.ExternalDisplayConfig
 import org.ncssar.rid2caltopo.data.ExternalDisplayContentMode
 import org.ncssar.rid2caltopo.data.ExternalDisplayMode
 import org.ncssar.rid2caltopo.data.ExternalDisplayPrefs
+import org.ncssar.rid2caltopo.data.MediaServerAccessPrefs
 import org.ncssar.rid2caltopo.data.RemoteVideoControlPrefs
 import org.ncssar.rid2caltopo.data.VideoThumbnailRefreshPolicy
 import org.ncssar.rid2caltopo.data.VideoThumbnailRefreshPrefs
@@ -82,6 +83,8 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
 
     private val _captureIncomingVideo = MutableStateFlow(CaltopoClient.GetCaptureVideoStreamsFlag())
     val captureIncomingVideo = _captureIncomingVideo.asStateFlow()
+    private val _mediaServerRestricted = MutableStateFlow(MediaServerAccessPrefs.isRestricted(R2CApplication.getAppCtxt()))
+    val mediaServerRestricted = _mediaServerRestricted.asStateFlow()
     private val _wifiRidScanningEnabled = MutableStateFlow(
         WifiRidScanPrefs.isEnabled(R2CApplication.getAppCtxt())
     )
@@ -200,6 +203,7 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
         _usePeers.value = CaltopoClient.GetUsePeersFlag()
         _standaloneR2cCoordinationEnabled.value = CaltopoClient.GetStandaloneR2cCoordinationEnabled()
         _captureIncomingVideo.value = CaltopoClient.GetCaptureVideoStreamsFlag()
+        _mediaServerRestricted.value = MediaServerAccessPrefs.isRestricted(R2CApplication.getAppCtxt())
         _wifiRidScanningEnabled.value = WifiRidScanPrefs.isEnabled(R2CApplication.getAppCtxt())
         _remoteVideoControlEnabled.value = RemoteVideoControlPrefs.isEnabled(R2CApplication.getAppCtxt())
         _thumbnailRefreshSeconds.value = VideoThumbnailRefreshPolicy.format(
@@ -317,6 +321,9 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
     fun onStandaloneR2cCoordinationEnabledChanged(enabled: Boolean) {
         _standaloneR2cCoordinationEnabled.value = enabled
     }
+    fun onMediaServerRestrictedChanged(restricted: Boolean) {
+        _mediaServerRestricted.value = restricted
+    }
     fun onCaptureIncomingVideoChanged(enabled: Boolean) {
         _captureIncomingVideo.value = enabled
     }
@@ -414,7 +421,8 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
         _caltopoCredentialError.value = null
         isSaving = true
         try {
-        val restartMediaMtx = CaltopoClient.GetCaptureVideoStreamsFlag() != _captureIncomingVideo.value
+        val restartMediaMtx = CaltopoClient.GetCaptureVideoStreamsFlag() != _captureIncomingVideo.value ||
+            MediaServerAccessPrefs.isRestricted(R2CApplication.getAppCtxt()) != _mediaServerRestricted.value
         CaltopoClient.SetHomeOrgName(_organizationName.value.trim())
         CaltopoClient.SetConnectKey(_caltopoConnectKey.value.trim())
         CaltopoClient.SetTrackFolderName(_trackFolder.value.trim())
@@ -461,6 +469,7 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
         CaltopoClient.SetUsePeers(_usePeers.value)
         CaltopoClient.SetStandaloneR2cCoordinationEnabled(false)
         CaltopoClient.SetCaptureVideoStreamsFlag(_captureIncomingVideo.value)
+        MediaServerAccessPrefs.setRestricted(R2CApplication.getAppCtxt(), _mediaServerRestricted.value)
         R2CApplication.getAppCtxt()?.let { context ->
             WifiRidScanPrefs.setEnabled(context, _wifiRidScanningEnabled.value)
             ScanningService.requestWifiRidScanningRefresh(context)

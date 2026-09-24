@@ -39,6 +39,8 @@ fun LandRestrictionPanel(
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
             ) {
+                Text("Mapped sources may be incomplete or outdated. No mapped restrictions does not mean permission to launch, land, or fly. Confirm current rules and permissions with the landowner or responsible agency.", fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(12.dp))
                 Text(state.chipLabel, fontWeight = FontWeight.SemiBold)
                 Text(state.statusLine, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 state.lastUpdatedEpochMs?.let {

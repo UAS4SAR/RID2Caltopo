@@ -35,6 +35,22 @@ object TrackerEnrollmentClient {
     private const val IDENTITY_PREFS = "tracker_device_identity"
     private const val RECONCILIATION_PENDING = "replacement_check_pending"
 
+    /** HTTP requests can fail while the live connection is idle; surface recovery here too. */
+    @JvmStatic
+    fun handleRejectedAuthorization(status: Int, body: String, rejectedToken: String) {
+        if (status != 401 && status != 403) return
+        val activity = org.ncssar.rid2caltopo.app.R2CActivity.getR2CActivity() ?: return
+        activity.runOnUiThread {
+            // An old in-flight response must not challenge a newly enrolled credential.
+            if (rejectedToken != CaltopoClient.GetTrackerUploadApiKey()) return@runOnUiThread
+            val detail = runCatching { JSONObject(body).optJSONObject("detail") }.getOrNull()
+            val url = detail?.takeIf { it.optString("code") == "reauthentication_required" }
+                ?.optString("reauthentication_url")?.takeIf(::isTrustedReauthenticationUrl)
+            if (url != null) activity.beginTrackerReauthentication(url)
+            else activity.showTrackerReenrollmentRequired()
+        }
+    }
+
     fun normalizedEnrollmentUrl(value: String): String? {
         val trimmed = value.trim()
         if (isEnrollmentUrl(trimmed)) return trimmed

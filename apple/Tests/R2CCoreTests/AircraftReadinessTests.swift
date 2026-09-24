@@ -90,3 +90,44 @@ import Testing
     readiness.pilotJSON = "{\"memberId\":\"member\",\"initialKnowledgeDate\":\"2025-02-01\"}"
     #expect(!readiness.pilotQualificationWarning.contains("Currency date not recorded"))
 }
+
+@Test func standaloneRidMappingAcceptsBlankOrganizationButManagedMappingRequiresIt() {
+    for organization in ["", "  "] {
+        let identity = RidAircraftIdentity(remoteID: "1581F8HGX1234567890", organization: organization,
+            pilotCallsign: "1SAR7", droneDescription: "DJI Mini 4 Pro")
+        #expect(RidMappingEditValidation.errors(identity, others: [], requireOrganization: false).isEmpty)
+        #expect(RidMappingEditValidation.errors(identity, others: [], requireOrganization: true) == ["Organization is required."])
+        #expect(identity.organization.isEmpty)
+        #expect(identity.mappedID == "1SAR7DjMn4Pr")
+    }
+}
+
+@Test func standaloneRidMappingStillValidatesAircraftFieldsAndDuplicates() {
+    let invalid = RidAircraftIdentity(remoteID: "BAD-RID", organization: "", pilotCallsign: "", droneDescription: "")
+    let errors = RidMappingEditValidation.errors(invalid, others: [], requireOrganization: false)
+    #expect(errors.contains("Remote ID must contain only A-Z and 0-9."))
+    #expect(errors.contains("Pilot callsign or name is required."))
+    #expect(errors.contains("Model is required."))
+    let valid = RidAircraftIdentity(remoteID: "RID1", organization: "", pilotCallsign: "1SAR7", droneDescription: "DJI Mini 4 Pro")
+    let duplicates = RidMappingEditValidation.errors(valid, others: [valid], requireOrganization: false)
+    #expect(duplicates.contains("Remote ID is already listed."))
+    #expect(duplicates.contains("Model must be unique for this owner callsign."))
+}
+
+@Test func ridMappingAcceptsPilotNamesAndArbitraryCallsigns() {
+    for pilot in ["SAR7", "Ken Taylor", "Alpha-2", "O'Neil", "山田 太郎"] {
+        let identity = RidAircraftIdentity(remoteID: "RID1", organization: "", pilotCallsign: pilot, droneDescription: "Mini 4 Pro")
+        #expect(RidMappingEditValidation.errors(identity, others: [], requireOrganization: false).isEmpty)
+        #expect(identity.pilotCallsign == pilot)
+    }
+}
+
+@Test func samePilotCanOwnTwoNeoDronesWithDistinctModelDescriptions() {
+    let first = RidAircraftIdentity(remoteID: "RID1", organization: "", pilotCallsign: "1sar7", droneDescription: "DJI Neo")
+    let second = RidAircraftIdentity(remoteID: "RID2", organization: "", pilotCallsign: "1sar7", droneDescription: "DJI Neo - 2")
+    #expect(RidMappingEditValidation.errors(second, others: [first], requireOrganization: false).isEmpty)
+    #expect(first.mappedID != second.mappedID)
+    let duplicate = RidAircraftIdentity(remoteID: "RID2", organization: "", pilotCallsign: " 1SAR7 ", droneDescription: " dji neo ")
+    #expect(RidMappingEditValidation.errors(duplicate, others: [first], requireOrganization: false)
+        .contains("Model must be unique for this owner callsign."))
+}

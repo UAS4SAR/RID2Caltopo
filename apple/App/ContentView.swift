@@ -108,10 +108,15 @@ struct ContentView: View {
     @State private var incidentMapBackgroundDisconnectTask: Task<Void, Never>?
     @State private var incidentMapRelocationGuard = IncidentMapRelocationGuard()
     @AppStorage("video.captureStreams") private var captureStreams = true
+    @AppStorage("video.restrictMediaServerAccess") private var restrictMediaServerAccess = true
     @AppStorage("rid.minimumHorizontalAccuracyCode") private var minimumHorizontalAccuracyCode = 9
 
     private var startupRoot: some View {
         rootScreen
+            .background(HeaderPageSwipe(toLiveView: true) {
+                guard !showTrackMap else { return }
+                openLiveViewFromHeaderSwipe()
+            })
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     Menu {
@@ -176,6 +181,7 @@ struct ContentView: View {
             }
             .navigationDestination(isPresented: $showTrackMap) {
                 operationalMapView
+                    .background(HeaderPageSwipe(toLiveView: false, onNavigate: closeLiveView))
                     .navigationBarBackButtonHidden(true)
                     .toolbar {
                         ToolbarItem(placement: .topBarLeading) {
@@ -299,7 +305,8 @@ struct ContentView: View {
                 Text(
                     "Tracker rejected this tablet's organization authorization. It may have "
                         + "been retired, expired, or replaced. In Import Config, scan a current "
-                        + "organization enrollment QR to re-enroll this tablet. Offline RID and "
+                        + "organization enrollment QR to re-enroll this tablet. Saved flights stay "
+                        + "on this tablet; resubmit recent tracks after reconnecting. Offline RID and "
                         + "the incident map remain available."
                 )
             }
@@ -930,6 +937,10 @@ struct ContentView: View {
             .onChange(of: mediaMTX.status) { _, status in
                 AppleLog.info("MediaMTX", status)
             }
+            .onChange(of: restrictMediaServerAccess) { _, _ in
+                guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
+                mediaMTX.restart(captureStreams: captureStreams)
+            }
             .onChange(of: captureStreams) { _, enabled in
                 guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
                 mediaMTX.restart(captureStreams: enabled)
@@ -1027,6 +1038,16 @@ struct ContentView: View {
                     caltopoSettings.configuration,
                     trackFolderName: orgConfigSettings.trackFolder
                 )
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: AppleTrackArchiveStore.authorizationRejectedNotification
+            )) { notification in
+                let credential = orgConfigSettings.trackerAPIKey
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard notification.userInfo?["credential"] as? String == credential,
+                      lastTrackerReenrollmentNoticeCredential != credential else { return }
+                lastTrackerReenrollmentNoticeCredential = credential
+                showTrackerReenrollmentRequired = true
             }
             .onChange(of: peerCoordinator.statusDetail) { _, detail in
                 AppleLog.info("TrackerPeer", detail)
@@ -1552,7 +1573,7 @@ struct ContentView: View {
 
     private var androidPilotCallsignCell: some View {
         VStack(spacing: 2) {
-            Text("Pilot Callsign")
+            Text("Pilot Callsign/Name")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             TextField("", text: Binding(
@@ -1563,7 +1584,7 @@ struct ContentView: View {
                 .multilineTextAlignment(.center)
                 .textInputAutocapitalization(.characters)
                 .autocorrectionDisabled()
-                .accessibilityLabel("Pilot Callsign")
+                .accessibilityLabel("Pilot Callsign/Name")
         }
         .padding(.horizontal, 6)
         .frame(width: 140, height: 58)
@@ -1650,7 +1671,7 @@ struct ContentView: View {
         switch landRestrictions.state.severity {
         case .danger: .danger
         case .caution: .caution
-        case .normal: .normal
+        case .normal: .neutral
         case .neutral: .neutral
         }
     }
@@ -2176,13 +2197,9 @@ struct ContentView: View {
         showTrackMap = false
     }
 
-    private func togglePrimaryScreenFromTopBar() {
-        if showTrackMap {
-            AppleLog.info("Navigation", "Top bar double tap: returning to Main Screen")
-            closeLiveView()
-            return
-        }
-        guard !showCaltopoSettings,
+    private func openLiveViewFromHeaderSwipe() {
+        guard !showTrackMap,
+              !showCaltopoSettings,
               !showDiagnosticLogs,
               !showStatus,
               !showReleaseNotes,
@@ -2191,7 +2208,7 @@ struct ContentView: View {
               !showStorageManagement,
               selectedAircraftID == nil
         else { return }
-        AppleLog.info("Navigation", "Top bar double tap: opening Live View")
+        AppleLog.info("Navigation", "Header swipe: opening Live View")
         showTrackMap = true
     }
 
@@ -2860,6 +2877,112 @@ private struct MainScreenMenu: View, Equatable {
             }
         } label: {
             Image(systemName: "ellipsis.circle")
+        }
+    }
+}
+
+
+/// A gesture on the native navigation bar, never on map/video or form content.
+private struct HeaderPageSwipe: UIViewControllerRepresentable {
+    let toLiveView: Bool
+    let onNavigate: () -> Void
+
+    func makeUIViewController(context: Context) -> Controller {
+        Controller(toLiveView: toLiveView, onNavigate: onNavigate)
+    }
+
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.toLiveView = toLiveView
+        controller.onNavigate = onNavigate
+    }
+
+    static func dismantleUIViewController(_ controller: Controller, coordinator: ()) {
+        controller.detach()
+    }
+
+    final class Controller: UIViewController, UIGestureRecognizerDelegate {
+        var toLiveView: Bool
+        var onNavigate: () -> Void
+        private weak var attachedBar: UINavigationBar?
+        private let progressLayer = CALayer()
+        private lazy var pan: UIPanGestureRecognizer = {
+            let recognizer = UIPanGestureRecognizer(target: self, action: #selector(swiped(_:)))
+            recognizer.maximumNumberOfTouches = 1
+            recognizer.cancelsTouchesInView = false
+            recognizer.delaysTouchesBegan = false
+            recognizer.delaysTouchesEnded = false
+            recognizer.delegate = self
+            return recognizer
+        }()
+
+        init(toLiveView: Bool, onNavigate: @escaping () -> Void) {
+            self.toLiveView = toLiveView
+            self.onNavigate = onNavigate
+            super.init(nibName: nil, bundle: nil)
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func loadView() {
+            view = UIView()
+            view.isUserInteractionEnabled = false
+        }
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            guard let bar = navigationController?.navigationBar else { return }
+            detach()
+            attachedBar = bar
+            bar.addGestureRecognizer(pan)
+            progressLayer.backgroundColor = UIColor.systemBlue.cgColor
+            bar.layer.addSublayer(progressLayer)
+        }
+
+        override func viewWillDisappear(_ animated: Bool) {
+            detach()
+            super.viewWillDisappear(animated)
+        }
+
+        func detach() {
+            progressLayer.removeFromSuperlayer()
+            attachedBar?.removeGestureRecognizer(pan)
+            attachedBar = nil
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let bar = attachedBar, !bar.isHidden,
+                  navigationController?.presentedViewController == nil else { return false }
+            let motion = pan.translation(in: bar)
+            return (toLiveView ? -motion.x : motion.x) > 0 && abs(motion.x) >= 2 * abs(motion.y)
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            var candidate = touch.view
+            while let current = candidate, current !== attachedBar {
+                if current is UIScrollView || current is UIControl { return false }
+                candidate = current.superview
+            }
+            return true
+        }
+
+        @objc private func swiped(_ gesture: UIPanGestureRecognizer) {
+            let motion = gesture.translation(in: attachedBar)
+            if let bar = attachedBar {
+                let progress = min(1, max(0, (toLiveView ? -motion.x : motion.x) / 72))
+                let width = bar.bounds.width * progress
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                progressLayer.frame = gesture.state == .changed
+                    ? CGRect(x: toLiveView ? bar.bounds.width - width : 0, y: bar.bounds.height - 3, width: width, height: 3)
+                    : .zero
+                CATransaction.commit()
+            }
+            guard gesture.state == .ended else { return }
+            guard PageNavigationSwipe.accepts(dx: motion.x, dy: motion.y, toLiveView: toLiveView) else { return }
+            if !toLiveView {
+                // Follow the existing explicit Back button's pop + state synchronization.
+                navigationController?.popViewController(animated: true)
+            }
+            withAnimation(.easeOut(duration: 0.22)) { onNavigate() }
         }
     }
 }

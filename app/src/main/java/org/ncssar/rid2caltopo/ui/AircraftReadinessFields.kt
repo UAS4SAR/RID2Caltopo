@@ -10,9 +10,9 @@ import java.util.UUID
 
 @Composable
 fun AircraftReadinessFields(value: AircraftReadiness, enabled: Boolean, onChange: (AircraftReadiness) -> Unit) {
-    @Composable fun field(label: String, text: String, change: (String) -> Unit) {
+    @Composable fun field(label: String, text: String, required: Boolean = false, change: (String) -> Unit) {
         OutlinedTextField(value = text, onValueChange = change, enabled = enabled,
-            label = { Text(label) }, modifier = Modifier.fillMaxWidth())
+            label = { RidRequiredFieldLabel(label, required) }, modifier = Modifier.fillMaxWidth())
     }
     field("Aircraft serial number", value.serialNumber) { onChange(value.copy(serialNumber = it)) }
     field("FAA registration number", value.registrationNumber) { onChange(value.copy(registrationNumber = it)) }
@@ -25,7 +25,7 @@ fun AircraftReadinessFields(value: AircraftReadiness, enabled: Boolean, onChange
     value.accessories.forEachIndexed { index, accessory ->
         key(accessory.id) {
             fun update(item: AircraftAccessory) = onChange(value.copy(accessories = value.accessories.toMutableList().also { it[index] = item }))
-            field("Accessory / battery name", accessory.name) { update(accessory.copy(name = it)) }
+            field("Accessory / battery name", accessory.name, required = true) { update(accessory.copy(name = it)) }
             WeightField("Accessory weight (grams)", accessory.weightGrams, enabled) { update(accessory.copy(weightGrams = it)) }
             field("Choose-one group (for example battery)", accessory.group) { update(accessory.copy(group = it)) }
             Row { Checkbox(checked = accessory.required, enabled = enabled, onCheckedChange = { update(accessory.copy(required = it)) }); Text("Required equipment") }

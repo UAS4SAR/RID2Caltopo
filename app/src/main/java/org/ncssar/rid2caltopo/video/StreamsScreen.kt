@@ -5,6 +5,7 @@ import StreamsLayoutMode
 import StreamsViewModel
 import org.ncssar.rid2caltopo.ui.RidMappingAdminDialog
 import android.app.Activity
+import org.ncssar.rid2caltopo.ui.pageNavigationSwipe
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
@@ -260,6 +261,7 @@ fun StreamsScreen(
     onTerminateRemoteVideo: () -> Unit = {},
 ) {
     val currentOnBack = rememberUpdatedState(onBack)
+    val headerScrollState = rememberScrollState()
     val releaseStreamsUiConsumer = remember(viewModel) {
         val removeConsumer = viewModel.addStreamsUiConsumer()
         var removed = false
@@ -354,48 +356,13 @@ fun StreamsScreen(
     ) {
         Column {
             if (fullScreenChrome.showTopBar) {
-                TopAppBar(
-                    modifier = Modifier.pointerInput(handleBack) {
+                androidx.compose.material3.CenterAlignedTopAppBar(
+                    modifier = Modifier.pageNavigationSwipe(toLiveView = false, enabled = showNavigation && !showNotamPanel && !showLandRestrictionPanel && !showPerformancePanel && !showCompliancePanel && !showSignalLossPanel) { handleBack() }.pointerInput(handleBack) {
                         detectTapGestures(
                             onDoubleTap = { handleBack() }
                         )
                     },
-                    title = {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            NotamStatusChip(
-                                state = notamUiState,
-                                airspaceState = airspaceUiState,
-                                onClick = { showNotamPanel = true },
-                                outerPadding = PaddingValues(0.dp)
-                            )
-                            LandRestrictionStatusChip(
-                                state = landRestrictionUiState,
-                                onClick = { showLandRestrictionPanel = true },
-                                outerPadding = PaddingValues(start = 8.dp)
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = serverStatus,
-                                modifier = Modifier
-                                    .clickable { showPerformancePanel = true }
-                                    .padding(end = 8.dp),
-                                fontSize = 14.sp,
-                            )
-                            StreamsMapStatusButton(
-                                mapName = mapName,
-                                onClick = onMapStatusTap,
-                                modifier = Modifier
-                                    .widthIn(max = 220.dp)
-                                    .height(36.dp)
-                            )
-                            Spacer(Modifier.width(8.dp))
-                        }
-                    },
+                    title = { Text("Live View", maxLines = 1) },
                     navigationIcon = if (showNavigation) {
                         {
                             IconButton(onClick = handleBack) {
@@ -446,6 +413,41 @@ fun StreamsScreen(
                         }
                     }
                 )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp)
+                        .horizontalScroll(headerScrollState),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    NotamStatusChip(
+                        state = notamUiState,
+                        airspaceState = airspaceUiState,
+                        onClick = { showNotamPanel = true },
+                        outerPadding = PaddingValues(0.dp)
+                    )
+                    LandRestrictionStatusChip(
+                        state = landRestrictionUiState,
+                        onClick = { showLandRestrictionPanel = true },
+                        outerPadding = PaddingValues(start = 8.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = serverStatus,
+                        modifier = Modifier
+                            .clickable { showPerformancePanel = true }
+                            .padding(end = 8.dp),
+                        fontSize = 14.sp,
+                    )
+                    StreamsMapStatusButton(
+                        mapName = mapName,
+                        onClick = onMapStatusTap,
+                        modifier = Modifier
+                            .widthIn(max = 220.dp)
+                            .height(36.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
             }
             if (!remoteVideoStatus.isNullOrBlank()) {
                 Surface(
@@ -1494,16 +1496,19 @@ private fun StreamsGrid(
     Box(modifier = modifier) {
         if (visibleEntries.isEmpty()) {
             CTDebug(tag, "No streams to show.")
-            EmptyStreamsView(
-                viewModel = viewModel,
-                mapName = mapName,
-                onMapStatusTap = onMapStatusTap,
-                onPlayCapturedVideo = onPlayCapturedVideo,
-                onRestartServer = {
-                    restartMediaMtxServer(context)
-                },
-                modifier = Modifier.fillMaxSize()
-            )
+            Column(Modifier.fillMaxSize()) {
+                VideoSafetyNotice()
+                EmptyStreamsView(
+                    viewModel = viewModel,
+                    mapName = mapName,
+                    onMapStatusTap = onMapStatusTap,
+                    onPlayCapturedVideo = onPlayCapturedVideo,
+                    onRestartServer = {
+                        restartMediaMtxServer(context)
+                    },
+                    modifier = Modifier.weight(1f).fillMaxWidth()
+                )
+            }
         } else {
             val columns = if (visibleEntries.size <= 2) 1 else 2
             val rows = when (visibleEntries.size) {

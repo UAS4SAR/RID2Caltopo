@@ -52,14 +52,10 @@ rg -q '^Latest changes:$' "$whats_new" || {
     echo "What's new must contain a 'Latest changes:' section." >&2
     exit 1
 }
-rg -q '^Platform-specific changes:$' "$whats_new" || {
-    echo "What's new must contain a 'Platform-specific changes:' section." >&2
+if rg -q '^(Platform-specific changes:|Known platform differences:)$' "$whats_new"; then
+    echo "Keep platform differences in docs/PLATFORM_PARITY_LEDGER.md, not public release notes." >&2
     exit 1
-}
-rg -q '^Known platform differences:$' "$whats_new" || {
-    echo "What's new must contain a 'Known platform differences:' section." >&2
-    exit 1
-}
+fi
 
 if [[ -n "$marketing_version" ]]; then
     print -r -- "$marketing_version" | grep -Eq '^[0-9]+(\.[0-9]+){1,2}$' || {

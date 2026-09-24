@@ -55,6 +55,7 @@ struct AppleArchiveDirectoryOption: Sendable, Identifiable, Equatable {
 }
 
 actor AppleTrackArchiveStore {
+    static let authorizationRejectedNotification = Notification.Name("trackerArchiveAuthorizationRejected")
     enum ArchiveError: Error {
         case documentsDirectoryUnavailable
     }
@@ -298,6 +299,15 @@ actor AppleTrackArchiveStore {
             if !TrackerArchiveUploadContract.isTransient(statusCode: statusCode) { break }
             if attempt < 3 {
                 try? await Task.sleep(for: .seconds(attempt))
+            }
+        }
+        if statusCode == 401 || statusCode == 403 {
+            await MainActor.run {
+                NotificationCenter.default.post(
+                    name: Self.authorizationRejectedNotification,
+                    object: nil,
+                    userInfo: ["credential": configuration.tracker.apiKey]
+                )
             }
         }
         if TrackerArchiveUploadContract.shouldMarkReported(statusCode: statusCode) {

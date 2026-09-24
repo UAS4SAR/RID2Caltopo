@@ -22,6 +22,7 @@ struct CaltopoSettingsView: View {
     @ObservedObject private var spokenWarnings = AppleSpokenWarningCenter.shared
     @ObservedObject private var profileLifecycle = AppleCaltopoProfileLifecycle.shared
     @AppStorage("video.captureStreams") private var captureStreams = true
+    @AppStorage("video.restrictMediaServerAccess") private var restrictMediaServerAccess = true
     @AppStorage("video.remoteControlEnabled") private var remoteVideoControlEnabled = false
     @AppStorage(OperationalThumbnailRefreshInterval.storageKey)
     private var thumbnailRefreshSeconds = OperationalThumbnailRefreshInterval.defaultSeconds
@@ -176,6 +177,10 @@ struct CaltopoSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("Video Streams") {
+                Toggle("Restrict media server access", isOn: $restrictMediaServerAccess)
+                Text("Accept controller RTMP streams while blocking direct media-server viewing from other devices. Playback and recording on this tablet and authorized R2C sharing remain available. Turn off only for trusted local viewers. Changing this setting restarts video.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 Toggle("Capture Streams", isOn: $captureStreams)
                 Text("When enabled, incoming streams are recorded as fMP4 under Files > RID2Caltopo > FlightStorage. Changing this setting restarts the local media server.")
                     .font(.footnote)

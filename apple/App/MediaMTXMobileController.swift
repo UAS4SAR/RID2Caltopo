@@ -176,6 +176,7 @@ final class MediaMTXViewModel: ObservableObject {
                 let configuration = try MediaMTXRuntimeConfiguration.build(
                     base: baseConfiguration,
                     captureStreams: captureStreams && recordingAllowed,
+                    restrictNetworkAccess: UserDefaults.standard.object(forKey: "video.restrictMediaServerAccess") as? Bool ?? true,
                     recordingRoot: recordingRoot
                 )
                 try await controller.start(configuration: configuration)

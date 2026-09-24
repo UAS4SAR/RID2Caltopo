@@ -158,7 +158,7 @@ private struct AppleAircraftReadinessFields: View {
         Text("Examples: aircraft ADS-B warnings on controller; standalone skyAlert.").font(.footnote)
         ForEach($value.accessories) { $accessory in
             VStack(alignment: .leading, spacing: 4) {
-                Text("Accessory / battery name").font(.caption).foregroundStyle(.secondary)
+                RIDRequiredFieldLabel("Accessory / battery name").font(.caption).foregroundStyle(.secondary)
                 TextField("Accessory / battery name", text: $accessory.name)
             }
             VStack(alignment: .leading, spacing: 4) {
@@ -478,14 +478,25 @@ struct RidMappingAdminView: View {
                     }.disabled(!canEdit || saving)
                 }
             } else {
+                Section {
+                    HStack(spacing: 4) {
+                        Text("*").foregroundStyle(.red)
+                        Text("Required Fields")
+                    }
+                    .font(.footnote)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Asterisk indicates required fields")
+                }
                 Section("Organization") {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Organization designator").font(.caption).foregroundStyle(.secondary)
+                        RIDRequiredFieldLabel("Organization designator", required: AppleAircraftOrganizationAccess.belongsToOrganization).font(.caption).foregroundStyle(.secondary)
                         TextField("Organization designator", text: $organizationName).disabled(true)
                             .textInputAutocapitalization(.characters)
                             .autocorrectionDisabled()
                     }
-                    Text("Stored once and applied to every aircraft.")
+                    Text(AppleAircraftOrganizationAccess.belongsToOrganization
+                         ? "Stored once and applied to every aircraft."
+                         : "Optional for local aircraft entries. No organization configuration is needed.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -494,7 +505,7 @@ struct RidMappingAdminView: View {
                     if mapping.id == selectedID {
                         Section("Aircraft") {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Remote ID")
+                                RIDRequiredFieldLabel("Remote ID")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 AppleScannableTextField(
@@ -502,6 +513,8 @@ struct RidMappingAdminView: View {
                                     text: $mapping.remoteID,
                                     mode: .remoteID
                                 )
+                                .frame(minHeight: 44)
+                                .background(RIDEntryImmediateTouches())
                                 .onChange(of: mapping.remoteID) { _, value in
                                     if mapping.readiness.serialNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                                         mapping.readiness.serialNumber = value.uppercased()
@@ -513,20 +526,23 @@ struct RidMappingAdminView: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 TextField("Owner name", text: $mapping.ownerName)
+                                    .frame(minHeight: 44)
                             }
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Owner callsign (for example 1SAR7)")
+                                RIDRequiredFieldLabel("Pilot callsign / name")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                                TextField("Owner callsign", text: $mapping.ownerCallsign)
-                                    .textInputAutocapitalization(.characters)
+                                TextField("Pilot callsign / name", text: $mapping.ownerCallsign)
+                                    .frame(minHeight: 44)
+                                    .textInputAutocapitalization(.words)
                                     .autocorrectionDisabled()
                             }
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Model")
+                                RIDRequiredFieldLabel("Model")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 TextField("Model", text: $mapping.model)
+                                    .frame(minHeight: 44)
                             }
                             AppleAircraftReadinessFields(value: $mapping.readiness)
                             LabeledContent("Drone designator", value: identity(for: mapping).mappedID)
@@ -635,7 +651,7 @@ struct RidMappingAdminView: View {
 
     private func validate() -> [String] {
         guard let selected = mappings.first(where: { $0.id == selectedID }) else { return [] }
-        return RidMappingEditValidation.errors(identity(for: selected), others: mappings.filter { $0.id != selectedID }.map { identity(for: $0) })
+        return RidMappingEditValidation.errors(identity(for: selected), others: mappings.filter { $0.id != selectedID }.map { identity(for: $0) }, requireOrganization: AppleAircraftOrganizationAccess.belongsToOrganization)
     }
 
 }
@@ -849,5 +865,69 @@ private struct AppleAlphanumericDataScanner: UIViewControllerRepresentable {
             }
             return values
         }
+    }
+}
+
+/// Let text controls receive touch-down immediately instead of waiting for the
+/// form's scroll recognizer to decide whether a tap will become a drag.
+private struct RIDEntryImmediateTouches: UIViewRepresentable {
+    func makeUIView(context: Context) -> TouchAnchor { TouchAnchor() }
+    func updateUIView(_ view: TouchAnchor, context: Context) { view.configureScrollView() }
+    static func dismantleUIView(_ view: TouchAnchor, coordinator: ()) { view.restore() }
+
+    final class TouchAnchor: UIView {
+        private weak var scrollView: UIScrollView?
+        private var originalDelay = true
+
+        init() {
+            super.init(frame: .zero)
+            isUserInteractionEnabled = false
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window == nil { restore() } else { configureScrollView() }
+        }
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            configureScrollView()
+        }
+        func configureScrollView() {
+            guard window != nil else { return }
+            var ancestor = superview
+            while let current = ancestor {
+                if let scroll = current as? UIScrollView {
+                    guard scrollView !== scroll else { return }
+                    restore()
+                    scrollView = scroll
+                    originalDelay = scroll.delaysContentTouches
+                    scroll.delaysContentTouches = false
+                    return
+                }
+                ancestor = current.superview
+            }
+        }
+        func restore() {
+            scrollView?.delaysContentTouches = originalDelay
+            scrollView = nil
+        }
+    }
+}
+
+private struct RIDRequiredFieldLabel: View {
+    let title: String
+    let required: Bool
+    init(_ title: String, required: Bool = true) {
+        self.title = title
+        self.required = required
+    }
+    var body: some View {
+        HStack(spacing: 3) {
+            Text(title)
+            if required { Text("*").foregroundStyle(.red) }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(required ? "\(title), required" : title)
     }
 }

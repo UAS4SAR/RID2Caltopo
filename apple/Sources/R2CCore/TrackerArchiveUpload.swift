@@ -74,7 +74,8 @@ public enum TrackerArchiveUploadContract {
     }
 
     public static func shouldMarkReported(statusCode: Int) -> Bool {
-        !isTransient(statusCode: statusCode)
+        // Keep the archive pending until authorization or the app is repaired.
+        ![401, 403, 426, 499].contains(statusCode) && !isTransient(statusCode: statusCode)
     }
 
     private static func normalize(_ value: String?) -> String {

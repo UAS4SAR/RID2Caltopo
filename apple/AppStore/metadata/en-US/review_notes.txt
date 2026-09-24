@@ -2,7 +2,7 @@ RID2Caltopo does not require an account for Bluetooth Remote ID reception, local
 
 Bluetooth Remote ID starts automatically on launch. The app remains useful without nearby Remote ID aircraft; the empty Nearby Aircraft state and all configuration, status, map, video, log, and privacy controls remain inspectable.
 
-Optional CalTopo and tracker features require organization-supplied credentials or an Android-compatible configuration QR. No review credentials are required to inspect the application. Publishing is disabled by default.
+Optional CalTopo and tracker features require organization-supplied credentials or a configuration QR. No review credentials are required to inspect the application. Publishing is disabled by default.
 
 The embedded MediaMTX server accepts a controller stream at the RTMP target displayed in the Anomaly Detector section. Live decoding requires a publisher on the same local network.
 

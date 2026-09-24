@@ -500,7 +500,8 @@ private fun TrackerReenrollmentRequiredDialog(onDismiss: () -> Unit) {
             Text(
                 "Tracker rejected this tablet's organization authorization. It may have " +
                     "been retired, expired, or replaced. In Import Config, scan a current " +
-                    "organization enrollment QR to re-enroll this tablet. Offline RID and " +
+                    "organization enrollment QR to re-enroll this tablet. Saved flights stay " +
+                    "on this tablet; use Resubmit Recent Tracks To Tracker after reconnecting. Offline RID and " +
                     "the incident map remain available."
             )
         },
@@ -770,6 +771,7 @@ class R2CActivity :
     private var deviceReconciliationInFlight = false
     private var deviceReconciliationDialog: androidx.appcompat.app.AlertDialog? = null
     private var trackerReenrollmentRequired by mutableStateOf(false)
+    private var lastRejectedTrackerCredential: String? = null
     private var pendingVideoStreamRequest by mutableStateOf<VideoStreamViewRequest?>(null)
     private var pendingRecordingDownloadRequest by mutableStateOf<RecordingDownloadRequest?>(null)
     private var pendingVideoPreflightRouteKind by mutableStateOf<String?>(null)
@@ -1151,6 +1153,7 @@ class R2CActivity :
 
     override fun onResume() {
         super.onResume()
+        org.ncssar.rid2caltopo.data.PlayAppUpdateCheck.check(this)
         val returnedFromTrackerReauthentication = trackerReauthenticationBrowserOpen
         if (returnedFromTrackerReauthentication) {
             trackerReauthenticationBrowserOpen = false
@@ -1513,6 +1516,7 @@ class R2CActivity :
                         )
                     }
                 }
+                org.ncssar.rid2caltopo.ui.PrimaryPageTransition(activeScreen) {
                 when (activeScreen) {
                     ActiveScreen.MAIN -> {
                         MainScreen(
@@ -1602,6 +1606,7 @@ class R2CActivity :
                             onTerminateRemoteVideo = { terminateManagedVideo() },
                         )
                     }
+                }
                 }
                 pendingDroneConfirmation?.let { confirmationState ->
                     DroneSpecConfirmationDialog(
@@ -2540,6 +2545,9 @@ class R2CActivity :
     }
     fun showTrackerReenrollmentRequired() {
         runOnUiThread {
+            val credential = CaltopoClient.GetTrackerUploadApiKey()
+            if (lastRejectedTrackerCredential == credential) return@runOnUiThread
+            lastRejectedTrackerCredential = credential
             trackerReenrollmentRequired = true
         }
     }

@@ -314,6 +314,18 @@ class TrackerPeerCoordinatorTest {
     }
 
     @Test
+    fun playUpdateSurvivesMissingTrackerRecommendationAndPreservesDismissal() {
+        AppUpdateAdvisory.onPlayRecommendation(BuildConfig.VERSION_CODE + 1)
+        assertTrue(AppUpdateAdvisory.state.value.updateRequired)
+        AppUpdateAdvisory.dismissForSession()
+        AppUpdateAdvisory.onTrackerRecommendation(0, null)
+        assertEquals(BuildConfig.VERSION_CODE + 1, AppUpdateAdvisory.state.value.recommendedVersionCode)
+        assertFalse(AppUpdateAdvisory.state.value.updateRequired)
+        AppUpdateAdvisory.onPlayRecommendation(BuildConfig.VERSION_CODE + 2)
+        assertTrue(AppUpdateAdvisory.state.value.updateRequired)
+    }
+
+    @Test
     fun helloAckWithCurrentRecommendedVersion_doesNotTriggerUpdateAdvisory() {
         coordinator.start("MAP1", "zone-alpha", "Alpha", null)
 

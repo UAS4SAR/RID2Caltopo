@@ -1,9 +1,6 @@
 package org.ncssar.rid2caltopo.notam
 
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
@@ -23,7 +20,7 @@ fun NotamStatusChip(
     airspaceState: AirspaceUiState? = null,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    outerPadding: PaddingValues = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+    outerPadding: PaddingValues = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
 ) {
     if (!state.visible && airspaceState?.visible != true) return
     val useAirspaceLabel = shouldUseAirspaceStatus(state.visible, airspaceState)
@@ -61,23 +58,19 @@ fun NotamStatusChip(
             labelColor = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
-    Row(
-        modifier = modifier.padding(outerPadding),
-        horizontalArrangement = Arrangement.Start
-    ) {
-        AssistChip(
-            onClick = onClick,
-            label = {
-                Text(
-                    text = displayLabel,
-                    maxLines = 1,
-                    softWrap = false,
-                    overflow = TextOverflow.Clip
-                )
-            },
-            colors = colors
-        )
-    }
+    AssistChip(
+        onClick = onClick,
+        label = {
+            Text(
+                text = displayLabel,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Clip
+            )
+        },
+        colors = colors,
+        modifier = modifier.padding(outerPadding)
+    )
 }
 
 internal fun shouldUseAirspaceStatus(

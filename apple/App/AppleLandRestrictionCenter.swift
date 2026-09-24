@@ -243,6 +243,9 @@ struct AppleLandRestrictionPanel: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("Verify land access") {
+                    Text("Mapped sources may be incomplete or outdated. No mapped restrictions does not mean permission to launch, land, or fly. Confirm current rules and permissions with the landowner or responsible agency.").fontWeight(.semibold)
+                }
                 Section("One-mile operating area") {
                     Label(center.state.chipLabel, systemImage: "leaf.circle")
                         .foregroundStyle(severityColor)
@@ -298,7 +301,7 @@ struct AppleLandRestrictionPanel: View {
         switch center.state.severity {
         case .danger: .red
         case .caution: .orange
-        case .normal: .green
+        case .normal: .secondary
         case .neutral: .secondary
         }
     }

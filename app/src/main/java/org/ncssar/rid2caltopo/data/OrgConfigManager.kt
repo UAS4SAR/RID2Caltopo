@@ -357,9 +357,14 @@ object OrgConfigManager {
                         CaltopoClient.CTInfo(TAG, "No managed organization configuration is published.")
                         return@use
                     }
-                    if (!response.isSuccessful) throw IllegalStateException(
-                        "Tracker returned HTTP ${response.code} for organization configuration."
-                    )
+                    if (!response.isSuccessful) {
+                        TrackerEnrollmentClient.handleRejectedAuthorization(
+                            response.code, response.body?.string().orEmpty(), deviceToken
+                        )
+                        throw IllegalStateException(
+                            "Tracker returned HTTP ${response.code} for organization configuration."
+                        )
+                    }
                     val root = JSONObject(response.body?.string().orEmpty())
                     val versionMs = root.getLong("versionMs")
                     val needsApply = versionMs != getManagedVersionMs(context) ||

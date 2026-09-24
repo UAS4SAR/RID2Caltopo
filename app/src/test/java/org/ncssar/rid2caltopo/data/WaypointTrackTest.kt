@@ -300,6 +300,9 @@ class WaypointTrackTest {
     @Test
     fun shouldMarkGeoJsonStatsReportedForResponse_doesNotReportLocalUploadSkip() {
         assertFalse(WaypointTrack.ShouldMarkGeoJsonStatsReportedForResponse(WaypointTrack.GEOJSON_STATS_UPLOAD_SKIPPED))
+        for (status in listOf(401, 403, 426, 499)) {
+            assertFalse(WaypointTrack.ShouldMarkGeoJsonStatsReportedForResponse(status))
+        }
         assertFalse(WaypointTrack.ShouldMarkGeoJsonStatsReportedForResponse(408))
         assertFalse(WaypointTrack.ShouldMarkGeoJsonStatsReportedForResponse(429))
         assertFalse(WaypointTrack.ShouldMarkGeoJsonStatsReportedForResponse(503))

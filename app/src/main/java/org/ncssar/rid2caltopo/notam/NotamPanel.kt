@@ -61,10 +61,7 @@ fun NotamPanel(
             }
         },
         title = {
-            Column {
-                Text("Nearby NOTAMs")
-                Text("Not flight authorization. Verify independently.", style = MaterialTheme.typography.labelMedium)
-            }
+            Text("Nearby NOTAMs")
         },
         text = {
             Column(
@@ -281,10 +278,7 @@ private fun AirspaceRestrictionsPanel(
             }
         },
         title = {
-            Column {
-                Text("Nearby Airspace Restrictions")
-                Text("Not flight authorization. Verify independently.", style = MaterialTheme.typography.labelMedium)
-            }
+            Text("Nearby Airspace Restrictions")
         },
         text = {
             Column(

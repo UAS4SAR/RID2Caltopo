@@ -38,11 +38,11 @@ release is to remain synchronized.
 
 ### 2. Prepare unified release notes
 
-Create `release-notes/<version>/whats_new.txt` with these sections in order:
-
-1. `Latest changes:`
-2. `Platform-specific changes:`
-3. `Known platform differences:`
+Create `release-notes/<version>/whats_new.txt` with a single `Latest changes:`
+section. Keep platform names and comparisons out of public notes. Record
+platform-specific changes, open gaps, and verified resolutions in the internal,
+cumulative [platform parity ledger](docs/PLATFORM_PARITY_LEDGER.md), never in
+app resources or store metadata. Preserve historical shipped notes as provenance.
 
 Keep one operator-visible change per bullet. Update the Xcode
 `whats_new.txt` resource reference to that canonical versioned file, then run:
@@ -153,6 +153,21 @@ performance, or field correctness.
    it, and monitor crashes, ANRs, reviews, and field reports before expanding.
 
 Do not rebuild between internal qualification and production promotion.
+
+### Keep installed clients informed of available updates
+
+After verifying that the intended Android build is available to the target users
+in Google Play, update production Tracker's `R2C_RECOMMENDED_APP_VERSION_CODE`
+to that build number through the Tracker release process. Set `R2C_UPDATE_URL`
+to the RID2Caltopo Play listing and verify both values on the revision serving
+production traffic. Do not recommend an unpublished or inaccessible build.
+
+Use an older, validly enrolled Play installation to verify that its Tracker
+connection produces the update prompt and that **Check Play** opens the correct
+listing with an available update. Record the installed and recommended build
+numbers. TestFlight notifications do not maintain this Android server setting.
+The independent Play availability check supplements this path in newer clients;
+already-installed older versions still depend on the Tracker recommendation.
 
 ### Android rollback
 
@@ -293,6 +308,7 @@ move a published tag.
 - [ ] Android internal release checked before production promotion
 - [ ] Apple internal TestFlight checked before App Review submission
 - [ ] Store rollout monitoring owner and rollback/forward-fix plan assigned
+- [ ] Production Tracker Android recommendation matches the available Play build; older-client prompt and Play link verified
 - [ ] Final store versions, dates, links, and known issues recorded
 
 Release-note details are in [the unified release-note guide](release-notes/README.md).

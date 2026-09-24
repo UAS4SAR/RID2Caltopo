@@ -480,7 +480,10 @@ public class WaypointTrack {
     }
 
     public static boolean ShouldMarkGeoJsonStatsReportedForResponse(int responseCode) {
+        // Authentication and upgrade failures can recover without changing the archive.
         return responseCode != GEOJSON_STATS_UPLOAD_SKIPPED &&
+                responseCode != 401 && responseCode != 403 && responseCode != 426 &&
+                responseCode != 499 &&
                 !IsTransientStatsResponse(responseCode);
     }
 
@@ -797,7 +800,9 @@ public class WaypointTrack {
             if (ShouldMarkGeoJsonStatsReportedForResponse(responseCode)) {
                 ReportStatsForFile(reportedFilepath, filename);
                 result.filesMarkedReported++;
-                result.filesUploaded++;
+                if (responseCode >= 200 && responseCode < 300) {
+                    result.filesUploaded++;
+                }
             } else {
                 result.filesFailed++;
             }

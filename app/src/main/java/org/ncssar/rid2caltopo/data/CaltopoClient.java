@@ -688,7 +688,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
                 others.add(new EditableRidMapping(spec.getRemoteId(), spec.getOwnerName(), spec.getOwner(), spec.getModel(), spec.getReadiness()));
             }
         }
-        List<String> errors = RidMappingRules.INSTANCE.validateEntry(organization, mapping, others);
+        List<String> errors = RidMappingRules.INSTANCE.validateEntry(organization, mapping, others, AircraftOrganizationAccess.belongsToOrganization());
         if (!errors.isEmpty()) throw new IllegalArgumentException(String.join("\n", errors));
         String remoteId = RidMappingRules.INSTANCE.normalizeRemoteId(mapping.getRemoteId());
         CtDroneSpec spec = new CtDroneSpec(remoteId, CtDroneSpec.BuildMappedId(mapping.getOwnerCallsign().trim(), mapping.getModel().trim(), remoteId),
@@ -705,7 +705,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             @NonNull List<EditableRidMapping> mappings
     ) {
         AircraftOrganizationAccess.requireEdit();
-        List<String> errors = RidMappingRules.INSTANCE.validate(organization, mappings);
+        List<String> errors = RidMappingRules.INSTANCE.validate(organization, mappings, AircraftOrganizationAccess.belongsToOrganization());
         if (!errors.isEmpty()) {
             throw new IllegalArgumentException(errors.get(0));
         }
@@ -4477,6 +4477,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             // Read the body (Response.body().string() handles stream closing)
             String bodyString = response.body() != null ? response.body().string() : "";
             responseLog.append(bodyString);
+            TrackerEnrollmentClient.handleRejectedAuthorization(responseCode, bodyString, trackerApiKey);
 
             if (CTDebugEnabled(TAG)) CTDebug(TAG, responseLog.toString());
             return responseCode;
