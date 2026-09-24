@@ -6387,3 +6387,19 @@ func aolHighlightRequiresNegativeNumberAndExcludesAdjacentFields() {
         .components(separatedBy: "authInternalUsers:").last == restricted
         .components(separatedBy: "authInternalUsers:").last?.components(separatedBy: "pathDefaults:").first)
 }
+
+@Test func appleTrackerCallbackAndForegroundHandlingSurvivePrivacyGate() throws {
+    let appleRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let source = try String(contentsOf: appleRoot.appendingPathComponent("App/ContentView.swift"), encoding: .utf8)
+    let rootStart = try #require(source.range(of: "    var body: some View {\n        NavigationStack"))
+    let rootEnd = try #require(source.range(of: "    private var organizationAuthenticationRequired", range: rootStart.upperBound..<source.endIndex))
+    let root = String(source[rootStart.lowerBound..<rootEnd.lowerBound])
+    let nested = String(source[..<rootStart.lowerBound])
+    // Neither event handler may live only on monitoredRoot, which is absent while obscured.
+    #expect(!nested.contains(".onOpenURL"))
+    #expect(!nested.contains("resumeTrackerAfterBrowserReturnIfNeeded(callbackPending: false)"))
+    #expect(root.contains(".onOpenURL"))
+    #expect(root.contains("resumeTrackerAfterBrowserReturnIfNeeded("))
+    #expect(root.contains("pendingOrganizationAccessURL?.scheme?.lowercased() == \"r2creauth\""))
+}

@@ -389,3 +389,8 @@ end-to-end video latency is claimed from these input changes.
 
 - Closed an Apple bootstrap gap: organization configuration now refreshes independently of a selected incident map after sign-in and on foreground/startup. Android already invokes its independent bootstrap after reauthentication.
 - Pending Apple sign-in no longer reports configuration import success. Automated recovery tests pass; see docs/validation/2026-09-23-ipad-enrollment-recovery.md for device evidence and physical verification status.
+
+### 2.3.5 build 252 follow-up
+
+- Apple sign-in callback and foreground recovery handling now survive the privacy gate hiding protected content during a browser switch. Android already handles incoming URLs at Activity level.
+- Server audit confirmed the affected iPad login succeeded; the repeated prompt was stale client state. Physical recovery evidence is tracked in docs/validation/2026-09-23-ipad-enrollment-recovery.md.

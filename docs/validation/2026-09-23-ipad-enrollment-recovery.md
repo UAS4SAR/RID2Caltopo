@@ -50,3 +50,29 @@ and sign-in prompts are deferred until the sheet finishes closing. All 385
 Swift tests and the signed Release device build passed. Installed in place on
 Ken's iPad, installation sequence 1916. End-to-end enrollment verification
 requires available campaign capacity; the existing token need not be replaced.
+
+## Browser callback lost behind privacy gate — build 252
+
+After explicit operator approval, campaign capacity was increased from 40 to
+100 and its state restored to active at 21:51:52 PDT. The token generation,
+October 7 expiry, redemption count, and existing credentials were preserved;
+audit event 2e672bc8-2705-46c5-9539-567274d48b53 records the change.
+
+The fresh iPad log shows enrollment HTTP 200 at 21:52:47, repeated main-screen
+mounts, and no sign-in completion callback. The server confirms the iOS device
+is active and signed in, with a successful reauthentication audit at 21:52:59.
+The privacy gate removes monitoredRoot while inactive; both onOpenURL and the
+foreground recovery handler were attached to that removable subtree. Build 252
+moves both handlers onto the persistent outer NavigationStack, preserving the
+existing device-unlock gate and deferred-URL handling. Android handles intents
+at Activity level and does not share this SwiftUI handler-lifetime defect.
+
+A structural regression test checks that URL and browser-return handlers remain
+on the persistent root. Physical browser-return qualification remains separate
+from the automated source/build checks.
+
+Build 252 validation: all 386 Swift tests passed; signed Release device build
+and strict signature verification passed. Installed in place on the connected
+iPad at 21:59:08 PDT, installation sequence 1924, and launched at 21:59:20.
+Device unlock and verification of restored settings remain pending operator
+interaction. No token replacement or persistent-state reset is needed.

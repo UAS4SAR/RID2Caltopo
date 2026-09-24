@@ -823,9 +823,6 @@ struct ContentView: View {
                     notams.update(location: locationProvider.lastLocation)
                 }
             }
-            .onOpenURL { url in
-                receiveIncomingURL(url)
-            }
     }
 
     private func receiveIncomingURL(_ url: URL) {
@@ -990,28 +987,6 @@ struct ContentView: View {
             }
             .onChange(of: networkDiagnostics.currentSnapshotID) { _, _ in
                 refreshControllerRTMPURL()
-            }
-            .onChange(of: scenePhase) { _, phase in
-                guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
-                updateIdleTimerPolicy(for: phase)
-                switch phase {
-                case .active:
-                    handleIncidentMapBecameActive()
-                    resumeTrackerAfterBrowserReturnIfNeeded(callbackPending: false)
-                    mediaMTX.ensureHealthy(captureStreams: captureStreams)
-                    Task {
-                        await refreshManagedOrganizationConfiguration()
-                        await networkDiagnostics.refresh(reason: .applicationBecameActive)
-                        await ridTracks.setLocalDeviceMarkerPublishingEnabled(true)
-                    }
-                case .background:
-                    removeLocalDeviceMarkerInBackground()
-                    scheduleIncidentMapBackgroundDisconnect()
-                case .inactive:
-                    break
-                @unknown default:
-                    break
-                }
             }
             .onChange(of: showTrackMap) { _, showing in
                 guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
@@ -1188,6 +1163,37 @@ struct ContentView: View {
             .navigationTitle("RID-2-Caltopo")
             .navigationBarTitleDisplayMode(.inline)
         }
+            // Keep URL and lifecycle delivery outside the protected-content branch:
+            // that branch is removed while Safari or a system overlay is active.
+            .onOpenURL { url in
+                receiveIncomingURL(url)
+            }
+            .onChange(of: scenePhase) { _, phase in
+                guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
+                updateIdleTimerPolicy(for: phase)
+                switch phase {
+                case .active:
+                    handleIncidentMapBecameActive()
+                    if organizationAccessGranted || !organizationAuthenticationRequired {
+                        resumeTrackerAfterBrowserReturnIfNeeded(
+                            callbackPending: pendingOrganizationAccessURL?.scheme?.lowercased() == "r2creauth"
+                        )
+                    }
+                    mediaMTX.ensureHealthy(captureStreams: captureStreams)
+                    Task {
+                        await refreshManagedOrganizationConfiguration()
+                        await networkDiagnostics.refresh(reason: .applicationBecameActive)
+                        await ridTracks.setLocalDeviceMarkerPublishingEnabled(true)
+                    }
+                case .background:
+                    removeLocalDeviceMarkerInBackground()
+                    scheduleIncidentMapBackgroundDisconnect()
+                case .inactive:
+                    break
+                @unknown default:
+                    break
+                }
+            }
             .background {
                 PrimaryWindowSceneReader { scene in
                     AppleApplicationCleanupCenter.shared.registerPrimaryWindowScene(scene)
