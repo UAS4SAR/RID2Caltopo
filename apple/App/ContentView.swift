@@ -113,8 +113,10 @@ struct ContentView: View {
     @AppStorage("video.restrictMediaServerAccess") private var restrictMediaServerAccess = true
     @AppStorage("rid.minimumHorizontalAccuracyCode") private var minimumHorizontalAccuracyCode = 9
 
-    private var startupRoot: some View {
-        rootScreen
+    // Bound generic view depth: the signed device runtime otherwise overflows
+    // while decoding the combined navigation, presentation, and lifecycle type.
+    private var navigationRoot: some View {
+        AnyView(rootScreen)
             .background(HeaderPageSwipe(toLiveView: true) {
                 guard !showTrackMap else { return }
                 openLiveViewFromHeaderSwipe()
@@ -250,6 +252,10 @@ struct ContentView: View {
                     }
                 )
             }
+    }
+
+    private var authenticationPresentationRoot: some View {
+        AnyView(navigationRoot)
             .sheet(isPresented: $showImportConfig, onDismiss: {
                 if let notice = pendingImportConfigNotice {
                     pendingImportConfigNotice = nil
@@ -353,6 +359,10 @@ struct ContentView: View {
                     dismissButton: .default(Text("OK"))
                 )
             }
+    }
+
+    private var startupRoot: some View {
+        AnyView(authenticationPresentationRoot)
             .modifier(RecordingDownloadApprovalModifier(coordinator: peerCoordinator))
             .sheet(item: Binding(
                 get: { peerCoordinator.videoStreamRequestReadyForApproval },
@@ -767,7 +777,7 @@ struct ContentView: View {
     }
 
     private var lifecycleRoot: some View {
-        startupRoot
+        AnyView(startupRoot)
             .alert("Flight Storage", isPresented: Binding(
                 get: { mediaMTX.storageWarning != nil },
                 set: { if !$0 { mediaMTX.storageWarning = nil } }
@@ -881,7 +891,7 @@ struct ContentView: View {
     }
 
     private var mediaMonitoredRoot: some View {
-        lifecycleRoot
+        AnyView(lifecycleRoot)
             .onChange(of: bluetoothScanner.state, initial: true) { _, state in
                 if state == .bluetoothDisabled { showingBluetoothDisabled = true }
                 else if state == .scanning { showingBluetoothDisabled = false }
@@ -956,7 +966,7 @@ struct ContentView: View {
     }
 
     private var lifecycleEventRoot: some View {
-        mediaMonitoredRoot
+        AnyView(mediaMonitoredRoot)
             .onChange(of: videoStatus) { _, status in
                 AppleLog.info("Video", status)
             }
@@ -1014,7 +1024,7 @@ struct ContentView: View {
     }
 
     private var monitoredRoot: some View {
-        lifecycleEventRoot
+        AnyView(lifecycleEventRoot)
             .onChange(of: ridTracks.caltopoRTTMilliseconds) { _, milliseconds in
                 peerCoordinator.updateCaltopoRTT(milliseconds: milliseconds)
             }

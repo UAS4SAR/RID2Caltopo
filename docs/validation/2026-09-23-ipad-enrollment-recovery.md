@@ -76,3 +76,24 @@ and strict signature verification passed. Installed in place on the connected
 iPad at 21:59:08 PDT, installation sequence 1924, and launched at 21:59:20.
 Device unlock and verification of restored settings remain pending operator
 interaction. No token replacement or persistent-state reset is needed.
+
+## Physical startup failure in build 252; replacement build 253
+
+The operator unlocked the iPad and reported an exit. Two new device crash
+reports at 21:59:36 and 21:59:41 confirm EXC_BAD_ACCESS / stack-guard protection
+failure while Swift decodes nested generic view metadata. The main-thread
+stack leads through ContentView.startupRoot, lifecycleRoot, mediaMonitoredRoot,
+lifecycleEventRoot, monitoredRoot, and body. This is a confirmed runtime failure
+of build 252 despite passing source tests and compilation; it is not evidence
+of an enrollment rejection or configuration-apply failure.
+
+Build 253 separates navigation and authentication presentation from startup
+and uses stable AnyView boundaries between the existing screen layers to bound
+the generic type depth. It retains the persistent callback/foreground handlers.
+All 386 Swift tests passed again. Device-build and physical validation follow.
+
+Build 253 signed Release build and strict signature verification passed.
+Installed at 22:04:11 PDT (sequence 1932), launched at 22:04:24, and process
+1363 was still present in a subsequent device process snapshot. Post-unlock
+startup and restored organization settings remain pending operator validation;
+process presence alone does not qualify the main-screen crash fix.
