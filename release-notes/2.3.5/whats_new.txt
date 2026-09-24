@@ -14,3 +14,4 @@ Latest changes:
 - Operational monitoring resumes when the app reopens.
 - Live video identifies local playback delay and inactive frames.
 - Organization configuration finishes loading after sign-in, before selecting an incident map.
+- Keeping the archive folder after resetting settings restores the saved selection across app restarts.

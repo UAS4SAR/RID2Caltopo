@@ -293,6 +293,20 @@ internal sealed interface ArchiveDirSelectionResult {
     data class Failed(val detail: String) : ArchiveDirSelectionResult
 }
 
+internal fun <T> keepArchiveDirSelection(
+    selection: T?,
+    selectionIsAuthorized: (T) -> Boolean,
+    activateSelection: (T) -> Unit,
+    selectionIsActive: (T) -> Boolean
+): ArchiveDirSelectionResult = persistArchiveDirSelection(
+    selection = selection,
+    persistPermission = {
+        check(selectionIsAuthorized(it)) { "The saved folder needs Android authorization again." }
+    },
+    activateSelection = activateSelection,
+    selectionIsUsable = selectionIsActive
+)
+
 internal fun <T> persistArchiveDirSelection(
     selection: T?,
     persistPermission: (T) -> Unit,
@@ -1644,14 +1658,37 @@ fun MainScreen(
                 promptActions.chooseDifferentLabel?.let { chooseDifferentLabel ->
                     TextButton(
                         onClick = {
+                            if (!pendingArchiveDirPermissionMissing && previousArchivePath != null) {
+                                val retainedUri = pendingArchiveDirInitialUri?.let(Uri::parse)
+                                pendingArchiveDirPromptMessage = null
+                                archiveDirPickerOpen = true
+                                coroutineScope.launch {
+                                    val result = withContext(Dispatchers.IO) {
+                                        keepArchiveDirSelection(
+                                            selection = retainedUri,
+                                            selectionIsAuthorized = CaltopoClient::CanUseArchiveUri,
+                                            activateSelection = CaltopoClient::SetArchiveUri,
+                                            selectionIsActive = { CaltopoClient.GetArchiveUri() == it }
+                                        )
+                                    }
+                                    if (result == ArchiveDirSelectionResult.Selected) {
+                                        pendingArchiveDirInitialUri = null
+                                        pendingArchiveDirPermissionMissing = false
+                                        archiveDirPromptSuppressed = false
+                                        CTDebug(tag, "Retained archive folder activated and saved")
+                                    } else {
+                                        archiveDirPromptSuppressed = true
+                                        pendingArchiveDirPermissionMissing = true
+                                        pendingArchiveDirPromptMessage = archiveDirPromptMessage(true, previousArchivePath)
+                                    }
+                                    archiveDirPickerOpen = false
+                                }
+                                return@TextButton
+                            }
                             if (!pendingArchiveDirPermissionMissing) {
                                 pendingArchiveDirPromptMessage = null
                                 pendingArchiveDirInitialUri = null
                                 pendingArchiveDirPermissionMissing = false
-                                if (previousArchivePath != null) {
-                                    archiveDirPromptSuppressed = false
-                                    return@TextButton
-                                }
                                 archiveDirPromptSuppressed = true
                                 if (CaltopoClient.UseTemporaryArchiveDirForSession()) {
                                     CaltopoClient.ShowToast(

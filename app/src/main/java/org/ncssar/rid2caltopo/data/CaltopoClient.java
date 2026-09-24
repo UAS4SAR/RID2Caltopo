@@ -3508,6 +3508,12 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         }
     }
 
+    /** A remembered folder is only reusable while Android retains its grant. */
+    public static boolean CanUseArchiveUri(@NonNull Uri uri) {
+        Context ctxt = R2CApplication.getAppCtxt();
+        return ctxt != null && isArchiveUriUsable(ctxt, uri);
+    }
+
     public static boolean WasArchiveUriPermissionMissing() {
         return ArchivePermissionMissingFlag;
     }

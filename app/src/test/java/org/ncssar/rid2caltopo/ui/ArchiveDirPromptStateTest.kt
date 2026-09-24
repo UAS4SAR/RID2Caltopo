@@ -230,4 +230,43 @@ class ArchiveDirPromptStateTest {
             exception
         )
     }
+    @Test
+    fun keepingRetainedFolderRestoresSelectionAfterResetAndSuppressesNextStartupPrompt() {
+        val retainedHint = "sdcard:/DroneTrax"
+        var persistedSelection: String? = null
+        var activeSelection: String? = null
+        val result = keepArchiveDirSelection(
+            selection = retainedHint,
+            selectionIsAuthorized = { it == retainedHint },
+            activateSelection = { activeSelection = it; persistedSelection = it },
+            selectionIsActive = { activeSelection == it }
+        )
+        assertEquals(ArchiveDirSelectionResult.Selected, result)
+        // A new session loads the durable choice, rather than relying on dialog dismissal.
+        activeSelection = persistedSelection
+        assertEquals(retainedHint, activeSelection)
+        assertFalse(shouldLaunchArchiveDirPicker(
+            archiveUriMissing = activeSelection == null,
+            sessionArchiveDirAvailable = activeSelection != null,
+            forceArchiveDirPrompt = false,
+            driveRestoreEligibilityLoaded = true,
+            showDriveRestoreDialog = false,
+            driveSyncInProgress = false,
+            archiveDirPickerOpen = false
+        ))
+    }
+
+    @Test
+    fun retainedHintWithoutAndroidPermissionCannotBeActivated() {
+        var activated = false
+        val result = keepArchiveDirSelection(
+            selection = "old folder",
+            selectionIsAuthorized = { false },
+            activateSelection = { activated = true },
+            selectionIsActive = { true }
+        )
+        assertTrue(result is ArchiveDirSelectionResult.Failed)
+        assertFalse(activated)
+    }
+
 }

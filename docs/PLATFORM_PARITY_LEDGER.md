@@ -394,3 +394,8 @@ end-to-end video latency is claimed from these input changes.
 
 - Apple sign-in callback and foreground recovery handling now survive the privacy gate hiding protected content during a browser switch. Android already handles incoming URLs at Activity level.
 - Server audit confirmed the affected iPad login succeeded; the repeated prompt was stale client state. Physical recovery evidence is tracked in docs/validation/2026-09-23-ipad-enrollment-recovery.md.
+
+### 2.3.5 build 254 follow-up
+
+- Android "Keep current folder" now validates the retained Android folder grant and reactivates/persists the archive selection after a settings reset. Previously it only dismissed the dialog, so startup prompted again. Missing authorization routes back to explicit folder reauthorization.
+- Apple uses application-owned archive storage and has no corresponding Android tree-grant selection flow. Its build 253 clean reset/enrollment was confirmed by the operator; two Face ID scans were observed during initial recovery and remain a separate UX follow-up.

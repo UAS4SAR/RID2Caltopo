@@ -97,3 +97,8 @@ Installed at 22:04:11 PDT (sequence 1932), launched at 22:04:24, and process
 1363 was still present in a subsequent device process snapshot. Post-unlock
 startup and restored organization settings remain pending operator validation;
 process presence alone does not qualify the main-screen crash fix.
+
+Operator follow-up confirmed build 253 integrated the credentials, then a full
+persistent-state reset and clean enrollment completed without problems. The
+operator observed two Face ID scans during initial recovery; this remains a
+separate local-authentication UX observation, not a failed Tracker sign-in.
