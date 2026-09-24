@@ -13,3 +13,4 @@ Latest changes:
 - Swipe the title bar to move between Main Screen and Live View, with visible transition feedback.
 - Operational monitoring resumes when the app reopens.
 - Live video identifies local playback delay and inactive frames.
+- Organization configuration finishes loading after sign-in, before selecting an incident map.

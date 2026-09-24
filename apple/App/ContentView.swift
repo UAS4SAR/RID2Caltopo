@@ -32,7 +32,8 @@ private struct TrackerReauthenticationPromptModifier: ViewModifier {
             Text(
                 "Sign in with an authorized organization account to restore Tracker "
                     + "sharing and online organization services. RID, video, maps, and "
-                    + "your existing CalTopo configuration remain available."
+                    + "independently configured CalTopo access remain available. Organization "
+                    + "aircraft and managed CalTopo credentials load after sign-in completes."
             )
         }
     }
@@ -606,6 +607,7 @@ struct ContentView: View {
                     peerConfirmationClearer: droneConfirmations.clearPeerConfirmation
                 )
                 configurePeerCoordinator()
+                Task { await refreshManagedOrganizationConfiguration() }
                 configureTrackArchive()
                 configureTrackPolicy()
                 if ProcessInfo.processInfo.arguments.contains("--demo-notam") {
@@ -851,6 +853,7 @@ struct ContentView: View {
                 notams.refreshNow(location: locationProvider.lastLocation)
                 airspace.update(location: locationProvider.lastLocation)
                 configurePeerCoordinator(forceReconnect: true)
+                Task { await refreshManagedOrganizationConfiguration(force: true) }
             } else if url.host == "erase" {
                 droneConfirmations.resetPersistedState()
                 caltopoSettings.resetPersistedState()
@@ -989,6 +992,7 @@ struct ContentView: View {
                     resumeTrackerAfterBrowserReturnIfNeeded(callbackPending: false)
                     mediaMTX.ensureHealthy(captureStreams: captureStreams)
                     Task {
+                        await refreshManagedOrganizationConfiguration()
                         await networkDiagnostics.refresh(reason: .applicationBecameActive)
                         await ridTracks.setLocalDeviceMarkerPublishingEnabled(true)
                     }
@@ -1065,7 +1069,7 @@ struct ContentView: View {
                 of: peerCoordinator.reauthenticationRequiredGeneration,
                 initial: true
             ) { _, generation in
-                guard generation > 0 else { return }
+                guard generation > 0, peerCoordinator.reauthenticationURL != nil else { return }
                 let managedCaltopoCleared =
                     caltopoSettings.quarantineTrackerManagedCredentials()
                 if managedCaltopoCleared {
@@ -1446,6 +1450,13 @@ struct ContentView: View {
             "Returned from Tracker sign-in browser without an app callback; retrying Tracker access"
         )
         configurePeerCoordinator(forceReconnect: true)
+        Task { await refreshManagedOrganizationConfiguration(force: true) }
+    }
+
+    private func refreshManagedOrganizationConfiguration(force: Bool = false) async {
+        await orgConfigImporter.refreshManagedConfiguration(
+            caltopoSettings: caltopoSettings, orgSettings: orgConfigSettings,
+            identityStore: droneConfirmations, force: force)
     }
 
     private var rootScreen: some View {

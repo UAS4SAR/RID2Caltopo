@@ -384,3 +384,8 @@ end-to-end video latency is claimed from these input changes.
 - Both platforms support directional title-bar navigation. Native transitions differ; navigation remains outside map, video, and form content. Apple RID form fields have 44-point minimum touch height and no scroll touch delay.
 - Android adds an independent Play update check; Apple continues to use its distribution update mechanisms. Saved-flight authorization failures remain pending on both platforms.
 - Candidate installation and automated checks are recorded separately from the operator morning field test. Prior iPad demo acceptance does not qualify the newly built Android artifact.
+
+### 2.3.5 build 250 follow-up
+
+- Closed an Apple bootstrap gap: organization configuration now refreshes independently of a selected incident map after sign-in and on foreground/startup. Android already invokes its independent bootstrap after reauthentication.
+- Pending Apple sign-in no longer reports configuration import success. Automated recovery tests pass; see docs/validation/2026-09-23-ipad-enrollment-recovery.md for device evidence and physical verification status.

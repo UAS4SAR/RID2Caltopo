@@ -356,6 +356,9 @@ enum AppleTrackerEnrollmentClient {
         guard let http = response as? HTTPURLResponse else {
             throw EnrollmentError.invalidResponse
         }
+        if let url = TrackerReauthenticationChallenge.url(fromHTTPError: data, statusCode: http.statusCode) {
+            throw EnrollmentError.reauthenticationRequired(url)
+        }
         if http.statusCode == 204 { return nil }
         guard (200 ..< 300).contains(http.statusCode),
               let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -369,12 +372,14 @@ enum AppleTrackerEnrollmentClient {
         case invalidURL
         case invalidResponse
         case server(String)
+        case reauthenticationRequired(URL)
 
         var errorDescription: String? {
             switch self {
             case .invalidURL: "Enrollment QR is not an r2c-tracker.com enrollment URL."
             case .invalidResponse: "The tracker returned an invalid enrollment response."
             case let .server(message): message
+            case .reauthenticationRequired: "Tracker sign-in is required to download organization configuration."
             }
         }
     }

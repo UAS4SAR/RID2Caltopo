@@ -933,9 +933,11 @@ final class AppleOrgConfigImporter: ObservableObject {
         case idle
         case downloading
         case applied(String)
+        case awaitingSignIn(String)
         case failed(String)
     }
 
+    private let managedBootstrap = ManagedConfigurationBootstrap<AppleManagedOrganizationConfigResult>()
     @Published private(set) var state: State = .idle
     let profileLifecycle = AppleCaltopoProfileLifecycle.shared
     var caltopoConfigurationHandler: ((AppleCaltopoConfiguration) -> Void)?
@@ -946,13 +948,68 @@ final class AppleOrgConfigImporter: ObservableObject {
         switch state {
         case .idle: "No import in progress"
         case .downloading: "Downloading shared configuration…"
-        case let .applied(message), let .failed(message): message
+        case let .applied(message), let .awaitingSignIn(message), let .failed(message): message
         }
     }
 
     func prepareForImport() {
         guard state != .downloading else { return }
         state = .idle
+    }
+
+    /// Retry after browser sign-in and on reopening, even before selecting a map.
+    func refreshManagedConfiguration(
+        caltopoSettings: AppleCaltopoSettings,
+        orgSettings: AppleOrgConfigSettings,
+        identityStore: AppleDroneConfirmationStore,
+        force: Bool = false
+    ) async {
+        guard state != .downloading, orgSettings.hasManagedTrackerEnrollment,
+              profileLifecycle.activeProfileID == "home" || profileLifecycle.activeProfileID.isEmpty
+        else { return }
+        let prefix = orgSettings.trackerURLPrefix
+        let credential = orgSettings.trackerAPIKey
+        let profileID = profileLifecycle.activeProfileID
+        let isCurrent = {
+            orgSettings.trackerURLPrefix == prefix && orgSettings.trackerAPIKey == credential &&
+                self.profileLifecycle.activeProfileID == profileID
+        }
+        do {
+            let applied = try await managedBootstrap.refresh(
+                scope: prefix + "\n" + credential, force: force,
+                fetch: {
+                    guard let managed = try await AppleTrackerEnrollmentClient.fetchManagedOrganizationConfig(
+                        trackerBaseURL: prefix, deviceToken: credential) else { return nil }
+                    guard ManagedConfigurationRefreshPolicy.shouldApply(
+                        remoteVersion: managed.versionMs,
+                        localVersion: Int64(UserDefaults.standard.integer(forKey: AppleManagedOrganizationConfig.versionDefaultsKey)),
+                        hasCredentials: !caltopoSettings.credentialID.isEmpty && !caltopoSettings.credentialSecret.isEmpty
+                    ) else { return nil }
+                    return managed
+                },
+                isCurrent: isCurrent,
+                apply: { managed in
+                    try AppleManagedOrganizationConfig.apply(
+                        snapshot: managed.snapshot, versionMs: managed.versionMs,
+                        caltopo: caltopoSettings, organization: orgSettings, identities: identityStore)
+                    try self.profileLifecycle.captureHome(org: orgSettings, caltopo: caltopoSettings)
+                }
+            )
+            guard applied else { return }
+            state = .applied("Organization configuration loaded. Choose a CalTopo map to connect.")
+            caltopoConfigurationHandler?(caltopoSettings.configuration)
+            notamEnrollmentAppliedHandler?(orgSettings.faaProxyURL, prefix, credential)
+            AppleLog.info("OrgConfig", "Managed configuration recovered without requiring an incident map")
+        } catch {
+            guard isCurrent() else { return }
+            if case let AppleTrackerEnrollmentClient.EnrollmentError.reauthenticationRequired(url) = error {
+                state = .awaitingSignIn("Sign in to finish loading the organization's aircraft and CalTopo configuration.")
+                trackerReauthenticationRequiredHandler?(url)
+            } else {
+                state = .failed("Organization configuration has not loaded. \(error.localizedDescription)")
+                AppleLog.error("OrgConfig", "Managed configuration refresh failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     func importTrackerEnrollment(
@@ -979,11 +1036,13 @@ final class AppleOrgConfigImporter: ObservableObject {
             )
             try profileLifecycle.captureHome(org: orgSettings, caltopo: caltopoSettings)
             if let url = result.reauthenticationURL {
+                state = .awaitingSignIn("Sign in to finish loading the organization’s aircraft and CalTopo configuration.")
                 trackerReauthenticationRequiredHandler?(url)
                 AppleLog.info(
                     "OrgConfig",
                     "Deferring protected configuration sync until tracker reauthentication completes"
                 )
+                return
             } else {
                 AppleNotamCenter.shared.enabled = true
                 notamEnrollmentAppliedHandler?(
@@ -1003,6 +1062,7 @@ final class AppleOrgConfigImporter: ObservableObject {
                             organization: orgSettings,
                             identities: identityStore
                         )
+                        try profileLifecycle.captureHome(org: orgSettings, caltopo: caltopoSettings)
                         caltopoConfigurationHandler?(caltopoSettings.configuration)
                     }
                 } catch {
@@ -1010,6 +1070,8 @@ final class AppleOrgConfigImporter: ObservableObject {
                         "OrgConfig",
                         "Initial managed configuration sync failed; tracker will retry: \(error.localizedDescription)"
                     )
+                    state = .failed("Joined the organization, but its configuration has not loaded. \(error.localizedDescription)")
+                    return
                 }
             }
             state = .applied("Joined \(result.organization) on r2c-tracker.")
@@ -1094,7 +1156,9 @@ final class AppleOrgConfigImporter: ObservableObject {
                 )
                 try profileLifecycle.captureHome(org: orgSettings, caltopo: caltopoSettings)
                 if let url = enrollment.reauthenticationURL {
+                    state = .awaitingSignIn("Sign in to finish organization setup.")
                     trackerReauthenticationRequiredHandler?(url)
+                    return
                 } else {
                     AppleNotamCenter.shared.enabled = true
                     notamEnrollmentAppliedHandler?(
@@ -1252,7 +1316,9 @@ final class AppleOrgConfigImporter: ObservableObject {
             )
             try profileLifecycle.captureHome(org: orgSettings, caltopo: caltopoSettings)
             if let url = enrollment.reauthenticationURL {
+                state = .awaitingSignIn("Sign in to finish organization setup.")
                 trackerReauthenticationRequiredHandler?(url)
+                return
             } else {
                 AppleNotamCenter.shared.enabled = true
                 notamEnrollmentAppliedHandler?(
@@ -1590,6 +1656,8 @@ struct ConfigImportView: View {
             onFinished(.init(succeeded: true, message: message))
         case let .failed(message):
             onFinished(.init(succeeded: false, message: message))
+        case .awaitingSignIn:
+            break // The Tracker sign-in prompt owns this result; do not replace it with a success alert.
         case .idle, .downloading:
             onFinished(.init(succeeded: false, message: "The configuration import did not complete."))
         }
