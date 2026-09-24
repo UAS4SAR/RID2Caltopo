@@ -13,5 +13,8 @@ Latest changes:
 - Swipe the title bar to move between Main Screen and Live View, with visible transition feedback.
 - Operational monitoring resumes when the app reopens.
 - Live video identifies local playback delay and inactive frames.
-- Organization configuration finishes loading after sign-in, before selecting an incident map.
-- Keeping the archive folder after resetting settings restores the saved selection across app restarts.
+- Organization aircraft and managed CalTopo credentials finish loading after Tracker sign-in, without requiring an incident map first, and are saved to the home profile.
+- Returning from browser sign-in resumes configuration loading instead of repeating a completed sign-in request.
+- Configuration import shows progress and keeps failures visible for retry; it clearly identifies when sign-in is still needed.
+- Improved startup stability when opening the main screen after device authentication.
+- Keeping the archive folder after resetting settings restores the saved selection, preventing repeated prompts on returning to Main Screen or restarting the app.
