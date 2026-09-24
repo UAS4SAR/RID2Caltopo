@@ -75,6 +75,7 @@ struct ContentView: View {
     @State private var showAboutPrivacy = false
     @State private var showImportConfig = false
     @State private var importConfigNotice: ConfigImportNotice?
+    @State private var pendingImportConfigNotice: ConfigImportNotice?
     @State private var showConfigurationTransfer = false
     @State private var showStorageManagement = false
     @State private var showTeamMaps = false
@@ -249,7 +250,14 @@ struct ContentView: View {
                     }
                 )
             }
-            .sheet(isPresented: $showImportConfig) {
+            .sheet(isPresented: $showImportConfig, onDismiss: {
+                if let notice = pendingImportConfigNotice {
+                    pendingImportConfigNotice = nil
+                    importConfigNotice = notice
+                } else if trackerReauthenticationURL != nil {
+                    showTrackerReauthenticationPrompt = true
+                }
+            }) {
                 NavigationStack {
                     ConfigImportView(
                         initialToken: pendingImportToken,
@@ -258,7 +266,7 @@ struct ContentView: View {
                         orgSettings: orgConfigSettings,
                         identityStore: droneConfirmations
                     ) { notice in
-                        importConfigNotice = notice
+                        pendingImportConfigNotice = notice
                     }
                     .id(pendingImportToken)
                 }
@@ -1086,7 +1094,7 @@ struct ContentView: View {
                 )
                 if let url = peerCoordinator.reauthenticationURL {
                     trackerReauthenticationURL = url
-                    showTrackerReauthenticationPrompt = true
+                    showTrackerReauthenticationPrompt = !showImportConfig
                 }
             }
             .onChange(of: peerCoordinator.heartbeatAcknowledgedAtMilliseconds) { _, _ in

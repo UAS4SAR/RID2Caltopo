@@ -1512,10 +1512,14 @@ struct ConfigImportView: View {
                     .font(.footnote)
                     .foregroundStyle(recognitionColor)
             }
-            if packageToken != nil {
-                Section("MA package transfer") {
-                    if submitting { ProgressView("Downloading and importing…") }
-                    if isFailed { Text(importer.statusText).foregroundStyle(.red) }
+            if submitting || isFailed {
+                Section("Import status") {
+                    if submitting { ProgressView("Loading configuration…") }
+                    if isFailed {
+                        Text(importer.statusText).foregroundStyle(.red)
+                        Text("The configuration was not imported. If the enrollment campaign is inactive, renew its QR/token in Tracker before trying again.")
+                            .font(.footnote)
+                    }
                 }
             }
             Section {
@@ -1532,7 +1536,7 @@ struct ConfigImportView: View {
                         .buttonStyle(.bordered)
                         .disabled(submitting)
 
-                    Button(packageToken != nil && isFailed ? "Retry" : "Import") { submitToken() }
+                    Button(isFailed ? "Retry" : "Import") { submitToken() }
                         .buttonStyle(.borderedProminent)
                         .disabled(!canImport)
                 }
@@ -1608,7 +1612,6 @@ struct ConfigImportView: View {
         guard canImport else { return }
         submitting = true
         let value = tokenText
-        let isPackage = packageToken != nil
         let normalizedTrackerEnrollment = trackerEnrollmentURL
         Task { @MainActor in
             if let normalizedTrackerEnrollment {
@@ -1627,12 +1630,10 @@ struct ConfigImportView: View {
                 )
             }
             submitting = false
-            if !isPackage || !isFailed {
-                reportResult()
-                if isPackage { dismiss() }
-            }
+            guard !isFailed else { return }
+            reportResult()
+            dismiss()
         }
-        if !isPackage { dismiss() }
     }
 
     private func submitFile(_ url: URL) {
@@ -1645,9 +1646,11 @@ struct ConfigImportView: View {
                 orgSettings: orgSettings,
                 identityStore: identityStore
             )
+            submitting = false
+            guard !isFailed else { return }
             reportResult()
+            dismiss()
         }
-        dismiss()
     }
 
     private func reportResult() {
