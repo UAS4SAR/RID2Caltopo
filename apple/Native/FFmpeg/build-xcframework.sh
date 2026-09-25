@@ -28,6 +28,7 @@ build_slice() {
   jobs="$(sysctl -n hw.ncpu 2>/dev/null || echo 8)"
 
   mkdir -p "$build_dir" "$prefix" "$slice_root/Headers"
+  if [[ "${REBUILD_BRIDGE_ONLY:-false}" != "true" ]]; then
   (
     cd "$build_dir"
     "$STAGED_SOURCE/configure" \
@@ -64,6 +65,7 @@ build_slice() {
     make -j"$jobs"
     make install
   )
+  fi
 
   "$clang" -target "$target" -isysroot "$sysroot" -std=c11 -O2 -fPIC \
     -I "$prefix/include" -I "$SCRIPT_DIR" \
@@ -77,7 +79,9 @@ build_slice() {
   cp "$SCRIPT_DIR/R2CFFmpegMobile.h" "$slice_root/Headers/"
 }
 
-if [[ "${SKIP_DEVICE_BUILD:-false}" != "true" ]]; then
+if [[ "${REBUILD_BRIDGE_ONLY:-false}" == "true" ]]; then
+  build_slice iphoneos arm64-apple-ios17.0 device
+elif [[ "${SKIP_DEVICE_BUILD:-false}" != "true" ]]; then
   rm -rf "$BUILD_ROOT"
   mkdir -p "$STAGED_SOURCE"
   git -C "$FFMPEG_SOURCE_DIR" archive --format=tar HEAD | tar -x -C "$STAGED_SOURCE"
@@ -88,6 +92,7 @@ elif [[ ! -f "$BUILD_ROOT/device/libR2CFFmpegMobile.a" || ! -x "$STAGED_SOURCE/c
 fi
 build_slice iphonesimulator arm64-apple-ios17.0-simulator simulator
 
+rm -rf "$BUILD_ROOT/R2CFFmpegMobile.xcframework"
 xcodebuild -create-xcframework \
   -library "$BUILD_ROOT/device/libR2CFFmpegMobile.a" -headers "$BUILD_ROOT/device/Headers" \
   -library "$BUILD_ROOT/simulator/libR2CFFmpegMobile.a" -headers "$BUILD_ROOT/simulator/Headers" \

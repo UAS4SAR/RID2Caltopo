@@ -19,7 +19,8 @@ typedef enum R2CFFmpegStatus {
     R2C_FFMPEG_STATUS_STOPPED = 4,
 } R2CFFmpegStatus;
 
-// Atomically retain the displayed frame and its same-decoder camera metadata.
+// Live streams dequeue the next adaptively paced frame and its matching camera metadata.
+// Returns NULL while buffering or before the next render deadline. Local files retain newest-frame behavior.
 CVPixelBufferRef R2CFFmpegSessionCopyFrameWithCamera(
     R2CFFmpegSession *session, uint64_t *sequence, int64_t *frameTimestamp,
     double *values, int capacity, int64_t *cameraTimestamp, uint64_t *cameraSequence
@@ -49,12 +50,17 @@ int R2CFFmpegNormalizeRecording(
 void R2CFFmpegSessionDestroy(R2CFFmpegSession *session);
 
 // Returns the newest hardware-decoded frame with a +1 retain count. The
-// caller owns the returned CVPixelBufferRef. Older unread frames are dropped.
+// caller owns the returned CVPixelBufferRef. For local playback only; live playback
+// uses CopyFrameWithCamera so frames cannot be separated from buffered telemetry.
 CVPixelBufferRef R2CFFmpegSessionCopyLatestFrame(
     R2CFFmpegSession *session,
     uint64_t *sequence,
     int64_t *presentationTimeMicroseconds
 );
+
+int64_t R2CFFmpegSessionRenderAgeMilliseconds(R2CFFmpegSession *session);
+
+bool R2CFFmpegSessionCopyRenderDiagnostics(R2CFFmpegSession *session, char *detail, int capacity);
 
 R2CFFmpegStatus R2CFFmpegSessionGetStatus(
     R2CFFmpegSession *session,

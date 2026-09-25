@@ -10,7 +10,7 @@ contracts and native cores:
 1. CoreBluetooth produces `RidObservation` values, including Wi-Fi Remote ID reports bridged by the DS110.
 2. Shared tracking policy consumes observations and publishes accepted updates.
 3. The verified MediaMTX Go core receives controller RTMP and exposes RTSP and HLS locally.
-4. FFmpeg demuxes RTSP and VideoToolbox produces newest-frame `CVPixelBuffer` output; AVPlayer HLS remains a fallback.
+4. FFmpeg demuxes RTSP and VideoToolbox feeds an adaptive FIFO of `CVPixelBuffer` frames with matching camera telemetry. Live display uses Android's shared buffer-target and render-interval functions; AVPlayer HLS remains a fallback.
 5. SwiftUI and Metal present operator state, video, and anomaly annotations.
 
 `RidObservationProvider` is the radio boundary and `MediaServerController` is

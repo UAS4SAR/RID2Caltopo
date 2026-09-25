@@ -347,6 +347,8 @@ final class AppleVideoFrameSource: ObservableObject {
 
     @Published private(set) var state: State = .idle
     @Published private(set) var frameCount = 0
+    private var consumedFrameCount = 0
+    private var lastFrameUIUpdateAt: TimeInterval = 0
     @Published private(set) var dimensions = "--"
     @Published private(set) var sourceWidth = 0
     @Published private(set) var sourceHeight = 0
@@ -510,6 +512,9 @@ final class AppleVideoFrameSource: ObservableObject {
         nativeEndHandled = false
         ffmpegFrameSequence = 0
         ffmpegDJICameraTelemetrySequence = 0
+        displaySubmissionCount = 0
+        displayBusyDrops = 0
+        lastRenderDiagnosticAt = 0
         loggedNativeFrameFormat = false
         loggedNativeDisplayFailure = false
 
@@ -542,6 +547,9 @@ final class AppleVideoFrameSource: ObservableObject {
         nativeEndHandled = false
         ffmpegFrameSequence = 0
         ffmpegDJICameraTelemetrySequence = 0
+        displaySubmissionCount = 0
+        displayBusyDrops = 0
+        lastRenderDiagnosticAt = 0
         loggedNativeFrameFormat = false
         loggedNativeDisplayFailure = false
 
@@ -563,7 +571,7 @@ final class AppleVideoFrameSource: ObservableObject {
         decoderBackend = "FFmpeg \(String(cString: R2CFFmpegVersion())) / VideoToolbox"
         flushDisplayLayers(removeImage: true)
         installDisplayLink()
-        AppleLog.info("Video", "Native newest-frame decoder opening \(rtspURL.absoluteString) backend=\(decoderBackend)")
+        AppleLog.info("Video", "Native adaptive-buffer decoder opening \(rtspURL.absoluteString) backend=\(decoderBackend)")
     }
 
     private func installPlayer(url: URL, beginsRecoveryAttempt: Bool = true) {
@@ -659,6 +667,8 @@ final class AppleVideoFrameSource: ObservableObject {
         lagEstimator.reset()
         sessionLagEstimator.reset()
         frameCount = 0
+        consumedFrameCount = 0
+        lastFrameUIUpdateAt = 0
         dimensions = "--"
         sourceWidth = 0
         sourceHeight = 0
@@ -794,7 +804,11 @@ final class AppleVideoFrameSource: ObservableObject {
     private func installDisplayLink() {
         displayLink?.invalidate()
         let displayLink = CADisplayLink(target: self, selector: #selector(pullFrame))
-        displayLink.preferredFrameRateRange = CAFrameRateRange(minimum: 10, maximum: 30, preferred: 30)
+        // Poll above the source rate so adaptive deadlines can pace 30 fps without
+        // rounding every slightly-slower frame to a 66 ms display callback.
+        displayLink.preferredFrameRateRange = currentURL?.isFileURL == true
+            ? CAFrameRateRange(minimum: 10, maximum: 30, preferred: 30)
+            : CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
         displayLink.add(to: .main, forMode: .common)
         self.displayLink = displayLink
     }
@@ -819,9 +833,29 @@ final class AppleVideoFrameSource: ObservableObject {
         }
         ffmpegFrameSequence = 0
         ffmpegDJICameraTelemetrySequence = 0
+        displaySubmissionCount = 0
+        displayBusyDrops = 0
+        lastRenderDiagnosticAt = 0
+        callbackCount = 0
+        callbackWorkSeconds = 0
+        callbackWindowStartedAt = 0
+        callbackLastAt = 0
+        callbackMaxGapSeconds = 0
     }
 
+    private var callbackCount = 0
+    private var callbackWorkSeconds: TimeInterval = 0
+    private var callbackWindowStartedAt: TimeInterval = 0
+    private var callbackLastAt: TimeInterval = 0
+    private var callbackMaxGapSeconds: TimeInterval = 0
+
     @objc private func pullFrame(_ displayLink: CADisplayLink) {
+        let callbackStarted = CACurrentMediaTime()
+        if callbackWindowStartedAt == 0 { callbackWindowStartedAt = callbackStarted }
+        if callbackLastAt > 0 { callbackMaxGapSeconds = max(callbackMaxGapSeconds, callbackStarted - callbackLastAt) }
+        callbackLastAt = callbackStarted
+        callbackCount += 1
+        defer { callbackWorkSeconds += CACurrentMediaTime() - callbackStarted }
         if let ffmpegSession {
             var sequence: UInt64 = 0
             var presentationTimeMicroseconds: Int64 = 0
@@ -915,21 +949,21 @@ final class AppleVideoFrameSource: ObservableObject {
                 let selected = OperationalClueGeometry.selectedGimbalAngleDegrees(
                     streamPitchDegrees: gimbalPitchDegrees
                 )
-                latestGimbalPitchDegrees = selected
+                if latestGimbalPitchDegrees != selected { latestGimbalPitchDegrees = selected }
             }
             var cameraYawDegrees = 0.0
             if R2CFFmpegSessionCopyLatestCameraYawDegrees(
                 ffmpegSession,
                 &cameraYawDegrees
             ), let normalized = RidHeading.normalized(cameraYawDegrees) {
-                latestCameraYawDegrees = normalized
+                if latestCameraYawDegrees != normalized { latestCameraYawDegrees = normalized }
             }
             var streamHeadingDegrees = 0.0
             if R2CFFmpegSessionCopyLatestHeadingDegrees(
                 ffmpegSession,
                 &streamHeadingDegrees
             ), let normalized = RidHeading.normalized(streamHeadingDegrees) {
-                latestStreamHeadingDegrees = normalized
+                if latestStreamHeadingDegrees != normalized { latestStreamHeadingDegrees = normalized }
             }
             let itemTime = presentationTimeMicroseconds > Int64.min / 2
                 ? CMTime(value: presentationTimeMicroseconds, timescale: 1_000_000)
@@ -966,17 +1000,24 @@ final class AppleVideoFrameSource: ObservableObject {
         sourceTimestampMicroseconds: Int64?,
         renderNatively: Bool
     ) {
-        frameCount += 1
+        consumedFrameCount += 1
+        let uiNow = CACurrentMediaTime()
+        if uiNow - lastFrameUIUpdateAt >= 0.25 {
+            frameCount = consumedFrameCount
+            lastFrameUIUpdateAt = uiNow
+        }
         recoveryPolicy.recordDecodedFrame(at: Self.now)
-        decodedFrameAgeSeconds = 0
-        nextRetryDelaySeconds = nil
+        if decodedFrameAgeSeconds != 0 { decodedFrameAgeSeconds = 0 }
+        if nextRetryDelaySeconds != nil { nextRetryDelaySeconds = nil }
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
-        dimensions = "\(width) x \(height)"
-        sourceWidth = width
-        sourceHeight = height
+        if sourceWidth != width || sourceHeight != height {
+            dimensions = "\(width) x \(height)"
+            sourceWidth = width
+            sourceHeight = height
+        }
         recordSourceFrameForRateMeasurement()
-        if height > 0 {
+        if height > 0, videoAspectRatio != Double(width) / Double(height) {
             videoAspectRatio = Double(width) / Double(height)
         }
         latestPixelBuffer = pixelBuffer
@@ -1001,16 +1042,21 @@ final class AppleVideoFrameSource: ObservableObject {
             observedAtMilliseconds: Self.nowMilliseconds
         )
         if let decoderDelay {
-            decoderDelayMilliseconds = LiveVideoLagEstimator.quantize(milliseconds: decoderDelay)
+            let delay = LiveVideoLagEstimator.quantize(milliseconds: decoderDelay)
+            if decoderDelayMilliseconds != delay { decoderDelayMilliseconds = delay }
         }
-        if let effectiveDelay = [decoderDelay, sessionDelay].compactMap({ $0 }).max() {
-            renderDelayMilliseconds = LiveVideoLagEstimator.quantize(milliseconds: effectiveDelay)
+        let bufferedAge: Int64? = renderNatively ? ffmpegSession.map {
+            R2CFFmpegSessionRenderAgeMilliseconds($0)
+        } : nil
+        if let effectiveDelay = [decoderDelay, sessionDelay, bufferedAge].compactMap({ $0 }).max() {
+            let delay = LiveVideoLagEstimator.quantize(milliseconds: effectiveDelay)
+            if renderDelayMilliseconds != delay { renderDelayMilliseconds = delay }
         }
         if renderNatively {
             enqueueForImmediateDisplay(pixelBuffer)
         }
         submitForAnomalyAnalysis(pixelBuffer: pixelBuffer, itemTime: itemTime)
-        state = .streaming
+        if state != .streaming { state = .streaming }
     }
 
     private func recordSourceFrameForRateMeasurement() {
@@ -1093,11 +1139,14 @@ final class AppleVideoFrameSource: ObservableObject {
             if displayLayer.status == .failed {
                 displayLayer.flush()
             }
-            // This is a newest-frame display path. If a particular surface has
-            // not consumed its preceding sample, drop this frame for that
-            // surface instead of growing a queue.
-            guard displayLayer.isReadyForMoreMediaData else { continue }
+            // Native live frames have already been paced by the adaptive FIFO.
+            // Avoid adding a second queue inside a blocked display surface.
+            guard displayLayer.isReadyForMoreMediaData else {
+                displayBusyDrops += 1
+                continue
+            }
             displayLayer.enqueue(sampleBuffer)
+            displaySubmissionCount += 1
             if displayLayer.status == .failed {
                 logNativeDisplayFailureOnce(
                     "Display layer rejected native frame: \(displayLayer.error?.localizedDescription ?? "unknown error")"
@@ -1131,10 +1180,38 @@ final class AppleVideoFrameSource: ObservableObject {
         AppleLog.warning("Video", message)
     }
 
+    private var displaySubmissionCount: UInt64 = 0
+    private var displayBusyDrops: UInt64 = 0
+    private var lastRenderDiagnosticAt: TimeInterval = 0
+
     private func inspectNativeDecoderStatus() -> Bool {
         guard let ffmpegSession else { return false }
         var detail = [CChar](repeating: 0, count: 256)
         let status = R2CFFmpegSessionGetStatus(ffmpegSession, &detail, Int32(detail.count))
+        if currentURL?.isFileURL != true {
+            let age = R2CFFmpegSessionRenderAgeMilliseconds(ffmpegSession)
+            if age > 0 {
+                renderDelayMilliseconds = LiveVideoLagEstimator.quantize(milliseconds: max(age, renderDelayMilliseconds ?? 0))
+            }
+        }
+        let diagnosticNow = CACurrentMediaTime()
+        if diagnosticNow - lastRenderDiagnosticAt >= 2 {
+            lastRenderDiagnosticAt = diagnosticNow
+            var renderDetail = [CChar](repeating: 0, count: 512)
+            if R2CFFmpegSessionCopyRenderDiagnostics(ffmpegSession, &renderDetail, Int32(renderDetail.count)) {
+                let text = String(decoding: renderDetail.prefix { $0 != 0 }.map(UInt8.init(bitPattern:)), as: UTF8.self)
+                let elapsed = max(0.001, diagnosticNow - callbackWindowStartedAt)
+                let timing = String(format: " callbackHz=%.1f callbackWorkMeanMs=%.2f callbackMaxGapMs=%.1f",
+                    Double(callbackCount) / elapsed,
+                    callbackCount > 0 ? callbackWorkSeconds * 1000 / Double(callbackCount) : 0,
+                    callbackMaxGapSeconds * 1000)
+                AppleLog.info("Video", "Render buffer path=\(currentPath ?? "unknown") \(text) displaySubmitted=\(displaySubmissionCount) surfaceBusyDrops=\(displayBusyDrops)\(timing)")
+                callbackCount = 0
+                callbackWorkSeconds = 0
+                callbackWindowStartedAt = diagnosticNow
+                callbackMaxGapSeconds = 0
+            }
+        }
         if status == R2C_FFMPEG_STATUS_ENDED {
             if !nativeEndHandled {
                 nativeEndHandled = true
@@ -1172,7 +1249,7 @@ final class AppleVideoFrameSource: ObservableObject {
         }
         let width = CVPixelBufferGetWidth(latestPixelBuffer)
         let height = CVPixelBufferGetHeight(latestPixelBuffer)
-        let frameSequence = frameCount
+        let frameSequence = consumedFrameCount
         let frameTimestampMicroseconds = latestFrameSourceTimestampMicroseconds
         let frameTelemetry = latestFrameDJICameraTelemetry
         let viewport = OperationalVideoViewport(

@@ -98,7 +98,7 @@ for library in \
     "$ffmpeg_root/simulator/libR2CFFmpegMobile.a"; do
     lipo -info "$library" | grep -q 'architecture: arm64'
 done
-for symbol in R2CFFmpegSessionCreate R2CFFmpegSessionCreatePlayback R2CFFmpegSessionDestroy R2CFFmpegSessionCopyLatestFrame R2CFFmpegSessionGetStatus R2CFFmpegSessionCopyLatestDJICameraTelemetry R2CFFmpegSessionCopyLatestDJISEIPayload; do
+for symbol in R2CFFmpegSessionCopyRenderDiagnostics R2CFFmpegSessionRenderAgeMilliseconds R2CFFmpegSessionCopyFrameWithCamera R2CFFmpegSessionCreate R2CFFmpegSessionCreatePlayback R2CFFmpegSessionDestroy R2CFFmpegSessionCopyLatestFrame R2CFFmpegSessionGetStatus R2CFFmpegSessionCopyLatestDJICameraTelemetry R2CFFmpegSessionCopyLatestDJISEIPayload; do
     nm -gU "$ffmpeg_root/device/libR2CFFmpegMobile.a" | grep "_$symbol$" >/dev/null
     nm -gU "$ffmpeg_root/simulator/libR2CFFmpegMobile.a" | grep "_$symbol$" >/dev/null
 done
@@ -118,6 +118,12 @@ xcrun clang -std=c11 -Wall -Wextra -Werror \
     "$repo_root/native/tests/R2CDJICameraTelemetryTests.c" \
     -o "$work_dir/R2CDJICameraTelemetryTests"
 "$work_dir/R2CDJICameraTelemetryTests"
+
+xcrun clang -std=c11 -Wall -Wextra -Werror \
+    "$script_dir/Native/FFmpeg/tests/R2CLiveFrameQueueTests.c" \
+    "$repo_root/app/src/main/cpp/anomaly_runtime_budget.c" \
+    -o "$work_dir/R2CLiveFrameQueueTests"
+"$work_dir/R2CLiveFrameQueueTests"
 
 echo "[4/10] Portable anomaly regression suite"
 cmake -S "$repo_root/tools/anomaly_test" -B "$work_dir/anomaly-test" -DCMAKE_BUILD_TYPE=Release

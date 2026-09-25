@@ -3,9 +3,8 @@ import R2CCore
 import SwiftUI
 import UIKit
 
-/// Hosts the display layer fed by AppleVideoFrameSource's newest decoded frame.
-/// The layer receives display-immediately sample buffers, so it never waits for
-/// a playback timeline or intentionally grows a latency-producing queue.
+/// Hosts frames paced by the native adaptive live buffer. Display immediately
+/// here so AVFoundation does not add a second playback queue.
 struct AppleLiveVideoSurface: UIViewRepresentable {
     let model: AppleVideoFrameSource
 

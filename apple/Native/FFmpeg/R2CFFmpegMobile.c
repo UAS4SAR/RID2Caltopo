@@ -1,5 +1,6 @@
 #include "R2CFFmpegMobile.h"
 #include "R2CH264Packet.h"
+#include "R2CLiveFrameQueue.h"
 #include "../../../native/R2CDJICameraTelemetry.h"
 #include "../../../native/R2CLocalPlaybackCadence.h"
 
@@ -23,12 +24,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-typedef struct {
-    double values[20]; // azimuth, tilt, FOV, attitude[9], position[7]
-    int64_t timestamp;
-    uint64_t sequence;
-} R2CFrameCamera;
 
 struct R2CFFmpegSession {
     pthread_t worker;
@@ -71,6 +66,8 @@ struct R2CFFmpegSession {
     R2CFrameCamera cameraHistory[120];
     unsigned cameraHistoryNext;
     R2CFrameCamera frameCamera;
+    R2CLiveFrameQueue liveQueue;
+    int64_t renderedFrameEnqueuedAt;
     char lastFFmpegLog[256];
 };
 
@@ -252,6 +249,8 @@ static void ingest_packet_telemetry_metadata(R2CFFmpegSession *session, AVPacket
     av_dict_free(&metadata);
 }
 
+static void release_live_frame(void *frame) { CVPixelBufferRelease((CVPixelBufferRef)frame); }
+
 static void publish_frame(
     R2CFFmpegSession *session,
     CVPixelBufferRef frame,
@@ -273,6 +272,18 @@ static void publish_frame(
             closest = delta;
             session->frameCamera = candidate;
         }
+    }
+    if (!session->localPlayback) {
+        // Transfer this retained surface to the FIFO together with its exact camera sample.
+        size_t bytes = CVPixelBufferGetDataSize(frame);
+        if (!bytes) bytes = CVPixelBufferGetWidth(frame) * CVPixelBufferGetHeight(frame) * 4;
+        R2CLiveFrame queued = {
+            .frame = frame, .bytes = bytes, .pts = presentationTimeMicroseconds,
+            .enqueued = av_gettime_relative() / 1000,
+            .sequence = session->latestSequence, .camera = session->frameCamera
+        };
+        R2CLiveQueuePush(&session->liveQueue, queued, release_live_frame);
+        session->latestFrame = NULL;
     }
     session->decodedFrameCount += 1;
     session->status = R2C_FFMPEG_STATUS_STREAMING;
@@ -873,6 +884,7 @@ void R2CFFmpegSessionDestroy(R2CFFmpegSession *session) {
         pthread_join(session->worker, NULL);
     }
     pthread_mutex_lock(&session->lock);
+    R2CLiveQueueClear(&session->liveQueue, release_live_frame);
     CVPixelBufferRef latest = session->latestFrame;
     session->latestFrame = NULL;
     pthread_mutex_unlock(&session->lock);
@@ -913,6 +925,21 @@ CVPixelBufferRef R2CFFmpegSessionCopyFrameWithCamera(
 ) {
     if (!session || !values || capacity < 20 || !cameraTimestamp || !cameraSequence) return NULL;
     pthread_mutex_lock(&session->lock);
+    if (!session->localPlayback) {
+        R2CLiveFrame queued;
+        if (!R2CLiveQueuePresent(&session->liveQueue, av_gettime_relative() / 1000, &queued, release_live_frame)) {
+            pthread_mutex_unlock(&session->lock);
+            return NULL;
+        }
+        session->renderedFrameEnqueuedAt = queued.enqueued;
+        if (sequence) *sequence = queued.sequence;
+        if (frameTimestamp) *frameTimestamp = queued.pts;
+        memcpy(values, queued.camera.values, 20 * sizeof(double));
+        *cameraTimestamp = queued.camera.timestamp;
+        *cameraSequence = queued.camera.sequence;
+        pthread_mutex_unlock(&session->lock);
+        return (CVPixelBufferRef)queued.frame;
+    }
     CVPixelBufferRef frame = session->latestFrame;
     if (frame) CVPixelBufferRetain(frame);
     if (sequence) *sequence = session->latestSequence;
@@ -922,6 +949,30 @@ CVPixelBufferRef R2CFFmpegSessionCopyFrameWithCamera(
     *cameraSequence = session->frameCamera.sequence;
     pthread_mutex_unlock(&session->lock);
     return frame;
+}
+
+int64_t R2CFFmpegSessionRenderAgeMilliseconds(R2CFFmpegSession *session) {
+    if (!session || session->localPlayback) return 0;
+    pthread_mutex_lock(&session->lock);
+    int64_t age = session->renderedFrameEnqueuedAt
+        ? av_gettime_relative() / 1000 - session->renderedFrameEnqueuedAt : 0;
+    pthread_mutex_unlock(&session->lock);
+    return age;
+}
+
+bool R2CFFmpegSessionCopyRenderDiagnostics(R2CFFmpegSession *session, char *detail, int capacity) {
+    if (!session || !detail || capacity <= 0 || session->localPlayback) return false;
+    pthread_mutex_lock(&session->lock);
+    R2CLiveFrameQueue *q = &session->liveQueue;
+    snprintf(detail, (size_t)capacity,
+        "decoded=%llu dequeued=%llu queueDepth=%d bufferedSpanMs=%lld targetMs=%lld sourceIntervalMs=%lld renderIntervalMs=%lld underruns=%llu dropped=%llu resets=%llu presentationSkipped=%llu queueBytes=%zu",
+        (unsigned long long)session->decodedFrameCount, (unsigned long long)q->rendered,
+        q->count, (long long)R2CLiveQueueSpan(q), (long long)q->target,
+        (long long)q->sourceInterval, (long long)q->renderInterval,
+        (unsigned long long)q->underruns, (unsigned long long)q->dropped,
+        (unsigned long long)q->resets, (unsigned long long)q->presentationSkipped, q->bytes);
+    pthread_mutex_unlock(&session->lock);
+    return true;
 }
 
 R2CFFmpegStatus R2CFFmpegSessionGetStatus(

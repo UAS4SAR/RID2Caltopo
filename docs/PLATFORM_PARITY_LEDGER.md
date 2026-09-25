@@ -399,3 +399,13 @@ end-to-end video latency is claimed from these input changes.
 
 - Android "Keep current folder" now validates the retained Android folder grant and reactivates/persists the archive selection after a settings reset. Previously it only dismissed the dialog, so startup prompted again. Missing authorization routes back to explicit folder reauthorization.
 - Apple uses application-owned archive storage and has no corresponding Android tree-grant selection flow. Its build 253 clean reset/enrollment was confirmed by the operator; two Face ID scans were observed during initial recovery and remain a separate UX follow-up.
+
+### 2026-09-25 — Apple adaptive live-video buffering
+
+Apple's native live path now queues decoded frames and matching camera telemetry, using Android's shared native adaptive timing functions and buffer-target tuning. Android behavior is unchanged. Apple adds bounded retained-surface memory and uses display callbacks for presentation; local recordings and AVFoundation HLS fallback keep their existing pacing. Buffer/dequeue/display-submission diagnostics distinguish source timing from display backpressure. Portable/native/Swift tests and application builds are tracked in `docs/validation/2026-09-25-apple-buffered-live-video.md`; physical iPad smoothness and cross-platform field equivalence remain unverified.
+
+### 2026-09-25 — Apple display callback throughput correction
+
+Build 268 field diagnostics exposed sustained overflow despite a 700 ms adaptive target. Apple now coalesces overdue presentations against the same adaptive timeline, relocks substantial source-rate changes promptly, and reduces redundant SwiftUI publications. Presentation skips are explicitly separate from memory-overflow drops. This differs deliberately from Android's independently timed rendering worker; shared target and rate-adjustment functions remain unchanged. Callback-jitter regressions and limits are documented in `docs/validation/2026-09-25-apple-render-callback-correction.md`.
+
+Build 269 was installed in place and launched on Ken’s iPad. The user tested it and reported “That was fantastic.” This is operator confirmation of the tested playback improvement; broader cross-platform field equivalence remains unverified.
