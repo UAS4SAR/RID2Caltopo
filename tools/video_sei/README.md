@@ -232,3 +232,16 @@ Run the focused tests with:
 ```bash
 python3 -m unittest discover -s tools/video_sei -p 'test_*.py'
 ```
+
+## Bounded live discovery capture
+
+The September 25, 2026 research controls now sample all SEI message layouts on
+Android and Apple, including type-245 TLV layout changes. They retain up to 20
+complete samples per layout, 64 layouts and a 2 MiB text budget per off/on capture
+window. `SEI_SAMPLE` hex is reconstructed by window/sample and byte offset;
+`SEI_KIND` gives seen/saved counts when capture is switched off. Unlike earlier
+live diagnostic descriptions above, admitted samples are chunked completely;
+oversize/budget omissions are counted rather than truncated.
+
+Field controls, original-recording locations and transport limitations are in
+[the capture guide](../../docs/validation/2026-09-25-sei-discovery-capture.md).

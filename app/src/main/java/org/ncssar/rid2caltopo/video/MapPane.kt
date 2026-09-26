@@ -58,6 +58,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Checkbox
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -245,9 +246,14 @@ internal fun seedLocalTrackPointsFromSnapshot(
     if (snapshotPoints.isEmpty()) return false
 
     var changed = false
+    // Only equal timestamps can be duplicates. Avoid comparing the entire
+    // growing flight history with every snapshot point on the UI thread.
+    val pointsByTimestamp = flightPoints.groupByTo(HashMap()) { it.timestampMsec }
     snapshotPoints.forEach { point ->
-        if (flightPoints.none { existing -> existing.isSameTrackPoint(point) }) {
+        val candidates = pointsByTimestamp.getOrPut(point.timestampMsec) { mutableListOf() }
+        if (candidates.none { existing -> existing.isSameTrackPoint(point) }) {
             flightPoints.add(point)
+            candidates.add(point)
             changed = true
         }
     }
@@ -720,7 +726,6 @@ internal fun SplitMapPane(
     val activeShareSession by MutualAidPackageTransferManager.shareSession.collectAsState()
     var preparingMutualAidShare by remember { mutableStateOf(false) }
     val maximizeThroughputBlockedForOsm = baseLayer == BaseLayerOption.OpenStreetMap
-    var predictiveHeadEnabled by remember { mutableStateOf(CaltopoClient.GetPredictiveHeadEnabled()) }
     var contourOverlayEnabled by remember { mutableStateOf(MapCacheSettings.contourOverlayEnabled(context)) }
     var autoRemoveBadTiles by remember { mutableStateOf(BadTilePolicy.isAutoRemoveEnabled(context)) }
     var badTileDialogState by remember { mutableStateOf<BadTileDialogState?>(null) }
@@ -729,8 +734,8 @@ internal fun SplitMapPane(
     val artifactRenderCache = viewModel.mapArtifactRenderCache
     val artifactStoreById = artifactRenderCache.featuresById
     fun cachedOverlayState(): ArtifactOverlayState = cachedArtifactOverlayState(artifactRenderCache.overlayState)
-    val localTrackPointsByMappedId = remember { mutableStateMapOf<String, MutableList<LocalTrackPoint>>() }
-    val currentFlightTrackPointsByMappedId = remember { mutableStateMapOf<String, MutableList<LocalTrackPoint>>() }
+    val localTrackPointsByMappedId = remember { mutableStateMapOf<String, SnapshotStateList<LocalTrackPoint>>() }
+    val currentFlightTrackPointsByMappedId = remember { mutableStateMapOf<String, SnapshotStateList<LocalTrackPoint>>() }
     val seiTelemetryByMappedId = remember { mutableStateMapOf<String, StreamCameraTelemetrySample>() }
     val localTrackMappedIdsByRemoteId = remember { mutableStateMapOf<String, MutableSet<String>>() }
     val localTrackLastSeededTimestampByMappedId = remember { mutableMapOf<String, Long>() }
@@ -741,6 +746,8 @@ internal fun SplitMapPane(
     var localDeviceRefreshToken by remember { mutableIntStateOf(0) }
     var positionFreshnessRefreshToken by remember { mutableIntStateOf(0) }
     val managedOverlays = remember { mutableListOf<Overlay>() }
+    val flightTrackLines = remember { MapOwnedReusable<TrackRenderCache<Polyline>>() }
+    val recentTrackLines = remember { MapOwnedReusable<TrackRenderCache<Polyline>>() }
     val markerInfoWindow = remember { MapOwnedReusable<LocalMarkerInfoWindow>() }
     var artifactOverlayState: ArtifactOverlayState by remember {
         mutableStateOf(cachedOverlayState())
@@ -3334,6 +3341,10 @@ internal fun SplitMapPane(
                     mappedIdsByRemoteId = localTrackMappedIdsByRemoteId,
                     preferenceForPilotKey = ::pilotDisplayPreferenceFor
                 )
+                val flightLines = flightTrackLines.getOrCreate(mapView) { TrackRenderCache<Polyline>() }
+                val recentLines = recentTrackLines.getOrCreate(mapView) { TrackRenderCache<Polyline>() }
+                flightLines.retainKeys(fullFlightTrackMappedIds.intersect(currentFlightTrackPointsByMappedId.keys))
+                recentLines.retainKeys(localTrackPointsByMappedId.keys)
                 currentFlightTrackPointsByMappedId.forEach { (mappedId, points) ->
                     if (mappedId !in fullFlightTrackMappedIds) return@forEach
                     if (points.size < 2) return@forEach
@@ -3341,8 +3352,14 @@ internal fun SplitMapPane(
                         pilotPreferencesByMappedId[mappedId]?.archiveTrackColor,
                         DEFAULT_ARCHIVE_TRACK_COLOR
                     )
-                    val line = Polyline(mapView).apply {
-                        setPoints(points.map { GeoPoint(it.lat, it.lng) })
+                    val line = flightLines.getOrUpdate(
+                        mappedId,
+                        points.toList(), // SnapshotStateList returns an immutable, O(1) snapshot.
+                        create = { Polyline(mapView) },
+                        update = { line, snapshot ->
+                            line.setPoints(snapshot.map { GeoPoint(it.lat, it.lng) })
+                        }
+                    ).apply {
                         title = "Flight track: $mappedId (${points.size})"
                         applyPolylineStyle(this, trackColor, 2.0f * lineScale)
                     }
@@ -3356,8 +3373,14 @@ internal fun SplitMapPane(
                         pilotPreferencesByMappedId[mappedId]?.activeTrackColor,
                         DEFAULT_ACTIVE_TRACK_COLOR
                     )
-                    val line = Polyline(mapView).apply {
-                        setPoints(points.map { GeoPoint(it.lat, it.lng) })
+                    val line = recentLines.getOrUpdate(
+                        mappedId,
+                        points.toList(), // SnapshotStateList returns an immutable, O(1) snapshot.
+                        create = { Polyline(mapView) },
+                        update = { line, snapshot ->
+                            line.setPoints(snapshot.map { GeoPoint(it.lat, it.lng) })
+                        }
+                    ).apply {
                         title = "Local track: $mappedId (${points.size})"
                         applyPolylineStyle(this, trackColor, 4.0f * lineScale)
                     }
@@ -3701,18 +3724,8 @@ internal fun SplitMapPane(
                         )
                         renderLatencyKeyByDesignator[point.designator] = pointLatencyKey
                     }
-                    val predictedHead = if (predictiveHeadEnabled) {
-                        predictedHeadPoint(
-                            designator = point.designator,
-                            nowWallMsec = uiNowWallMsec,
-                            dronePointTimestampMsec = point.timestampMsec,
-                            tracksByMappedId = localTrackPointsByMappedId
-                        )
-                    } else {
-                        null
-                    }
-                    val renderLat = predictedHead?.lat ?: point.lat
-                    val renderLng = predictedHead?.lng ?: point.lng
+                    val renderLat = point.lat
+                    val renderLng = point.lng
                     val cameraFov = cameraFovBoundaryBearings(
                         point.cameraAzimuthDeg,
                         point.horizontalCameraFovDeg
@@ -4343,7 +4356,6 @@ internal fun SplitMapPane(
                 badTilesMenuExpanded = badTilesMenuExpanded,
                 onBadTilesMenuExpandedChange = { badTilesMenuExpanded = it },
                 baseLayer = baseLayer,
-                predictiveHeadEnabled = predictiveHeadEnabled,
                 followFocusedDroneEnabled = followFocusedDroneEnabled,
                 mapReloadInFlight = mapReloadInFlight,
                 mapCacheAvailableBytes = offlinePrepAvailableBytes,
@@ -4352,11 +4364,6 @@ internal fun SplitMapPane(
                 autoRemoveBadTiles = autoRemoveBadTiles,
                 contourOverlayEnabled = contourOverlayEnabled,
                 hasMapFolders = buildMapFolderUiStates(artifactStoreById).isNotEmpty(),
-                onTogglePredictiveHead = {
-                    predictiveHeadEnabled = !predictiveHeadEnabled
-                    CaltopoClient.SetPredictiveHeadEnabled(predictiveHeadEnabled)
-                    settingsMenuExpanded = false
-                },
                 onDownloadMap = {
                     offlinePrepIncludeContours = contourOverlayEnabled
                     offlinePrepCacheLimitInput = String.format(
@@ -5158,56 +5165,4 @@ private fun nearestLocalTrackTailDistanceMeters(
         }
     }
     return best
-}
-
-
-private fun predictedHeadPoint(
-    designator: String,
-    nowWallMsec: Long,
-    dronePointTimestampMsec: Long,
-    tracksByMappedId: Map<String, List<LocalTrackPoint>>
-): PredictedHead? {
-    val points = tracksByMappedId[designator] ?: return null
-    val p2 = points.lastOrNull() ?: return null
-    val p1 = points.asReversed().drop(1).firstOrNull() ?: return null
-
-    val deltaByDroneTsMsec = p2.timestampMsec - p1.timestampMsec
-    val deltaByReceiveMsec = p2.receivedAtMsec - p1.receivedAtMsec
-    val deltaMsec = when {
-        deltaByDroneTsMsec > 0L -> deltaByDroneTsMsec
-        deltaByReceiveMsec > 0L -> deltaByReceiveMsec
-        else -> return null
-    }
-
-    val distanceAndBearing = FloatArray(2)
-    Location.distanceBetween(
-        p1.lat, p1.lng,
-        p2.lat, p2.lng,
-        distanceAndBearing
-    )
-    val segmentDistanceM = distanceAndBearing[0].toDouble()
-    if (!segmentDistanceM.isFinite() || segmentDistanceM <= 0.0) return null
-
-    val speedMps = (segmentDistanceM / deltaMsec.toDouble() * 1000.0)
-        .coerceAtMost(PREDICTIVE_HEAD_MAX_SPEED_MPS)
-    if (speedMps <= 0.0) return null
-
-    val ageMsec = nowWallMsec - dronePointTimestampMsec
-    if (ageMsec < PREDICTIVE_HEAD_MIN_AGE_MS || ageMsec > PREDICTIVE_HEAD_MAX_AGE_MS) return null
-
-    val projectionMsec = ageMsec.coerceAtMost(PREDICTIVE_HEAD_MAX_LOOKAHEAD_MS)
-    val projectionDistanceM = (speedMps * projectionMsec.toDouble() / 1000.0)
-        .coerceAtMost(PREDICTIVE_HEAD_MAX_DISTANCE_M)
-    if (projectionDistanceM <= 0.0) return null
-
-    val predictedGeoPoint = destinationPoint(
-        startLat = p2.lat,
-        startLng = p2.lng,
-        bearingDeg = distanceAndBearing[1].toDouble(),
-        distanceM = projectionDistanceM
-    )
-    return PredictedHead(
-        lat = predictedGeoPoint.latitude,
-        lng = predictedGeoPoint.longitude
-    )
 }

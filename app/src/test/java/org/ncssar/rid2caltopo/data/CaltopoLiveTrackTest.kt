@@ -10,6 +10,11 @@ import java.lang.reflect.Field
 import java.lang.reflect.Method
 
 class CaltopoLiveTrackTest {
+    private lateinit var journalFile: java.io.File
+    private lateinit var mapNodeField: Field
+    private var previousMapNode: Any? = null
+    private var previousRuntime: Any? = null
+
 
     private lateinit var fixture: TestR2cRuntimeFactory.Fixture
     private lateinit var mapStatusField: Field
@@ -39,8 +44,18 @@ class CaltopoLiveTrackTest {
 
     @Before
     fun setUp() {
+        journalFile = java.io.File.createTempFile("livetrack-start-", ".json").apply { delete() }
+        CaltopoInterruptedTrackJournal.setFileForTesting(journalFile)
+        mapNodeField = CaltopoMap::class.java.getDeclaredField("MapNode").apply { isAccessible = true }
+        previousMapNode = mapNodeField.get(null)
+        mapNodeField.set(null, CaltopoNode.MapNode("map-test", "Test", 0L))
         fixture = TestR2cRuntimeFactory.create("live-track-test")
         fixture.setAsDefaultRuntime()
+        CaltopoMap::class.java.getDeclaredField("CurrentRuntime").apply {
+            isAccessible = true
+            previousRuntime = get(null)
+            set(null, fixture.runtime)
+        }
 
         mapStatusField = CaltopoMap::class.java.getDeclaredField("MapStatus").apply { isAccessible = true }
         folderIdField = CaltopoMap::class.java.getDeclaredField("FolderId").apply { isAccessible = true }
@@ -59,6 +74,10 @@ class CaltopoLiveTrackTest {
 
     @After
     fun tearDown() {
+        mapNodeField.set(null, previousMapNode)
+        CaltopoMap::class.java.getDeclaredField("CurrentRuntime").apply { isAccessible = true; set(null, previousRuntime) }
+        CaltopoInterruptedTrackJournal.setFileForTesting(null)
+        journalFile.delete()
         clearLocalTrackListeners()
         mapStatusField.set(null, originalMapStatus)
         folderIdField.set(null, originalFolderId)
@@ -66,6 +85,88 @@ class CaltopoLiveTrackTest {
         @Suppress("UNCHECKED_CAST")
         (liveTracksByIdField.get(null) as MutableMap<String, *>).clear()
         R2cRuntimeRegistry.resetDefaultRuntimeForTesting()
+    }
+
+    private fun startingTrack(): CaltopoLiveTrack {
+        val drone = CtDroneSpec("RID-TIMEOUT")
+        setDroneTrackLabel(drone, "RID-TIMEOUT_120000Sep25")
+        return CaltopoLiveTrack(drone, 39.1, -121.1, 500.0, 1_000L).also {
+            it.mapStatusUpdate(CaltopoMap.MapStatusListener.mapStatus.up, null, null)
+            it.setLocalOwner(true)
+        }
+    }
+
+    private fun reply(id: String? = null) = CaltopoOp(null).apply {
+        responseCode = if (id == null) 0 else 200
+        if (id != null) responseJson = org.json.JSONObject().put("id", id)
+        setOperationIsDone(id != null)
+    }
+
+    @Test fun endedTrackRestartsOnceBuffersUntilOwnershipAndArchivesAllReturningPoints() {
+        val track = startingTrack()
+        val gateway = fixture.calTopoSessionGateway
+        val peer = fixture.peerCoordinator as FakePeerCoordinator
+        val firstId = gateway.snapshotOperations().first { it.kind == "startLiveTrack" }.payload!!.getString("id")
+        gateway.startCallbacks[0].accept(reply(firstId))
+        track.finishTrack("telemetry idle after Wi-Fi loss")
+        assertFalse(track.isActive)
+
+        val drone = CaltopoLiveTrack::class.java.getDeclaredField("droneSpec").apply { isAccessible = true }.get(track) as CtDroneSpec
+        setDroneTrackLabel(drone, "RID-TIMEOUT_120100Sep25")
+        repeat(4) { index ->
+            // Exercise both the client's active branch and a redundant restart call.
+            if (index == 0 || index == 2) track.startNewTrack(39.2 + index * .001, -121.2, 501.0, 2_000L + index)
+            else track.publishDirect(39.2 + index * .001, -121.2, 501L, 2_000L + index)
+            org.junit.Assert.assertTrue(track.isActive)
+        }
+        assertEquals(2, peer.countEvents("onLiveTrackCreated"))
+        assertEquals(1, gateway.countOperations("startLiveTrack"))
+        assertEquals(4, track.queuedPointCount)
+
+        track.setLocalOwner(true)
+        val secondId = gateway.snapshotOperations().last { it.kind == "startLiveTrack" }.payload!!.getString("id")
+        org.junit.Assert.assertNotEquals(firstId, secondId)
+        gateway.startCallbacks[1].accept(reply(secondId))
+        track.finishTrack("second segment ended")
+        val shape = gateway.snapshotOperations().first { it.kind == "editObject" && it.summary == "Shape:$secondId" }.payload!!
+        assertEquals(4, shape.getJSONObject("geometry").getJSONArray("coordinates").length())
+    }
+
+    @Test fun pendingStartBuffersPointsAndTimeoutReusesPersistedIdentity() {
+        val track = startingTrack()
+        val gateway = fixture.calTopoSessionGateway
+        val id = gateway.snapshotOperations().first { it.kind == "startLiveTrack" }.payload!!.getString("id")
+        org.junit.Assert.assertTrue(journalFile.readText().contains(id))
+        track.startNewTrack(39.2, -121.2, 501.0, 2_000L)
+        assertEquals(1, gateway.countOperations("startLiveTrack"))
+        assertEquals(0, gateway.countOperations("addLiveTrackPoint"))
+        gateway.startCallbacks[0].accept(reply())
+        setPrivateField(track, "nextStartAttemptAtMs", 0L)
+        track.publishDirect(39.3, -121.3, 502L, 3_000L)
+        val ids = gateway.snapshotOperations().filter { it.kind == "startLiveTrack" }.map { it.payload!!.getString("id") }
+        assertEquals(listOf(id, id), ids)
+        assertEquals(0, gateway.countOperations("addLiveTrackPoint"))
+        gateway.startCallbacks[1].accept(reply(id))
+        assertEquals(1, gateway.countOperations("addLiveTrackPoint"))
+        assertEquals(39.3, gateway.snapshotOperations().last { it.kind == "addLiveTrackPoint" }.payload!!.getDouble("lat"), 0.000001)
+        repeat(4) { gateway.pointCallbacks[0].accept(reply()) }
+        org.junit.Assert.assertTrue(track.isActive)
+        track.publishDirect(39.4, -121.4, 503L, 4_000L)
+        assertEquals(2, gateway.countOperations("startLiveTrack"))
+    }
+
+    @Test fun lostStartResponseStillArchivesEveryStoredPointUnderSameId() {
+        val track = startingTrack()
+        val gateway = fixture.calTopoSessionGateway
+        val id = gateway.snapshotOperations().first { it.kind == "startLiveTrack" }.payload!!.getString("id")
+        track.publishDirect(39.2, -121.2, 501L, 2_000L)
+        gateway.startCallbacks[0].accept(reply())
+        track.finishTrack("flight ended")
+        val shape = gateway.snapshotOperations().first { it.kind == "editObject" && it.summary == "Shape:$id" }.payload!!
+        assertEquals(2, shape.getJSONObject("geometry").getJSONArray("coordinates").length())
+        assertEquals(id, shape.getString("id"))
+        gateway.startCallbacks[0].accept(reply(id))
+        assertEquals(0, gateway.countOperations("addLiveTrackPoint"))
     }
 
     @Test
@@ -212,7 +313,7 @@ class CaltopoLiveTrackTest {
             val callback = CaltopoOp(null).apply {
                 responseCode = 200
                 response = "fake"
-                responseJson = org.json.JSONObject().put("id", "live-video-test")
+                responseJson = org.json.JSONObject().put("id", fixture.calTopoSessionGateway.snapshotOperations().first { it.kind == "startLiveTrack" }.payload!!.getString("id"))
                 setOperationIsDone(true)
             }
             startLiveTrackCompleteMethod().invoke(liveTrack, callback)

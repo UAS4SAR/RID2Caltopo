@@ -2,6 +2,7 @@
 #include "R2CH264Packet.h"
 #include "R2CLiveFrameQueue.h"
 #include "../../../native/R2CDJICameraTelemetry.h"
+#include "../../../native/R2CSEIDiscovery.h"
 #include "../../../native/R2CLocalPlaybackCadence.h"
 
 #include <libavcodec/avcodec.h>
@@ -24,6 +25,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+static pthread_mutex_t seiCaptureLock = PTHREAD_MUTEX_INITIALIZER;
+static atomic_bool seiCaptureEnabled = false;
+static R2CSEIDiscovery seiCapture;
+static R2CSEIDiagnosticLogger seiLogger;
+void R2CFFmpegSetSEIDiscovery(bool enabled, R2CSEIDiagnosticLogger logger) {
+    pthread_mutex_lock(&seiCaptureLock);
+    if (atomic_load(&seiCaptureEnabled) && seiLogger) R2CSEISummary(&seiCapture,seiLogger);
+    seiLogger=logger;
+    if (enabled) R2CSEIReset(&seiCapture);
+    atomic_store(&seiCaptureEnabled,enabled);
+    pthread_mutex_unlock(&seiCaptureLock);
+}
+typedef struct { const char *stream; int64_t pts; } SEIContext;
+static void captureSEI(size_t type,const uint8_t *bytes,size_t size,void *opaque) {
+    SEIContext *context=opaque;
+    if (seiLogger) R2CSEICapture(&seiCapture,type,bytes,size,context->stream,context->pts,seiLogger);
+}
 
 struct R2CFFmpegSession {
     pthread_t worker;
@@ -441,6 +460,19 @@ static void *decode_worker(void *opaque) {
         }
         ingest_packet_telemetry_metadata(session, packet);
         if (stream->codecpar->codec_id == AV_CODEC_ID_H264) {
+            if (!session->localPlayback && atomic_load(&seiCaptureEnabled)) {
+                pthread_mutex_lock(&seiCaptureLock);
+                if (atomic_load(&seiCaptureEnabled)) {
+                    // URL path identifies the publisher without including query credentials.
+                    const char *identity=strrchr(session->url,'/');
+                    char safeIdentity[97];
+                    snprintf(safeIdentity,sizeof(safeIdentity),"%.96s",identity ? identity+1 : "live");
+                    safeIdentity[strcspn(safeIdentity,"?\r\n")]=0;
+                    SEIContext context={safeIdentity, packet->pts == AV_NOPTS_VALUE ? INT64_MIN : av_rescale_q(packet->pts,stream->time_base,(AVRational){1,1000000})};
+                    R2CDJIVisitH264SEIPayloads(packet->data,(size_t)packet->size,nalLengthSize,captureSEI,&context);
+                }
+                pthread_mutex_unlock(&seiCaptureLock);
+            }
             R2CDJICameraTelemetry camera = {0};
             if (R2CDJIDecodeH264Packet(
                     packet->data,

@@ -23,6 +23,8 @@ import java.util.function.Consumer;
  * lines, etc., without touching the real network or CalTopo backend.
  */
 public final class FakeCalTopoSessionGateway implements CalTopoSessionGateway {
+    public final List<Consumer<CaltopoOp>> startCallbacks = new ArrayList<>();
+    public final List<Consumer<CaltopoOp>> pointCallbacks = new ArrayList<>();
 
     public static final class Operation {
         @NonNull public final String kind;
@@ -192,7 +194,7 @@ public final class FakeCalTopoSessionGateway implements CalTopoSessionGateway {
 
     @NonNull
     @Override
-    public CaltopoOp startLiveTrack(@NonNull String deviceId, @NonNull String label, @Nullable String folderId, @Nullable String description, @Nullable CtLineProperty lineProp, @Nullable Consumer<CaltopoOp> onComplete) {
+    public CaltopoOp startLiveTrack(@NonNull String liveTrackId, @NonNull String deviceId, @NonNull String label, @Nullable String folderId, @Nullable String description, @Nullable CtLineProperty lineProp, @Nullable Consumer<CaltopoOp> onComplete) {
         JSONObject payload = new JSONObject();
         try {
             payload.put("deviceId", deviceId);
@@ -200,8 +202,10 @@ public final class FakeCalTopoSessionGateway implements CalTopoSessionGateway {
             payload.put("folderId", folderId);
             payload.put("mapId", currentMapId);
         } catch (Exception ignored) { }
+        try { payload.put("id", liveTrackId); } catch (Exception ignored) { }
         record("startLiveTrack", deviceId, payload);
-        return completedOp("live-" + deviceId + "-" + nextId.getAndIncrement());
+        startCallbacks.add(onComplete);
+        return completedOp(liveTrackId);
     }
 
     @NonNull
@@ -226,6 +230,7 @@ public final class FakeCalTopoSessionGateway implements CalTopoSessionGateway {
             }
         } catch (Exception ignored) { }
         record("addLiveTrackPoint", deviceId, payload);
+        pointCallbacks.add(onComplete);
         return completedOp(deviceId);
     }
 

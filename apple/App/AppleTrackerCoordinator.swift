@@ -2842,14 +2842,6 @@ final class AppleTrackerCoordinator: ObservableObject {
                 streamSessionID: stream.sessionId,
                 thumbnailRevision: stream.thumbnailRevision
             )
-        if let thumbnailURL,
-           let timestamp = URLComponents(url: thumbnailURL, resolvingAgainstBaseURL: false)?
-               .queryItems?.first(where: { $0.name == "timestamp" })?.value {
-            AppleLog.debug(
-                "CalTopo",
-                "positionReport(GET) camera:thumbnail_url=present(scheme=https,host=tracker,cacheBust=timestamp:\(timestamp))"
-            )
-        }
         let cameraTelemetry = managedVideoSourcesBySessionID[stream.sessionId]?
             .freshDJICameraTelemetry()
         return CaltopoCameraMetadata(

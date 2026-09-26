@@ -115,6 +115,10 @@ bool R2CFFmpegSessionCopyLatestDJISEIPayload(
 
 const char *R2CFFmpegVersion(void);
 
+// Research capture runs on the decoder worker, never the display callback.
+typedef void (*R2CSEIDiagnosticLogger)(const char *line);
+void R2CFFmpegSetSEIDiscovery(bool enabled, R2CSEIDiagnosticLogger logger);
+
 #ifdef __cplusplus
 }
 #endif

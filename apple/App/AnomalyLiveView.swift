@@ -73,7 +73,6 @@ struct AnomalyLiveView: View {
             if model.recoveryCount > 0 || model.mediaPublisherStatus != "Unknown" {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Decoder: \(model.decoderBackend)")
-                    Text("Local delay: \(LiveVideoLagEstimator.label(milliseconds: model.renderDelayMilliseconds)) • decoder: \(LiveVideoLagEstimator.label(milliseconds: model.decoderDelayMilliseconds))")
                     Text("MediaMTX: \(model.mediaPublisherStatus) • recoveries: \(model.recoveryCount)")
                     Text("Last frame: \(frameAge) • last recovery: \(model.lastRecoveryReason)")
                 }

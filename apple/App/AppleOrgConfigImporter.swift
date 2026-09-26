@@ -372,8 +372,8 @@ final class AppleOrgConfigSettings: ObservableObject {
         trackerEnrollmentURL = defaults.string(forKey: "org.trackerEnrollmentURL") ?? ""
         usePeers = defaults.object(forKey: "org.usePeers") as? Bool ?? true
         standaloneR2CCoordinationEnabled = false
-        predictiveHeadEnabled = defaults.object(forKey: "org.predictiveHead") as? Bool ?? true
-        proximityAlertSpacingFeet = defaults.object(forKey: "org.proximityFeet") as? Int ?? 40
+        predictiveHeadEnabled = false // Retired compatibility field.
+        proximityAlertSpacingFeet = max(50, defaults.object(forKey: "org.proximityFeet") as? Int ?? 100)
         minimumTrackDistanceFeet = max(2, defaults.object(forKey: "track.minimumDistanceFeet") as? Int ?? 2)
         newTrackDelaySeconds = max(1, defaults.object(forKey: "track.newTrackDelaySeconds") as? Int ?? 30)
         bridgeCheckDistanceFeet = max(1, defaults.object(forKey: "track.bridgeCheckDistanceFeet") as? Int ?? 20)
@@ -554,8 +554,8 @@ final class AppleOrgConfigSettings: ObservableObject {
         faaProxyURL = ""
         trackerEnrollmentURL = ""
         usePeers = credentials?.usePeers ?? true
-        predictiveHeadEnabled = credentials?.predictiveHeadEnabled ?? true
-        proximityAlertSpacingFeet = credentials?.proximityAlertSpacingFeet ?? 40
+        predictiveHeadEnabled = false // Retired compatibility field.
+        proximityAlertSpacingFeet = max(50, credentials?.proximityAlertSpacingFeet ?? 100)
         sourceDescription = "R2C2 • \(organizationName.isEmpty ? "Unnamed org" : organizationName)"
 
         defaults.set(organizationName, forKey: "org.name")
@@ -606,7 +606,7 @@ final class AppleOrgConfigSettings: ObservableObject {
         teamID = profile.teamID
         trackerURLPrefix = profile.trackerURLPrefix
         usePeers = true
-        predictiveHeadEnabled = true
+        predictiveHeadEnabled = false // Retired compatibility field.
         sourceDescription = "Android MA QR • \(profile.displayName)"
         defaults.set(organizationName, forKey: "org.name")
         defaults.set(incident, forKey: "org.incident")
@@ -643,8 +643,8 @@ final class AppleOrgConfigSettings: ObservableObject {
     }
 
     func setPredictiveHeadEnabled(_ enabled: Bool) {
-        predictiveHeadEnabled = enabled
-        defaults.set(enabled, forKey: "org.predictiveHead")
+        predictiveHeadEnabled = false // Retired compatibility field.
+        defaults.set(false, forKey: "org.predictiveHead")
     }
 
     func setUsePeers(_ enabled: Bool) {
@@ -660,7 +660,7 @@ final class AppleOrgConfigSettings: ObservableObject {
     }
 
     func setProximityAlertSpacingFeet(_ value: Int) {
-        proximityAlertSpacingFeet = max(1, value)
+        proximityAlertSpacingFeet = max(50, value)
         defaults.set(proximityAlertSpacingFeet, forKey: "org.proximityFeet")
     }
 
@@ -695,8 +695,8 @@ final class AppleOrgConfigSettings: ObservableObject {
         faaProxyURL = ""
         usePeers = true
         standaloneR2CCoordinationEnabled = false
-        predictiveHeadEnabled = true
-        proximityAlertSpacingFeet = 40
+        predictiveHeadEnabled = false // Retired compatibility field.
+        proximityAlertSpacingFeet = 100
         minimumTrackDistanceFeet = 2
         newTrackDelaySeconds = 30
         bridgeCheckDistanceFeet = 20
@@ -798,8 +798,8 @@ final class AppleOrgConfigSettings: ObservableObject {
         trackerURLPrefix = object["tracker_url_prefix"] as? String ?? ""
         usePeers = (object["use_peers"] as? NSNumber)?.boolValue ?? true
         standaloneR2CCoordinationEnabled = false
-        predictiveHeadEnabled = (object["predictive_head"] as? NSNumber)?.boolValue ?? true
-        proximityAlertSpacingFeet = (object["proximity_feet"] as? NSNumber)?.intValue ?? 40
+        predictiveHeadEnabled = false // Retired compatibility field.
+        proximityAlertSpacingFeet = max(50, (object["proximity_feet"] as? NSNumber)?.intValue ?? 100)
         minimumTrackDistanceFeet = max(2, (object["minimum_track_distance_feet"] as? NSNumber)?.intValue ?? 2)
         newTrackDelaySeconds = max(1, (object["new_track_delay_seconds"] as? NSNumber)?.intValue ?? 30)
         bridgeCheckDistanceFeet = max(1, (object["bridge_check_distance_feet"] as? NSNumber)?.intValue ?? 20)

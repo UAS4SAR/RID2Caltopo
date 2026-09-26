@@ -208,9 +208,22 @@ enum AppleLog {
     }
 }
 
+// C invokes this on the decoder worker. Keep the callback outside MainActor
+// isolation and copy its borrowed C string before asynchronous log delivery.
+private nonisolated func appleSEIDiagnosticCallback(_ line: UnsafePointer<CChar>?) {
+    guard let line else { return }
+    AppleLog.info("DjiSeiPayload", String(cString: line))
+}
+
 @MainActor
 enum AppleSEIHexDiagnostics {
-    static var enabled = false
+    static var preserveOriginals = false
+    static var enabled = false {
+        didSet {
+            if enabled { preserveOriginals = true }
+            R2CFFmpegSetSEIDiscovery(enabled, appleSEIDiagnosticCallback)
+        }
+    }
 }
 
 @MainActor

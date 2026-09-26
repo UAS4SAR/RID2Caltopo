@@ -843,7 +843,8 @@ private struct AppleStreamTile: View {
             if telemetryText != nil || coordinateText != nil {
                 VStack(alignment: .leading, spacing: 2) {
                     if let telemetryText {
-                        let line = zoom > 1.01 ? "\(telemetryText)  \(zoomLabel)" : telemetryText
+                        let stableText = stableVideoTelemetryText(telemetryText)
+                        let line = zoom > 1.01 ? "\(stableText)  \(zoomLabel)" : stableText
                         if line.contains("CAL") {
                             Button { onCalibrationRequested?() } label: {
                                 Text(coloredTelemetry(line)).fixedSize(horizontal: false, vertical: true)
@@ -872,7 +873,7 @@ private struct AppleStreamTile: View {
                         }
                     }
                 }
-                .font(.caption2.monospacedDigit())
+                .font(.caption2.monospaced())
                 .foregroundStyle(.white)
                 .padding(.horizontal, 7)
                 .padding(.vertical, 4)
@@ -1164,10 +1165,6 @@ private struct StreamPerformanceView: View {
                 LabeledContent("Backend", value: model.decoderBackend)
                 LabeledContent("Frame size", value: model.dimensions)
                 LabeledContent("Decoded frames", value: model.frameCount.formatted())
-                LabeledContent(
-                    "Lag",
-                    value: LiveVideoLagEstimator.label(milliseconds: model.renderDelayMilliseconds)
-                )
                 LabeledContent("Recoveries", value: model.recoveryCount.formatted())
                 LabeledContent("Last recovery", value: model.lastRecoveryReason)
             }

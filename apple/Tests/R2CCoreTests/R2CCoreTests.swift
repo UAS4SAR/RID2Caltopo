@@ -2122,7 +2122,7 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
         team: false,
         eligible: false
     )
-    #expect(engine.update(drones: [ineligible, nearbyUnknown], thresholdFeet: 40).activeAlert == nil)
+    #expect(engine.update(drones: [ineligible, nearbyUnknown], thresholdFeet: 100, enabled: true).activeAlert == nil)
 
     engine.reset()
     let eligible = proximityDrone(
@@ -2131,9 +2131,9 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
         team: true,
         eligible: true
     )
-    let output = engine.update(drones: [eligible, nearbyUnknown], thresholdFeet: 40)
+    let output = engine.update(drones: [eligible, nearbyUnknown], thresholdFeet: 100, enabled: true)
     #expect(output.activeAlert?.pairKey == "A|B")
-    #expect(output.activeAlert?.horizontalSeparationFeet ?? 100 < 40)
+    #expect(output.activeAlert?.horizontalSeparationFeet ?? 200 < 100)
 }
 
 @Test func proximityAlertUsesVerticalSpacingOnlyForTwoTeamDrones() {
@@ -2152,7 +2152,7 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
         team: false,
         eligible: false
     )
-    #expect(engine.update(drones: [eligibleTeam, highUnknown], thresholdFeet: 40).activeAlert != nil)
+    #expect(engine.update(drones: [eligibleTeam, highUnknown], thresholdFeet: 100, enabled: true).activeAlert != nil)
 
     engine.reset()
     let highTeam = proximityDrone(
@@ -2162,29 +2162,29 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
         team: true,
         eligible: false
     )
-    #expect(engine.update(drones: [eligibleTeam, highTeam], thresholdFeet: 40).activeAlert == nil)
+    #expect(engine.update(drones: [eligibleTeam, highTeam], thresholdFeet: 100, enabled: true).activeAlert == nil)
 }
 
 @Test func proximityAlertSuspendsResumesAndClearsAfterAndroidDelay() {
     var engine = RidProximityAlertEngine()
     let start = Date(timeIntervalSince1970: 1_000)
-    let first = proximityDrone(id: "A", longitude: 0, team: true, eligible: true)
-    let second = proximityDrone(id: "B", longitude: 0.00005, team: true, eligible: false)
+    let first = proximityDrone(id: "A", longitude: 0, sampleDate: start, team: true, eligible: true)
+    let second = proximityDrone(id: "B", longitude: 0.00005, sampleDate: start, team: true, eligible: false)
 
-    let active = engine.update(drones: [first, second], thresholdFeet: 40, now: start)
+    let active = engine.update(drones: [first, second], thresholdFeet: 100, enabled: true, now: start)
     #expect(active.activeAlert != nil)
     let suspended = engine.suspend()
     #expect(suspended.activeAlert == nil)
     #expect(suspended.canResume)
     #expect(engine.resume().activeAlert != nil)
 
-    let separated = proximityDrone(id: "B", longitude: 0.001, team: true, eligible: false)
-    #expect(engine.update(drones: [first, separated], thresholdFeet: 40, now: start).activeAlert != nil)
-    #expect(engine.update(drones: [first, separated], thresholdFeet: 40, now: start.addingTimeInterval(2.9)).activeAlert != nil)
-    #expect(engine.update(drones: [first, separated], thresholdFeet: 40, now: start.addingTimeInterval(3.1)).activeAlert == nil)
+    let separated = proximityDrone(id: "B", longitude: 0.01, sampleDate: start, team: true, eligible: false)
+    #expect(engine.update(drones: [first, separated], thresholdFeet: 100, enabled: true, now: start).activeAlert != nil)
+    #expect(engine.update(drones: [first, separated], thresholdFeet: 100, enabled: true, now: start.addingTimeInterval(2.9)).activeAlert != nil)
+    #expect(engine.update(drones: [first, separated], thresholdFeet: 100, enabled: true, now: start.addingTimeInterval(3.1)).activeAlert == nil)
 }
 
-@Test func predictiveHeadAlertsBeforeReportedPositionsCrossThreshold() {
+@Test func legacyPredictionFlagCannotAdvanceProximityAlerts() {
     let firstDate = Date(timeIntervalSince1970: 2_000)
     let secondDate = firstDate.addingTimeInterval(1)
     let firstInitial = proximityDrone(
@@ -2196,7 +2196,7 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
     )
     let secondInitial = proximityDrone(
         id: "B",
-        longitude: 0.00030,
+        longitude: 0.00090,
         sampleDate: firstDate,
         team: true,
         eligible: false
@@ -2210,7 +2210,7 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
     )
     let secondCurrent = proximityDrone(
         id: "B",
-        longitude: 0.00020,
+        longitude: 0.00050,
         sampleDate: secondDate,
         team: true,
         eligible: false
@@ -2219,31 +2219,28 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
     var predictive = RidProximityAlertEngine()
     #expect(predictive.update(
         drones: [firstInitial, secondInitial],
-        thresholdFeet: 40,
+        thresholdFeet: 100, enabled: true,
         predictiveEnabled: true,
         now: firstDate
     ).activeAlert == nil)
     let projected = predictive.update(
         drones: [firstCurrent, secondCurrent],
-        thresholdFeet: 40,
+        thresholdFeet: 100, enabled: true,
         predictiveEnabled: true,
         now: secondDate
     )
-    #expect(projected.activeAlert != nil)
-    #expect(projected.activeAlert?.horizontalSeparationFeet ?? 100 < 40)
-    #expect(projected.activeAlert?.currentHorizontalSeparationFeet ?? 0 > 40)
-    #expect(projected.activeAlert?.usesProjection == true)
+    #expect(projected.activeAlert == nil)
 
     var reportedOnly = RidProximityAlertEngine()
     _ = reportedOnly.update(
         drones: [firstInitial, secondInitial],
-        thresholdFeet: 40,
+        thresholdFeet: 100, enabled: true,
         predictiveEnabled: false,
         now: firstDate
     )
     #expect(reportedOnly.update(
         drones: [firstCurrent, secondCurrent],
-        thresholdFeet: 40,
+        thresholdFeet: 100, enabled: true,
         predictiveEnabled: false,
         now: secondDate
     ).activeAlert == nil)
@@ -2265,7 +2262,9 @@ private func proximityDrone(
         altitudeMeters: altitude,
         sampleDate: sampleDate,
         teamDrone: team,
-        localAlertEligible: eligible
+        localAlertEligible: eligible,
+        telemetry: .init(horizontalAccuracyMeters: 1, absoluteAltitudeMeters: altitude,
+                         altitudeReference: .geodetic, verticalAccuracyMeters: 1)
     )
 }
 
@@ -3291,17 +3290,17 @@ private func proximityDrone(
     #expect(second.leaderEnd != nil)
 }
 
-@Test func operationalAircraftPredictionMatchesAndroidAgeAndLookaheadBounds() throws {
+@Test func operationalAircraftPredictionIsRetired() throws {
     let previous = MapCoordinate(latitude: 39, longitude: -105)
     let current = MapCoordinate(latitude: 39, longitude: -104.9999)
-    let predicted = try #require(OperationalAircraftDisplay.predictedCoordinate(
+    let predicted = OperationalAircraftDisplay.predictedCoordinate(
         previous: previous,
         previousTime: Date(timeIntervalSince1970: 100),
         current: current,
         currentTime: Date(timeIntervalSince1970: 101),
         now: Date(timeIntervalSince1970: 102)
-    ))
-    #expect(predicted.longitude > current.longitude)
+    )
+    #expect(predicted == nil)
     #expect(OperationalAircraftDisplay.predictedCoordinate(
         previous: previous,
         previousTime: Date(timeIntervalSince1970: 100),
@@ -4865,6 +4864,7 @@ private func proximityDrone(
         connectKey: "NCSSAR-UAS"
     ))
     let request = try await client.makeStartLiveTrackRequest(
+        liveTrackID: "11111111-2222-4333-8444-555555555555",
         remoteID: "RID01",
         label: "ALPHA1",
         folderID: "drone-folder",
@@ -4886,6 +4886,7 @@ private func proximityDrone(
         credentialSecretBase64: "c2VjcmV0"
     ))
     let request = try await client.makeStartLiveTrackRequest(
+        liveTrackID: "11111111-2222-4333-8444-555555555555",
         remoteID: "RID01",
         label: "ALPHA1",
         folderID: nil,
@@ -5506,6 +5507,7 @@ private func bluetoothServiceData(message: [UInt8], counter: UInt8) -> Data {
     #expect(bundle.trackerEnrollmentURL == "https://r2c-tracker.com/ncssar/enroll?token=campaign-token")
     #expect(bundle.credentials?.usePeers == true)
     #expect(bundle.credentials?.predictiveHeadEnabled == false)
+    #expect(bundle.credentials?.proximityAlertSpacingFeet == 50)
     #expect(bundle.credentials?.connectKey == "NCSSAR-UAS")
     #expect(bundle.faaConfig == nil)
     #expect(bundle.mutualAidTemplate?.credentialID == "ma-credential")
@@ -6024,12 +6026,12 @@ private func writeInt32(_ value: Int32, into bytes: inout [UInt8], at offset: In
         hash = (hash ^ UInt64(byte)) &* 1_099_511_628_211
     }
 
-    #expect(hash == 0xa459680b79193637)
-    #expect(ApplicationLaunchDisclaimer.text.contains("accept full responsibility"))
-    #expect(ApplicationLaunchDisclaimer.text.contains("hold harmless UAS4SAR LLC"))
-    #expect(ApplicationLaunchDisclaimer.text.contains("California Civil Code section 1542"))
-    #expect(ApplicationLaunchDisclaimer.text.contains("expressly waive all rights and benefits"))
-    #expect(ApplicationLaunchDisclaimer.text.contains("unknown or unsuspected"))
+    #expect(hash == 0x8298a4ab7300621)
+    #expect(ApplicationLaunchDisclaimer.text.contains("Apache License, Version 2.0"))
+    #expect(ApplicationLaunchDisclaimer.text.contains("This acknowledgement does not modify those licenses"))
+    #expect(ApplicationLaunchDisclaimer.text.contains("does not accept service terms or bind your organization"))
+    #expect(ApplicationLaunchDisclaimer.text.contains("personal injury, or death"))
+    #expect(ApplicationLaunchDisclaimer.text.contains("does not establish that conditions are safe"))
 }
 
 @Test func applicationIdleTimeoutUsesRemainingTimeSinceLatestRIDMessage() {
@@ -6402,4 +6404,43 @@ func aolHighlightRequiresNegativeNumberAndExcludesAdjacentFields() {
     #expect(root.contains(".onOpenURL"))
     #expect(root.contains("resumeTrackerAfterBrowserReturnIfNeeded("))
     #expect(root.contains("pendingOrganizationAccessURL?.scheme?.lowercased() == \"r2creauth\""))
+}
+
+@Test func caltopoLiveTrackRetriesUseIdenticalClientIdentity() async throws {
+    let client = try CaltopoLiveClient(configuration: CaltopoLiveConfiguration(
+        mapID: "map123", credentialID: "credential", credentialSecretBase64: "c2VjcmV0"))
+    let id = "11111111-2222-4333-8444-555555555555"
+    for offset in [0.0, 60.0] {
+        let request = try await client.makeStartLiveTrackRequest(
+            liveTrackID: id, remoteID: "RID01", label: "Flight", folderID: "folder",
+            now: Date(timeIntervalSince1970: 1700000000 + offset))
+        #expect(request.url?.path == "/api/v1/map/map123/LiveTrack/\(id)")
+        let fields = decodeFormBody(try #require(request.httpBody))
+        let json = try #require(fields["json"])
+        let root = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        #expect(root["id"] as? String == id)
+        #expect(root["geometry"] == nil)
+    }
+}
+
+@Test func caltopoCompletedTrackContainsAllSixThousandPoints() async throws {
+    let client = try CaltopoLiveClient(configuration: CaltopoLiveConfiguration(
+        mapID: "map123", credentialID: "credential", credentialSecretBase64: "c2VjcmV0"))
+    let points = (0..<6000).map { index in
+        RidObservation(source: .trackerRelay, aircraftId: "RID01",
+            receivedAt: Date(timeIntervalSince1970: 1700000000 + Double(index)),
+            latitude: 39 + Double(index) / 1000000, longitude: -121, altitudeMeters: 500)
+    }
+    let request = try await client.makeArchiveLiveTrackRequest(
+        liveTrackID: "track1", label: "Flight", observations: points,
+        folderID: "archive", now: Date())
+    let fields = decodeFormBody(try #require(request.httpBody))
+    let json = try #require(fields["json"])
+    let root = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+    let geometry = try #require(root["geometry"] as? [String: Any])
+    let coordinates = try #require(geometry["coordinates"] as? [[Double]])
+    #expect(coordinates.count == 6000)
+    #expect(coordinates.first == [-121, 39, 500])
+    let expectedLast: [Double] = [-121, 39 + 5999.0 / 1000000, 500]
+    #expect(coordinates.last == expectedLast)
 }

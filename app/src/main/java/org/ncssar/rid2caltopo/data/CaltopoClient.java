@@ -290,8 +290,8 @@ class ClientClassState {
         trackerEnrollmentUrl = "";
         coordinateDisplayFormat = "decimal";
         captureVideoStreamsFlag = true;
-        predictiveHeadEnabled = true;
-        proximityAlertSpacingFeet = 40L;
+        predictiveHeadEnabled = false;
+        proximityAlertSpacingFeet = 100L;
         notamEnabled = true;
         notamRadiusNm = 1;
         notamAutoRefresh = true;
@@ -2406,7 +2406,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         boolean hasUsePeers = json.has("use_peers");
         boolean usePeers = json.optBoolean("use_peers", true);
         boolean predictiveHeadEnabled = json.optBoolean("predictive_head_enabled", true);
-        long proximityAlertSpacingFeet = json.optLong("proximity_alert_spacing_feet", 40L);
+        long proximityAlertSpacingFeet = json.optLong("proximity_alert_spacing_feet", 100L);
         boolean notamEnabled = json.optBoolean("notam_enabled", true);
         int notamRadiusNm = json.optInt(
                 "notam_radius_statute_miles",
@@ -3601,24 +3601,24 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     }
 
     public static boolean GetPredictiveHeadEnabled() {
-        return GetState().predictiveHeadEnabled;
+        return false; // Retired setting retained only for old configuration compatibility.
     }
 
     public static void SetPredictiveHeadEnabled(boolean enabled) {
         ClientClassState ccs = GetState();
-        if (ccs.predictiveHeadEnabled != enabled) {
-            ccs.predictiveHeadEnabled = enabled;
+        if (ccs.predictiveHeadEnabled) {
+            ccs.predictiveHeadEnabled = false;
             NotifySettingsChanged();
             ArchiveState("predictive head changed");
         }
     }
 
     public static long GetProximityAlertSpacingFeet() {
-        return GetState().proximityAlertSpacingFeet;
+        return Math.max(50L, GetState().proximityAlertSpacingFeet);
     }
 
     public static void SetProximityAlertSpacingFeet(long feet) {
-        long normalized = Math.max(0L, feet);
+        long normalized = Math.max(50L, feet);
         ClientClassState ccs = GetState();
         if (ccs.proximityAlertSpacingFeet != normalized) {
             ccs.proximityAlertSpacingFeet = normalized;

@@ -18,11 +18,11 @@ class LaunchDisclaimerTest {
             hash = (hash xor byte.toUByte().toULong()) * 1099511628211uL
         }
 
-        assertEquals(0xa459680b79193637uL, hash)
-        assertTrue(LAUNCH_DISCLAIMER_TEXT.contains("accept full responsibility"))
-        assertTrue(LAUNCH_DISCLAIMER_TEXT.contains("hold harmless UAS4SAR LLC"))
-        assertTrue(LAUNCH_DISCLAIMER_TEXT.contains("California Civil Code section 1542"))
-        assertTrue(LAUNCH_DISCLAIMER_TEXT.contains("expressly waive all rights and benefits"))
-        assertTrue(LAUNCH_DISCLAIMER_TEXT.contains("unknown or unsuspected"))
+        assertEquals(0x8298a4ab7300621uL, hash)
+        assertTrue(LAUNCH_DISCLAIMER_TEXT.contains("Apache License, Version 2.0"))
+        assertTrue(LAUNCH_DISCLAIMER_TEXT.contains("This acknowledgement does not modify those licenses"))
+        assertTrue(LAUNCH_DISCLAIMER_TEXT.contains("does not accept service terms or bind your organization"))
+        assertTrue(LAUNCH_DISCLAIMER_TEXT.contains("personal injury, or death"))
+        assertTrue(LAUNCH_DISCLAIMER_TEXT.contains("does not establish that conditions are safe"))
     }
 }

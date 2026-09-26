@@ -265,7 +265,9 @@ fun StreamTile(
     val clueCaptureTargetRef = remember(clueCaptureStateKey) {
         mutableStateOf<StreamClueCaptureTarget?>(null)
     }
-    var renderedFrameCount by remember(clueCaptureStateKey) { mutableIntStateOf(0) }
+    val clueFrames = remember(clueCaptureStateKey) { StreamClueFrameProgress() }
+    // Only wake Compose when an explicitly pending clue needs another frame.
+    var clueFrameSignal by remember(clueCaptureStateKey) { mutableIntStateOf(0) }
     var pendingClueCaptureRequestId by remember(clueCaptureStateKey) { mutableLongStateOf(0L) }
     var handledClueCaptureRequestId by remember(clueCaptureStateKey) { mutableLongStateOf(0L) }
     var showPicker by remember { mutableStateOf(false) }
@@ -456,7 +458,7 @@ fun StreamTile(
         if (previous?.textureView !== target.textureView ||
             previous.requiresRenderedFrame != target.requiresRenderedFrame
         ) {
-            renderedFrameCount = 0
+            clueFrames.reset()
         }
         clueCaptureTargetRef.value = target
     }
@@ -476,7 +478,7 @@ fun StreamTile(
         val captureTarget = clueCaptureTargetRef.value
         if (!streamClueCaptureReady(
                 hasCaptureTarget = captureTarget != null,
-                renderedFrameCount = renderedFrameCount,
+                renderedFrameCount = clueFrames.renderedFrameCount,
                 requiresRenderedFrame = captureTarget?.requiresRenderedFrame ?: true
             ) || captureTarget == null
         ) {
@@ -485,7 +487,7 @@ fun StreamTile(
                 "Capture target not ready yet for clue capture reason=$reason " +
                     "target=${captureTarget?.label ?: "none"} " +
                     "requiresRenderedFrame=${captureTarget?.requiresRenderedFrame ?: true} " +
-                    "renderedFrames=$renderedFrameCount"
+                    "renderedFrames=${clueFrames.renderedFrameCount}"
             )
             return false
         }
@@ -502,7 +504,7 @@ fun StreamTile(
             CTDebug(
                 tag,
                 "Failed to capture bitmap from ${captureTarget.label} " +
-                    "reason=$reason renderedFrames=$renderedFrameCount"
+                    "reason=$reason renderedFrames=${clueFrames.renderedFrameCount}"
             )
             return false
         }
@@ -538,7 +540,7 @@ fun StreamTile(
         CTDebug(
             tag,
             "Clue capture requested designator=$streamDesignator reason=$reason " +
-                "focused=$currentIsFocused state=$streamState renderedFrames=$renderedFrameCount"
+                "focused=$currentIsFocused state=$streamState renderedFrames=${clueFrames.renderedFrameCount}"
         )
         if (!currentIsFocused) {
             viewModel.ensureFocus(streamDesignator)
@@ -557,7 +559,7 @@ fun StreamTile(
         }
     }
 
-    LaunchedEffect(pendingClueCaptureRequestId, renderedFrameCount, clueCaptureTargetRef.value) {
+    LaunchedEffect(pendingClueCaptureRequestId, clueFrameSignal, clueCaptureTargetRef.value) {
         val requestId = pendingClueCaptureRequestId
         if (requestId == 0L || requestId == handledClueCaptureRequestId) return@LaunchedEffect
         if (captureClueSnapshot("deferred")) {
@@ -616,7 +618,11 @@ fun StreamTile(
                         )
                     )
                 },
-                onTextureFrameUpdated = { renderedFrameCount = it }
+                onTextureFrameUpdated = { count ->
+                    if (clueFrames.onFrame(count, pendingClueCaptureRequestId, handledClueCaptureRequestId)) {
+                        clueFrameSignal += 1
+                    }
+                }
             )
             if (isLocalPlayback) {
                 if (currentFrameAnnotations.isNotEmpty()) {
@@ -709,7 +715,7 @@ fun StreamTile(
             ) {
                 Text(
                     text = androidx.compose.ui.text.buildAnnotatedString {
-                        val line = streamTelemetryHeaderText(displayState, cameraAzimuthDeg)
+                        val line = stableVideoTelemetryText(streamTelemetryHeaderText(displayState, cameraAzimuthDeg))
                         append(line)
                         Regex("\\bCAL\\b").findAll(line).forEach { match ->
                             addStyle(androidx.compose.ui.text.SpanStyle(color = Color(0xFFFF9800)), match.range.first, match.range.last + 1)
@@ -2173,6 +2179,7 @@ fun StreamPlayer(
 ) {
     val tag = "StreamPlayer"
     val surfaceTag = "StreamTile"
+    val currentOnTextureFrameUpdated by rememberUpdatedState(onTextureFrameUpdated)
     if (state != StreamState.LIVE) return
 
     if (!viewModel.useFfmpegRender(designator)) {
@@ -2251,7 +2258,7 @@ fun StreamPlayer(
 
                     override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {
                         surfaceFrameCount += 1
-                        onTextureFrameUpdated(surfaceFrameCount)
+                        currentOnTextureFrameUpdated(surfaceFrameCount)
                         val now = System.currentTimeMillis()
                         if (updateLogCount < 3 || now - lastUpdatedLogAtMs >= 5_000L) {
                             lastUpdatedLogAtMs = now

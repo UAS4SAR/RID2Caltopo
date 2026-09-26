@@ -159,7 +159,7 @@ fun DesignatorIndicator(
                     maxLines = 1,
                     overflow = TextOverflow.Clip,
                     palette = palette,
-                    modifier = Modifier.requiredWidth(84.dp)
+                    modifier = Modifier.requiredWidth(112.dp)
                 )
                 if (showTelemetryChip) {
                     TelemetryIndicatorChip(
@@ -169,7 +169,7 @@ fun DesignatorIndicator(
                     )
                 } else {
                     OutlinedIndicatorText(
-                        text = formatCompactTelemetry(droneDisplayState, cameraAzimuthDeg),
+                        text = stableVideoTelemetryText(formatCompactTelemetry(droneDisplayState, cameraAzimuthDeg)),
                         highlightNegativeAol = true,
                         style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
                         maxLines = 1,
@@ -267,7 +267,7 @@ private fun TelemetryIndicatorChip(
             .background(Color.Transparent)
     ) {
         OutlinedIndicatorText(
-            text = text,
+            text = stableVideoTelemetryText(text),
             highlightNegativeAol = true,
             style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
             maxLines = 1,
@@ -353,11 +353,10 @@ internal fun formatLiveState(
     playbackIndicatorState: PlaybackIndicatorState? = null,
 ): String {
     if (playbackIndicatorState == PlaybackIndicatorState.BUFFERING) return "Buffering"
-    if (playbackIndicatorState == PlaybackIndicatorState.LIVE_UNMEASURED) return "Streaming • delay unknown"
+    if (playbackIndicatorState == PlaybackIndicatorState.LIVE_UNMEASURED) return "Streaming"
     val delayMs = renderDelayMs ?: return "Starting"
     if (delayMs >= 5_000L) return "Stalled"
-    if (delayMs < 1_000L) return "local:${delayMs}ms"
-    return String.format(Locale.US, "local:%.1fs", delayMs / 1000.0)
+    return "Streaming"
 }
 
 internal fun formatCompactTelemetry(
@@ -455,4 +454,16 @@ fun DroneSpecPickerDialog(
             }
         }
     )
+}
+
+/** Fixed monospaced value slots, including a dedicated uncertainty-marker column. */
+internal fun stableVideoTelemetryText(text: String): String = text.split(" ").sortedBy { if (it.startsWith("RNG:")) 1 else 0 }.joinToString(" ") { token ->
+    val separator = token.indexOf(':')
+    if (separator < 0) token else {
+        val value = token.substring(separator + 1)
+        val uncertain = value.endsWith("?")
+        val width = if (token.startsWith("CAM:") || token.startsWith("TRK:") || token.startsWith("HDG:")) 4 else 5
+        token.substring(0, separator + 1) + value.removeSuffix("?").padStart(width) +
+            if (uncertain) "?" else " "
+    }
 }

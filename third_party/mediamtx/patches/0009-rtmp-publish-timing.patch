@@ -1,0 +1,62 @@
+--- a/internal/servers/rtmp/conn.go
++++ b/internal/servers/rtmp/conn.go
+@@ -323,10 +323,23 @@
+ 
+ 	c.Log(logger.Debug, "RTMP publish: mapping tracks to stream for path '%s'", pathName)
+ 	var lastMediaUnixNano int64
++	// These diagnostics are owned by the read goroutine; no per-packet log I/O.
++	var mediaAt, previousMediaAt time.Time
++	var mediaGap time.Duration
++	var mediaCount, readCalls int64
++	var maxRead, maxBeforeMedia, maxAfterMedia, maxMediaGap time.Duration
++	lastTimingLog := time.Now()
+ 	atomic.StoreInt64(&lastMediaUnixNano, time.Now().UnixNano())
+ 
+ 	medias, err := rtmp.ToStream(r, &subStream, func() {
+-		atomic.StoreInt64(&lastMediaUnixNano, time.Now().UnixNano())
++		mediaAt = time.Now()
++		atomic.StoreInt64(&lastMediaUnixNano, mediaAt.UnixNano())
++		mediaCount++
++		if !previousMediaAt.IsZero() {
++			mediaGap = mediaAt.Sub(previousMediaAt)
++			maxMediaGap = max(maxMediaGap, mediaGap)
++		}
++		previousMediaAt = mediaAt
+ 	}, pathConf.RTMPPublishVideoOnly)
+ 	if err != nil {
+ 		c.Log(logger.Debug, "RTMP publish failed during track mapping for path '%s': %v", pathName, err)
+@@ -499,7 +512,34 @@
+ 
+ 	for {
+ 		c.nconn.SetReadDeadline(time.Now().Add(time.Duration(c.readTimeout)))
++		readStarted := time.Now()
++		mediaAt = time.Time{}
++		mediaGap = 0
+ 		err = r.Read()
++		readEnded := time.Now()
++		readElapsed := readEnded.Sub(readStarted)
++		readCalls++
++		maxRead = max(maxRead, readElapsed)
++		var beforeMedia, afterMedia time.Duration
++		if !mediaAt.IsZero() {
++			beforeMedia = mediaAt.Sub(readStarted)
++			afterMedia = readEnded.Sub(mediaAt)
++			maxBeforeMedia = max(maxBeforeMedia, beforeMedia)
++			maxAfterMedia = max(maxAfterMedia, afterMedia)
++		}
++		window := readEnded.Sub(lastTimingLog)
++		slow := readElapsed >= 500*time.Millisecond || mediaGap >= 500*time.Millisecond || afterMedia >= 100*time.Millisecond
++		if window >= 60*time.Second || (slow && window >= 5*time.Second) || err != nil {
++			// beforeMedia includes socket wait AND RTMP parsing; afterMedia includes
++			// synchronous stream forwarding, not asynchronous RTSP socket delivery.
++			c.Log(logger.Debug, "RTMP timing path=%s wallMs=%d windowMs=%d reads=%d mediaUnits=%d readMs=%d beforeMediaMs=%d afterMediaMs=%d mediaGapMs=%d maxReadMs=%d maxBeforeMediaMs=%d maxAfterMediaMs=%d maxMediaGapMs=%d ended=%t",
++				pathName, readEnded.UnixMilli(), window.Milliseconds(), readCalls, mediaCount,
++				readElapsed.Milliseconds(), beforeMedia.Milliseconds(), afterMedia.Milliseconds(), mediaGap.Milliseconds(),
++				maxRead.Milliseconds(), maxBeforeMedia.Milliseconds(), maxAfterMedia.Milliseconds(), maxMediaGap.Milliseconds(), err != nil)
++			lastTimingLog = readEnded
++			readCalls, mediaCount = 0, 0
++			maxRead, maxBeforeMedia, maxAfterMedia, maxMediaGap = 0, 0, 0, 0
++		}
+ 		if err != nil {
+ 			c.Log(logger.Debug, "RTMP publish read loop ended for path '%s': %v", pathName, err)
+ 			return err

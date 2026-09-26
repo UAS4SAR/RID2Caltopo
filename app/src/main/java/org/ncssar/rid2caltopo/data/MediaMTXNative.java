@@ -26,7 +26,7 @@ public final class MediaMTXNative {
         // (for example FCUnpublish/deleteStream before the path timeout elapses).
         // Feed both paths so StreamRegistry can react immediately when the logs
         // contain a stronger stop signal than the structured event stream.
-        CTDebug("MediaMTXService", "MediaMTX: " + line);
+        // The dispatcher logs each line once before parsing lifecycle events.
         MediaMTXLogDispatcher.dispatch(line);
     }
 

@@ -141,6 +141,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
     public volatile transient double lastLat;  // may get updated by BLE thread
     public volatile transient double lastLng;
     public volatile transient double lastAlt;
+    @Nullable public volatile transient ProximityPosition proximityPosition;
     @Nullable
     private transient PositionTelemetry lastPositionTelemetry;
 
@@ -251,13 +252,14 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
 
 
     public void reset() {
+        proximityPosition = null;
         currentFlightConfirmed = false;
         flightReadinessJson = null;
         outOfRange = false;
+        hasRecordedWaypoint = false;
         if (trackLabel.isEmpty()) return;
         CTDebug(TAG, "reset(): Advising dronespec inactive: " + trackLabel);
         trackLabel = EMPTY_STRING;
-        hasRecordedWaypoint = false;
         goodCount = 0;
         diagnosticInvalidPositions = diagnosticDuplicatePositions = diagnosticDistantPositions = diagnosticSpeedRejectedPositions = 0;
         lastTrackDiagnosticAtMs = 0;
@@ -714,6 +716,13 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
      *         Recording/publication sampling is separate.
      */
     public boolean checkNewWaypoint(double lat, double lng, double altitudeInMeters, long timestampInMilliseconds, long nowWallMsec, @Nullable Boolean airborne, TransportTypeEnum transportType) {
+        return checkNewWaypoint(lat, lng, altitudeInMeters, timestampInMilliseconds, nowWallMsec,
+                airborne, transportType, new ProximityTelemetry());
+    }
+
+    public boolean checkNewWaypoint(double lat, double lng, double altitudeInMeters, long timestampInMilliseconds,
+            long nowWallMsec, @Nullable Boolean airborne, TransportTypeEnum transportType,
+            @NonNull ProximityTelemetry proximityTelemetry) {
         if (transportType != TransportTypeEnum.DJI_STREAM) {
             aolReportedAirborne = airborne;
             aolGroundStatusAtMsec = nowWallMsec;
@@ -831,6 +840,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
                     "checkNewWaypoint(): %s airborne changed to %s.", mappedId, airborne));
         }
         lastLat = lat; lastLng = lng; lastAlt = altitudeInMeters;
+        proximityPosition = new ProximityPosition(lat, lng, nowWallMsec, proximityTelemetry);
         if (CaltopoClient.CTDebugEnabled(ICON_LATENCY_TAG)) {
             CaltopoClient.CTDebug(ICON_LATENCY_TAG, String.format(Locale.US,
                     "rid_rx remoteId=%s waypoint=%d wall=%d droneTs=%d lat=%.6f lng=%.6f alt=%.1f transport=%s rssi=%d airborne=%s distance: %.3f, totalDistance: %.3f, duration: %s",
@@ -848,17 +858,17 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
 
     public synchronized boolean shouldRecordWaypoint(double lat, double lng, long receivedAtMsec,
                                         double minimumDistanceFeet, TransportTypeEnum source) {
-        if (hasRecordedWaypoint && source != TransportTypeEnum.DJI_STREAM) {
+        if (hasRecordedWaypoint) {
             double distance = DistanceFeetBetween(recordedLatitude, recordedLongitude, lat, lng);
             long elapsed = receivedAtMsec - recordedAtMsec;
-            // Keep live telemetry current, but do not let sub-second arrivals consume
-            // archive/publication points. CalTopo LiveTrack keeps its own first-3,000
-            // point window; local recording remains complete.
-            if (elapsed >= 0 && elapsed < 1000) {
+            // All position sources share this recording anchor, including the SEI
+            // refresh timer. Live telemetry has already refreshed independently.
+            if (elapsed < 1000) {
                 diagnosticDuplicatePositions++;
                 return false;
             }
-            if ((distance == 0 || distance < minimumDistanceFeet) && elapsed >= 0 && elapsed < 3000) {
+            if (source != TransportTypeEnum.DJI_STREAM &&
+                    (distance == 0 || distance < minimumDistanceFeet) && elapsed < 3000) {
                 diagnosticDuplicatePositions++;
                 return false;
             }

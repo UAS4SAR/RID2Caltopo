@@ -1,0 +1,3 @@
+<en-US>
+More reliable tracks through network outages: latest-only LiveTrack updates, complete final tracks, and stable retry identities. Incremental incident-map refreshes and corrected flight confirmation. Smoother video and faster map-track rendering. Optional accuracy-aware proximity alerts with freshness checks and clear controls. Improved device-unlock return, updated acknowledgement and offline license access, bounded research capture, and quieter diagnostics.
+</en-US>

@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 typedef struct R2CDJICameraTelemetry {
     bool valid;
@@ -224,31 +225,33 @@ static inline size_t R2CDJIVisitSEINAL(
     void *context
 ) {
     if (nal == NULL || nalSize < 2 || (nal[0] & 0x1f) != 6 || visitor == NULL) return 0;
-    uint8_t rbsp[2048];
+    // Discovery must not silently truncate unfamiliar larger messages.
+    if (nalSize > 1024 * 1024) { visitor(SIZE_MAX, nal, nalSize, context); return 1; }
+    uint8_t *rbsp = malloc(nalSize);
+    if (!rbsp) return 0;
     size_t rbspSize = 0;
     for (size_t index = 1; index < nalSize; ++index) {
         if (index >= 3 && nal[index] == 0x03 && nal[index - 1] == 0x00 &&
             nal[index - 2] == 0x00 && index + 1 < nalSize && nal[index + 1] <= 0x03) {
             continue;
         }
-        if (rbspSize >= sizeof(rbsp)) return 0;
         rbsp[rbspSize++] = nal[index];
     }
     size_t offset = 0;
     size_t count = 0;
-    while (offset < rbspSize && rbsp[offset] != 0x80) {
+    while (offset < rbspSize && !(offset + 1 == rbspSize && rbsp[offset] == 0x80)) {
         size_t payloadType = 0;
         size_t payloadLength = 0;
         if (!R2CDJIReadExtendedSEIValue(rbsp, rbspSize, &offset, &payloadType) ||
             !R2CDJIReadExtendedSEIValue(rbsp, rbspSize, &offset, &payloadLength) ||
             payloadLength > rbspSize - offset) {
-            return count;
+            free(rbsp); return count;
         }
         visitor(payloadType, rbsp + offset, payloadLength, context);
         ++count;
         offset += payloadLength;
     }
-    return count;
+    free(rbsp); return count;
 }
 
 static inline bool R2CDJIDecodeSEINAL(

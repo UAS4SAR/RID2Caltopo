@@ -512,11 +512,6 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         val currentDrones = _drones.value
         val nextDrones = (currentDrones.filterNot { it.remoteId == remoteId } + drone)
             .sortedWith { left, right -> left.compareToAge(right) }
-        CTDebug(
-            tag,
-            "onLocalTrackPoint(): publishing screen update remoteId=$remoteId mappedId=$mappedId " +
-                "count=${nextDrones.size} droneTs=$timestampMsec"
-        )
         onDroneSpecsChanged(nextDrones)
     }
 
@@ -806,9 +801,9 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         return true
     }
 
-    private fun clearInactivePromptOnly(remoteId: String, reason: String) {
+    private fun clearInactivePromptOnly(remoteId: String, reason: String, trackFinished: Boolean = false) {
         val trimmedRemoteId = remoteId.trim()
-        if (trimmedRemoteId.isEmpty() || trimmedRemoteId in liveStreamConfirmationSpecs) return
+        if (trimmedRemoteId.isEmpty() || (!trackFinished && trimmedRemoteId in liveStreamConfirmationSpecs)) return
         val removedPrompt = promptedCurrentFlightRemoteIds.remove(trimmedRemoteId)
         if (_pendingDroneConfirmation.value?.remoteId == trimmedRemoteId) {
             CTDebug(tag, "Clearing pending confirmation for $trimmedRemoteId: $reason")
@@ -821,10 +816,12 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
 
     private fun clearFinishedFlightConfirmationState(remoteId: String, reason: String) {
         val trimmedRemoteId = remoteId.trim()
-        if (trimmedRemoteId.isEmpty() || trimmedRemoteId in liveStreamConfirmationSpecs) return
+        if (trimmedRemoteId.isEmpty()) return
+        // A listed video stream can outlive telemetry and the actual track. Once
+        // publishing approval ends, the UI must allow confirmation of the next segment.
         confirmedCurrentFlightRemoteIds.remove(trimmedRemoteId)
         CaltopoClient.ClearCurrentPeerDroneConfirmation(trimmedRemoteId)
-        clearInactivePromptOnly(trimmedRemoteId, reason)
+        clearInactivePromptOnly(trimmedRemoteId, reason, trackFinished = true)
     }
 
     private fun buildConfirmationState(drone: CtDroneSpec): DroneSpecConfirmationUiState {

@@ -82,6 +82,18 @@ object MediaMTXRecordingSync {
         val mergedFile = tempMergedRecordingFile(context, streamPath, fragments.first())
 
         try {
+            if (org.ncssar.rid2caltopo.video.ffmpeg.FfmpegBridge.preserveSEIOriginals) {
+                // Retain original MediaMTX bytes before normalized remux/deletion.
+                val researchRoot = File(context.filesDir, "video-sei-originals")
+                val researchDir = File(researchRoot, streamPath.replace(Regex("[^A-Za-z0-9_-]"), "_"))
+                check(researchDir.isDirectory || researchDir.mkdirs()) { "Cannot preserve research originals" }
+                fragments.forEach { fragment ->
+                    val original = File(researchDir, fragment.name)
+                    if (!original.exists()) fragment.copyTo(original)
+                    check(original.length() == fragment.length()) { "Incomplete research original" }
+                }
+                CaltopoClient.CTLog("RESEARCH", "DjiSeiPayload", "Preserved original fragments path=${researchDir.absolutePath}")
+            }
             remuxMp4Sequence(fragments, mergedFile)
             if (todaysTrackDir != null) {
                 val targetDir = ensureTargetDir(todaysTrackDir, streamPath)

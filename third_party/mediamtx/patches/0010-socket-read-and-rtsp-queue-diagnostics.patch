@@ -1,0 +1,123 @@
+--- a/internal/servers/rtmp/conn.go
++++ b/internal/servers/rtmp/conn.go
+@@ -30,6 +30,26 @@
+ 	rtmpPublisherIdlePingAfter    = time.Second
+ 	rtmpPublisherIdlePingPollTime = 250 * time.Millisecond
+ )
++
++// Read metrics are only accessed by the RTMP read goroutine.
++type timedRTMPConn struct {
++	net.Conn
++	readTime time.Duration
++	maxRead  time.Duration
++	reads    uint64
++	bytes    uint64
++}
++
++func (c *timedRTMPConn) Read(p []byte) (int, error) {
++	started := time.Now()
++	n, err := c.Conn.Read(p)
++	elapsed := time.Since(started)
++	c.readTime += elapsed
++	c.maxRead = max(c.maxRead, elapsed)
++	c.reads++
++	c.bytes += uint64(n)
++	return n, err
++}
+ 
+ type conn struct {
+ 	parentCtx           context.Context
+@@ -46,15 +66,16 @@
+ 	pathManager         serverPathManager
+ 	parent              *Server
+ 
+-	ctx       context.Context
+-	ctxCancel func()
+-	uuid      uuid.UUID
+-	created   time.Time
+-	mutex     sync.RWMutex
+-	rconn     *gortmplib.ServerConn
+-	state     defs.APIRTMPConnState
+-	pathName  string
+-	query     string
++	ctx          context.Context
++	ctxCancel    func()
++	uuid         uuid.UUID
++	created      time.Time
++	mutex        sync.RWMutex
++	socketTiming *timedRTMPConn
++	rconn        *gortmplib.ServerConn
++	state        defs.APIRTMPConnState
++	pathName     string
++	query        string
+ }
+ 
+ func (c *conn) initialize() {
+@@ -132,8 +153,9 @@
+ 	c.nconn.SetReadDeadline(time.Now().Add(time.Duration(c.readTimeout)))
+ 	c.nconn.SetWriteDeadline(time.Now().Add(time.Duration(c.writeTimeout)))
+ 
++	c.socketTiming = &timedRTMPConn{Conn: c.nconn}
+ 	conn := &gortmplib.ServerConn{
+-		RW: c.nconn,
++		RW: c.socketTiming,
+ 	}
+ 
+ 	c.Log(logger.Debug, "RTMP handshake: initializing server connection")
+@@ -329,6 +351,9 @@
+ 	var mediaCount, readCalls int64
+ 	var maxRead, maxBeforeMedia, maxAfterMedia, maxMediaGap time.Duration
+ 	lastTimingLog := time.Now()
++	var maxSocketWait, maxNonSocket time.Duration
++	c.socketTiming.readTime, c.socketTiming.maxRead = 0, 0
++	c.socketTiming.reads, c.socketTiming.bytes = 0, 0
+ 	atomic.StoreInt64(&lastMediaUnixNano, time.Now().UnixNano())
+ 
+ 	medias, err := rtmp.ToStream(r, &subStream, func() {
+@@ -512,12 +537,17 @@
+ 
+ 	for {
+ 		c.nconn.SetReadDeadline(time.Now().Add(time.Duration(c.readTimeout)))
++		socketBefore := c.socketTiming.readTime
+ 		readStarted := time.Now()
+ 		mediaAt = time.Time{}
+ 		mediaGap = 0
+ 		err = r.Read()
+ 		readEnded := time.Now()
+ 		readElapsed := readEnded.Sub(readStarted)
++		socketWait := c.socketTiming.readTime - socketBefore
++		nonSocket := max(time.Duration(0), readElapsed-socketWait)
++		maxSocketWait = max(maxSocketWait, socketWait)
++		maxNonSocket = max(maxNonSocket, nonSocket)
+ 		readCalls++
+ 		maxRead = max(maxRead, readElapsed)
+ 		var beforeMedia, afterMedia time.Duration
+@@ -532,10 +562,15 @@
+ 		if window >= 60*time.Second || (slow && window >= 5*time.Second) || err != nil {
+ 			// beforeMedia includes socket wait AND RTMP parsing; afterMedia includes
+ 			// synchronous stream forwarding, not asynchronous RTSP socket delivery.
+-			c.Log(logger.Debug, "RTMP timing path=%s wallMs=%d windowMs=%d reads=%d mediaUnits=%d readMs=%d beforeMediaMs=%d afterMediaMs=%d mediaGapMs=%d maxReadMs=%d maxBeforeMediaMs=%d maxAfterMediaMs=%d maxMediaGapMs=%d ended=%t",
++			c.Log(logger.Debug, "RTMP timing path=%s wallMs=%d windowMs=%d reads=%d mediaUnits=%d readMs=%d beforeMediaMs=%d afterMediaMs=%d mediaGapMs=%d maxReadMs=%d maxBeforeMediaMs=%d maxAfterMediaMs=%d maxMediaGapMs=%d ended=%t socketWaitMs=%d nonSocketMs=%d maxSocketWaitMs=%d maxNonSocketMs=%d socketReads=%d socketBytes=%d maxSocketReadMs=%d",
+ 				pathName, readEnded.UnixMilli(), window.Milliseconds(), readCalls, mediaCount,
+ 				readElapsed.Milliseconds(), beforeMedia.Milliseconds(), afterMedia.Milliseconds(), mediaGap.Milliseconds(),
+-				maxRead.Milliseconds(), maxBeforeMedia.Milliseconds(), maxAfterMedia.Milliseconds(), maxMediaGap.Milliseconds(), err != nil)
++				maxRead.Milliseconds(), maxBeforeMedia.Milliseconds(), maxAfterMedia.Milliseconds(), maxMediaGap.Milliseconds(), err != nil,
++				socketWait.Milliseconds(), nonSocket.Milliseconds(), maxSocketWait.Milliseconds(), maxNonSocket.Milliseconds(),
++				c.socketTiming.reads, c.socketTiming.bytes, c.socketTiming.maxRead.Milliseconds())
++			c.socketTiming.readTime, c.socketTiming.maxRead = 0, 0
++			c.socketTiming.reads, c.socketTiming.bytes = 0, 0
++			maxSocketWait, maxNonSocket = 0, 0
+ 			lastTimingLog = readEnded
+ 			readCalls, mediaCount = 0, 0
+ 			maxRead, maxBeforeMedia, maxAfterMedia, maxMediaGap = 0, 0, 0, 0
+--- a/internal/servers/rtsp/session.go
++++ b/internal/servers/rtsp/session.go
+@@ -94,7 +94,7 @@
+ 
+ 	s.discardedFrames = &counterdumper.Dumper{
+ 		OnReport: func(val uint64) {
+-			s.Log(logger.Warn, "reader is too slow, discarding %d %s",
++			s.Log(logger.Warn, "RTSP output queue full: reader is too slow, discarding %d %s",
+ 				val,
+ 				func() string {
+ 					if val == 1 {

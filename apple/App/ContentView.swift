@@ -72,6 +72,7 @@ struct ContentView: View {
     @State private var showDiagnosticLogs = false
     @State private var showStatus = false
     @State private var showReleaseNotes = false
+    @State private var showTerms = false
     @State private var showAboutPrivacy = false
     @State private var showImportConfig = false
     @State private var importConfigNotice: ConfigImportNotice?
@@ -179,6 +180,7 @@ struct ContentView: View {
                         showStorageManagement: $showStorageManagement,
                         showCaltopoSettings: $showCaltopoSettings,
                         showAboutPrivacy: $showAboutPrivacy,
+                        showTerms: $showTerms,
                         showConfirmExit: $showConfirmExit
                     ).equatable()
                 }
@@ -234,6 +236,9 @@ struct ContentView: View {
             }
             .navigationDestination(isPresented: $showReleaseNotes) {
                 AppleReleaseNotesView()
+            }
+            .navigationDestination(isPresented: $showTerms) {
+                ApplicationTermsReadOnlyView()
             }
             .navigationDestination(isPresented: $showAboutPrivacy) {
                 AboutPrivacyView()
@@ -622,7 +627,8 @@ struct ContentView: View {
                     peerCoordinator,
                     identityProvider: droneConfirmations.identity,
                     peerConfirmationConsumer: droneConfirmations.applyPeerConfirmation,
-                    peerConfirmationClearer: droneConfirmations.clearPeerConfirmation
+                    peerConfirmationClearer: droneConfirmations.clearPeerConfirmation,
+                    flightEndConsumer: droneConfirmations.endFlight
                 )
                 configurePeerCoordinator()
                 Task { await refreshManagedOrganizationConfiguration() }
@@ -1089,8 +1095,8 @@ struct ContentView: View {
                 publishLocalDeviceMarker(force: true)
             }
             .onReceive(ridTracks.$tracks) { tracks in
-                updateProximityAlerts()
-                reconcileStreamFlightPairings()
+                updateProximityAlerts(tracks: tracks)
+                reconcileStreamFlightPairings(tracks: tracks, offerConfirmation: false)
                 // @Published emits before ridTracks.tracks is assigned. Use this snapshot,
                 // especially the empty list that ends a video-only flight.
                 let remoteID = droneConfirmations.reconcileActiveFlights(
@@ -1136,6 +1142,14 @@ struct ContentView: View {
                             .font(.caption2).padding(2).background(.regularMaterial)
                     }
                 }
+                HStack {
+                    Text("Proximity alerts: \(proximityAlerts.status)").font(.caption)
+                    Spacer()
+                    if proximityAlerts.isSuspended {
+                        Button("Resume") { proximityAlerts.resume() }.font(.caption)
+                    }
+                }
+                .padding(.horizontal)
                 ShortFlightRecordingPanel(gate: ridTracks.shortFlightDecisions)
                 if operationalAlerts.signalLossAlerts.first != nil || operationalAlerts.altitudeAlerts.first != nil {
                     OperationalAlertBanner(
@@ -1146,15 +1160,6 @@ struct ContentView: View {
                         onMuteAltitude: operationalAlerts.muteAltitude
                     )
                     .transition(.move(edge: .top).combined(with: .opacity))
-                }
-                if let alert = proximityAlerts.activeAlert {
-                    ProximityAlertBanner(
-                        alert: alert,
-                        onMap: { showTrackMap = true },
-                        onSuspend: proximityAlerts.suspend
-                    )
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                    .animation(.default, value: alert.alertInstanceID)
                 }
             }
         }
@@ -1172,6 +1177,15 @@ struct ContentView: View {
             }
             .navigationTitle("RID-2-Caltopo")
             .navigationBarTitleDisplayMode(.inline)
+        }
+        // Keep the compact warning host above navigation, including Live View.
+        .overlay(alignment: .topTrailing) {
+            if !organizationAccessBlocked {
+                AppleProximityWarningHost(center: proximityAlerts, onMap: { showTrackMap = true })
+                    .padding(.top, 52)
+                    .padding(.trailing, 12)
+                    .padding(.leading, 12)
+            }
         }
             // Keep URL and lifecycle delivery outside the protected-content branch:
             // that branch is removed while Safari or a system overlay is active.
@@ -1521,7 +1535,7 @@ struct ContentView: View {
             if !orgConfigSettings.operationalPeriod.isEmpty {
                 LabeledContent("Operational period", value: orgConfigSettings.operationalPeriod)
             }
-            LabeledContent("Coordinator", value: peerCoordinator.status.rawValue)
+            LabeledContent("Tracker", value: peerCoordinator.status.rawValue)
             if !peerCoordinator.peers.isEmpty { LabeledContent("Peer zones", value: String(peerCoordinator.peers.count)) }
             LabeledContent("Team drones", value: String(droneConfirmations.importedMappingCount))
             Button("Import Config", systemImage: "qrcode.viewfinder") { showImportConfig = true }
@@ -1551,7 +1565,7 @@ struct ContentView: View {
             androidIncidentMapButton
             androidOpPeriodCell
             androidPilotCallsignCell
-            androidHeaderCell("Coordinator", androidCoordinatorStatus, width: 150)
+            androidHeaderCell("Tracker", androidCoordinatorStatus, width: 150)
             androidHeaderCell("Team Drones", "\(droneConfirmations.importedMappingCount)", width: 110)
             androidHeaderCell("", deviceVersionText, width: 190)
             androidHeaderCell("Up Time", appUptimeText, width: 100)
@@ -1988,8 +2002,8 @@ struct ContentView: View {
                 if let threeDimensional = closestPair.threeDimensionalMeters {
                     LabeledContent("3D separation", value: separationFeet(threeDimensional))
                 }
-                if proximityAlerts.canResume { Button("Resume Proximity Alert") { proximityAlerts.resume() } }
-                Text("Alerts require at least one confirmed team drone and a current local tracker lease plus local Save confirmation.")
+                if proximityAlerts.isSuspended { Button("Resume Proximity Alert") { proximityAlerts.resume() } }
+                Text(proximityAlerts.alertAllAircraft ? "Alert scope: All aircraft — any received pair." : "Alert scope: Published only — pairs involving an aircraft claimed by this tablet.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -2239,6 +2253,7 @@ struct ContentView: View {
               !showStatus,
               !showReleaseNotes,
               !showAboutPrivacy,
+              !showTerms,
               !showConfigurationTransfer,
               !showStorageManagement,
               selectedAircraftID == nil
@@ -2464,7 +2479,7 @@ struct ContentView: View {
     }
 
     private var proximityConfigurationFingerprint: String {
-        "\(orgConfigSettings.proximityAlertSpacingFeet)|\(orgConfigSettings.predictiveHeadEnabled)"
+        "\(orgConfigSettings.proximityAlertSpacingFeet)|\(proximityAlerts.consent.enabled)|\(proximityAlerts.alertAllAircraft)"
     }
 
     private var managedVideoPresenceFingerprint: String {
@@ -2614,28 +2629,41 @@ struct ContentView: View {
         }
     }
 
-    private func updateProximityAlerts() {
+    private func updateProximityAlerts(tracks: [RidAircraftTrack]? = nil) {
         proximityAlerts.update(
-            tracks: ridTracks.tracks,
+            tracks: tracks ?? ridTracks.tracks,
             thresholdFeet: orgConfigSettings.proximityAlertSpacingFeet,
-            predictiveEnabled: ProcessInfo.processInfo.arguments.contains("--demo-predictive-alert")
-                || orgConfigSettings.predictiveHeadEnabled,
+            predictiveEnabled: false,
             operatorLocation: locationProvider.lastLocation,
             identityProvider: droneConfirmations.identity,
-            alertEligibility: peerCoordinator.isLocalAlertEligible
+            alertEligibility: { remoteID in
+                RidProximityEligibility.allows(
+                    locallyConfirmed: droneConfirmations.isCurrentFlightConfirmed(remoteID),
+                    coordinationRequired: peerCoordinator.coordinationRequired,
+                    coordinatorEligible: peerCoordinator.isLocalAlertEligible(remoteID: remoteID)
+                )
+            }
         )
     }
 
-    private func reconcileStreamFlightPairings() {
+    private func reconcileStreamFlightPairings(
+        tracks snapshot: [RidAircraftTrack]? = nil,
+        offerConfirmation: Bool = true
+    ) {
+        let tracks = snapshot ?? ridTracks.tracks
         streamRegistry.pairConfiguredPublishers(mappings: droneConfirmations.importedMappings.map {
             (remoteID: $0.remoteID, designator: $0.mappedID)
         })
-        if !ProcessInfo.processInfo.arguments.contains("--suppress-auto-confirmation") { queueNextDroneConfirmation() }
+        // The tracks publisher reconciles confirmation itself using its incoming snapshot.
+        // Do not read the old @Published value during that callback.
+        if offerConfirmation && !ProcessInfo.processInfo.arguments.contains("--suppress-auto-confirmation") {
+            queueNextDroneConfirmation()
+        }
         let activeStreamIDs = streamRegistry.activePublisherStreamIDs
         automaticPairingOfferedStreamIDs.formIntersection(activeStreamIDs)
         for streamID in activeStreamIDs {
             let normalizedStreamID = streamID.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-            let matches = ridTracks.tracks.filter { track in
+            let matches = tracks.filter { track in
                 let identity = droneConfirmations.identity(for: track.aircraftID)
                 return track.aircraftID.uppercased() == normalizedStreamID
                     || identity?.mappedID.uppercased() == normalizedStreamID
@@ -2650,7 +2678,7 @@ struct ContentView: View {
             streamRegistry.boundAircraftID(for: $0) == nil
                 && !automaticPairingOfferedStreamIDs.contains($0)
         }
-        let confirmedCandidateIDs = ridTracks.tracks.compactMap { track in
+        let confirmedCandidateIDs = tracks.compactMap { track in
             droneConfirmations.isCurrentFlightConfirmed(track.aircraftID)
                 ? track.aircraftID
                 : nil
@@ -2658,7 +2686,7 @@ struct ContentView: View {
         guard confirmedCandidateIDs.count == 1,
               let streamID = OperationalStreamDesignatorMatch.automaticPairingStreamID(
                 confirmedCandidateID: confirmedCandidateIDs[0],
-                activeCandidateIDs: ridTracks.tracks.map(\.aircraftID),
+                activeCandidateIDs: tracks.map(\.aircraftID),
                 liveUnpairedStreamIDs: Array(liveUnpairedStreamIDs)
               )
         else { return }
@@ -2885,6 +2913,7 @@ private struct MainScreenMenu: View, Equatable {
     @Binding var showStorageManagement: Bool
     @Binding var showCaltopoSettings: Bool
     @Binding var showAboutPrivacy: Bool
+    @Binding var showTerms: Bool
     @Binding var showConfirmExit: Bool
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool { true }
@@ -2902,6 +2931,7 @@ private struct MainScreenMenu: View, Equatable {
             Button("Backup & Transfer", systemImage: "shippingbox") { showConfigurationTransfer = true }
             Button("Manage Storage...", systemImage: "externaldrive") { showStorageManagement = true }
             Button("Settings", systemImage: "gearshape") { showCaltopoSettings = true }
+            Button("Terms of Use", systemImage: "doc.text") { showTerms = true }
             Button("About & Privacy", systemImage: "hand.raised") {
                 showAboutPrivacy = true
             }

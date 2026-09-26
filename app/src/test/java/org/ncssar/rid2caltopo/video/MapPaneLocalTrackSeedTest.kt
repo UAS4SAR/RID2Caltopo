@@ -96,4 +96,33 @@ class MapPaneLocalTrackSeedTest {
         assertTrue(!shouldSeedLocalTrackSnapshotForDesignator("1SAR7", invalidNewerSnapshot, lastSeeded))
         assertEquals(2_000L, lastSeeded["1SAR7"])
     }
+
+    @Test
+    fun seed_preservesDistinctPointsAtSameTimestampAndTolerance() {
+        val recent = mutableListOf<LocalTrackPoint>()
+        val flight = mutableListOf<LocalTrackPoint>()
+        val snapshot = listOf(
+            WaypointTrack.TrackPoint(39.0, -121.0, 100.0, 1000L),
+            WaypointTrack.TrackPoint(39.0000005, -121.0, 100.4, 1000L),
+            WaypointTrack.TrackPoint(39.001, -121.0, 100.0, 1000L),
+            WaypointTrack.TrackPoint(39.0, -121.0, 101.0, 1000L),
+            WaypointTrack.TrackPoint(39.0, -121.0, 100.0, 999L)
+        )
+        seedLocalTrackPointsFromSnapshot("A", snapshot, 2000L, recent, flight)
+        assertEquals(4, flight.size)
+        assertTrue(!seedLocalTrackPointsFromSnapshot("A", snapshot, 3000L, recent, flight))
+    }
+
+    @Test
+    fun seed_longFlightRetainsLimitAndNewestPoint() {
+        val recent = mutableListOf<LocalTrackPoint>()
+        val flight = mutableListOf<LocalTrackPoint>()
+        val snapshot = (0..10_000).map {
+            WaypointTrack.TrackPoint(39.0, -121.0, 100.0, it.toLong())
+        }
+        seedLocalTrackPointsFromSnapshot("A", snapshot.take(10_000), 20000L, recent, flight)
+        seedLocalTrackPointsFromSnapshot("A", snapshot, 20001L, recent, flight)
+        assertEquals(10_000, flight.size)
+        assertEquals((1L..10_000L).toList(), flight.map { it.timestampMsec })
+    }
 }

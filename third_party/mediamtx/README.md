@@ -28,6 +28,24 @@ Apple use that event to publish the finished recording without a timing guess.
 
 Prepare a fresh patched checkout:
 
+`0009-rtmp-publish-timing.patch` adds bounded publisher timing diagnostics shared
+by Android and Apple source builds. `RTMP timing` summarizes read calls/media
+units and maximum read, pre-callback, post-callback, and inter-media times every
+60 seconds, or at most once per five seconds when a read/media gap exceeds 500 ms
+or forwarding exceeds 100 ms. A final line is emitted on read failure.
+`beforeMediaMs` includes socket waiting and RTMP parsing; `afterMediaMs` measures
+synchronous relay forwarding, not asynchronous RTSP socket writes. Compare
+`wallMs` with the existing FFmpeg `av_read_frame wait` and `video packet gap`
+lines. No payloads, credentials, or per-frame log lines are added.
+
+`0010-socket-read-and-rtsp-queue-diagnostics.patch` separates time inside the
+underlying RTMP socket `Read` from other work within the media-reader call.
+The existing timing summary includes socket calls/bytes and maximum socket and
+non-socket time. Socket timing includes OS scheduling and is not a TCP packet-loss
+measurement. RTSP's existing once-per-second discarded-packet warning now
+explicitly identifies `RTSP output queue full`; the session prefix identifies
+the affected reader. These changes do not alter queue capacity or packet handling.
+
 ```sh
 tools/prepare_mediamtx_source.sh
 ```

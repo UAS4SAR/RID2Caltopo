@@ -118,7 +118,7 @@ fun AppHeader(appUptime: String, hostName: String, viewModel: R2CViewModel?) {
                 R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator.coordinationStatusText
             )
             Text(
-                text = "Coordinator:\n$coordinatorStatus",
+                text = "Tracker:\n$coordinatorStatus",
                 modifier = textMod,
                 style = MaterialTheme.typography.titleSmall,
                 textAlign = TextAlign.Center

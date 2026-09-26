@@ -321,6 +321,14 @@ object AppConfigStore {
         return false
     }
 
+    internal fun resolveProximitySpacingFeet(config: AppConfig): Long = when {
+            config.proximityAlertSpacingConfigured && config.proximityAlertSpacingFeet >= 0L ->
+                config.proximityAlertSpacingFeet
+            config.schemaVersion in 3..5 && config.proximityAlertSpacingFeet > 0L ->
+                config.proximityAlertSpacingFeet
+            else -> 100L
+        }.coerceAtLeast(50L)
+
     private fun toClientState(config: AppConfig): ClientClassState {
         val profiles = effectiveProfiles(config)
         val activeProfile = selectActiveProfile(config, profiles)
@@ -370,14 +378,8 @@ object AppConfigStore {
         state.captureVideoStreamsFlag = config.captureVideoStreams
         state.usePeersFlag = config.usePeers
         state.standaloneR2cCoordinationEnabled = false // Legacy configs cannot enable standalone flight sharing.
-        state.predictiveHeadEnabled = if (config.schemaVersion >= 3) config.predictiveHeadEnabled else true
-        state.proximityAlertSpacingFeet = when {
-            config.proximityAlertSpacingConfigured && config.proximityAlertSpacingFeet >= 0L ->
-                config.proximityAlertSpacingFeet
-            config.schemaVersion in 3..5 && config.proximityAlertSpacingFeet > 0L ->
-                config.proximityAlertSpacingFeet
-            else -> 40L
-        }
+        state.predictiveHeadEnabled = false // Retired; legacy true cannot reactivate projection.
+        state.proximityAlertSpacingFeet = resolveProximitySpacingFeet(config)
         state.notamEnabled = config.notam.enabled
         state.notamRadiusNm = when {
             config.notam.radiusNm >= 1 -> config.notam.radiusNm

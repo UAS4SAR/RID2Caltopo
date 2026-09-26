@@ -6,6 +6,7 @@
  */
 package org.ncssar.rid2caltopo.ui
 
+import org.ncssar.rid2caltopo.data.ProximityAlertConsent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -65,8 +66,11 @@ fun CaltopoSettingsScreen(
     val wifiRidScanningEnabled by settingsViewModel.wifiRidScanningEnabled.collectAsState()
     val remoteVideoControlEnabled by settingsViewModel.remoteVideoControlEnabled.collectAsState()
     val thumbnailRefreshSeconds by settingsViewModel.thumbnailRefreshSeconds.collectAsState()
-    val predictiveHeadEnabled by settingsViewModel.predictiveHeadEnabled.collectAsState()
     val proximityAlertSpacingFeet by settingsViewModel.proximityAlertSpacingFeet.collectAsState()
+    val proximityConsent by ProximityAlertConsent.state.collectAsState()
+    val alertAllAircraft by ProximityAlertConsent.alertAllAircraft.collectAsState()
+    DisposableEffect(Unit) { onDispose { ProximityAlertConsent.cancel() } }
+    val suspendedProximity by ProximityAlertCenter.isSuspended.collectAsState()
     val caltopoUrl by settingsViewModel.caltopoUrl.collectAsState()
     val notamEnabled by settingsViewModel.notamEnabled.collectAsState()
     val notamRadiusNm by settingsViewModel.notamRadiusNm.collectAsState()
@@ -396,18 +400,26 @@ fun CaltopoSettingsScreen(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 LabeledSwitch(
-                    label = "Predictive Head",
-                    checked = predictiveHeadEnabled,
-                    onCheckedChange = settingsViewModel::onPredictiveHeadEnabledChanged
+                    label = "Proximity alerts: ${if (!proximityConsent.enabled) "Off" else if (suspendedProximity) "Suspended" else "On"}",
+                    checked = proximityConsent.enabled,
+                    onCheckedChange = { enabled ->
+                        if (enabled) ProximityAlertConsent.requestEnable() else ProximityAlertCenter.disableAlerts()
+                    }
                 )
-
+                Text("Optional alerts based on received telemetry. No alert does not mean the airspace is clear.")
+                LabeledSwitch(
+                    label = "Alert scope: ${if (alertAllAircraft) "All aircraft" else "Published only"}",
+                    checked = alertAllAircraft,
+                    onCheckedChange = ProximityAlertCenter::setAlertAllAircraft
+                )
+                Text("Published only: pairs involving an aircraft claimed by this tablet. All aircraft: any received pair, including ignored or unconfirmed flights. This does not change recording or publishing.")
                 OutlinedTextField(
                     value = proximityAlertSpacingFeet,
                     onValueChange = {
                         settingsViewModel.onProximityAlertSpacingFeetChanged(it.filter { ch -> ch.isDigit() })
                     },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    label = { Text("Proximity Alert Spacing (ft)") },
+                    label = { Text("Proximity Alert Spacing (ft, minimum 50; default 100)") },
                     modifier = Modifier.fillMaxWidth()
                 )
 
@@ -656,6 +668,19 @@ fun CaltopoSettingsScreen(
     }
     if (showRidMappingAdmin) {
         RidMappingAdminDialog(onDismiss = { showRidMappingAdmin = false })
+    }
+    if (proximityConsent.noticePending) {
+        AlertDialog(
+            onDismissRequest = { ProximityAlertConsent.cancel() },
+            title = { Text(ProximityAlertConsent.TITLE) },
+            text = { Text(ProximityAlertConsent.notice, modifier = Modifier.verticalScroll(rememberScrollState())) },
+            confirmButton = {
+                TextButton(onClick = { ProximityAlertConsent.confirmEnable() }) { Text("Enable alerts") }
+            },
+            dismissButton = {
+                TextButton(onClick = { ProximityAlertConsent.cancel() }) { Text("Keep disabled") }
+            }
+        )
     }
     if (showMinimumLocationAccuracyDialog) {
         AlertDialog(

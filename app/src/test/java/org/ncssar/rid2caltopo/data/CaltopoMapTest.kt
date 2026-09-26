@@ -23,13 +23,10 @@ class CaltopoMapTest {
         assertEquals(0L, CaltopoMap.minimumMapPollDelayMs(1_000, 0))
     }
 
-    @Test fun visibleMapsReconcileMissingDeletionsWithinTwoMinutes() {
-        assertFalse(CaltopoMap.fullArtifactReconciliationDue(120_999, 1_000, true))
-        assertTrue(CaltopoMap.fullArtifactReconciliationDue(121_000, 1_000, true))
-        assertFalse(CaltopoMap.fullArtifactReconciliationDue(121_000, 1_000, false))
-        assertTrue(CaltopoMap.fullArtifactReconciliationDue(901_000, 1_000, false))
-        assertTrue(CaltopoMap.fullArtifactReconciliationDue(1_000, 0, true))
-        assertTrue(CaltopoMap.fullArtifactReconciliationDue(500, 1_000, true))
+    @Test fun fullArtifactReadsRequireInitialLoadOrManualReload() {
+        assertTrue(CaltopoMap.fullArtifactRefreshRequired(0, false))
+        assertFalse(CaltopoMap.fullArtifactRefreshRequired(1_000, false))
+        assertTrue(CaltopoMap.fullArtifactRefreshRequired(1_000, true))
     }
 
 
@@ -57,7 +54,6 @@ class CaltopoMapTest {
     private lateinit var lastWaypointTimestampField: Field
     private lateinit var appExitRequestedField: Field
     private lateinit var lastMapSyncField: Field
-    private lateinit var lastFullArtifactSyncField: Field
     private lateinit var lastMapPollStartedAtField: Field
     private lateinit var mapRefreshInFlightField: Field
     private lateinit var mapRefreshPendingField: Field
@@ -89,7 +85,6 @@ class CaltopoMapTest {
     private var originalAppExitRequested: Boolean = false
     private var originalLastMapSync: Long = 0L
     private var originalLastMapPollStartedAt: Long = 0L
-    private var originalLastFullArtifactSync: Long = 0L
     private var originalMapRefreshInFlight: Boolean = false
     private var originalMapRefreshPending: Boolean = false
     private var originalFullMapRefreshPending: Boolean = false
@@ -117,7 +112,6 @@ class CaltopoMapTest {
         appExitRequestedField = CaltopoClient::class.java.getDeclaredField("AppExitRequested").apply { isAccessible = true }
         lastMapSyncField = CaltopoMap::class.java.getDeclaredField("LastMapSync").apply { isAccessible = true }
         lastMapPollStartedAtField = CaltopoMap::class.java.getDeclaredField("LastMapPollStartedAt").apply { isAccessible = true }
-        lastFullArtifactSyncField = CaltopoMap::class.java.getDeclaredField("LastFullArtifactSync").apply { isAccessible = true }
         mapRefreshInFlightField = CaltopoMap::class.java.getDeclaredField("MapRefreshInFlight").apply { isAccessible = true }
         mapRefreshPendingField = CaltopoMap::class.java.getDeclaredField("MapRefreshPending").apply { isAccessible = true }
         fullMapRefreshPendingField = CaltopoMap::class.java.getDeclaredField("FullMapRefreshPending").apply { isAccessible = true }
@@ -170,7 +164,6 @@ class CaltopoMapTest {
         originalLastMapSync = lastMapSyncField.getLong(null)
         originalLastMapPollStartedAt = lastMapPollStartedAtField.getLong(null)
         lastMapPollStartedAtField.setLong(null, 0L)
-        originalLastFullArtifactSync = lastFullArtifactSyncField.getLong(null)
         originalMapRefreshInFlight = mapRefreshInFlightField.getBoolean(null)
         originalMapRefreshPending = mapRefreshPendingField.getBoolean(null)
         originalFullMapRefreshPending = fullMapRefreshPendingField.getBoolean(null)
@@ -190,7 +183,6 @@ class CaltopoMapTest {
         standaloneEnabledForActiveFlightsField.set(null, null)
         appExitRequestedField.setBoolean(null, false)
         lastMapSyncField.setLong(null, 0L)
-        lastFullArtifactSyncField.setLong(null, 0L)
         mapRefreshInFlightField.setBoolean(null, false)
         mapRefreshPendingField.setBoolean(null, false)
         fullMapRefreshPendingField.setBoolean(null, false)
@@ -221,7 +213,6 @@ class CaltopoMapTest {
         appExitRequestedField.setBoolean(null, originalAppExitRequested)
         lastMapSyncField.setLong(null, originalLastMapSync)
         lastMapPollStartedAtField.setLong(null, originalLastMapPollStartedAt)
-        lastFullArtifactSyncField.setLong(null, originalLastFullArtifactSync)
         mapRefreshInFlightField.setBoolean(null, originalMapRefreshInFlight)
         mapRefreshPendingField.setBoolean(null, originalMapRefreshPending)
         fullMapRefreshPendingField.setBoolean(null, originalFullMapRefreshPending)
@@ -254,9 +245,24 @@ class CaltopoMapTest {
     }
 
     @Test
+    fun automaticRefreshUsesOldCursorWithoutFullDownload() {
+        lastMapSyncField.setLong(null, 1_000L)
+        CaltopoMap.RequestMapRefreshNow()
+        val request = fixture.calTopoSessionGateway.snapshotOperations().first { it.kind == "openMap" }
+        assertEquals(1_000L, request.payload?.optLong("lastSyncTimestamp"))
+    }
+
+    @Test
+    fun manualReloadRequestsFullDownloadDespiteExistingCursor() {
+        lastMapSyncField.setLong(null, 1_000L)
+        CaltopoMap.ReloadMapArtifactsNow(null)
+        val request = fixture.calTopoSessionGateway.snapshotOperations().first { it.kind == "openMap" }
+        assertEquals(0L, request.payload?.optLong("lastSyncTimestamp"))
+    }
+
+    @Test
     fun archiveFeature_requestsIncrementalMapRefreshAfterLiveTrackDeleteFinishes() {
         lastMapSyncField.setLong(null, 12_345L)
-        lastFullArtifactSyncField.setLong(null, System.currentTimeMillis())
         val feature = JSONObject()
             .put("id", "track-archive-refresh")
             .put(

@@ -11,6 +11,7 @@ final class AppleSpokenWarningCenter: NSObject, ObservableObject, AVSpeechSynthe
     private let defaults: UserDefaults
     private let audioSession: AVAudioSession
     private let speech = AVSpeechSynthesizer()
+    private var speakingProximity = false
     private var pendingUtterances: Set<ObjectIdentifier> = []
 
     init(
@@ -31,6 +32,12 @@ final class AppleSpokenWarningCenter: NSObject, ObservableObject, AVSpeechSynthe
         let normalized = OperationalAlarmAudioPolicy.normalizedVolumePercent(value)
         volumePercent = normalized
         defaults.set(normalized, forKey: Self.volumeDefaultsKey)
+    }
+
+    func cancelProximityWarning() {
+        guard speakingProximity else { return }
+        speakingProximity = false
+        speech.stopSpeaking(at: .immediate)
     }
 
     func requestAudioAlarmTest() {
@@ -55,8 +62,11 @@ final class AppleSpokenWarningCenter: NSObject, ObservableObject, AVSpeechSynthe
         }
 
         speech.stopSpeaking(at: .immediate)
+        speakingProximity = phrases == ["Proximity warning"]
         let configuredVolume = OperationalAlarmAudioPolicy.volumeMultiplier(forPercent: volumePercent)
         let utteranceVolume = min(1, max(0, volumeFraction)) * configuredVolume
+        let outputs = audioSession.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+        AppleLog.info("SpokenWarning", "Requested phrases=\(phrases.joined(separator: " | ")) alarmVolume=\(volumePercent) systemVolume=\(audioSession.outputVolume) outputs=\(outputs)")
         for phrase in phrases {
             let utterance = AVSpeechUtterance(string: phrase)
             utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.88
@@ -69,10 +79,21 @@ final class AppleSpokenWarningCenter: NSObject, ObservableObject, AVSpeechSynthe
 
     nonisolated func speechSynthesizer(
         _ synthesizer: AVSpeechSynthesizer,
+        didStart utterance: AVSpeechUtterance
+    ) {
+        let phrase = utterance.speechString
+        Task { @MainActor in
+            AppleLog.info("SpokenWarning", "Speech started phrase=\(phrase)")
+        }
+    }
+
+    nonisolated func speechSynthesizer(
+        _ synthesizer: AVSpeechSynthesizer,
         didFinish utterance: AVSpeechUtterance
     ) {
         let identifier = ObjectIdentifier(utterance)
         Task { @MainActor in
+            AppleLog.info("SpokenWarning", "Speech finished")
             finish(identifier)
         }
     }
@@ -83,6 +104,7 @@ final class AppleSpokenWarningCenter: NSObject, ObservableObject, AVSpeechSynthe
     ) {
         let identifier = ObjectIdentifier(utterance)
         Task { @MainActor in
+            AppleLog.info("SpokenWarning", "Speech canceled")
             finish(identifier)
         }
     }

@@ -381,7 +381,7 @@ object MediaMTXLogDispatcher {
             .map { it.trim() }
             .filter { it.isNotEmpty() }
             .forEach { chunkLine ->
-                if (shouldLog) {
+                if (shouldLog && !chunkLine.contains("RTMP control: sent Acknowledge")) {
                     CTDebug("MediaMTX", chunkLine)
                 }
                 onLogLine(chunkLine)

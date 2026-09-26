@@ -9,6 +9,7 @@
 package org.ncssar.rid2caltopo.app
 
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import StreamsViewModel
 import android.Manifest
@@ -117,6 +118,10 @@ import org.ncssar.rid2caltopo.ui.ControllerSignalStrengthAlertHost
 import org.ncssar.rid2caltopo.ui.DroneScoutBridgeAlertHost
 import org.ncssar.rid2caltopo.ui.DroneSignalLossAlertHost
 import org.ncssar.rid2caltopo.ui.DroneSpecConfirmationDialog
+import org.ncssar.rid2caltopo.ui.ApplicationTerms
+import org.ncssar.rid2caltopo.ui.TermsAcceptance
+import org.ncssar.rid2caltopo.ui.TermsAcceptanceStore
+import org.ncssar.rid2caltopo.ui.LAUNCH_DISCLAIMER_TEXT
 import org.ncssar.rid2caltopo.ui.LaunchDisclaimerScreen
 import org.ncssar.rid2caltopo.ui.MainScreen
 import org.ncssar.rid2caltopo.ui.MutualAidPackageImportDialog
@@ -259,9 +264,11 @@ internal class OrganizationAccessSession {
     fun invalidateForScreenLock(screenOffElapsedRealtimeMs: Long) {
         // Retain the flow marker so its eventual result can still be consumed, but
         // require authentication before protected app content is shown again.
-        val canResumeFromSystemUnlock = authenticated
+        // onStop and ACTION_SCREEN_OFF can report the same lock in either order.
+        // Preserve the original handoff (and its timestamp) on repeated reports.
+        val canResumeFromSystemUnlock = authenticated || screenLockedAtElapsedRealtimeMs != null
         authenticated = false
-        screenLockedAtElapsedRealtimeMs = screenOffElapsedRealtimeMs.takeIf {
+        screenLockedAtElapsedRealtimeMs = (screenLockedAtElapsedRealtimeMs ?: screenOffElapsedRealtimeMs).takeIf {
             canResumeFromSystemUnlock
         }
     }
@@ -321,6 +328,7 @@ private fun configuredAccessAuthenticationRequired(): Boolean =
 
 private enum class OrganizationAccessState {
     LOCKED,
+    WAITING_FOR_SYSTEM_UNLOCK,
     AUTHENTICATING,
     UNLOCKED,
     DEVICE_SECURITY_REQUIRED,
@@ -335,6 +343,23 @@ private fun OrganizationAccessGate(
     onOpenSecuritySettings: () -> Unit,
     onQuit: () -> Unit,
 ) {
+    if (state == OrganizationAccessState.WAITING_FOR_SYSTEM_UNLOCK) {
+        // A separate opaque, modal window covers the retained page, including its
+        // existing menus/dialogs, without disposing the page's remembered state.
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = {},
+            properties = DialogProperties(
+                dismissOnBackPress = false,
+                dismissOnClickOutside = false,
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false,
+                securePolicy = androidx.compose.ui.window.SecureFlagPolicy.SecureOn,
+            ),
+        ) {
+            androidx.compose.material3.Surface(modifier = Modifier.fillMaxSize()) {}
+        }
+        return
+    }
     val deviceSecurityRequired = state == OrganizationAccessState.DEVICE_SECURITY_REQUIRED
     AlertDialog(
         onDismissRequest = {},
@@ -762,9 +787,12 @@ class R2CActivity :
     private var bluetoothDisabled by mutableStateOf(false)
     private var bluetoothDisabledAcknowledged by mutableStateOf(false)
     private var launchDisclaimerAccepted by mutableStateOf(false)
+    private var termsAcceptanceSaving by mutableStateOf(false)
+    private var termsAcceptanceError by mutableStateOf<String?>(null)
     private var organizationAccessState by mutableStateOf(OrganizationAccessState.LOCKED)
     private var organizationAccessError by mutableStateOf<String?>(null)
     private var organizationAuthenticationCancellation: CancellationSignal? = null
+    private var systemUnlockPresentationJob: Job? = null
     private var pendingOrganizationAccessIntent: Intent? = null
     private var trackerReauthenticationBrowserOpen = false
     private var pendingTrackerReauthenticationUrl by mutableStateOf<String?>(null)
@@ -805,7 +833,9 @@ class R2CActivity :
                     CTDebug(TAG, "Organization access locked because the screen turned off")
                 }
                 Intent.ACTION_USER_PRESENT -> {
+                    CTDebug(TAG, "Organization access received the system user-present notification")
                     if (organizationAccessSession.authenticateFromUserPresent()) {
+                        systemUnlockPresentationJob?.cancel()
                         organizationAuthenticationCancellation?.cancel()
                         organizationAuthenticationCancellation = null
                         organizationAccessState = OrganizationAccessState.UNLOCKED
@@ -1169,11 +1199,22 @@ class R2CActivity :
                 organizationAccessState = if (organizationAccessSession.isAuthenticated()) {
                     organizationAccessError = null
                     OrganizationAccessState.UNLOCKED
+                } else if (organizationAccessSession.isAwaitingSystemUnlock()) {
+                    OrganizationAccessState.WAITING_FOR_SYSTEM_UNLOCK
                 } else {
                     OrganizationAccessState.LOCKED
                 }
             }
             if (organizationAccessSession.isAwaitingSystemUnlock()) {
+                systemUnlockPresentationJob?.cancel()
+                systemUnlockPresentationJob = lifecycleScope.launch {
+                    delay(750L)
+                    if (organizationAccessState == OrganizationAccessState.WAITING_FOR_SYSTEM_UNLOCK) {
+                        // Restore manual recovery if the platform never delivers unlock.
+                        // This timeout does not grant access or clear the pending handoff.
+                        organizationAccessState = OrganizationAccessState.LOCKED
+                    }
+                }
                 CTDebug(TAG, "Organization access is waiting for the completed system unlock")
             } else {
                 requestOrganizationAccessAuthentication()
@@ -1202,6 +1243,7 @@ class R2CActivity :
     }
 
     override fun onStop() {
+        systemUnlockPresentationJob?.cancel()
         ScanningService.setDisplayActive(applicationContext, false, externalDisplayConnected)
         if (configuredAccessAuthenticationRequired() &&
             organizationAccessState != OrganizationAccessState.AUTHENTICATING
@@ -1221,7 +1263,13 @@ class R2CActivity :
                     isChangingConfigurations = isChangingConfigurations,
                     screenOffElapsedRealtimeMs = screenOffElapsedRealtimeMs,
                 )
-                if (!remainsAuthenticated) organizationAccessState = OrganizationAccessState.LOCKED
+                if (!remainsAuthenticated) {
+                    organizationAccessState = if (organizationAccessSession.isAwaitingSystemUnlock()) {
+                        OrganizationAccessState.WAITING_FOR_SYSTEM_UNLOCK
+                    } else {
+                        OrganizationAccessState.LOCKED
+                    }
+                }
             }
         }
         super.onStop()
@@ -1350,6 +1398,8 @@ class R2CActivity :
                 if (!launchDisclaimerAccepted) {
                     LaunchDisclaimerScreen(
                         onAgree = ::acceptLaunchDisclaimer,
+                        saving = termsAcceptanceSaving,
+                        error = termsAcceptanceError,
                         onDisagree = {
                             requestAppExit(AppExitRequestSource.DISCLAIMER_DECLINED)
                         },
@@ -1363,8 +1413,11 @@ class R2CActivity :
                     return@content
                 }
                 val organizationName = CaltopoClient.GetHomeOrgName().trim()
+                val waitingForSystemUnlock = configuredAccessAuthenticationRequired() &&
+                    organizationAccessState == OrganizationAccessState.WAITING_FOR_SYSTEM_UNLOCK
                 if (configuredAccessAuthenticationRequired() &&
-                    organizationAccessState != OrganizationAccessState.UNLOCKED
+                    organizationAccessState != OrganizationAccessState.UNLOCKED &&
+                    !waitingForSystemUnlock
                 ) {
                     OrganizationAccessGate(
                         protectedAccountName = organizationName.ifEmpty { "CalTopo Teams" },
@@ -1378,7 +1431,8 @@ class R2CActivity :
                     )
                     return@content
                 }
-                LaunchedEffect(pendingCapturedVideoUri) {
+                LaunchedEffect(pendingCapturedVideoUri, waitingForSystemUnlock) {
+                    if (waitingForSystemUnlock) return@LaunchedEffect
                     pendingCapturedVideoUri?.let { value ->
                         pendingCapturedVideoUri = null
                         val uri = Uri.parse(value)
@@ -1393,7 +1447,7 @@ class R2CActivity :
                 val activeScreen by localViewModel
                     .activeScreen
                     .collectAsState()
-                BackHandler(enabled = pendingAppExitSource == null) {
+                BackHandler(enabled = pendingAppExitSource == null && !waitingForSystemUnlock) {
                     when (appBackAction(activeScreen)) {
                         AppBackAction.REQUEST_EXIT_CONFIRMATION ->
                             requestAppExit(AppExitRequestSource.SYSTEM_BACK)
@@ -1516,6 +1570,17 @@ class R2CActivity :
                         )
                     }
                 }
+                DisposableEffect(Unit) {
+                    CTDebug(TAG, "Protected page composition mounted")
+                    onDispose { CTDebug(TAG, "Protected page composition disposed") }
+                }
+                // Reserve space for operational status instead of drawing competing
+                // overlays over the system status bar and page controls.
+                Column(Modifier.fillMaxSize().statusBarsPadding()) {
+                    if (!waitingForSystemUnlock) {
+                        org.ncssar.rid2caltopo.ui.ShortFlightRecordingPanel()
+                    }
+                    androidx.compose.foundation.layout.Box(Modifier.weight(1f)) {
                 org.ncssar.rid2caltopo.ui.PrimaryPageTransition(activeScreen) {
                 when (activeScreen) {
                     ActiveScreen.MAIN -> {
@@ -1608,6 +1673,10 @@ class R2CActivity :
                     }
                 }
                 }
+                    }
+                }
+                // Defer new operational dialogs until the system unlock is accepted.
+                if (!waitingForSystemUnlock) {
                 pendingDroneConfirmation?.let { confirmationState ->
                     DroneSpecConfirmationDialog(
                         state = confirmationState,
@@ -1630,12 +1699,6 @@ class R2CActivity :
                             localViewModel.markPendingDroneConfirmationUnknown()
                         },
                     )
-                }
-                androidx.compose.foundation.layout.Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.TopCenter) {
-                    androidx.compose.foundation.layout.Column {
-                        org.ncssar.rid2caltopo.ui.ActiveOperatingProfiles()
-                        org.ncssar.rid2caltopo.ui.ShortFlightRecordingPanel()
-                    }
                 }
                 ProximityAlertHost(
                     onSuspend = { ProximityAlertCenter.suspendCurrentAlert() },
@@ -1777,7 +1840,24 @@ class R2CActivity :
                         onConfirm = confirmAppExit,
                     )
                 }
+                }
+                if (waitingForSystemUnlock) {
+                    OrganizationAccessGate(
+                        protectedAccountName = organizationName.ifEmpty { "CalTopo Teams" },
+                        state = organizationAccessState,
+                        errorMessage = null,
+                        onUnlock = ::requestOrganizationAccessAuthentication,
+                        onOpenSecuritySettings = {},
+                        onQuit = { CaltopoClient.QuitApplication() },
+                    )
+                }
             }
+        }
+        TermsAcceptanceStore(this).read()?.takeIf { it.isCurrent() }?.let { record ->
+            lifecycleScope.launch(Dispatchers.IO) {
+                CaltopoClient.CTLog("INFO", "Terms", record.logMessage("TermsAcceptanceRestored"))
+            }
+            continueAfterLaunchTerms()
         }
     }
 
@@ -1891,8 +1971,24 @@ class R2CActivity :
     }
 
     private fun acceptLaunchDisclaimer() {
+        if (launchDisclaimerAccepted || termsAcceptanceSaving) return
+        termsAcceptanceSaving = true
+        termsAcceptanceError = null
+        lifecycleScope.launch {
+            val record = TermsAcceptance(ApplicationTerms.version, LAUNCH_DISCLAIMER_TEXT, System.currentTimeMillis())
+            val saved = withContext(Dispatchers.IO) {
+                val persisted = TermsAcceptanceStore(this@R2CActivity).save(record)
+                if (persisted) CaltopoClient.CTLog("INFO", "Terms", record.logMessage("TermsAccepted"))
+                persisted
+            }
+            termsAcceptanceSaving = false
+            if (saved) continueAfterLaunchTerms()
+            else termsAcceptanceError = "Unable to save acceptance. Please try again."
+        }
+    }
+
+    private fun continueAfterLaunchTerms() {
         if (launchDisclaimerAccepted) return
-        CTDebug(TAG, "Launch disclaimer accepted")
         CaltopoClient.CheckIdle()
         if (CaltopoClient.IsExitRequested()) {
             CTDebug(TAG, "Launch acceptance idle check requested app exit")
@@ -2025,7 +2121,11 @@ class R2CActivity :
             addAction(Intent.ACTION_USER_PRESENT)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(screenLockReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            // Samsung sends USER_PRESENT from System UI's privileged app UID, not
+            // the system UID. NOT_EXPORTED silently excludes that unlock event.
+            // Both actions in this filter are protected OS broadcasts: ordinary
+            // apps cannot send them. Keep custom actions out of this receiver.
+            registerReceiver(screenLockReceiver, filter, Context.RECEIVER_EXPORTED)
         } else {
             @Suppress("DEPRECATION")
             registerReceiver(screenLockReceiver, filter)

@@ -50,7 +50,7 @@ struct AppleLiveVideoIndicator: View {
         case .connecting: "Connecting..."
         case .waitingForPublisher: "Waiting"
         case .failed: "Reconnecting"
-        case .streaming: "Streaming • local delay \(LiveVideoLagEstimator.label(milliseconds: model.renderDelayMilliseconds))"
+        case .streaming: "Streaming"
         }
     }
 }

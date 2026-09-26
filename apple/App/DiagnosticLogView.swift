@@ -11,14 +11,14 @@ struct DiagnosticLogView: View {
                 Text("Today is selected automatically. The compressed ZIP includes device and app details and each selected log. Track files are optional and off by default because they contain aircraft locations.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                Text("Diagnostic log messages omit location details. The bundle can contain Remote IDs, the app-install coordination identifier, local network addresses, and operational status. It never includes the CalTopo credential secret.")
+                Text("Ordinary diagnostic messages omit location details; enabled research captures can include aircraft positions. The bundle can contain Remote IDs, the app-install coordination identifier, local network addresses, and operational status. It never includes the CalTopo credential secret.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
 
             Section("DJI SEI Research") {
                 Toggle(
-                    "Capture full type-245 payloads",
+                    "Capture video telemetry samples",
                     isOn: Binding(
                         get: { AppleSEIHexDiagnostics.enabled },
                         set: { enabled in
@@ -30,7 +30,7 @@ struct DiagnosticLogView: View {
                         }
                     )
                 )
-                Text("Off by default and reset when the app restarts. While enabled, each payload sample observed by the video frame source is written to the diagnostic log, which can grow quickly.")
+                Text("Captures up to 20 complete samples per message layout, with a 2 MiB text budget. Turn off for a summary; turn on again to sample arriving traffic. Research logs may contain aircraft positions. Original recordings are also preserved until the app restarts; this uses additional storage.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

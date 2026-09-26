@@ -307,6 +307,13 @@ final class AppleDroneConfirmationStore: ObservableObject {
         return candidate
     }
 
+    func endFlight(remoteID: String) {
+        confirmationLifecycle.endFlight(remoteID: remoteID)
+        sessionIdentities.removeValue(forKey: remoteID)
+        peerIdentities.removeValue(forKey: remoteID)
+        AppleLog.info("DroneConfirmation", "Cleared confirmation at telemetry track end remoteId=\(remoteID)")
+    }
+
     func isIgnored(_ remoteID: String) -> Bool {
         ignoredRemoteIDs.contains(remoteID)
     }

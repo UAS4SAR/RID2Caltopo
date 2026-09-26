@@ -305,54 +305,135 @@ struct PrimaryWindowSceneReader: UIViewRepresentable {
     }
 }
 
-private struct LaunchDisclaimerView: View {
+struct LaunchDisclaimerView: View {
     let onAgree: () -> Void
     let onDisagree: () -> Void
+    var readOnly = false
+    var error: String? = nil
+    @State private var checked = false
+    @State private var showLicense = false
+    @State private var showPrivacy = false
 
     var body: some View {
         ScrollView {
             VStack(spacing: 24) {
-                Text("Acknowledgment, Release, and Safety Terms")
+                Text("RID2Caltopo — Safety & License")
                     .font(.largeTitle.bold())
                     .multilineTextAlignment(.center)
-                Text(ApplicationLaunchDisclaimer.text)
-                    .font(.body)
-                VStack(spacing: 12) {
-                    Button(action: onAgree) {
-                        Text("I agree")
-                            .frame(maxWidth: .infinity)
+                Text("Acknowledgement version \(ApplicationTermsAcceptance.currentVersion)")
+                    .font(.caption)
+                VStack(alignment: .leading, spacing: 16) {
+                    ForEach(Array(ApplicationLaunchDisclaimer.text.components(separatedBy: "\n\n").enumerated()), id: \.offset) { index, paragraph in
+                        Text(paragraph)
+                            .font(.body)
+                            .fontWeight(index == 0 || ["Operational risks", "Software license", "Connected services"].contains(paragraph) || paragraph.range(of: "^[1-9]\\. ", options: .regularExpression) != nil || paragraph.hasPrefix("Observation only") ? .bold : .regular)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    Button(role: .destructive, action: onDisagree) {
-                        Text("I disagree")
-                            .frame(maxWidth: .infinity)
+                }
+                Button("Apache 2.0 & third-party notices") { showLicense = true }
+                Button("Privacy & data use") { showPrivacy = true }
+                if readOnly {
+                    Button("Close", action: onDisagree)
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    VStack(spacing: 12) {
+                        Toggle(isOn: $checked) {
+                            Text("I have read and understand this operational acknowledgement. I acknowledge it for myself, not on behalf of my organization.")
+                        }
+                        .toggleStyle(TermsCheckboxStyle())
+                        if let error { Text(error).foregroundStyle(.red) }
+                        Button(action: onAgree) {
+                            Text("Acknowledge and Continue").frame(maxWidth: .infinity)
+                        }
+                        .disabled(!checked)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        Button(role: .destructive, action: onDisagree) {
+                            Text("Decline and Exit").frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
                 }
             }
             .frame(maxWidth: 640)
             .frame(maxWidth: .infinity, minHeight: 640)
             .padding(32)
         }
+        .sheet(isPresented: $showLicense) {
+            NavigationStack {
+                ScrollView {
+                    Text(ApplicationSoftwareLicense.text).textSelection(.enabled).padding()
+                }
+                .navigationTitle("License & Notices")
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showLicense = false } } }
+            }
+        }
+        .sheet(isPresented: $showPrivacy) {
+            NavigationStack {
+                AboutPrivacyView()
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showPrivacy = false } } }
+            }
+        }
+    }
+}
+
+private struct TermsCheckboxStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button { configuration.isOn.toggle() } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: configuration.isOn ? "checkmark.square.fill" : "square")
+                    .font(.title2)
+                configuration.label.foregroundStyle(.primary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(configuration.isOn ? "Checked" : "Unchecked")
+    }
+}
+
+struct ApplicationTermsReadOnlyView: View {
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        LaunchDisclaimerView(onAgree: {}, onDisagree: { dismiss() }, readOnly: true)
+            .navigationTitle("Terms of Use")
+            .navigationBarTitleDisplayMode(.inline)
     }
 }
 
 private struct LaunchDisclaimerGate: View {
-    @State private var accepted = false
+    @State private var acceptance = ApplicationTermsAcceptance.load()
+    @State private var error: String?
 
     var body: some View {
-        if accepted {
-            ContentView()
-        } else {
-            LaunchDisclaimerView(
-                onAgree: {
-                    AppleLog.info("Lifecycle", "Launch disclaimer accepted")
-                    accepted = true
-                },
-                onDisagree: AppleApplicationCleanupCenter.shared.declineLaunchDisclaimer
-            )
+        Group {
+            if acceptance?.isCurrent() == true {
+                ContentView()
+            } else {
+                LaunchDisclaimerView(
+                    onAgree: {
+                        let record = ApplicationTermsAcceptance()
+                        do {
+                            try record.save()
+                            AppleLog.info("Terms", record.logMessage("TermsAccepted"))
+                            acceptance = record
+                            error = nil
+                        } catch {
+                            self.error = "Unable to save acceptance. Please try again."
+                        }
+                    },
+                    onDisagree: AppleApplicationCleanupCenter.shared.declineLaunchDisclaimer,
+                    error: error
+                )
+            }
+        }
+        .onAppear {
+            if let acceptance, acceptance.isCurrent() {
+                AppleLog.info("Terms", acceptance.logMessage("TermsAcceptanceRestored"))
+            }
         }
     }
 }

@@ -688,6 +688,7 @@ fun MainScreen(
     }
     var showConfirmDialog by remember { mutableStateOf(false) }
     var addRidMapRemoteId by remember { mutableStateOf<String?>(null) }
+    var showTermsDialog by remember { mutableStateOf(false) }
     var showAboutPrivacyDialog by remember { mutableStateOf(false) }
     var showDebugTagDialog by remember { mutableStateOf(false) }
     var knownDebugTags by remember { mutableStateOf(listOf<String>()) }
@@ -1399,8 +1400,8 @@ fun MainScreen(
                             )
                             Text(
                                 "Horizontal ${"%.1f".format(pair.horizontalSeparationFt)} ft  •  " +
-                                    "Vertical ${"%.1f".format(pair.verticalSeparationFt)} ft  •  " +
-                                    "3D ${"%.1f".format(pair.threeDSeparationFt)} ft" +
+                                    (if (pair.verticalSeparationKnown) "Vertical ${"%.1f".format(pair.verticalSeparationFt)} ft  •  " +
+                                        "3D ${"%.1f".format(pair.threeDSeparationFt)} ft" else "Vertical separation unknown") +
                                     if (pair.alerting) "  •  alerting" else ""
                             )
                             Spacer(Modifier.height(10.dp))
@@ -1867,7 +1868,7 @@ fun MainScreen(
                         allMuted = allSignalLossMuted,
                         onClick = { showSignalLossPanel = true }
                     )
-                    ResumeProximityAlertButton()
+                    ResumeProximityAlertButton(onSettings = { localViewModel.showSettings() })
                     MainBridgeSignalIndicator(rssi = bridgeRssi)
                     IconButton(onClick = { menuExpanded = true }) {
                         Icon(Icons.Default.MoreVert, contentDescription = "More options")
@@ -1940,6 +1941,10 @@ fun MainScreen(
                             localViewModel.showSettings()
                             menuExpanded = false
                         })
+                        DropdownMenuItem(text = { Text("Terms of Use") }, onClick = {
+                            showTermsDialog = true
+                            menuExpanded = false
+                        })
                         DropdownMenuItem(text = { Text("About & Privacy") }, onClick = {
                             showAboutPrivacyDialog = true
                             CaltopoClient.CTEvent(tag,"AboutPrivacyDisplayed", null)
@@ -2009,80 +2014,17 @@ fun MainScreen(
         }
     }
 
+    if (showTermsDialog) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showTermsDialog = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            LaunchDisclaimerScreen(onAgree = {}, onDisagree = { showTermsDialog = false }, readOnly = true)
+        }
+    }
+
     if (showAboutPrivacyDialog) {
-        AlertDialog(
-            onDismissRequest = { showAboutPrivacyDialog = false },
-            title = { Text("About & Privacy") },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .heightIn(max = 560.dp)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text("RID2Caltopo", style = MaterialTheme.typography.titleMedium)
-                    Text("Version ${BuildConfig.BUILD_VERSION} (${BuildConfig.VERSION_CODE})")
-                    Text(
-                        "Incident-support software for receiving Remote ID observations, mapping aircraft, publishing operator-authorized tracks, and analyzing live drone video.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("Privacy", style = MaterialTheme.typography.titleMedium)
-                    Text("RID2Caltopo contains no advertising, does not track people across apps or websites, and does not sell personal data.")
-                    Text("The Android app uses Firebase Analytics for operational app events and configuration state. Some events include map or configuration details and mapped Remote ID identifiers; advertising-identifier collection is disabled.")
-                    Text("Remote ID observations, track archives, and diagnostic logs remain on this device unless you enable CalTopo publishing, load a configuration that enables eligible team-track upload or tracker peer coordination, enable configuration backup, or explicitly share a file.")
-                    Text("CalTopo credentials are stored in the app's private configuration and are not intentionally written to diagnostic logs or shared log bundles.")
-
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("Permissions and network use", style = MaterialTheme.typography.titleMedium)
-                    Text("Bluetooth receives nearby ASTM Remote ID broadcasts.")
-                    Text("Location places the operator relative to aircraft on the map.")
-                    Text("Nearby Wi-Fi and local-network access receive controller video and optional external Remote ID observations.")
-                    Text("When enabled by the operator, CalTopo receives aircraft positions and telemetry for the selected map. Configured tracker peer coordination receives the app-install zone identifier, device zone name, operator position, confirmed drone identity, and aircraft sightings needed to coordinate ownership. Nearby NOTAM monitoring sends the operator location and selected radius to the configured tracker, which queries FAA without exposing FAA credentials to this app.")
-                    Text("When protected-land checks are enabled, public NPS, USFWS, USFS, and Colorado Parks and Wildlife services receive a small geographic search area around the operator location. Returned boundaries are cached locally; these requests do not include aircraft tracks or an operator identity.")
-
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("Logs and deletion", style = MaterialTheme.typography.titleMedium)
-                    Text("You choose which log days to package. Diagnostic log messages omit location details. JSON track files contain aircraft positions and are excluded unless you explicitly include them.")
-                    Text("Nothing is transmitted until you choose a destination in the Android share panel. Local logs and track archives can be removed in the app. Android or Google Drive configuration backups remain until removed from the corresponding backup service; CalTopo and the configured tracker control retention of data sent to them.")
-
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("Additional information", style = MaterialTheme.typography.titleMedium)
-                    TextButton(
-                        onClick = {
-                            try {
-                                context.startActivity(
-                                    Intent(Intent.ACTION_VIEW, Uri.parse("https://rid2caltopo.com/"))
-                                )
-                            } catch (_: ActivityNotFoundException) {
-                                CaltopoClient.ShowToast("Unable to open rid2caltopo.com.")
-                            }
-                        }
-                    ) {
-                        Text("RID2Caltopo website")
-                    }
-                    TextButton(
-                        onClick = {
-                            try {
-                                context.startActivity(
-                                    Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:help@uas4sar.com"))
-                                )
-                            } catch (_: ActivityNotFoundException) {
-                                CaltopoClient.ShowToast("No email app is available.")
-                            }
-                        }
-                    ) {
-                        Text("help@uas4sar.com")
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showAboutPrivacyDialog = false }) {
-                    Text("Close")
-                }
-            }
-        )
+        AboutPrivacyDialog(onClose = { showAboutPrivacyDialog = false })
     }
 
     if (showLogArchiveDialog) {
@@ -2569,10 +2511,10 @@ fun MainScreen(
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("DJI SEI Hex: ${if (djiSeiHexDumpEnabled) "On" else "Off"}")
+                        Text("Video telemetry capture: ${if (djiSeiHexDumpEnabled) "On" else "Off"}")
                     }
                     Text(
-                        "Research capture only. Logs every type-245 payload and can fill the diagnostic log quickly.",
+                        "Up to 20 complete samples per layout; 2 MiB text budget. Turn off for a summary, then on to sample again. Research logs may contain aircraft positions. Original recordings are preserved until app restart and use additional storage.",
                         style = MaterialTheme.typography.bodySmall
                     )
                     if (BuildConfig.DEBUG) {
@@ -2824,4 +2766,82 @@ private fun MainBridgeSignalIndicator(rssi: Int?) {
             }
         },
     )
+}
+
+@Composable
+internal fun AboutPrivacyDialog(onClose: () -> Unit) {
+    val context = LocalContext.current
+        AlertDialog(
+            onDismissRequest = onClose,
+            title = { Text("About & Privacy") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 560.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("RID2Caltopo", style = MaterialTheme.typography.titleMedium)
+                    Text("Version ${BuildConfig.BUILD_VERSION} (${BuildConfig.VERSION_CODE})")
+                    Text(
+                        "Incident-support software for receiving Remote ID observations, mapping aircraft, publishing operator-authorized tracks, and analyzing live drone video.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("Privacy", style = MaterialTheme.typography.titleMedium)
+                    Text("RID2Caltopo contains no advertising, does not track people across apps or websites, and does not sell personal data.")
+                    Text("The Android app uses Firebase Analytics for operational app events and configuration state. Some events include map or configuration details and mapped Remote ID identifiers; advertising-identifier collection is disabled.")
+                    Text("Remote ID observations, track archives, and diagnostic logs remain on this device unless you enable CalTopo publishing, load a configuration that enables eligible team-track upload or tracker peer coordination, enable configuration backup, or explicitly share a file.")
+                    Text("CalTopo credentials are stored in the app's private configuration and are not intentionally written to diagnostic logs or shared log bundles.")
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("Permissions and network use", style = MaterialTheme.typography.titleMedium)
+                    Text("Bluetooth receives nearby ASTM Remote ID broadcasts.")
+                    Text("Location places the operator relative to aircraft on the map.")
+                    Text("Nearby Wi-Fi and local-network access receive controller video and optional external Remote ID observations.")
+                    Text("When enabled by the operator, CalTopo receives aircraft positions and telemetry for the selected map. Configured tracker peer coordination receives the app-install zone identifier, device zone name, operator position, confirmed drone identity, and aircraft sightings needed to coordinate ownership. Nearby NOTAM monitoring sends the operator location and selected radius to the configured tracker, which queries FAA without exposing FAA credentials to this app.")
+                    Text("When protected-land checks are enabled, public NPS, USFWS, USFS, and Colorado Parks and Wildlife services receive a small geographic search area around the operator location. Returned boundaries are cached locally; these requests do not include aircraft tracks or an operator identity.")
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("Logs and deletion", style = MaterialTheme.typography.titleMedium)
+                    Text("You choose which log days to package. Diagnostic log messages omit location details. JSON track files contain aircraft positions and are excluded unless you explicitly include them.")
+                    Text("Nothing is transmitted until you choose a destination in the Android share panel. Local logs and track archives can be removed in the app. Android or Google Drive configuration backups remain until removed from the corresponding backup service; CalTopo and the configured tracker control retention of data sent to them.")
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("Additional information", style = MaterialTheme.typography.titleMedium)
+                    TextButton(
+                        onClick = {
+                            try {
+                                context.startActivity(
+                                    Intent(Intent.ACTION_VIEW, Uri.parse("https://rid2caltopo.com/"))
+                                )
+                            } catch (_: ActivityNotFoundException) {
+                                CaltopoClient.ShowToast("Unable to open rid2caltopo.com.")
+                            }
+                        }
+                    ) {
+                        Text("RID2Caltopo website")
+                    }
+                    TextButton(
+                        onClick = {
+                            try {
+                                context.startActivity(
+                                    Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:help@uas4sar.com"))
+                                )
+                            } catch (_: ActivityNotFoundException) {
+                                CaltopoClient.ShowToast("No email app is available.")
+                            }
+                        }
+                    ) {
+                        Text("help@uas4sar.com")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = onClose) {
+                    Text("Close")
+                }
+            }
+        )
 }

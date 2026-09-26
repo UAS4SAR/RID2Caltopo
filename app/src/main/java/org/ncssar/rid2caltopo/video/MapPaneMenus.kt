@@ -32,7 +32,6 @@ internal fun BoxScope.MapPaneSettingsMenus(
     badTilesMenuExpanded: Boolean,
     onBadTilesMenuExpandedChange: (Boolean) -> Unit,
     baseLayer: BaseLayerOption,
-    predictiveHeadEnabled: Boolean,
     followFocusedDroneEnabled: Boolean,
     mapReloadInFlight: Boolean,
     mapCacheAvailableBytes: Long?,
@@ -41,7 +40,6 @@ internal fun BoxScope.MapPaneSettingsMenus(
     autoRemoveBadTiles: Boolean,
     contourOverlayEnabled: Boolean,
     hasMapFolders: Boolean,
-    onTogglePredictiveHead: () -> Unit,
     onDownloadMap: () -> Unit,
     onOpenMapFolders: () -> Unit,
     onToggleFollowFocusedDrone: () -> Unit,
@@ -87,10 +85,6 @@ internal fun BoxScope.MapPaneSettingsMenus(
                     onSettingsMenuExpandedChange(false)
                     onBaseLayerMenuExpandedChange(true)
                 }
-            )
-            DropdownMenuItem(
-                text = { Text(if (predictiveHeadEnabled) "Predictive Head: On" else "Predictive Head: Off") },
-                onClick = onTogglePredictiveHead
             )
             DropdownMenuItem(
                 text = {

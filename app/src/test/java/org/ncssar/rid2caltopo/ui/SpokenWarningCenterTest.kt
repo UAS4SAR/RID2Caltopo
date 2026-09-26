@@ -13,6 +13,16 @@ class SpokenWarningCenterTest {
     }
 
     @Test
+    fun disablingProximityCancelsOnlyItsPendingWarning() {
+        SpokenWarningCenter.requestWarning(SpokenWarningKind.Proximity, "A|B")
+        SpokenWarningCenter.cancelProximityWarning()
+        assertNull(SpokenWarningCenter.requests.value)
+        SpokenWarningCenter.requestWarning(SpokenWarningKind.Altitude, "A")
+        SpokenWarningCenter.cancelProximityWarning()
+        assertEquals(SpokenWarningKind.Altitude, SpokenWarningCenter.requests.value?.kind)
+    }
+
+    @Test
     fun requestWarning_emitsProblemLabel() {
         SpokenWarningCenter.requestWarning(
             kind = SpokenWarningKind.Altitude,

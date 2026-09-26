@@ -30,6 +30,33 @@ final class FlightConfirmationRegressionTests: XCTestCase {
 }
 
 extension FlightConfirmationRegressionTests {
+    func testCompletedFlightEmptySnapshotDoesNotReopenConfirmation() {
+        var lifecycle = CurrentFlightConfirmationLifecycle()
+        XCTAssertEqual(lifecycle.reconcile(orderedRemoteIDs: ["M4TD"], confirmedRemoteIDs: [], ignoredRemoteIDs: []).candidateRemoteID, "M4TD")
+        XCTAssertNil(lifecycle.reconcile(orderedRemoteIDs: ["M4TD"], confirmedRemoteIDs: ["M4TD"], ignoredRemoteIDs: []).candidateRemoteID)
+        // RTMP has stopped; telemetry aging ends the track and clears its decision.
+        lifecycle.endFlight(remoteID: "M4TD")
+        // The @Published callback must supply its incoming empty snapshot, not
+        // the pre-assignment property that still contains the completed track.
+        for _ in 0..<3 {
+            XCTAssertNil(lifecycle.reconcile(orderedRemoteIDs: [], confirmedRemoteIDs: [], ignoredRemoteIDs: []).candidateRemoteID)
+        }
+        // A real subsequent flight still needs a new operator decision.
+        XCTAssertEqual(lifecycle.reconcile(orderedRemoteIDs: ["M4TD"], confirmedRemoteIDs: [], ignoredRemoteIDs: []).candidateRemoteID, "M4TD")
+    }
+
+    func testExplicitTelemetryEndAllowsNewConfirmationWithVideoStillListed() {
+        var lifecycle = CurrentFlightConfirmationLifecycle()
+        XCTAssertEqual(lifecycle.reconcile(orderedRemoteIDs: ["M4TD"], confirmedRemoteIDs: [], ignoredRemoteIDs: []).candidateRemoteID, "M4TD")
+        XCTAssertNil(lifecycle.reconcile(orderedRemoteIDs: ["M4TD"], confirmedRemoteIDs: ["M4TD"], ignoredRemoteIDs: []).candidateRemoteID)
+        lifecycle.endFlight(remoteID: "M4TD")
+        // The confirmation store clears its saved decision when explicitly ending the track.
+        XCTAssertEqual(lifecycle.reconcile(orderedRemoteIDs: ["M4TD"], confirmedRemoteIDs: [], ignoredRemoteIDs: []).candidateRemoteID, "M4TD")
+        XCTAssertNil(lifecycle.reconcile(orderedRemoteIDs: ["M4TD"], confirmedRemoteIDs: [], ignoredRemoteIDs: []).candidateRemoteID)
+        lifecycle.endFlight(remoteID: "M4TD")
+        XCTAssertNil(lifecycle.reconcile(orderedRemoteIDs: ["M4TD"], confirmedRemoteIDs: [], ignoredRemoteIDs: ["M4TD"]).candidateRemoteID)
+    }
+
     func testIgnorePersistsAcrossFlightsForAppSession() {
         var lifecycle = CurrentFlightConfirmationLifecycle()
         var ignored: Set<String> = []

@@ -7,6 +7,20 @@ import org.junit.Test
 
 class AppConfigDefaultTest {
     @Test
+    fun `proximity defaults to 100 and imported settings have a 50 foot floor`() {
+        assertEquals(100L, ClientClassState().proximityAlertSpacingFeet)
+        assertEquals(100L, AppConfigStore.resolveProximitySpacingFeet(AppConfig.getDefaultInstance()))
+        for (schema in listOf(3, 5, AppConfigStore.SCHEMA_VERSION)) {
+            for (feet in listOf(0L, 40L, 50L, 75L, 99L, 100L, 250L)) {
+                val config = AppConfig.newBuilder().setSchemaVersion(schema)
+                    .setProximityAlertSpacingConfigured(true).setProximityAlertSpacingFeet(feet).build()
+                assertEquals(maxOf(50L, feet), AppConfigStore.resolveProximitySpacingFeet(config))
+            }
+        }
+    }
+
+
+    @Test
     fun `new installs use a thirty-minute RID idle timeout`() {
         assertEquals(
             CaltopoClient.DEFAULT_MAX_IDLE_TIME_MINUTES,

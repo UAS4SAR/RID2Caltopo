@@ -45,6 +45,12 @@ public struct CurrentFlightConfirmationLifecycle: Sendable, Equatable {
         )
     }
 
+    /// An explicit telemetry track end takes precedence over a still-listed video stream.
+    public mutating func endFlight(remoteID: String) {
+        activeRemoteIDs.remove(remoteID)
+        promptedRemoteIDs.remove(remoteID)
+    }
+
     public mutating func reset() {
         activeRemoteIDs.removeAll()
         promptedRemoteIDs.removeAll()

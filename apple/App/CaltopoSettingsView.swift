@@ -219,21 +219,24 @@ struct CaltopoSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Toggle(
-                    "Predictive Head",
-                    isOn: Binding(
-                        get: { orgSettings.predictiveHeadEnabled },
-                        set: { enabled in
-                            orgSettings.setPredictiveHeadEnabled(enabled)
-                        }
-                    )
+                    "Proximity alerts: \(proximityAlerts.status)",
+                    isOn: Binding(get: { proximityAlerts.consent.enabled }, set: { enabled in
+                        if enabled { proximityAlerts.requestEnable() } else { proximityAlerts.disable() }
+                    })
                 )
+                Text("Optional alerts based on received telemetry. No alert does not mean the airspace is clear.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Toggle("Alert scope: \(proximityAlerts.alertAllAircraft ? "All aircraft" : "Published only")",
+                    isOn: Binding(get: { proximityAlerts.alertAllAircraft }, set: { proximityAlerts.setAlertAllAircraft($0) }))
+                Text("Published only: pairs involving an aircraft claimed by this tablet. All aircraft: any received pair, including ignored or unconfirmed flights. This does not change recording or publishing.")
+                    .font(.footnote).foregroundStyle(.secondary)
                 Stepper(
                     "Proximity spacing: \(orgSettings.proximityAlertSpacingFeet) ft",
                     value: Binding(
                         get: { orgSettings.proximityAlertSpacingFeet },
                         set: { orgSettings.setProximityAlertSpacingFeet($0) }
                     ),
-                    in: 1 ... 1_000
+                    in: 50 ... 1_000
                 )
                 Stepper(
                     "Min Dist: \(orgSettings.minimumTrackDistanceFeet) ft",
@@ -397,6 +400,16 @@ struct CaltopoSettingsView: View {
             }
         }
         .navigationTitle("Settings")
+        .alert(RidProximityConsent.title, isPresented: Binding(
+            get: { proximityAlerts.consent.noticePending },
+            set: { if !$0 { proximityAlerts.cancelEnable() } }
+        )) {
+            Button("Keep disabled", role: .cancel) { proximityAlerts.cancelEnable() }
+            Button("Enable alerts") { proximityAlerts.confirmEnable() }
+        } message: {
+            Text(RidProximityConsent.notice)
+        }
+        .onDisappear { proximityAlerts.cancelEnable() }
         .sheet(isPresented: $showingTeamMaps) {
             CaltopoTeamMapBrowser(settings: settings) { map in
                 orgSettings.setIncidentMapTitle(map.title)
@@ -854,7 +867,7 @@ private struct AppleProximityPairsView: View {
                 ContentUnavailableView(
                     "No active drone pairs",
                     systemImage: "airplane",
-                    description: Text("Confirmed team drones will appear here when at least two are active.")
+                    description: Text(proximityAlerts.alertAllAircraft ? "Received aircraft pairs will appear here when at least two are active." : "Mapped aircraft pairs will appear here when at least two are active.")
                 )
             } else {
                 ForEach(proximityAlerts.pairs) { pair in

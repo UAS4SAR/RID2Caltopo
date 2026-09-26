@@ -49,6 +49,8 @@ import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.sqrt
+import org.ncssar.rid2caltopo.data.ProximityTelemetry
+import org.ncssar.rid2caltopo.data.ProximityAlertConsent
 
 data class ProximityAlertUiState(
     val alertInstanceId: Long,
@@ -64,7 +66,9 @@ data class ProximityAlertUiState(
     val firstLat: Double,
     val firstLng: Double,
     val secondLat: Double,
-    val secondLng: Double
+    val secondLng: Double,
+    val verticalSeparationKnown: Boolean = false,
+    val usesProjection: Boolean = false
 )
 
 data class ProximityDebugPair(
@@ -73,6 +77,7 @@ data class ProximityDebugPair(
     val horizontalSeparationFt: Double,
     val verticalSeparationFt: Double,
     val threeDSeparationFt: Double,
+    val verticalSeparationKnown: Boolean,
     val alerting: Boolean
 )
 
@@ -205,8 +210,8 @@ object ProximityAlertCenter {
         val mappedId: String,
         val lat: Double,
         val lng: Double,
-        val altFt: Double,
-        val wallTimeMs: Long
+        val wallTimeMs: Long,
+        val horizontalAccuracyMeters: Double
     )
 
     private data class DroneInput(
@@ -216,7 +221,9 @@ object ProximityAlertCenter {
         val lastLng: Double,
         val lastAlt: Double,
         val mostRecentMsecTimestamp: Long,
-        val localArchiveOnly: Boolean
+        val localArchiveOnly: Boolean,
+        val telemetry: ProximityTelemetry,
+        val locallyConfirmed: Boolean
     )
 
     private data class ProximityUpdateRequest(
@@ -235,7 +242,12 @@ object ProximityAlertCenter {
         val effectiveLat: Double,
         val effectiveLng: Double,
         val effectiveAltFt: Double,
-        val distanceToDeviceFt: Double?
+        val distanceToDeviceFt: Double?,
+        val telemetry: ProximityTelemetry,
+        val ageSeconds: Double,
+        val horizontalUncertaintyFt: Double,
+        val projectedUncertaintyFt: Double,
+        val projectionSeconds: Double
     )
 
     private data class PairSnapshot(
@@ -266,6 +278,9 @@ object ProximityAlertCenter {
         val currentVerticalFt: Double,
         val currentThreeDFt: Double,
         val altitudeSensitive: Boolean,
+        val decisionHorizontalFt: Double,
+        val decisionVerticalFt: Double,
+        val usesProjection: Boolean,
         val shouldAlert: Boolean,
         val isGettingFartherApart: Boolean,
         val highSeverity: Boolean,
@@ -283,6 +298,11 @@ object ProximityAlertCenter {
 
     private val stateLock = Any()
     private val pendingUpdate = AtomicReference<ProximityUpdateRequest?>(null)
+    private var latestRequest: ProximityUpdateRequest? = null
+    internal var evaluationTimeForTests: Long? = null
+    private val _stalePositionCount = MutableStateFlow(0)
+    val stalePositionCount = _stalePositionCount.asStateFlow()
+    @Volatile private var periodicEvaluationEnabled = true
     private val workerScheduled = AtomicBoolean(false)
     @Volatile
     private var evaluationExecutor: Executor = createDefaultEvaluationExecutor()
@@ -290,7 +310,11 @@ object ProximityAlertCenter {
     private val sampleHistoryByRemoteId = linkedMapOf<String, ArrayDeque<DroneSample>>()
     private val previousPairSnapshots = linkedMapOf<String, PairSnapshot>()
     private var latestEvaluationsByKey = emptyMap<String, PairEvaluation>()
-    private var alertsSuspended = false
+    private val _isSuspended = MutableStateFlow(false)
+    val isSuspended = _isSuspended.asStateFlow()
+    private var alertsSuspended: Boolean
+        get() = _isSuspended.value
+        set(value) { _isSuspended.value = value }
     private var clearEligibleSinceMs: Long? = null
 
     private fun logUpdateIfSlow(
@@ -316,15 +340,20 @@ object ProximityAlertCenter {
 
     fun updateDrones(drones: List<CtDroneSpec>) {
         val request = ProximityUpdateRequest(
-            drones = drones.map { spec ->
+            // Some callers supply the retained identity table, others the active list.
+            // Apply the same flight membership rule before counting stale positions.
+            drones = drones.filter { it.isActive }.map { spec ->
+                val position = spec.proximityPosition
                 DroneInput(
                     remoteId = spec.remoteId,
                     mappedId = spec.mappedId,
-                    lastLat = spec.lastLat,
-                    lastLng = spec.lastLng,
-                    lastAlt = spec.lastAlt,
-                    mostRecentMsecTimestamp = spec.mostRecentMsecTimestamp,
-                    localArchiveOnly = spec.isLocalArchiveOnly
+                    lastLat = position?.latitude ?: spec.lastLat,
+                    lastLng = position?.longitude ?: spec.lastLng,
+                    lastAlt = position?.telemetry?.absoluteAltitudeMeters ?: 0.0,
+                    mostRecentMsecTimestamp = position?.receivedAtMillis ?: spec.mostRecentMsecTimestamp,
+                    localArchiveOnly = spec.isLocalArchiveOnly,
+                    telemetry = position?.telemetry ?: ProximityTelemetry(),
+                    locallyConfirmed = spec.isCurrentFlightConfirmed
                 )
             },
             submittedAtMs = System.currentTimeMillis()
@@ -354,12 +383,14 @@ object ProximityAlertCenter {
         }
     }
 
-    private fun updateDronesOnWorker(request: ProximityUpdateRequest) = synchronized(stateLock) {
+    private fun updateDronesOnWorker(request: ProximityUpdateRequest, nowMs: Long = evaluationTimeForTests ?: System.currentTimeMillis()) = synchronized(stateLock) {
+        latestRequest = request
         val startedAtMs = request.submittedAtMs
         val drones = request.drones
-        val nowMs = System.currentTimeMillis()
         val thresholdFt = CaltopoClient.GetProximityAlertSpacingFeet().toDouble()
-        if (thresholdFt <= 0.0) {
+        if (!ProximityAlertConsent.state.value.enabled || thresholdFt <= 0.0) {
+            sampleHistoryByRemoteId.clear()
+            previousPairSnapshots.clear()
             alertsSuspended = false
             clearEligibleSinceMs = null
             _uiState.value = null
@@ -376,9 +407,11 @@ object ProximityAlertCenter {
             return
         }
 
-        val staleCutoffMs = nowMs - (CaltopoClient.GetNewTrackDelayInSeconds() * MIN_STALE_MULTIPLIER)
+        _stalePositionCount.value = if (drones.size < 2) 0 else drones.count {
+            nowMs - it.mostRecentMsecTimestamp !in 0..ProximityTelemetry.MAX_POSITION_AGE_MS
+        }
         val activeDrones = drones.filter { spec ->
-            spec.mostRecentMsecTimestamp >= staleCutoffMs &&
+            nowMs - spec.mostRecentMsecTimestamp in 0..ProximityTelemetry.MAX_POSITION_AGE_MS &&
                 spec.lastLat.isFinite() &&
                 spec.lastLng.isFinite() &&
                 !(spec.lastLat == 0.0 && spec.lastLng == 0.0)
@@ -399,18 +432,18 @@ object ProximityAlertCenter {
                         mappedId = spec.mappedId,
                         lat = spec.lastLat,
                         lng = spec.lastLng,
-                        altFt = spec.lastAlt * FT_PER_METER,
-                        wallTimeMs = spec.mostRecentMsecTimestamp
+                        wallTimeMs = spec.mostRecentMsecTimestamp,
+                        horizontalAccuracyMeters = spec.telemetry.horizontalAccuracyMeters
                     )
                 )
                 while (history.size > 2) history.removeFirst()
             }
         }
 
-        val predictiveEnabled = CaltopoClient.GetPredictiveHeadEnabled()
+        val predictiveEnabled = false
         val myLocation = CaltopoMap.GetMyLocation()
         val evaluated = activeDrones.map { spec ->
-            evaluateDrone(spec, predictiveEnabled, myLocation)
+            evaluateDrone(spec, predictiveEnabled, myLocation, nowMs)
         }
 
         val evaluations = buildList {
@@ -437,6 +470,7 @@ object ProximityAlertCenter {
                     horizontalSeparationFt = evaluation.effectiveHorizontalFt,
                     verticalSeparationFt = evaluation.effectiveVerticalFt,
                     threeDSeparationFt = evaluation.effectiveThreeDFt,
+                    verticalSeparationKnown = evaluation.altitudeSensitive,
                     alerting = evaluation.shouldAlert
                 )
             }
@@ -501,13 +535,9 @@ object ProximityAlertCenter {
         previousPairSnapshots.clear()
         evaluations.forEach { evaluation ->
             previousPairSnapshots[evaluation.pairKey] = PairSnapshot(
-                effectiveHorizontalFt = evaluation.effectiveHorizontalFt,
-                effectiveVerticalFt = if (evaluation.altitudeSensitive) evaluation.effectiveVerticalFt else 0.0,
-                effectiveThreeDFt = if (evaluation.altitudeSensitive) {
-                    evaluation.effectiveThreeDFt
-                } else {
-                    evaluation.effectiveHorizontalFt
-                }
+                effectiveHorizontalFt = evaluation.decisionHorizontalFt,
+                effectiveVerticalFt = evaluation.decisionVerticalFt,
+                effectiveThreeDFt = threeDistanceFt(evaluation.decisionHorizontalFt, evaluation.decisionVerticalFt)
             )
         }
         logUpdateIfSlow(
@@ -530,6 +560,8 @@ object ProximityAlertCenter {
 
     fun resumeSuspendedAlert() {
         synchronized(stateLock) {
+            if (!ProximityAlertConsent.state.value.enabled) return
+            alertsSuspended = false
             val suspended = _suspendedAlert.value ?: return
             val currentEval = latestEvaluationsByKey[suspended.pairKey]
             val stillWithinThreshold = currentEval != null && currentEval.isInsideThreshold(suspended.thresholdFt)
@@ -556,78 +588,38 @@ object ProximityAlertCenter {
     private fun evaluateDrone(
         spec: DroneInput,
         predictiveEnabled: Boolean,
-        myLocation: android.location.Location?
+        myLocation: android.location.Location?,
+        nowMs: Long
     ): EvaluatedDrone {
-        val currentAltFt = spec.lastAlt * FT_PER_METER
-        val history = sampleHistoryByRemoteId[spec.remoteId]
-        val projected = if (predictiveEnabled) projectedSample(history) else null
-        val effectiveLat = projected?.lat ?: spec.lastLat
-        val effectiveLng = projected?.lng ?: spec.lastLng
-        val effectiveAltFt = projected?.altFt ?: currentAltFt
+        val currentAltFt = if (spec.telemetry.hasUsableAltitude()) spec.lastAlt * FT_PER_METER else 0.0
+        val effectiveLat = spec.lastLat
+        val effectiveLng = spec.lastLng
+        val effectiveAltFt = currentAltFt
+        val age = (nowMs - spec.mostRecentMsecTimestamp).coerceAtLeast(0) / 1000.0
+        val accuracy = spec.telemetry.horizontalAccuracyMeters.takeIf { it.isFinite() && it > 0 }
+            ?: ProximityTelemetry.UNKNOWN_HORIZONTAL_METERS
+        val uncertainty = accuracy * FT_PER_METER
+        val projectedUncertainty = uncertainty
         val distanceToDeviceFt = myLocation?.let { location ->
-            val result = FloatArray(1)
-            android.location.Location.distanceBetween(
-                effectiveLat,
-                effectiveLng,
-                location.latitude,
-                location.longitude,
-                result
-            )
-            result[0] * FT_PER_METER
+            horizontalDistanceFt(effectiveLat, effectiveLng, location.latitude, location.longitude)
         }
         return EvaluatedDrone(
             remoteId = spec.remoteId,
             mappedId = spec.mappedId,
             teamDrone = !spec.localArchiveOnly,
-            localAlertEligible = isLocalAlertEligible(spec.remoteId),
+            localAlertEligible = spec.locallyConfirmed && isLocalAlertEligible(spec.remoteId),
             currentLat = spec.lastLat,
             currentLng = spec.lastLng,
             currentAltFt = currentAltFt,
             effectiveLat = effectiveLat,
             effectiveLng = effectiveLng,
             effectiveAltFt = effectiveAltFt,
-            distanceToDeviceFt = distanceToDeviceFt
-        )
-    }
-
-    private data class ProjectedSample(
-        val lat: Double,
-        val lng: Double,
-        val altFt: Double
-    )
-
-    private fun projectedSample(history: ArrayDeque<DroneSample>?): ProjectedSample? {
-        val p2 = history?.lastOrNull() ?: return null
-        val p1 = history.firstOrNull() ?: return null
-        if (p1.wallTimeMs == p2.wallTimeMs) return null
-
-        val deltaMs = (p2.wallTimeMs - p1.wallTimeMs).coerceAtMost(MAX_PROJECTION_MS)
-        if (deltaMs <= 0L) return null
-
-        val distanceAndBearing = FloatArray(2)
-        android.location.Location.distanceBetween(
-            p1.lat, p1.lng,
-            p2.lat, p2.lng,
-            distanceAndBearing
-        )
-        val horizontalDistanceFt = distanceAndBearing[0] * FT_PER_METER
-        val projectionMs = min(deltaMs, MAX_PROJECTION_MS)
-        val projectionDistanceFt = horizontalDistanceFt
-        val projectedPoint = if (projectionDistanceFt >= MIN_DRONE_MOVE_FT) {
-            destinationPoint(
-                startLat = p2.lat,
-                startLng = p2.lng,
-                bearingDeg = distanceAndBearing[1].toDouble(),
-                distanceM = projectionDistanceFt * METERS_PER_FOOT
-            )
-        } else {
-            org.osmdroid.util.GeoPoint(p2.lat, p2.lng)
-        }
-        val verticalRateFtPerMs = (p2.altFt - p1.altFt) / deltaMs.toDouble()
-        return ProjectedSample(
-            lat = projectedPoint.latitude,
-            lng = projectedPoint.longitude,
-            altFt = p2.altFt + (verticalRateFtPerMs * projectionMs.toDouble())
+            distanceToDeviceFt = distanceToDeviceFt,
+            telemetry = spec.telemetry,
+            ageSeconds = age,
+            horizontalUncertaintyFt = uncertainty,
+            projectedUncertaintyFt = projectedUncertainty,
+            projectionSeconds = 0.0
         )
     }
 
@@ -646,26 +638,38 @@ object ProximityAlertCenter {
         val currentVerticalFt = abs(first.currentAltFt - second.currentAltFt)
         val currentThreeDFt = threeDistanceFt(currentHorizontalFt, currentVerticalFt)
 
-        val effectiveHorizontalFt = horizontalDistanceFt(
+        val projectedHorizontalFt = horizontalDistanceFt(
             first.effectiveLat,
             first.effectiveLng,
             second.effectiveLat,
             second.effectiveLng
         )
-        val effectiveVerticalFt = abs(first.effectiveAltFt - second.effectiveAltFt)
+        val currentLowerBound = (currentHorizontalFt - first.horizontalUncertaintyFt - second.horizontalUncertaintyFt).coerceAtLeast(0.0)
+        val projectedLowerBound = (projectedHorizontalFt - first.projectedUncertaintyFt - second.projectedUncertaintyFt).coerceAtLeast(0.0)
+        val usesProjection = false
+        val effectiveHorizontalFt = if (usesProjection) projectedHorizontalFt else currentHorizontalFt
+        val decisionHorizontalFt = min(currentLowerBound, projectedLowerBound)
+        val effectiveVerticalFt = currentVerticalFt
         val effectiveThreeDFt = threeDistanceFt(effectiveHorizontalFt, effectiveVerticalFt)
 
         if (!effectiveHorizontalFt.isFinite() || !effectiveVerticalFt.isFinite()) return null
 
-        val altitudeSensitive = first.teamDrone && second.teamDrone
-        val decisionCurrentVerticalFt = if (altitudeSensitive) currentVerticalFt else 0.0
-        val decisionEffectiveVerticalFt = if (altitudeSensitive) effectiveVerticalFt else 0.0
-        val decisionCurrentThreeDFt = threeDistanceFt(currentHorizontalFt, decisionCurrentVerticalFt)
-        val decisionEffectiveThreeDFt = threeDistanceFt(effectiveHorizontalFt, decisionEffectiveVerticalFt)
+        val altitudeSensitive = first.teamDrone && second.teamDrone &&
+            first.telemetry.hasUsableAltitude() && second.telemetry.hasUsableAltitude() &&
+            first.telemetry.altitudeReference == second.telemetry.altitudeReference &&
+            first.ageSeconds <= ProximityTelemetry.MAX_ALTITUDE_AGE_SECONDS &&
+            second.ageSeconds <= ProximityTelemetry.MAX_ALTITUDE_AGE_SECONDS
+        val verticalUncertaintyFt = ((first.telemetry.verticalAccuracyMeters ?: 0.0) +
+            (second.telemetry.verticalAccuracyMeters ?: 0.0)) * FT_PER_METER
+        val decisionEffectiveVerticalFt = if (altitudeSensitive)
+            (currentVerticalFt - verticalUncertaintyFt).coerceAtLeast(0.0) else 0.0
+        val decisionCurrentVerticalFt = decisionEffectiveVerticalFt
+        val decisionCurrentThreeDFt = threeDistanceFt(currentLowerBound, decisionCurrentVerticalFt)
+        val decisionEffectiveThreeDFt = threeDistanceFt(decisionHorizontalFt, decisionEffectiveVerticalFt)
         val pairKey = pairKey(first.remoteId, second.remoteId)
         val previous = previousPairSnapshots[pairKey]
         val decision = evaluateThresholdDecision(
-            effectiveHorizontalFt = effectiveHorizontalFt,
+            effectiveHorizontalFt = decisionHorizontalFt,
             effectiveVerticalFt = decisionEffectiveVerticalFt,
             effectiveThreeDFt = decisionEffectiveThreeDFt,
             currentThreeDFt = decisionCurrentThreeDFt,
@@ -684,7 +688,10 @@ object ProximityAlertCenter {
             currentVerticalFt = currentVerticalFt,
             currentThreeDFt = currentThreeDFt,
             altitudeSensitive = altitudeSensitive,
-            shouldAlert = decision.shouldAlert && shouldAlertForPair(first, second),
+            decisionHorizontalFt = decisionHorizontalFt,
+            decisionVerticalFt = decisionEffectiveVerticalFt,
+            usesProjection = usesProjection,
+            shouldAlert = decision.insideThreshold && shouldAlertForPair(first, second),
             isGettingFartherApart = decision.isGettingFartherApart,
             highSeverity = decision.highSeverity,
             severityScore = decision.severityScore
@@ -692,8 +699,27 @@ object ProximityAlertCenter {
     }
 
     private fun shouldAlertForPair(first: EvaluatedDrone, second: EvaluatedDrone): Boolean =
-        (first.teamDrone || second.teamDrone) &&
-            (first.localAlertEligible || second.localAlertEligible)
+        ProximityAlertConsent.alertAllAircraft.value || ((first.teamDrone || second.teamDrone) &&
+            (first.localAlertEligible || second.localAlertEligible))
+
+    fun setAlertAllAircraft(value: Boolean) {
+        synchronized(stateLock) {
+            if (ProximityAlertConsent.alertAllAircraft.value == value) return
+            ProximityAlertConsent.setAlertAllAircraft(value)
+            SpokenWarningCenter.cancelProximityWarning()
+            _uiState.value = null
+            _suspendedAlert.value = null
+            _canResumeAlert.value = false
+            _debugPairs.value = emptyList()
+            latestEvaluationsByKey = emptyMap()
+            previousPairSnapshots.clear()
+            clearEligibleSinceMs = null
+            latestRequest?.let { pendingUpdate.set(it.copy(submittedAtMs = System.currentTimeMillis())) }
+        }
+        if (pendingUpdate.get() != null && workerScheduled.compareAndSet(false, true)) {
+            evaluationExecutor.execute(::drainPendingUpdates)
+        }
+    }
 
     internal fun shouldAlertForPairForTests(
         firstTeamDrone: Boolean,
@@ -704,7 +730,25 @@ object ProximityAlertCenter {
         (firstTeamDrone || secondTeamDrone) &&
             (firstLocalAlertEligible || secondLocalAlertEligible)
 
+    fun disableAlerts() = synchronized(stateLock) {
+        ProximityAlertConsent.disable()
+        _stalePositionCount.value = 0
+        SpokenWarningCenter.cancelProximityWarning()
+        pendingUpdate.set(null)
+        _uiState.value = null
+        _suspendedAlert.value = null
+        _canResumeAlert.value = false
+        _debugPairs.value = emptyList()
+        sampleHistoryByRemoteId.clear()
+        previousPairSnapshots.clear()
+        latestEvaluationsByKey = emptyMap()
+        alertsSuspended = false
+        clearEligibleSinceMs = null
+    }
+
     internal fun resetForTests() {
+        latestRequest = null
+        _stalePositionCount.value = 0
         pendingUpdate.set(null)
         workerScheduled.set(false)
         synchronized(stateLock) {
@@ -721,10 +765,13 @@ object ProximityAlertCenter {
     }
 
     internal fun setEvaluationExecutorForTests(executor: Executor) {
+        periodicEvaluationEnabled = false
         evaluationExecutor = executor
     }
 
     internal fun clearEvaluationExecutorForTests() {
+        periodicEvaluationEnabled = true
+        evaluationTimeForTests = null
         evaluationExecutor = createDefaultEvaluationExecutor()
     }
 
@@ -818,8 +865,7 @@ object ProximityAlertCenter {
     }
 
     private fun PairEvaluation.isInsideThreshold(thresholdFt: Double): Boolean =
-        effectiveHorizontalFt <= thresholdFt &&
-            (!altitudeSensitive || effectiveVerticalFt <= thresholdFt)
+        decisionHorizontalFt <= thresholdFt && decisionVerticalFt <= thresholdFt
 
     private fun PairEvaluation.toUiState(alertInstanceId: Long, thresholdFt: Double): ProximityAlertUiState {
         val nearest = listOf(first, second).sortedWith(
@@ -842,7 +888,9 @@ object ProximityAlertCenter {
             firstLat = first.currentLat,
             firstLng = first.currentLng,
             secondLat = second.currentLat,
-            secondLng = second.currentLng
+            secondLng = second.currentLng,
+            verticalSeparationKnown = altitudeSensitive,
+            usesProjection = usesProjection
         )
     }
 
@@ -860,9 +908,14 @@ object ProximityAlertCenter {
         secondLat: Double,
         secondLng: Double
     ): Double {
-        val result = FloatArray(1)
-        android.location.Location.distanceBetween(firstLat, firstLng, secondLat, secondLng, result)
-        return result[0] * FT_PER_METER
+        // Same spherical geometry as Apple RidGeometry; independent of Android framework stubs.
+        val lat1 = Math.toRadians(firstLat)
+        val lat2 = Math.toRadians(secondLat)
+        val deltaLat = lat2 - lat1
+        val deltaLng = Math.toRadians(secondLng - firstLng)
+        val a = (sin(deltaLat / 2) * sin(deltaLat / 2) + cos(lat1) * cos(lat2) *
+            sin(deltaLng / 2) * sin(deltaLng / 2)).coerceIn(0.0, 1.0)
+        return 6_371_008.8 * 2 * atan2(sqrt(a), sqrt(1 - a)) * FT_PER_METER
     }
 
     private fun threeDistanceFt(horizontalFt: Double, verticalFt: Double): Double =
@@ -891,6 +944,24 @@ object ProximityAlertCenter {
         return org.osmdroid.util.GeoPoint(Math.toDegrees(lat2), Math.toDegrees(lon2))
     }
 
+    internal fun reevaluateForTests(nowMs: Long) {
+        latestRequest?.let { updateDronesOnWorker(it, nowMs) }
+    }
+
+    // Aging and the clear delay must advance even after the final packet.
+    private val freshnessTimer = Executors.newSingleThreadScheduledExecutor { runnable ->
+        Thread(runnable, "r2c-proximity-freshness").apply { isDaemon = true }
+    }.apply {
+        scheduleAtFixedRate({
+            if (periodicEvaluationEnabled && ProximityAlertConsent.state.value.enabled) {
+                synchronized(stateLock) {
+                    if (periodicEvaluationEnabled) latestRequest?.let { pendingUpdate.compareAndSet(null, it.copy(submittedAtMs = System.currentTimeMillis())) }
+                }
+                if (pendingUpdate.get() != null && workerScheduled.compareAndSet(false, true)) evaluationExecutor.execute(::drainPendingUpdates)
+            }
+        }, 1, 1, java.util.concurrent.TimeUnit.SECONDS)
+    }
+
     private fun createDefaultEvaluationExecutor(): Executor =
         Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "r2c-proximity-alert").apply {
@@ -911,7 +982,7 @@ fun ProximityAlertHost(
     val alert by ProximityAlertCenter.uiState.collectAsState()
 
     LaunchedEffect(alert?.alertInstanceId) {
-        if (alert != null) {
+        if (alert != null && ProximityAlertConsent.state.value.enabled) {
             SpokenWarningCenter.requestWarning(
                 kind = SpokenWarningKind.Proximity,
                 sourceKey = alert?.pairKey ?: "proximity",
@@ -967,12 +1038,22 @@ fun ComplianceAlertHost() {
 }
 
 @Composable
-fun ResumeProximityAlertButton() {
-    val canResume by ProximityAlertCenter.canResumeAlert.collectAsState()
-    if (canResume) {
-        TextButton(onClick = { ProximityAlertCenter.resumeSuspendedAlert() }) {
-            Text("Resume Proximity Alert")
+fun ResumeProximityAlertButton(onSettings: (() -> Unit)? = null) {
+    val consent by ProximityAlertConsent.state.collectAsState()
+    val suspended by ProximityAlertCenter.isSuspended.collectAsState()
+    val staleCount by ProximityAlertCenter.stalePositionCount.collectAsState()
+    val status = when {
+        !consent.enabled -> "Off"
+        suspended -> "Suspended"
+        staleCount > 0 -> "Unavailable"
+        else -> "On"
+    }
+    if (suspended && consent.enabled || onSettings != null) {
+        TextButton(onClick = { if (suspended && consent.enabled) ProximityAlertCenter.resumeSuspendedAlert() else onSettings?.invoke() }) {
+            Text("Proximity: $status")
         }
+    } else {
+        Text("Proximity: $status", style = MaterialTheme.typography.labelSmall)
     }
 }
 
@@ -980,7 +1061,8 @@ fun ResumeProximityAlertButton() {
 private fun ProximityAlertBody(alert: ProximityAlertUiState) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Text(
-            "Both horizontal and vertical spacing crossed the ${formatFeet(alert.thresholdFt)} threshold.",
+            "${formatFeet(alert.thresholdFt)} base spacing plus position uncertainty." +
+                if (alert.verticalSeparationKnown) "" else " Vertical separation unknown.",
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(12.dp))
@@ -1000,14 +1082,14 @@ private fun ProximityAlertGrid(alert: ProximityAlertUiState) {
     ) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Spacer(modifier = Modifier.weight(1f))
-            GridCell(alert.highestDroneMappedId, emphasis = true)
+            GridCell(if (alert.verticalSeparationKnown) alert.highestDroneMappedId else "", emphasis = true)
             Spacer(modifier = Modifier.weight(1f))
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             GridCell(alert.nearestDroneMappedId, emphasis = true)
             GridCell(
-                primary = "H: ${formatFeet(alert.horizontalSeparationFt)}",
-                secondary = "V: ${formatFeet(alert.verticalSeparationFt)}",
+                primary = "${if (alert.usesProjection) "Projected H" else "H"}: ${formatFeet(alert.horizontalSeparationFt)}",
+                secondary = if (alert.verticalSeparationKnown) "V: ${formatFeet(alert.verticalSeparationFt)}" else "V: Unknown",
                 primaryColor = horizontalColor,
                 secondaryColor = verticalColor
             )
@@ -1015,7 +1097,7 @@ private fun ProximityAlertGrid(alert: ProximityAlertUiState) {
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Spacer(modifier = Modifier.weight(1f))
-            GridCell(alert.lowestDroneMappedId, emphasis = true)
+            GridCell(if (alert.verticalSeparationKnown) alert.lowestDroneMappedId else "", emphasis = true)
             Spacer(modifier = Modifier.weight(1f))
         }
     }

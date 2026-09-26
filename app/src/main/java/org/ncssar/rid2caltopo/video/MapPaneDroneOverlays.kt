@@ -553,8 +553,9 @@ private fun polarPoint(
 internal fun negativeAolRange(text: String): IntRange? {
     val start = text.indexOf("AOL:")
     if (start < 0) return null
-    val end = text.indexOf(' ', start).let { if (it < 0) text.length else it }
-    val feet = text.substring(start + 4, end).removeSuffix("'").toDoubleOrNull() ?: return null
+    val valueStart = (start + 4 until text.length).firstOrNull { !text[it].isWhitespace() } ?: return null
+    val end = text.indexOf(' ', valueStart).let { if (it < 0) text.length else it }
+    val feet = text.substring(valueStart, end).removeSuffix("'").toDoubleOrNull() ?: return null
     return if (feet.isFinite() && feet < 0) start until end else null
 }
 

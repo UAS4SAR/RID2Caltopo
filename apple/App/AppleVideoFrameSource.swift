@@ -901,14 +901,6 @@ final class AppleVideoFrameSource: ObservableObject {
                         &payloadSequence
                     )
                 }
-                if AppleSEIHexDiagnostics.enabled,
-                   copiedPayload, payloadSize > 0, Int(payloadSize) <= payload.count {
-                        let hex = payload.prefix(Int(payloadSize)).map { String(format: "%02x", $0) }.joined()
-                        AppleLog.debug(
-                            "DjiSeiHex",
-                            "DJI_SEI_HEX path=\(currentPath ?? "unknown") sequence=\(payloadSequence) ptsUs=\(payloadTimestampMicroseconds) len=\(payloadSize) northMm=\(northMillimeters) eastMm=\(eastMillimeters) downMm=\(downMillimeters) payload=\(hex)"
-                        )
-                }
                 let magneticDeclinationDegrees = AppleMagneticNorth.declinationDegrees
                 latestDJICameraTelemetry = AppleDJICameraTelemetry(
                     rawAzimuthCandidateDegrees: RidHeading.normalized(djiAzimuthDegrees) ?? djiAzimuthDegrees,

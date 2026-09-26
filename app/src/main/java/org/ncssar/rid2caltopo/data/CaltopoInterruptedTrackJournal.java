@@ -23,13 +23,13 @@ public final class CaltopoInterruptedTrackJournal {
 
     private CaltopoInterruptedTrackJournal() { }
 
-    public static void save(@NonNull String mapId,
+    public static boolean save(@NonNull String mapId,
                             @NonNull String remoteId,
                             @NonNull String liveTrackId,
                             @NonNull String label,
                             @NonNull String description,
                             @NonNull JSONArray points) {
-        if (mapId.isEmpty() || liveTrackId.isEmpty()) return;
+        if (mapId.isEmpty() || liveTrackId.isEmpty()) return false;
         synchronized (LOCK) {
             try {
                 JSONObject root = readRoot();
@@ -57,8 +57,10 @@ public final class CaltopoInterruptedTrackJournal {
                 entry.put("description", description);
                 entry.put("points", new JSONArray(points.toString()));
                 writeRoot(root);
+                return true;
             } catch (Exception error) {
                 CaltopoClient.CTError(TAG, "Could not persist interrupted LiveTrack", error);
+                return false;
             }
         }
     }
@@ -186,7 +188,7 @@ public final class CaltopoInterruptedTrackJournal {
 
     private static void writeRoot(@NonNull JSONObject root) throws Exception {
         File file = journalFile();
-        if (file == null) return;
+        if (file == null) throw new IllegalStateException("Recovery journal storage unavailable");
         File parent = file.getParentFile();
         if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
             throw new IllegalStateException("Could not create journal directory");

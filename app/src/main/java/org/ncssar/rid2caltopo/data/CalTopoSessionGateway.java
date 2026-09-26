@@ -27,9 +27,10 @@ public interface CalTopoSessionGateway {
     @NonNull CaltopoOp deleteLiveTrackWithId(@NonNull String objId, @Nullable Consumer<CaltopoOp> onComplete, int... acceptedErrorCodes);
     @NonNull CaltopoOp editObjectWithId(@NonNull String objectType, @NonNull String objId,
                                         @NonNull JSONObject featureSet, @Nullable Consumer<CaltopoOp> onComplete);
-    @NonNull CaltopoOp startLiveTrack(@NonNull String deviceId, @NonNull String label,
+    @NonNull CaltopoOp startLiveTrack(@NonNull String liveTrackId, @NonNull String deviceId, @NonNull String label,
                                       @Nullable String folderId, @Nullable String description,
                                       @Nullable CtLineProperty lineProp, @Nullable Consumer<CaltopoOp> onComplete);
+    default void cancelLiveTrackPoints(@NonNull String deviceId) { }
     @NonNull CaltopoOp addLiveTrackPoint(@NonNull String deviceId, double lat, double lng, double eleMeters,
                                          @Nullable CtDroneSpec.PositionTelemetry telemetry,
                                          @Nullable CaltopoCameraMetadata cameraMetadata,

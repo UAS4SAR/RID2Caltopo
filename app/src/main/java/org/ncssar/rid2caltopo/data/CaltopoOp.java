@@ -55,6 +55,7 @@ public class CaltopoOp implements Future <CaltopoOp> {
     public String response;    // if receivedTimestampInMsec && goodResponse == false;
     public JSONObject responseJson; // if receivedTimestampInMsec && goodResponse == true;
 	public boolean goNaked;
+    public boolean positionReport;
 	private boolean isDone;
 	    
     public CaltopoOp() throws RuntimeException {
@@ -79,6 +80,11 @@ public class CaltopoOp implements Future <CaltopoOp> {
 
     public boolean fail() {
         return isDone() && !this.goodResponse;
+    }
+
+    void discardPositionReport() {
+        // Superseded live samples are neither network successes nor failures.
+        isDone = true;
     }
 
     @Nullable

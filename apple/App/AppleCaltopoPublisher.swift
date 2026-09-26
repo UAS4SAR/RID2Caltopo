@@ -23,6 +23,8 @@ actor AppleCaltopoPublisher {
     private nonisolated let continuation: AsyncStream<AppleCaltopoPublisherEvent>.Continuation
     private var client: CaltopoLiveClient?
     private var liveTrackIDs: [String: String] = [:]
+    private var requestedLiveTrackIDs: [String: String] = [:]
+    private var nextStartAttemptAt: [String: Date] = [:]
     private var labels: [String: String] = [:]
     private var observations: [String: [RidObservation]] = [:]
     private var startTasks: [String: Task<String, Error>] = [:]
@@ -106,9 +108,13 @@ actor AppleCaltopoPublisher {
         await waitForDeviceMarkerPublicationToFinish()
         await removePublishedDeviceMarker()
         configurationGeneration += 1
+        await client?.stopAllPositionReports()
         await folderResolver.reset()
         folderResolver = CaltopoTrackFolderResolver()
         liveTrackIDs.removeAll()
+        requestedLiveTrackIDs.removeAll()
+        lastInterruptedJournalWriteAt.removeAll()
+        nextStartAttemptAt.removeAll()
         labels.removeAll()
         observations.removeAll()
         finishingRemoteIDs.removeAll()
@@ -299,35 +305,82 @@ actor AppleCaltopoPublisher {
         )
     }
 
+    // Retain every admitted point before returning to the local publication chain.
+    // Network completion must not hold that chain and build a historical backlog.
     func publish(
         remoteID: String,
         label: String,
         observation: RidObservation,
         cameraMetadata: CaltopoCameraMetadata? = nil
     ) async {
-        guard let client else { return }
+        guard client != nil, !finishingRemoteIDs.contains(remoteID) else { return }
+        guard WaypointRecordingCadence.accepts(
+            previous: observations[remoteID]?.last?.receivedAt,
+            candidate: observation.receivedAt
+        ) else { return }
+        if observations[remoteID]?.last != observation {
+            observations[remoteID, default: []].append(observation)
+        }
+        let id = requestedLiveTrackIDs[remoteID] ?? UUID().uuidString.lowercased()
+        requestedLiveTrackIDs[remoteID] = id
+        if labels[remoteID] == nil {
+            labels[remoteID] = CaltopoTrackLabel.androidCompatible(
+                baseLabel: label, firstWaypointAt: observations[remoteID]?.first?.receivedAt ?? observation.receivedAt)
+        }
+        Task {
+            await self.publishBuffered(remoteID: remoteID, label: label,
+                observation: observation, cameraMetadata: cameraMetadata, expectedID: id)
+        }
+    }
+
+    private func publishBuffered(
+        remoteID: String,
+        label: String,
+        observation: RidObservation,
+        cameraMetadata: CaltopoCameraMetadata?,
+        expectedID: String
+    ) async {
+        guard let client, requestedLiveTrackIDs[remoteID] == expectedID, !finishingRemoteIDs.contains(remoteID) else { return }
+        let generation = configurationGeneration
+        var publicationID: String?
         do {
-            try await ensureFolders(client: client)
-            await recoverInterruptedPublications(client: client)
-            var saved = observations[remoteID, default: []]
-            if saved.last != observation {
-                saved.append(observation)
-                if saved.count > 5_000 { saved.removeFirst(saved.count - 5_000) }
-                observations[remoteID] = saved
-            }
+            let saved = observations[remoteID, default: []]
             let trackLabel = labels[remoteID] ?? CaltopoTrackLabel.androidCompatible(
                 baseLabel: label,
                 firstWaypointAt: saved.first?.receivedAt ?? observation.receivedAt
             )
             labels[remoteID] = trackLabel
+            let requestedID = requestedLiveTrackIDs[remoteID] ?? UUID().uuidString.lowercased()
+            requestedLiveTrackIDs[remoteID] = requestedID
+            publicationID = requestedID
+            // Persist the identity and observations before any network request.
+            guard let configuration = configuredConfiguration else { return }
+            let now = Date()
+            if liveTrackIDs[remoteID] == nil && startTasks[remoteID] == nil ||
+                now.timeIntervalSince(lastInterruptedJournalWriteAt[remoteID] ?? .distantPast) >= 5 {
+                try await interruptedJournal.upsert(CaltopoInterruptedPublication(
+                    mapID: configuration.mapID, remoteID: remoteID, liveTrackID: requestedID,
+                    label: trackLabel, description: "", observations: saved))
+                lastInterruptedJournalWriteAt[remoteID] = now
+            }
+            guard generation == configurationGeneration,
+                  requestedLiveTrackIDs[remoteID] == requestedID,
+                  !finishingRemoteIDs.contains(remoteID) else { return }
+            try await ensureFolders(client: client)
+            guard generation == configurationGeneration,
+                  requestedLiveTrackIDs[remoteID] == requestedID,
+                  !finishingRemoteIDs.contains(remoteID) else { return }
             if liveTrackIDs[remoteID] == nil {
                 let task: Task<String, Error>
-                if let existing = startTasks[remoteID] {
-                    task = existing
+                if startTasks[remoteID] != nil {
+                    return // Points are already saved; only the original start awaits its result.
                 } else {
+                    guard Date() >= (nextStartAttemptAt[remoteID] ?? .distantPast) else { return }
+                    nextStartAttemptAt[remoteID] = Date().addingTimeInterval(20)
                     let folderID = trackFolderID
                     task = Task {
                         try await client.startLiveTrack(
+                            liveTrackID: requestedID,
                             remoteID: remoteID,
                             label: trackLabel,
                             folderID: folderID
@@ -336,75 +389,87 @@ actor AppleCaltopoPublisher {
                     startTasks[remoteID] = task
                 }
                 let liveTrackID = try await task.value
+                guard generation == configurationGeneration,
+                      requestedLiveTrackIDs[remoteID] == requestedID,
+                      !finishingRemoteIDs.contains(remoteID) else { return }
                 startTasks.removeValue(forKey: remoteID)
-                guard !finishingRemoteIDs.contains(remoteID) else { return }
                 liveTrackIDs[remoteID] = liveTrackID
                 await persistInterruptedPublication(remoteID: remoteID, force: true)
                 continuation.yield(.trackStarted(remoteID))
             }
             await persistInterruptedPublication(remoteID: remoteID)
+            guard generation == configurationGeneration,
+                  requestedLiveTrackIDs[remoteID] == publicationID,
+                  !finishingRemoteIDs.contains(remoteID) else { return }
             let requestStarted = Date()
-            try await client.publishPoint(
+            let sent = try await client.publishPoint(
                 remoteID: remoteID,
-                observation: observation,
+                observation: observations[remoteID]?.last ?? observation,
                 cameraMetadata: cameraMetadata
             )
+            guard sent else { return }
             let rttMilliseconds = max(0, Int64(Date().timeIntervalSince(requestStarted) * 1_000))
+            guard generation == configurationGeneration, requestedLiveTrackIDs[remoteID] == publicationID else { return }
             continuation.yield(.pointPublished(remoteID, rttMilliseconds: rttMilliseconds))
         } catch {
+            guard generation == configurationGeneration,
+                  requestedLiveTrackIDs[remoteID] == publicationID else { return }
+            if error as? CaltopoLiveClientError == .mismatchedLiveTrackID {
+                nextStartAttemptAt[remoteID] = .distantFuture
+            }
             startTasks.removeValue(forKey: remoteID)
             continuation.yield(.failed("\(remoteID): \(error.localizedDescription)"))
         }
     }
 
     func finish(remoteID: String, description: String = "") async -> AppleArchivedCaltopoTrack? {
+        guard !finishingRemoteIDs.contains(remoteID) else { return nil }
         finishingRemoteIDs.insert(remoteID)
-        defer { finishingRemoteIDs.remove(remoteID) }
-        guard let client else {
-            startTasks.removeValue(forKey: remoteID)?.cancel()
-            liveTrackIDs.removeValue(forKey: remoteID)
-            labels.removeValue(forKey: remoteID)
-            observations.removeValue(forKey: remoteID)
-            return nil
+        let generation = configurationGeneration
+        let id = liveTrackIDs[remoteID] ?? requestedLiveTrackIDs[remoteID]
+        let label = labels[remoteID] ?? remoteID
+        let saved = observations[remoteID] ?? []
+        let pendingStart = startTasks[remoteID]
+        let finishingClient = client
+        let finishingConfiguration = configuredConfiguration
+        await finishingClient?.stopPositionReports(remoteID: remoteID)
+        defer {
+            if generation == configurationGeneration {
+                finishingRemoteIDs.remove(remoteID)
+                startTasks.removeValue(forKey: remoteID)
+                liveTrackIDs.removeValue(forKey: remoteID)
+                requestedLiveTrackIDs.removeValue(forKey: remoteID)
+                nextStartAttemptAt.removeValue(forKey: remoteID)
+                lastInterruptedJournalWriteAt.removeValue(forKey: remoteID)
+                labels.removeValue(forKey: remoteID)
+                observations.removeValue(forKey: remoteID)
+            }
         }
+        guard generation == configurationGeneration, let client = finishingClient,
+              let id, let configuration = finishingConfiguration else { return nil }
+        let entry = CaltopoInterruptedPublication(
+            mapID: configuration.mapID, remoteID: remoteID, liveTrackID: id,
+            label: label, description: description, observations: saved)
         do {
-            let liveTrackID: String?
-            if let existing = liveTrackIDs[remoteID] {
-                liveTrackID = existing
-            } else if let task = startTasks.removeValue(forKey: remoteID) {
-                liveTrackID = try await task.value
-                liveTrackIDs[remoteID] = liveTrackID
-            } else {
-                liveTrackID = nil
-            }
-            guard let liveTrackID else { return nil }
-            await persistInterruptedPublication(remoteID: remoteID, description: description, force: true)
+            try await interruptedJournal.upsert(entry)
+            // Finish an in-flight create before the Shape write; a lost response does not
+            // prevent conversion because the durable identity is already known.
+            if let pendingStart { _ = try? await pendingStart.value }
+            guard generation == configurationGeneration else { return nil }
             try await ensureFolders(client: client)
-            guard let archiveFolderID else {
-                throw CaltopoLiveClientError.missingResult
-            }
+            guard generation == configurationGeneration, let archiveFolderID else { return nil }
             try await client.archiveLiveTrack(
-                liveTrackID: liveTrackID,
-                label: labels[remoteID] ?? remoteID,
-                observations: observations[remoteID] ?? [],
-                folderID: archiveFolderID,
-                description: description
-            )
-            let archivedTrack = AppleArchivedCaltopoTrack(
-                liveTrackID: liveTrackID,
-                label: labels[remoteID] ?? remoteID,
-                observations: observations[remoteID] ?? [],
-                folderID: archiveFolderID
-            )
-            liveTrackIDs.removeValue(forKey: remoteID)
-            labels.removeValue(forKey: remoteID)
-            observations.removeValue(forKey: remoteID)
-            try await interruptedJournal.remove(liveTrackID: liveTrackID)
+                liveTrackID: id, label: label, observations: saved,
+                folderID: archiveFolderID, description: description)
+            try await interruptedJournal.remove(liveTrackID: id)
             continuation.yield(.trackStopped(remoteID))
-            return archivedTrack
-        } catch is CancellationError {
-            return nil
+            return AppleArchivedCaltopoTrack(
+                liveTrackID: id, label: label, observations: saved, folderID: archiveFolderID)
         } catch {
+            if generation == configurationGeneration {
+                pendingInterruptedRecoveries.removeAll { $0.liveTrackID == id }
+                pendingInterruptedRecoveries.append(entry)
+            }
             continuation.yield(.failed("Stop \(remoteID): \(error.localizedDescription)"))
             return nil
         }
@@ -440,10 +505,13 @@ actor AppleCaltopoPublisher {
     /// Stops an ignored aircraft's live track without converting it to an archived Shape.
     func discard(remoteID: String) async {
         finishingRemoteIDs.insert(remoteID)
+        await client?.stopPositionReports(remoteID: remoteID)
         defer {
             finishingRemoteIDs.remove(remoteID)
             startTasks.removeValue(forKey: remoteID)
             liveTrackIDs.removeValue(forKey: remoteID)
+            requestedLiveTrackIDs.removeValue(forKey: remoteID)
+            nextStartAttemptAt.removeValue(forKey: remoteID)
             labels.removeValue(forKey: remoteID)
             observations.removeValue(forKey: remoteID)
         }
@@ -452,9 +520,9 @@ actor AppleCaltopoPublisher {
         if let existing = liveTrackIDs[remoteID] {
             liveTrackID = existing
         } else if let task = startTasks[remoteID] {
-            liveTrackID = try? await task.value
+            liveTrackID = (try? await task.value) ?? requestedLiveTrackIDs[remoteID]
         } else {
-            liveTrackID = nil
+            liveTrackID = requestedLiveTrackIDs[remoteID]
         }
         guard let client, let liveTrackID else { return }
         do {
@@ -504,7 +572,7 @@ actor AppleCaltopoPublisher {
         force: Bool = false
     ) async {
         guard let configuration = configuredConfiguration,
-              let liveTrackID = liveTrackIDs[remoteID]
+              let liveTrackID = liveTrackIDs[remoteID] ?? requestedLiveTrackIDs[remoteID]
         else { return }
         let now = Date()
         if !force,

@@ -154,6 +154,8 @@ public struct OpenDroneIDLocation: Equatable, Sendable {
     public let geodeticAltitudeMeters: Double
     public let heightMeters: Double
     public let horizontalAccuracyCode: UInt8
+    public var verticalAccuracyCode: UInt8 = 0
+    public var barometerAccuracyCode: UInt8 = 0
     public let directionDegrees: Double?
     public let horizontalSpeedMetersPerSecond: Double?
     public let verticalSpeedMetersPerSecond: Double?
@@ -284,6 +286,8 @@ public enum OpenDroneIDParser {
             geodeticAltitudeMeters: altitude(uint16LE(data, 15)),
             heightMeters: altitude(uint16LE(data, 17)),
             horizontalAccuracyCode: byte(data, 19) & 0x0F,
+            verticalAccuracyCode: byte(data, 19) >> 4,
+            barometerAccuracyCode: byte(data, 20) >> 4,
             // ASTM F3411 reserves 361 degrees for unavailable direction. Do not
             // normalize that sentinel to 1 degree and accidentally display it.
             directionDegrees: (0 ... 360).contains(decodedDirection)

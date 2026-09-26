@@ -112,14 +112,11 @@ public class CaltopoMap {
     public static android.location.Location MyLocation;
     private static android.location.Location MyLocationOverride;
     private static long FirstMapUpdateTimeInSeconds = 15;
-    private static long RepeatMapUpdateTimeInSeconds = 90;
+    private static long RepeatMapUpdateTimeInSeconds = 20;
     private static final long FOREGROUND_MAP_UPDATE_TIME_IN_SECONDS = 20;
-    private static final long FULL_ARTIFACT_RECONCILE_INTERVAL_MS = 15L * 60L * 1000L;
-    private static final long FOREGROUND_ARTIFACT_RECONCILE_INTERVAL_MS = 120L * 1000L;
-
-    static boolean fullArtifactReconciliationDue(long now, long lastFullSync, boolean foreground) {
-        long interval = foreground ? FOREGROUND_ARTIFACT_RECONCILE_INTERVAL_MS : FULL_ARTIFACT_RECONCILE_INTERVAL_MS;
-        return lastFullSync == 0L || now < lastFullSync || now - lastFullSync >= interval;
+    // Initial connection loads the map; subsequent full reads require an operator reload.
+    static boolean fullArtifactRefreshRequired(long lastSync, boolean manualReload) {
+        return lastSync == 0L || manualReload;
     }
     public static final CtLineProperty ArchiveLineProp =
             new CtLineProperty(2, 0.5F, "#ff00ff", "solid");
@@ -176,7 +173,6 @@ public class CaltopoMap {
     private static boolean MapRefreshPending;
     private static boolean FullMapRefreshPending;
     private static int MapArtifactForegroundConsumers;
-    private static long LastFullArtifactSync;
     private static long MapRefreshGeneration;
     private static final ArrayList<Runnable> FullMapRefreshCallbacks = new ArrayList<>();
 
@@ -606,7 +602,7 @@ public class CaltopoMap {
 
     public static void SetMapUpdateDelayInSeconds(long initialDelay, long repeatDelay) {
         FirstMapUpdateTimeInSeconds = Math.max(5, initialDelay);
-        RepeatMapUpdateTimeInSeconds = Math.max(20, repeatDelay);
+        RepeatMapUpdateTimeInSeconds = Math.min(30, Math.max(20, repeatDelay));
         CTInfo(TAG, String.format(Locale.US,
                 "SetMapUpdateDelayInSeconds(): initial=%d repeat=%d",
                 FirstMapUpdateTimeInSeconds, RepeatMapUpdateTimeInSeconds));
@@ -782,7 +778,6 @@ public class CaltopoMap {
             FullMapRefreshCallbacks.clear();
             LastMapSync = 0L;
             LastMapPollStartedAt = 0L;
-            LastFullArtifactSync = 0L;
         }
         InitialMarkerPublishDelay.stop();
         InitialMarkerPublishPending = false;
@@ -1080,8 +1075,7 @@ public class CaltopoMap {
             MapRefreshInFlight = true;
             MapRefreshPending = false;
             refreshGeneration = MapRefreshGeneration;
-            fullReconcile = FullMapRefreshPending || fullArtifactReconciliationDue(
-                    requestStartedAtMs, LastFullArtifactSync, MapArtifactForegroundConsumers > 0);
+            fullReconcile = fullArtifactRefreshRequired(LastMapSync, FullMapRefreshPending);
             if (fullReconcile) FullMapRefreshPending = false;
             requestCursor = fullReconcile ? 0L : LastMapSync;
         }
@@ -1161,7 +1155,6 @@ public class CaltopoMap {
             if (success) {
                 LastMapSync = Math.max(LastMapSync, requestStartedAtMs);
                 if (fullReconcile) {
-                    LastFullArtifactSync = requestStartedAtMs;
                     completedCallbacks.addAll(FullMapRefreshCallbacks);
                     FullMapRefreshCallbacks.clear();
                 }
@@ -1351,7 +1344,6 @@ public class CaltopoMap {
             ParseMap(state);
             synchronized (MapRefreshLock) {
                 LastMapSync = Math.max(LastMapSync, requestStartedAtMs);
-                LastFullArtifactSync = requestStartedAtMs;
                 LastMapPollStartedAt = requestStartedAtMs;
             }
         } catch (Exception e) {

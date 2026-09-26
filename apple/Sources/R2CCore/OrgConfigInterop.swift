@@ -461,8 +461,8 @@ public enum OrgConfigTokenCodec {
                         : string(config["tracker_url_pfx"]),
                     trackerFAAProxyURL: string(config["tracker_faa_proxy_url"]),
                     usePeers: number(config["use_peers"]).map { $0.boolValue },
-                    predictiveHeadEnabled: number(config["predictive_head_enabled"])?.boolValue ?? true,
-                    proximityAlertSpacingFeet: number(config["proximity_alert_spacing_feet"])?.intValue ?? 40,
+                    predictiveHeadEnabled: false,
+                    proximityAlertSpacingFeet: max(50, number(config["proximity_alert_spacing_feet"])?.intValue ?? 100),
                     connectKey: string(config["connect_key"])
                 )
             case let value where value.hasPrefix("ct_faa_"):

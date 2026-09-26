@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.ncssar.rid2caltopo.data.CaltopoClient
+import org.ncssar.rid2caltopo.data.ProximityAlertConsent
 
 enum class SpokenWarningKind(val phrase: String) {
     DroneTelemetry("Drone Telemetry"),
@@ -134,6 +135,12 @@ object SpokenWarningCenter {
     }
 
     @Synchronized
+    fun cancelProximityWarning() {
+        if (_requests.value?.kind == SpokenWarningKind.Proximity) _requests.value = null
+        lastRequestedAtMsByKey.keys.removeAll { it.kind == SpokenWarningKind.Proximity }
+    }
+
+    @Synchronized
     fun resetForTests() {
         _requests.value = null
         lastRequestedAtMsByKey.clear()
@@ -146,9 +153,18 @@ fun SpokenWarningAlertHost() {
     val context = LocalContext.current
     val request by SpokenWarningCenter.requests.collectAsState()
     var ready by remember { mutableStateOf(false) }
+    val proximityConsent by ProximityAlertConsent.state.collectAsState()
+    var speakingKind by remember { mutableStateOf<SpokenWarningKind?>(null) }
     val tts = remember(context) {
         TextToSpeech(context.applicationContext) { status ->
             ready = status == TextToSpeech.SUCCESS
+        }
+    }
+
+    LaunchedEffect(proximityConsent.enabled) {
+        if (!proximityConsent.enabled && speakingKind == SpokenWarningKind.Proximity) {
+            tts.stop()
+            speakingKind = null
         }
     }
 
@@ -180,6 +196,8 @@ fun SpokenWarningAlertHost() {
         if (!ready) return@LaunchedEffect
         val currentRequest = SpokenWarningCenter.consume(pendingRequest.requestId)
             ?: return@LaunchedEffect
+        if (currentRequest.kind == SpokenWarningKind.Proximity && !ProximityAlertConsent.state.value.enabled) return@LaunchedEffect
+        speakingKind = currentRequest.kind
         val volume = (currentRequest.volumeFraction * CaltopoClient.GetAlarmVolumeMultiplier())
             .coerceIn(0f, 1f)
         val params = Bundle().apply {

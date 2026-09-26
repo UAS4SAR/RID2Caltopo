@@ -136,7 +136,10 @@ public actor OpenDroneIDTrackAssembler {
             operatorLatitude: state.system?.operatorLatitude,
             operatorLongitude: state.system?.operatorLongitude,
             signalStrengthDbm: signalStrengthDbm,
-            droneScoutRelay: state.droneScoutRelay
+            droneScoutRelay: state.droneScoutRelay,
+            proximityTelemetry: .fromRID(horizontalCode: location.horizontalAccuracyCode,
+                geodetic: location.geodeticAltitudeMeters, pressure: location.pressureAltitudeMeters,
+                verticalCode: location.verticalAccuracyCode, barometerCode: location.barometerAccuracyCode)
         )
         return OpenDroneIDTrackAssemblyResult(
             observation: observation,

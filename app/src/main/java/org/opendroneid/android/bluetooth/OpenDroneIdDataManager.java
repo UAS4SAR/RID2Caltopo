@@ -507,7 +507,10 @@ public class OpenDroneIdDataManager {
                 : null;
 
         // Let the droneSpec be final arbiter of what constitutes a reasonable waypoint.
-        if (!droneSpec.checkNewWaypoint(lat, lng, altitudeInMeters, timestampInMilliseconds, nowWallMsec, airborne, transportType)) return;
+        if (!droneSpec.checkNewWaypoint(lat, lng, altitudeInMeters, timestampInMilliseconds, nowWallMsec, airborne, transportType,
+                org.ncssar.rid2caltopo.data.ProximityTelemetry.fromRid(horizontalAccuracyCode,
+                        location.getAltitudeGeodetic(), location.getAltitudePressure(),
+                        location.getVerticalAccuracy().ordinal(), location.getBaroAccuracy().ordinal()))) return;
 
         // A relayed packet's callback RSSI is bridge-to-device, not drone-to-device. Preserve
         // the direct per-transport RSSI until another genuinely direct packet updates it.

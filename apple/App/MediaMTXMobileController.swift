@@ -84,7 +84,9 @@ actor MediaMTXMobileController: MediaServerController {
     #endif
 
     fileprivate func receive(logLine: String) {
-        AppleLog.debug("MediaMTX", logLine)
+        if !logLine.contains("RTMP control: sent Acknowledge") {
+            AppleLog.debug("MediaMTX", logLine)
+        }
         if let event = parser.parse(line: logLine) {
             continuation.yield(event)
         }
@@ -242,8 +244,19 @@ final class MediaMTXViewModel: ObservableObject {
         guard case let .recordFileCompleted(path, filePath, durationMs) = event else {
             return event
         }
+        let preserveOriginal = await MainActor.run { AppleSEIHexDiagnostics.preserveOriginals }
         let result = await Task.detached(priority: .utility) { () -> (Bool, String) in
             let sourceURL = URL(fileURLWithPath: filePath)
+            if preserveOriginal {
+                let originalURL = sourceURL.deletingPathExtension().appendingPathExtension("sei-original.mp4")
+                do {
+                    try FileManager.default.copyItem(at: sourceURL, to: originalURL)
+                    AppleLog.info("DjiSeiPayload", "Preserved original recording: \(originalURL.lastPathComponent)")
+                } catch {
+                    // Never replace the sole original when preservation fails.
+                    return (false, "Research original preservation failed: \(error.localizedDescription)")
+                }
+            }
             let temporaryURL = sourceURL.deletingLastPathComponent().appendingPathComponent(
                 ".\(sourceURL.deletingPathExtension().lastPathComponent)-ios-compatible-\(UUID().uuidString).mp4"
             )

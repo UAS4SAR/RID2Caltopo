@@ -75,8 +75,9 @@ public enum OperationalAircraftDisplay {
     /// Highlight only a displayed numeric clearance below zero, never a status placeholder.
     public static func negativeAOLRange(in text: String) -> Range<String.Index>? {
         guard let prefix = text.range(of: "AOL:") else { return nil }
-        let end = text[prefix.upperBound...].firstIndex(where: { $0.isWhitespace }) ?? text.endIndex
-        let value = text[prefix.upperBound..<end].replacingOccurrences(of: "'", with: "")
+        guard let valueStart = text[prefix.upperBound...].firstIndex(where: { !$0.isWhitespace }) else { return nil }
+        let end = text[valueStart...].firstIndex(where: { $0.isWhitespace }) ?? text.endIndex
+        let value = text[valueStart..<end].replacingOccurrences(of: "'", with: "")
         guard let feet = Double(value), feet.isFinite, feet < 0 else { return nil }
         return prefix.lowerBound..<end
     }
@@ -211,20 +212,8 @@ public enum OperationalAircraftDisplay {
         currentTime: Date,
         now: Date
     ) -> MapCoordinate? {
-        let delta = currentTime.timeIntervalSince(previousTime)
-        let age = now.timeIntervalSince(currentTime)
-        guard delta > 0, age >= 0.6, age <= 5,
-              let relative = RidGeometry.relativePosition(
-                fromLatitude: previous.latitude,
-                longitude: previous.longitude,
-                toLatitude: current.latitude,
-                longitude: current.longitude
-              ), relative.distanceMeters > 0
-        else { return nil }
-        let speed = min(relative.distanceMeters / delta, 45)
-        let distance = min(speed * min(age, 2), 90)
-        guard distance > 0 else { return nil }
-        return destination(from: current, bearingDegrees: relative.bearingDegrees, distanceMeters: distance)
+        // Predictive heads are retired. Callers render the accepted current position.
+        return nil
     }
 
     private struct Candidate {
@@ -283,4 +272,17 @@ public enum OperationalStreamConfirmationMatch {
         let matches=Set(mappings.filter { $0.designator.trimmingCharacters(in:.whitespacesAndNewlines).lowercased()==key }.map(\.remoteID))
         return matches.count==1 ? matches.first : nil
     }
+}
+
+/// Fixed monospaced value slots for the video overlay, including uncertainty markers.
+public func stableVideoTelemetryText(_ text: String) -> String {
+    let tokens = text.components(separatedBy: " ")
+    return (tokens.filter { !$0.hasPrefix("RNG:") } + tokens.filter { $0.hasPrefix("RNG:") }).map { token in
+        guard let separator = token.firstIndex(of: ":") else { return token }
+        var value = String(token[token.index(after: separator)...])
+        let uncertain = value.hasSuffix("?")
+        if uncertain { value.removeLast() }
+        let width = ["CAM:", "TRK:", "HDG:"].contains(String(token[...separator])) ? 4 : 5
+        return String(token[...separator]) + String(repeating: " ", count: max(0, width - value.count)) + value + (uncertain ? "?" : " ")
+    }.joined(separator: " ")
 }

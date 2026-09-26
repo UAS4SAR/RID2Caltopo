@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include "../../../../native/R2CDJICameraTelemetry.h"
+#include "../../../../native/R2CSEIDiscovery.h"
 #include "../../../../native/R2CLocalPlaybackCadence.h"
 
 #if !defined(HAVE_FFMPEG)
@@ -451,11 +452,14 @@ static jclass g_caltopo_client_class = NULL;
 static jmethodID g_dispatch_probe_event_mid = NULL;
 static jmethodID g_dispatch_remote_video_frame_mid = NULL;
 static jmethodID g_ctdebug_mid = NULL;
+static jmethodID g_research_log_mid = NULL;
 static jmethodID g_ctwarn_mid = NULL;
 static jmethodID g_cterror_mid = NULL;
 static jmethodID g_register_debug_tag_mid = NULL;
 static atomic_uint_fast64_t g_person_relevance_evidence_id = 1u;
 static atomic_bool g_dji_sei_hex_dump_enabled = false;
+static pthread_mutex_t g_sei_capture_lock = PTHREAD_MUTEX_INITIALIZER;
+static R2CSEIDiscovery g_sei_capture;
 
 #if HAVE_FFMPEG && HAVE_SWSCALE
 static bool person_relevance_native_backend(
@@ -807,6 +811,22 @@ static void ct_debug(const char *tag, const char *fmt, ...) {
     vsnprintf(buffer, sizeof(buffer), fmt, ap);
     va_end(ap);
     ct_log_call(g_ctdebug_mid, ANDROID_LOG_DEBUG, tag, "%s", buffer);
+}
+
+static void sei_capture_log(const char *line) {
+    // Explicit research opt-in is independent of ordinary debug filters.
+    bool attached=false; JNIEnv *env=get_env(&attached);
+    if (env && g_caltopo_client_class && g_research_log_mid) {
+        jstring level=(*env)->NewStringUTF(env,"RESEARCH");
+        jstring tag=(*env)->NewStringUTF(env,"DjiSeiPayload");
+        jstring message=(*env)->NewStringUTF(env,line);
+        if (level && tag && message) (*env)->CallStaticVoidMethod(env,g_caltopo_client_class,g_research_log_mid,level,tag,message);
+        if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionDescribe(env); (*env)->ExceptionClear(env); }
+        if(level) (*env)->DeleteLocalRef(env,level);
+        if(tag) (*env)->DeleteLocalRef(env,tag);
+        if(message) (*env)->DeleteLocalRef(env,message);
+    }
+    release_env(attached);
 }
 
 static void ct_warn(const char *tag, const char *fmt, ...) {
@@ -3492,7 +3512,7 @@ static int64_t compute_desired_render_interval_ms_locked(ffmpeg_session_t *sessi
     if (periodic_log) {
         session->last_render_control_log_at_ms = now_ms;
         ct_debug(TAG,
-                 "render control id=%lld designator=%s bufferedSpanMs=%lld targetLatencyMs=%lld stallEstimateMs=%lld provenGapMs=%lld sourceIntervalMs=%lld renderIntervalMs=%lld desiredIntervalMs=%lld stallActive=%d queueDepth=%d",
+                 "render control id=%lld designator=%s bufferedSpanMs=%lld targetLatencyMs=%lld stallEstimateMs=%lld provenGapMs=%lld sourceIntervalMs=%lld renderIntervalMs=%lld desiredIntervalMs=%lld stallActive=%d queueDepth=%d ptsIntervalMs=%lld",
                  (long long) session->session_id,
                  session->designator,
                  (long long) buffered_span_ms,
@@ -3503,7 +3523,8 @@ static int64_t compute_desired_render_interval_ms_locked(ffmpeg_session_t *sessi
                  (long long) smoothed_interval_ms,
                  (long long) desired_interval_ms,
                  session->stall_active ? 1 : 0,
-                 session->render_queue_depth);
+                 session->render_queue_depth,
+                 (long long) queue_pts_interval_ms_locked(session, 24));
     }
 
     return smoothed_interval_ms;
@@ -5311,56 +5332,11 @@ typedef struct {
     size_t message_index;
 } dji_sei_payload_dump_context_t;
 
-static void dump_dji_sei_payload(
-        size_t payload_type,
-        const uint8_t *payload,
-        size_t payload_size,
-        void *opaque) {
-    dji_sei_payload_dump_context_t *context = opaque;
-    if (context == NULL || context->session == NULL || payload == NULL) return;
-
-    const size_t message_index = context->message_index++;
-    enum { DJI_SEI_DUMP_CHUNK_BYTES = 256 };
-    if (payload_size == 0) {
-        ct_debug(
-                "DjiSeiPayload",
-                "DJI_SEI_PAYLOAD designator=%s sessionId=%lld role=%s ptsUs=%lld messageIndex=%zu type=%zu len=0 chunkOffset=0 chunkLen=0 payload=",
-                context->session->designator,
-                (long long) context->session->session_id,
-                context->session->is_render ? "render" : "probe",
-                (long long) context->packet_ts_us,
-                message_index,
-                payload_type);
-        return;
-    }
-
-    for (size_t chunk_offset = 0;
-         chunk_offset < payload_size;
-         chunk_offset += DJI_SEI_DUMP_CHUNK_BYTES) {
-        size_t chunk_size = payload_size - chunk_offset;
-        if (chunk_size > DJI_SEI_DUMP_CHUNK_BYTES) chunk_size = DJI_SEI_DUMP_CHUNK_BYTES;
-        char payload_hex[DJI_SEI_DUMP_CHUNK_BYTES * 2 + 1];
-        if (!R2CDJIHexEncode(
-                payload + chunk_offset,
-                chunk_size,
-                payload_hex,
-                sizeof(payload_hex))) {
-            return;
-        }
-        ct_debug(
-                "DjiSeiPayload",
-                "DJI_SEI_PAYLOAD designator=%s sessionId=%lld role=%s ptsUs=%lld messageIndex=%zu type=%zu len=%zu chunkOffset=%zu chunkLen=%zu payload=%s",
-                context->session->designator,
-                (long long) context->session->session_id,
-                context->session->is_render ? "render" : "probe",
-                (long long) context->packet_ts_us,
-                message_index,
-                payload_type,
-                payload_size,
-                chunk_offset,
-                chunk_size,
-                payload_hex);
-    }
+static void dump_dji_sei_payload(size_t type, const uint8_t *payload, size_t size, void *opaque) {
+    dji_sei_payload_dump_context_t *c = opaque;
+    char identity[96];
+    snprintf(identity,sizeof(identity),"%.60s/%lld",c->session->designator,(long long)c->session->session_id);
+    R2CSEICapture(&g_sei_capture,type,payload,size,identity,c->packet_ts_us,sei_capture_log);
 }
 
 static void emit_dji_camera_telemetry(
@@ -5368,18 +5344,13 @@ static void emit_dji_camera_telemetry(
         const AVPacket *packet) {
     if (session == NULL || packet == NULL || packet->data == NULL || packet->size <= 0) return;
     int64_t packet_ts_us = pts_to_us(packet->pts, session->video_time_base);
-    if (atomic_load_explicit(&g_dji_sei_hex_dump_enabled, memory_order_relaxed)) {
-        dji_sei_payload_dump_context_t dump_context = {
-                .session = session,
-                .packet_ts_us = packet_ts_us,
-                .message_index = 0,
-        };
-        R2CDJIVisitH264SEIPayloads(
-                packet->data,
-                (size_t) packet->size,
-                4,
-                dump_dji_sei_payload,
-                &dump_context);
+    if (!session->is_render && atomic_load_explicit(&g_dji_sei_hex_dump_enabled, memory_order_relaxed)) {
+        pthread_mutex_lock(&g_sei_capture_lock);
+        if (atomic_load_explicit(&g_dji_sei_hex_dump_enabled, memory_order_relaxed)) {
+            dji_sei_payload_dump_context_t context = {.session=session,.packet_ts_us=packet_ts_us};
+            R2CDJIVisitH264SEIPayloads(packet->data,(size_t)packet->size,4,dump_dji_sei_payload,&context);
+        }
+        pthread_mutex_unlock(&g_sei_capture_lock);
     }
     R2CDJICameraTelemetry camera = {0};
     if (!R2CDJIDecodeH264Packet(
@@ -5388,30 +5359,6 @@ static void emit_dji_camera_telemetry(
             4,
             &camera)) {
         return;
-    }
-    if (atomic_load_explicit(&g_dji_sei_hex_dump_enabled, memory_order_relaxed)) {
-        char payload_hex[sizeof(camera.type245Payload) * 2 + 1];
-        if (R2CDJIHexEncode(
-                camera.type245Payload,
-                camera.type245PayloadSize,
-                payload_hex,
-                sizeof(payload_hex))) {
-            ct_debug(
-                    "DjiSeiHex",
-                    "DJI_SEI_HEX designator=%s sessionId=%lld role=%s ptsUs=%lld len=%zu northMm=%d eastMm=%d downMm=%d rawN16=%d rawE16=%d rawD16=%d payload=%s",
-                    session->designator,
-                    (long long) session->session_id,
-                    session->is_render ? "render" : "probe",
-                    (long long) packet_ts_us,
-                    camera.type245PayloadSize,
-                    camera.relativeNorthMillimeters,
-                    camera.relativeEastMillimeters,
-                    camera.downMillimeters,
-                    (int) camera.relativeNorthMillimetersRaw,
-                    (int) camera.relativeEastMillimetersRaw,
-                    (int) camera.relativeDownMillimetersRaw,
-                    payload_hex);
-        }
     }
     char attitude_angles_csv[256];
     snprintf(
@@ -5938,15 +5885,43 @@ static void run_decode_loop(ffmpeg_session_t *session) {
     int64_t last_video_packet_at_ms = 0;
     int64_t last_decoded_frame_at_ms = 0;
     int startup_packet_log_count = 0;
+    int64_t processing_started_ms = 0, telemetry_work_ms = 0, codec_work_ms = 0;
+    int64_t timing_log_ms = monotonic_ms();
+    int64_t max_processing_ms = 0, max_telemetry_ms = 0, max_codec_ms = 0, max_other_ms = 0;
+    unsigned int timing_packets = 0;
 
     while (session_running(session)) {
         int64_t read_started_at_ms = monotonic_ms();
+        if (processing_started_ms > 0) {
+            int64_t processing_ms = read_started_at_ms - processing_started_ms;
+            int64_t other_ms = processing_ms - telemetry_work_ms - codec_work_ms;
+            if (other_ms < 0) other_ms = 0;
+            timing_packets++;
+            if (processing_ms > max_processing_ms) max_processing_ms = processing_ms;
+            if (telemetry_work_ms > max_telemetry_ms) max_telemetry_ms = telemetry_work_ms;
+            if (codec_work_ms > max_codec_ms) max_codec_ms = codec_work_ms;
+            if (other_ms > max_other_ms) max_other_ms = other_ms;
+            int64_t window_ms = read_started_at_ms - timing_log_ms;
+            if (!local_file_source && (window_ms >= 60000 || (processing_ms >= 100 && window_ms >= 5000))) {
+                ct_debug(TAG, "packet processing id=%lld designator=%s render=%d windowMs=%lld packets=%u maxProcessingMs=%lld maxTelemetryMs=%lld maxCodecMs=%lld maxOtherMs=%lld",
+                         (long long)session->session_id, session->designator, session->is_render,
+                         (long long)window_ms, timing_packets, (long long)max_processing_ms,
+                         (long long)max_telemetry_ms, (long long)max_codec_ms, (long long)max_other_ms);
+                timing_log_ms = read_started_at_ms;
+                timing_packets = 0;
+                max_processing_ms = max_telemetry_ms = max_codec_ms = max_other_ms = 0;
+            }
+        }
+        processing_started_ms = 0;
+        telemetry_work_ms = codec_work_ms = 0;
+        read_started_at_ms = monotonic_ms();
         // Expose blocking start time so the render thread can detect an implicit stall
         // before ETIMEDOUT fires on the socket timeout.
         session->reader_waiting_since_ms = read_started_at_ms;
         // Let ordinary source stalls block here until packets resume.
         // Explicit stop() still interrupts via ffmpeg_interrupt_cb when running=false.
         rc = av_read_frame(session->fmt, pkt);
+        if (rc >= 0) processing_started_ms = monotonic_ms();
         session->reader_waiting_since_ms = 0;
         int64_t read_elapsed_ms = monotonic_ms() - read_started_at_ms;
             if (read_elapsed_ms >= 500) {
@@ -6064,6 +6039,7 @@ static void run_decode_loop(ffmpeg_session_t *session) {
                      (long long) pkt->dts);
         }
 
+        int64_t telemetry_started_ms = monotonic_ms();
         emit_dji_camera_telemetry(session, pkt);
 #if FFMPEG_TELEMETRY_ENABLED
         telemetry_values_t packet_tv = telemetry_values_init();
@@ -6087,6 +6063,7 @@ static void run_decode_loop(ffmpeg_session_t *session) {
 #endif  // AV_PKT_DATA_STRINGS_METADATA
 #endif  // FFMPEG_TELEMETRY_ENABLED
 
+        telemetry_work_ms += monotonic_ms() - telemetry_started_ms;
         // Probe sessions exist to inspect packet-carried metadata such as DJI
         // SEI. Keep the RTSP reader current without paying to decode video
         // frames when there is no visual consumer.
@@ -6137,7 +6114,9 @@ static void run_decode_loop(ffmpeg_session_t *session) {
         }
 
         trace_begin_section("RID2C avcodec_send_packet");
+        int64_t codec_started_ms = monotonic_ms();
         rc = avcodec_send_packet(session->codec, pkt);
+        codec_work_ms += monotonic_ms() - codec_started_ms;
         trace_end_section();
         av_packet_unref(pkt);
         if (rc < 0) {
@@ -6146,7 +6125,9 @@ static void run_decode_loop(ffmpeg_session_t *session) {
 
         while (session_running(session)) {
             trace_begin_section("RID2C avcodec_receive_frame");
+            codec_started_ms = monotonic_ms();
             rc = avcodec_receive_frame(session->codec, frame);
+            codec_work_ms += monotonic_ms() - codec_started_ms;
             trace_end_section();
             if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF) {
                 break;
@@ -6158,12 +6139,14 @@ static void run_decode_loop(ffmpeg_session_t *session) {
             pts_us = normalize_local_playback_pts_us(session, pts_us);
             AVFrame *clean_history_frame = local_file_source ? av_frame_clone(frame) : NULL;
 #if FFMPEG_TELEMETRY_ENABLED
+            telemetry_started_ms = monotonic_ms();
             log_dict_keys_once(
                     session,
                     frame->metadata,
                     "frame-metadata",
                     &session->frame_metadata_keys_logged);
             telemetry_values_t frame_tv = collect_dict_telemetry_values(frame->metadata, pts_us);
+            telemetry_work_ms += monotonic_ms() - telemetry_started_ms;
 #endif  // FFMPEG_TELEMETRY_ENABLED
             int64_t decoded_at_ms = monotonic_ms();
             if (last_decoded_frame_at_ms != 0) {
@@ -6186,7 +6169,9 @@ static void run_decode_loop(ffmpeg_session_t *session) {
             dispatch_remote_video_frame(session, frame, pts_us, decoded_at_ms);
 #endif
 #if FFMPEG_TELEMETRY_ENABLED
+            telemetry_started_ms = monotonic_ms();
             emit_telemetry_values(session, "frame-metadata", 0.60, &frame_tv);
+            telemetry_work_ms += monotonic_ms() - telemetry_started_ms;
 #endif  // FFMPEG_TELEMETRY_ENABLED
 
 #if HAVE_SWSCALE
@@ -6951,6 +6936,8 @@ Java_org_ncssar_rid2caltopo_video_ffmpeg_FfmpegBridge_nativeInitBridge(
     (*env)->DeleteLocalRef(env, caltopo_local_cls);
     if (g_caltopo_client_class == NULL) return;
 
+    g_research_log_mid = (*env)->GetStaticMethodID(env,g_caltopo_client_class,
+            "CTLog", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
     g_ctdebug_mid = (*env)->GetStaticMethodID(
             env,
             g_caltopo_client_class,
@@ -6991,10 +6978,11 @@ Java_org_ncssar_rid2caltopo_video_ffmpeg_FfmpegBridge_nativeSetDjiSeiHexDumpEnab
 ) {
     (void) env;
     (void) thiz;
-    atomic_store_explicit(
-            &g_dji_sei_hex_dump_enabled,
-            enabled == JNI_TRUE,
-            memory_order_relaxed);
+    pthread_mutex_lock(&g_sei_capture_lock);
+    if (atomic_load(&g_dji_sei_hex_dump_enabled)) R2CSEISummary(&g_sei_capture,sei_capture_log);
+    if (enabled == JNI_TRUE) R2CSEIReset(&g_sei_capture);
+    atomic_store(&g_dji_sei_hex_dump_enabled, enabled == JNI_TRUE);
+    pthread_mutex_unlock(&g_sei_capture_lock);
 }
 
 JNIEXPORT jstring JNICALL

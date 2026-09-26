@@ -17,6 +17,28 @@ import org.ncssar.rid2caltopo.data.CtDroneSpec
 import org.ncssar.rid2caltopo.data.SimpleTimer
 
 class R2CViewModelDroneConfirmationTest {
+    @Test fun telemetryTimeoutClearsConfirmationEvenWhileVideoRemainsListed() {
+        val remoteId = "RETURNINGVIDEO"
+        val drone = activeDrone(remoteId, waypointTimestampMsec = 1234L).apply { setMappedId("1sar7M4TD") }
+        val model = R2CViewModel(SimpleTimer())
+        model.showStreams()
+        model.onLiveStreamDesignatorsChanged(setOf(drone.mappedId), listOf(drone))
+        model.updatePendingDroneConfirmation("NCSSAR", "1SAR7", "DJI Matrice 4TD")
+        model.savePendingDroneConfirmation()
+        assertTrue(CaltopoClient.IsCurrentPeerDroneConfirmed(remoteId))
+        assertNull(model.pendingDroneConfirmation.value)
+
+        model.onLocalTrackFinished(remoteId, drone.mappedId, "telemetry idle after Wi-Fi loss")
+        assertFalse(CaltopoClient.IsCurrentPeerDroneConfirmed(remoteId))
+        model.onDroneSpecsChanged(listOf(drone))
+        assertEquals(remoteId, model.pendingDroneConfirmation.value?.remoteId)
+        assertEquals(ActiveScreen.STREAMS, model.activeScreen.value)
+        model.savePendingDroneConfirmation()
+        assertTrue(CaltopoClient.IsCurrentPeerDroneConfirmed(remoteId))
+        model.onDroneSpecsChanged(listOf(drone))
+        assertNull(model.pendingDroneConfirmation.value)
+    }
+
     @Test fun uniqueVideoOpensConfirmationBeforeRidAndDoesNotRepeatOnRidArrival() {
         val drone=CtDroneSpec("VIDEO1","1sar7Mn4Pr","NCSSAR","DJI Mini 4 Pro","1SAR7")
         val model=R2CViewModel(SimpleTimer())

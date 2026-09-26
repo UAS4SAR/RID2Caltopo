@@ -328,7 +328,8 @@ private extension RidObservation {
             signalStrengthDbm: signalStrengthDbm,
             droneScoutRelay: droneScoutRelay,
             videoReferenceLatitude: videoReferenceLatitude,
-            videoReferenceLongitude: videoReferenceLongitude
+            videoReferenceLongitude: videoReferenceLongitude,
+            proximityTelemetry: proximityTelemetry
         )
     }
 }

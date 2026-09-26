@@ -136,6 +136,44 @@ class OrganizationAccessPolicyTest {
     }
 
     @Test
+    fun screenOffAfterActivityStopPreservesSystemUnlockHandoff() {
+        val session = OrganizationAccessSession()
+        session.markAuthenticated()
+        assertFalse(session.activityStopped(false, screenOffElapsedRealtimeMs = 1_000L))
+        session.invalidateForScreenLock(screenOffElapsedRealtimeMs = 1_010L)
+
+        assertFalse(session.isAuthenticated())
+        assertTrue(session.isAwaitingSystemUnlock())
+        assertTrue(session.authenticateFromUserPresent())
+        assertTrue(session.isAuthenticated())
+    }
+
+    @Test
+    fun repeatedScreenOffPreservesOriginalAuthenticationBoundary() {
+        val session = OrganizationAccessSession()
+        session.markAuthenticated()
+        session.invalidateForScreenLock(screenOffElapsedRealtimeMs = 1_000L)
+        session.invalidateForScreenLock(screenOffElapsedRealtimeMs = 1_020L)
+        assertFalse(session.activityStopped(false, screenOffElapsedRealtimeMs = 1_030L))
+
+        assertFalse(session.authenticateFromSystemUnlock(999L, deviceLocked = false))
+        assertFalse(session.authenticateFromSystemUnlock(1_010L, deviceLocked = true))
+        assertTrue(session.authenticateFromSystemUnlock(1_010L, deviceLocked = false))
+    }
+
+    @Test
+    fun explicitInvalidationClearsPendingSystemUnlockHandoff() {
+        val session = OrganizationAccessSession()
+        session.markAuthenticated()
+        session.invalidateForScreenLock(screenOffElapsedRealtimeMs = 1_000L)
+        session.invalidate()
+        session.invalidateForScreenLock(screenOffElapsedRealtimeMs = 1_020L)
+
+        assertFalse(session.authenticateFromUserPresent())
+        assertFalse(session.authenticateFromSystemUnlock(1_100L, deviceLocked = false))
+    }
+
+    @Test
     fun screenLockInvalidatesAuthenticationWhileRetainingPickerCompletion() {
         val session = OrganizationAccessSession()
         session.markAuthenticated()

@@ -276,6 +276,22 @@ public class CaltopoSession {
         return msg == null ? e.getClass().getSimpleName() : msg;
     }
 
+    private static final java.util.concurrent.ScheduledExecutorService PositionTimer =
+            java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+    private static final LatestPositionReports<CaltopoOp> PositionReports = new LatestPositionReports<>(
+            task -> GetMainExecutorPool().execute(task),
+            (task, delay) -> PositionTimer.schedule(task, delay, java.util.concurrent.TimeUnit.MILLISECONDS),
+            () -> java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()),
+            CaltopoSession::BgSendRequest, CaltopoOp::discardPositionReport);
+
+    private static String positionReportKey(String deviceId) {
+        return DomainAndPort + ":" + CaltopoClient.GetConnectKey().trim() + ":" + deviceId;
+    }
+
+    public static void CancelLiveTrackPoints(String deviceId) {
+        PositionReports.cancel(positionReportKey(deviceId));
+    }
+
     private static void SubmitRequest(@NonNull CaltopoOp op) {
         try {
             op.asyncFuture = GetMainExecutorPool().submit(() -> BgSendRequest(op));
@@ -352,7 +368,7 @@ public class CaltopoSession {
 	// this needs to be run in background thread to prevent blocking the app thread.
 	private static CaltopoOp BgSendRequest(CaltopoOp op) {
         boolean goodResponse = false;
-        for (int attemptNum = 1; attemptNum <= MAX_RETRY_ATTEMPTS; attemptNum++) {
+        for (int attemptNum = 1; attemptNum <= (op.positionReport ? 1 : MAX_RETRY_ATTEMPTS); attemptNum++) {
             try {
                 op.sentTimestampMsec = System.currentTimeMillis();
                 long expires = op.sentTimestampMsec + DEFAULT_TIMEOUT_MS;
@@ -445,7 +461,7 @@ public class CaltopoSession {
                         eventParams.putString("r2c_url", op.url);
                         eventParams.putString("r2c_method", op.method.toString());
                         CaltopoClient.CTEvent(TAG, "CaltopoOpFailed", eventParams);
-                        if (IsTransientResponseCode(op.responseCode)
+                        if (!op.positionReport && IsTransientResponseCode(op.responseCode)
                                 && RetryAfterDelay("HTTP " + op.responseCode, attemptNum)) {
                             continue;
                         }
@@ -458,13 +474,13 @@ public class CaltopoSession {
 
             } catch (UnknownHostException e) {
                 op.response = "UnknownHostException during request: " + ExceptionMessage(e);
-                if (!RetryAfterDelay("DNS lookup failure", attemptNum)) {
+                if (op.positionReport || !RetryAfterDelay("DNS lookup failure", attemptNum)) {
                     break;
                 }
             } catch (IOException e) {
                 op.response = "IOException during request: " + ExceptionMessage(e);
                 CTError(TAG, "IOException raised during request", e);
-                if (!RetryAfterDelay("I/O exception", attemptNum)) {
+                if (op.positionReport || !RetryAfterDelay("I/O exception", attemptNum)) {
                     break;
                 }
             } catch (Exception e) {
@@ -761,7 +777,7 @@ public class CaltopoSession {
 	}
 
 	@NonNull
-	public static CaltopoOp StartLiveTrack(@NonNull String deviceId, @NonNull String label,
+	public static CaltopoOp StartLiveTrack(@NonNull String liveTrackId, @NonNull String deviceId, @NonNull String label,
                                            @Nullable String folderId, @Nullable String description,
                                            @Nullable CtLineProperty lineProp, @Nullable Consumer<CaltopoOp> onComplete) {
         if (null == MapId)
@@ -785,6 +801,7 @@ public class CaltopoSession {
 			}
 			prop.put("deviceId", liveTrackDeviceId(deviceId, CaltopoClient.GetConnectKey()));
 
+			top.put("id", liveTrackId);
 			top.put("type", "Feature");
 			top.put("properties", prop);
 		} catch (Exception e) {
@@ -792,7 +809,7 @@ public class CaltopoSession {
 			return null;
 		}
 
-		String urlEnd = CALTOPO_MAP_API_V1 + MapId + "/LiveTrack";
+		String urlEnd = CALTOPO_MAP_API_V1 + MapId + "/LiveTrack/" + liveTrackId;
 		CaltopoOp op = new CaltopoOp(onComplete);
 		SendRequest(op, CtsMethod_t.POST, urlEnd, top, false);
 		return op;
@@ -842,13 +859,14 @@ public class CaltopoSession {
 				EncodeParm("elevation", ele.toString()));
         JSONObject queryParameters = buildPositionQueryParameters(eleMeters, telemetry, cameraMetadata);
         appendPositionQueryParameters(urlBuilder, queryParameters);
-        if (BuildConfig.DEBUG) {
-            CTDebug(TAG, positionReportDiagnosticSummary(queryParameters));
-        }
         String url = urlBuilder.toString();
 
 		CaltopoOp op = new CaltopoOp(onComplete);
-		SendRequest(op, positionReportMethod(), url, null, true);
+		op.positionReport = true;
+        op.goNaked = true;
+        op.method = positionReportMethod();
+        op.url = url;
+        PositionReports.submit(positionReportKey(deviceId), op);
 		return op;
 	}
 

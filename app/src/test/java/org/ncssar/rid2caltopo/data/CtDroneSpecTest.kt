@@ -28,6 +28,25 @@ class CtDroneSpecTest {
     }
 
     @Test
+    fun proximityQualityIsAcceptedAtomicallyAndClearedByVideoOrLegacySamples() {
+        val spec = CtDroneSpec("QUALITY")
+        val quality = ProximityTelemetry.fromRid(9, 500.0, 300.0, 3, 4)
+        assertEquals(30.0, quality.horizontalAccuracyMeters, 0.001)
+        assertEquals(500.0, quality.absoluteAltitudeMeters!!, 0.001)
+        assertEquals(25.0, quality.verticalAccuracyMeters!!, 0.001)
+        assertEquals(ProximityTelemetry.Reference.GEODETIC, quality.altitudeReference)
+        assertTrue(spec.checkNewWaypoint(39.0, -121.0, 300.0, 10_000, 10_000, true, CtDroneSpec.TransportTypeEnum.WIFI, quality))
+        assertEquals(quality, spec.proximityPosition!!.telemetry)
+        assertFalse(spec.checkNewWaypoint(0.0, -121.0, 300.0, 11_000, 11_000, true, CtDroneSpec.TransportTypeEnum.DJI_STREAM))
+        assertEquals(quality, spec.proximityPosition!!.telemetry)
+        assertTrue(spec.checkNewWaypoint(39.0, -121.0, 300.0, 12_000, 12_000, true, CtDroneSpec.TransportTypeEnum.DJI_STREAM))
+        assertFalse(spec.proximityPosition!!.telemetry.hasUsableAltitude())
+        assertEquals(15.24, spec.proximityPosition!!.telemetry.horizontalAccuracyMeters, 0.001)
+        spec.reset()
+        assertEquals(null, spec.proximityPosition)
+    }
+
+    @Test
     fun stationaryRidRefreshesTelemetryButRecordsOnlyEveryThreeSeconds() {
         val spec = CtDroneSpec("RIDLIVE")
         val source = CtDroneSpec.TransportTypeEnum.WIFI
@@ -68,6 +87,22 @@ class CtDroneSpecTest {
         assertTrue(spec.shouldRecordWaypoint(39.0, -121.0, 10_000, 2.0, source))
         assertFalse(spec.shouldRecordWaypoint(39.0001, -121.0, 10_500, 2.0, source))
         assertTrue(spec.shouldRecordWaypoint(39.0002, -121.0, 11_000, 2.0, source))
+    }
+
+    @Test
+    fun videoCallbacksAndPeriodicRefreshShareOneRecordingAnchor() {
+        val spec = CtDroneSpec("RIDSHARED")
+        val video = CtDroneSpec.TransportTypeEnum.DJI_STREAM
+        val accepted = mutableListOf<Long>()
+        // Interleaved callback/timer/RID samples, including a delayed old report.
+        for ((time, source) in listOf(10_000L to video, 10_200L to video,
+            10_900L to CtDroneSpec.TransportTypeEnum.BT5, 11_000L to video,
+            11_050L to video, 10_500L to video, 11_999L to video, 12_000L to video)) {
+            if (spec.shouldRecordWaypoint(39.0, -121.0, time, 2.0, source)) accepted.add(time)
+        }
+        assertEquals(listOf(10_000L, 11_000L, 12_000L), accepted)
+        spec.reset()
+        assertTrue(spec.shouldRecordWaypoint(39.0, -121.0, 12_100L, 2.0, video))
     }
 
     @Test

@@ -55,6 +55,7 @@ public enum CaltopoLiveClientError: Error, Sendable, Equatable {
     case httpStatus(Int, String)
     case missingResult
     case missingLiveTrackID
+    case mismatchedLiveTrackID
 }
 
 extension CaltopoLiveClientError: LocalizedError {
@@ -73,6 +74,8 @@ extension CaltopoLiveClientError: LocalizedError {
                 : "CalTopo returned HTTP \(code): \(detail)"
         case .missingResult:
             return "CalTopo returned a response without the expected result."
+        case .mismatchedLiveTrackID:
+            return "CalTopo did not confirm the requested LiveTrack ID; publication paused."
         case .missingLiveTrackID:
             return "CalTopo did not return a live-track identifier."
         }
@@ -150,6 +153,8 @@ public enum CaltopoRequestSigner {
 public actor CaltopoLiveClient {
     private let configuration: CaltopoLiveConfiguration
     private let session: URLSession
+    private static let positionReports = LatestPositionReports()
+    private var positionReportKeys: Set<String> = []
 
     public init(
         configuration: CaltopoLiveConfiguration,
@@ -167,12 +172,14 @@ public actor CaltopoLiveClient {
     }
 
     public func startLiveTrack(
+        liveTrackID: String,
         remoteID: String,
         label: String,
         folderID: String? = nil,
         now: Date = Date()
     ) async throws -> String {
         let request = try makeStartLiveTrackRequest(
+            liveTrackID: liveTrackID,
             remoteID: remoteID,
             label: label,
             folderID: folderID,
@@ -183,22 +190,38 @@ public actor CaltopoLiveClient {
         guard let result = root?["result"] as? [String: Any] else {
             throw CaltopoLiveClientError.missingResult
         }
-        guard let id = result["id"] as? String, !id.isEmpty else {
-            throw CaltopoLiveClientError.missingLiveTrackID
+        guard let id = result["id"] as? String, id.lowercased() == liveTrackID.lowercased() else {
+            throw CaltopoLiveClientError.mismatchedLiveTrackID
         }
-        return id
+        return liveTrackID
     }
 
+    @discardableResult
     public func publishPoint(
         remoteID: String,
         observation: RidObservation,
         cameraMetadata: CaltopoCameraMetadata? = nil
-    ) async throws {
-        _ = try await perform(makePointRequest(
-            remoteID: remoteID,
-            observation: observation,
-            cameraMetadata: cameraMetadata
-        ))
+    ) async throws -> Bool {
+        let request = try makePointRequest(remoteID: remoteID, observation: observation,
+                                           cameraMetadata: cameraMetadata)
+        let key = positionReportKey(remoteID)
+        positionReportKeys.insert(key)
+        return try await Self.positionReports.submit(key: key) {
+            _ = try await self.perform(request)
+        }
+    }
+
+    private func positionReportKey(_ remoteID: String) -> String {
+        "\(configuration.domainAndPort):\(effectiveConnectKey):\(remoteID)"
+    }
+
+    public func stopPositionReports(remoteID: String) async {
+        await Self.positionReports.cancel(key: positionReportKey(remoteID))
+    }
+
+    public func stopAllPositionReports() async {
+        for key in positionReportKeys { await Self.positionReports.cancel(key: key) }
+        positionReportKeys.removeAll()
     }
 
     public func stopLiveTrack(liveTrackID: String, now: Date = Date()) async throws {
@@ -484,12 +507,14 @@ public actor CaltopoLiveClient {
     }
 
     func makeStartLiveTrackRequest(
+        liveTrackID: String,
         remoteID: String,
         label: String,
         folderID: String?,
         now: Date
     ) throws -> URLRequest {
-        let path = "/api/v1/map/\(configuration.mapID)/LiveTrack"
+        guard UUID(uuidString: liveTrackID) != nil else { throw CaltopoLiveClientError.missingLiveTrackID }
+        let path = "/api/v1/map/\(configuration.mapID)/LiveTrack/\(liveTrackID)"
         var properties: [String: Any] = [
             "title": label,
             "stroke-width": 2,
@@ -505,7 +530,7 @@ public actor CaltopoLiveClient {
             properties["folderId"] = folderID
         }
         let payloadData = try JSONSerialization.data(
-            withJSONObject: ["type": "Feature", "properties": properties],
+            withJSONObject: ["id": liveTrackID, "type": "Feature", "properties": properties],
             options: [.sortedKeys]
         )
         let payload = String(decoding: payloadData, as: UTF8.self)

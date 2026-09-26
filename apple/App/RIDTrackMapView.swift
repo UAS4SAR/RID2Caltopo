@@ -179,12 +179,12 @@ private final class AppleMapArtifactModel: ObservableObject {
     private var lastPollAtByMapID: [String: Date] = [:]
     private var featureStore = CaltopoArtifactFeatureStore()
     private var lastSuccessfulCursorMilliseconds: Int64 = 0
-    private var lastFullReconciliationAt: Date?
+    private var fullReloadRequested = false
     private var foregroundActive = false
 
     private static let minimumPollInterval: TimeInterval = 20
     private static let foregroundPollInterval: Duration = .seconds(20)
-    private static let backgroundPollInterval: Duration = .seconds(90)
+    private static let backgroundPollInterval: Duration = .seconds(20)
 
     init() {
         Self.removeLegacyPersistedVisibility()
@@ -216,7 +216,7 @@ private final class AppleMapArtifactModel: ObservableObject {
             hiddenItemIDs = persistedHiddenItemIDs
             featureStore = CaltopoArtifactFeatureStore()
             lastSuccessfulCursorMilliseconds = 0
-            lastFullReconciliationAt = nil
+            fullReloadRequested = false
         }
         visibilityInitialized = false
         guard !configuration.domainAndPort.isEmpty,
@@ -262,6 +262,7 @@ private final class AppleMapArtifactModel: ObservableObject {
         AppleLog.info("Map", "Manual CalTopo artifact reload requested map=\(configuration.mapID)")
         // Operator-requested reloads are immediate. The minimum interval only
         // protects the automatic poller from unnecessary requests.
+        fullReloadRequested = true
         lastPollAtByMapID[configuration.mapID] = nil
         configurationFingerprint = ""
         configure(configuration)
@@ -375,10 +376,9 @@ private final class AppleMapArtifactModel: ObservableObject {
         defer { isRefreshing = false }
         status = "Refreshing CalTopo artifacts…"
         do {
-            let fullReconciliation = featureStore.featuresByID.isEmpty ||
-                lastSuccessfulCursorMilliseconds == 0 ||
-                CaltopoArtifactSyncPolicy.fullReconciliationDue(
-                    now: requestStartedAt, lastFullSync: lastFullReconciliationAt, foreground: foregroundActive)
+            let fullReconciliation = CaltopoArtifactSyncPolicy.fullRefreshRequired(
+                lastSuccessfulCursorMilliseconds: lastSuccessfulCursorMilliseconds,
+                manualReload: fullReloadRequested)
             let changes = try await client.fetchMapArtifactChanges(
                 sinceMilliseconds: fullReconciliation ? 0 : lastSuccessfulCursorMilliseconds,
                 now: requestStartedAt
@@ -393,7 +393,7 @@ private final class AppleMapArtifactModel: ObservableObject {
                 lastSuccessfulCursorMilliseconds,
                 Int64(requestStartedAt.timeIntervalSince1970 * 1_000)
             )
-            if fullReconciliation { lastFullReconciliationAt = requestStartedAt }
+            if fullReconciliation { fullReloadRequested = false }
             let serverHiddenFolders = Set(value.folders.filter { !$0.initiallyVisible }.map(\.id))
             if !visibilityInitialized {
                 visibilityInitialized = true
@@ -1374,9 +1374,6 @@ struct RIDTrackMapView: View {
                 } label: {
                     Text("Contours: \(showContours ? "On" : "Off")")
                 }
-            }
-            Button("Predictive Head: \(orgSettings.predictiveHeadEnabled ? "On" : "Off")") {
-                orgSettings.setPredictiveHeadEnabled(!orgSettings.predictiveHeadEnabled)
             }
             Button(
                 offlineMaps.downloadMenuStatus.map { "Download Map: \($0)" } ?? "Download Map…"
@@ -3770,7 +3767,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 longitudeDelta: region.span.longitudeDelta,
                 width: map.bounds.width,
                 height: map.bounds.height,
-                predictionSecond: predictiveHeadEnabled ? Int(now.timeIntervalSinceReferenceDate) : nil,
+                predictionSecond: nil,
                 positionIconAlphaByAircraftID: positionIconAlphaByAircraftID
             )
             let aircraftChanged = nextAircraftState != aircraftRenderState
@@ -3787,20 +3784,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 guard let points = renderInputByAircraftID[track.aircraftID]?.points,
                       let latest = points.last else { return nil }
                 let actual = MapCoordinate(latitude: latest.latitude, longitude: latest.longitude)
-                let usingSEI = !(seiTrackPointsByAircraftID[track.aircraftID]?.isEmpty ?? true)
-                let predicted = predictiveHeadEnabled && !usingSEI && points.count >= 2
-                    ? OperationalAircraftDisplay.predictedCoordinate(
-                        previous: MapCoordinate(
-                            latitude: points[points.count - 2].latitude,
-                            longitude: points[points.count - 2].longitude
-                        ),
-                        previousTime: points[points.count - 2].receivedAt,
-                        current: actual,
-                        currentTime: latest.receivedAt,
-                        now: now
-                    )
-                    : nil
-                return (track.aircraftID, (predicted ?? actual).clCoordinate)
+                return (track.aircraftID, actual.clCoordinate)
             })
             let statusLabels = Dictionary(uniqueKeysWithValues: tracks.map { track in
                 let altitude = altitudeDisplay[track.aircraftID]

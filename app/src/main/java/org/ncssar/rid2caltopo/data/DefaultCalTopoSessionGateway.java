@@ -91,8 +91,13 @@ public final class DefaultCalTopoSessionGateway implements CalTopoSessionGateway
 
     @NonNull
     @Override
-    public CaltopoOp startLiveTrack(@NonNull String deviceId, @NonNull String label, @Nullable String folderId, @Nullable String description, @Nullable CtLineProperty lineProp, @Nullable Consumer<CaltopoOp> onComplete) {
-        return CaltopoSession.StartLiveTrack(deviceId, label, folderId, description, lineProp, onComplete);
+    public CaltopoOp startLiveTrack(@NonNull String liveTrackId, @NonNull String deviceId, @NonNull String label, @Nullable String folderId, @Nullable String description, @Nullable CtLineProperty lineProp, @Nullable Consumer<CaltopoOp> onComplete) {
+        return CaltopoSession.StartLiveTrack(liveTrackId, deviceId, label, folderId, description, lineProp, onComplete);
+    }
+
+    @Override
+    public void cancelLiveTrackPoints(@NonNull String deviceId) {
+        CaltopoSession.CancelLiveTrackPoints(deviceId);
     }
 
     @NonNull

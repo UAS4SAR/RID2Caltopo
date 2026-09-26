@@ -66,6 +66,7 @@ final class RIDTrackViewModel: ObservableObject {
     private var flightRecordingAllowed: ((String) -> Bool)?
     private var peerConfirmationConsumer: ((TrackerCoordinationIdentity) -> Void)?
     private var peerConfirmationClearer: ((String) -> Void)?
+    private var flightEndConsumer: ((String) -> Void)?
     private var peerTrafficLatestSampleAtByAircraftID: [String: Date] = [:]
     private var pairedVideoActivityProvider: (() -> [String: Date])?
     private var validatedSEIPositionProvider:
@@ -99,7 +100,6 @@ final class RIDTrackViewModel: ObservableObject {
                 )
                 for track in inactive {
                     await self.archive(track, publishFlightEnd: true)
-                    self.peerCoordinator?.droneLost(remoteID: track.aircraftID)
                     self.pendingPublication.removeValue(forKey: track.aircraftID)
                     self.lastSEIPublicationAtByAircraftID.removeValue(
                         forKey: track.aircraftID
@@ -722,13 +722,15 @@ final class RIDTrackViewModel: ObservableObject {
         _ coordinator: AppleTrackerCoordinator,
         identityProvider: @escaping (String) -> RidAircraftIdentity?,
         peerConfirmationConsumer: @escaping (TrackerCoordinationIdentity) -> Void,
-        peerConfirmationClearer: @escaping (String) -> Void
+        peerConfirmationClearer: @escaping (String) -> Void,
+        flightEndConsumer: @escaping (String) -> Void
     ) {
         peerCoordinator = coordinator
         updateCaltopoThumbnailRefreshTargets()
         self.identityProvider = identityProvider
         self.peerConfirmationConsumer = peerConfirmationConsumer
         self.peerConfirmationClearer = peerConfirmationClearer
+        self.flightEndConsumer = flightEndConsumer
         coordinator.setManagedVideoThumbnailUpdatedHandler { [weak self] droneDesignator in
             self?.refreshCaltopoThumbnailMetadata(droneDesignator: droneDesignator)
         }
@@ -919,7 +921,11 @@ final class RIDTrackViewModel: ObservableObject {
     private func archive(_ track: RidAircraftTrack, publishFlightEnd: Bool = false) async {
         // Snapshot the decision before publishing flight end clears the current DCP state.
         guard flightRecordingAllowed?(track.aircraftID) == true else {
-            if publishFlightEnd { tracks.removeAll { $0.aircraftID == track.aircraftID } }
+            if publishFlightEnd {
+                peerCoordinator?.droneLost(remoteID: track.aircraftID)
+                flightEndConsumer?(track.aircraftID)
+                tracks.removeAll { $0.aircraftID == track.aircraftID }
+            }
             AppleLog.info("DroneConfirmation", "Ignored unanswered/unconfirmed flight remoteId=\(track.aircraftID); archive and upload skipped")
             return
         }
@@ -943,6 +949,8 @@ final class RIDTrackViewModel: ObservableObject {
         if publishFlightEnd {
             // Capture the completed flight's identity/readiness above before observers
             // clear its confirmation. Network archive retries must not delay that reset.
+            peerCoordinator?.droneLost(remoteID: track.aircraftID)
+            flightEndConsumer?(track.aircraftID)
             tracks.removeAll { $0.aircraftID == track.aircraftID }
             AppleLog.info("DroneConfirmation", "Published flight end before archive upload remoteId=\(track.aircraftID)")
         }

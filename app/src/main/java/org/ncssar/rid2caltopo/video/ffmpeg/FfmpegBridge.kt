@@ -49,6 +49,8 @@ object FfmpegBridge {
     private var nextRemoteVideoFrameToken = 1L
     @Volatile
     private var djiSeiHexDumpEnabled = false
+    @Volatile var preserveSEIOriginals = false
+        private set
 
     init {
         RegisterDebugTags(listOf(TAG, NATIVE_TAG))
@@ -77,6 +79,7 @@ object FfmpegBridge {
     fun isDjiSeiHexDumpEnabled(): Boolean = djiSeiHexDumpEnabled
 
     fun setDjiSeiHexDumpEnabled(enabled: Boolean) {
+        if (enabled) preserveSEIOriginals = true
         djiSeiHexDumpEnabled = enabled
         if (nativeLoaded) nativeSetDjiSeiHexDumpEnabled(enabled)
     }

@@ -35,6 +35,7 @@ public struct RidObservation: Sendable, Equatable {
     public let videoReferenceLongitude: Double?
     /// Raw F3411 NACp horizontal-accuracy code. Codes 10...12 declare <10 m containment.
     public let horizontalAccuracyCode: UInt8?
+    public let proximityTelemetry: RidProximityTelemetry
     public let headingDegrees: Double?
     public let speedMetersPerSecond: Double?
     public let operatorLatitude: Double?
@@ -60,7 +61,8 @@ public struct RidObservation: Sendable, Equatable {
         signalStrengthDbm: Int? = nil,
         droneScoutRelay: DroneScoutRelayMetadata? = nil,
         videoReferenceLatitude: Double? = nil,
-        videoReferenceLongitude: Double? = nil
+        videoReferenceLongitude: Double? = nil,
+        proximityTelemetry: RidProximityTelemetry? = nil
     ) {
         self.source = source
         self.aircraftId = aircraftId
@@ -74,6 +76,8 @@ public struct RidObservation: Sendable, Equatable {
         self.videoReferenceLatitude = videoReferenceLatitude
         self.videoReferenceLongitude = videoReferenceLongitude
         self.horizontalAccuracyCode = horizontalAccuracyCode
+        self.proximityTelemetry = proximityTelemetry ?? RidProximityTelemetry(
+            horizontalAccuracyMeters: RidProximityTelemetry.horizontalAccuracyMeters(code: horizontalAccuracyCode))
         self.headingDegrees = RidHeading.normalized(headingDegrees)
         self.speedMetersPerSecond = speedMetersPerSecond
         self.operatorLatitude = operatorLatitude

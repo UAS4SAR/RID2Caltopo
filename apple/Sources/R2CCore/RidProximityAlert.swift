@@ -10,6 +10,7 @@ public struct RidProximityDrone: Sendable, Equatable {
     public let distanceToOperatorMeters: Double?
     public let teamDrone: Bool
     public let localAlertEligible: Bool
+    public let telemetry: RidProximityTelemetry
 
     public init(
         remoteID: String,
@@ -20,7 +21,8 @@ public struct RidProximityDrone: Sendable, Equatable {
         sampleDate: Date = Date(),
         distanceToOperatorMeters: Double? = nil,
         teamDrone: Bool,
-        localAlertEligible: Bool
+        localAlertEligible: Bool,
+        telemetry: RidProximityTelemetry = .init()
     ) {
         self.remoteID = remoteID
         self.mappedID = mappedID
@@ -31,6 +33,7 @@ public struct RidProximityDrone: Sendable, Equatable {
         self.distanceToOperatorMeters = distanceToOperatorMeters
         self.teamDrone = teamDrone
         self.localAlertEligible = localAlertEligible
+        self.telemetry = telemetry
     }
 }
 
@@ -49,6 +52,7 @@ public struct RidProximityAlertState: Sendable, Equatable, Identifiable {
     public let currentHorizontalSeparationFeet: Double
     public let currentVerticalSeparationFeet: Double
     public let usesProjection: Bool
+    public let verticalSeparationKnown: Bool
     public let firstLatitude: Double
     public let firstLongitude: Double
     public let secondLatitude: Double
@@ -59,6 +63,7 @@ public struct RidProximityAlertOutput: Sendable, Equatable {
     public let activeAlert: RidProximityAlertState?
     public let suspendedAlert: RidProximityAlertState?
     public let canResume: Bool
+    public let isSuspended: Bool
 }
 
 /// Stateful Android-parity alert policy. UI presentation, speech, and haptics
@@ -67,8 +72,8 @@ public struct RidProximityAlertEngine: Sendable {
     private struct DroneSample: Sendable {
         let latitude: Double
         let longitude: Double
-        let altitudeFeet: Double
         let sampleDate: Date
+        let horizontalAccuracyMeters: Double
     }
 
     private struct EvaluatedDrone: Sendable {
@@ -76,12 +81,10 @@ public struct RidProximityAlertEngine: Sendable {
         let effectiveLatitude: Double
         let effectiveLongitude: Double
         let effectiveAltitudeFeet: Double
-    }
-
-    private struct PairSnapshot: Sendable {
-        let horizontalFeet: Double
-        let verticalFeet: Double
-        let threeDimensionalFeet: Double
+        let ageSeconds: Double
+        let horizontalUncertaintyFeet: Double
+        let projectedUncertaintyFeet: Double
+        let projectionSeconds: Double
     }
 
     private struct PairEvaluation: Sendable {
@@ -94,16 +97,17 @@ public struct RidProximityAlertEngine: Sendable {
         let currentVerticalFeet: Double
         let usesProjection: Bool
         let altitudeSensitive: Bool
+        let decisionHorizontalFeet: Double
+        let decisionVerticalFeet: Double
         let shouldAlert: Bool
         let highSeverity: Bool
         let severityScore: Double
 
         func isInside(thresholdFeet: Double) -> Bool {
-            horizontalFeet <= thresholdFeet && (!altitudeSensitive || verticalFeet <= thresholdFeet)
+            decisionHorizontalFeet <= thresholdFeet && decisionVerticalFeet <= thresholdFeet
         }
     }
 
-    private var previousPairs: [String: PairSnapshot] = [:]
     private var sampleHistory: [String: [DroneSample]] = [:]
     private var latestPairs: [String: PairEvaluation] = [:]
     private var activeAlert: RidProximityAlertState?
@@ -111,22 +115,35 @@ public struct RidProximityAlertEngine: Sendable {
     private var alertsSuspended = false
     private var clearEligibleSince: Date?
     private var nextAlertInstanceID: Int64 = 1
+    private var alertAllAircraft = false
 
     public init() {}
 
     public mutating func update(
         drones: [RidProximityDrone],
         thresholdFeet: Double,
+        enabled: Bool = false,
+        alertAllAircraft: Bool = false,
         predictiveEnabled: Bool = true,
         now: Date = Date()
     ) -> RidProximityAlertOutput {
-        guard thresholdFeet.isFinite, thresholdFeet > 0 else {
+        if self.alertAllAircraft != alertAllAircraft {
+            let wasSuspended = alertsSuspended
+            reset()
+            alertsSuspended = wasSuspended
+            self.alertAllAircraft = alertAllAircraft
+        }
+        guard enabled, thresholdFeet.isFinite else {
             reset()
             return output
         }
 
-        updateSampleHistory(drones: drones)
-        let evaluated = drones.map { evaluateDrone($0, predictiveEnabled: predictiveEnabled) }
+        let thresholdFeet = max(50, thresholdFeet)
+        // Track retention is longer than collision telemetry validity. Never expand
+        // uncertainty indefinitely around an old position.
+        let freshDrones = drones.filter { (0...RidProximityTelemetry.maximumPositionAgeSeconds).contains(now.timeIntervalSince($0.sampleDate)) }
+        updateSampleHistory(drones: freshDrones)
+        let evaluated = freshDrones.map { evaluateDrone($0, predictiveEnabled: predictiveEnabled, now: now) }
         let evaluations = evaluatePairs(drones: evaluated, thresholdFeet: thresholdFeet, predictiveEnabled: predictiveEnabled)
         latestPairs = Dictionary(uniqueKeysWithValues: evaluations.map { ($0.pairKey, $0) })
         let best = evaluations
@@ -184,17 +201,6 @@ public struct RidProximityAlertEngine: Sendable {
             suspendedAlert = nil
         }
 
-        previousPairs = Dictionary(uniqueKeysWithValues: evaluations.map { evaluation in
-            let decisionVertical = evaluation.altitudeSensitive ? evaluation.verticalFeet : 0
-            return (
-                evaluation.pairKey,
-                PairSnapshot(
-                    horizontalFeet: evaluation.horizontalFeet,
-                    verticalFeet: decisionVertical,
-                    threeDimensionalFeet: hypot(evaluation.horizontalFeet, decisionVertical)
-                )
-            )
-        })
         return output
     }
 
@@ -207,6 +213,7 @@ public struct RidProximityAlertEngine: Sendable {
     }
 
     public mutating func resume() -> RidProximityAlertOutput {
+        alertsSuspended = false
         guard let suspendedAlert else { return output }
         let evaluation = latestPairs[suspendedAlert.pairKey]
         alertsSuspended = false
@@ -226,7 +233,6 @@ public struct RidProximityAlertEngine: Sendable {
     }
 
     public mutating func reset() {
-        previousPairs.removeAll()
         sampleHistory.removeAll()
         latestPairs.removeAll()
         activeAlert = nil
@@ -242,7 +248,8 @@ public struct RidProximityAlertEngine: Sendable {
         return RidProximityAlertOutput(
             activeAlert: activeAlert,
             suspendedAlert: suspendedAlert,
-            canResume: canResume
+            canResume: canResume,
+            isSuspended: alertsSuspended
         )
     }
 
@@ -273,30 +280,28 @@ public struct RidProximityAlertEngine: Sendable {
 
                 let currentHorizontalFeet = currentRelative.distanceMeters * 3.28084
                 let currentVerticalFeet = verticalSeparationFeet(
-                    first.input.altitudeMeters,
-                    second.input.altitudeMeters
+                    first.input.telemetry.absoluteAltitudeMeters,
+                    second.input.telemetry.absoluteAltitudeMeters
                 )
-                let horizontalFeet = effectiveRelative.distanceMeters * 3.28084
-                let verticalFeet = abs(first.effectiveAltitudeFeet - second.effectiveAltitudeFeet)
+                let currentLowerBound = max(0, currentHorizontalFeet - first.horizontalUncertaintyFeet - second.horizontalUncertaintyFeet)
+                let projectedHorizontalFeet = effectiveRelative.distanceMeters * 3.28084
+                let projectedLowerBound = max(0, projectedHorizontalFeet - first.projectedUncertaintyFeet - second.projectedUncertaintyFeet)
+                let usesProjection = false
+                let horizontalFeet = usesProjection ? projectedHorizontalFeet : currentHorizontalFeet
+                let decisionHorizontal = min(currentLowerBound, projectedLowerBound)
+                let verticalFeet = currentVerticalFeet
                 let altitudeSensitive = first.input.teamDrone && second.input.teamDrone
-                let decisionCurrentVertical = altitudeSensitive ? currentVerticalFeet : 0
-                let decisionVertical = altitudeSensitive ? verticalFeet : 0
-                let currentThreeDimensional = hypot(currentHorizontalFeet, decisionCurrentVertical)
-                let threeDimensional = hypot(horizontalFeet, decisionVertical)
+                    && first.input.telemetry.hasUsableAltitude && second.input.telemetry.hasUsableAltitude
+                    && first.input.telemetry.altitudeReference == second.input.telemetry.altitudeReference
+                    && first.ageSeconds <= RidProximityTelemetry.maximumAltitudeAgeSeconds
+                    && second.ageSeconds <= RidProximityTelemetry.maximumAltitudeAgeSeconds
+                let verticalUncertainty = ((first.input.telemetry.verticalAccuracyMeters ?? 0)
+                    + (second.input.telemetry.verticalAccuracyMeters ?? 0)) * 3.28084
+                let decisionVertical = altitudeSensitive ? max(0, verticalFeet - verticalUncertainty) : 0
                 let pairKey = Self.pairKey(first.input.remoteID, second.input.remoteID)
-                let previous = previousPairs[pairKey]
-                let inside = horizontalFeet <= thresholdFeet && decisionVertical <= thresholdFeet
-                let crossedInside = previous == nil
-                    || (previous?.horizontalFeet ?? 0) > thresholdFeet
-                    || (previous?.verticalFeet ?? 0) > thresholdFeet
-                let predictedCloser = threeDimensional + 1 < currentThreeDimensional
-                let actuallyApproaching = previous == nil
-                    || threeDimensional + 1 < (previous?.threeDimensionalFeet ?? threeDimensional)
-                let thresholdAllowsAlert = predictiveEnabled
-                    ? inside && (predictedCloser || crossedInside)
-                    : inside && (actuallyApproaching || crossedInside)
-                let eligible = (first.input.teamDrone || second.input.teamDrone)
-                    && (first.input.localAlertEligible || second.input.localAlertEligible)
+                let inside = decisionHorizontal <= thresholdFeet && decisionVertical <= thresholdFeet
+                let eligible = alertAllAircraft || ((first.input.teamDrone || second.input.teamDrone)
+                    && (first.input.localAlertEligible || second.input.localAlertEligible))
                 result.append(
                     PairEvaluation(
                         pairKey: pairKey,
@@ -306,15 +311,14 @@ public struct RidProximityAlertEngine: Sendable {
                         verticalFeet: verticalFeet,
                         currentHorizontalFeet: currentHorizontalFeet,
                         currentVerticalFeet: currentVerticalFeet,
-                        usesProjection: predictiveEnabled && (
-                            abs(horizontalFeet - currentHorizontalFeet) >= 0.1
-                                || abs(verticalFeet - currentVerticalFeet) >= 0.1
-                        ),
+                        usesProjection: usesProjection,
                         altitudeSensitive: altitudeSensitive,
-                        shouldAlert: thresholdAllowsAlert && eligible,
-                        highSeverity: horizontalFeet < thresholdFeet * 0.75
+                        decisionHorizontalFeet: decisionHorizontal,
+                        decisionVerticalFeet: decisionVertical,
+                        shouldAlert: inside && eligible,
+                        highSeverity: decisionHorizontal < thresholdFeet * 0.75
                             || decisionVertical < thresholdFeet * 0.75,
-                        severityScore: max(horizontalFeet / thresholdFeet, decisionVertical / thresholdFeet)
+                        severityScore: max(decisionHorizontal / thresholdFeet, decisionVertical / thresholdFeet)
                     )
                 )
             }
@@ -348,6 +352,7 @@ public struct RidProximityAlertEngine: Sendable {
             currentHorizontalSeparationFeet: evaluation.currentHorizontalFeet,
             currentVerticalSeparationFeet: evaluation.currentVerticalFeet,
             usesProjection: evaluation.usesProjection,
+            verticalSeparationKnown: evaluation.altitudeSensitive,
             firstLatitude: evaluation.first.input.latitude,
             firstLongitude: evaluation.first.input.longitude,
             secondLatitude: evaluation.second.input.latitude,
@@ -365,8 +370,8 @@ public struct RidProximityAlertEngine: Sendable {
                     DroneSample(
                         latitude: drone.latitude,
                         longitude: drone.longitude,
-                        altitudeFeet: (drone.altitudeMeters ?? 0) * 3.28084,
-                        sampleDate: drone.sampleDate
+                        sampleDate: drone.sampleDate,
+                        horizontalAccuracyMeters: drone.telemetry.horizontalAccuracyMeters
                     )
                 )
                 if history.count > 2 { history.removeFirst(history.count - 2) }
@@ -377,77 +382,24 @@ public struct RidProximityAlertEngine: Sendable {
 
     private func evaluateDrone(
         _ drone: RidProximityDrone,
-        predictiveEnabled: Bool
+        predictiveEnabled: Bool,
+        now: Date
     ) -> EvaluatedDrone {
-        guard predictiveEnabled,
-              let history = sampleHistory[drone.remoteID],
-              history.count == 2,
-              let projected = projectedSample(history)
-        else {
-            return EvaluatedDrone(
-                input: drone,
-                effectiveLatitude: drone.latitude,
-                effectiveLongitude: drone.longitude,
-                effectiveAltitudeFeet: (drone.altitudeMeters ?? 0) * 3.28084
-            )
-        }
+        let age = max(0, now.timeIntervalSince(drone.sampleDate))
+        let reportedAccuracy = drone.telemetry.horizontalAccuracyMeters
+        let accuracy = reportedAccuracy.isFinite && reportedAccuracy > 0
+            ? reportedAccuracy : RidProximityTelemetry.unknownHorizontalMeters
+        let uncertainty = accuracy * 3.28084
         return EvaluatedDrone(
             input: drone,
-            effectiveLatitude: projected.latitude,
-            effectiveLongitude: projected.longitude,
-            effectiveAltitudeFeet: projected.altitudeFeet
+            effectiveLatitude: drone.latitude,
+            effectiveLongitude: drone.longitude,
+            effectiveAltitudeFeet: (drone.telemetry.hasUsableAltitude ? (drone.telemetry.absoluteAltitudeMeters ?? 0) : 0) * 3.28084,
+            ageSeconds: age,
+            horizontalUncertaintyFeet: uncertainty,
+            projectedUncertaintyFeet: uncertainty,
+            projectionSeconds: 0
         )
-    }
-
-    private func projectedSample(_ history: [DroneSample]) -> DroneSample? {
-        let first = history[0]
-        let second = history[1]
-        let deltaSeconds = min(second.sampleDate.timeIntervalSince(first.sampleDate), 2)
-        guard deltaSeconds > 0,
-              let movement = RidGeometry.relativePosition(
-                  fromLatitude: first.latitude,
-                  longitude: first.longitude,
-                  toLatitude: second.latitude,
-                  longitude: second.longitude
-              )
-        else { return nil }
-
-        let projectedCoordinate = movement.distanceMeters * 3.28084 >= 1
-            ? destinationPoint(
-                latitude: second.latitude,
-                longitude: second.longitude,
-                bearingDegrees: movement.bearingDegrees,
-                distanceMeters: movement.distanceMeters
-            )
-            : (second.latitude, second.longitude)
-        let verticalRate = (second.altitudeFeet - first.altitudeFeet) / deltaSeconds
-        return DroneSample(
-            latitude: projectedCoordinate.0,
-            longitude: projectedCoordinate.1,
-            altitudeFeet: second.altitudeFeet + verticalRate * deltaSeconds,
-            sampleDate: second.sampleDate.addingTimeInterval(deltaSeconds)
-        )
-    }
-
-    private func destinationPoint(
-        latitude: Double,
-        longitude: Double,
-        bearingDegrees: Double,
-        distanceMeters: Double
-    ) -> (Double, Double) {
-        let angularDistance = distanceMeters / 6_371_000
-        let bearing = bearingDegrees * .pi / 180
-        let latitude1 = latitude * .pi / 180
-        let longitude1 = longitude * .pi / 180
-        let latitude2 = asin(
-            sin(latitude1) * cos(angularDistance)
-                + cos(latitude1) * sin(angularDistance) * cos(bearing)
-        )
-        let longitude2 = longitude1 + atan2(
-            sin(bearing) * sin(angularDistance) * cos(latitude1),
-            cos(angularDistance) - sin(latitude1) * sin(latitude2)
-        )
-        return (latitude2 * 180 / .pi, longitude2 * 180 / .pi)
     }
 
     private func verticalSeparationFeet(_ first: Double?, _ second: Double?) -> Double {
