@@ -1040,6 +1040,12 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         return currentTimeInMsec - referenceTimestamp;
     }
 
+    /** Receive time only: never a source timestamp or a replayed display frame. */
+    public long getMostRecentAircraftReceiptMsecTimestamp() {
+        return Math.max(mostRecentSignalMsecTimestamp,
+                Math.max(mostRecentAircraftMessageMsecTimestamp, mostRecentMeshTelemetryMsecTimestamp));
+    }
+
     public long getMostRecentSignalMsecTimestamp() {
         return (mostRecentSignalMsecTimestamp > 0)
                 ? mostRecentSignalMsecTimestamp

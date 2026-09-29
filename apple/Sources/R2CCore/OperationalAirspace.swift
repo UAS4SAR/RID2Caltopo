@@ -108,7 +108,7 @@ public enum OperationalFacilityMap {
         }
         if let error = root["error"] as? [String: Any] {
             let message = (error["message"] as? String) ?? "FAA Facility Map returned an error."
-            throw OperationalFacilityMapError.service(message)
+            throw AirspaceServiceFailure(message, rateLimited: (error["code"] as? NSNumber)?.intValue == 429)
         }
         return (root["features"] as? [[String: Any]] ?? []).compactMap { feature in
             guard let attributes = feature["attributes"] as? [String: Any] else { return nil }
@@ -327,5 +327,16 @@ public enum OperationalFacilityMapError: LocalizedError {
     case service(String)
     public var errorDescription: String? {
         switch self { case let .service(message): message }
+    }
+}
+
+/// Empty results and failed initial lookups must not trigger a request per GPS update.
+public enum OperationalAirspaceRefreshPolicy {
+    public static let normalInterval: TimeInterval = 20 * 60
+    public static func shouldRefresh(
+        autoRefresh: Bool, hasCompletedAttempt: Bool, elapsedSinceAttempt: TimeInterval
+    ) -> Bool {
+        if !hasCompletedAttempt { return true }
+        return autoRefresh && elapsedSinceAttempt >= normalInterval
     }
 }

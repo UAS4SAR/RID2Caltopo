@@ -9,6 +9,25 @@ import java.io.File
 
 class ClueCaptureSummaryTest {
     @Test
+    fun captureDescriptionMatchesSharedAppleFixture() {
+        val clue = PendingClue(
+            droneSpec = CtDroneSpec("RID123"), designator = "1SAR7",
+            droneLat = 39.0, droneLng = -75.0, droneAlt = 120.0,
+            lat = 39.0, lng = -75.0, alt = 102.0,
+            headingDeg = 273.2, headingSourceLabel = "Camera yaw",
+            aglMeters = 25.0, atoMeters = 40.0,
+            projectionHeightMeters = 25.0, projectionHeightSourceLabel = "fresh AGL",
+            gimbalAngleDeg = -45.0, timestamp = 1_000L,
+            bitmap = null, preview = null, title = "Clue", description = "",
+            terrainProjectionApplied = true, demSource = "usgs-geotiff-local-1m",
+            demResolutionMeters = 1.0,
+        )
+        val fixture = sequenceOf(File("test-fixtures/clue-description/capture.txt"),
+            File("../test-fixtures/clue-description/capture.txt")).first { it.isFile }
+        assertEquals(fixture.readText().trimEnd(), buildClueCaptureSummary(clue, CoordinateDisplayFormat.DECIMAL))
+    }
+
+    @Test
     fun videoMslAgl_prefersPlausibleAltitudeDifference() {
         assertEquals(64.595, videoMslAglMeters(574.595, 510.0) ?: 0.0, 0.000001)
         assertNull(videoMslAglMeters(500.0, 600.0))

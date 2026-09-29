@@ -149,10 +149,14 @@ fun AppHeader(appUptime: String, hostName: String, viewModel: R2CViewModel?) {
             )
         }
         Column(modifier = colModifier) {
-            val rtt = String.format(
-                Locale.US, "%.3f sec",
-                R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator.getCaltopoRttMs().toDouble() / 1000.0
-            )
+            val rtt = if (viewModel?.connectionState is CaltopoConnectionState.MapSelected) {
+                String.format(
+                    Locale.US, "%.3f sec",
+                    R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator.getCaltopoRttMs().toDouble() / 1000.0
+                )
+            } else {
+                "--"
+            }
             Text(
                 text = "Caltopo msg rtt:\n$rtt",
                 modifier = textMod,
@@ -522,21 +526,46 @@ fun DroneSpecConfirmationDialog(
 
 @Composable
 fun MapStateView(viewModel: R2CViewModel) {
-    // 1. Observe the two sources of truth
+    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(6.dp)) {
+        CaltopoActionInterface(
+            state = viewModel.connectionState,
+            onActionClicked = { viewModel.openConnectionOverlayFromCurrentScreen() }
+        )
+    }
+}
+
+// Shared host keeps the active page mounted throughout the connection workflow.
+@Composable
+fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
     val connection = viewModel.connectionState
     val overlay = viewModel.overlay
     val pendingProfileSwitch = viewModel.pendingProfileSwitch
-
-    Box (
-        contentAlignment = Alignment.Center,
-        modifier = Modifier.padding(6.dp)
-    ) {
-        // The Header only needs to know the Connection state to draw its icon/label
-        CaltopoActionInterface(
-            state = connection,
-            onActionClicked = { viewModel.onUIEvent(UIEvent.HeaderClicked) }
-        )
-
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val configPicker = rememberLauncherForActivityResult(FreshOpenDocument()) { uri ->
+        if (uri == null) {
+            viewModel.onUIEvent(UIEvent.DismissRequested)
+        } else {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+                viewModel.onUIEvent(if (CaltopoClient.LoadConfigFile(uri)) {
+                    UIEvent.ConfigFileLoaded
+                } else {
+                    UIEvent.NotAbleToReadConfigFile
+                })
+            } catch (e: Exception) {
+                CaltopoClient.CTError("MapConnectionOverlayHost", "Config read failed: ", e)
+                viewModel.onUIEvent(UIEvent.NotAbleToReadConfigFile)
+            }
+        }
+    }
+    LaunchedEffect(overlay) {
+        if (overlay == OverlayState.RequestConfigFile) {
+            configPicker.launch(arrayOf("application/json", "text/plain", "application/octet-stream"))
+        }
+    }
+    Box {
         // 2. The "Marching Orders": Render EXACTLY one overlay based on state
         when (val currentOverlay = overlay) {
             is OverlayState.ConnectionSetup -> {

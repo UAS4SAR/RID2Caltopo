@@ -7,6 +7,7 @@ import java.util.concurrent.Executor
 
 class LatestPositionReportsTest {
     private var now = 0L
+    private var interval = 5_000L
     private val worker = ArrayDeque<Runnable>()
     private val timers = mutableListOf<Pair<Long, Runnable>>()
     private val sent = mutableListOf<Pair<Long, Int>>()
@@ -14,13 +15,32 @@ class LatestPositionReportsTest {
     private val reports = LatestPositionReports<Int>(
         Executor { worker.add(it) },
         { task, delay -> timers.add(now + delay to task) },
-        { now }, { sent.add(now to it) }, { dropped.add(it) })
+        { now }, { sent.add(now to it) }, { dropped.add(it) }, { interval })
 
     private fun tick(time: Long) {
         now = time
         val ready = timers.filter { it.first <= now }
         timers.removeAll(ready.toSet())
         ready.forEach { it.second.run() }
+    }
+
+    @Test fun changingIntervalAppliesToPendingUpdatesWithoutRestart() {
+        reports.submit("a", 1)
+        tick(0); worker.remove().run()
+        interval = 60_000
+        reports.submit("a", 2)
+        tick(500); assertTrue(worker.isEmpty())
+        interval = 500
+        tick(1_000); worker.remove().run()
+        assertEquals(listOf(0L to 1, 1_000L to 2), sent)
+        reports.submit("a", 3)
+        tick(1_500) // ready, but network worker has not run
+        interval = 5_000
+        worker.remove().run()
+        assertEquals(2, sent.size)
+        tick(5_999); assertTrue(worker.isEmpty())
+        tick(6_000); worker.remove().run()
+        assertEquals(6_000L to 3, sent.last())
     }
 
     @Test fun blockedWorkerSendsOnlyNewestThenWaitsFiveSeconds() {

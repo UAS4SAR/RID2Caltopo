@@ -9,6 +9,54 @@ final class RIDTrackViewModel: ObservableObject {
     private static let caltopoFinishRetryNanoseconds: UInt64 = 5_000_000_000
     private static let caltopoFinishRetryCount = 3
     let shortFlightDecisions = ShortFlightRecordingGate()
+    private let awaitingMapJournal = AwaitingMapFlightJournal(fileURL:
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("awaiting-map-flights.json"))
+    @Published private(set) var awaitingMapFlights: [AwaitingMapFlight] = []
+    @Published private(set) var incidentCommandLocations: [MapCoordinate] = []
+    func refreshIncidentCommandLocations() async {
+        incidentCommandLocations = await caltopoPublisher.incidentCommandLocations()
+    }
+    private var publicationMapID = ""
+    private var publicationTeamID = ""
+    private var lastDeferredSnapshot: [String: Date] = [:]
+
+    func capturePublicationIntent(remoteID: String) {
+        lastDeferredSnapshot.removeValue(forKey: remoteID)
+        if let track = tracks.first(where: { $0.aircraftID == remoteID }) { recordAwaitingFlight(track) }
+    }
+
+    private func recordAwaitingFlight(_ track: RidAircraftTrack, finished: Bool = false) {
+        guard flightRecordingAllowed?(track.aircraftID) == true,
+              publicationSuppressionProvider?(track.aircraftID) != true else { return }
+        let now = Date()
+        if !finished, now.timeIntervalSince(lastDeferredSnapshot[track.aircraftID] ?? .distantPast) < 5 { return }
+        let samples = track.points.map { RidObservation(source: track.lastObservation.source, aircraftId: track.aircraftID,
+            receivedAt: $0.receivedAt, latitude: $0.latitude, longitude: $0.longitude, altitudeMeters: $0.altitudeMeters) }
+        do {
+            try awaitingMapJournal.record(remoteID: track.aircraftID, label: identityProvider?(track.aircraftID)?.displayLabel ?? track.aircraftID,
+                observations: samples, mapID: publicationMapID, teamID: publicationTeamID, finished: finished)
+            lastDeferredSnapshot[track.aircraftID] = now
+            awaitingMapFlights = awaitingMapJournal.entries.filter { $0.decision == "review" }
+        } catch { archiveStatus = "Could not save pending publication: \(error.localizedDescription)" }
+    }
+
+    func decideAwaitingFlight(_ id: String, mapID: String?, teamID: String) async {
+        do {
+            try awaitingMapJournal.decide(id: id, mapID: mapID, teamID: teamID)
+            awaitingMapFlights = awaitingMapJournal.entries.filter { $0.decision == "review" }
+            await queueCompletedDeferredFlights()
+        } catch { archiveStatus = "Publication choice was not saved: \(error.localizedDescription)" }
+    }
+
+    private func queueCompletedDeferredFlights() async {
+        for entry in awaitingMapJournal.entries where entry.finished && entry.decision == "publish" &&
+                entry.mapID == publicationMapID && entry.teamID == publicationTeamID {
+            do {
+                try await caltopoPublisher.queueDeferredArchive(entry.publication)
+                try awaitingMapJournal.markQueued(id: entry.id)
+            } catch { archiveStatus = "Publication remains pending: \(error.localizedDescription)" }
+        }
+    }
     @Published private(set) var tracks: [RidAircraftTrack] = []
     @Published private(set) var acceptedObservationCount = 0
     @Published private(set) var filteredObservationCount = 0
@@ -220,6 +268,7 @@ final class RIDTrackViewModel: ObservableObject {
             if let code = observation.horizontalAccuracyCode {
                 lastHorizontalAccuracyCodeByAircraftID[track.aircraftID] = code
             }
+            recordAwaitingFlight(track)
             logAcceptedObservation(track)
             updateAltitude(for: track)
             if publicationSuppressionProvider?(track.aircraftID) == true {
@@ -650,11 +699,15 @@ final class RIDTrackViewModel: ObservableObject {
         _ configuration: AppleCaltopoConfiguration,
         trackFolderName: String = "Drone Tracks"
     ) {
+        publicationMapID = configuration.mapID
+        publicationTeamID = configuration.teamID
+        awaitingMapFlights = awaitingMapJournal.entries.filter { $0.decision == "review" }
         Task { [caltopoPublisher] in
             await caltopoPublisher.configure(
                 configuration,
                 trackFolderName: trackFolderName
             )
+            await self.queueCompletedDeferredFlights()
             if let marker = await MainActor.run(body: { self.localDeviceMarker }) {
                 await caltopoPublisher.publishDeviceMarker(marker, force: true)
             }
@@ -929,6 +982,8 @@ final class RIDTrackViewModel: ObservableObject {
             AppleLog.info("DroneConfirmation", "Ignored unanswered/unconfirmed flight remoteId=\(track.aircraftID); archive and upload skipped")
             return
         }
+        recordAwaitingFlight(track, finished: true)
+        await queueCompletedDeferredFlights()
         let identity = identityProvider?(track.aircraftID)
         let archiveConfiguration = archiveConfiguration
         let metadata = RidTrackArchiveMetadata(
@@ -958,7 +1013,13 @@ final class RIDTrackViewModel: ObservableObject {
             Task { @MainActor in await self.archiveRecorded(track, metadata: metadata, clues: clues) }
         }
         if shortFlightDecisions.request(aircraft: metadata.mappedID,
-            seconds: track.lastAircraftMessageAt.timeIntervalSince(start), meters: track.distanceMeters, keep: save) { return }
+            seconds: track.lastAircraftMessageAt.timeIntervalSince(start), meters: track.distanceMeters, keep: save, discard: { [weak self] in
+                guard let self else { return }
+                do {
+                    try self.awaitingMapJournal.discard(remoteID: track.aircraftID, startedAt: start)
+                    self.awaitingMapFlights = self.awaitingMapJournal.entries.filter { $0.decision == "review" }
+                } catch { self.archiveStatus = "Could not discard publication offer: \(error.localizedDescription)" }
+            }) { return }
         await archiveRecorded(track, metadata: metadata, clues: clues)
     }
 
@@ -1166,6 +1227,10 @@ final class RIDTrackViewModel: ObservableObject {
         label: String,
         observation: RidObservation
     ) -> Task<Void, Never> {
+        let deferred = awaitingMapJournal.entries.last { $0.remoteID == remoteID && !$0.finished }
+        if let deferred, !["publish", "bound"].contains(deferred.decision) || deferred.mapID != publicationMapID || deferred.teamID != publicationTeamID {
+            return Task { }
+        }
         let previous = publicationChains[remoteID]
         let publicationObservation = RidObservation(
             source: observation.source,
@@ -1190,12 +1255,17 @@ final class RIDTrackViewModel: ObservableObject {
         let task = Task { [caltopoPublisher] in
             _ = await previous?.value
             guard !Task.isCancelled else { return }
+            if let deferred, deferred.decision == "publish" { await caltopoPublisher.seedDeferredFlight(deferred.publication) }
             await caltopoPublisher.publish(
                 remoteID: remoteID,
                 label: label,
                 observation: publicationObservation,
                 cameraMetadata: cameraMetadata
             )
+            if await caltopoPublisher.hasBufferedPublication(remoteID: remoteID, mapID: self.publicationMapID) {
+                do { try self.awaitingMapJournal.notePublication(remoteID: remoteID, mapID: self.publicationMapID) }
+                catch { self.archiveStatus = "Publication handoff could not be saved" }
+            }
         }
         publicationChains[remoteID] = task
         return task

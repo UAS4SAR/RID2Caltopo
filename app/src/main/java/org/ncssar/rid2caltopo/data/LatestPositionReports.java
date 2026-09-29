@@ -13,17 +13,25 @@ final class LatestPositionReports<T> {
     private final class Slot {
         T pending;
         boolean scheduled;
-        long readyAt;
+        Long completedAt;
     }
     private final Map<String, Slot> slots = new HashMap<>();
     private final Executor worker;
     private final BiConsumer<Runnable, Long> timer;
     private final LongSupplier clock;
+    private final LongSupplier intervalMs;
     private final Consumer<T> send;
     private final Consumer<T> discard;
 
     LatestPositionReports(Executor worker, BiConsumer<Runnable, Long> timer,
                           LongSupplier clock, Consumer<T> send, Consumer<T> discard) {
+        this(worker, timer, clock, send, discard, () -> INTERVAL_MS);
+    }
+
+    LatestPositionReports(Executor worker, BiConsumer<Runnable, Long> timer,
+                          LongSupplier clock, Consumer<T> send, Consumer<T> discard,
+                          LongSupplier intervalMs) {
+        this.intervalMs = intervalMs;
         this.worker = worker;
         this.timer = timer;
         this.clock = clock;
@@ -49,13 +57,25 @@ final class LatestPositionReports<T> {
 
     private void schedule(Slot slot) {
         slot.scheduled = true;
-        timer.accept(() -> worker.execute(() -> drain(slot)),
-                Math.max(0L, slot.readyAt - clock.getAsLong()));
+        timer.accept(() -> checkReady(slot), Math.min(500L, remaining(slot)));
+    }
+
+    private long remaining(Slot slot) {
+        return slot.completedAt == null ? 0L : Math.max(0L,
+                slot.completedAt + intervalMs.getAsLong() - clock.getAsLong());
+    }
+
+    private synchronized void checkReady(Slot slot) {
+        if (slot.pending == null) { slot.scheduled = false; return; }
+        if (remaining(slot) > 0) { schedule(slot); return; }
+        worker.execute(() -> drain(slot));
     }
 
     private void drain(Slot slot) {
         T report;
         synchronized (this) {
+            // Recheck if the setting increased while waiting for the network worker.
+            if (remaining(slot) > 0) { schedule(slot); return; }
             // Choose at execution time, not when this work was enqueued.
             report = slot.pending;
             slot.pending = null;
@@ -65,7 +85,7 @@ final class LatestPositionReports<T> {
             send.accept(report);
         } finally {
             synchronized (this) {
-                slot.readyAt = clock.getAsLong() + INTERVAL_MS;
+                slot.completedAt = clock.getAsLong();
                 slot.scheduled = false;
                 if (slot.pending != null) schedule(slot);
             }

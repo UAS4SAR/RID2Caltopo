@@ -21,7 +21,9 @@ public struct CurrentFlightConfirmationLifecycle: Sendable, Equatable {
     public mutating func reconcile(
         orderedRemoteIDs: [String],
         confirmedRemoteIDs: Set<String>,
-        ignoredRemoteIDs: Set<String>
+        ignoredRemoteIDs: Set<String>,
+        videoReconfirmationRemoteIDs: Set<String> = [],
+        allowPrompt: Bool = true
     ) -> CurrentFlightConfirmationReconciliation {
         let currentRemoteIDs = Set(orderedRemoteIDs.filter { !$0.isEmpty })
         let endedRemoteIDs = activeRemoteIDs.subtracting(currentRemoteIDs)
@@ -32,9 +34,9 @@ public struct CurrentFlightConfirmationLifecycle: Sendable, Equatable {
             .subtracting(endedRemoteIDs)
             .union(ignoredRemoteIDs)
         let candidate = orderedRemoteIDs.first { remoteID in
-            !remoteID.isEmpty
-                && !promptedRemoteIDs.contains(remoteID)
-                && !decisionsAfterFlightEnd.contains(remoteID)
+            allowPrompt && !remoteID.isEmpty
+                && (videoReconfirmationRemoteIDs.contains(remoteID) ||
+                    (!promptedRemoteIDs.contains(remoteID) && !decisionsAfterFlightEnd.contains(remoteID)))
         }
         if let candidate {
             promptedRemoteIDs.insert(candidate)

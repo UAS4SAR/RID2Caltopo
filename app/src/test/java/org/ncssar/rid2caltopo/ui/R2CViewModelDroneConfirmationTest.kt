@@ -17,7 +17,75 @@ import org.ncssar.rid2caltopo.data.CtDroneSpec
 import org.ncssar.rid2caltopo.data.SimpleTimer
 
 class R2CViewModelDroneConfirmationTest {
-    @Test fun telemetryTimeoutClearsConfirmationEvenWhileVideoRemainsListed() {
+    @Test fun mapConnectionDialogsKeepTheOriginatingPageThroughCancelAndReconnect() {
+        val mapField = CaltopoMap::class.java.getDeclaredField("MapNode").apply { isAccessible = true }
+        val previousMap = mapField.get(null)
+        try {
+            mapField.set(null, org.ncssar.rid2caltopo.data.CaltopoNode.MapNode("map-test", "Taylor Site", 0L))
+        for (liveView in listOf(false, true)) {
+            val model = R2CViewModel(SimpleTimer())
+            if (liveView) model.showStreams()
+            val origin = model.activeScreen.value
+            model.openConnectionOverlayFromCurrentScreen()
+            assertEquals(origin, model.activeScreen.value)
+            model.onUIEvent(UIEvent.DismissRequested)
+            assertEquals(OverlayState.None, model.overlay)
+            assertEquals(origin, model.activeScreen.value)
+
+            model.onUIEvent(UIEvent.ConnectionStatusChanged(CaltopoMap.MapStatusListener.mapStatus.credentialsVerified))
+            assertEquals(OverlayState.MapBrowser, model.overlay)
+            model.openConnectionOverlayFromCurrentScreen()
+            assertEquals(origin, model.activeScreen.value)
+            model.onUIEvent(UIEvent.ConnectionStatusChanged(CaltopoMap.MapStatusListener.mapStatus.connecting))
+            assertEquals(origin, model.activeScreen.value)
+            model.onUIEvent(UIEvent.ConnectionStatusChanged(CaltopoMap.MapStatusListener.mapStatus.up))
+            assertEquals(OverlayState.None, model.overlay)
+            assertEquals(origin, model.activeScreen.value)
+            model.openConnectionOverlayFromCurrentScreen()
+            model.onUIEvent(UIEvent.SwitchMapRequested)
+            model.onUIEvent(UIEvent.DismissRequested)
+            assertEquals(origin, model.activeScreen.value)
+            model.onUIEvent(UIEvent.NotAbleToReadConfigFile)
+            assertEquals(origin, model.activeScreen.value)
+            model.onUIEvent(UIEvent.ConnectionStatusChanged(CaltopoMap.MapStatusListener.mapStatus.down))
+            assertEquals(origin, model.activeScreen.value)
+        }
+        } finally { mapField.set(null, previousMap) }
+    }
+
+    @Test fun cancellingMapSwitchPreservesSelectedMapAndHeaderAction() {
+        val mapField = CaltopoMap::class.java.getDeclaredField("MapNode").apply { isAccessible = true }
+        val previousMap = mapField.get(null)
+        val map = org.ncssar.rid2caltopo.data.CaltopoNode.MapNode("map-test", "Taylor Site", 0L)
+        try {
+            mapField.set(null, map)
+            val model = R2CViewModel(SimpleTimer())
+            model.onUIEvent(UIEvent.ConnectionStatusChanged(CaltopoMap.MapStatusListener.mapStatus.up))
+            model.onUIEvent(UIEvent.SwitchMapRequested)
+            assertEquals(OverlayState.MapBrowser, model.overlay)
+            assertEquals("Taylor Site", incidentMapDisplayValue(model.connectionState))
+            model.onUIEvent(UIEvent.DismissRequested)
+            assertEquals(OverlayState.None, model.overlay)
+            assertEquals("Taylor Site", incidentMapDisplayValue(model.connectionState))
+            assertSame(map, CaltopoMap.GetMapNode())
+            model.onUIEvent(UIEvent.HeaderClicked)
+            assertEquals(OverlayState.Management, model.overlay)
+            model.onUIEvent(UIEvent.ConnectionStatusChanged(CaltopoMap.MapStatusListener.mapStatus.down))
+            assertEquals("Standalone", incidentMapDisplayValue(model.connectionState))
+        } finally { mapField.set(null, previousMap) }
+    }
+
+    @Test fun cancellingInitialMapBrowserPreservesVerifiedCredentials() {
+        val model = R2CViewModel(SimpleTimer())
+        model.onUIEvent(UIEvent.ConnectionStatusChanged(CaltopoMap.MapStatusListener.mapStatus.credentialsVerified))
+        model.onUIEvent(UIEvent.DismissRequested)
+        assertEquals(CaltopoConnectionState.CredentialsVerified, model.connectionState)
+        assertEquals(OverlayState.None, model.overlay)
+        model.onUIEvent(UIEvent.HeaderClicked)
+        assertEquals(OverlayState.MapBrowser, model.overlay)
+    }
+
+    @Test fun telemetryTimeoutDoesNotReopenConfirmationWhileOldVideoRemainsListed() {
         val remoteId = "RETURNINGVIDEO"
         val drone = activeDrone(remoteId, waypointTimestampMsec = 1234L).apply { setMappedId("1sar7M4TD") }
         val model = R2CViewModel(SimpleTimer())
@@ -30,7 +98,13 @@ class R2CViewModelDroneConfirmationTest {
 
         model.onLocalTrackFinished(remoteId, drone.mappedId, "telemetry idle after Wi-Fi loss")
         assertFalse(CaltopoClient.IsCurrentPeerDroneConfirmed(remoteId))
-        model.onDroneSpecsChanged(listOf(drone))
+        repeat(3) {
+            model.onDroneSpecsChanged(listOf(drone))
+            model.onLiveStreamDesignatorsChanged(setOf(drone.mappedId), listOf(drone))
+            assertNull(model.pendingDroneConfirmation.value)
+        }
+        val nextFlight = activeDrone(remoteId, waypointTimestampMsec = System.currentTimeMillis() + 1)
+        model.onDroneSpecsChanged(listOf(nextFlight))
         assertEquals(remoteId, model.pendingDroneConfirmation.value?.remoteId)
         assertEquals(ActiveScreen.STREAMS, model.activeScreen.value)
         model.savePendingDroneConfirmation()
@@ -87,6 +161,21 @@ class R2CViewModelDroneConfirmationTest {
         assertNull(uniqueStreamConfirmationRemoteId("missing",listOf("A" to "Same")))
         assertEquals("A",uniqueStreamConfirmationRemoteId(" SAME ",listOf("A" to "same")))
     }
+    @Test fun newPublisherAfterTrackEndAllowsVideoOnlyConfirmation() {
+        val drone = CtDroneSpec("RECONNECT", "mini4pro", "NCSSAR", "Mini", "1SAR7")
+        val model = R2CViewModel(SimpleTimer())
+        model.onLiveStreamDesignatorsChanged(setOf("mini4pro"), listOf(drone), mapOf("mini4pro" to "old"))
+        model.savePendingDroneConfirmation()
+        model.onLocalTrackFinished(drone.remoteId, drone.mappedId, "timeout")
+        model.onLiveStreamDesignatorsChanged(setOf("mini4pro"), listOf(drone), mapOf("mini4pro" to "old"))
+        assertNull(model.pendingDroneConfirmation.value)
+        model.onLiveStreamDesignatorsChanged(emptySet(), listOf(drone))
+        model.onLiveStreamDesignatorsChanged(setOf("mini4pro"), listOf(drone), mapOf("mini4pro" to "old"))
+        assertNull(model.pendingDroneConfirmation.value)
+        model.onLiveStreamDesignatorsChanged(setOf("mini4pro"), listOf(drone), mapOf("mini4pro" to "new"))
+        assertEquals(drone.remoteId, model.pendingDroneConfirmation.value?.remoteId)
+    }
+
     @Before
     fun setUp() {
         clearLocalTrackListeners()
@@ -449,6 +538,8 @@ class R2CViewModelDroneConfirmationTest {
 
         CaltopoLiveTrack.NotifyLocalTrackFinished(drone, "test track finished")
         viewModel.onDroneSpecsChanged(listOf(drone))
+        assertNull(viewModel.pendingDroneConfirmation.value)
+        viewModel.onDroneSpecsChanged(listOf(activeDrone(remoteId, waypointTimestampMsec = System.currentTimeMillis() + 1)))
 
         assertEquals(remoteId, viewModel.pendingDroneConfirmation.value?.remoteId)
 
@@ -478,6 +569,8 @@ class R2CViewModelDroneConfirmationTest {
 
         CaltopoLiveTrack.NotifyLocalTrackFinished(drone, "test track finished")
         viewModel.onDroneSpecsChanged(listOf(drone))
+        assertNull(viewModel.pendingDroneConfirmation.value)
+        viewModel.onDroneSpecsChanged(listOf(activeDrone(remoteId, waypointTimestampMsec = System.currentTimeMillis() + 1)))
 
         assertEquals(remoteId, viewModel.pendingDroneConfirmation.value?.remoteId)
     }
@@ -500,6 +593,24 @@ class R2CViewModelDroneConfirmationTest {
         viewModel.onLiveStreamDesignatorsChanged(setOf(drone.mappedId), listOf(drone))
 
         assertNull(viewModel.pendingDroneConfirmation.value)
+    }
+
+    @Test
+    fun declinedDroneGetsOneNewPromptWhenLocalPublisherStarts() {
+        val drone = activeDrone("DRONENEWVIDEO", waypointTimestampMsec = 131415L).apply { setMappedId("mini4pro") }
+        val viewModel = R2CViewModel(SimpleTimer())
+        viewModel.onDroneConfirmationCandidate(drone)
+        viewModel.markPendingDroneConfirmationUnknown()
+        viewModel.onDroneSpecsChanged(listOf(drone))
+        assertNull(viewModel.pendingDroneConfirmation.value)
+        viewModel.onLiveStreamDesignatorsChanged(setOf(drone.mappedId), listOf(drone), mapOf(drone.mappedId to "publisher-1"))
+        assertNotNull(viewModel.pendingDroneConfirmation.value)
+        assertTrue(CaltopoClient.IsSessionUnknownDrone(drone.remoteId))
+        viewModel.markPendingDroneConfirmationUnknown()
+        viewModel.onLiveStreamDesignatorsChanged(setOf(drone.mappedId), listOf(drone), mapOf(drone.mappedId to "publisher-1"))
+        assertNull(viewModel.pendingDroneConfirmation.value)
+        viewModel.onLiveStreamDesignatorsChanged(setOf(drone.mappedId), listOf(drone), mapOf(drone.mappedId to "publisher-2"))
+        assertNotNull(viewModel.pendingDroneConfirmation.value)
     }
 
     @Test

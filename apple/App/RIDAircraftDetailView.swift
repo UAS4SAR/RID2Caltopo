@@ -227,6 +227,8 @@ final class AppleDroneConfirmationStore: ObservableObject {
     @Published private var importedIdentities: [String: RidAircraftIdentity] = [:]
     @Published private(set) var preferredPilotCallsign: String
     private var confirmationLifecycle = CurrentFlightConfirmationLifecycle()
+    private var declinedVideoConfirmation = DeclinedDroneVideoConfirmation()
+    private var completedFlightGuard = CompletedFlightConfirmationGuard()
     private var peerConfirmationMapID = ""
     private var ignoredRemoteIDs: Set<String> = []
     private let defaults = UserDefaults.standard
@@ -286,13 +288,31 @@ final class AppleDroneConfirmationStore: ObservableObject {
 
     /// Prompt once per current flight. RID-only gaps do not reach this method as an ended
     /// flight until the shared 30-second RID/video activity timeout removes the track.
-    func reconcileActiveFlights(_ orderedRemoteIDs: [String]) -> String? {
+    func reconcileActiveFlights(
+        _ orderedRemoteIDs: [String],
+        aircraftReceivedAt: [String: Date] = [:],
+        videoSessions: [String: Set<String>] = [:],
+        allowPrompt: Bool = true,
+        mediaDiagnostics: String = "media=unavailable",
+        onFlightEnded: (String) -> Void = { _ in }
+    ) -> String? {
+        completedFlightGuard.updateSessions(videoSessions)
+        declinedVideoConfirmation.update(videoSessions)
+        let eligible = orderedRemoteIDs.filter {
+            completedFlightGuard.allows(remoteID: $0, receivedAt: aircraftReceivedAt[$0]) { AppleLog.info("DroneConfirmation", "\($0) \(mediaDiagnostics)") }
+        }
         let reconciliation = confirmationLifecycle.reconcile(
-            orderedRemoteIDs: orderedRemoteIDs,
+            orderedRemoteIDs: eligible,
             confirmedRemoteIDs: Set(sessionIdentities.keys).union(peerIdentities.keys),
-            ignoredRemoteIDs: ignoredRemoteIDs
+            ignoredRemoteIDs: ignoredRemoteIDs,
+            videoReconfirmationRemoteIDs: Set(eligible.filter {
+                ignoredRemoteIDs.contains($0) && declinedVideoConfirmation.hasNewPublisher($0)
+            }),
+            allowPrompt: allowPrompt
         )
         for remoteID in reconciliation.endedRemoteIDs {
+            onFlightEnded(remoteID)
+            completedFlightGuard.end(remoteID: remoteID, at: Date()) { AppleLog.info("DroneConfirmation", "\($0) \(mediaDiagnostics)") }
             sessionIdentities.removeValue(forKey: remoteID)
             peerIdentities.removeValue(forKey: remoteID)
         }
@@ -303,11 +323,13 @@ final class AppleDroneConfirmationStore: ObservableObject {
             )
         }
         guard let candidate = reconciliation.candidateRemoteID else { return nil }
-        AppleLog.info("DroneConfirmation", "Queueing confirmation for active flight remoteId=\(candidate)")
+        if ignoredRemoteIDs.contains(candidate) { declinedVideoConfirmation.markHandled(candidate) }
+        AppleLog.info("DroneConfirmation", "Queueing confirmation remoteId=\(candidate) aircraftReceivedAt=\(String(describing: aircraftReceivedAt[candidate])) publisherSessions=\((videoSessions[candidate] ?? []).sorted()) \(mediaDiagnostics)")
         return candidate
     }
 
     func endFlight(remoteID: String) {
+        completedFlightGuard.end(remoteID: remoteID, at: Date()) { AppleLog.info("DroneConfirmation", $0) }
         confirmationLifecycle.endFlight(remoteID: remoteID)
         sessionIdentities.removeValue(forKey: remoteID)
         peerIdentities.removeValue(forKey: remoteID)
@@ -321,6 +343,7 @@ final class AppleDroneConfirmationStore: ObservableObject {
     func ignore(_ remoteID: String) {
         guard !remoteID.isEmpty else { return }
         ignoredRemoteIDs.insert(remoteID)
+        declinedVideoConfirmation.markHandled(remoteID)
         sessionIdentities.removeValue(forKey: remoteID)
         peerIdentities.removeValue(forKey: remoteID)
         AppleLog.info(
@@ -409,6 +432,8 @@ final class AppleDroneConfirmationStore: ObservableObject {
         let normalized = mapID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard normalized != peerConfirmationMapID else { return }
         peerConfirmationMapID = normalized
+        // Peer authority is map-scoped. Local pilot/readiness and confirmation belong
+        // to the physical flight and are cleared only by endFlight/reconciliation.
         peerIdentities.removeAll()
     }
 
@@ -436,6 +461,7 @@ final class AppleDroneConfirmationStore: ObservableObject {
         sessionIdentities.removeAll()
         peerIdentities.removeAll()
         confirmationLifecycle.reset()
+        completedFlightGuard = CompletedFlightConfirmationGuard()
         ignoredRemoteIDs.removeAll()
         defaults.removeObject(forKey: "org.ridMappings")
         defaults.removeObject(forKey: Self.ignoredRemoteIDsDefaultsKey)

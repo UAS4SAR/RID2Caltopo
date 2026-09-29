@@ -13,6 +13,7 @@ struct CaltopoSettingsView: View {
     @ObservedObject var identityStore: AppleDroneConfirmationStore
     @ObservedObject var trackModel: RIDTrackViewModel
     @ObservedObject var proximityAlerts: AppleProximityAlertCenter
+    @ObservedObject var bridgeAlerts: AppleDroneScoutBridgeAlertCenter
     let iCloudBackup: AppleICloudBackupCenter
     let onSave: (AppleCaltopoConfiguration) -> Void
     @ObservedObject private var notams = AppleNotamCenter.shared
@@ -191,7 +192,7 @@ struct CaltopoSettingsView: View {
                     .foregroundStyle(.secondary)
                 Stepper {
                     LabeledContent(
-                        "Thumbnail Refresh",
+                        "Thumbnail & LiveTrack update interval",
                         value: "\(OperationalThumbnailRefreshInterval.formatted(thumbnailRefreshSeconds)) seconds"
                     )
                 } onIncrement: {
@@ -203,7 +204,16 @@ struct CaltopoSettingsView: View {
                         thumbnailRefreshSeconds
                     )
                 }
-                Text("Defaults to 5.0 seconds. Shorter intervals use more battery and network data.")
+                Text("Minimum time between thumbnail refreshes and LiveTrack updates. Default 5.0 seconds; lower values update more often and use more battery and data.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Bridge warnings") {
+                Toggle("Bridge audio warnings", isOn: Binding(
+                    get: { !bridgeAlerts.audioMuted },
+                    set: { bridgeAlerts.setAudioMuted(!$0) }
+                ))
+                Text("Enabled when the app starts. Turning this off silences bridge warnings for this app session only.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

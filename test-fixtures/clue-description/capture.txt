@@ -1,0 +1,11 @@
+Projected clue location:
+  Position (Decimal): 39.00000,-75.00000 alt 335'
+  Camera Azimuth: 273.2°
+  Heading source: Camera yaw
+  Gimbal angle at capture: -45.0°
+  AGL: 82'
+  Projection height: 82' (fresh AGL)
+  Aircraft position source: RID
+  DEM used: local USGS GeoTIFF (1 m grid)
+  ATO: 131'
+  Distance to clue: 0'

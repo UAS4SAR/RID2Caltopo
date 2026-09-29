@@ -282,7 +282,9 @@ public class CaltopoSession {
             task -> GetMainExecutorPool().execute(task),
             (task, delay) -> PositionTimer.schedule(task, delay, java.util.concurrent.TimeUnit.MILLISECONDS),
             () -> java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()),
-            CaltopoSession::BgSendRequest, CaltopoOp::discardPositionReport);
+            CaltopoSession::BgSendRequest, CaltopoOp::discardPositionReport,
+            () -> VideoThumbnailRefreshPolicy.INSTANCE.milliseconds(
+                    VideoThumbnailRefreshPrefs.getSeconds(R2CApplication.getAppCtxt())));
 
     private static String positionReportKey(String deviceId) {
         return DomainAndPort + ":" + CaltopoClient.GetConnectKey().trim() + ":" + deviceId;
@@ -776,6 +778,21 @@ public class CaltopoSession {
 		return op;
 	}
 
+    public static CaltopoOp EditObjectOnMap(String mapId, String type, String id, JSONObject feature, Consumer<CaltopoOp> done) {
+        CaltopoOp op = new CaltopoOp(done);
+        SendRequest(op, CtsMethod_t.POST, CALTOPO_MAP_API_V1 + mapId + "/" + type + "/" + id, feature, false);
+        return op;
+    }
+
+    public static CaltopoOp DeleteLiveTrackOnMap(String mapId, String id, Consumer<CaltopoOp> done) {
+        CaltopoOp op = new CaltopoOp(done);
+        // CalTopo returns 400 for an absent LiveTrack after standalone upload.
+        // Match Apple stopLiveTrack; this is limited to this DELETE operation.
+        op.acceptedErrorCodes = new int[] {400, 404};
+        SendRequest(op, CtsMethod_t.DELETE, CALTOPO_MAP_API_V1 + mapId + "/LiveTrack/" + id, null, false);
+        return op;
+    }
+
 	@NonNull
 	public static CaltopoOp StartLiveTrack(@NonNull String liveTrackId, @NonNull String deviceId, @NonNull String label,
                                            @Nullable String folderId, @Nullable String description,
@@ -1174,6 +1191,45 @@ public class CaltopoSession {
         } catch (Exception e) {
             CTError(TAG, "ArchiveJpeg() Not able to write jpeg file: " + filename);
         }
+    }
+
+    public static CaltopoOp PublishStoredPhoto(String mapId, String teamId, String markerId,
+            double lat, double lng, String title, String description, String folderId,
+            long createdAt, byte[] jpeg, Consumer<CaltopoOp> done) {
+        CaltopoOp outer = new CaltopoOp(done);
+        SubmitPhotoRequest(outer, () -> {
+            CaltopoOp result;
+            try {
+                if (Cred == null || !teamId.equals(Cred.teamId)) throw new IllegalStateException("Original team is not selected");
+                String mediaId = UUID.nameUUIDFromBytes((markerId + ":media").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+                String linkId = UUID.nameUUIDFromBytes((markerId + ":link").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+                JSONObject geometry = new JSONObject().put("type", "Point").put("coordinates", new JSONArray().put(lng).put(lat));
+                JSONObject props = new JSONObject().put("class", "Marker").put("title", title)
+                    .put("description", description).put("created", createdAt).put("folderId", folderId)
+                    .put("marker-symbol", "Drone").put("marker-color", "#FF0000");
+                JSONObject marker = new JSONObject().put("id", markerId).put("type", "Feature").put("geometry", geometry).put("properties", props);
+                result = BgOp(CtsMethod_t.POST, CALTOPO_MAP_API_V1 + mapId + "/Marker/" + markerId, marker, false);
+                if (result.success()) result = BgOp(CtsMethod_t.POST, CALTOPO_MEDIA_API_V1 + mediaId,
+                    new JSONObject().put("properties", new JSONObject().put("creator", teamId)), false);
+                if (result.success()) result = BgOp(CtsMethod_t.POST, CALTOPO_MEDIA_API_V1 + mediaId + "/data",
+                    new JSONObject().put("creator", teamId).put("data", android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP)), false);
+                if (result.success()) {
+                    JSONObject linkProps = new JSONObject().put("class", "MapMediaObject").put("title", title)
+                        .put("description", description).put("parentId", "Marker:" + markerId).put("backendMediaId", mediaId)
+                        .put("created", createdAt).put("marker-symbol", "aperture");
+                    result = BgOp(CtsMethod_t.POST, CALTOPO_MAP_API_V1 + mapId + "/MapMediaObject/" + linkId,
+                        new JSONObject().put("id", linkId).put("type", "Feature").put("geometry", geometry).put("properties", linkProps), false);
+                }
+                outer.responseCode = result.responseCode;
+                outer.response = result.response;
+                outer.setOperationIsDone(result.success());
+            } catch (Exception error) {
+                outer.response = error.getMessage();
+                outer.setOperationIsDone(false);
+            }
+            return outer;
+        });
+        return outer;
     }
 
     static CaltopoOp BgAddPhotoWaypoint(CaltopoOp apwOp,

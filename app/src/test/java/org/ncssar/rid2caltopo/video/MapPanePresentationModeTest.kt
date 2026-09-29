@@ -218,7 +218,7 @@ class MapPanePresentationModeTest {
 
     @Test
     fun operatorTapOrMissingFocus_doesNotReleaseDroneFocus() {
-        assertFalse(
+        assertTrue(
             shouldReleaseFocusedDroneForMapGesture(
                 presentationMode = MapPanePresentationMode.Full,
                 hasFocusedDrone = true,

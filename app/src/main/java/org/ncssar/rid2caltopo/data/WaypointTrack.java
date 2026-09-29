@@ -163,6 +163,7 @@ public class WaypointTrack {
     private DocumentFile dataFilepath;
     private String fileName;
     private final List<ArchivedClue> clues = new ArrayList<>();
+    private final String deferredPublicationId = java.util.UUID.randomUUID().toString();
     private boolean archivePrepared = false;
     private String archivedOwner = "";
     private String archivedFlightReadinessJson = "{}";
@@ -199,6 +200,18 @@ public class WaypointTrack {
 		}
 		track.addWaypoint(lat, lng, altitude, timestampInMillisec);
 	}
+
+    public static void CapturePublicationIntent(CtDroneSpec drone) {
+        for (WaypointTrack track : new ArrayList<>(TrackMap.values())) {
+            if (track.droneSpec.getRemoteId().equals(drone.getRemoteId())) track.recordPublicationIntent(false);
+        }
+    }
+
+    private void recordPublicationIntent(boolean finished) {
+        try {
+            AwaitingMapFlights.record(deferredPublicationId, droneSpec.getRemoteId(), trackLabel, coordinates, finished);
+        } catch (Exception error) { CTError(TAG, "Could not persist publication intent; local track recording continues", error); }
+    }
 
     @NonNull
     public static List<TrackPoint> GetTrackPointsSnapshot(@NonNull CtDroneSpec droneSpec) {
@@ -964,12 +977,16 @@ public class WaypointTrack {
         double last = coordinates.optJSONArray(coordinates.length() - 1).optDouble(3, Double.NaN);
         if (!ShortFlightRecording.request(archivedMappedId.isEmpty() ? archivedRemoteId : archivedMappedId,
                 (last - first) / 1000.0, archivedDistanceInFeet * 0.3048,
-                () -> GetTrackArchiveExecutorPool().submit(this::archiveRecorded))) {
+                () -> GetTrackArchiveExecutorPool().submit(this::archiveRecorded),
+                () -> AwaitingMapFlights.discard(deferredPublicationId))) {
             archiveRecorded();
         }
     }
 
     private void archiveRecorded() {
+        if (archivedFlightConfirmed && !archivedLocalOnly) {
+            recordPublicationIntent(true);
+        }
         long numCoords = coordinates.length();
         JSONObject joTop = getGeoJson();
         String geoJsonString = null;
@@ -1023,6 +1040,9 @@ public class WaypointTrack {
 		ja.put(String.format(Locale.US, "%d", timestampInMillisec));
 		coordinates.put(ja);
 		WaypointCount++;
+        if (droneSpec.isCurrentFlightConfirmed() && !droneSpec.isLocalArchiveOnly()) {
+            recordPublicationIntent(false);
+        }
 	}
 
     /** Associates a clue with this track for inclusion in the KMZ archive. */

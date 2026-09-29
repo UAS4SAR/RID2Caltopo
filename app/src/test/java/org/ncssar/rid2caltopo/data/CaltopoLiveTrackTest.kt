@@ -169,6 +169,42 @@ class CaltopoLiveTrackTest {
         assertEquals(0, gateway.countOperations("addLiveTrackPoint"))
     }
 
+    @Test fun mapShutdownPreservesPilotConsentAndPhysicalFlight() {
+        val drone = CtDroneSpec("RID-CONTINUING")
+        val label = "1SAR7m3_120000Apr28"
+        setDroneTrackLabel(drone, label)
+        drone.setOwner("1SAR7")
+        drone.setCurrentFlightConfirmed(true)
+        drone.setFlightReadinessJson("{\"pilot\":{\"callsign\":\"1SAR7\"}}")
+        val readiness = drone.flightReadinessJson
+        val track = CaltopoLiveTrack(drone, 39.1, -121.1, 500.0, 1_000L)
+        track.mapStatusUpdate(CaltopoMap.MapStatusListener.mapStatus.up, null, null)
+        forceLiveTrackId(track, "live-continuing")
+        track.shutdown(0)
+        assertEquals(label, drone.trackLabel())
+        org.junit.Assert.assertTrue(drone.isActive)
+        org.junit.Assert.assertTrue(drone.isCurrentFlightConfirmed)
+        assertEquals(readiness, drone.flightReadinessJson)
+        assertEquals("1SAR7", drone.owner)
+        track.mapStatusUpdate(CaltopoMap.MapStatusListener.mapStatus.connecting, null, null)
+        assertEquals(readiness, drone.flightReadinessJson)
+        // Genuine end must still notify confirmation cleanup after publication stopped.
+        var ended = 0
+        val listener = CaltopoLiveTrack.LocalTrackFinishedListener { remote, _, _ ->
+            if (remote == drone.remoteId) ended++
+        }
+        CaltopoLiveTrack.AddLocalTrackFinishedListener(listener)
+        try {
+            track.finishTrack("physical flight ended")
+            assertEquals(1, ended)
+        } finally { CaltopoLiveTrack.RemoveLocalTrackFinishedListener(listener) }
+        // The owner of the physical flight then clears its per-flight state.
+        drone.reset()
+        assertFalse(drone.isActive)
+        assertFalse(drone.isCurrentFlightConfirmed)
+        assertEquals("{}", drone.flightReadinessJson)
+    }
+
     @Test
     fun shutdownAfterOwnershipLoss_deletesOrphanedLiveTrack() {
         val drone = CtDroneSpec("RID-ORPHAN")

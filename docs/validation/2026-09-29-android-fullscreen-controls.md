@@ -1,0 +1,15 @@
+# Android full-screen camera controls — 2026-09-29
+
+Read-only A5 Pro evidence from /storage/4A21-0000/DroneTrax/tracks-29Sep2026/Log_29Sep2026-110649-PDT-0700.txt, copied to /tmp/r2c-android-fullscreen-clue.txt. Video double-tap started a clue at 11:18:56.936; camera-button capture started one at 11:19:54.230. No earlier camera-button invocation was logged. User confirms PiP was likely enabled, camera was clear of the inset, failed taps had no visible effect, and double-tap worked. Thus snapshot generation and clue presentation were operational; exact failed-tap coordinates and input cancellation are not recorded.
+
+Found the Android pan/zoom transform handler on the ancestor of all video controls. Moved it onto the video gesture surface (and the paused-video annotation surface), making camera, settings, telemetry, and centerpoint controls siblings rather than descendants of that gesture handler. This prevents the video transform recognizer from taking over button gestures. Camera placement is unchanged. Added full-screen state to capture-attempt logs and logs when full-screen/clue-panel visibility changes.
+
+Review: camera remains above the video tap surface; Exit FS/PiP/Bridge row has a reserved right margin for stream settings, so no geometry change was made. PiP and full-screen toggles retain current behavior. iOS already has a separate video input surface below the camera control; no counterpart edit required.
+
+Android Debug build, five clue-frame tests, and one stream resync test passed. This is a source-level input conflict fix, not a reproduced/confirmed explanation of the exact failed physical tap. No install or live-flight actions performed. Physical retest required: camera in full-screen with PiP on/off, double-tap, pinch/pan, settings, telemetry pairing, Exit FS, and Bridge return.
+
+Additional full-screen/PiP/control-layout suite: 29 tests passed (35 focused tests total). git diff --check passed.
+
+Installation follow-up: latest tested APK installed in place on A5 Pro R52Y90C9XST and launched successfully. Signing certificate matches the previously verified installed build. Package remains 2.3.7 (304), running process confirmed. No data reset; iPad unchanged. Physical camera retest pending.
+
+Second physical retest: gesture isolation did not fix the camera. New log /tmp/r2c-a5-camera-retest.txt (device Log_29Sep2026-112940-PDT-0700.txt) records full-screen entry at 11:35:33.558 and no camera action until 11:36:34.910 after the split pane was resized; the clue sheet then appeared while fullScreen remained true. Inspection found the collapsed divider's 96dp invisible restore target clamped entirely inside the right edge, overlapping the camera's old 62dp trailing inset and its center. Moved the entire Android camera outside that target with a 12dp gap (108dp inset); iOS uses its 88pt divider touch thickness plus 12pt gap (100pt inset). A geometry test covers collapsed landscape bounds at tablet/phone widths. Earlier gesture isolation was insufficient and is not considered physical proof.

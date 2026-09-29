@@ -7,6 +7,8 @@
 
 package org.ncssar.rid2caltopo.ui
 
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import StreamsViewModel
 import android.content.ActivityNotFoundException
 import android.content.Context
@@ -25,10 +27,16 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -54,6 +62,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -643,7 +652,7 @@ private fun openAppUpgradeLocation(context: Context, updateUrl: String) {
 }
 
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun MainScreen(
     localViewModel: R2CViewModel,
@@ -899,11 +908,9 @@ fun MainScreen(
         }
     )
 
-    var isPickerOpen by remember { mutableStateOf(false) }
     val loadConfigFileLauncher = rememberLauncherForActivityResult(
         contract = FreshOpenDocument(),
         onResult = { uri ->
-            isPickerOpen = false
             if (uri != null) {
                 CTDebug(tag, "loadConfigFileLauncher() returned '${uri}'")
                 try {
@@ -1349,7 +1356,12 @@ fun MainScreen(
         NotamPanel(
             state = notamUiState,
             airspaceState = airspaceUiState,
-            onDismiss = { showNotamPanel = false }
+            onDismiss = { showNotamPanel = false },
+            onShowOnMap = { notice ->
+                showNotamPanel = false
+                streamsViewModel.showNotamOnMap(notice)
+                localViewModel.showStreams()
+            }
         )
     }
     if (showLandRestrictionPanel) {
@@ -1509,15 +1521,6 @@ fun MainScreen(
             }
         )
     }
-    LaunchedEffect(localViewModel.overlay) {
-        if (localViewModel.overlay == OverlayState.RequestConfigFile && !isPickerOpen) {
-            CTDebug(tag, "LaunchedEffect(): requesting config file...")
-            isPickerOpen = true
-            loadConfigFileLauncher.launch(arrayOf("application/json", "text/plain", "application/octet-stream"))
-        }
-    }
-
-
     // Launcher for selecting an archive directory
     var archiveDirPickerOpen by rememberSaveable { mutableStateOf(false) }
     var pendingArchiveDirPromptMessage by rememberSaveable { mutableStateOf<String?>(null) }
@@ -1785,77 +1788,176 @@ fun MainScreen(
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
-            CenterAlignedTopAppBar(
-                modifier = Modifier.pageNavigationSwipe(toLiveView = true, enabled = !menuExpanded && !credentialMenuExpanded && !showNotamPanel && !showLandRestrictionPanel) { localViewModel.showStreams() }.pointerInput(localViewModel) {
-                    detectTapGestures(
-                        onDoubleTap = {
-                            localViewModel.showStreams()
-                        }
-                    )
-                },
-                title = {
-                    Box {
-                        TextButton(onClick = { credentialMenuExpanded = true }) {
-                            Column {
-                                Text("RID-2-Caltopo", style = MaterialTheme.typography.titleMedium)
-                                Text(
-                                    "Teams: ${selectedOperationalProfile?.credentialLabel ?: "None"}",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = if (
-                                        selectedOperationalProfile?.expiresAtEpochMs?.let {
-                                            it - System.currentTimeMillis() in 1..3_600_000L
-                                        } == true
-                                    ) MaterialTheme.colorScheme.tertiary
-                                    else MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+            Column {
+                OperatorMainHeader(
+                    title = {
+                        Box {
+                            TextButton(onClick = { credentialMenuExpanded = true }) {
+                                Column(modifier = Modifier.weight(1f, fill = false), horizontalAlignment = if (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 600 * androidx.compose.ui.platform.LocalDensity.current.fontScale) Alignment.CenterHorizontally else Alignment.Start) {
+                                    Text(
+                                        "RID-2-Caltopo",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        "Team: ${selectedOperationalProfile?.credentialLabel ?: "None"}",
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = if (
+                                            selectedOperationalProfile?.expiresAtEpochMs?.let {
+                                                it - System.currentTimeMillis() in 1..3_600_000L
+                                            } == true
+                                        ) MaterialTheme.colorScheme.tertiary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    OrganizationUserLabel(compactHeader = true)
+                                }
+                                Icon(Icons.Default.ArrowDropDown, contentDescription = "Select Teams credentials")
                             }
-                            Icon(Icons.Default.ArrowDropDown, contentDescription = "Select Teams credentials")
+                            DropdownMenu(
+                                expanded = credentialMenuExpanded,
+                                onDismissRequest = { credentialMenuExpanded = false }
+                            ) {
+                                operationalProfiles.forEach { profile ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Column {
+                                                Text(profile.credentialLabel)
+                                                Text(
+                                                    buildString {
+                                                        append(profile.description)
+                                                        if (profile.expiresAtEpochMs > 0L) {
+                                                            append(" • expires ")
+                                                            append(formatOperationalProfileExpiry(profile.expiresAtEpochMs))
+                                                        }
+                                                    },
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        },
+                                        trailingIcon = {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                if (profile.profileId == localViewModel.selectedOperationalProfileId) {
+                                                    Icon(Icons.Default.Check, contentDescription = "Selected")
+                                                }
+                                                if (profile.isMutualAid) {
+                                                    TextButton(onClick = {
+                                                        credentialMenuExpanded = false
+                                                        pendingProfileRemoval = profile
+                                                    }) { Text("Remove") }
+                                                }
+                                            }
+                                        },
+                                        onClick = {
+                                            credentialMenuExpanded = false
+                                            localViewModel.selectOperationalProfile(profile.profileId)
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    actions = {
+                        MainBridgeSignalIndicator(rssi = bridgeRssi, onClick = { localViewModel.showStreams() })
+                        Spacer(Modifier.width(16.dp))
+                        IconButton(onClick = { menuExpanded = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "More options")
                         }
                         DropdownMenu(
-                            expanded = credentialMenuExpanded,
-                            onDismissRequest = { credentialMenuExpanded = false }
+                            expanded = menuExpanded,
+                            onDismissRequest = { menuExpanded = false }
                         ) {
-                            operationalProfiles.forEach { profile ->
+                            DropdownMenuItem(text = { Text("Live View")}, onClick = {
+                                localViewModel.showStreams()
+                                CaltopoClient.CTEvent(tag,"Stream Service Activated", null)
+                                menuExpanded = false
+                            })
+                            DropdownMenuItem(text = { Text("Send diagnostics to developer...") }, onClick = {
+                                showLogArchiveDialog = true
+                                includeTracksInDiagnostics = false
+                                loadingLogArchiveDays = true
+                                logArchiveDays = emptyList()
+                                selectedLogArchiveDays = emptySet()
+                                menuExpanded = false
+                                coroutineScope.launch {
+                                    val loadedDays = availableLogArchiveDaysProvider()
+                                    logArchiveDays = loadedDays
+                                    selectedLogArchiveDays = loadedDays
+                                        .filter { it.isToday }
+                                        .mapTo(linkedSetOf()) { it.directoryName }
+                                        .ifEmpty { loadedDays.firstOrNull()?.let { linkedSetOf(it.directoryName) } ?: linkedSetOf() }
+                                    loadingLogArchiveDays = false
+                                }
+                            })
+                            if (externalDisplayConnected && onSetExternalDisplayContent != null && externalDisplayContentMode != null) {
                                 DropdownMenuItem(
-                                    text = {
-                                        Column {
-                                            Text(profile.credentialLabel)
-                                            Text(
-                                                buildString {
-                                                    append(profile.description)
-                                                    if (profile.expiresAtEpochMs > 0L) {
-                                                        append(" • expires ")
-                                                        append(formatOperationalProfileExpiry(profile.expiresAtEpochMs))
-                                                    }
-                                                },
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    },
-                                    trailingIcon = {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            if (profile.profileId == localViewModel.selectedOperationalProfileId) {
-                                                Icon(Icons.Default.Check, contentDescription = "Selected")
-                                            }
-                                            if (profile.isMutualAid) {
-                                                TextButton(onClick = {
-                                                    credentialMenuExpanded = false
-                                                    pendingProfileRemoval = profile
-                                                }) { Text("Remove") }
-                                            }
-                                        }
-                                    },
+                                    text = { Text("External: Streams View") },
                                     onClick = {
-                                        credentialMenuExpanded = false
-                                        localViewModel.selectOperationalProfile(profile.profileId)
+                                        onSetExternalDisplayContent(ExternalDisplayContentMode.StreamsGrid)
+                                        menuExpanded = false
                                     }
                                 )
                             }
+                            DropdownMenuItem(text = { Text("Status")}, onClick = {
+                                localViewModel.showScanner()
+                                CaltopoClient.CTEvent(tag,"ScannersDisplayed", null)
+                                menuExpanded = false
+                            })
+                            DropdownMenuItem(text = { Text("Release Notes") }, onClick = {
+                                releaseNoteEntries = loadReleaseNotes(context)
+                                showReleaseNotesDialog = true
+                                CaltopoClient.CTEvent(tag,"ReleaseNotesDisplayed", null)
+                                menuExpanded = false
+                            })
+                            DropdownMenuItem(
+                                text = { Text("Import Config") },
+                                onClick = {
+                                    menuExpanded = false
+                                    pendingImportToken = ""
+                                    showImportConfigDialog = true
+                                }
+                            )
+                            DropdownMenuItem(text = { Text("Manage Storage...") }, onClick = {
+                                showStorageManagement = true
+                                menuExpanded = false
+                            })
+                            DropdownMenuItem(text = { Text("Archive Storage...") }, onClick = {
+                                archiveDirPromptSuppressed = false
+                                archiveDirSelectionFailure = null
+                                forceArchiveDirPrompt = true
+                                menuExpanded = false
+                            })
+                            DropdownMenuItem(text = { Text("Settings") }, onClick = {
+                                localViewModel.showSettings()
+                                menuExpanded = false
+                            })
+                            DropdownMenuItem(text = { Text("Terms of Use") }, onClick = {
+                                showTermsDialog = true
+                                menuExpanded = false
+                            })
+                            DropdownMenuItem(text = { Text("About & Privacy") }, onClick = {
+                                showAboutPrivacyDialog = true
+                                CaltopoClient.CTEvent(tag,"AboutPrivacyDisplayed", null)
+                                menuExpanded = false
+                            })
+                            DropdownMenuItem(text = { Text("Quit") }, onClick = {
+                                menuExpanded = false
+                                onRequestExit()
+                            })
                         }
                     }
-                },
-                actions = {
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    ResumeProximityAlertButton(onSettings = { localViewModel.showSettings() })
+                    NotamStatusChip(state = notamUiState, airspaceState = airspaceUiState, onClick = { showNotamPanel = true }, outerPadding = PaddingValues(0.dp))
+                    LandRestrictionStatusChip(state = landRestrictionUiState, onClick = { showLandRestrictionPanel = true }, outerPadding = PaddingValues(0.dp))
                     val allOverLimitMuted = overLimitDrones.isNotEmpty() && overLimitDrones.all { it.muted }
                     val allSignalLossMuted = signalLossFlights.isNotEmpty() && signalLossFlights.all { it.muted }
                     ComplianceAlertBell(
@@ -1868,95 +1970,8 @@ fun MainScreen(
                         allMuted = allSignalLossMuted,
                         onClick = { showSignalLossPanel = true }
                     )
-                    ResumeProximityAlertButton(onSettings = { localViewModel.showSettings() })
-                    MainBridgeSignalIndicator(rssi = bridgeRssi)
-                    IconButton(onClick = { menuExpanded = true }) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "More options")
-                    }
-                    DropdownMenu(
-                        expanded = menuExpanded,
-                        onDismissRequest = { menuExpanded = false }
-                    ) {
-                        DropdownMenuItem(text = { Text("Live View")}, onClick = {
-                            localViewModel.showStreams()
-                            CaltopoClient.CTEvent(tag,"Stream Service Activated", null)
-                            menuExpanded = false
-                        })
-                        DropdownMenuItem(text = { Text("Send diagnostics to developer...") }, onClick = {
-                            showLogArchiveDialog = true
-                            includeTracksInDiagnostics = false
-                            loadingLogArchiveDays = true
-                            logArchiveDays = emptyList()
-                            selectedLogArchiveDays = emptySet()
-                            menuExpanded = false
-                            coroutineScope.launch {
-                                val loadedDays = availableLogArchiveDaysProvider()
-                                logArchiveDays = loadedDays
-                                selectedLogArchiveDays = loadedDays
-                                    .filter { it.isToday }
-                                    .mapTo(linkedSetOf()) { it.directoryName }
-                                    .ifEmpty { loadedDays.firstOrNull()?.let { linkedSetOf(it.directoryName) } ?: linkedSetOf() }
-                                loadingLogArchiveDays = false
-                            }
-                        })
-                        if (externalDisplayConnected && onSetExternalDisplayContent != null && externalDisplayContentMode != null) {
-                            DropdownMenuItem(
-                                text = { Text("External: Streams View") },
-                                onClick = {
-                                    onSetExternalDisplayContent(ExternalDisplayContentMode.StreamsGrid)
-                                    menuExpanded = false
-                                }
-                            )
-                        }
-                        DropdownMenuItem(text = { Text("Status")}, onClick = {
-                            localViewModel.showScanner()
-                            CaltopoClient.CTEvent(tag,"ScannersDisplayed", null)
-                            menuExpanded = false
-                        })
-                        DropdownMenuItem(text = { Text("Release Notes") }, onClick = {
-                            releaseNoteEntries = loadReleaseNotes(context)
-                            showReleaseNotesDialog = true
-                            CaltopoClient.CTEvent(tag,"ReleaseNotesDisplayed", null)
-                            menuExpanded = false
-                        })
-                        DropdownMenuItem(
-                            text = { Text("Import Config") },
-                            onClick = {
-                                menuExpanded = false
-                                pendingImportToken = ""
-                                showImportConfigDialog = true
-                            }
-                        )
-                        DropdownMenuItem(text = { Text("Manage Storage...") }, onClick = {
-                            showStorageManagement = true
-                            menuExpanded = false
-                        })
-                        DropdownMenuItem(text = { Text("Archive Storage...") }, onClick = {
-                            archiveDirPromptSuppressed = false
-                            archiveDirSelectionFailure = null
-                            forceArchiveDirPrompt = true
-                            menuExpanded = false
-                        })
-                        DropdownMenuItem(text = { Text("Settings") }, onClick = {
-                            localViewModel.showSettings()
-                            menuExpanded = false
-                        })
-                        DropdownMenuItem(text = { Text("Terms of Use") }, onClick = {
-                            showTermsDialog = true
-                            menuExpanded = false
-                        })
-                        DropdownMenuItem(text = { Text("About & Privacy") }, onClick = {
-                            showAboutPrivacyDialog = true
-                            CaltopoClient.CTEvent(tag,"AboutPrivacyDisplayed", null)
-                            menuExpanded = false
-                        })
-                        DropdownMenuItem(text = { Text("Quit") }, onClick = {
-                            menuExpanded = false
-                            onRequestExit()
-                        })
-                    }
                 }
-            )
+            }
         }
     ) { paddingValues ->
         // 3. Use a single LazyColumn with the robust `items` DSL and a stable key.
@@ -1964,20 +1979,6 @@ fun MainScreen(
             modifier = Modifier.horizontalScroll(mainHorizontalScrollState)
         ) {
             LazyColumn(modifier = Modifier.padding(paddingValues)) {
-                item(key = "notam_chip") {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        NotamStatusChip(
-                            state = notamUiState,
-                            airspaceState = airspaceUiState,
-                            onClick = { showNotamPanel = true }
-                        )
-                        LandRestrictionStatusChip(
-                            state = landRestrictionUiState,
-                            onClick = { showLandRestrictionPanel = true }
-                        )
-                        OrganizationUserLabel()
-                    }
-                }
                 itemsIndexed(
                     items = screenItems,
                     key = { _, item ->
@@ -2749,9 +2750,10 @@ fun MainScreen(
 }
 
 @Composable
-private fun MainBridgeSignalIndicator(rssi: Int?) {
+private fun MainBridgeSignalIndicator(rssi: Int?, onClick: () -> Unit) {
     AssistChip(
-        onClick = DroneScoutBridgeMonitor::toggleAudioMuted,
+        onClick = onClick,
+        modifier = Modifier.semantics { contentDescription = "Bridge ${rssi ?: "not detected"}; show Live View" },
         label = {
             Row(
                 verticalAlignment = Alignment.CenterVertically,

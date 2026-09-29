@@ -32,6 +32,13 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
     public var lastUploadError: String?
     public var caltopoMarkerID: String?
     public let caltopoMediaID: UUID
+    // Optional for compatibility with older indexes. Missing destinations require review.
+    public var destinationMapID: String?
+    public var destinationTeamID: String?
+
+    public func canAutomaticallyPublish(mapID: String, teamID: String) -> Bool {
+        !mapID.isEmpty && !teamID.isEmpty && destinationMapID == mapID && destinationTeamID == teamID
+    }
 
     public init(
         id: UUID = UUID(),
@@ -56,7 +63,9 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
         uploadAttempts: Int = 0,
         lastUploadError: String? = nil,
         caltopoMarkerID: String? = nil,
-        caltopoMediaID: UUID = UUID()
+        caltopoMediaID: UUID = UUID(),
+        destinationMapID: String? = nil,
+        destinationTeamID: String? = nil
     ) {
         self.id = id
         self.capturedAt = capturedAt
@@ -81,6 +90,8 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
         self.lastUploadError = lastUploadError
         self.caltopoMarkerID = caltopoMarkerID
         self.caltopoMediaID = caltopoMediaID
+        self.destinationMapID = destinationMapID
+        self.destinationTeamID = destinationTeamID
     }
 }
 

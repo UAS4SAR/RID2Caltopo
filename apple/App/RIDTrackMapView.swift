@@ -19,6 +19,7 @@ private struct ArtifactInspection: Identifiable {
     let id = UUID()
     let title: String
     let description: String?
+    var notice: OperationalNotam? = nil
 }
 
 private struct ClueSelectionCandidates: Identifiable {
@@ -105,7 +106,10 @@ struct AppleOperationalStatusChipLabel: View {
 }
 
 @MainActor
-private final class AppleMapViewportMemory: ObservableObject {
+final class AppleMapViewportMemory: ObservableObject {
+    // Owned by ContentView so navigation cannot discard the operator's view.
+    @Published var operatorAdjustedViewport = false
+    var hasCenteredOnLocation = false
     var region = unresolvedAppleMapRegion
     var visibleMapRect: MKMapRect?
     var hasOperationalViewport = false
@@ -547,21 +551,27 @@ struct RIDTrackMapView: View {
 
     @ObservedObject var model: RIDTrackViewModel
     @ObservedObject var locationProvider: AppleLocationProvider
-    let caltopoConfiguration: AppleCaltopoConfiguration
+    @ObservedObject var caltopoSettings: AppleCaltopoSettings
+
+    // Observe the shared settings so retained navigation destinations stay current.
+    private var caltopoConfiguration: AppleCaltopoConfiguration {
+        caltopoSettings.configuration
+    }
     @ObservedObject var streamRegistry: AppleStreamRegistry
     @ObservedObject var videoModel: AppleVideoFrameSource
     @ObservedObject var clueStore: AppleClueStore
     @ObservedObject var identityStore: AppleDroneConfirmationStore
     @ObservedObject var orgSettings: AppleOrgConfigSettings
     @ObservedObject var notams: AppleNotamCenter
+    @ObservedObject var proximityAlerts: AppleProximityAlertCenter
     @ObservedObject var peerCoordinator: AppleTrackerCoordinator
     @ObservedObject private var airspace = AppleAirspaceCenter.shared
     @ObservedObject private var landRestrictions = AppleLandRestrictionCenter.shared
     let streamURL: URL?
-    let ingestAddress: String
-    let networkSSID: String
     let bridgeSignalStrengthDbm: Int?
     @Binding var automaticStreamPairingAircraftID: String?
+    @Environment(\.dismiss) private var dismissLiveView
+    let onReturnToMain: () -> Void
     let onMapStatusTap: () -> Void
     let onSwitchMap: () -> Void
     let onDisconnectMap: () -> Void
@@ -570,7 +580,7 @@ struct RIDTrackMapView: View {
     @StateObject private var artifacts = AppleMapArtifactModel()
     @StateObject private var pilotDisplay = ApplePilotDisplayStore()
     @ObservedObject private var offlineMaps = AppleMapOfflineManager.shared
-    @StateObject private var viewportMemory = AppleMapViewportMemory()
+    @ObservedObject var viewportMemory: AppleMapViewportMemory
     @AppStorage("map.baseLayer") private var storedBaseLayer = OperationalMapBaseLayer.openStreetMap.rawValue
     // Match Android's session-scoped StreamsLayoutMode: every app process starts
     // in Split, while changes remain local to the current Live View session.
@@ -590,7 +600,10 @@ struct RIDTrackMapView: View {
     @State private var mapTileNotice: String?
     @State private var selectedPilotSettings: PilotDisplaySelection?
     @State private var focusedAircraftID: String?
-    @State private var operatorAdjustedViewport = false
+    private var operatorAdjustedViewport: Bool {
+        get { viewportMemory.operatorAdjustedViewport }
+        nonmutating set { viewportMemory.operatorAdjustedViewport = newValue }
+    }
     @State private var streamFocusArrival = OperationalStreamFocusArrival()
     @State private var pendingSnapshot: PendingClueSnapshot?
     @State private var selectedClueID: UUID?
@@ -626,6 +639,8 @@ struct RIDTrackMapView: View {
         nonmutating set { storedLayout = newValue.rawValue }
     }
 
+    @State private var headerWidth: CGFloat = 0
+
     private var mapContentWithSheets: some View {
         GeometryReader { geometry in
             ZStack(alignment: .top) {
@@ -649,12 +664,14 @@ struct RIDTrackMapView: View {
                                 ? "Turn picture in picture off"
                                 : "Turn picture in picture on"
                         )
-                        BridgeSignalIndicator(rssi: bridgeSignalStrengthDbm)
+                        bridgeNavigationButton
                     }
                     .buttonStyle(.borderedProminent)
                     .padding(10)
                 }
             }
+            .onAppear { headerWidth = geometry.size.width }
+            .onChange(of: geometry.size.width) { _, width in headerWidth = width }
         }
         .safeAreaInset(edge: .top) {
             if !streamsFullScreen {
@@ -666,7 +683,7 @@ struct RIDTrackMapView: View {
                 remoteVideoStatusBar
             }
         }
-        .navigationTitle("Live View")
+        .navigationTitle(headerWidth >= 600 ? "Live View" : "")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(streamsFullScreen ? .hidden : .visible, for: .navigationBar)
         .toolbar { mapToolbar }
@@ -693,13 +710,7 @@ struct RIDTrackMapView: View {
         .sheet(isPresented: $showMapManagement) {
             AppleMapCacheManagementView(
                 manager: offlineMaps,
-                followFocusedDrone: Binding(
-                    get: { followFocusedDrone },
-                    set: { enabled in
-                        followFocusedDrone = enabled
-                        if enabled { operatorAdjustedViewport = false }
-                    }
-                ),
+                followFocusedDrone: followFocusedDroneBinding(),
                 canReloadMap: caltopoConfiguration.liveConfiguration != nil,
                 mapReloadInFlight: artifacts.isRefreshing,
                 mapReloadStatus: artifacts.status,
@@ -731,7 +742,15 @@ struct RIDTrackMapView: View {
             Text(mapTileNotice ?? "")
         }
         .alert(item: $selectedArtifactInspection) { artifact in
-            Alert(
+            if let notice = artifact.notice, !notice.mapCoordinates.isEmpty {
+                return Alert(
+                    title: Text("NOTAM Detail"),
+                    message: Text(notice.title + "\n\n" + notice.details),
+                    primaryButton: .default(Text("Show on map")) { notams.showOnMap(notice) },
+                    secondaryButton: .cancel(Text("Close"))
+                )
+            }
+            return Alert(
                 title: Text(artifact.title),
                 message: Text(artifact.description ?? "No description is available for this map item."),
                 dismissButton: .default(Text("Close"))
@@ -802,7 +821,7 @@ struct RIDTrackMapView: View {
                 selection: selection,
                 track: model.tracks.first { $0.aircraftID == selection.remoteID },
                 altitudeDisplay: model.altitudeDisplayByAircraftID[selection.remoteID],
-                followFocusedDrone: $followFocusedDrone,
+                followFocusedDrone: followFocusedDroneBinding(aircraftID: selection.remoteID),
                 onCalibrateAltitude: { model.manualCalibrateAltitude(remoteID: selection.remoteID) },
                 store: pilotDisplay
             )
@@ -845,6 +864,13 @@ struct RIDTrackMapView: View {
 
     var body: some View {
         mapContentWithSheets
+        .onChange(of: notams.mapFocusRequest?.id, initial: true) { _, id in
+            guard id != nil else { return }
+            focusedAircraftID = nil
+            operatorAdjustedViewport = true
+            streamsFullScreen = false
+            layout = .map
+        }
         .onChange(of: liveFocusStreamIDs, initial: true) { _, streams in
             handleFocusStreamArrival(streams)
         }
@@ -928,7 +954,9 @@ struct RIDTrackMapView: View {
             if offlineMaps.isRunning {
                 showOfflinePreparation = true
             }
-            if ProcessInfo.processInfo.arguments.contains("--show-anomaly")
+            if notams.mapFocusRequest != nil {
+                layout = .map
+            } else if ProcessInfo.processInfo.arguments.contains("--show-anomaly")
                 || ProcessInfo.processInfo.arguments.contains("--show-streams") {
                 layout = .video
             } else {
@@ -1274,7 +1302,9 @@ struct RIDTrackMapView: View {
                 focusedAircraftID: focusedAircraftID,
                 followFocusedDrone: followFocusedDrone,
                 artifactZoomRequest: artifacts.zoomRequest,
-                operatorAdjustedViewport: $operatorAdjustedViewport,
+                notamZoomRequest: notams.mapFocusRequest,
+                onNotamZoomConsumed: { notams.consumeMapFocus($0) },
+                operatorAdjustedViewport: $viewportMemory.operatorAdjustedViewport,
                 onSelectClue: { clueIDs in
                     let available = clueIDs.filter { clueID in
                         clueStore.records.contains { $0.id == clueID }
@@ -1285,9 +1315,9 @@ struct RIDTrackMapView: View {
                         clueSelectionCandidates = ClueSelectionCandidates(clueIDs: available)
                     }
                 },
-                onSelectArtifact: { title, description in
+                onSelectArtifact: { title, description, notice in
                     guard !inset else { return }
-                    selectedArtifactInspection = ArtifactInspection(title: title, description: description)
+                    selectedArtifactInspection = ArtifactInspection(title: title, description: description, notice: notice)
                 },
                 onSelectAircraft: { remoteID in
                     let inspect = OperationalMapFocusPolicy.shouldInspectAircraft(
@@ -1450,7 +1480,6 @@ struct RIDTrackMapView: View {
             Color.black
             AppleStreamsGridView(
                 registry: streamRegistry,
-                ingestAddress: ingestAddress,
                 showsSetupHeader: false,
                 showsNavigationTitle: false,
                 expandedSessionID: expandedStreamID,
@@ -1509,7 +1538,7 @@ struct RIDTrackMapView: View {
                     .disabled(capturingSnapshot || model.tracks.isEmpty || videoModel.frameCount == 0)
                     .accessibilityLabel("Capture clue snapshot")
                     // Keep the camera control clear of the enlarged divider grab area.
-                    .padding(.trailing, 56)
+                    .padding(.trailing, Self.splitDividerTouchThickness + 12)
                 }
                 Spacer()
             }
@@ -1570,7 +1599,22 @@ struct RIDTrackMapView: View {
         return Set(sessions.map(\.id))
     }
 
+    // Every Follow control must resume the manual-viewport gate consistently.
+    private func followFocusedDroneBinding(aircraftID: String? = nil) -> Binding<Bool> {
+        Binding(
+            get: { followFocusedDrone },
+            set: { enabled in
+                followFocusedDrone = enabled
+                guard enabled else { return }
+                operatorAdjustedViewport = false
+                if let aircraftID { focusedAircraftID = aircraftID }
+                AppleLog.info("MapFocus", "Operator enabled follow aircraft=\(focusedAircraftID ?? "automatic")")
+            }
+        )
+    }
+
     private func handleFocusStreamArrival(_ streams: Set<String>) {
+        guard notams.mapFocusRequest == nil, !operatorAdjustedViewport else { return }
         if streamFocusArrival.observe(liveStreamIDs: streams, followEnabled: followFocusedDrone,
                                       hasFocus: focusedAircraftID != nil) {
             operatorAdjustedViewport = false
@@ -1579,6 +1623,7 @@ struct RIDTrackMapView: View {
     }
 
     private func handleInitialStreamFocus(_ state: OperationalInitialStreamFocusState) {
+        guard notams.mapFocusRequest == nil else { return }
         let streams = state.liveStreamAircraftIDs.map { $0 ?? "unresolved" }.joined(separator: ",")
         let focus = state.focusedAircraftID ?? "none"
         AppleLog.info("MapFocus", "Automatic focus evaluation follow=\(state.followEnabled) adjusted=\(state.operatorAdjustedViewport) focused=\(focus) streams=\(streams)")
@@ -1820,6 +1865,33 @@ struct RIDTrackMapView: View {
                         points: captureTrack.points
                     )
                 )
+                var reportTelemetry = OperationalClueReportTelemetry(
+                    observation: ridCaptureObservation,
+                    aglMeters: captureAltitudeDisplay?.aglFeet.map { $0 * 0.3048 },
+                    atoMeters: captureAltitudeDisplay?.atoFeet.map { $0 * 0.3048 }
+                )
+                reportTelemetry.headingDegrees = ridCaptureObservation.headingDegrees
+                    ?? OperationalMapGeometry.travelBearingDegrees(points: captureTrack.points)
+                if let frameTelemetry {
+                    reportTelemetry.rawTiltDegrees = frameTelemetry.rawTiltDegrees
+                    reportTelemetry.calibratedTiltDegrees = frameTelemetry.tiltDegrees
+                    reportTelemetry.rawAzimuthDegrees = frameTelemetry.rawAzimuthCandidateDegrees
+                    reportTelemetry.horizontalFovDegrees = frameTelemetry.horizontalFovDegrees
+                    reportTelemetry.verticalFovDegrees = frameTelemetry.verticalFovDegrees
+                    reportTelemetry.source = "dji-sei-245"
+                    // Same decoded DJI source confidence used by Android's report.
+                    reportTelemetry.confidence = 0.95
+                    reportTelemetry.timestampMicroseconds = frameTelemetry.sourceTimestampMicroseconds
+                }
+                if let completeSEITelemetry {
+                    reportTelemetry.magneticDeclinationDegrees = completeSEITelemetry.magneticDeclinationDegrees
+                    reportTelemetry.seiLatitude = completeSEITelemetry.latitudeDegrees
+                    reportTelemetry.seiLongitude = completeSEITelemetry.longitudeDegrees
+                    reportTelemetry.relativeUpMeters = completeSEITelemetry.relativeUpMeters
+                    reportTelemetry.referenceLatitude = completeSEITelemetry.referenceLatitudeDegrees
+                    reportTelemetry.referenceLongitude = completeSEITelemetry.referenceLongitudeDegrees
+                    reportTelemetry.referenceAltitudeMeters = completeSEITelemetry.referenceAltitudeMeters
+                }
                 pendingSnapshot = PendingClueSnapshot(
                     snapshot: snapshot,
                     defaultAircraftID: defaultAircraftID,
@@ -1830,7 +1902,8 @@ struct RIDTrackMapView: View {
                     observation: captureObservation,
                     altitudeDisplay: captureAltitudeDisplay,
                     heading: captureHeading,
-                    djiCameraTelemetry: completeSEITelemetry
+                    djiCameraTelemetry: completeSEITelemetry,
+                    reportTelemetry: reportTelemetry
                 )
             } catch {
                 clueError = error.localizedDescription
@@ -1932,6 +2005,7 @@ struct RIDTrackMapView: View {
     private var androidLiveViewStatusBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
+                AppleProximityStatusChip(center: proximityAlerts)
                 if airspace.enabled || notams.state.visible {
                     operationalStatusChip(
                         conciseAirspaceOrNotamChipLabel,
@@ -1952,7 +2026,6 @@ struct RIDTrackMapView: View {
                         showLandRestrictions = true
                     }
                 }
-                AppleControllerConnectionURLs()
                 Button(action: openLiveViewMapActions) {
                     AppleOperationalStatusChipLabel(
                         title: liveViewMapTitle,
@@ -1964,9 +2037,7 @@ struct RIDTrackMapView: View {
                 .contentShape(Rectangle())
                 .accessibilityLabel("Incident map")
                 .accessibilityValue(liveViewMapTitle)
-                Text("on \(networkSSID)")
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                AppleLiveViewNetworkStatus()
                 Label("\(model.tracks.count) active", systemImage: "airplane.circle")
                 Text("\(model.acceptedObservationCount) points")
             }
@@ -2053,15 +2124,29 @@ struct RIDTrackMapView: View {
     private var mapToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
             if !streamsFullScreen {
-                Button("Enter FS") { streamsFullScreen = true }
+                Button("Enter FS") { streamsFullScreen = true }.font(.caption)
                 Button(videoPipEnabled ? "PiP:On" : "PiP:Off") {
                     videoPipEnabled.toggle()
                     if !videoPipEnabled { pipEditorMode = false }
                     applyPipPreference()
                 }
-                BridgeSignalIndicator(rssi: bridgeSignalStrengthDbm)
+                .font(.caption)
+                bridgeNavigationButton
+                    .fixedSize(horizontal: true, vertical: false)
             }
         }
+    }
+
+    private var bridgeNavigationButton: some View {
+        Button {
+            dismissLiveView()
+            onReturnToMain()
+        } label: {
+            BridgeSignalIndicator(rssi: bridgeSignalStrengthDbm)
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Show Main Screen")
+        .accessibilityIdentifier("bridge-show-main-screen")
     }
 
     private func applyPipPreference() {
@@ -2090,6 +2175,8 @@ struct BridgeSignalIndicator: View {
         .padding(.horizontal, 7)
         .padding(.vertical, 5)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Bridge signal strength")
         .accessibilityValue(rssi.map { "\($0) decibels milliwatt" } ?? "not detected")
@@ -2294,6 +2381,7 @@ private struct PendingClueSnapshot: Identifiable {
     let altitudeDisplay: OperationalAircraftAltitudeDisplay?
     let heading: OperationalClueHeadingSelection
     let djiCameraTelemetry: AppleDJICameraTelemetry?
+    let reportTelemetry: OperationalClueReportTelemetry
 
     init(
         snapshot: AppleVideoSnapshot,
@@ -2303,7 +2391,8 @@ private struct PendingClueSnapshot: Identifiable {
         observation: RidObservation,
         altitudeDisplay: OperationalAircraftAltitudeDisplay?,
         heading: OperationalClueHeadingSelection,
-        djiCameraTelemetry: AppleDJICameraTelemetry? = nil
+        djiCameraTelemetry: AppleDJICameraTelemetry? = nil,
+        reportTelemetry: OperationalClueReportTelemetry? = nil
     ) {
         self.snapshot = snapshot
         self.defaultAircraftID = defaultAircraftID
@@ -2313,6 +2402,11 @@ private struct PendingClueSnapshot: Identifiable {
         self.altitudeDisplay = altitudeDisplay
         self.heading = heading
         self.djiCameraTelemetry = djiCameraTelemetry
+        self.reportTelemetry = reportTelemetry ?? OperationalClueReportTelemetry(
+            observation: observation,
+            aglMeters: altitudeDisplay?.aglFeet.map { $0 * 0.3048 },
+            atoMeters: altitudeDisplay?.atoFeet.map { $0 * 0.3048 }
+        )
     }
 }
 
@@ -2640,32 +2734,20 @@ private struct ClueSubmissionView: View {
             return
         }
         submissionFeedback = nil
-        let clueAltitude = projection.altitudeMeters.map { String(format: "%.0f'", $0 * 3.28084) } ?? "N/A"
-        let primaryPosition = OperationalCoordinateFormatter.format(
-            latitude: projection.latitude,
-            longitude: projection.longitude,
-            as: coordinateDisplayFormat
-        ).replacingOccurrences(of: "loc:", with: "")
-        var summaryLines = [
-            "Projected clue location:",
-            "  Position (\(coordinateDisplayFormat.label)): \(primaryPosition) alt \(clueAltitude)"
-        ]
-        if coordinateDisplayFormat != .decimal {
-            summaryLines.append(String(format: "  Decimal: %.6f, %.6f", projection.latitude, projection.longitude))
-        }
-        summaryLines += [
-            "  Camera Azimuth: \(headingMeasurement(heading.degrees))",
-            "  Heading source: \(heading.sourceLabel ?? "N/A")",
-            "  Gimbal angle at capture: \(String(format: "%.1f°", gimbalAngle))",
-            "  AGL: \(display?.aglLabel ?? "Unk")",
-            "  Projection height: \(measurement(projectionHeight.meters * 3.28084, suffix: " ft")) (\(projectionHeight.sourceLabel))",
-            clueDemSummary(projection),
-            "  ATO: \(display?.atoLabel ?? "Unk")",
-            "  Distance to clue: \(measurement(clueDistanceFeet, suffix: " ft"))"
-        ]
-        let summary = summaryLines.joined(separator: "\n")
-        let trimmedDescription = description.trimmingCharacters(in: .whitespacesAndNewlines)
-        let finalDescription = trimmedDescription.isEmpty ? summary : trimmedDescription + "\n\n" + summary
+        let reportTelemetry = usesCaptureTelemetry ? pending.reportTelemetry : OperationalClueReportTelemetry(
+            observation: observation, aglMeters: aglMeters, atoMeters: atoMeters
+        )
+        let finalDescription = OperationalClueDescription.build(
+            description: description, designator: designator,
+            projection: projection, format: coordinateDisplayFormat,
+            heading: heading, gimbalAngleDegrees: gimbalAngle,
+            aglMeters: aglMeters, atoMeters: atoMeters,
+            projectionHeight: projectionHeight,
+            aircraftPositionSource: usesCaptureTelemetry && pending.djiCameraTelemetry != nil
+                ? "DJI SEI local displacement" : (observation.source == .djiVideo ? "stream" : "RID"),
+            distanceMeters: clueDistanceFeet.map { $0 * 0.3048 },
+            telemetry: publish ? reportTelemetry : nil
+        )
         onSubmit(AppleClueDraft(
             capturedAt: pending.snapshot.capturedAt,
             aircraftID: selectedAircraftID,
@@ -2704,28 +2786,6 @@ private struct ClueSubmissionView: View {
               resolution.isFinite, resolution > 0
         else { return "DEM terrain projection applied" }
         return String(format: "DEM terrain projection applied (%.0f m grid)", resolution)
-    }
-
-    private func clueDemSummary(_ projection: OperationalClueProjection) -> String {
-        guard projection.terrainProjectionApplied else {
-            return "  DEM used: none (flat-ground estimate)"
-        }
-        let sourceLabel: String
-        if projection.demSource?.hasPrefix("usgs-geotiff-local-") == true {
-            sourceLabel = "local USGS GeoTIFF"
-        } else if projection.demSource == "usgs-epqs" || projection.demSource == nil {
-            sourceLabel = "USGS elevation service"
-        } else {
-            sourceLabel = projection.demSource ?? "USGS elevation data"
-        }
-        let resolutionLabel: String
-        if let resolution = projection.demResolutionMeters,
-           resolution.isFinite, resolution > 0 {
-            resolutionLabel = String(format: " (%.0f m grid)", resolution)
-        } else {
-            resolutionLabel = " (resolution not reported)"
-        }
-        return "  DEM used: \(sourceLabel)\(resolutionLabel)\(projection.demSampleStale ? ", cached" : "")"
     }
 
     private func headingMeasurement(_ value: Double?) -> String {
@@ -3102,6 +3162,7 @@ private struct AircraftMapRenderState: Equatable {
     let predictiveHeadEnabled: Bool
     let focusedAircraftID: String?
     let followFocusedDrone: Bool
+    let operatorAdjustedViewport: Bool
     let centerLatitude: Double
     let centerLongitude: Double
     let latitudeDelta: Double
@@ -3291,9 +3352,11 @@ private struct OperationalMKMapView: UIViewRepresentable {
     let focusedAircraftID: String?
     let followFocusedDrone: Bool
     let artifactZoomRequest: ArtifactZoomRequest?
+    let notamZoomRequest: AppleNotamMapFocusRequest?
+    let onNotamZoomConsumed: (UUID) -> Void
     @Binding var operatorAdjustedViewport: Bool
     let onSelectClue: ([UUID]) -> Void
-    let onSelectArtifact: (String, String?) -> Void
+    let onSelectArtifact: (String, String?, OperationalNotam?) -> Void
     let onSelectAircraft: (String) -> Void
     let onOperatorViewportGesture: () -> Void
     let onLongPressTile: (Int, Int, Int) -> Void
@@ -3412,14 +3475,10 @@ private struct OperationalMKMapView: UIViewRepresentable {
             allowed: !operatorAdjustedViewport
                 && focusedAircraftID == nil
         )
-        let shouldFollowOperator = operatorCoordinate != nil && !inset && !followFocusedDrone && !operatorAdjustedViewport
-        if shouldFollowOperator {
-            if let operatorCoordinate {
-                context.coordinator.setCenterAndPersist(operatorCoordinate, on: map)
-            }
-        } else if map.userTrackingMode != .none {
+        if map.userTrackingMode != .none {
             map.setUserTrackingMode(.none, animated: false)
         }
+
         context.coordinator.updateTiles(
             on: map,
             baseLayer: baseLayer,
@@ -3447,6 +3506,10 @@ private struct OperationalMKMapView: UIViewRepresentable {
         if let artifactZoomRequest {
             context.coordinator.zoomToArtifact(artifactZoomRequest, on: map)
         }
+        if !inset, let request = notamZoomRequest, map.bounds.width > 0, map.bounds.height > 0 {
+            context.coordinator.zoomToNotam(request, on: map)
+            DispatchQueue.main.async { onNotamZoomConsumed(request.id) }
+        }
     }
 
     final class Coordinator: NSObject, MKMapViewDelegate, UIGestureRecognizerDelegate {
@@ -3461,6 +3524,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
         private var operatorCircle: MKCircle?
         private var operatorAnnotation: OperatorDeviceAnnotation?
         private var lastArtifactZoomRequestID: UUID?
+        private var lastNotamZoomRequestID: UUID?
         private enum InitialViewportSource {
             case none
             case fallbackOperationalData
@@ -3472,12 +3536,11 @@ private struct OperationalMKMapView: UIViewRepresentable {
         private var currentInset = false
         private var lastCenteredFocusedAircraftID: String?
         private var currentFocusedAircraftID: String?
-        private var viewportGestureIncludesZoom = false
         private let pendingVisibleMapRect: MKMapRect?
         private var restoredViewportBounds = false
         private var regionChangeWasUserGesture = false
         var onSelectClue: ([UUID]) -> Void
-        var onSelectArtifact: (String, String?) -> Void
+        var onSelectArtifact: (String, String?, OperationalNotam?) -> Void
         var onSelectAircraft: (String) -> Void
         var onOperatorViewportGesture: () -> Void
         var onLongPressTile: (Int, Int, Int) -> Void
@@ -3487,7 +3550,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
             viewportMemory: AppleMapViewportMemory,
             operatorAdjustedViewport: Binding<Bool>,
             onSelectClue: @escaping ([UUID]) -> Void,
-            onSelectArtifact: @escaping (String, String?) -> Void,
+            onSelectArtifact: @escaping (String, String?, OperationalNotam?) -> Void,
             onSelectAircraft: @escaping (String) -> Void,
             onOperatorViewportGesture: @escaping () -> Void,
             onLongPressTile: @escaping (Int, Int, Int) -> Void
@@ -3623,12 +3686,11 @@ private struct OperationalMKMapView: UIViewRepresentable {
             // startup center. If Remote ID or CalTopo coordinates arrive first,
             // they may supply a temporary fallback, but a later location fix
             // gets one chance to replace it. A user gesture, focused drone, or
-            // preserved full/PiP transition prevents this startup correction at
-            // the call site or through the preserved source state.
+            // previous location center prevents repeating this startup correction.
             if let operatorCoordinate,
                CLLocationCoordinate2DIsValid(operatorCoordinate),
-               initialViewportSource != .operatorLocation,
-               initialViewportSource != .preservedTransition {
+               !viewportMemory.hasCenteredOnLocation {
+                viewportMemory.hasCenteredOnLocation = true
                 initialViewportSource = .operatorLocation
                 let region = MKCoordinateRegion(
                     center: operatorCoordinate,
@@ -3761,6 +3823,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 predictiveHeadEnabled: predictiveHeadEnabled,
                 focusedAircraftID: focusedAircraftID,
                 followFocusedDrone: followFocusedDrone,
+                operatorAdjustedViewport: operatorAdjustedViewport,
                 centerLatitude: region.center.latitude,
                 centerLongitude: region.center.longitude,
                 latitudeDelta: region.span.latitudeDelta,
@@ -3926,6 +3989,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 map.removeAnnotation(annotation)
             }
             if followFocusedDrone,
+               !operatorAdjustedViewport,
                let focusedAircraftID,
                let coordinate = renderCoordinates[focusedAircraftID] {
                 if !hasActiveViewportGesture(in: map) {
@@ -4052,13 +4116,13 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 case let .line(values):
                     let coordinates = values.map(\.clCoordinate)
                     if coordinates.count >= 2 {
-                        map.addOverlay(StyledPolyline(coordinates: coordinates, count: coordinates.count, color: style.0, width: 5), level: .aboveLabels)
+                        map.addOverlay(StyledPolyline(coordinates: coordinates, count: coordinates.count, color: style.0, width: 5, artifactTitle: notice.title, artifactDescription: notice.details, notice: notice), level: .aboveLabels)
                     }
                 case let .polygon(rings):
                     guard let outer = rings.first else { return }
                     let coordinates = outer.map(\.clCoordinate)
                     if coordinates.count >= 3 {
-                        map.addOverlay(StyledPolygon(coordinates: coordinates, count: coordinates.count, stroke: style.0, fill: style.1, width: 4), level: .aboveLabels)
+                        map.addOverlay(StyledPolygon(coordinates: coordinates, count: coordinates.count, stroke: style.0, fill: style.1, width: 4, artifactTitle: notice.title, artifactDescription: notice.details, notice: notice), level: .aboveLabels)
                     }
                 case let .collection(values): values.forEach(add)
                 }
@@ -4112,12 +4176,11 @@ private struct OperationalMKMapView: UIViewRepresentable {
             guard !updating else { return }
             persistViewport(from: mapView)
             regionChangeWasUserGesture = false
-            if !hasActiveViewportGesture(in: mapView) { viewportGestureIncludesZoom = false }
         }
 
         func mapViewDidChangeVisibleRegion(_ mapView: MKMapView) {
             guard !updating, hasActiveViewportGesture(in: mapView) else { return }
-            if hasActivePanGesture(in: mapView) {
+            if !currentInset {
                 releaseFocusedAircraftForOperatorGesture()
                 operatorAdjustedViewport = true
             }
@@ -4134,6 +4197,17 @@ private struct OperationalMKMapView: UIViewRepresentable {
             viewportMemory.region.center = coordinate
             viewportMemory.visibleMapRect = validVisibleMapRect(from: map)
             viewportMemory.hasOperationalViewport = true
+        }
+
+        func zoomToNotam(_ request: AppleNotamMapFocusRequest, on map: MKMapView) {
+            guard lastNotamZoomRequestID != request.id else { return }
+            lastNotamZoomRequestID = request.id
+            let previousArtifactRequestID = lastArtifactZoomRequestID
+            defer { lastArtifactZoomRequestID = previousArtifactRequestID }
+            zoomToArtifact(ArtifactZoomRequest(
+                title: request.title,
+                coordinates: request.coordinates.map { MapCoordinate(latitude: $0.latitude, longitude: $0.longitude) }
+            ), on: map)
         }
 
         func zoomToArtifact(_ request: ArtifactZoomRequest, on map: MKMapView) {
@@ -4254,9 +4328,9 @@ private struct OperationalMKMapView: UIViewRepresentable {
         func mapView(_ mapView: MKMapView, regionWillChangeAnimated animated: Bool) {
             let userGesture = hasActiveViewportGesture(in: mapView)
             regionChangeWasUserGesture = userGesture
-            guard userGesture, hasActivePanGesture(in: mapView) else { return }
+            guard userGesture, !currentInset else { return }
             if !operatorAdjustedViewport {
-                AppleLog.info("MapFocus", "Operator pan suspends automatic follow")
+                AppleLog.info("MapFocus", "Operator pan or zoom suspends automatic follow")
             }
             releaseFocusedAircraftForOperatorGesture()
             operatorAdjustedViewport = true
@@ -4286,31 +4360,6 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 return true
             }
             return view.subviews.contains(where: hasActiveViewportGesture)
-        }
-
-        private func hasActivePanGesture(in view: UIView) -> Bool {
-            // MapKit can recognize a pan alongside a pinch. Give zoom precedence
-            // so changing scale never cancels pending or established follow.
-            func containsGesture(_ view: UIView, matching predicate: (UIGestureRecognizer) -> Bool) -> Bool {
-                (view.gestureRecognizers?.contains(where: predicate) ?? false)
-                    || view.subviews.contains { containsGesture($0, matching: predicate) }
-            }
-            let zoom = containsGesture(view) { gesture in
-                if gesture is UIPinchGestureRecognizer {
-                    return gesture.state == .began || gesture.state == .changed
-                }
-                if let tap = gesture as? UITapGestureRecognizer {
-                    return tap.numberOfTapsRequired >= 2 && gesture.state == .ended
-                }
-                return false
-            }
-            viewportGestureIncludesZoom = viewportGestureIncludesZoom || zoom
-            let pan = containsGesture(view) { gesture in
-                guard let pan = gesture as? UIPanGestureRecognizer else { return false }
-                return pan.numberOfTouches == 1 && (pan.state == .began || pan.state == .changed)
-            }
-            return OperationalMapFocusPolicy.shouldSuspendFollow(
-                isOperatorGesture: pan, isZoomGesture: viewportGestureIncludesZoom)
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
@@ -4440,9 +4489,15 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 onSelectClue(candidates.isEmpty ? [clue.clueID] : candidates)
                 return
             }
+            if let notam = view.annotation as? NotamAnnotation {
+                guard !currentInset else { return }
+                mapView.deselectAnnotation(notam, animated: false)
+                onSelectArtifact("NOTAM Detail", notam.details, notam.notice)
+                return
+            }
             if let artifact = view.annotation as? ArtifactAnnotation {
                 guard !currentInset else { return }
-                onSelectArtifact(artifact.title ?? "Map item", artifact.subtitle ?? nil)
+                onSelectArtifact(artifact.title ?? "Map item", artifact.subtitle ?? nil, nil)
                 return
             }
             guard let aircraft = view.annotation as? AircraftAnnotation else { return }
@@ -4482,7 +4537,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
                    let title = polygon.artifactTitle,
                    let renderer = map.renderer(for: polygon) as? MKPolygonRenderer,
                    renderer.path?.contains(renderer.point(for: mapPoint)) == true {
-                    onSelectArtifact(title, polygon.artifactDescription)
+                    onSelectArtifact(title, polygon.artifactDescription, polygon.notice)
                     return
                 }
                 if let line = overlay as? StyledPolyline,
@@ -4496,7 +4551,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
                         miterLimit: 0
                     )
                     if hitPath.contains(renderer.point(for: mapPoint)) {
-                        onSelectArtifact(title, line.artifactDescription)
+                        onSelectArtifact(title, line.artifactDescription, line.notice)
                         return
                     }
                 }
@@ -5031,6 +5086,7 @@ private final class StyledPolyline: MKPolyline {
     var layer: OperationalMapRenderLayer = .staticMap
     var artifactTitle: String?
     var artifactDescription: String?
+    var notice: OperationalNotam?
 
     convenience init(
         coordinates: [CLLocationCoordinate2D],
@@ -5039,6 +5095,7 @@ private final class StyledPolyline: MKPolyline {
         width: Double,
         artifactTitle: String? = nil,
         artifactDescription: String? = nil,
+        notice: OperationalNotam? = nil,
         layer: OperationalMapRenderLayer = .staticMap
     ) {
         self.init(coordinates: coordinates, count: count)
@@ -5046,6 +5103,7 @@ private final class StyledPolyline: MKPolyline {
         self.width = width
         self.artifactTitle = artifactTitle
         self.artifactDescription = artifactDescription
+        self.notice = notice
         self.layer = layer
     }
 }
@@ -5057,6 +5115,7 @@ private final class StyledPolygon: MKPolygon {
     var layer: OperationalMapRenderLayer = .staticMap
     var artifactTitle: String?
     var artifactDescription: String?
+    var notice: OperationalNotam?
 
     convenience init(
         coordinates: [CLLocationCoordinate2D],
@@ -5066,6 +5125,7 @@ private final class StyledPolygon: MKPolygon {
         width: Double,
         artifactTitle: String? = nil,
         artifactDescription: String? = nil,
+        notice: OperationalNotam? = nil,
         layer: OperationalMapRenderLayer = .staticMap
     ) {
         self.init(coordinates: coordinates, count: count)
@@ -5074,6 +5134,7 @@ private final class StyledPolygon: MKPolygon {
         self.width = width
         self.artifactTitle = artifactTitle
         self.artifactDescription = artifactDescription
+        self.notice = notice
         self.layer = layer
     }
 }
@@ -5171,7 +5232,12 @@ private final class NotamAnnotation: NSObject, MKAnnotation, MapLayerAnnotation 
     let subtitle: String?
     let color: UIColor
 
+    let details: String
+    let notice: OperationalNotam
+
     init(notice: OperationalNotam, coordinate: CLLocationCoordinate2D) {
+        self.notice = notice
+        details = notice.details
         self.coordinate = coordinate
         title = notice.title
         subtitle = notice.summary

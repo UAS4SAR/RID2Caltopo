@@ -182,8 +182,17 @@ object FlightStorage {
             }
         }.sortedByDescending { it.ageMs }
     }
-    private fun isStaging(context: Context, file: File): Boolean =
-        listOf(auxiliaryRoots(context)[0], auxiliaryRoots(context)[2]).any { file.path.startsWith(it.path + "/") }
+    private fun isStaging(context: Context, file: File): Boolean {
+        if (listOf(auxiliaryRoots(context)[0], auxiliaryRoots(context)[2]).any { file.path.startsWith(it.path + "/") }) return true
+        val clues = File(context.filesDir, "clues")
+        if (file.parentFile != clues || file.name == "clues.json") return false
+        val index = runCatching { org.json.JSONArray(File(clues, "clues.json").readText()) }.getOrNull() ?: return true
+        return (0 until index.length()).any { i ->
+            val entry = index.optJSONObject(i) ?: return@any false
+            entry.optBoolean("publishToCaltopo") && entry.optString("uploadState") in listOf("pending", "uploading", "failed") &&
+                file.name in listOf(entry.optString("imageFilename"), entry.optString("thumbnailFilename"))
+        }
+    }
 
     fun deleteDays(context: Context, names: List<String>): ArchiveCleanupDeleteResult = synchronized(lock) {
         val failures = mutableListOf<String>()

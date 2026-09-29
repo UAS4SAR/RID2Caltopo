@@ -38,6 +38,7 @@ class R2CApplication : Application() {
         AirspaceCenter.initialize(this)
         NotamCenter.initialize(this)
         LandRestrictionCenter.initialize(this)
+        NetworkCheckRecovery.start(this)
         R2CMqttManager.InitializeNetworkAddressMonitor(this)
         MapCacheStartupMaintenance.ensureStarted(this)
         MainThreadStallMonitor.start()

@@ -2886,6 +2886,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             activeDs.setLocalArchiveOnly(shouldKeepConfirmedDroneLocalOnly(trimmedOrg));
             UpdateDroneSpecs();
         }
+        if (!activeDs.isLocalArchiveOnly()) WaypointTrack.CapturePublicationIntent(activeDs);
         if (mappedIdChanged) {
             NotifyLatestLocalTrackPoint(activeDs, latestPointBeforeMappedIdChange);
         }

@@ -1,6 +1,8 @@
 package org.ncssar.rid2caltopo.notam
 
 import android.content.Context
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -13,6 +15,7 @@ object NotamCenter {
     private const val LOOP_DELAY_MS = 60_000L
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val repository = NotamRepository()
+    private val refreshMutex = Mutex()
     val uiState = repository.uiState
 
     @Volatile
@@ -32,7 +35,7 @@ object NotamCenter {
     fun requestImmediateRefresh() {
         if (!initialized) return
         scope.launch {
-            repository.refresh(force = true)
+            refreshMutex.withLock { repository.refresh(force = true) }
         }
     }
 
@@ -51,7 +54,7 @@ object NotamCenter {
         refreshJob?.cancel()
         refreshJob = scope.launch {
             while (isActive) {
-                repository.refresh()
+                refreshMutex.withLock { repository.refresh() }
                 delay(LOOP_DELAY_MS)
             }
         }

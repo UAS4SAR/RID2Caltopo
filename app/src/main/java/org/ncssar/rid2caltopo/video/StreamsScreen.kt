@@ -5,7 +5,6 @@ import StreamsLayoutMode
 import StreamsViewModel
 import org.ncssar.rid2caltopo.ui.RidMappingAdminDialog
 import android.app.Activity
-import org.ncssar.rid2caltopo.ui.pageNavigationSwipe
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
@@ -260,6 +259,7 @@ fun StreamsScreen(
     onToggleRemoteVideoMicrophone: () -> Unit = {},
     onTerminateRemoteVideo: () -> Unit = {},
 ) {
+    val context = LocalContext.current
     val currentOnBack = rememberUpdatedState(onBack)
     val headerScrollState = rememberScrollState()
     val releaseStreamsUiConsumer = remember(viewModel) {
@@ -287,7 +287,8 @@ fun StreamsScreen(
 
     val isServerRunning = MediaMTXStatus.isServerRunning
     val serverExitReason = MediaMTXStatus.serverExitReason
-    val controllerEndpoints = rememberControllerEndpoints()
+    val controllerNetwork = rememberControllerNetwork()
+    val controllerEndpoints = controllerNetwork.endpoints
     val serverStatus = when {
         isServerRunning -> controllerEndpointInstructions(controllerEndpoints)
         serverExitReason.isNotEmpty() -> "\uD83D\uDD34 Server exited: $serverExitReason"
@@ -347,6 +348,9 @@ fun StreamsScreen(
         externalContentActive = externalContentMode != null
     )
     ApplyStreamsFullScreenSystemBars(fullScreenChrome.showExitChip)
+    LaunchedEffect(streamsFullScreen, viewModel.pendingClue != null) {
+        CTDebug("StreamsPane", "Controls fullScreen=$streamsFullScreen cluePanel=${viewModel.pendingClue != null} dialogsAllowed=$allowModalDialogs")
+    }
     val allOverLimitMuted = overLimitDrones.isNotEmpty() && overLimitDrones.all { it.muted }
     val allSignalLossMuted = signalLossFlights.isNotEmpty() && signalLossFlights.all { it.muted }
 
@@ -357,12 +361,7 @@ fun StreamsScreen(
         Column {
             if (fullScreenChrome.showTopBar) {
                 androidx.compose.material3.CenterAlignedTopAppBar(
-                    modifier = Modifier.pageNavigationSwipe(toLiveView = false, enabled = showNavigation && !showNotamPanel && !showLandRestrictionPanel && !showPerformancePanel && !showCompliancePanel && !showSignalLossPanel) { handleBack() }.pointerInput(handleBack) {
-                        detectTapGestures(
-                            onDoubleTap = { handleBack() }
-                        )
-                    },
-                    title = { Text("Live View", maxLines = 1) },
+                    title = { if (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 600 * androidx.compose.ui.platform.LocalDensity.current.fontScale) Text("Live View", maxLines = 1) },
                     navigationIcon = if (showNavigation) {
                         {
                             IconButton(onClick = handleBack) {
@@ -390,17 +389,6 @@ fun StreamsScreen(
                                 )
                                 Spacer(Modifier.width(6.dp))
                             }
-                            ComplianceAlertBell(
-                                overLimitDrones = overLimitDrones,
-                                allOverLimitMuted = allOverLimitMuted,
-                                onClick = { showCompliancePanel = true }
-                            )
-                            SignalLossAlertButton(
-                                flights = signalLossFlights,
-                                allMuted = allSignalLossMuted,
-                                onClick = { showSignalLossPanel = true }
-                            )
-                            ResumeProximityAlertButton()
                             if (externalContentMode == null) {
                                 LayoutToggleChip(
                                     label = if (streamPipUiState.enabled) "PiP:On" else "PiP:Off",
@@ -409,7 +397,7 @@ fun StreamsScreen(
                                 )
                                 Spacer(Modifier.width(6.dp))
                             }
-                            BridgeSignalIndicator(rssi = bridgeRssi)
+                            BridgeSignalIndicator(rssi = bridgeRssi, onClick = handleBack, enabled = showNavigation)
                         }
                     }
                 )
@@ -420,33 +408,29 @@ fun StreamsScreen(
                         .horizontalScroll(headerScrollState),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    NotamStatusChip(
-                        state = notamUiState,
-                        airspaceState = airspaceUiState,
-                        onClick = { showNotamPanel = true },
-                        outerPadding = PaddingValues(0.dp)
-                    )
-                    LandRestrictionStatusChip(
-                        state = landRestrictionUiState,
-                        onClick = { showLandRestrictionPanel = true },
-                        outerPadding = PaddingValues(start = 8.dp)
-                    )
+                    ResumeProximityAlertButton()
                     Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = serverStatus,
-                        modifier = Modifier
-                            .clickable { showPerformancePanel = true }
-                            .padding(end = 8.dp),
-                        fontSize = 14.sp,
-                    )
-                    StreamsMapStatusButton(
-                        mapName = mapName,
-                        onClick = onMapStatusTap,
-                        modifier = Modifier
-                            .widthIn(max = 220.dp)
-                            .height(36.dp)
-                    )
+                    NotamStatusChip(state = notamUiState, airspaceState = airspaceUiState, onClick = { showNotamPanel = true }, outerPadding = PaddingValues(0.dp))
                     Spacer(Modifier.width(8.dp))
+                    Spacer(Modifier.width(8.dp))
+                    LandRestrictionStatusChip(state = landRestrictionUiState, onClick = { showLandRestrictionPanel = true }, outerPadding = PaddingValues(0.dp))
+                    Spacer(Modifier.width(8.dp))
+                    StreamsMapStatusButton(mapName = mapName, onClick = onMapStatusTap,
+                        modifier = Modifier.widthIn(max = 220.dp).height(36.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(text = "Network: " + controllerNetwork.ssid, modifier = Modifier.padding(end = 8.dp), fontSize = 14.sp)
+                    Text(text = serverStatus, modifier = Modifier.clickable { showPerformancePanel = true }.padding(end = 8.dp), fontSize = 14.sp)
+                            ComplianceAlertBell(
+                                overLimitDrones = overLimitDrones,
+                                allOverLimitMuted = allOverLimitMuted,
+                                onClick = { showCompliancePanel = true }
+                            )
+                            SignalLossAlertButton(
+                                flights = signalLossFlights,
+                                allMuted = allSignalLossMuted,
+                                onClick = { showSignalLossPanel = true }
+                            )
+
                 }
             }
             if (!remoteVideoStatus.isNullOrBlank()) {
@@ -672,7 +656,7 @@ fun StreamsScreen(
                                 viewModel.setStreamPipEnabled(!streamPipUiState.enabled)
                             },
                         )
-                        BridgeSignalIndicator(rssi = bridgeRssi, overlay = true)
+                        BridgeSignalIndicator(rssi = bridgeRssi, onClick = handleBack, enabled = showNavigation, overlay = true)
                     }
                 }
 
@@ -714,7 +698,11 @@ fun StreamsScreen(
         NotamPanel(
             state = notamUiState,
             airspaceState = airspaceUiState,
-            onDismiss = { showNotamPanel = false }
+            onDismiss = { showNotamPanel = false },
+            onShowOnMap = { notice ->
+                showNotamPanel = false
+                viewModel.showNotamOnMap(notice)
+            }
         )
     }
     if (showLandRestrictionPanel) {
@@ -767,11 +755,17 @@ private fun ApplyStreamsFullScreenSystemBars(active: Boolean) {
 @Composable
 private fun BridgeSignalIndicator(
     rssi: Int?,
+    onClick: () -> Unit,
+    enabled: Boolean,
     modifier: Modifier = Modifier,
     overlay: Boolean = false,
 ) {
     Surface(
-        modifier = modifier.heightIn(min = 32.dp),
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.heightIn(min = 48.dp).semantics {
+            contentDescription = "Bridge ${rssi ?: "not detected"}; show Main Screen"
+        },
         shape = RoundedCornerShape(10.dp),
         color = if (overlay) Color.Black.copy(alpha = 0.68f)
         else MaterialTheme.colorScheme.surfaceVariant,
@@ -985,6 +979,8 @@ private fun complianceAlertSummary(drone: OverLimitDroneUiState): String {
 internal const val MIN_SPLIT_FRACTION = 0f
 internal const val MAX_SPLIT_FRACTION = 1f
 internal const val SPLIT_EDGE_SNAP_HANDLE_WIDTHS = 2f
+internal fun streamCameraTrailingInsetDp(): Int = SPLIT_DIVIDER_TOUCH_SIZE_DP + 12
+
 internal const val SPLIT_DIVIDER_TOUCH_SIZE_DP = 96
 internal const val SPLIT_DIVIDER_SNAP_WIDTH_DP = 48
 internal const val SPLIT_EDGE_RESTORE_TOUCH_HEIGHT_DP = 192

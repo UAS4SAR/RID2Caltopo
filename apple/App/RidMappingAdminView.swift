@@ -95,16 +95,17 @@ enum AppleAircraftOrganizationAccess {
 }
 
 struct AppleOrganizationUserLabel: View {
+    var compactHeader = false
     @Environment(\.scenePhase) private var scenePhase
     @State private var username: String?
     var body: some View {
         let currentUser = username == AppleAircraftOrganizationAccess.organizationUser ? username : nil
         return Group {
-            if AppleAircraftOrganizationAccess.belongsToOrganization {
-                Text("Organization account: " + (currentUser ?? "Not verified"))
+            if compactHeader || AppleAircraftOrganizationAccess.belongsToOrganization {
+                Text((compactHeader ? "Account: " : "Organization account: ") + (currentUser ?? "Not verified"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(compactHeader ? 1 : 2)
                     .accessibilityLabel("Organization user: " + (currentUser ?? "not verified"))
             }
         }

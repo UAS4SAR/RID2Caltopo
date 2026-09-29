@@ -94,7 +94,7 @@ internal enum class OperatorMapGesture {
 }
 
 internal fun shouldSuspendMapFollow(gesture: OperatorMapGesture): Boolean =
-    gesture == OperatorMapGesture.Pan
+    gesture == OperatorMapGesture.Pan || gesture == OperatorMapGesture.Zoom
 
 internal fun shouldReleaseFocusedDroneForMapGesture(
     presentationMode: MapPanePresentationMode,

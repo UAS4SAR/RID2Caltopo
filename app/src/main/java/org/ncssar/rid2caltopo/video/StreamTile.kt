@@ -493,7 +493,16 @@ fun StreamTile(
         }
 
         val captureStartedAtMs = System.currentTimeMillis()
-        val capturedFrame = viewModel.captureClueFrame(streamDesignator)
+        val capturedFrame = captureFromActiveClueRenderer(
+            usesFfmpeg = captureTarget.requiresRenderedFrame,
+            ffmpeg = { viewModel.captureClueFrame(streamDesignator) },
+            player = {
+                // ExoPlayer has no FFmpeg rendered-frame buffer or frame-matched SEI.
+                captureTarget.textureView.takeIf { it.isAvailable }?.bitmap?.let {
+                    org.ncssar.rid2caltopo.video.ffmpeg.FfmpegProbeService.ClueFrameCapture(it, 0L, null)
+                }
+            }
+        )
         val bitmap = capturedFrame?.bitmap
         logClueTapIfSlow(
             "${captureTarget.label}.bitmap",
@@ -540,7 +549,7 @@ fun StreamTile(
         CTDebug(
             tag,
             "Clue capture requested designator=$streamDesignator reason=$reason " +
-                "focused=$currentIsFocused state=$streamState renderedFrames=${clueFrames.renderedFrameCount}"
+                "focused=$currentIsFocused fullScreen=$fillContainer state=$streamState renderedFrames=${clueFrames.renderedFrameCount}"
         )
         if (!currentIsFocused) {
             viewModel.ensureFocus(streamDesignator)
@@ -559,12 +568,25 @@ fun StreamTile(
         }
     }
 
-    LaunchedEffect(pendingClueCaptureRequestId, clueFrameSignal, clueCaptureTargetRef.value) {
+    LaunchedEffect(pendingClueCaptureRequestId) {
         val requestId = pendingClueCaptureRequestId
         if (requestId == 0L || requestId == handledClueCaptureRequestId) return@LaunchedEffect
-        if (captureClueSnapshot("deferred")) {
-            handledClueCaptureRequestId = requestId
+        // ExoPlayer does not emit the FFmpeg frame callback. Retry briefly for either
+        // renderer, then end this request instead of leaving an indefinite promise.
+        repeat(30) {
+            delay(100)
+            if (!viewModel.hasPairedTelemetry(streamDesignator)) {
+                handledClueCaptureRequestId = requestId
+                CaltopoClient.ShowToast("Clue unavailable: no current paired drone location.")
+                return@LaunchedEffect
+            }
+            if (captureClueSnapshot("deferred")) {
+                handledClueCaptureRequestId = requestId
+                return@LaunchedEffect
+            }
         }
+        handledClueCaptureRequestId = requestId
+        CaltopoClient.ShowToast("No video image available for clue. Please try again when video is visible.")
     }
 
     Column(
@@ -581,7 +603,6 @@ fun StreamTile(
             modifier = Modifier.weight(1f).fillMaxWidth()
                 .onSizeChanged { streamTileSize = it }
                 .clipToBounds()
-                .transformable(zoomTransformState)
         ) {
         Box(
             modifier = Modifier
@@ -667,6 +688,7 @@ fun StreamTile(
         if (isLocalPlayback && anomalyConfig.enabled && isLocalPlaybackPaused && currentFrameTimestampUs != null) {
             Box(
                 modifier = streamFrameModifier
+                    .transformable(zoomTransformState)
                     .pointerInput(
                         streamDesignator,
                         currentFrameTimestampUs,
@@ -793,7 +815,10 @@ fun StreamTile(
                     if (!tileInteractionsEnabled || (isLocalPlayback && isLocalPlaybackPaused)) {
                         Modifier
                     } else {
-                        Modifier.pointerInput(streamDesignator, designatorState, currentIsFocused, currentDesignatorState) {
+                        // Keep video pan/zoom on this sibling input surface. A parent
+                        // transform handler can steal moving taps from camera/settings controls.
+                        Modifier.transformable(zoomTransformState)
+                            .pointerInput(streamDesignator, designatorState, currentIsFocused, currentDesignatorState) {
                             detectTapGestures(
                                 onTap = { tapOffset ->
                                     CTDebug(tag, "StreamTile{${streamDesignator}) onTap")
@@ -885,7 +910,7 @@ fun StreamTile(
                 modifier = Modifier
                     .zIndex(2f)
                     .align(Alignment.CenterEnd)
-                    .offset(x = (-62).dp)
+                    .offset(x = (-streamCameraTrailingInsetDp()).dp)
                     .size(56.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.88f))

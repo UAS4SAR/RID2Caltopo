@@ -204,7 +204,11 @@ final class AppleDroneScoutBridgeAlertCenter: ObservableObject {
     }
 
     func toggleAudioMuted() {
-        audioMuted.toggle()
+        setAudioMuted(!audioMuted)
+    }
+
+    func setAudioMuted(_ muted: Bool) {
+        audioMuted = muted
         AppleLog.info(
             "DroneScoutBridge",
             audioMuted ? "Bridge warning muted" : "Bridge warning unmuted"

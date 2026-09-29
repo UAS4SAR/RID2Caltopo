@@ -91,6 +91,14 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     private CaltopoOp startLiveTrackOp;
     private String liveTrackId;
     private String requestedLiveTrackId;
+    private String publicationMapId;
+
+    static boolean hasActivePublication(String id) {
+        for (CaltopoLiveTrack track : LiveTrackByRemoteId.values()) {
+            if (id.equals(track.liveTrackId) || id.equals(track.requestedLiveTrackId)) return true;
+        }
+        return false;
+    }
     private boolean startInFlight;
     private long nextStartAttemptAtMs;
     private long publicationGeneration;
@@ -579,14 +587,13 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                         liveTrackId, myRemoteId));
                 try {
                     String orphanedLiveTrackId = liveTrackId != null ? liveTrackId : requestedLiveTrackId;
-                    runtime.getCalTopoSessionGateway().deleteLiveTrackWithId(
-                            orphanedLiveTrackId,
+                    runtime.getCalTopoSessionGateway().deleteLiveTrackOnMap(
+                            publicationMapId != null ? publicationMapId : CaltopoMap.GetMapId(), orphanedLiveTrackId,
                             deleteOp -> {
                                 if (deleteOp.success()) {
                                     CaltopoInterruptedTrackJournal.remove(orphanedLiveTrackId);
                                 }
-                            },
-                            400, 404);
+                            });
                 } catch (Exception e) {
                     CTError(TAG, "archiveTrackOnCaltopo(): deleteLiveTrackWithId() raised: ", e);
                 }
@@ -627,6 +634,10 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         CTDebug(TAG, String.format(Locale.US, "archiveTrackOnCaltopo(%s): Archiving track with %d points.",
                 trackLabel, size));
         persistInterruptedPublication(archiveDescription, true);
+        if (publicationMapId != null && !publicationMapId.equals(CaltopoMap.GetMapId())) {
+            resetLiveTrack();
+            return;
+        }
         // convert the LiveTrack to a Shape w/archive properties and add in all the waypoints.
         JSONObject feature = new JSONObject();
         JSONObject geometry = new JSONObject();
@@ -658,6 +669,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                 success -> {
                     if (!success) return;
                     CaltopoInterruptedTrackJournal.remove(archivedLiveTrackId);
+                    AwaitingMapFlights.published(archivedLiveTrackId);
                     if (archiveDescription.isEmpty()) {
                         scheduleDeferredVideoDescriptionUpdate(
                                 feature,
@@ -674,12 +686,15 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         boolean isActive = droneSpec.isActive();
         CTDebug(TAG, String.format(Locale.US, "resetLiveTrack(%s): resetting %sactive track",
                 droneSpec.trackLabel(), isActive ? "": "in"));
-        if (isActive) {
+        // Map publication shutdown is not physical flight termination. Keep the
+        // confirmed pilot, local geometry and per-flight consent until RID/video ends.
+        if (isActive && !shuttingDown) {
             WaypointTrack.ArchiveTrack(droneSpec.trackLabel());
             droneSpec.reset();
         }
         publicationGeneration++;
         requestedLiveTrackId = null;
+        publicationMapId = null;
         startInFlight = false;
         nextStartAttemptAtMs = 0L;
         linePoints.clear();
@@ -696,6 +711,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     private synchronized void clearLiveTrackState() {
         publicationGeneration++;
         requestedLiveTrackId = null;
+        publicationMapId = null;
         startInFlight = false;
         nextStartAttemptAtMs = 0L;
         linePoints.clear();
@@ -753,9 +769,14 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     }
 
     private synchronized void startNewTrack() {
+        String deferredId = AwaitingMapFlights.publicationId(myRemoteId, CaltopoMap.GetMapId());
+        if (deferredId != null && deferredId.isEmpty()) return;
         if (!startInFlight && liveTrackId == null && localOwner
                 && System.currentTimeMillis() >= nextStartAttemptAtMs) {
-            if (requestedLiveTrackId == null) requestedLiveTrackId = java.util.UUID.randomUUID().toString();
+            if (requestedLiveTrackId == null) {
+                requestedLiveTrackId = deferredId != null ? deferredId : java.util.UUID.randomUUID().toString();
+                publicationMapId = CaltopoMap.GetMapId();
+            }
             final String requestedId = requestedLiveTrackId;
             final long generation = publicationGeneration;
             if (!persistInterruptedPublication("", true)) {
@@ -808,7 +829,11 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     }
 
     public synchronized void finishTrack(@NonNull String reason) {
-        if (!active) return;
+        if (!active) {
+            // A map disconnect may have stopped publication while the flight continued.
+            if (droneSpec.isActive()) NotifyLocalTrackFinished(droneSpec, reason);
+            return;
+        }
         CTDebug(TAG, String.format(Locale.US, "finishTrack(%s): %s", getTrackLabel(), reason));
         if (liveTrackId != null || requestedLiveTrackId != null) try {
             if (liveTrackId != null) CaltopoMap.RemoveLiveTrack(liveTrackId);
@@ -1037,13 +1062,17 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             return false;
         }
         boolean saved = CaltopoInterruptedTrackJournal.save(
-                CaltopoMap.GetMapId(),
+                publicationMapId != null ? publicationMapId : CaltopoMap.GetMapId(),
                 myRemoteId,
                 journalId,
                 droneSpec.trackLabel(),
                 description,
                 points);
-        if (saved) lastInterruptedJournalWriteMs = now;
+        if (saved) {
+            lastInterruptedJournalWriteMs = now;
+            try { AwaitingMapFlights.notePublication(myRemoteId, publicationMapId != null ? publicationMapId : CaltopoMap.GetMapId()); }
+            catch (Exception error) { CTError(TAG, "Could not persist publication handoff", error); }
+        }
         return saved;
     }
 
@@ -1051,6 +1080,8 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
      *  Pull waypoints off the queue and forward to Caltopo
      */
     public synchronized void forwardNextWaypoints(@Nullable CaltopoOp lastOp) {
+        String destinationChoice = AwaitingMapFlights.publicationId(myRemoteId, CaltopoMap.GetMapId());
+        if (destinationChoice != null && destinationChoice.isEmpty()) return;
         if (shuttingDown || !active || liveTrackId == null) {
             CTDebug(TAG, "forwardNextWaypoints(): Not active.");
             return; // Don't send any more waypoints at this time.

@@ -35,6 +35,8 @@ final class AppleLandRestrictionCenter: ObservableObject {
     private var lastAttempt = Date.distantPast
     private var lastUpdated: Date?
     private var refreshTask: Task<Void, Never>?
+    private var pendingForcedRefresh = false
+    private var pendingRefreshLocation: CLLocation?
     private let refreshInterval: TimeInterval = 15 * 60
 
     private init(defaults: UserDefaults = .standard) {
@@ -74,7 +76,13 @@ final class AppleLandRestrictionCenter: ObservableObject {
             return
         }
         guard force || shouldRefresh(location) else { return }
-        guard refreshTask == nil else { return }
+        guard refreshTask == nil else {
+            if force {
+                pendingForcedRefresh = true
+                pendingRefreshLocation = location
+            }
+            return
+        }
         lastAttempt = Date()
         rebuild(loading: true, errors: state.sourceErrors)
         let coordinate = OperationalLandCoordinate(
@@ -83,7 +91,7 @@ final class AppleLandRestrictionCenter: ObservableObject {
         )
         refreshTask = Task { [weak self] in
             guard let self else { return }
-            defer { refreshTask = nil }
+            defer { refreshTask = nil; runPendingRefresh() }
             var fetched: [OperationalLandArea] = []
             var errors: [String] = []
             for source in OperationalLandRestriction.sources {
@@ -122,6 +130,14 @@ final class AppleLandRestrictionCenter: ObservableObject {
                 "Loaded \(areas.count) protected-land area(s); sourceErrors=\(errors.count)"
             )
         }
+    }
+
+    private func runPendingRefresh() {
+        guard pendingForcedRefresh else { return }
+        let location = pendingRefreshLocation
+        pendingForcedRefresh = false
+        pendingRefreshLocation = nil
+        update(location: location, force: true)
     }
 
     func refreshNow(location: CLLocation?) { update(location: location, force: true) }

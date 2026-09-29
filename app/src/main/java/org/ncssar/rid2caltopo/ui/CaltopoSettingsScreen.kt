@@ -6,6 +6,7 @@
  */
 package org.ncssar.rid2caltopo.ui
 
+import org.opendroneid.android.bluetooth.DroneScoutBridgeMonitor
 import org.ncssar.rid2caltopo.data.ProximityAlertConsent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -33,6 +34,7 @@ fun CaltopoSettingsScreen(
     onShowDeveloperTools: () -> Unit,
     settingsViewModel: CaltopoSettingsViewModel = viewModel()
 ) {
+    val bridgeWarningsMuted by DroneScoutBridgeMonitor.audioMuted.collectAsState()
     var showRidMappingAdmin by remember { mutableStateOf(false) }
     val ridMappingCount = CaltopoClient.GetPersistedDroneSpecs().size
     val organizationName by settingsViewModel.organizationName.collectAsState()
@@ -316,6 +318,15 @@ fun CaltopoSettingsScreen(
                 Spacer(modifier = Modifier.height(16.dp))
                 HorizontalDivider()
                 Spacer(modifier = Modifier.height(16.dp))
+                Text("Bridge warnings", style = MaterialTheme.typography.titleMedium)
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Text("Bridge audio warnings", modifier = Modifier.weight(1f))
+                    Switch(checked = !bridgeWarningsMuted,
+                        onCheckedChange = { DroneScoutBridgeMonitor.setAudioMuted(!it) })
+                }
+                Text("Enabled when the app starts. Turning this off silences bridge warnings for this app session only.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(
                     "Traffic safety",
                     style = MaterialTheme.typography.titleMedium,
@@ -467,9 +478,9 @@ fun CaltopoSettingsScreen(
                         keyboardType = KeyboardType.Decimal,
                         imeAction = ImeAction.Done,
                     ),
-                    label = { Text("Thumbnail Refresh (seconds)") },
+                    label = { Text("Thumbnail & LiveTrack update interval") },
                     supportingText = {
-                        Text("0.5–60.0 seconds; default 5.0. Shorter intervals use more battery and network data.")
+                        Text("Minimum time between thumbnail refreshes and LiveTrack updates. 0.5–60.0 seconds; default 5.0. Lower values update more often and use more battery and data.")
                     },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),

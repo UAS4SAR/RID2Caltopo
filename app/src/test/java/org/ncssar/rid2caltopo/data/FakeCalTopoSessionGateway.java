@@ -25,6 +25,38 @@ import java.util.function.Consumer;
 public final class FakeCalTopoSessionGateway implements CalTopoSessionGateway {
     public final List<Consumer<CaltopoOp>> startCallbacks = new ArrayList<>();
     public final List<Consumer<CaltopoOp>> pointCallbacks = new ArrayList<>();
+    public final List<String> recoveryMaps = new ArrayList<>();
+    public final List<Consumer<CaltopoOp>> recoveryEditCallbacks = new ArrayList<>();
+    public boolean holdRecoveryEdits;
+    public int recoveryDeleteResponseCode = 200;
+
+    @Override
+    public CaltopoOp editObjectOnMap(String mapId, String type, String id, JSONObject feature, Consumer<CaltopoOp> done) {
+        recoveryMaps.add(mapId);
+        if (holdRecoveryEdits) {
+            record("editObject", type + ":" + id, feature);
+            recoveryEditCallbacks.add(done);
+            return new CaltopoOp(null);
+        }
+        return editObjectWithId(type, id, feature, done);
+    }
+
+    @Override
+    public CaltopoOp deleteLiveTrackOnMap(String mapId, String id, Consumer<CaltopoOp> done) {
+        recoveryMaps.add(mapId);
+        record("deleteLiveTrack", id, null);
+        CaltopoOp op = new CaltopoOp(null);
+        op.responseCode = recoveryDeleteResponseCode;
+        op.setOperationIsDone(recoveryDeleteResponseCode >= 200 && recoveryDeleteResponseCode < 300);
+        if (done != null) done.accept(op);
+        return op;
+    }
+
+    public void completeRecoveryEdit(boolean success) {
+        CaltopoOp op = new CaltopoOp(null);
+        op.setOperationIsDone(success);
+        recoveryEditCallbacks.remove(0).accept(op);
+    }
 
     public static final class Operation {
         @NonNull public final String kind;

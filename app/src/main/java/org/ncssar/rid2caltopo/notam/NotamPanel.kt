@@ -29,7 +29,8 @@ import org.ncssar.rid2caltopo.video.CoordinateFormatter
 fun NotamPanel(
     state: NotamUiState,
     airspaceState: AirspaceUiState? = null,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onShowOnMap: (NearbyNotam) -> Unit
 ) {
     val displayedAirspace = airspaceState?.takeIf {
         shouldUseAirspaceStatus(state.visible, it)
@@ -211,6 +212,11 @@ fun NotamPanel(
                         }
                         if (notice.summary.isNotBlank()) {
                             Text(notice.summary, modifier = Modifier.padding(top = 2.dp))
+                        }
+                        if (notice.mapCoordinates().isNotEmpty()) {
+                            TextButton(onClick = { onShowOnMap(notice) }) { Text("Show on map") }
+                        } else {
+                            Text("Map location unavailable for this notice.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         TextButton(
                             onClick = {

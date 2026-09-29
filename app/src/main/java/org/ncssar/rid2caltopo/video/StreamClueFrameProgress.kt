@@ -15,3 +15,10 @@ internal class StreamClueFrameProgress {
         return pendingRequest != 0L && pendingRequest != handledRequest
     }
 }
+
+/** Never substitute another renderer's retained frame for the visible player's image. */
+internal fun <T> captureFromActiveClueRenderer(
+    usesFfmpeg: Boolean,
+    ffmpeg: () -> T?,
+    player: () -> T?,
+): T? = if (usesFfmpeg) ffmpeg() else player()

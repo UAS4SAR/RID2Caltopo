@@ -68,3 +68,22 @@ data class NotamUiState(
     val nearestHiddenNotice: NearbyNotam? = null,
     val errorMessage: String? = null
 )
+
+/** Coordinates that can actually be rendered; never substitute the query location. */
+fun NearbyNotam.mapCoordinates(): List<NotamLatLng> {
+    fun coordinates(geometry: NotamGeometry): List<NotamLatLng> = when (geometry) {
+        is NotamGeometry.Point -> listOf(geometry.coordinate)
+        is NotamGeometry.Line -> geometry.coordinates
+        is NotamGeometry.Polygon -> geometry.rings.firstOrNull().orEmpty()
+        is NotamGeometry.Collection -> geometry.geometries.flatMap(::coordinates)
+    }
+    return geometries.flatMap(::coordinates).filter {
+        it.latitude.isFinite() && it.longitude.isFinite() &&
+            it.latitude in -90.0..90.0 && it.longitude in -180.0..180.0
+    }.distinct()
+}
+
+data class NotamMapFocusRequest(
+    val id: java.util.UUID = java.util.UUID.randomUUID(),
+    val coordinates: List<NotamLatLng>
+)

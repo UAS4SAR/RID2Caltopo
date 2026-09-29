@@ -25,21 +25,20 @@ import Testing
     ))
 }
 
-@Test func zoomPreservesFocusAndVideoFirstPendingFollow() {
+@Test func zoomPreservesManualViewportWhileWaitingForPosition() {
     var adjusted = false
-    // A simultaneous MapKit pan recognizer during pinch must not suspend follow,
-    // even when video is waiting for its first RID position.
+    // Pinch zoom is an intentional viewport choice even before RID arrives.
     if OperationalMapFocusPolicy.shouldSuspendFollow(
         isOperatorGesture: true, isZoomGesture: true
     ) { adjusted = true }
-    #expect(!adjusted)
+    #expect(adjusted)
     #expect(OperationalMapFocusPolicy.initialStreamFocus(
         followEnabled: true, focusedAircraftID: nil, operatorAdjustedViewport: adjusted,
         liveStreamAircraftIDs: [nil]) == nil)
     #expect(OperationalMapFocusPolicy.initialStreamFocus(
         followEnabled: true, focusedAircraftID: nil, operatorAdjustedViewport: adjusted,
-        liveStreamAircraftIDs: ["mini-rid"]) == "mini-rid")
-    #expect(!OperationalMapFocusPolicy.shouldReleaseFocus(
+        liveStreamAircraftIDs: ["mini-rid"]) == nil)
+    #expect(OperationalMapFocusPolicy.shouldReleaseFocus(
         hasFocusedAircraft: true, isOperatorGesture: true, isZoomGesture: true))
     #expect(OperationalMapFocusPolicy.shouldReleaseFocus(
         hasFocusedAircraft: true, isOperatorGesture: true, isZoomGesture: false))

@@ -111,6 +111,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
 
     @NonNull private final ConcurrentHashMap<String, PendingDrone> pendingDrones = new ConcurrentHashMap<>();
     @NonNull private final ConcurrentHashMap<String, JSONObject> pendingConfirmationsByRemoteId = new ConcurrentHashMap<>();
+    @NonNull private final ConcurrentHashMap<String, Long> confirmationSentAtByRemoteId = new ConcurrentHashMap<>();
     @NonNull private final ConcurrentHashMap<String, R2CMqttManager.PeerState> peers = new ConcurrentHashMap<>();
     @NonNull private final ConcurrentHashMap<String, String> ownerByRemoteId = new ConcurrentHashMap<>();
     @NonNull private final ConcurrentHashMap<String, Long> leaseSeqByRemoteId = new ConcurrentHashMap<>();
@@ -183,6 +184,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
     private volatile long reconnectScheduledAtMs;
     private volatile long reconnectTargetAtMs;
     private volatile boolean reconnectPending;
+    private volatile boolean connectInFlight;
     private volatile boolean suppressScheduledHeartbeatRequestsForTesting;
 
     private TrackerPeerCoordinator() {
@@ -350,6 +352,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                 scheduleReconnect("failure", -1L);
             }
         });
+        connectInFlight = true;
         transport.connect(this.trackerWsUrl, trackerApiKey);
         notifyCoordinationIndicatorListener();
     }
@@ -372,6 +375,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
             iterator.remove();
         }
         pendingConfirmationsByRemoteId.clear();
+        confirmationSentAtByRemoteId.clear();
         locallyConfirmedRemoteIds.clear();
         peers.clear();
         ownerByRemoteId.clear();
@@ -392,6 +396,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
             activeTransport.disconnect();
         }
         started = false;
+        connectInFlight = false;
         coordinationAttemptStartedAtMs = 0L;
         lastServerAcknowledgementAtMs = 0L;
         managedVideoThumbnailPreviewUntilMs = 0L;
@@ -647,6 +652,8 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         ownerByRemoteId.remove(remoteId);
         leaseSeqByRemoteId.remove(remoteId);
         locallyConfirmedRemoteIds.remove(remoteId);
+        pendingConfirmationsByRemoteId.remove(remoteId);
+        confirmationSentAtByRemoteId.remove(remoteId);
         lastSightingSentByRemoteId.remove(remoteId);
         trafficSequenceByKey.keySet().removeIf(key -> key.endsWith("|" + remoteId));
         lastTrafficSentByKey.keySet().removeIf(key -> key.endsWith("|" + remoteId));
@@ -691,6 +698,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
             jo.put("model", model);
             jo.put("ownerName", owner);
             pendingConfirmationsByRemoteId.put(remoteId, jo);
+            confirmationSentAtByRemoteId.remove(remoteId);
             wakeForCoordinationActivity("drone_confirmed");
             CTDebug(TAG, String.format(Locale.US,
                     "onDroneConfirmed(): queued remoteId=%s mappedId='%s'",
@@ -828,7 +836,9 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                     formatDuration(nowMs - lastHeartbeatSentAtMs)));
         }
 
-        if (reconnectPending) {
+        if (connectInFlight) {
+            lines.add("Tracker connection handshake in progress");
+        } else if (reconnectPending) {
             lines.add("Reconnect pending in " + formatDuration(Math.max(reconnectTargetAtMs - nowMs, 0L)));
         } else if (!lastReconnectCause.isEmpty() && !"connected".equals(lastReconnectCause)) {
             lines.add("Last tracker event: " + lastReconnectCause);
@@ -945,6 +955,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         heartbeatCoalesceTimer.stop();
         reconnectTimer.stop();
         reconnectPending = false;
+        connectInFlight = false;
         peers.clear();
         notifyPeerListChanged();
         TrackerCoordinationTransport activeTransport = transport;
@@ -972,17 +983,11 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
     private synchronized void wakeForCoordinationActivity(@NonNull String reason) {
         if (!started || trackerWsUrl == null || trackerApiKey == null) return;
         idleParkTimer.stop();
-        if (isConnected() || reconnectPending) return;
+        if (isConnected() || reconnectPending || connectInFlight) return;
         CTInfo(TAG, "wakeForCoordinationActivity(): waking tracker websocket for " + reason);
         intentionallyParked = false;
-        reconnectPending = true;
         lastReconnectCause = "wake-" + reason;
-        TrackerCoordinationTransport activeTransport = transport;
-        if (activeTransport == null) {
-            activeTransport = transportFactory.create();
-            transport = activeTransport;
-        }
-        activeTransport.connect(trackerWsUrl, trackerApiKey);
+        reconnect();
         notifyCoordinationIndicatorListener();
     }
 
@@ -997,7 +1002,8 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         scheduleReconnect("retry", -1L);
     }
 
-    private void scheduleReconnect(@NonNull String cause, long overrideDelayMs) {
+    private synchronized void scheduleReconnect(@NonNull String cause, long overrideDelayMs) {
+        connectInFlight = false;
         if (!started || trackerWsUrl == null || trackerApiKey == null || intentionallyParked) return;
         long delayMs = overrideDelayMs >= 0 ? overrideDelayMs : nextReconnectDelayMs;
         long scheduledAtMs = nowMs();
@@ -1100,11 +1106,14 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                 scheduleReconnect("failure", -1L);
             }
         });
+        connectInFlight = true;
         activeTransport.connect(trackerWsUrl, trackerApiKey);
     }
 
     private void onTransportOpen(boolean reconnecting) {
+        connectInFlight = false;
         reconnectPending = false;
+        confirmationSentAtByRemoteId.clear();
         lastTrafficSentByKey.clear();
         trafficSendIntervalByKey.clear();
         lastTrafficSentLogByKey.clear();
@@ -1373,11 +1382,18 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
             return;
         }
         for (Map.Entry<String, JSONObject> entry : pendingConfirmationsByRemoteId.entrySet()) {
+            long now = nowMs();
+            Long lastSent = confirmationSentAtByRemoteId.get(entry.getKey());
+            if (lastSent != null && now - lastSent < 5_000L) continue;
             if (sendJson(entry.getValue())) {
                 CTDebug(TAG, String.format(Locale.US,
                         "flushPendingConfirmations(): sent remoteId=%s",
                         entry.getKey()));
-                pendingConfirmationsByRemoteId.remove(entry.getKey(), entry.getValue());
+                // Socket acceptance is not a server acknowledgement. Keep the Save
+                // until its own echo arrives, and replay it on a new transport.
+                if (pendingConfirmationsByRemoteId.get(entry.getKey()) == entry.getValue()) {
+                    confirmationSentAtByRemoteId.put(entry.getKey(), now);
+                }
             } else {
                 CTDebug(TAG, String.format(Locale.US,
                         "flushPendingConfirmations(): send rejected remoteId=%s pending=%d",
@@ -1427,6 +1443,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         heartbeatTimer.stop();
         ackWatchdogTimer.stop();
         heartbeatCoalesceTimer.stop();
+        connectInFlight = false;
         TrackerCoordinationTransport activeTransport = transport;
         if (activeTransport != null) {
             activeTransport.disconnect();
@@ -2109,6 +2126,8 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         ownerByRemoteId.remove(remoteId);
         leaseSeqByRemoteId.remove(remoteId);
         locallyConfirmedRemoteIds.remove(remoteId);
+        pendingConfirmationsByRemoteId.remove(remoteId);
+        confirmationSentAtByRemoteId.remove(remoteId);
         lastSightingSentByRemoteId.remove(remoteId);
         CaltopoClient.ClearCurrentPeerDroneConfirmation(remoteId);
         PendingDrone pending = pendingDrones.get(remoteId);
@@ -2224,9 +2243,17 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                 jo.optString("confirmedByGuid"),
                 firstNonEmpty(jo.optString("guid"), jo.optString("zoneId")));
         if (myGuid != null && myGuid.equals(confirmedByGuid)) {
+            JSONObject pendingConfirmation = pendingConfirmationsByRemoteId.get(remoteId);
+            if (pendingConfirmation != null && confirmationMatches(pendingConfirmation, jo)) {
+                pendingConfirmationsByRemoteId.remove(remoteId, pendingConfirmation);
+                confirmationSentAtByRemoteId.remove(remoteId);
+            }
             locallyConfirmedRemoteIds.put(remoteId, true);
         } else {
             locallyConfirmedRemoteIds.remove(remoteId);
+            // An authoritative peer confirmation supersedes this local Save.
+            pendingConfirmationsByRemoteId.remove(remoteId);
+            confirmationSentAtByRemoteId.remove(remoteId);
         }
         CaltopoClient.ApplyPeerDroneSpecConfirmation(
                 remoteId,
@@ -2241,6 +2268,13 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                     jo.optLong("leaseSeq", -1L),
                     jo.optLong("leaseExpireTs", 0L));
         }
+    }
+
+    private static boolean confirmationMatches(JSONObject pending, JSONObject received) {
+        for (String field : new String[] {"mappedId", "org", "model", "ownerName"}) {
+            if (!pending.optString(field).equals(received.optString(field))) return false;
+        }
+        return true;
     }
 
     void handleOwnerAssignedForTesting(@NonNull String remoteId, @NonNull String ownerGuid, long leaseSeq) {

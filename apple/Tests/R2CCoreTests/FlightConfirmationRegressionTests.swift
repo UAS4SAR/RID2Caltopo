@@ -45,12 +45,20 @@ extension FlightConfirmationRegressionTests {
         XCTAssertEqual(lifecycle.reconcile(orderedRemoteIDs: ["M4TD"], confirmedRemoteIDs: [], ignoredRemoteIDs: []).candidateRemoteID, "M4TD")
     }
 
-    func testExplicitTelemetryEndAllowsNewConfirmationWithVideoStillListed() {
+    func testExplicitTelemetryEndRequiresNewEvidenceDespiteListedVideo() {
         var lifecycle = CurrentFlightConfirmationLifecycle()
         XCTAssertEqual(lifecycle.reconcile(orderedRemoteIDs: ["M4TD"], confirmedRemoteIDs: [], ignoredRemoteIDs: []).candidateRemoteID, "M4TD")
         XCTAssertNil(lifecycle.reconcile(orderedRemoteIDs: ["M4TD"], confirmedRemoteIDs: ["M4TD"], ignoredRemoteIDs: []).candidateRemoteID)
+        var guardPolicy = CompletedFlightConfirmationGuard()
+        guardPolicy.updateSessions(["M4TD": ["stream|old"]])
+        guardPolicy.end(remoteID: "M4TD", at: Date(timeIntervalSince1970: 100))
         lifecycle.endFlight(remoteID: "M4TD")
-        // The confirmation store clears its saved decision when explicitly ending the track.
+        for _ in 0..<3 {
+            let eligible = ["M4TD"].filter { guardPolicy.allows(remoteID: $0) }
+            XCTAssertNil(lifecycle.reconcile(orderedRemoteIDs: eligible, confirmedRemoteIDs: [], ignoredRemoteIDs: []).candidateRemoteID)
+        }
+        guardPolicy.updateSessions(["M4TD": ["stream|new"]])
+        XCTAssertTrue(guardPolicy.allows(remoteID: "M4TD"))
         XCTAssertEqual(lifecycle.reconcile(orderedRemoteIDs: ["M4TD"], confirmedRemoteIDs: [], ignoredRemoteIDs: []).candidateRemoteID, "M4TD")
         XCTAssertNil(lifecycle.reconcile(orderedRemoteIDs: ["M4TD"], confirmedRemoteIDs: [], ignoredRemoteIDs: []).candidateRemoteID)
         lifecycle.endFlight(remoteID: "M4TD")
@@ -78,5 +86,22 @@ extension FlightConfirmationRegressionTests {
             XCTAssertEqual(lifecycle.reconcile(orderedRemoteIDs: ["MATRICE"], confirmedRemoteIDs: peerIDs, ignoredRemoteIDs: []).candidateRemoteID, "MATRICE")
         }
         XCTAssertTrue(CurrentFlightConfirmationLifecycle.acceptsPeerConfirmation(mapID: "MAP1"))
+    }
+}
+
+// Map scope controls peer confirmation, not the lifetime of locally confirmed flights.
+extension FlightConfirmationRegressionTests {
+    func testMapTransitionsKeepLocalFlightConfirmationUntilPhysicalEnd() {
+        var lifecycle = CurrentFlightConfirmationLifecycle()
+        let remote = "RID-CONTINUING"
+        _ = lifecycle.reconcile(orderedRemoteIDs: [remote], confirmedRemoteIDs: [remote], ignoredRemoteIDs: [])
+        for mapID in ["first-map", "", "second-map"] {
+            XCTAssertEqual(CurrentFlightConfirmationLifecycle.acceptsPeerConfirmation(mapID: mapID), !mapID.isEmpty)
+            let result = lifecycle.reconcile(orderedRemoteIDs: [remote], confirmedRemoteIDs: [remote], ignoredRemoteIDs: [])
+            XCTAssertTrue(result.endedRemoteIDs.isEmpty)
+            XCTAssertNil(result.candidateRemoteID)
+        }
+        lifecycle.endFlight(remoteID: remote)
+        XCTAssertEqual(lifecycle.reconcile(orderedRemoteIDs: [remote], confirmedRemoteIDs: [], ignoredRemoteIDs: []).candidateRemoteID, remote)
     }
 }

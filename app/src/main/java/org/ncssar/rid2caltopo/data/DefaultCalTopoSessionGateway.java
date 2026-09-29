@@ -91,6 +91,16 @@ public final class DefaultCalTopoSessionGateway implements CalTopoSessionGateway
 
     @NonNull
     @Override
+    public CaltopoOp editObjectOnMap(String mapId, String type, String id, JSONObject feature, Consumer<CaltopoOp> done) {
+        return CaltopoSession.EditObjectOnMap(mapId, type, id, feature, done);
+    }
+
+    @Override
+    public CaltopoOp deleteLiveTrackOnMap(String mapId, String id, Consumer<CaltopoOp> done) {
+        return CaltopoSession.DeleteLiveTrackOnMap(mapId, id, done);
+    }
+
+    @Override
     public CaltopoOp startLiveTrack(@NonNull String liveTrackId, @NonNull String deviceId, @NonNull String label, @Nullable String folderId, @Nullable String description, @Nullable CtLineProperty lineProp, @Nullable Consumer<CaltopoOp> onComplete) {
         return CaltopoSession.StartLiveTrack(liveTrackId, deviceId, label, folderId, description, lineProp, onComplete);
     }

@@ -4,6 +4,21 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ControllerNetworkTest {
+    @Test fun networkSwitchUpdatesIdentityEvenWhenAddressIsUnchanged() {
+        val address = ControllerEndpoint("192.168.1.10", false)
+        val first = controllerNetworkState(listOf(address), "\"Taylor Site\"")
+        val switched = controllerNetworkState(listOf(address), "\"Field Hotspot\"")
+        assertNotEquals(first, switched)
+        assertEquals("Field Hotspot", switched.ssid)
+        val moved = controllerNetworkState(listOf(ControllerEndpoint("192.168.2.20", false)), "Field Hotspot")
+        assertEquals("Wi-Fi: rtmp://192.168.2.20/droneDesig", controllerEndpointInstructions(moved.endpoints))
+        val disconnected = controllerNetworkState(emptyList(), "Field Hotspot")
+        assertEquals("Not connected", disconnected.ssid)
+        assertEquals("Wi-Fi: Not connected", controllerEndpointInstructions(disconnected.endpoints))
+        assertEquals("Wi-Fi name unavailable", controllerNetworkState(listOf(address), "<unknown ssid>").ssid)
+        assertEquals("Wi-Fi name unavailable", controllerNetworkState(listOf(address), null).ssid)
+    }
+
     @Test fun cableConnectionAddsAddressWithoutReplacingWifi() {
         val wifi = ControllerEndpoint("192.168.50.12", false)
         val wired = ControllerEndpoint("169.254.10.2", true)

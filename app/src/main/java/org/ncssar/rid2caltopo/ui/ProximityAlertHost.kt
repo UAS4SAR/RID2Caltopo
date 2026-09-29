@@ -1048,13 +1048,10 @@ fun ResumeProximityAlertButton(onSettings: (() -> Unit)? = null) {
         staleCount > 0 -> "Unavailable"
         else -> "On"
     }
-    if (suspended && consent.enabled || onSettings != null) {
-        TextButton(onClick = { if (suspended && consent.enabled) ProximityAlertCenter.resumeSuspendedAlert() else onSettings?.invoke() }) {
-            Text("Proximity: $status")
-        }
-    } else {
-        Text("Proximity: $status", style = MaterialTheme.typography.labelSmall)
-    }
+    androidx.compose.material3.AssistChip(
+        onClick = { if (suspended && consent.enabled) ProximityAlertCenter.resumeSuspendedAlert() else onSettings?.invoke() },
+        label = { Text("Proximity Alerts: $status", maxLines = 1) }
+    )
 }
 
 @Composable

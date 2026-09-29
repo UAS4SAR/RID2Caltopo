@@ -530,9 +530,9 @@ internal class NotamRepository {
         val start = notam.optString("effectiveStart")
         val end = notam.optString("effectiveEnd")
         return when {
-            start.isNotBlank() && end.isNotBlank() -> "Active $start to $end"
-            start.isNotBlank() -> "Active from $start"
-            end.isNotBlank() -> "Active until $end"
+            start.isNotBlank() && end.isNotBlank() -> "Effective $start to $end"
+            start.isNotBlank() -> "Effective from $start"
+            end.isNotBlank() -> "Effective until $end"
             else -> ""
         }
     }

@@ -35,6 +35,7 @@ internal object NotamHumanizer {
         }
 
         val summaryParts = mutableListOf<String>()
+        serviceAvailabilitySummary(sourceText)?.let(summaryParts::add)
         when {
             intersectsPilotBubble -> summaryParts += "Intersects the pilot's ${OperatingArea.displayLabel}."
             horizontalIntersectsPilotBubble && verticallyIntersectsPilotBand == false ->
@@ -62,6 +63,20 @@ internal object NotamHumanizer {
             summary = summaryParts.joinToString(" "),
             details = detailParts.joinToString("\n")
         )
+    }
+
+    private fun serviceAvailabilitySummary(text: String): String? {
+        val upper = text.uppercase(Locale.US)
+        if (!upper.contains("MAY NOT BE AVBL")) return null
+        val services = buildList {
+            if (upper.contains("ADS-B")) add("ADS-B")
+            if (upper.contains("ADS-R")) add("ADS-R rebroadcast")
+            if (upper.contains("TIS-B")) add("traffic information (TIS-B)")
+            if (upper.contains("FIS-B")) add("flight information (FIS-B)")
+        }
+        return services.takeIf { it.isNotEmpty() }?.joinToString(", ")?.let {
+            "$it services may be unavailable during the effective period."
+        }
     }
 
     private fun categoryFor(text: String): String {
@@ -99,12 +114,12 @@ internal object NotamHumanizer {
     private fun areaSummary(text: String): String? {
         val normalized = text.uppercase(Locale.US)
         return when {
-            normalized.contains("WI AN AREA DEFINED AS") || normalized.contains("WI AREA DEFINED AS") ->
-                "Applies inside a polygon-defined area."
             radiusRegex.containsMatchIn(normalized) -> {
                 val radius = radiusRegex.find(normalized)?.groupValues?.getOrNull(1) ?: return null
                 "Applies inside a $radius NM radius area."
             }
+            normalized.contains("WI AN AREA DEFINED AS") || normalized.contains("WI AREA DEFINED AS") ->
+                "Applies inside a polygon-defined area."
             normalized.contains("WI") && normalized.contains("AREA") ->
                 "Applies inside a defined area."
             else -> null
@@ -115,14 +130,14 @@ internal object NotamHumanizer {
         val normalized = text.uppercase(Locale.US)
         val firstReference = Regex("""\(([0-9.]+NM [A-Z]{1,3} [A-Z0-9]{2,5})\)""").find(normalized)?.groupValues?.getOrNull(1)
         return when {
-            normalized.contains("WI AN AREA DEFINED AS") || normalized.contains("WI AREA DEFINED AS") -> {
-                val nearFix = firstReference?.let { " First reference point: $it." }.orEmpty()
-                "Area: Polygon boundary defined by FAA coordinates.$nearFix"
-            }
             radiusRegex.containsMatchIn(normalized) -> {
                 val radius = radiusRegex.find(normalized)?.groupValues?.getOrNull(1) ?: return null
                 val nearFix = firstReference?.let { " centered near $it" }.orEmpty()
-                "Area: $radius NM radius restriction$nearFix."
+                "Area: $radius NM radius$nearFix."
+            }
+            normalized.contains("WI AN AREA DEFINED AS") || normalized.contains("WI AREA DEFINED AS") -> {
+                val nearFix = firstReference?.let { " First reference point: $it." }.orEmpty()
+                "Area: Polygon boundary defined by FAA coordinates.$nearFix"
             }
             else -> null
         }

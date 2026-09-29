@@ -29,6 +29,8 @@ final class AppleClueStore: ObservableObject {
     private let root: URL
     private var client: CaltopoLiveClient?
     private var teamID = ""
+    private var mapID = ""
+    private var configurationGeneration = 0
     private var trackFolderName = "Drone Tracks"
     private var trackFolderID: String?
     private var folderResolver = CaltopoTrackFolderResolver()
@@ -51,6 +53,8 @@ final class AppleClueStore: ObservableObject {
     ) {
         uploadTasks.values.forEach { $0.cancel() }
         uploadTasks.removeAll()
+        configurationGeneration += 1
+        mapID = configuration.mapID
         teamID = configuration.teamID
         self.trackFolderName = trackFolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "Drone Tracks"
@@ -64,6 +68,11 @@ final class AppleClueStore: ObservableObject {
         }
         do {
             client = try CaltopoLiveClient(configuration: live)
+            let journalURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("awaiting-map-flights.json")
+            let decisions = AwaitingMapFlightJournal(fileURL: journalURL).entries
+            for flight in decisions where ["publish", "queued"].contains(flight.decision) && flight.mapID == mapID && flight.teamID == teamID {
+                bindAwaitingFlight(flight, mapID: mapID, teamID: teamID)
+            }
             records.filter { $0.uploadState == .pending || $0.uploadState == .failed || $0.uploadState == .uploading }
                 .forEach { enqueueUpload($0.id) }
             updateStatus()
@@ -86,6 +95,7 @@ final class AppleClueStore: ObservableObject {
         try jpegData.write(to: root.appendingPathComponent(imageFilename), options: .atomic)
         let thumbnailData = Self.thumbnailJPEG(from: jpegData) ?? jpegData
         try thumbnailData.write(to: root.appendingPathComponent(thumbnailFilename), options: .atomic)
+        let flightDestination = publicationDestination(for: draft)
         let record = OperationalClueRecord(
             id: id,
             capturedAt: draft.capturedAt,
@@ -105,7 +115,9 @@ final class AppleClueStore: ObservableObject {
             clueDescription: draft.description,
             imageFilename: imageFilename,
             thumbnailFilename: thumbnailFilename,
-            uploadState: publishToCaltopo ? .pending : .localOnly
+            uploadState: publishToCaltopo ? .pending : .localOnly,
+            destinationMapID: publishToCaltopo ? flightDestination.map : nil,
+            destinationTeamID: publishToCaltopo ? flightDestination.team : nil
         )
         records.insert(record, at: 0)
         try persistIndex()
@@ -116,6 +128,31 @@ final class AppleClueStore: ObservableObject {
         updateStatus()
         if publishToCaltopo { enqueueUpload(id) }
         return record
+    }
+
+    private func publicationDestination(for draft: AppleClueDraft) -> (map: String?, team: String?) {
+        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("awaiting-map-flights.json")
+        if let data = try? Data(contentsOf: url), let flights = try? JSONDecoder().decode([AwaitingMapFlight].self, from: data),
+           let flight = flights.last(where: { !$0.finished && RidTrackStore.canonicalAircraftID($0.remoteID) == RidTrackStore.canonicalAircraftID(draft.aircraftID) && $0.decision != "local" &&
+               draft.capturedAt >= $0.firstTime && draft.capturedAt.timeIntervalSince($0.lastTime) <= 30 }) {
+            return (flight.mapID.isEmpty ? nil : flight.mapID, flight.teamID.isEmpty ? nil : flight.teamID)
+        }
+        return (mapID.isEmpty ? nil : mapID, teamID.isEmpty ? nil : teamID)
+    }
+
+    func bindAwaitingFlight(_ flight: AwaitingMapFlight, mapID: String, teamID: String) {
+        let previous = records
+        for index in records.indices where records[index].destinationMapID == nil &&
+                records[index].uploadState != .localOnly && records[index].uploadState != .published &&
+                RidTrackStore.canonicalAircraftID(records[index].aircraftID) == RidTrackStore.canonicalAircraftID(flight.remoteID) &&
+                records[index].capturedAt >= flight.firstTime && records[index].capturedAt <= flight.lastTime {
+            records[index].destinationMapID = mapID
+            records[index].destinationTeamID = teamID
+        }
+        do { try persistIndex() } catch { records = previous; status = "Clue destination could not be saved"; return }
+        for record in records where record.canAutomaticallyPublish(mapID: self.mapID, teamID: self.teamID) && record.uploadState == .pending {
+            enqueueUpload(record.id)
+        }
     }
 
     func retry(_ id: UUID) {
@@ -169,6 +206,15 @@ final class AppleClueStore: ObservableObject {
 
     private func enqueueUpload(_ id: UUID) {
         guard uploadTasks[id] == nil else { return }
+        guard let record = records.first(where: { $0.id == id }),
+              record.canAutomaticallyPublish(mapID: mapID, teamID: teamID) else {
+            mutate(id) { $0.lastUploadError = "Waiting for the original map, or review to choose a destination." }
+            try? persistIndex()
+            updateStatus()
+            return
+        }
+        let generation = configurationGeneration
+        let destinationTeamID = teamID
         guard client != nil, !teamID.isEmpty else {
             mutate(id) { record in
                 record.uploadState = .pending
@@ -180,7 +226,7 @@ final class AppleClueStore: ObservableObject {
         }
         uploadTasks[id] = Task { [weak self] in
             guard let self else { return }
-            while !Task.isCancelled {
+            while !Task.isCancelled && generation == self.configurationGeneration {
                 guard let record = self.records.first(where: { $0.id == id }),
                       record.uploadState != .published,
                       record.uploadState != .localOnly,
@@ -196,6 +242,7 @@ final class AppleClueStore: ObservableObject {
                 self.updateStatus()
                 do {
                     let folderID = try await self.resolveTrackFolder(using: client)
+                    guard !Task.isCancelled, generation == self.configurationGeneration else { break }
                     let markerID = try await client.publishPhotoClue(CaltopoPhotoClue(
                         markerID: id,
                         mediaID: record.caltopoMediaID,
@@ -205,7 +252,7 @@ final class AppleClueStore: ObservableObject {
                         description: record.clueDescription,
                         createdMilliseconds: Int64(record.capturedAt.timeIntervalSince1970 * 1_000),
                         jpegData: jpeg,
-                        teamID: self.teamID,
+                        teamID: destinationTeamID,
                         folderID: folderID
                     ))
                     self.mutate(id) { value in
@@ -218,6 +265,7 @@ final class AppleClueStore: ObservableObject {
                     AppleLog.info("Clue", "CalTopo clue published id=\(id) marker=\(markerID)")
                     break
                 } catch {
+                    guard !Task.isCancelled, generation == self.configurationGeneration else { break }
                     let attempts = self.records.first(where: { $0.id == id })?.uploadAttempts ?? 1
                     self.mutate(id) { value in
                         value.uploadState = .failed
@@ -225,6 +273,8 @@ final class AppleClueStore: ObservableObject {
                     }
                     try? self.persistIndex()
                     self.updateStatus()
+                    if case let CaltopoLiveClientError.httpStatus(code, _) = error,
+                       [400, 401, 403, 404, 413, 422].contains(code) { break }
                     let delay = [2.0, 5.0, 15.0, 30.0, 60.0][min(max(attempts - 1, 0), 4)]
                     AppleLog.warning(
                         "Clue",
@@ -233,14 +283,18 @@ final class AppleClueStore: ObservableObject {
                     try? await Task.sleep(for: .seconds(delay))
                 }
             }
-            self.uploadTasks.removeValue(forKey: id)
+            if generation == self.configurationGeneration {
+                self.uploadTasks.removeValue(forKey: id)
+            }
         }
     }
 
     private func resolveTrackFolder(using client: CaltopoLiveClient) async throws -> String {
         if let trackFolderID { return trackFolderID }
         let folderName = trackFolderName
-        let resolved = try await folderResolver.resolve(
+        let generation = configurationGeneration
+        let resolver = folderResolver
+        let resolved = try await resolver.resolve(
             trackFolderName: folderName,
             settleDelay: .milliseconds(500),
             fetchSnapshot: {
@@ -261,7 +315,7 @@ final class AppleClueStore: ObservableObject {
                 )
             }
         )
-        trackFolderID = resolved.active
+        if generation == configurationGeneration { trackFolderID = resolved.active }
         return resolved.active
     }
 

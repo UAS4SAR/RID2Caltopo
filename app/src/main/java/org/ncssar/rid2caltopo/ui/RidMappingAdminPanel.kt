@@ -509,7 +509,7 @@ internal fun extractRemoteIdCandidates(value: String): List<String> {
 }
 
 @Composable
-fun OrganizationUserLabel() {
+fun OrganizationUserLabel(compactHeader: Boolean = false) {
     val change by AircraftOrganizationAccess.changes.collectAsState()
     val endpoint = CaltopoClient.GetTrackerCoordinationUrlPfx()
     val credential = CaltopoClient.GetTrackerCoordinationApiKey()
@@ -527,9 +527,11 @@ fun OrganizationUserLabel() {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     val username = remember(change, endpoint, credential) { AircraftOrganizationAccess.organizationUser() }
-    if (AircraftOrganizationAccess.belongsToOrganization()) {
-        Text("Organization account: " + (username ?: "Not verified"), style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(6.dp))
+    if (compactHeader || AircraftOrganizationAccess.belongsToOrganization()) {
+        Text((if (compactHeader) "Account: " else "Organization account: ") + (username ?: "Not verified"),
+            style = if (compactHeader) MaterialTheme.typography.labelMedium else MaterialTheme.typography.bodySmall,
+            maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            modifier = Modifier.padding(if (compactHeader) 0.dp else 6.dp))
     }
 }
 

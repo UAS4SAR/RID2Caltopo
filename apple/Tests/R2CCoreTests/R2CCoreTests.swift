@@ -641,6 +641,13 @@ import Testing
     #expect(contentView.contains(".onChange(of: locationProvider.authorizationStatus)"))
     #expect(contentView.contains("refresh(reason: .locationAuthorizationChanged)"))
     #expect(contentView.contains("refresh(reason: .applicationBecameActive)"))
+    #expect(contentView.contains("refresh(reason: .foregroundIdentityCheck)"))
+    #expect(contentView.contains("Task.sleep(for: .seconds(3))"))
+    #expect(contentView.contains(".onChange(of: networkDiagnostics.currentSnapshotID)"))
+    #expect(diagnostics.contains("let identity = await Self.currentWiFiIdentity()"))
+    #expect(diagnostics.contains("guard generation == recordGeneration, !Task.isCancelled"))
+    #expect(diagnostics.contains("currentControllerIPv4Address = controllerIPv4"))
+    #expect(diagnostics.contains("currentWiFiSSID = ssid"))
     #expect(diagnostics.contains("self.latestPath = path"))
     #expect(diagnostics.contains("refresh(reason: RefreshReason) async"))
     #expect(diagnostics.contains("self.record(path: path, reason: .networkPathChanged)"))
@@ -3270,6 +3277,14 @@ private func proximityDrone(
         from: JSONEncoder().encode(record)
     )
     #expect(decoded == record)
+    #expect(!decoded.canAutomaticallyPublish(mapID: "map-a", teamID: "team-a"))
+    var bound = decoded
+    bound.destinationMapID = "map-a"
+    bound.destinationTeamID = "team-a"
+    let restored = try JSONDecoder().decode(OperationalClueRecord.self, from: JSONEncoder().encode(bound))
+    #expect(restored.canAutomaticallyPublish(mapID: "map-a", teamID: "team-a"))
+    #expect(!restored.canAutomaticallyPublish(mapID: "map-b", teamID: "team-a"))
+    #expect(!restored.canAutomaticallyPublish(mapID: "map-a", teamID: "team-b"))
 }
 
 @Test func operationalAircraftLabelLayoutSeparatesOverlappingLabels() throws {
@@ -5231,7 +5246,7 @@ private func proximityDrone(
         "/api/v1/map/map123/Marker/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         "/api/v1/media/11111111-2222-3333-4444-555555555555",
         "/api/v1/media/11111111-2222-3333-4444-555555555555/data",
-        "/api/v1/map/map123/MapMediaObject",
+        "/api/v1/map/map123/MapMediaObject/11111111-2222-3333-4444-555555555555",
     ])
     for request in requests {
         #expect(request.httpMethod == "POST")
@@ -5277,6 +5292,7 @@ private func proximityDrone(
     let link = try #require(JSONSerialization.jsonObject(with: linkJSON) as? [String: Any])
     let linkProperties = try #require(link["properties"] as? [String: Any])
     let linkGeometry = try #require(link["geometry"] as? [String: Any])
+    #expect(link["id"] as? String == "11111111-2222-3333-4444-555555555555")
     #expect(link["type"] as? String == "Feature")
     #expect(linkGeometry["type"] as? String == "Point")
     #expect(linkGeometry["coordinates"] as? [Double] == [-105.2, 39.1])
@@ -6244,7 +6260,7 @@ private func writeInt32(_ value: Int32, into bytes: inout [UInt8], at offset: In
     #expect(!source.contains("let freshDjiCameraTelemetry = session.model.freshDJICameraTelemetry()"))
     #expect(!source.contains("freshValidatedDJIPositionByAircraftID(tracks: model.tracks)"))
     #expect(!source.contains(".anchoredToRID("))
-    #expect(source.contains("Camera Azimuth: "))
+    #expect(source.contains("OperationalClueDescription.build("))
     #expect(!source.contains("Heading used for clue"))
     #expect(!source.contains("DJI frame/SEI diagnostics:"))
     #expect(!source.contains("DJI tag-4 angles:"))
@@ -6443,4 +6459,20 @@ func aolHighlightRequiresNegativeNumberAndExcludesAdjacentFields() {
     #expect(coordinates.first == [-121, 39, 500])
     let expectedLast: [Double] = [-121, 39 + 5999.0 / 1000000, 500]
     #expect(coordinates.last == expectedLast)
+}
+
+@Test func retainedLiveViewObservesNetworkIdentityInsteadOfCapturingIt() throws {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        .deletingLastPathComponent().deletingLastPathComponent()
+    let map = try String(contentsOf: root.appendingPathComponent("App/RIDTrackMapView.swift"), encoding: .utf8)
+    let network = try String(contentsOf: root.appendingPathComponent("App/AppleNetworkAddress.swift"), encoding: .utf8)
+    #expect(map.contains("AppleLiveViewNetworkStatus()"))
+    #expect(!map.contains("let networkSSID: String"))
+    #expect(!map.contains("let ingestAddress: String"))
+    let header = String(network.split(separator: "struct AppleLiveViewNetworkStatus: View")[1]
+        .split(separator: "struct AppleControllerConnectionURLs: View")[0])
+    #expect(header.contains("@ObservedObject private var network = AppleNetworkDiagnosticCenter.shared"))
+    #expect(header.contains("network.currentControllerConnectionLabel"))
+    #expect(header.contains("AppleControllerConnectionURLs()"))
+    #expect(header.contains(".onChange(of: network.currentSnapshotID, initial: true)"))
 }

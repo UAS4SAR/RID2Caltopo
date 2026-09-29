@@ -27,4 +27,20 @@ class StreamClueFrameProgressTest {
         assertTrue(progress.onFrame(1, 1, 0))
         assertEquals(1, progress.renderedFrameCount)
     }
+    @Test fun playerCaptureWorksWithoutFfmpegAndCannotUseItsOldFrame() {
+        val image = captureFromActiveClueRenderer(false,
+            ffmpeg = { error("Inactive FFmpeg renderer must not be queried") },
+            player = { "visible player image" })
+        assertEquals("visible player image", image)
+        assertNull(captureFromActiveClueRenderer(false,
+            ffmpeg = { "stale FFmpeg image" }, player = { null }))
+    }
+
+    @Test fun ffmpegCaptureKeepsFrameMatchedDataAndDoesNotUsePlayerFallback() {
+        val frame = "image with frame-matched camera metadata"
+        assertSame(frame, captureFromActiveClueRenderer(true,
+            ffmpeg = { frame }, player = { error("Inactive player") }))
+        assertNull(captureFromActiveClueRenderer(true,
+            ffmpeg = { null }, player = { "stale player image" }))
+    }
 }

@@ -765,10 +765,11 @@ internal fun SplitMapPane(
     var restoredViewportStartupCheckComplete by remember { mutableStateOf(true) }
     var restoredViewportStartupWaitLogged by remember { mutableStateOf(false) }
     var restoredViewportStartupCheckStartedAtMs by remember { mutableStateOf(System.currentTimeMillis()) }
-    var operatorAdjustedViewport by remember { mutableStateOf(false) }
+    var operatorAdjustedViewport by remember(viewModel, isInsetMode) {
+        if (isInsetMode) mutableStateOf(false) else viewModel.mapOperatorAdjustedViewportState
+    }
     var lastLocalDeviceMarkerStats by remember { mutableStateOf("") }
     var localDeviceLocationMissingLogged by remember { mutableStateOf(false) }
-    var localDeviceViewportRescueApplied by remember { mutableStateOf(false) }
     val droneMarkerIcon = remember(context) { ContextCompat.getDrawable(context, R.drawable.ic_drone_marker) }
     val symbolMarkerCache = remember { LinkedHashMap<String, Drawable>() }
     val caltopoMarkerCache = remember { mutableStateMapOf<String, Drawable>() }
@@ -848,6 +849,7 @@ internal fun SplitMapPane(
     val notamUiState by NotamCenter.uiState.collectAsStateWithLifecycle()
     val airspaceUiState by AirspaceCenter.uiState.collectAsStateWithLifecycle()
     val landRestrictionUiState by LandRestrictionCenter.uiState.collectAsStateWithLifecycle()
+    val notamMapFocusRequest by viewModel.notamMapFocusRequest.collectAsStateWithLifecycle()
     val proximityMapFocusTarget by viewModel.proximityMapFocusTarget.collectAsStateWithLifecycle()
     val peerTrafficMapPoints by PeerTrafficMapRegistry.points.collectAsStateWithLifecycle()
     val staleTrackCutoffMs = System.currentTimeMillis() - (CaltopoClient.GetNewTrackDelayInSeconds() * 1000L)
@@ -1025,7 +1027,12 @@ internal fun SplitMapPane(
         selectedNotam = selectedNotam,
         onSelectedNotamChange = { selectedNotam = it },
         selectedNotamGroup = selectedNotamGroup,
-        onSelectedNotamGroupChange = { selectedNotamGroup = it }
+        onSelectedNotamGroupChange = { selectedNotamGroup = it },
+        onShowOnMap = { notice ->
+            selectedNotam = null
+            selectedNotamGroup = null
+            viewModel.showNotamOnMap(notice)
+        }
     )
     selectedArtifact?.let { artifact ->
         AlertDialog(
@@ -1059,7 +1066,7 @@ internal fun SplitMapPane(
         }
         .toMap()
     LaunchedEffect(liveMapStreamIds) {
-        if (!isInsetMode && streamFocusArrival.observe(liveMapStreamIds, followFocusedDroneEnabled, focusedPath != null)) {
+        if (!isInsetMode && !operatorAdjustedViewport && notamMapFocusRequest == null && streamFocusArrival.observe(liveMapStreamIds, followFocusedDroneEnabled, focusedPath != null)) {
             operatorAdjustedViewport = false
         }
     }
@@ -1070,7 +1077,7 @@ internal fun SplitMapPane(
             dronePoints.singleOrNull { sameMapDrone(it.designator, mapped) }?.designator
         }
     LaunchedEffect(followFocusedDroneEnabled, focusedPath, operatorAdjustedViewport, liveStreamMapDesignators) {
-        if (!isInsetMode) {
+        if (!isInsetMode && notamMapFocusRequest == null) {
             initialStreamMapFocus(
                 followFocusedDroneEnabled, focusedPath, operatorAdjustedViewport, liveStreamMapDesignators
             )?.let(viewModel::focusMapDrone)
@@ -2298,7 +2305,6 @@ internal fun SplitMapPane(
         lastCacheStats = ""
         lastLocalDeviceMarkerStats = ""
         viewportRestoreTracker.reset()
-        localDeviceViewportRescueApplied = false
         viewModel.altitudeCoordinator.onMapReconnect()
         renderLatencyKeyByDesignator.clear()
         complianceByDesignator.clear()
@@ -2307,7 +2313,6 @@ internal fun SplitMapPane(
         restoredViewportStartupCheckComplete = true
         restoredViewportStartupWaitLogged = false
         restoredViewportStartupCheckStartedAtMs = System.currentTimeMillis()
-        operatorAdjustedViewport = false
         localDeviceLocationMissingLogged = false
         startArtifactHydration("mapName=$mapName")
     }
@@ -3264,7 +3269,18 @@ internal fun SplitMapPane(
                             fillColor = polygonSpec.fillColor,
                             strokeWidth = 0f
                         )
-                        setOnClickListener { _, _, _ -> false }
+                        setOnClickListener { _, _, _ ->
+                            val notice = polygonSpec.notice
+                            if (!isInsetMode && notice != null) {
+                                selectedNotamGroup = null
+                                selectedNotam = notice
+                                true
+                            } else {
+                                // The pilot-range ring has no notice; inset taps retain
+                                // their existing navigation/focus behavior.
+                                false
+                            }
+                        }
                     }
                     mapView.overlays.add(polygonFill)
                     managedOverlays.add(polygonFill)
@@ -3633,23 +3649,12 @@ internal fun SplitMapPane(
                     consumeInsetMarkerTaps(localMarker, isInsetMode)
                     mapView.overlays.add(localMarker)
                     managedOverlays.add(localMarker)
-                    val mapCenter = mapView.mapCenter
-                    val localDeviceVisible = mapView.boundingBox.containsLocation(myLocation)
-                    val defaultViewportCenter =
-                        kotlin.math.abs(mapCenter.latitude) < 0.000001 &&
-                            kotlin.math.abs(mapCenter.longitude) < 0.000001
-                    val operationalContentPresent =
-                        dronePoints.isNotEmpty() || artifactOverlayState.totalFeatures > 0
-                    if (shouldRescueLocalDeviceViewport(
-                            hasRestoredViewport = restoredViewport != null,
-                            presentationMode = presentationMode,
-                            rescueAlreadyApplied = localDeviceViewportRescueApplied,
-                            localDeviceVisible = localDeviceVisible,
-                            defaultViewportCenter = defaultViewportCenter,
-                            operationalContentPresent = operationalContentPresent,
-                            operatorAdjustedViewport = operatorAdjustedViewport
-                        )
+                    if (!isInsetMode && !operatorAdjustedViewport && focusedPath == null &&
+                        !viewModel.mapInitialLocationApplied &&
+                        mapView.width > 0 && mapView.height > 0
                     ) {
+                        val mapCenter = mapView.mapCenter
+                        viewModel.mapInitialLocationApplied = true
                         mapView.controller.setCenter(GeoPoint(myLocation.latitude, myLocation.longitude))
                         mapView.controller.setZoom(STARTUP_MY_LOCATION_MIN_ZOOM)
                         if (!isInsetMode) {
@@ -3657,7 +3662,6 @@ internal fun SplitMapPane(
                         }
                         initialViewportApplied = true
                         restoredViewportStartupCheckComplete = true
-                        localDeviceViewportRescueApplied = true
                         CTDebug(
                             MAP_PANE_TAG,
                             String.format(
@@ -4172,6 +4176,25 @@ internal fun SplitMapPane(
                         }
                         initialViewportApplied = true
                         viewModel.clearProximityMapFocus(focusTarget.requestId)
+                    }
+                }
+
+                if (!isInsetMode) notamMapFocusRequest?.let { request ->
+                    // Wait for a measured full map, then consume once so reopening cannot replay it.
+                    if (mapView.width > 0 && mapView.height > 0) {
+                        val points = request.coordinates.map { GeoPoint(it.latitude, it.longitude) }
+                        operatorAdjustedViewport = true
+                        viewModel.clearMapDroneFocus()
+                        if (points.size == 1) {
+                            mapView.controller.setCenter(points.first())
+                            mapView.controller.setZoom(15.0)
+                        } else {
+                            mapView.zoomToBoundingBox(boundingBoxFromPoints(points), false, 96, 15.0, null)
+                        }
+                        persistFullMapViewport(mapView)
+                        initialViewportApplied = true
+                        pendingArtifactZoomFeatureId = null
+                        viewModel.consumeNotamMapFocus(request.id)
                     }
                 }
 

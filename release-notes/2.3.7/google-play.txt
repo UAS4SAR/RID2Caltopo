@@ -1,0 +1,3 @@
+<en-US>
+Fly standalone and upload selected flights and clues later. Improved recovery from intermittent map connectivity and prevented repeat uploads. Bridge signal chip switches Main Screen/Live View. One setting controls thumbnail and LiveTrack updates. Network names and RTMP addresses refresh after network changes. Improved map-view persistence, NOTAM details, clue reports, narrow-screen layout, full-screen camera controls, and drone confirmation behavior.
+</en-US>

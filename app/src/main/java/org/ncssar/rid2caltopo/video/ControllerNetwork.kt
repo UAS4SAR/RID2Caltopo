@@ -17,6 +17,10 @@ import androidx.compose.material3.Text
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import java.net.Inet4Address
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import org.opendroneid.android.bluetooth.WiFiScanner
 
 internal data class ControllerEndpoint(val address: String, val wired: Boolean) {
     val label: String get() = if (wired) "Ethernet" else "Wi-Fi"
@@ -59,12 +63,28 @@ internal fun ControllerEndpointInstructions(
     }
 }
 
-/** Observe all local networks, including Ethernet without an Internet route. */
+internal data class ControllerNetworkState(
+    val endpoints: List<ControllerEndpoint> = emptyList(),
+    val ssid: String = "Not connected",
+)
+
+internal fun controllerNetworkState(candidates: List<ControllerEndpoint>, rawSSID: String?): ControllerNetworkState {
+    val endpoints = controllerEndpoints(candidates)
+    val name = rawSSID?.trim()?.trim('"')?.takeIf { it.isNotBlank() && it != "<unknown ssid>" }
+    return ControllerNetworkState(endpoints,
+        if (endpoints.none { !it.wired }) "Not connected" else name ?: "Wi-Fi name unavailable")
+}
+
 @Composable
-internal fun rememberControllerEndpoints(): List<ControllerEndpoint> {
+internal fun rememberControllerEndpoints(): List<ControllerEndpoint> = rememberControllerNetwork().endpoints
+
+/** Observe local links and recheck identity while visible, including same-subnet Wi-Fi switches. */
+@Composable
+internal fun rememberControllerNetwork(): ControllerNetworkState {
     val context = LocalContext.current.applicationContext
-    var endpoints by remember { mutableStateOf(emptyList<ControllerEndpoint>()) }
-    DisposableEffect(context) {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    var state by remember { mutableStateOf(ControllerNetworkState()) }
+    DisposableEffect(context, lifecycle) {
         val manager = context.getSystemService(ConnectivityManager::class.java)
         val handler = Handler(Looper.getMainLooper())
         var active = true
@@ -88,7 +108,7 @@ internal fun rememberControllerEndpoints(): List<ControllerEndpoint> {
                             }
                         }
                     }
-                    endpoints = controllerEndpoints(candidates)
+                    state = controllerNetworkState(candidates, runCatching { WiFiScanner.WiFiSSID(context) }.getOrNull())
                 }
             }
         }
@@ -103,8 +123,25 @@ internal fun rememberControllerEndpoints(): List<ControllerEndpoint> {
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET).build()
         manager.registerNetworkCallback(request, callback, handler)
+        val identityRefresh = object : Runnable {
+            override fun run() {
+                if (!active || !lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
+                refresh()
+                handler.postDelayed(this, 3_000)
+            }
+        }
+        val observer = LifecycleEventObserver { _, _ ->
+            handler.removeCallbacks(identityRefresh)
+            if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) handler.post(identityRefresh)
+        }
+        lifecycle.addObserver(observer)
         refresh()
-        onDispose { active = false; manager.unregisterNetworkCallback(callback) }
+        onDispose {
+            active = false
+            lifecycle.removeObserver(observer)
+            handler.removeCallbacks(identityRefresh)
+            manager.unregisterNetworkCallback(callback)
+        }
     }
-    return endpoints
+    return state
 }

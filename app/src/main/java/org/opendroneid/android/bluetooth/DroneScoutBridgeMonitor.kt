@@ -71,9 +71,11 @@ object DroneScoutBridgeMonitor {
         _audioMuted.value = !_audioMuted.value
     }
 
-    internal fun setAudioMutedForTests(muted: Boolean) {
+    fun setAudioMuted(muted: Boolean) {
         _audioMuted.value = muted
     }
+
+    internal fun setAudioMutedForTests(muted: Boolean) = setAudioMuted(muted)
 
     internal fun resetForTests() {
         _signal.value = null

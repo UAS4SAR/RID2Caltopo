@@ -48,6 +48,7 @@ struct ContentView: View {
     @StateObject private var mediaMTX = MediaMTXViewModel()
     @ObservedObject private var videoFrames = AppleStreamRegistry.shared.primaryModel
     @StateObject private var ridTracks = RIDTrackViewModel()
+    @StateObject private var mapViewportMemory = AppleMapViewportMemory()
     @StateObject private var locationProvider = AppleLocationProvider()
     @StateObject private var caltopoSettings = AppleCaltopoSettings()
     @State private var showingFlightAllowance = false
@@ -67,7 +68,7 @@ struct ContentView: View {
     @StateObject private var streamRegistry = AppleStreamRegistry.shared
     @ObservedObject private var networkDiagnostics = AppleNetworkDiagnosticCenter.shared
     private let iCloudBackup = AppleICloudBackupCenter.shared
-    @State private var showTrackMap = false
+    @State private var showTrackMap = ProcessInfo.processInfo.arguments.contains("--show-map")
     @State private var showCaltopoSettings = false
     @State private var showDiagnosticLogs = false
     @State private var showStatus = false
@@ -85,7 +86,11 @@ struct ContentView: View {
     @State private var pendingImportToken = ""
     @State private var selectedAircraftID: String?
     @State private var addRidMapRemoteID: String?
-    @State private var pendingDroneConfirmation: DroneConfirmationRequest?
+    @State private var confirmationPresentation = PendingFlightConfirmation()
+    private var pendingDroneConfirmation: DroneConfirmationRequest? {
+        get { confirmationPresentation.remoteID.map { DroneConfirmationRequest(id: $0) } }
+        nonmutating set { confirmationPresentation.present(remoteID: newValue?.id) }
+    }
     @State private var automaticStreamPairingAircraftID: String?
     @State private var automaticPairingOfferedStreamIDs: Set<String> = []
     @State private var controllerRTMPURL = "Connect this device to Wi-Fi or Ethernet"
@@ -116,60 +121,60 @@ struct ContentView: View {
 
     // Bound generic view depth: the signed device runtime otherwise overflows
     // while decoding the combined navigation, presentation, and lifecycle type.
+    private func mainHeaderTitle(centered: Bool) -> some View {
+        Menu {
+            ForEach(profileLifecycle.availableProfiles) { profile in
+                Button {
+                    requestCredentialProfileSwitch(profile.id)
+                } label: {
+                    Label {
+                        VStack(alignment: .leading) {
+                            Text(profile.credentialLabel)
+                            Text(profileMenuDetail(profile))
+                        }
+                    } icon: {
+                        Image(systemName: profile.id == profileLifecycle.activeProfileID
+                            ? "checkmark.circle.fill" : "circle")
+                    }
+                }
+            }
+        } label: {
+            VStack(alignment: centered ? .center : .leading, spacing: 1) {
+                Text("RID-2-Caltopo")
+                    .font(.headline)
+                HStack(spacing: 2) {
+                    Text("Team: \(profileLifecycle.activeCredentialLabel)")
+                        .font(.caption)
+                        .foregroundStyle(activeCredentialNearExpiry ? .orange : .secondary)
+                    Image(systemName: "chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                AppleOrganizationUserLabel(compactHeader: true)
+            }
+            .lineLimit(1)
+            .foregroundStyle(.primary)
+        }
+        .accessibilityLabel("Selected Teams credentials: \(profileLifecycle.activeCredentialLabel)")
+    }
+
+
     private var navigationRoot: some View {
         AnyView(rootScreen)
-            .background(HeaderPageSwipe(toLiveView: true) {
-                guard !showTrackMap else { return }
-                openLiveViewFromHeaderSwipe()
-            })
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Menu {
-                        ForEach(profileLifecycle.availableProfiles) { profile in
-                            Button {
-                                requestCredentialProfileSwitch(profile.id)
-                            } label: {
-                                Label {
-                                    VStack(alignment: .leading) {
-                                        Text(profile.credentialLabel)
-                                        Text(profileMenuDetail(profile))
-                                    }
-                                } icon: {
-                                    Image(systemName: profile.id == profileLifecycle.activeProfileID
-                                        ? "checkmark.circle.fill" : "circle")
-                                }
-                            }
-                        }
-                    } label: {
-                        VStack(spacing: 0) {
-                            Text("RID-2-Caltopo")
-                                .font(.headline)
-                            HStack(spacing: 2) {
-                                Text("Teams: \(profileLifecycle.activeCredentialLabel)")
-                                    .font(.caption)
-                                    .foregroundStyle(activeCredentialNearExpiry ? .orange : .secondary)
-                                Image(systemName: "chevron.down")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    .accessibilityLabel("Selected Teams credentials: \(profileLifecycle.activeCredentialLabel)")
-                }
-                ToolbarItemGroup(placement: .topBarTrailing) {
+            .toolbar(showTrackMap || showCaltopoSettings || showConfigurationTransfer || showStorageManagement || showDiagnosticLogs || showStatus || showReleaseNotes || showTerms || showAboutPrivacy || selectedAircraftID != nil || addRidMapRemoteID != nil ? .visible : .hidden, for: .navigationBar)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                AdaptiveOperatorHeader { centered in
+                    mainHeaderTitle(centered: centered)
+                } actions: {
                     Button {
-                        bridgeAlerts.toggleAudioMuted()
+                        if showTrackMap { closeLiveView() }
+                        else { openLiveViewFromBridgeChip() }
                     } label: {
                         BridgeSignalIndicator(rssi: bluetoothScanner.bridgeSignalStrengthDbm)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityHint(
-                        bridgeAlerts.audioMuted
-                            ? "Double tap to enable bridge warnings"
-                            : "Double tap to mute bridge warnings"
-                    )
-                }
-                ToolbarItem(placement: .topBarTrailing) {
+                    .accessibilityHint(showTrackMap ? "Show Main Screen" : "Show Live View")
+                    .padding(.trailing, 16)
                     MainScreenMenu(
                         showTrackMap: $showTrackMap,
                         showDiagnosticLogs: $showDiagnosticLogs,
@@ -187,7 +192,6 @@ struct ContentView: View {
             }
             .navigationDestination(isPresented: $showTrackMap) {
                 operationalMapView
-                    .background(HeaderPageSwipe(toLiveView: false, onNavigate: closeLiveView))
                     .navigationBarBackButtonHidden(true)
                     .toolbar {
                         ToolbarItem(placement: .topBarLeading) {
@@ -212,6 +216,7 @@ struct ContentView: View {
                     identityStore: droneConfirmations,
                     trackModel: ridTracks,
                     proximityAlerts: proximityAlerts,
+                    bridgeAlerts: bridgeAlerts,
                     iCloudBackup: iCloudBackup
                 ) { configuration in
                     ridTracks.configureCaltopo(configuration, trackFolderName: orgConfigSettings.trackFolder)
@@ -523,7 +528,10 @@ struct ContentView: View {
                     .interactiveDismissDisabled()
                 }
             }
-            .sheet(item: $pendingDroneConfirmation, onDismiss: queueNextDroneConfirmation) { request in
+            .sheet(item: Binding(
+                get: { pendingDroneConfirmation },
+                set: { pendingDroneConfirmation = $0 }
+            ), onDismiss: queueNextDroneConfirmation) { request in
                 DroneConfirmationView(
                     remoteID: request.id,
                     existing: droneConfirmations.identity(for: request.id),
@@ -628,7 +636,11 @@ struct ContentView: View {
                     identityProvider: droneConfirmations.identity,
                     peerConfirmationConsumer: droneConfirmations.applyPeerConfirmation,
                     peerConfirmationClearer: droneConfirmations.clearPeerConfirmation,
-                    flightEndConsumer: droneConfirmations.endFlight
+                    flightEndConsumer: { remoteID in
+                        AppleLog.info("DroneConfirmation", "Flight end remoteId=\(remoteID) \(confirmationMediaDiagnostics)")
+                        droneConfirmations.endFlight(remoteID: remoteID)
+                        dismissEndedDroneConfirmation(remoteID)
+                    }
                 )
                 configurePeerCoordinator()
                 Task { await refreshManagedOrganizationConfiguration() }
@@ -827,6 +839,17 @@ struct ContentView: View {
                     try? await Task.sleep(for: .seconds(15))
                 }
             }
+            .task(id: scenePhase == .active) {
+                guard scenePhase == .active else { return }
+                // NWPath can stay identical across SSID changes, including the same IP/subnet.
+                // Read local identity only; this does not probe the network or restart streams.
+                while !Task.isCancelled,
+                      !AppleApplicationCleanupCenter.shared.isShutdownRequested {
+                    await networkDiagnostics.refresh(reason: .foregroundIdentityCheck)
+                    do { try await Task.sleep(for: .seconds(3)) }
+                    catch { return }
+                }
+            }
             .onReceive(orgConfigSettings.objectWillChange) { _ in
                 guard !ProcessInfo.processInfo.arguments.contains("--demo-notam") else { return }
                 Task { @MainActor in
@@ -1001,6 +1024,13 @@ struct ContentView: View {
                     )
                 }
             }
+            .onChange(of: networkDiagnostics.checkRecoveryGeneration) { _, _ in
+                guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
+                AppleLog.info("NetworkChecks", "Network path available; refreshing airspace, NOTAMs, and land rules")
+                airspace.refreshNow(location: locationProvider.lastLocation)
+                notams.refreshNow(location: locationProvider.lastLocation)
+                landRestrictions.refreshNow(location: locationProvider.lastLocation)
+            }
             .onChange(of: networkDiagnostics.currentSnapshotID) { _, _ in
                 refreshControllerRTMPURL()
             }
@@ -1100,7 +1130,12 @@ struct ContentView: View {
                 // @Published emits before ridTracks.tracks is assigned. Use this snapshot,
                 // especially the empty list that ends a video-only flight.
                 let remoteID = droneConfirmations.reconcileActiveFlights(
-                    confirmationActiveRemoteIDs(tracks: tracks)
+                    confirmationActiveRemoteIDs(tracks: tracks),
+                    aircraftReceivedAt: Dictionary(tracks.map { ($0.aircraftID, $0.lastAircraftMessageAt) }, uniquingKeysWith: max),
+                    videoSessions: confirmationVideoSessions,
+                    allowPrompt: pendingDroneConfirmation == nil,
+                    mediaDiagnostics: confirmationMediaDiagnostics,
+                    onFlightEnded: dismissEndedDroneConfirmation
                 )
                 if !ProcessInfo.processInfo.arguments.contains("--suppress-auto-confirmation"),
                    pendingDroneConfirmation == nil,
@@ -1133,8 +1168,10 @@ struct ContentView: View {
                 configureTrackPolicy()
                 updateOperationalAlerts()
             }
-        .overlay(alignment: .top) {
-            VStack(spacing: 0) {
+        // Reserve the measured status height so larger text and alert panels
+        // push the restriction chips down instead of drawing over them.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            VStack(spacing: 4) {
                 ForEach(ridTracks.tracks) { track in
                     if let identity = droneConfirmations.identity(for: track.aircraftID),
                        let profile = OperatingProfiles.active(identity.flightReadiness)["profile"] as? [String: Any] {
@@ -1142,14 +1179,6 @@ struct ContentView: View {
                             .font(.caption2).padding(2).background(.regularMaterial)
                     }
                 }
-                HStack {
-                    Text("Proximity alerts: \(proximityAlerts.status)").font(.caption)
-                    Spacer()
-                    if proximityAlerts.isSuspended {
-                        Button("Resume") { proximityAlerts.resume() }.font(.caption)
-                    }
-                }
-                .padding(.horizontal)
                 ShortFlightRecordingPanel(gate: ridTracks.shortFlightDecisions)
                 if operationalAlerts.signalLossAlerts.first != nil || operationalAlerts.altitudeAlerts.first != nil {
                     OperationalAlertBanner(
@@ -1162,6 +1191,8 @@ struct ContentView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
+            .padding(.vertical, 4)
+            .background(Color(uiColor: .systemBackground))
         }
     }
 
@@ -1177,6 +1208,11 @@ struct ContentView: View {
             }
             .navigationTitle("RID-2-Caltopo")
             .navigationBarTitleDisplayMode(.inline)
+        }
+        .safeAreaInset(edge: .bottom, alignment: .leading, spacing: 0) {
+            if !organizationAccessBlocked {
+                AwaitingMapPublicationPanel(tracks: ridTracks, settings: caltopoSettings, clues: clueStore)
+            }
         }
         // Keep the compact warning host above navigation, including Live View.
         .overlay(alignment: .topTrailing) {
@@ -1205,8 +1241,8 @@ struct ContentView: View {
                     }
                     mediaMTX.ensureHealthy(captureStreams: captureStreams)
                     Task {
-                        await refreshManagedOrganizationConfiguration()
                         await networkDiagnostics.refresh(reason: .applicationBecameActive)
+                        await refreshManagedOrganizationConfiguration()
                         await ridTracks.setLocalDeviceMarkerPublishingEnabled(true)
                     }
                 case .background:
@@ -1546,10 +1582,11 @@ struct ContentView: View {
     }
 
     private var androidParityDashboard: some View {
+      VStack(spacing: 4) {
+        androidRestrictionStrip
         ScrollView(.vertical) {
             ScrollView(.horizontal, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 8) {
-                    androidRestrictionStrip
                     androidOperationsHeader
                     androidAircraftTable
                 }
@@ -1558,6 +1595,7 @@ struct ContentView: View {
             }
         }
         .background(Color(uiColor: .systemBackground))
+      }
     }
 
     private var androidOperationsHeader: some View {
@@ -1641,7 +1679,9 @@ struct ContentView: View {
     }
 
     private var androidRestrictionStrip: some View {
-        HStack(spacing: 8) {
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 8) {
+            AppleProximityStatusChip(center: proximityAlerts) { showCaltopoSettings = true }
             if airspace.enabled || notams.state.visible {
                 NavigationLink {
                     if usesAirspaceRestrictionStatus {
@@ -1650,8 +1690,10 @@ struct ContentView: View {
                             notams: notams,
                             location: locationProvider.lastLocation
                         )
+                        .onDisappear { if notams.mapFocusRequest != nil { showTrackMap = true } }
                     } else {
                         AppleNotamPanel(center: notams, location: locationProvider.lastLocation)
+                            .onDisappear { if notams.mapFocusRequest != nil { showTrackMap = true } }
                     }
                 } label: {
                     AppleOperationalStatusChipLabel(
@@ -1675,10 +1717,9 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
             }
-            AppleOrganizationUserLabel()
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 6)
+          .padding(.horizontal, 6)
+        }
     }
 
     private var usesAirspaceRestrictionStatus: Bool {
@@ -1786,7 +1827,9 @@ struct ContentView: View {
                 if droneConfirmations.isUnassociated(track.aircraftID) {
                     addRidMapRemoteID = track.aircraftID
                 } else {
-                    selectedAircraftID = track.aircraftID
+                    // Manual confirmation must remain available after Don't publish,
+                    // just like the Android Main Screen drone-spec button.
+                    pendingDroneConfirmation = DroneConfirmationRequest(id: track.aircraftID)
                 }
             }
                 .font(.caption.monospaced())
@@ -2019,12 +2062,16 @@ struct ContentView: View {
                             notams: notams,
                             location: locationProvider.lastLocation
                         )
+                        .onDisappear { if notams.mapFocusRequest != nil { showTrackMap = true } }
                     } label: {
                         LabeledContent("Controlled airspace", value: airspace.state.chipLabel)
                     }
                 }
                 if notams.state.visible {
-                    NavigationLink { AppleNotamPanel(center: notams, location: locationProvider.lastLocation) } label: {
+                    NavigationLink {
+                        AppleNotamPanel(center: notams, location: locationProvider.lastLocation)
+                            .onDisappear { if notams.mapFocusRequest != nil { showTrackMap = true } }
+                    } label: {
                         LabeledContent("Nearby NOTAMs", value: notams.state.chipLabel)
                     }
                     if notams.state.stale {
@@ -2091,6 +2138,7 @@ struct ContentView: View {
                     identityStore: droneConfirmations,
                     trackModel: ridTracks,
                     proximityAlerts: proximityAlerts,
+                    bridgeAlerts: bridgeAlerts,
                     iCloudBackup: iCloudBackup
                 ) { configuration in
                     ridTracks.configureCaltopo(configuration, trackFolderName: orgConfigSettings.trackFolder)
@@ -2143,8 +2191,6 @@ struct ContentView: View {
             NavigationLink {
                 AppleStreamsGridView(
                     registry: streamRegistry,
-                    ingestAddress: controllerRTMPURL,
-                    networkSSID: controllerWiFiSSID,
                     registeredDroneDesignators: droneConfirmations.importedMappings.map(\.mappedID),
                     aircraftDetailsView: {
                         AnyView(RidMappingAdminView(
@@ -2203,19 +2249,19 @@ struct ContentView: View {
         RIDTrackMapView(
             model: ridTracks,
             locationProvider: locationProvider,
-            caltopoConfiguration: caltopoSettings.configuration,
+            caltopoSettings: caltopoSettings,
             streamRegistry: streamRegistry,
             videoModel: streamRegistry.focusedSession.model,
             clueStore: clueStore,
             identityStore: droneConfirmations,
             orgSettings: orgConfigSettings,
             notams: notams,
+            proximityAlerts: proximityAlerts,
             peerCoordinator: peerCoordinator,
             streamURL: streamRegistry.focusedPlaybackURL,
-            ingestAddress: controllerRTMPURL,
-            networkSSID: controllerWiFiSSID,
             bridgeSignalStrengthDbm: bluetoothScanner.bridgeSignalStrengthDbm,
             automaticStreamPairingAircraftID: $automaticStreamPairingAircraftID,
+            onReturnToMain: closeLiveView,
             onMapStatusTap: openCaltopoMapActions,
             onSwitchMap: { showTeamMaps = true },
             onDisconnectMap: {
@@ -2225,7 +2271,8 @@ struct ContentView: View {
                 AppleLog.info("MediaMTX", "Operator restart streams requested from Live View")
                 streamRegistry.shutdown()
                 mediaMTX.restart(captureStreams: captureStreams)
-            }
+            },
+            viewportMemory: mapViewportMemory
         )
     }
 
@@ -2246,7 +2293,7 @@ struct ContentView: View {
         showTrackMap = false
     }
 
-    private func openLiveViewFromHeaderSwipe() {
+    private func openLiveViewFromBridgeChip() {
         guard !showTrackMap,
               !showCaltopoSettings,
               !showDiagnosticLogs,
@@ -2258,7 +2305,7 @@ struct ContentView: View {
               !showStorageManagement,
               selectedAircraftID == nil
         else { return }
-        AppleLog.info("Navigation", "Header swipe: opening Live View")
+        AppleLog.info("Navigation", "Bridge chip: opening Live View")
         showTrackMap = true
     }
 
@@ -2586,6 +2633,24 @@ struct ContentView: View {
         )
     }
 
+    private var confirmationMediaDiagnostics: String {
+        streamRegistry.sessions.filter { $0.state == .live }.map { session in
+            "designator=\(session.id) publisherConnId=\(session.publisherConnectionID ?? "unknown") decodedFrameAgeSeconds=\(session.model.decodedFrameAgeSeconds ?? -1)"
+        }.joined(separator: "; ")
+    }
+
+    private var confirmationVideoSessions: [String: Set<String>] {
+        let mappings = droneConfirmations.importedMappings.map { (remoteID: $0.remoteID, designator: $0.mappedID) }
+        var result: [String: Set<String>] = [:]
+        for session in streamRegistry.sessions where session.state == .live {
+            guard let remoteID = OperationalStreamConfirmationMatch.remoteID(designator: session.id, mappings: mappings) else { continue }
+            let designator = session.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let publisher = session.publisherConnectionID.flatMap { $0.isEmpty ? nil : $0 } ?? "unknown"
+            result[remoteID, default: []].insert("\(designator)|\(publisher)")
+        }
+        return result
+    }
+
     private var confirmationActiveRemoteIDs: [String] {
         confirmationActiveRemoteIDs(tracks: ridTracks.tracks)
     }
@@ -2598,15 +2663,28 @@ struct ContentView: View {
         return Array(Set(tracks.map(\.aircraftID)+videoIDs)).sorted()
     }
 
+    private func dismissEndedDroneConfirmation(_ remoteID: String) {
+        if confirmationPresentation.endFlight(remoteID: remoteID) {
+            AppleLog.info("DroneConfirmation", "Dismissed expired confirmation remoteId=\(remoteID)")
+        }
+    }
+
     private func queueNextDroneConfirmation() {
         guard pendingDroneConfirmation == nil,
-              let remoteID = droneConfirmations.reconcileActiveFlights(confirmationActiveRemoteIDs),
+              let remoteID = droneConfirmations.reconcileActiveFlights(
+                confirmationActiveRemoteIDs,
+                aircraftReceivedAt: Dictionary(ridTracks.tracks.map { ($0.aircraftID, $0.lastAircraftMessageAt) }, uniquingKeysWith: max),
+                videoSessions: confirmationVideoSessions,
+                mediaDiagnostics: confirmationMediaDiagnostics,
+                onFlightEnded: dismissEndedDroneConfirmation
+              ),
               !droneConfirmations.isUnassociated(remoteID)
         else { return }
         pendingDroneConfirmation = DroneConfirmationRequest(id: remoteID)
     }
 
     private func confirmDrone(_ identity: RidAircraftIdentity) {
+        ridTracks.capturePublicationIntent(remoteID: identity.remoteID)
         peerCoordinator.confirm(identity)
         automaticStreamPairingAircraftID = identity.remoteID
         guard let flightEpoch = ridTracks.peerTrafficFlightEpoch(remoteID: identity.remoteID) else {
@@ -2947,107 +3025,112 @@ private struct MainScreenMenu: View, Equatable {
 }
 
 
-/// A gesture on the native navigation bar, never on map/video or form content.
-private struct HeaderPageSwipe: UIViewControllerRepresentable {
-    let toLiveView: Bool
-    let onNavigate: () -> Void
-
-    func makeUIViewController(context: Context) -> Controller {
-        Controller(toLiveView: toLiveView, onNavigate: onNavigate)
+private struct AwaitingMapPublicationPanel: View {
+    @ObservedObject var tracks: RIDTrackViewModel
+    @ObservedObject var settings: AppleCaltopoSettings
+    @ObservedObject var clues: AppleClueStore
+    @State private var reviewing = false
+    @State private var reminder = AwaitingMapReminder()
+    @State private var selected: AwaitingMapFlight?
+    @State private var destinationMap = ""
+    @State private var destinationTeam = ""
+    @State private var destinationTitle = ""
+    private var reminderFlightIDs: [String] {
+        guard settings.mapID.isEmpty else { return [] }
+        return tracks.awaitingMapFlights.filter { !$0.finished && $0.mapID.isEmpty }.map(\.id).sorted()
     }
-
-    func updateUIViewController(_ controller: Controller, context: Context) {
-        controller.toLiveView = toLiveView
-        controller.onNavigate = onNavigate
+    var body: some View {
+        if !tracks.awaitingMapFlights.isEmpty {
+            Button("\(tracks.awaitingMapFlights.count) flight(s) awaiting a map — Review") { reviewing = true }
+                .font(.caption).padding(4).background(.regularMaterial)
+                .task(id: reminderFlightIDs) {
+                    if reminder.shouldPresent(eligibleFlightIDs: Set(reminderFlightIDs), hasMap: !settings.mapID.isEmpty) {
+                        reviewing = true
+                    }
+                }
+                .sheet(isPresented: $reviewing) {
+                    NavigationStack {
+                        List {
+                            Text(settings.mapID.isEmpty ? "Select an incident map to publish. Flights and clues remain saved locally." : "Destination: \(settings.mapTitle) (\(settings.mapID))")
+                            ForEach(tracks.awaitingMapFlights.sorted { a, b in
+                                a.suggested(icLocations: tracks.incidentCommandLocations) && !b.suggested(icLocations: tracks.incidentCommandLocations)
+                            }) { flight in
+                                Button {
+                                    destinationMap = flight.mapID.isEmpty ? settings.mapID : flight.mapID
+                                    destinationTeam = flight.mapID.isEmpty ? settings.configuration.teamID : flight.teamID
+                                    destinationTitle = flight.mapID.isEmpty || flight.mapID == settings.mapID ? settings.mapTitle : "Original incident map"
+                                    selected = flight
+                                } label: {
+                                    VStack(alignment: .leading) {
+                                        Text(flight.label)
+                                        Text(flight.firstTime.formatted()).font(.caption)
+                                        if flight.suggested(icLocations: tracks.incidentCommandLocations) { Text("Recent flight near IC").font(.caption) }
+                                    }
+                                }.disabled(settings.mapID.isEmpty)
+                            }
+                        }
+                        .navigationTitle("Flights awaiting a map")
+                        .toolbar { Button("Later") { reviewing = false } }
+                        .task { await tracks.refreshIncidentCommandLocations() }
+                        .alert("Publish earlier flight?", isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } })) {
+                            Button("Publish") {
+                                guard let flight = selected else { return }
+                                let map = destinationMap; let team = destinationTeam
+                                Task {
+                                    await tracks.decideAwaitingFlight(flight.id, mapID: map, teamID: team)
+                                    clues.bindAwaitingFlight(flight, mapID: map, teamID: team)
+                                }
+                                selected = nil
+                            }
+                            Button("Keep local") {
+                                guard let flight = selected else { return }
+                                Task { await tracks.decideAwaitingFlight(flight.id, mapID: nil, teamID: destinationTeam) }
+                                selected = nil
+                            }
+                            Button("Later", role: .cancel) { selected = nil }
+                        } message: {
+                            Text("\(selected?.label ?? "Flight")\nTo \(destinationTitle) (\(destinationMap))\nIncludes the recorded track and associated clues marked for publication. Clues kept local stay local.")
+                        }
+                    }
+                }
+        }
     }
+}
 
-    static func dismantleUIViewController(_ controller: Controller, coordinator: ()) {
-        controller.detach()
+/// Measures the complete header instead of squeezing three identity lines into a navigation bar.
+struct AdaptiveOperatorHeader<Title: View, Actions: View>: View {
+    @ViewBuilder var title: (Bool) -> Title
+    @ViewBuilder var actions: () -> Actions
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                HStack(spacing: 8) { actions() }.hidden().accessibilityHidden(true).allowsHitTesting(false)
+                Spacer(minLength: 8)
+                title(true).fixedSize(horizontal: true, vertical: true)
+                Spacer(minLength: 8)
+                HStack(spacing: 8) { actions() }
+            }
+            .frame(minWidth: 600)
+            HStack(spacing: 8) {
+                title(false).frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 8) { actions() }.fixedSize(horizontal: true, vertical: false)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color(uiColor: .systemBackground))
     }
+}
 
-    final class Controller: UIViewController, UIGestureRecognizerDelegate {
-        var toLiveView: Bool
-        var onNavigate: () -> Void
-        private weak var attachedBar: UINavigationBar?
-        private let progressLayer = CALayer()
-        private lazy var pan: UIPanGestureRecognizer = {
-            let recognizer = UIPanGestureRecognizer(target: self, action: #selector(swiped(_:)))
-            recognizer.maximumNumberOfTouches = 1
-            recognizer.cancelsTouchesInView = false
-            recognizer.delaysTouchesBegan = false
-            recognizer.delaysTouchesEnded = false
-            recognizer.delegate = self
-            return recognizer
-        }()
-
-        init(toLiveView: Bool, onNavigate: @escaping () -> Void) {
-            self.toLiveView = toLiveView
-            self.onNavigate = onNavigate
-            super.init(nibName: nil, bundle: nil)
+struct AppleProximityStatusChip: View {
+    @ObservedObject var center: AppleProximityAlertCenter
+    var onSettings: (() -> Void)? = nil
+    var body: some View {
+        Button {
+            if center.isSuspended { center.resume() } else { onSettings?() }
+        } label: {
+            AppleOperationalStatusChipLabel(title: "Proximity Alerts: \(center.status)", tone: .neutral)
         }
-        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-        override func loadView() {
-            view = UIView()
-            view.isUserInteractionEnabled = false
-        }
-
-        override func viewDidAppear(_ animated: Bool) {
-            super.viewDidAppear(animated)
-            guard let bar = navigationController?.navigationBar else { return }
-            detach()
-            attachedBar = bar
-            bar.addGestureRecognizer(pan)
-            progressLayer.backgroundColor = UIColor.systemBlue.cgColor
-            bar.layer.addSublayer(progressLayer)
-        }
-
-        override func viewWillDisappear(_ animated: Bool) {
-            detach()
-            super.viewWillDisappear(animated)
-        }
-
-        func detach() {
-            progressLayer.removeFromSuperlayer()
-            attachedBar?.removeGestureRecognizer(pan)
-            attachedBar = nil
-        }
-
-        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            guard let bar = attachedBar, !bar.isHidden,
-                  navigationController?.presentedViewController == nil else { return false }
-            let motion = pan.translation(in: bar)
-            return (toLiveView ? -motion.x : motion.x) > 0 && abs(motion.x) >= 2 * abs(motion.y)
-        }
-
-        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-            var candidate = touch.view
-            while let current = candidate, current !== attachedBar {
-                if current is UIScrollView || current is UIControl { return false }
-                candidate = current.superview
-            }
-            return true
-        }
-
-        @objc private func swiped(_ gesture: UIPanGestureRecognizer) {
-            let motion = gesture.translation(in: attachedBar)
-            if let bar = attachedBar {
-                let progress = min(1, max(0, (toLiveView ? -motion.x : motion.x) / 72))
-                let width = bar.bounds.width * progress
-                CATransaction.begin()
-                CATransaction.setDisableActions(true)
-                progressLayer.frame = gesture.state == .changed
-                    ? CGRect(x: toLiveView ? bar.bounds.width - width : 0, y: bar.bounds.height - 3, width: width, height: 3)
-                    : .zero
-                CATransaction.commit()
-            }
-            guard gesture.state == .ended else { return }
-            guard PageNavigationSwipe.accepts(dx: motion.x, dy: motion.y, toLiveView: toLiveView) else { return }
-            if !toLiveView {
-                // Follow the existing explicit Back button's pop + state synchronization.
-                navigationController?.popViewController(animated: true)
-            }
-            withAnimation(.easeOut(duration: 0.22)) { onNavigate() }
-        }
+        .buttonStyle(.plain)
     }
 }

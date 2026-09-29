@@ -1,6 +1,7 @@
 package org.ncssar.rid2caltopo.video
 
 import android.content.Context
+import org.ncssar.rid2caltopo.notam.mapCoordinates
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -173,7 +174,8 @@ internal fun MapPaneNotamDialogs(
     selectedNotam: NearbyNotam?,
     onSelectedNotamChange: (NearbyNotam?) -> Unit,
     selectedNotamGroup: List<NearbyNotam>?,
-    onSelectedNotamGroupChange: (List<NearbyNotam>?) -> Unit
+    onSelectedNotamGroupChange: (List<NearbyNotam>?) -> Unit,
+    onShowOnMap: (NearbyNotam) -> Unit
 ) {
     selectedNotam?.let { notice ->
         AlertDialog(
@@ -212,7 +214,7 @@ internal fun MapPaneNotamDialogs(
                         Spacer(Modifier.height(8.dp))
                         Text(notice.details)
                     }
-                    if (notice.rawText.isNotBlank()) {
+                    if (notice.rawTitle.isNotBlank() || notice.rawText.isNotBlank()) {
                         Spacer(Modifier.height(8.dp))
                         Text(
                             "FAA text: ${notice.rawTitle.ifBlank { notice.rawText }}",
@@ -231,7 +233,11 @@ internal fun MapPaneNotamDialogs(
             confirmButton = {
                 TextButton(onClick = { onSelectedNotamChange(null) }) { Text("Close") }
             },
-            dismissButton = {}
+            dismissButton = {
+                if (notice.mapCoordinates().isNotEmpty()) {
+                    TextButton(onClick = { onShowOnMap(notice) }) { Text("Show on map") }
+                }
+            }
         )
     }
     selectedNotamGroup?.let { notices ->

@@ -10,14 +10,16 @@ actor LatestPositionReports {
         let id: UUID
         let task: Task<Void, Never>
     }
-    private let interval: Duration
+    private let interval: @Sendable () -> Duration
     private let clock = ContinuousClock()
     private var cancelling: Set<String> = []
     private var pending: [String: Pending] = [:]
     private var workers: [String: Worker] = [:]
-    private var readyAt: [String: ContinuousClock.Instant] = [:]
+    private var completedAt: [String: ContinuousClock.Instant] = [:]
 
-    init(interval: Duration = .seconds(5)) { self.interval = interval }
+    init(interval: Duration = .seconds(5)) { self.interval = { interval } }
+
+    init(intervalProvider: @escaping @Sendable () -> Duration) { self.interval = intervalProvider }
 
     func submit(key: String, send: @escaping @Sendable () async throws -> Void) async throws -> Bool {
         guard !cancelling.contains(key) else { return false }
@@ -50,8 +52,14 @@ actor LatestPositionReports {
     private func drain(key: String, id: UUID) async {
         defer { if workers[key]?.id == id { workers.removeValue(forKey: key) } }
         while pending[key] != nil && !Task.isCancelled {
-            if let deadline = readyAt[key] {
-                do { try await clock.sleep(until: deadline) } catch { return }
+            if let completed = completedAt[key] {
+                let deadline = completed.advanced(by: interval())
+                if clock.now < deadline {
+                    // Re-read settings during the cooldown, including when the interval is reduced.
+                    do { try await clock.sleep(until: min(deadline, clock.now.advanced(by: .milliseconds(500)))) }
+                    catch { return }
+                    continue
+                }
             }
             guard !Task.isCancelled, let report = pending.removeValue(forKey: key) else { return }
             do {
@@ -61,7 +69,7 @@ actor LatestPositionReports {
                 report.completion.resume(throwing: error)
             }
             // No sleep in the network worker, no retry of the stale sample, no catch-up burst.
-            readyAt[key] = clock.now.advanced(by: interval)
+            completedAt[key] = clock.now
         }
     }
 }

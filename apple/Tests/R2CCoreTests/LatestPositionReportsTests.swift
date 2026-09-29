@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import R2CCore
 
@@ -46,4 +47,26 @@ private actor PositionRecorder {
     await queue.cancel(key: "a")
     #expect(try await pending.value == false)
     #expect(await recorder.values == [1])
+}
+
+@Test func liveTrackIntervalUsesThumbnailPreferenceAndChangesWhilePending() async throws {
+    let suite = "LiveTrackIntervalTests-" + UUID().uuidString
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let key = OperationalThumbnailRefreshInterval.storageKey
+    let queue = LatestPositionReports(intervalProvider: {
+        .seconds(OperationalThumbnailRefreshInterval.normalized(
+            UserDefaults(suiteName: suite)!.object(forKey: OperationalThumbnailRefreshInterval.storageKey) as? Double))
+    })
+    let recorder = PositionRecorder()
+    defaults.set(60.0, forKey: key)
+    #expect(try await queue.submit(key: "a") { await recorder.record(1) })
+    let pending = Task { try await queue.submit(key: "a") { await recorder.record(2) } }
+    while await queue.pendingCountForTesting == 0 { await Task.yield() }
+    defaults.set(0.5, forKey: key)
+    #expect(try await pending.value)
+    let times = await recorder.times
+    #expect(times[0].duration(to: times[1]) >= .milliseconds(500))
+    #expect(times[0].duration(to: times[1]) < .seconds(5))
+    #expect(await recorder.values == [1, 2])
 }

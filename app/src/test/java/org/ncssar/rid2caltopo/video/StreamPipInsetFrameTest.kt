@@ -8,6 +8,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StreamPipInsetFrameTest {
+    @Test fun cameraClearsCollapsedDividerTouchArea() {
+        // The trailing edge of the entire 56dp button must be outside the
+        // divider's invisible 96dp restore target, not just its visible grip.
+        assertTrue(streamCameraTrailingInsetDp() >= SPLIT_DIVIDER_TOUCH_SIZE_DP + 12)
+        for (width in listOf(600f, 1280f)) {
+            val dividerLeft = splitDividerTouchOffsetPx(1f, width, SPLIT_DIVIDER_TOUCH_SIZE_DP.toFloat())
+            val cameraRight = width - streamCameraTrailingInsetDp()
+            assertTrue(cameraRight < dividerLeft)
+        }
+    }
+
     @Test fun centerpointPointAolStaysAbsoluteWhenTerrainReferenceChanges() {
         val sample = CenterpointElevationSample(39.0,-121.0,1000,1,true,50)
         assertEquals("1000' MSL · 1m DEM · AOL 50' · Assumed ↓90°",centerpointElevationLabel(sample))

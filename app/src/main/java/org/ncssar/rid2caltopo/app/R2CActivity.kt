@@ -9,7 +9,7 @@
 package org.ncssar.rid2caltopo.app
 
 import androidx.compose.ui.Modifier
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import StreamsViewModel
 import android.Manifest
@@ -1278,6 +1278,11 @@ class R2CActivity :
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        // A new task starts with bridge warnings enabled even if Android retained
+        // the process after Quit. Rotation/restoration preserves the current session.
+        if (savedInstanceState == null) {
+            org.opendroneid.android.bluetooth.DroneScoutBridgeMonitor.setAudioMuted(false)
+        }
         // Developer location simulation is deliberately process/task scoped.
         // Android can retain this process after the task is dismissed, so a
         // static-only override otherwise leaks into the next apparent launch.
@@ -1460,9 +1465,16 @@ class R2CActivity :
                     .collectAsState()
                 LaunchedEffect(Unit) {
                     streamsViewModel.streams.collect { streams ->
-                        localViewModel.onLiveStreamDesignatorsChanged(streams.values.filter {
+                        val livePublishers = streams.values.filter {
                             it.state == org.ncssar.rid2caltopo.video.StreamState.LIVE && !it.isLocalPlayback
-                        }.map { it.designator }.toSet())
+                        }
+                        localViewModel.onLiveStreamDesignatorsChanged(
+                            livePublishers.map { it.designator }.toSet(),
+                            publisherSessions = livePublishers.mapNotNull { stream ->
+                                stream.publisherConnId?.let { stream.designator to it }
+                            }.toMap(),
+                            mediaDiagnostics = streamsViewModel::confirmationMediaDiagnostics,
+                        )
                     }
                 }
                 val maPackageImportState by MutualAidPackageTransferManager.importState.collectAsState()
@@ -1575,8 +1587,10 @@ class R2CActivity :
                     onDispose { CTDebug(TAG, "Protected page composition disposed") }
                 }
                 // Reserve space for operational status instead of drawing competing
-                // overlays over the system status bar and page controls.
-                Column(Modifier.fillMaxSize().statusBarsPadding()) {
+                // overlays over page controls. Consume all safe drawing insets here so
+                // settings, scanner, and live video also avoid navigation bars/cutouts.
+                // Child app bars and scaffolds consume only the remaining insets.
+                Column(Modifier.fillMaxSize().safeDrawingPadding()) {
                     if (!waitingForSystemUnlock) {
                         org.ncssar.rid2caltopo.ui.ShortFlightRecordingPanel()
                     }
@@ -1674,9 +1688,15 @@ class R2CActivity :
                 }
                 }
                     }
+                    // One persistent host follows every page without covering video controls.
+                    // Keep the review dialog mounted while navigating between pages.
+                    if (!waitingForSystemUnlock) {
+                        org.ncssar.rid2caltopo.ui.AwaitingMapPublicationPanel()
+                    }
                 }
                 // Defer new operational dialogs until the system unlock is accepted.
                 if (!waitingForSystemUnlock) {
+                org.ncssar.rid2caltopo.ui.MapConnectionOverlayHost(localViewModel)
                 pendingDroneConfirmation?.let { confirmationState ->
                     DroneSpecConfirmationDialog(
                         state = confirmationState,

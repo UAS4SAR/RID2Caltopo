@@ -205,7 +205,6 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
     private val promptedCurrentFlightRemoteIds = linkedSetOf<String>()
     private val confirmedCurrentFlightRemoteIds = linkedSetOf<String>()
     private var pendingDroneConfirmationRequestedByOperator = false
-    private var screenBeforeConnectionOverlay: ActiveScreen? = null
     private var lastDroneListSignature: List<DroneSpecUiSignature>? = null
     private var lastUnknownDroneConfirmationOrganization = ""
     private val credentialRecoveryScheduled = AtomicBoolean(false)
@@ -304,16 +303,6 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
     }
 
     fun openConnectionOverlayFromCurrentScreen() {
-        val currentScreen = _activeScreen.value
-        screenBeforeConnectionOverlay = if (currentScreen != ActiveScreen.MAIN) {
-            currentScreen
-        } else {
-            null
-        }
-        if (currentScreen != ActiveScreen.MAIN) {
-            CTDebug(tag, "openConnectionOverlayFromCurrentScreen(): $currentScreen -> ${ActiveScreen.MAIN}")
-            showMain()
-        }
         onUIEvent(UIEvent.HeaderClicked)
     }
 
@@ -440,14 +429,14 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             }
 
             is UIEvent.DismissRequested -> {
-                connectionState = CaltopoConnectionState.StandAlone
+                // Closing a dialog does not disconnect the selected incident map.
+                // Connection status callbacks remain authoritative for the chip.
                 overlay = OverlayState.None
             }
         }
 
         val newState = "     POST: Overlay='${overlay}' ConnectionState: '${connectionState}'"
         CTDebug(tag, "onUIEvent(${uiEvent})\n$oldState\n$newState")
-        restoreScreenAfterConnectionOverlay(uiEvent, previousOverlay)
     }
 
     override fun mapStatusUpdate(status: CaltopoMap.MapStatusListener.mapStatus, mapNode: CaltopoNode.MapNode?, optErrmsg: String?) {
@@ -579,6 +568,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         val current = _pendingDroneConfirmation.value ?: return
         val remoteId = current.remoteId.trim()
         CTDebug(tag, "markPendingDroneConfirmationUnknown(): remoteId=$remoteId")
+        declinedDroneVideoConfirmation.markHandled(remoteId)
         CaltopoClient.SaveDroneSpecUnknownConfirmation(remoteId)
         _pendingDroneConfirmation.value = null
         pendingDroneConfirmationRequestedByOperator = false
@@ -745,16 +735,35 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         }
     }
 
+    private var confirmationMediaDiagnostics: () -> String = { "media=unavailable" }
+    private val completedFlightConfirmationGuard = CompletedFlightConfirmationGuard { CTDebug(tag, "$it ${confirmationMediaDiagnostics()}") }
+
+    private val declinedDroneVideoConfirmation = DeclinedDroneVideoConfirmation()
+
     private var liveStreamConfirmationSpecs: Map<String,CtDroneSpec> = emptyMap()
 
-    @Synchronized fun onLiveStreamDesignatorsChanged(designators: Set<String>, configured: List<CtDroneSpec> = CaltopoClient.GetPersistedDroneSpecs()) {
+    @Synchronized
+    fun onLiveStreamDesignatorsChanged(
+        designators: Set<String>,
+        configured: List<CtDroneSpec> = CaltopoClient.GetPersistedDroneSpecs(),
+        publisherSessions: Map<String, String> = emptyMap(),
+        mediaDiagnostics: (() -> String)? = null,
+    ) {
+        if (mediaDiagnostics != null) confirmationMediaDiagnostics = mediaDiagnostics
         val mappings=configured.map { it.remoteId to it.mappedId }
         val matched=designators.mapNotNull { uniqueStreamConfirmationRemoteId(it,mappings) }.toSet()
+        val sessionTokens = designators.mapNotNull { designator ->
+            uniqueStreamConfirmationRemoteId(designator, mappings)?.let { remoteId ->
+                remoteId to "${designator.trim().lowercase(java.util.Locale.ROOT)}|${publisherSessions[designator]?.takeIf { it.isNotBlank() } ?: "unknown"}"
+            }
+        }.groupBy({ it.first }, { it.second }).mapValues { it.value.toSet() }
         val previous=liveStreamConfirmationSpecs.keys
         liveStreamConfirmationSpecs=configured.filter { it.remoteId in matched }.associateBy { it.remoteId }
         for(id in previous-matched) {
             if(_drones.value.none { it.remoteId==id && it.isActive }) clearFinishedFlightConfirmationState(id,"video session ended before RID")
         }
+        completedFlightConfirmationGuard.updateSessions(sessionTokens)
+        declinedDroneVideoConfirmation.update(sessionTokens)
         for(spec in liveStreamConfirmationSpecs.values) if(queueConfirmationIfNeeded(spec,"unique configured live stream")) break
     }
 
@@ -770,27 +779,29 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
     /** Active flight state is scoped by remoteId. */
     private fun currentFlightRemoteId(drone: CtDroneSpec): String? {
         if (!drone.isActive) return null
+        if (!completedFlightConfirmationGuard.allows(drone.remoteId, drone.mostRecentAircraftReceiptMsecTimestamp)) return null
         return drone.remoteId.takeIf { it.isNotBlank() }
     }
 
     private fun queueConfirmationIfNeeded(drone: CtDroneSpec, reason: String): Boolean {
         if (_pendingDroneConfirmation.value != null) return false
         val remoteId = drone.remoteId.takeIf { it.isNotBlank() } ?: return false
-        // A saved confirmation is scoped to the current flight. The track lifecycle keeps a
-        // flight active across RID loss while SEI position is live or the drone is distant.
-        if (remoteId in promptedCurrentFlightRemoteIds ||
-            CaltopoClient.IsSessionUnknownDrone(remoteId) ||
-            drone.isLocalArchiveOnly ||
+        if (!completedFlightConfirmationGuard.allows(remoteId, if (drone.isActive) drone.mostRecentAircraftReceiptMsecTimestamp else 0L)) return false
+        val declined = CaltopoClient.IsSessionUnknownDrone(remoteId)
+        val newLocalVideo = declined && declinedDroneVideoConfirmation.hasNewPublisher(remoteId)
+        if ((remoteId in promptedCurrentFlightRemoteIds && !newLocalVideo) ||
+            (declined && !newLocalVideo) ||
+            (drone.isLocalArchiveOnly && !newLocalVideo) ||
             remoteId in confirmedCurrentFlightRemoteIds ||
             CaltopoClient.IsCurrentPeerDroneConfirmed(remoteId)
-        ) {
-            return false
-        }
+        ) return false
+        if (newLocalVideo) declinedDroneVideoConfirmation.markHandled(remoteId)
         CTDebug(
             tag,
             "Queueing confirmation for ${drone.remoteId}: " +
                 "mappedId=${drone.mappedId} " +
-                "org='${drone.org}' model='${drone.model}' owner='${drone.owner}' reason=$reason"
+                "org='${drone.org}' model='${drone.model}' owner='${drone.owner}' reason=$reason " +
+                "aircraftReceivedAtMs=${drone.mostRecentAircraftReceiptMsecTimestamp} ${confirmationMediaDiagnostics()}"
         )
         promptedCurrentFlightRemoteIds.add(remoteId)
         _pendingDroneConfirmation.value = buildConfirmationState(drone)
@@ -819,6 +830,8 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         if (trimmedRemoteId.isEmpty()) return
         // A listed video stream can outlive telemetry and the actual track. Once
         // publishing approval ends, the UI must allow confirmation of the next segment.
+        completedFlightConfirmationGuard.end(trimmedRemoteId, System.currentTimeMillis())
+        CTDebug(tag, "Retiring confirmation eligibility remoteId=$trimmedRemoteId videoListed=${trimmedRemoteId in liveStreamConfirmationSpecs} reason=$reason")
         confirmedCurrentFlightRemoteIds.remove(trimmedRemoteId)
         CaltopoClient.ClearCurrentPeerDroneConfirmation(trimmedRemoteId)
         clearInactivePromptOnly(trimmedRemoteId, reason, trackFinished = true)
@@ -879,26 +892,6 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
     private fun hasKnownDroneSpec(drone: CtDroneSpec): Boolean {
         val cached = CaltopoClient.GetDroneSpec(drone.remoteId)
         return hasMeaningfulDroneSpec(drone) || (cached != null && hasMeaningfulDroneSpec(cached))
-    }
-
-    private fun restoreScreenAfterConnectionOverlay(
-        uiEvent: UIEvent,
-        previousOverlay: OverlayState
-    ) {
-        val shouldRestore = when (uiEvent) {
-            is UIEvent.DismissRequested,
-            is UIEvent.DisconnectRequested -> overlay == OverlayState.None
-            is UIEvent.ConnectionStatusChanged ->
-                previousOverlay is OverlayState.Connecting && overlay == OverlayState.None
-            else -> false
-        }
-        if (!shouldRestore) return
-        val priorScreen = screenBeforeConnectionOverlay
-        screenBeforeConnectionOverlay = null
-        if (priorScreen != null && _activeScreen.value == ActiveScreen.MAIN && priorScreen != ActiveScreen.MAIN) {
-            CTDebug(tag, "restoreScreenAfterConnectionOverlay(): MAIN -> $priorScreen")
-            _activeScreen.value = priorScreen
-        }
     }
 
     private fun hasMeaningfulDroneSpec(drone: CtDroneSpec): Boolean {

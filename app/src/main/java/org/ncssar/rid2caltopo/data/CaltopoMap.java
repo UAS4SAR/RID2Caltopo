@@ -1141,6 +1141,10 @@ public class CaltopoMap {
             publishMyDeviceMarkerIfPossible(GetMyLocation());
         }
         SetMapStatus(MapStatusListener.mapStatus.up, null);
+        if (!DisconnectInProgress && ArchiveFolderId != null) {
+            AwaitingMapFlights.reconcile(GetMapId(), CaltopoClient.GetCaltopoCredentials().teamId);
+            CaltopoInterruptedTrackJournal.recover(GetMapId(), ArchiveFolderId, getCurrentRuntime(), GetArtifactFeatureSnapshot());
+        }
         FinishMapRefresh(true, fullReconcile, requestStartedAtMs, refreshGeneration);
     }
 
@@ -1657,7 +1661,7 @@ public class CaltopoMap {
     private static void LookForExistingLiveTracks() {
         if (null == FolderId || null == ArchiveFolderId) return;
         java.util.Set<String> recoveringTrackIds = CaltopoInterruptedTrackJournal.recover(
-                GetMapId(), ArchiveFolderId, getCurrentRuntime());
+                GetMapId(), ArchiveFolderId, getCurrentRuntime(), GetArtifactFeatureSnapshot());
         publishMyDeviceMarkerIfPossible(GetMyLocation());
         long timeNowInMilliseconds = System.currentTimeMillis();
         long maxTrackAgeInMilliseconds = CaltopoClient.GetNewTrackDelayInSeconds() * 1000;
@@ -1717,6 +1721,7 @@ public class CaltopoMap {
     static void ArchiveFeature(@NonNull JSONObject feature, @NonNull String featureClass,
                                long timeNowInMilliseconds, long maxWaitInMilliseconds,
                                @Nullable Consumer<Boolean> onComplete) {
+        final String destinationMapId = GetMapId();
         String timeString = String.valueOf(timeNowInMilliseconds);
         if (null == ArchiveFolderId) {
             CTError(TAG, "archiveFeature(): can't archive - folder not created yet.");
@@ -1746,7 +1751,7 @@ public class CaltopoMap {
             prop.put("class", "Shape");  // convert from LiveTrack to shape.
             AtomicReference<CaltopoOp> deleteOp = new AtomicReference<>();
             CaltopoOp op = getCurrentRuntime().getCalTopoSessionGateway()
-                    .editObjectWithId("Shape", trackId, feature, archiveOp -> {
+                    .editObjectOnMap(destinationMapId, "Shape", trackId, feature, archiveOp -> {
                         onArchiveFeatureEditFinished(trackId, archiveOp);
                         if (!archiveOp.success()) {
                             if (onComplete != null) onComplete.accept(false);
@@ -1759,14 +1764,14 @@ public class CaltopoMap {
                         }
                         CTInfo(TAG, String.format(Locale.US, "archiveFeature(): Stopping liveTrack %s....", trackId));
                         deleteOp.set(getCurrentRuntime().getCalTopoSessionGateway()
-                                .deleteLiveTrackWithId(trackId, finishedDeleteOp -> {
+                                .deleteLiveTrackOnMap(destinationMapId, trackId, finishedDeleteOp -> {
                                     CTInfo(TAG, String.format(Locale.US,
                                             "archiveFeature(): delete liveTrackId=%s success=%s responseCode=%d",
                                             trackId, finishedDeleteOp.success(), finishedDeleteOp.responseCode));
                                     refreshArtifactsAfterArchiveFinished(
                                             trackId, finishedDeleteOp.success());
                                     if (onComplete != null) onComplete.accept(finishedDeleteOp.success());
-                                }, 400, 404));
+                                }));
                     });
             if (maxWaitInMilliseconds > 0) {
                 op.syncOp(maxWaitInMilliseconds);

@@ -211,18 +211,24 @@ public enum OperationalNotamParser {
         let title = [reference, text].filter { !$0.isEmpty }.joined(separator: reference.isEmpty ? "" : " - ")
         let geometryObject = feature["geometry"] as? [String: Any]
         var geometries = geometryObject.flatMap(parseGeometry).map { [$0] } ?? []
+        var radiusProximity: Proximity?
         if let radius = radiusGeometry(from: rawText.isEmpty ? text : rawText),
-           isRestrictiveRadiusText("\(reference) \(text) \(rawText)") {
+           (string(notam["classification"]).uppercased() == "FDC"
+            || isRestrictiveRadiusText("\(reference) \(text) \(rawText)")),
+           shouldUseRadiusFallback(geometryObject, center: radius.center, radiusNM: radius.radiusNM) {
             geometries = [.polygon([circle(center: radius.center, radiusNM: radius.radiusNM)])]
+            let centerProximity = pointProximity(pilot, radius.center)
+            let distance = max(0, centerProximity.distanceNM - radius.radiusNM)
+            radiusProximity = Proximity(distanceNM: distance, bearingDegrees: distance == 0 ? nil : centerProximity.bearingDegrees)
         }
-        let proximity = nearestProximity(from: pilot, geometries: geometries)
+        let proximity = radiusProximity ?? nearestProximity(from: pilot, geometries: geometries)
         let intersects = (proximity?.distanceNM ?? .greatestFiniteMagnitude) <= operatingRadiusNM
         let combined = "\(title) \(rawText)"
         let severity = OperationalNotamPolicy.inferSeverity(text: combined, intersectsPilotArea: intersects)
         let start = string(notam["effectiveStart"])
         let end = string(notam["effectiveEnd"])
-        let effective = start.isEmpty ? (end.isEmpty ? "" : "Active until \(end)")
-            : (end.isEmpty ? "Active from \(start)" : "Active \(start) to \(end)")
+        let effective = start.isEmpty ? (end.isEmpty ? "" : "Effective until \(end)")
+            : (end.isEmpty ? "Effective from \(start)" : "Effective \(start) to \(end)")
         let summary = humanizedSummary(text: combined, intersects: intersects, distanceNM: proximity?.distanceNM)
         let id = string(notam["id"])
         return OperationalNotam(
@@ -233,7 +239,7 @@ public enum OperationalNotamParser {
             bearingDegrees: proximity?.bearingDegrees,
             intersectsPilotArea: intersects,
             effectiveText: effective,
-            details: [summary, effective, rawText].filter { !$0.isEmpty }.joined(separator: "\n\n"),
+            details: [summary, effective, "FAA notice: " + text, rawText].filter { !$0.isEmpty }.joined(separator: "\n\n"),
             rawText: rawText,
             reference: reference,
             lastUpdated: string(notam["lastUpdated"]),
@@ -373,6 +379,17 @@ public enum OperationalNotamParser {
 
     private static func humanizedSummary(text: String, intersects: Bool, distanceNM: Double?) -> String {
         let kind = humanizedTitle(text: text, fallback: "Aviation notice")
+        let upper = text.uppercased()
+        var services: [String] = []
+        if upper.contains("ADS-B") { services.append("ADS-B") }
+        if upper.contains("ADS-R") { services.append("ADS-R rebroadcast") }
+        if upper.contains("TIS-B") { services.append("traffic information (TIS-B)") }
+        if upper.contains("FIS-B") { services.append("flight information (FIS-B)") }
+        if upper.contains("MAY NOT BE AVBL"), !services.isEmpty {
+            let availability = services.joined(separator: ", ") + " services may be unavailable during the effective period."
+            let area = radiusGeometry(from: text).map { " Area: \(String(format: "%g", $0.radiusNM)) NM radius." } ?? ""
+            return availability + area + (intersects ? " Overlaps the pilot operating area." : "")
+        }
         if intersects { return "\(kind) intersects the pilot operating area." }
         if let distanceNM {
             return "\(kind) is \(String(format: "%.1f", distanceNM / OperationalNotamPolicy.nauticalMilesPerStatuteMile)) mi from the pilot."
@@ -418,6 +435,25 @@ public enum OperationalNotamParser {
         }
     }
 
+    // FAA may supply a facility reference point instead of the area described in
+    // an FDC notice. Match Android's fallback, preserving supplied area geometry.
+    private static func shouldUseRadiusFallback(
+        _ geometry: [String: Any]?, center: OperationalNotamCoordinate, radiusNM: Double
+    ) -> Bool {
+        guard let geometry else { return true }
+        switch string(geometry["type"]) {
+        case "Point":
+            guard let point = geometry["coordinates"].flatMap(coordinate) else { return true }
+            return pointProximity(center, point).distanceNM > max(2, radiusNM * 0.25)
+        case "GeometryCollection":
+            guard let values = geometry["geometries"] as? [[String: Any]] else { return true }
+            guard values.count == 1, string(values[0]["type"]) == "Point" else { return false }
+            return shouldUseRadiusFallback(values[0], center: center, radiusNM: radiusNM)
+        default:
+            return false
+        }
+    }
+
     private static func isRestrictiveRadiusText(_ value: String) -> Bool {
         let upper = value.uppercased()
         return upper.contains("TFR") || upper.contains("TEMPORARY FLIGHT RESTRICTION")
@@ -432,5 +468,23 @@ public enum OperationalNotamParser {
         if let number = value as? NSNumber { return number.doubleValue }
         if let text = value as? String { return Double(text) }
         return nil
+    }
+}
+
+public extension OperationalNotam {
+    /// Only use supplied, valid map geometry; the query position is not a notice location.
+    var mapCoordinates: [OperationalNotamCoordinate] {
+        func coordinates(_ geometry: OperationalNotamGeometry) -> [OperationalNotamCoordinate] {
+            switch geometry {
+            case let .point(point): [point]
+            case let .line(points): points
+            case let .polygon(rings): rings.first ?? []
+            case let .collection(geometries): geometries.flatMap(coordinates)
+            }
+        }
+        return geometries.flatMap(coordinates).filter {
+            $0.latitude.isFinite && $0.longitude.isFinite &&
+                (-90...90).contains($0.latitude) && (-180...180).contains($0.longitude)
+        }
     }
 }

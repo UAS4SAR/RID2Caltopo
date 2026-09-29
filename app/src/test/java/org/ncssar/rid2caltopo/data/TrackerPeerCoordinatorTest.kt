@@ -1359,6 +1359,7 @@ class TrackerPeerCoordinatorTest {
 
         coordinator.start("MAP1", "zone-alpha", "Alpha", null)
         transport.open()
+        coordinator.stopBackgroundTimersAndResetHeartbeatStateForTesting()
         coordinator.handleHelloAckForTesting()
         coordinator.markHeartbeatSentForTesting(19L, clock.now())
         clock.advanceBy(10_001L)
@@ -1388,7 +1389,7 @@ class TrackerPeerCoordinatorTest {
         coordinator.onDroneConfirmed("RID-QUEUED", "NCSSAR", "Mavic", "Pilot", "1SAR7DJ")
 
         assertTrue(transport.sentMessages.none { JSONObject(it).optString("type") == "drone_confirmed" })
-        assertTrue(transport.connectCount >= 2)
+        assertEquals(1, transport.connectCount)
 
         transport.open()
 
@@ -1411,7 +1412,7 @@ class TrackerPeerCoordinatorTest {
         coordinator.onLiveTrackCreated(track, drone, 42.0, 1234L)
 
         assertTrue(transport.sentMessages.none { JSONObject(it).optString("type") == "first_sighting" })
-        assertTrue(transport.connectCount >= 2)
+        assertEquals(1, transport.connectCount)
 
         transport.open()
 

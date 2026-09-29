@@ -517,3 +517,60 @@ Android and Apple now show a 247-word operational acknowledgement, version 2026-
 ## 2026-09-26 — 2.3.6 (285) release preparation
 
 Both platforms retain complete admitted track geometry with a shared one-second recording gate and latest-only CalTopo LiveTrack updates spaced at least five seconds after completion. Routine position metadata logs and RTMP acknowledgment chatter were removed; shared relay timing now summarizes every 60 seconds, with slow reads reported at most every five seconds and a final failure summary. Android no longer logs each native relay line twice, drops per-point UI messages, and uses the same 60-second/five-second limits for its FFmpeg processing diagnostics. Apple retains its existing native diagnostics; Android-specific FFmpeg stage counters remain intentionally platform-specific. Apple build 284 field testing confirmed post-flight DCP cleanup, uninterrupted local video during WAN failure, final 104-point track, and successful delayed clue publication; the operator removed that clue after testing and subsequently reported another successful outage clue test and five-second-or-longer LiveTrack spacing. Build 285 full gates and final-candidate physical checks are tracked in outputs/release-2.3.6-285.
+
+## 2026-09-27 — 2.3.7 (286) narrow-screen header
+
+Android Main Screen now separates the title/Teams selector from a wrapping row of proximity, bridge, and conditional alert controls. The title and Teams label each remain one line with ellipsis; the credential menu retains full labels. Horizontal safe-area insets are preserved. Apple already presents proximity outside the navigation title and needs no matching header change. Both marketing versions, build numbers, and release-note resources are synchronized to 2.3.7 (286).
+
+Android debug build and 25 proximity regression tests passed before the version bump. The user reviewed the installed 2.3.6 (285) change on the A5 Pro and reported that it looks fine. The original SM-S931U narrow-phone reproduction and the larger-font/device matrix remain unverified. Candidate validation and Google Play findings are tracked in release-notes/2.3.7/verification.md.
+
+Google Play's 2.3.6 edge-to-edge feedback is traced and addressed in the 2.3.7 candidate by updating AndroidX Activity 1.8.2 to 1.12.4 and consuming all safe drawing insets at the operational page root and startup acknowledgement. This is Android window-system work; Apple continues using SwiftUI safe-area behavior without a parallel dependency change. Maintained AndroidX still contains compatibility color setters, so the deprecated-API advisory is not claimed cleared. Full details and remaining physical checks are in release-notes/2.3.7/play-feedback.md.
+
+## 2026-09-27 — Completed-flight confirmation eligibility (2.3.7 build 287)
+
+Android and Apple now retire automatic confirmation eligibility when a flight ends. A retained LIVE listing, repeated old aircraft snapshot, or removal/reappearance of the same publisher cannot reopen Update Saved Drone. A later aircraft receive timestamp or a different identified publisher connection permits the next flight's confirmation. Unknown publisher identity is not proof of a new session; late resolution of the retired unknown identity also does not rearm the prompt. Save remains per flight, Ignore remains in force, and the active page stays mounted.
+
+Both platforms log retirement, the first suppression, and reactivation with aircraft receive time and publisher identity. Android additionally reports separate decoded and rendered frame ages/counts; Apple reports decoder age. Frame display activity is not used to rearm confirmation. These diagnostics identify confirmation decisions; they do not claim to resolve why a powered-off publisher remained LIVE in the original A5 capture. Validation: docs/validation/2026-09-27-completed-flight-confirmation-fix.md.
+
+## 2026-09-29 — Standalone publication and intermittent connectivity (2.3.7 candidate)
+
+Both platforms retain per-flight map choices and recover interrupted publication. Shared public release notes now describe standalone publication, retry after intermittent/partial connectivity, restart recovery, completed-upload handling, and network-restoration check refresh. Apple metadata is synchronized from the canonical notes.
+
+Android build 303 separates completed archive upload from LiveTrack cleanup and accepts missing-LiveTrack 400/404 responses, matching Apple's existing deletion behavior. Android persists a cleanup-only stage across restart. Its 435 data/publication tests and APK build passed. User retest confirms a subsequent standalone flight reached the incident map, with noticeable delay; copied journals mark it published and contain no pending recovery entries. This is one successful field retest, not comprehensive outage qualification. Old unresolved records may replay once if prior completion cannot be established.
+
+The confirmation-button and Follow-control iOS fixes are built/tested in source but remain uninstalled. Installed release-note content remains unchanged until the next device update.
+
+## 2026-09-29 — Expired pending confirmation presentation
+
+The iPad flight-end model guard did not retire an already pending sheet, allowing it to reappear much later. Both explicit telemetry end and reconciled video-only end now clear only the matching presentation. Android already clears its pending dialog on flight end. Three new lifecycle/presentation regressions, the full Apple core suite (468 tests), and signed device build passed. Details: docs/validation/2026-09-29-ipad-stale-confirmation.md. Source fix remains uninstalled pending device update and physical review.
+
+### 2026-09-29 clue description parity (2.3.7)
+
+- iOS now uses Android's clue-description field order, labels, units, heading precision, and DEM wording, and appends the captured designator and drone telemetry to published clues. RID position and complete DJI SEI position remain distinct from the projected clue location. Snapshot metadata is retained while the form is open.
+- Shared capture-summary fixture is checked by both platforms; Apple tests cover the full available RID/DJI telemetry block, alternate coordinate formats, missing values, and heading wrap.
+- Source availability remains a limitation: Apple's observation model does not currently carry Android's vertical-rate field or generic stream RID candidates. Those optional fields are omitted when unavailable; this is an outstanding data-model gap, not an OS restriction.
+- Device installation and physical CalTopo clue verification are pending for this change.
+
+### 2026-09-29 Live View network identity refresh (2.3.7)
+
+Both platforms refresh SSID and controller RTMP endpoints on network events and recheck local identity every three seconds while active. Android now observes the SSID and endpoints together; Apple catches same-path Wi-Fi identity changes and refreshes before account requests on foreground return. Android endpoint/identity tests, Apple regression suite, and both builds passed. Device installation and physical network switching remain pending; see [validation](validation/2026-09-29-network-identity-refresh.md).
+
+### 2026-09-29 shared thumbnail / LiveTrack update interval (2.3.7)
+
+Both platforms now use the existing thumbnail preference to limit LiveTrack position-update frequency, with matching “Thumbnail & LiveTrack update interval” labels, 0.5–60-second limits and 5-second default. Pending work respects runtime changes and keeps latest-only publication. Android focused tests, Apple full suite, and both builds passed; physical timing and layout verification pending. See [validation](validation/2026-09-29-shared-update-interval.md).
+
+### 2026-09-29 retained iPad Live View network header follow-up
+
+Build 304 device logs show the SSID and controller RTMP address changing internally during the reported flight, despite the stale display. Removed captured network arguments from the retained Apple Live View navigation path; the header now directly observes shared network state and logs snapshot receipt. Android already uses directly observed Compose state. Apple tests passed; physical URL/SSID refresh remains unverified. See [device evidence and limits](validation/2026-09-29-ipad-retained-network-header.md).
+
+### 2026-09-29 Bridge chip navigation and session warnings
+
+Both platforms replace title-bar page swipes with Bridge RSSI chip navigation, including returning from full-screen Live View. Added menu separation. Settings exposes a session-only Bridge audio warnings switch, enabled at fresh app startup. Physical verification remains pending. See [validation](validation/2026-09-29-bridge-chip-navigation.md).
+
+### 2026-09-29 Android full-screen input isolation
+
+Moved Android video pan/zoom handling below the camera/settings/control layer, matching Apple's existing separate gesture surface. User-reported full-screen camera failure had no capture invocation while double-tap succeeded. Physical fix verification pending; see [review and evidence](validation/2026-09-29-android-fullscreen-controls.md).
+
+### 2026-09-29 camera divider clearance and declined-drone video prompts
+
+The Android camera gesture mitigation failed physical testing. Follow-up identifies overlap with the invisible collapsed split-divider restore target; camera trailing insets now clear that target on both platforms. Both platforms also keep declined RID-only flights quiet while allowing a new concrete local video publisher to offer confirmation once, without automatically publishing. See [camera retest evidence](validation/2026-09-29-android-fullscreen-controls.md) and [confirmation validation](validation/2026-09-29-declined-drone-video-confirmation.md). Installation/physical validation pending.

@@ -111,6 +111,10 @@ public final class AppleFlightStorage: @unchecked Sendable {
     public static func isProtected(_ name: String) -> Bool {
         shared.lock.lock(); defer { shared.lock.unlock() }
         if name == dayName(Date()) || shared.protections.values.contains(name) { return true }
+        let clueIndex = root.appendingPathComponent(name).appendingPathComponent("clues.json")
+        if let data = try? Data(contentsOf: clueIndex),
+           let clues = try? JSONDecoder().decode([OperationalClueRecord].self, from: data),
+           clues.contains(where: { $0.uploadState == .pending || $0.uploadState == .uploading || $0.uploadState == .failed }) { return true }
         // MediaMTX uses UTC paths until completion. Protect raw segments across local midnight.
         if shared.recorderRunning, let files = FileManager.default.enumerator(at: root.appendingPathComponent(name), includingPropertiesForKeys: nil) {
             for case let url as URL in files where ["mp4", "fmp4"].contains(url.pathExtension.lowercased()) {

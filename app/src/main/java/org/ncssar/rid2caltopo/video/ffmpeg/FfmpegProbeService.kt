@@ -1368,6 +1368,16 @@ class FfmpegProbeService(
         }
     }
 
+    /** Decoder progress and presentation are deliberately separate diagnostic signals. */
+    fun confirmationDiagnostic(designator: String): String = synchronized(stateLock) {
+        val now = System.currentTimeMillis()
+        val sessionId = renderSessions[designator]
+        val session = sessionId?.let { managedRenderSessions[it] }
+        val decodedAge = session?.lastFrameAtMs?.let { now - it } ?: -1L
+        val renderedAge = lastFrameAtMs[designator]?.let { now - it } ?: -1L
+        "designator=$designator readerSession=$sessionId decodedFrameAgeMs=$decodedAge renderedFrameAgeMs=$renderedAge decodedFrames=${session?.decodedFrameCount ?: 0} renderedFrames=${session?.renderedFrameCount ?: 0}"
+    }
+
     fun hasRecentFrame(designator: String, maxAgeMs: Long = 2_500L): Boolean {
         val now = System.currentTimeMillis()
         return synchronized(stateLock) {

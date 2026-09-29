@@ -25,9 +25,14 @@ class AirspaceRepository(
             try {
                 client.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) {
-                        throw IOException("Controlled-airspace lookup failed with HTTP ${response.code}.")
+                        throw AirspaceServiceFailure("Controlled-airspace lookup failed with HTTP ${response.code}.",
+                            response.code == 429, response.header("Retry-After"))
                     }
-                    FaaUasFacilityMapParser.parse(response.body?.string().orEmpty())
+                    try {
+                        FaaUasFacilityMapParser.parse(response.body?.string().orEmpty())
+                    } catch (e: AirspaceServiceFailure) {
+                        throw AirspaceServiceFailure(e.message.orEmpty(), e.rateLimited, response.header("Retry-After"))
+                    }
                 }
             } catch (e: UnknownHostException) {
                 throw IOException("Controlled-airspace host lookup failed.", e)

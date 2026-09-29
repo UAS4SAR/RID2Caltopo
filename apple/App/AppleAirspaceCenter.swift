@@ -13,10 +13,13 @@ final class AppleAirspaceCenter: ObservableObject {
 
     private let defaults: UserDefaults
     private var records: [OperationalFacilityMapRecord] = []
+    private var retryPolicy = AirspaceRetryPolicy()
     private var lastAttempt = Date.distantPast
     @Published private(set) var lastSuccessfulCheck: Date?
     private var lastCoordinate: CLLocationCoordinate2D?
     private var refreshTask: Task<Void, Never>?
+    private var pendingForcedRefresh = false
+    private var pendingRefreshLocation: CLLocation?
     private var hasCompletedRefresh = false
 
     private init(defaults: UserDefaults = .standard) {
@@ -42,13 +45,20 @@ final class AppleAirspaceCenter: ObservableObject {
             ))
             return
         }
-        guard force || shouldRefresh(location) else {
-            if let lastSuccessfulCheck, Date().timeIntervalSince(lastSuccessfulCheck) > 180 {
-                publish(OperationalFacilityMap.state(records: records, loading: false, errorMessage: "Last successful facility-map check is over 3 minutes old. Refresh before relying on these results.", pilotCoordinate: .init(latitude: location.coordinate.latitude, longitude: location.coordinate.longitude)))
+        guard retryPolicy.permits() else { return }
+        guard force || (autoRefresh && retryPolicy.failures > 0) || shouldRefresh() else {
+            if let lastSuccessfulCheck, Date().timeIntervalSince(lastSuccessfulCheck) > OperationalAirspaceRefreshPolicy.normalInterval {
+                publish(OperationalFacilityMap.state(records: records, loading: false, errorMessage: "Last successful facility-map check is over 20 minutes old. Refresh before relying on these results.", pilotCoordinate: .init(latitude: location.coordinate.latitude, longitude: location.coordinate.longitude)))
             }
             return
         }
-        guard refreshTask == nil else { return }
+        guard refreshTask == nil else {
+            if force {
+                pendingForcedRefresh = true
+                pendingRefreshLocation = location
+            }
+            return
+        }
         lastAttempt = Date()
         if !hasCompletedRefresh {
             publish(OperationalFacilityMap.state(
@@ -63,7 +73,8 @@ final class AppleAirspaceCenter: ObservableObject {
         }
         refreshTask = Task { [weak self] in
             guard let self else { return }
-            defer { refreshTask = nil }
+            defer { refreshTask = nil; runPendingRefresh() }
+            var retryAfter: String?
             do {
                 guard let url = OperationalFacilityMap.queryURL(
                     latitude: location.coordinate.latitude,
@@ -73,10 +84,14 @@ final class AppleAirspaceCenter: ObservableObject {
                 request.timeoutInterval = 30
                 request.setValue("RID2Caltopo/Apple (contact: kjt@uas4sar.com)", forHTTPHeaderField: "User-Agent")
                 let (data, response) = try await URLSession.shared.data(for: request)
-                guard let http = response as? HTTPURLResponse, (200 ..< 300).contains(http.statusCode) else {
-                    throw AppleAirspaceError.service("Controlled-airspace lookup failed.")
+                let http = response as? HTTPURLResponse
+                retryAfter = http?.value(forHTTPHeaderField: "Retry-After")
+                guard let http, (200 ..< 300).contains(http.statusCode) else {
+                    throw AirspaceServiceFailure("Controlled-airspace lookup failed (HTTP \(http?.statusCode ?? 0)).",
+                        rateLimited: http?.statusCode == 429)
                 }
                 records = try OperationalFacilityMap.parse(data)
+                retryPolicy.succeeded()
                 lastCoordinate = location.coordinate
                 lastSuccessfulCheck = Date()
                 hasCompletedRefresh = true
@@ -91,17 +106,20 @@ final class AppleAirspaceCenter: ObservableObject {
                 ))
                 AppleLog.info("Airspace", "FAA Facility Map returned \(records.count) record(s)")
             } catch {
+                let wait = retryPolicy.failed(rateLimited: (error as? AirspaceServiceFailure)?.rateLimited == true,
+                    retryAfter: retryAfter)
+                let message = "\(error.localizedDescription) Retrying in \(Int(ceil(wait))) seconds."
                 hasCompletedRefresh = true
                 publish(OperationalFacilityMap.state(
                     records: records,
                     loading: false,
-                    errorMessage: error.localizedDescription,
+                    errorMessage: message,
                     pilotCoordinate: .init(
                         latitude: location.coordinate.latitude,
                         longitude: location.coordinate.longitude
                     )
                 ))
-                AppleLog.error("Airspace", error.localizedDescription)
+                AppleLog.error("Airspace", message)
             }
         }
     }
@@ -109,6 +127,14 @@ final class AppleAirspaceCenter: ObservableObject {
     var queryLocationText: String {
         guard let lastCoordinate else { return "No successful query location" }
         return String(format: "%.5f, %.5f • radius: 1 statute mile", lastCoordinate.latitude, lastCoordinate.longitude)
+    }
+
+    private func runPendingRefresh() {
+        guard pendingForcedRefresh else { return }
+        let location = pendingRefreshLocation
+        pendingForcedRefresh = false
+        pendingRefreshLocation = nil
+        update(location: location, force: true)
     }
 
     func refreshNow(location: CLLocation?) { update(location: location, force: true) }
@@ -137,11 +163,10 @@ final class AppleAirspaceCenter: ObservableObject {
         ))
     }
 
-    private func shouldRefresh(_ location: CLLocation) -> Bool {
-        guard autoRefresh else { return records.isEmpty }
-        if Date().timeIntervalSince(lastAttempt) >= 60 { return true }
-        guard let lastCoordinate else { return records.isEmpty }
-        return location.distance(from: CLLocation(latitude: lastCoordinate.latitude, longitude: lastCoordinate.longitude)) >= 402
+    private func shouldRefresh() -> Bool {
+        OperationalAirspaceRefreshPolicy.shouldRefresh(
+            autoRefresh: autoRefresh, hasCompletedAttempt: hasCompletedRefresh,
+            elapsedSinceAttempt: Date().timeIntervalSince(lastSuccessfulCheck ?? lastAttempt))
     }
 
     private func publish(_ newState: OperationalAirspaceState) {
@@ -210,16 +235,28 @@ struct AppleAirspacePanel: View {
                         Text(notamEmptyMessage).foregroundStyle(.secondary)
                     }
                     ForEach(notams.state.notices) { notice in
-                        DisclosureGroup {
-                            if !notice.effectiveText.isEmpty { Text(notice.effectiveText) }
-                            Text(notice.details).textSelection(.enabled)
-                            if !notice.reference.isEmpty {
-                                LabeledContent("Reference", value: notice.reference)
+                        VStack(alignment: .leading, spacing: 8) {
+                            DisclosureGroup {
+                                if !notice.effectiveText.isEmpty { Text(notice.effectiveText) }
+                                Text(notice.details).textSelection(.enabled)
+                                if !notice.reference.isEmpty {
+                                    LabeledContent("Reference", value: notice.reference)
+                                }
+                            } label: {
+                                VStack(alignment: .leading) {
+                                    Text(notice.title).fontWeight(.semibold)
+                                    Text(notice.summary).font(.caption).foregroundStyle(.secondary)
+                                }
                             }
-                        } label: {
-                            VStack(alignment: .leading) {
-                                Text(notice.title).fontWeight(.semibold)
-                                Text(notice.summary).font(.caption).foregroundStyle(.secondary)
+                            if notice.mapCoordinates.isEmpty {
+                                Text("Map location unavailable for this notice.").font(.caption).foregroundStyle(.secondary)
+                            } else {
+                                Button("Show on map") {
+                                    notams.showOnMap(notice)
+                                    dismiss()
+                                }
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel("Show \(notice.title) on map")
                             }
                         }
                     }

@@ -465,8 +465,6 @@ final class AppleStreamRegistry: ObservableObject {
 struct AppleStreamsGridView: View {
     @ObservedObject var registry: AppleStreamRegistry
     @ObservedObject private var networkDiagnostics = AppleNetworkDiagnosticCenter.shared
-    var ingestAddress: String? = nil
-    var networkSSID: String? = nil
     var showsSetupHeader = true
     var showsNavigationTitle = true
     var expandedSessionID: String? = nil
@@ -496,10 +494,6 @@ struct AppleStreamsGridView: View {
               let expanded = available.first(where: { $0.id == expandedSessionID })
         else { return available }
         return [expanded]
-    }
-
-    private var currentNetworkSSID: String? {
-        networkDiagnostics.currentControllerConnectionLabel
     }
 
     var body: some View {
@@ -567,8 +561,6 @@ struct AppleStreamsGridView: View {
     ) -> some View {
         AppleStreamTile(
             session: session,
-            ingestAddress: ingestAddress,
-            networkSSID: currentNetworkSSID,
             onDesignatorsTapped: {
                 showRegisteredDesignators = true
             },
@@ -649,8 +641,6 @@ private struct AppleStreamTile: View {
     @State private var centerpointElevationSample: OperationalCenterpointElevation.Sample?
     @State private var centerpointReferenceElevationFeet: Int?
     @State private var centerpointDisplayMode: OperationalCenterpointElevation.DisplayMode = .msl
-    let ingestAddress: String?
-    let networkSSID: String?
     let onDesignatorsTapped: (() -> Void)?
     let focused: Bool
     let fillsAvailableSpace: Bool
@@ -684,8 +674,6 @@ private struct AppleStreamTile: View {
 
     init(
         session: AppleLiveStreamSession,
-        ingestAddress: String?,
-        networkSSID: String?,
         onDesignatorsTapped: (() -> Void)? = nil,
         focused: Bool,
         fillsAvailableSpace: Bool,
@@ -706,8 +694,6 @@ private struct AppleStreamTile: View {
     ) {
         self.session = session
         _model = ObservedObject(wrappedValue: session.model)
-        self.ingestAddress = ingestAddress
-        self.networkSSID = networkSSID
         self.onDesignatorsTapped = onDesignatorsTapped
         self.focused = focused
         self.fillsAvailableSpace = fillsAvailableSpace

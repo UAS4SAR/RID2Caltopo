@@ -60,7 +60,7 @@ public enum OperationalMapFocusPolicy {
     }
 
     public static func shouldSuspendFollow(isOperatorGesture: Bool, isZoomGesture: Bool) -> Bool {
-        isOperatorGesture && !isZoomGesture
+        isOperatorGesture || isZoomGesture
     }
 }
 

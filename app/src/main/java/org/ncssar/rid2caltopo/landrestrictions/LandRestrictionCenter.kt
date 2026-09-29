@@ -2,7 +2,8 @@ package org.ncssar.rid2caltopo.landrestrictions
 
 import android.content.Context
 import android.location.Location
-import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -24,7 +25,7 @@ object LandRestrictionCenter {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _uiState = MutableStateFlow(LandRestrictionUiState())
     val uiState: StateFlow<LandRestrictionUiState> = _uiState.asStateFlow()
-    private val refreshing = AtomicBoolean(false)
+    private val refreshMutex = Mutex()
 
     @Volatile private var initialized = false
     private var repository: LandRestrictionRepository? = null
@@ -71,7 +72,9 @@ object LandRestrictionCenter {
         }
     }
 
-    private suspend fun refresh(force: Boolean) {
+    private suspend fun refresh(force: Boolean) = refreshMutex.withLock { refreshLocked(force) }
+
+    private suspend fun refreshLocked(force: Boolean) {
         val enabled = CaltopoClient.GetLandRestrictionsEnabled()
         if (!enabled) {
             _uiState.value = disabledLandRestrictionUiState()
@@ -90,7 +93,6 @@ object LandRestrictionCenter {
             rebuild(loading = false)
             return
         }
-        if (!refreshing.compareAndSet(false, true)) return
         try {
             lastAttemptEpochMs = System.currentTimeMillis()
             rebuild(loading = true)
@@ -109,8 +111,6 @@ object LandRestrictionCenter {
             lastErrors = listOf(error.message ?: "Protected-land lookup unavailable")
             rebuild(loading = false)
             CaltopoClient.CTWarn("LandRules", "Protected-land refresh failed", error)
-        } finally {
-            refreshing.set(false)
         }
     }
 

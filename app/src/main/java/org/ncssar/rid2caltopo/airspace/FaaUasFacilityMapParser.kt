@@ -4,7 +4,12 @@ import org.json.JSONObject
 
 object FaaUasFacilityMapParser {
     fun parse(body: String): List<FaaUasFacilityMapRecord> {
-        val features = JSONObject(body).optJSONArray("features") ?: return emptyList()
+        val root = JSONObject(body)
+        root.optJSONObject("error")?.let {
+            val message = it.optString("message", "FAA Facility Map returned an error.")
+            throw AirspaceServiceFailure(message, it.optInt("code") == 429 || message.contains("too many requests", ignoreCase = true))
+        }
+        val features = root.optJSONArray("features") ?: return emptyList()
         return buildList {
             for (i in 0 until features.length()) {
                 val feature = features.optJSONObject(i) ?: continue

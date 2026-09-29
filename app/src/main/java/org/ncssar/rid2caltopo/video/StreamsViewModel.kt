@@ -1,3 +1,6 @@
+import org.ncssar.rid2caltopo.notam.NearbyNotam
+import org.ncssar.rid2caltopo.notam.NotamMapFocusRequest
+import org.ncssar.rid2caltopo.notam.mapCoordinates
 import android.app.Application
 import android.graphics.Bitmap
 import android.net.Uri
@@ -1001,6 +1004,13 @@ class StreamsViewModel(
     CtDroneSpec.DroneSpecsChangedListener,
     CaltopoMap.MapStatusListener {
 
+    fun confirmationMediaDiagnostics(): String = streams.value.values
+        .filter { it.state == StreamState.LIVE && !it.isLocalPlayback }
+        .joinToString("; ") { stream ->
+            "publisherConnId=${stream.publisherConnId} " +
+                (ffmpegProbeService?.confirmationDiagnostic(stream.designator) ?: "decoder=unavailable")
+        }
+
     private val tag = "StreamsViewModel"
     private val processLoadSampleIntervalMs = 1_000L
     private val hotProcessCpuFractionForSecondStream = 0.85
@@ -1313,7 +1323,7 @@ class StreamsViewModel(
         get() = _pendingClue.value
     val localMapMarkers = mutableStateListOf<LocalMapMarker>()
     private val clueSnapshotRefsByTitle = mutableStateMapOf<String, ClueSnapshotRef>()
-    private val localClueStore = AndroidClueStore(application.applicationContext)
+    private val localClueStore = AndroidClueStore.shared(application.applicationContext)
     private var activeLocalClueMapKey: String? = null
 
     private val _mapName = mutableStateOf<String?>(null)
@@ -1353,6 +1363,9 @@ class StreamsViewModel(
     )
     internal val baseLayer: org.ncssar.rid2caltopo.video.BaseLayerOption
         get() = _baseLayer.value
+    // Session state survives map recreation and incident-map reconnects.
+    internal var mapInitialLocationApplied = false
+    internal val mapOperatorAdjustedViewportState = mutableStateOf(false)
     private var persistedMapViewportState: MapViewportState? = null
     private var clueProjectionJob: Job? = null
     private val mutedComplianceAlertDesignators = mutableStateSetOf<String>()
@@ -1903,7 +1916,6 @@ class StreamsViewModel(
                 hydrateLocalClues(mapKey)
             }
             if (!oldName.equals(newName)) {
-                persistedMapViewportState = null
                 CTDebug(tag, "Connected to ${newName}")
                 _mapName.value = newName
             }
@@ -2175,6 +2187,21 @@ class StreamsViewModel(
         if (_followFocusedDroneEnabled.value == enabled) return
         _followFocusedDroneEnabled.value = enabled
         streamPipPrefs.edit().putBoolean("follow_focused_drone_enabled", enabled).apply()
+    }
+
+    private val _notamMapFocusRequest = MutableStateFlow<NotamMapFocusRequest?>(null)
+    val notamMapFocusRequest = _notamMapFocusRequest.asStateFlow()
+
+    fun showNotamOnMap(notice: NearbyNotam) {
+        val coordinates = notice.mapCoordinates()
+        if (coordinates.isEmpty()) return
+        clearMapDroneFocus()
+        _notamMapFocusRequest.value = NotamMapFocusRequest(coordinates = coordinates)
+        showMapOnly()
+    }
+
+    fun consumeNotamMapFocus(id: java.util.UUID) {
+        if (_notamMapFocusRequest.value?.id == id) _notamMapFocusRequest.value = null
     }
 
     fun showMapOnly() {
@@ -2456,8 +2483,10 @@ class StreamsViewModel(
             return null
         }
         return try {
+            val destination = if (publish) org.ncssar.rid2caltopo.data.AwaitingMapFlights.clueDestination(clue.droneSpec.remoteId) else null
+            val destinationMapKey = destination?.first?.let { if (it.isBlank()) "unassigned" else "map:$it" } ?: currentLocalClueMapKey()
             val record = localClueStore.save(
-                mapKey = currentLocalClueMapKey(),
+                mapKey = destinationMapKey,
                 lat = clue.lat,
                 lng = clue.lng,
                 alt = clue.alt,
@@ -2467,6 +2496,7 @@ class StreamsViewModel(
                 sourceDesignator = clue.designator,
                 bitmap = bitmap,
                 publishToCaltopo = publish,
+                destinationTeamId = destination?.second ?: CaltopoClient.GetCaltopoCredentials().teamId.orEmpty(),
             )
             localMapMarkers.add(record.toLocalMapMarker())
             registerClueSnapshot(
@@ -2554,6 +2584,35 @@ class StreamsViewModel(
         }?.also { requestDemClueProjectionRefresh(it.designator) }
     }
 
+    private val clueUploadsInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    private fun retryPendingClues() {
+        if (CaltopoMap.GetMapStatus() != mapStatus.up) return
+        val mapId = CaltopoMap.GetMapId()
+        val teamId = CaltopoClient.GetCaltopoCredentials().teamId.orEmpty()
+        val folder = CaltopoMap.GetFolderId() ?: return
+        // One photo at a time; the next poll advances the remaining queue.
+        if (clueUploadsInFlight.isNotEmpty()) return
+        val record = localClueStore.pendingForMap(mapId, teamId).firstOrNull() ?: return
+        if (!clueUploadsInFlight.add(record.id)) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val jpeg = localClueStore.imageFile(record).readBytes()
+                org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
+                    mapId, teamId, record.id, record.lat, record.lng, record.title, record.description,
+                    folder, record.createdAtMs, jpeg) { result ->
+                    try {
+                        val permanent = result.responseCode in listOf(400, 401, 403, 404, 413, 422)
+                        localClueStore.recordUploadResult(record.id, result.success(), result.responseString(), permanent)
+                    } finally { clueUploadsInFlight.remove(record.id) }
+                }
+            } catch (error: Exception) {
+                clueUploadsInFlight.remove(record.id)
+                CTError(tag, "Pending clue remains local", error)
+            }
+        }
+    }
+
     fun submitClue() {
         val clue = pendingClue ?: return
         if (clue.projectionHeightMeters == null) {
@@ -2583,16 +2642,10 @@ class StreamsViewModel(
         )
         val finalDescription = appendTelemetrySummary(withCaptureSummary, clue.streamTelemetrySummary)
         if (persistClueLocally(clue, clue.title, finalDescription, publish = true) == null) return
-        CaltopoClient.SubmitClue(
-            clue.droneSpec,
-            clue.bitmap,
-            clue.lat,
-            clue.lng,
-            clue.alt,
-            clue.title,
-            finalDescription,
-            clue.timestamp
-        )
+        org.ncssar.rid2caltopo.data.WaypointTrack.AddClueForTrack(
+            clue.droneSpec, clue.lat, clue.lng, clue.alt, clue.timestamp, clue.title, finalDescription, clue.bitmap)
+        retryPendingClues()
+        CaltopoClient.ShowToast("Clue saved locally; publication will finish when its map is available.")
 
         clearPendingClue()
     }
@@ -3861,6 +3914,12 @@ class StreamsViewModel(
     }
 
     init {
+        viewModelScope.launch {
+            while (true) {
+                retryPendingClues()
+                kotlinx.coroutines.delay(30_000L)
+            }
+        }
         viewModelScope.launch {
             org.ncssar.rid2caltopo.app.FlightStorage.changes.collect { generation ->
                 if (generation > 0) hydrateLocalClues(currentLocalClueMapKey())

@@ -19,6 +19,7 @@ public final class CaltopoInterruptedTrackJournal {
     private static final String TAG = "CaltopoRecovery";
     private static final String FILE_NAME = "caltopo-interrupted-tracks.json";
     private static final Object LOCK = new Object();
+    private static final Set<String> inFlight = java.util.concurrent.ConcurrentHashMap.newKeySet();
     @Nullable private static File testFile;
 
     private CaltopoInterruptedTrackJournal() { }
@@ -69,6 +70,22 @@ public final class CaltopoInterruptedTrackJournal {
     public static Set<String> recover(@NonNull String mapId,
                                       @NonNull String archiveFolderId,
                                       @NonNull R2cRuntime runtime) {
+        return recover(mapId, archiveFolderId, runtime, java.util.Collections.emptyList());
+    }
+
+    public static Set<String> recover(@NonNull String mapId,
+                                      @NonNull String archiveFolderId,
+                                      @NonNull R2cRuntime runtime,
+                                      @NonNull java.util.List<JSONObject> mapFeatures) {
+        // Upgrade old journals from positive server evidence, without recreating
+        // an archive that is already present on this map.
+        java.util.Map<String, JSONObject> archivedFeatures = new java.util.HashMap<>();
+        for (JSONObject feature : mapFeatures) {
+            JSONObject properties = feature.optJSONObject("properties");
+            if (properties != null && "Shape".equals(properties.optString("class"))) {
+                archivedFeatures.put(feature.optString("id"), feature);
+            }
+        }
         Set<String> recovering = new HashSet<>();
         JSONArray entries;
         synchronized (LOCK) {
@@ -83,31 +100,82 @@ public final class CaltopoInterruptedTrackJournal {
             JSONArray points = entry.optJSONArray("points");
             if (liveTrackId.isEmpty() || points == null || points.length() == 0) continue;
             recovering.add(liveTrackId);
+            if (CaltopoLiveTrack.hasActivePublication(liveTrackId) || !inFlight.add(liveTrackId)) continue;
             try {
+                if (entry.optBoolean("archiveUploaded") || archiveContainsPoints(archivedFeatures.get(liveTrackId), points)) {
+                    finishArchiveCleanup(mapId, liveTrackId, runtime);
+                    continue;
+                }
                 JSONObject feature = archiveFeature(entry, archiveFolderId);
-                runtime.getCalTopoSessionGateway().editObjectWithId(
-                        "Shape", liveTrackId, feature, editOp -> {
+                runtime.getCalTopoSessionGateway().editObjectOnMap(
+                        mapId, "Shape", liveTrackId, feature, editOp -> {
                             if (!editOp.success()) {
+                                inFlight.remove(liveTrackId);
                                 CaltopoClient.CTWarn(TAG, "Interrupted LiveTrack conversion deferred id=" + liveTrackId);
                                 return;
                             }
-                            runtime.getCalTopoSessionGateway().deleteLiveTrackWithId(
-                                    liveTrackId,
-                                    deleteOp -> {
-                                        if (deleteOp.success()) {
-                                            remove(liveTrackId);
-                                            CaltopoClient.CTInfo(TAG, "Recovered interrupted LiveTrack id=" + liveTrackId);
-                                        } else {
-                                            CaltopoClient.CTWarn(TAG, "Interrupted LiveTrack deletion deferred id=" + liveTrackId);
-                                        }
-                                    },
-                                    400, 404);
+                            finishArchiveCleanup(mapId, liveTrackId, runtime);
                         });
             } catch (Exception error) {
+                inFlight.remove(liveTrackId);
                 CaltopoClient.CTError(TAG, "Interrupted LiveTrack recovery failed id=" + liveTrackId, error);
             }
         }
         return recovering;
+    }
+
+    private static boolean archiveContainsPoints(@Nullable JSONObject feature, JSONArray points) {
+        if (feature == null) return false;
+        JSONObject geometry = feature.optJSONObject("geometry");
+        if (geometry == null || !"LineString".equals(geometry.optString("type"))) return false;
+        JSONArray archived = geometry.optJSONArray("coordinates");
+        if (archived == null || archived.length() < points.length()) return false;
+        // An older/partial Shape is not proof that the complete buffered track
+        // was uploaded. Require every pending coordinate, including altitude.
+        for (int i = 0; i < points.length(); i++) {
+            JSONArray expected = points.optJSONArray(i);
+            JSONArray actual = archived.optJSONArray(i);
+            if (expected == null || actual == null || actual.length() < expected.length()) return false;
+            for (int j = 0; j < expected.length(); j++) {
+                double value = expected.optDouble(j);
+                if (!Double.isFinite(value) || Double.compare(value, actual.optDouble(j)) != 0) return false;
+            }
+        }
+        return true;
+    }
+
+    private static void finishArchiveCleanup(String mapId, String liveTrackId, R2cRuntime runtime) {
+        try {
+            // Persist completion before cleanup: a cleanup retry must never POST
+            // the Shape again, including after a restart or manual map deletion.
+            synchronized (LOCK) {
+                JSONObject root = readRoot();
+                JSONArray entries = root.optJSONArray("entries");
+                if (entries == null) { inFlight.remove(liveTrackId); return; }
+                for (int i = 0; i < entries.length(); i++) {
+                    JSONObject entry = entries.optJSONObject(i);
+                    if (entry != null && liveTrackId.equals(entry.optString("liveTrackId"))) {
+                        entry.put("archiveUploaded", true);
+                    }
+                }
+                writeRoot(root);
+            }
+            AwaitingMapFlights.published(liveTrackId);
+            runtime.getCalTopoSessionGateway().deleteLiveTrackOnMap(mapId, liveTrackId, deleteOp -> {
+                // Match Apple's already-gone handling. Standalone archives never
+                // created a LiveTrack, for which CalTopo returns 400 (or 404).
+                if (deleteOp.success() || deleteOp.responseCode == 400 || deleteOp.responseCode == 404) {
+                    remove(liveTrackId);
+                    CaltopoClient.CTInfo(TAG, "Recovered interrupted LiveTrack id=" + liveTrackId);
+                } else {
+                    CaltopoClient.CTWarn(TAG, "Archive uploaded; only LiveTrack cleanup pending id=" + liveTrackId);
+                }
+                inFlight.remove(liveTrackId);
+            });
+        } catch (Exception error) {
+            inFlight.remove(liveTrackId);
+            CaltopoClient.CTError(TAG, "Could not finish archive cleanup id=" + liveTrackId, error);
+        }
     }
 
     public static void remove(@NonNull String liveTrackId) {

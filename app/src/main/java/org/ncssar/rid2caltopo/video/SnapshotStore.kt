@@ -26,6 +26,9 @@ data class AndroidClueRecord(
     val imageFilename: String,
     val thumbnailFilename: String,
     val publishToCaltopo: Boolean,
+    val destinationTeamId: String = "",
+    val uploadState: String = "legacy",
+    val lastUploadError: String = "",
 )
 
 /**
@@ -65,6 +68,7 @@ class AndroidClueStore private constructor(
         sourceDesignator: String,
         bitmap: Bitmap,
         publishToCaltopo: Boolean,
+        destinationTeamId: String = "",
     ): AndroidClueRecord {
         val id = UUID.randomUUID().toString().lowercase()
         val imageFilename = "$id.jpg"
@@ -82,6 +86,9 @@ class AndroidClueStore private constructor(
             imageFilename = imageFilename,
             thumbnailFilename = thumbnailFilename,
             publishToCaltopo = publishToCaltopo,
+            destinationTeamId = destinationTeamId,
+            uploadState = if (publishToCaltopo) "pending" else "local",
+
         )
         val imageBytes = encodeJpeg(bitmap, 90)
         val thumbnailBytes = encodeJpeg(clueThumbnail(bitmap), 78)
@@ -127,6 +134,29 @@ class AndroidClueStore private constructor(
             records[id] = record
             throw error
         }
+    }
+
+    @Synchronized
+    fun bindAwaitingFlight(designator: String, from: Long, through: Long, mapId: String, teamId: String) {
+        records.values.toList().filter { it.mapKey == "unassigned" && it.publishToCaltopo &&
+            it.sourceDesignator.equals(designator, true) && it.createdAtMs in from..through }.forEach {
+            records[it.id] = it.copy(mapKey = "map:$mapId", destinationTeamId = teamId, uploadState = "pending")
+        }
+        persistIndex()
+    }
+
+    @Synchronized
+    fun pendingForMap(mapId: String, teamId: String): List<AndroidClueRecord> {
+        loadIndex()
+        return records.values.filter { it.publishToCaltopo && it.uploadState == "pending" &&
+            mapId.isNotBlank() && teamId.isNotBlank() && it.mapKey == "map:$mapId" && it.destinationTeamId == teamId }
+    }
+
+    @Synchronized
+    fun recordUploadResult(id: String, success: Boolean, error: String = "", terminal: Boolean = false) {
+        val record = records[id] ?: return
+        records[id] = record.copy(uploadState = if (success) "published" else if (terminal) "failed" else "pending", lastUploadError = error)
+        persistIndex()
     }
 
     fun imageFile(record: AndroidClueRecord): File = File(root, record.imageFilename)
@@ -198,6 +228,9 @@ class AndroidClueStore private constructor(
     }
 
     companion object {
+        private var shared: AndroidClueStore? = null
+        @JvmStatic @Synchronized fun shared(context: Context): AndroidClueStore =
+            shared ?: AndroidClueStore(context).also { shared = it }
         private const val THUMBNAIL_MAX_SIDE = 180
 
         internal fun forDirectory(root: File): AndroidClueStore = AndroidClueStore(root)
@@ -239,6 +272,9 @@ private fun AndroidClueRecord.toJson(): JSONObject = JSONObject()
     .put("imageFilename", imageFilename)
     .put("thumbnailFilename", thumbnailFilename)
     .put("publishToCaltopo", publishToCaltopo)
+    .put("destinationTeamId", destinationTeamId)
+    .put("uploadState", uploadState)
+    .put("lastUploadError", lastUploadError)
 
 private fun JSONObject.toAndroidClueRecord(): AndroidClueRecord? {
     val id = optString("id").takeIf { it.isNotBlank() } ?: return null
@@ -257,5 +293,8 @@ private fun JSONObject.toAndroidClueRecord(): AndroidClueRecord? {
         imageFilename = imageFilename,
         thumbnailFilename = thumbnailFilename,
         publishToCaltopo = optBoolean("publishToCaltopo"),
+        destinationTeamId = optString("destinationTeamId"),
+        uploadState = optString("uploadState", "legacy"),
+        lastUploadError = optString("lastUploadError"),
     ).takeIf { it.lat.isFinite() && it.lng.isFinite() }
 }

@@ -84,18 +84,21 @@ enum AppleNetworkAddress {
     }
 }
 
-/// Event-driven network diagnostics. NWPathMonitor supplies changes; no polling or probes are used.
+/// Path events refresh immediately; foreground identity checks catch same-path Wi-Fi changes.
 @MainActor
 final class AppleNetworkDiagnosticCenter: ObservableObject {
     enum RefreshReason: String {
         case networkPathChanged = "path_changed"
         case locationAuthorizationChanged = "location_authorization_changed"
         case applicationBecameActive = "application_became_active"
+        case foregroundIdentityCheck = "foreground_identity_check"
     }
 
     static let shared = AppleNetworkDiagnosticCenter()
 
     @Published private(set) var currentSnapshotID = "none"
+    @Published private(set) var checkRecoveryGeneration = 0
+    private var checkRecoveryGate = NetworkCheckRecoveryGate()
     @Published private(set) var currentWiFiSSID: String?
     @Published private(set) var currentControllerIPv4Address: String?
     @Published private(set) var currentWiredIPv4Address: String?
@@ -118,6 +121,9 @@ final class AppleNetworkDiagnosticCenter: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.latestPath = path
+                if self.checkRecoveryGate.update(available: path.status == .satisfied) {
+                    self.checkRecoveryGeneration += 1
+                }
                 await self.record(path: path, reason: .networkPathChanged)
             }
         }
@@ -143,9 +149,11 @@ final class AppleNetworkDiagnosticCenter: ObservableObject {
         monitor?.cancel()
         monitor = nil
         latestPath = nil
+        checkRecoveryGate = NetworkCheckRecoveryGate()
         localMonitors.forEach { $0.cancel() }
         localMonitors.removeAll()
         localPaths.removeAll()
+        currentWiFiSSID = nil
         currentControllerIPv4Address = nil
         currentWiredIPv4Address = nil
         currentControllerConnectionLabel = "Wi-Fi or Ethernet"
@@ -164,7 +172,9 @@ final class AppleNetworkDiagnosticCenter: ObservableObject {
     private func record(path: NWPath, reason requestedReason: RefreshReason) async {
         recordGeneration += 1
         let generation = recordGeneration
-        let ssid = await AppleNetworkAddress.currentWiFiSSID()
+        let identity = await Self.currentWiFiIdentity()
+        guard generation == recordGeneration, !Task.isCancelled else { return }
+        let ssid = identity.ssid
         let interfaces = Self.interfaceSummary(path)
         let ipv4 = AppleNetworkAddress.ipv4DiagnosticSummary()
         let localInterfaces = localPaths.values.flatMap(\.availableInterfaces)
@@ -179,7 +189,7 @@ final class AppleNetworkDiagnosticCenter: ObservableObject {
         )
         let connectionLabel = ssid ?? "Wi-Fi name unavailable"
         let status = Self.statusSummary(path.status)
-        let bssidHash = await Self.currentBSSIDHash()
+        let bssidHash = identity.bssidHash
         guard generation == recordGeneration else { return }
         let transitionKey = [
             ssid ?? "unavailable",
@@ -212,15 +222,17 @@ final class AppleNetworkDiagnosticCenter: ObservableObject {
         )
     }
 
-    private static func currentBSSIDHash() async -> String {
+    private static func currentWiFiIdentity() async -> (ssid: String?, bssidHash: String) {
         await withCheckedContinuation { continuation in
             NEHotspotNetwork.fetchCurrent { network in
+                let ssid = network?.ssid.trimmingCharacters(in: .whitespacesAndNewlines)
+                let name = ssid?.isEmpty == false ? ssid : nil
                 guard let bssid = network?.bssid, !bssid.isEmpty else {
-                    continuation.resume(returning: "unavailable")
+                    continuation.resume(returning: (name, "unavailable"))
                     return
                 }
                 let digest = SHA256.hash(data: Data(bssid.utf8))
-                continuation.resume(returning: digest.prefix(6).map { String(format: "%02x", $0) }.joined())
+                continuation.resume(returning: (name, digest.prefix(6).map { String(format: "%02x", $0) }.joined()))
             }
         }
     }
@@ -343,6 +355,24 @@ enum AppleDeviceIdentity {
 
     static func displayName(fromHostname hostname: String) -> String {
         OperationalDeviceName.displayName(fromHostname: hostname) ?? "iPad"
+    }
+}
+
+/// Own the subscription inside the retained navigation destination, rather than
+/// depending on value arguments captured when Live View was pushed.
+struct AppleLiveViewNetworkStatus: View {
+    @ObservedObject private var network = AppleNetworkDiagnosticCenter.shared
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text("on \(network.currentControllerConnectionLabel)")
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            AppleControllerConnectionURLs()
+        }
+        .onChange(of: network.currentSnapshotID, initial: true) { _, snapshotID in
+            AppleLog.info("Network", "Live View header snapshotId=\(snapshotID) ssid=\(network.currentControllerConnectionLabel) wifi=\(network.currentControllerIPv4Address ?? "none") wired=\(network.currentWiredIPv4Address ?? "none")")
+        }
     }
 }
 

@@ -14,6 +14,7 @@ internal data class ShortFlightPrompt(val id: String, val aircraft: String, val 
 
 internal class ShortFlightRecordingGate(private val now: () -> Long) {
     private val callbacks = linkedMapOf<String, Runnable>()
+    private val discardCallbacks = linkedMapOf<String, Runnable>()
     private val mutable = MutableStateFlow<List<ShortFlightPrompt>>(emptyList())
     val prompts = mutable.asStateFlow()
     private var active = false
@@ -22,10 +23,12 @@ internal class ShortFlightRecordingGate(private val now: () -> Long) {
         active = value
         if (!value) mutable.value.toList().forEach { decide(it.id, true) }
     }
-    @Synchronized fun request(aircraft: String, seconds: Double, meters: Double, keep: Runnable): Boolean {
+    fun request(aircraft: String, seconds: Double, meters: Double, keep: Runnable): Boolean = request(aircraft, seconds, meters, keep, null)
+    @Synchronized fun request(aircraft: String, seconds: Double, meters: Double, keep: Runnable, discard: Runnable?): Boolean {
         if (!active || !isShortFlight(seconds, meters)) return false
         val prompt = ShortFlightPrompt(UUID.randomUUID().toString(), aircraft, now() + 10_000)
         callbacks[prompt.id] = keep
+        if (discard != null) discardCallbacks[prompt.id] = discard
         mutable.value = mutable.value + prompt
         return true
     }
@@ -33,7 +36,8 @@ internal class ShortFlightRecordingGate(private val now: () -> Long) {
         val prompt = mutable.value.firstOrNull { it.id == id } ?: return
         val keep = callbacks.remove(id) ?: return
         mutable.value = mutable.value.filterNot { it.id == id }
-        if (record || now() >= prompt.deadlineMillis) keep.run()
+        val discard = discardCallbacks.remove(id)
+        if (record || now() >= prompt.deadlineMillis) keep.run() else discard?.run()
     }
     @Synchronized fun expire() {
         mutable.value.filter { now() >= it.deadlineMillis }.forEach { decide(it.id, true) }
@@ -48,4 +52,5 @@ object ShortFlightRecording {
             .scheduleAtFixedRate({ gate.expire() }, 100, 100, TimeUnit.MILLISECONDS)
     }
     @JvmStatic fun request(aircraft: String, seconds: Double, meters: Double, keep: Runnable) = gate.request(aircraft, seconds, meters, keep)
+    @JvmStatic fun request(aircraft: String, seconds: Double, meters: Double, keep: Runnable, discard: Runnable?) = gate.request(aircraft, seconds, meters, keep, discard)
 }

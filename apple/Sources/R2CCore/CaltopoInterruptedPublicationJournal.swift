@@ -49,7 +49,7 @@ public struct CaltopoInterruptedPublication: Codable, Sendable, Equatable, Ident
         self.liveTrackID = liveTrackID
         self.label = label
         self.description = description
-        points = observations.suffix(5_000).map(CaltopoInterruptedPublicationPoint.init)
+        points = observations.map(CaltopoInterruptedPublicationPoint.init)
     }
 
     public var observations: [RidObservation] {

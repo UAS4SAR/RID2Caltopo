@@ -153,7 +153,10 @@ public enum CaltopoRequestSigner {
 public actor CaltopoLiveClient {
     private let configuration: CaltopoLiveConfiguration
     private let session: URLSession
-    private static let positionReports = LatestPositionReports()
+    private static let positionReports = LatestPositionReports(intervalProvider: {
+        let stored = UserDefaults.standard.object(forKey: OperationalThumbnailRefreshInterval.storageKey) as? Double
+        return .seconds(OperationalThumbnailRefreshInterval.normalized(stored))
+    })
     private var positionReportKeys: Set<String> = []
 
     public init(
@@ -448,8 +451,9 @@ public actor CaltopoLiveClient {
             "creator": clue.teamID,
             "data": clue.jpegData.base64EncodedString(),
         ]
-        let linkPath = "/api/v1/map/\(configuration.mapID)/MapMediaObject"
+        let linkPath = "/api/v1/map/\(configuration.mapID)/MapMediaObject/\(mediaID)"
         let linkPayload: [String: Any] = [
+            "id": mediaID,
             "type": "Feature",
             "geometry": [
                 "type": "Point",

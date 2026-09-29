@@ -3,6 +3,12 @@ import Foundation
 import R2CCore
 import SwiftUI
 
+struct AppleNotamMapFocusRequest: Equatable {
+    let id = UUID()
+    let title: String
+    let coordinates: [OperationalNotamCoordinate]
+}
+
 struct AppleNotamState: Equatable {
     var visible = false
     var enabled = false
@@ -26,6 +32,18 @@ final class AppleNotamCenter: ObservableObject {
     private static let enrollmentActivationMigrationKey = "notam.enrollmentActivationMigration.v1"
 
     @Published private(set) var state = AppleNotamState()
+    @Published private(set) var mapFocusRequest: AppleNotamMapFocusRequest?
+
+    func showOnMap(_ notice: OperationalNotam) {
+        guard !notice.mapCoordinates.isEmpty else { return }
+        showOnMap = true
+        mapFocusRequest = AppleNotamMapFocusRequest(title: notice.title, coordinates: notice.mapCoordinates)
+    }
+
+    func consumeMapFocus(_ id: UUID) {
+        if mapFocusRequest?.id == id { mapFocusRequest = nil }
+    }
+
     @Published var enabled: Bool {
         didSet {
             defaults.set(enabled, forKey: "notam.enabled")
@@ -44,6 +62,8 @@ final class AppleNotamCenter: ObservableObject {
     private var lastAttempt = Date.distantPast
     private var lastSuccessfulNotices: [OperationalNotam] = []
     private var refreshTask: Task<Void, Never>?
+    private var pendingForcedRefresh = false
+    private var pendingRefreshLocation: CLLocation?
     private var refreshGeneration: UInt = 0
     private var proxyURL: URL?
     private var proxyToken = ""
@@ -93,7 +113,13 @@ final class AppleNotamCenter: ObservableObject {
             rebuildState(loading: false, coordinate: coordinate, error: state.errorMessage)
             return
         }
-        guard refreshTask == nil else { return }
+        guard refreshTask == nil else {
+            if force {
+                pendingForcedRefresh = true
+                pendingRefreshLocation = location
+            }
+            return
+        }
         lastAttempt = Date()
         rebuildState(loading: true, coordinate: coordinate, error: state.errorMessage)
         refreshTask = Task { [weak self] in
@@ -102,6 +128,7 @@ final class AppleNotamCenter: ObservableObject {
             defer {
                 if generation == refreshGeneration {
                     refreshTask = nil
+                    runPendingRefresh()
                 }
             }
             do {
@@ -126,6 +153,7 @@ final class AppleNotamCenter: ObservableObject {
     }
 
     func resetRuntimeState() {
+        mapFocusRequest = nil
         refreshGeneration &+= 1
         refreshTask?.cancel()
         refreshTask = nil
@@ -148,6 +176,14 @@ final class AppleNotamCenter: ObservableObject {
             statusLine: "Nearby NOTAM monitoring is disabled.",
             radiusStatuteMiles: 1
         )
+    }
+
+    private func runPendingRefresh() {
+        guard pendingForcedRefresh else { return }
+        let location = pendingRefreshLocation
+        pendingForcedRefresh = false
+        pendingRefreshLocation = nil
+        update(location: location, force: true)
     }
 
     func refreshNow(location: CLLocation?) { update(location: location, force: true) }
@@ -372,14 +408,26 @@ struct AppleNotamPanel: View {
                             .foregroundStyle(.secondary)
                     }
                     ForEach(center.state.notices) { notice in
-                        DisclosureGroup {
-                            if !notice.effectiveText.isEmpty { Text(notice.effectiveText) }
-                            Text(notice.details).textSelection(.enabled)
-                            if !notice.reference.isEmpty { LabeledContent("Reference", value: notice.reference) }
-                        } label: {
-                            VStack(alignment: .leading) {
-                                Text(notice.title).fontWeight(.semibold)
-                                Text(notice.summary).font(.caption).foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 8) {
+                            DisclosureGroup {
+                                if !notice.effectiveText.isEmpty { Text(notice.effectiveText) }
+                                Text(notice.details).textSelection(.enabled)
+                                if !notice.reference.isEmpty { LabeledContent("Reference", value: notice.reference) }
+                            } label: {
+                                VStack(alignment: .leading) {
+                                    Text(notice.title).fontWeight(.semibold)
+                                    Text(notice.summary).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            if notice.mapCoordinates.isEmpty {
+                                Text("Map location unavailable for this notice.").font(.caption).foregroundStyle(.secondary)
+                            } else {
+                                Button("Show on map") {
+                                    center.showOnMap(notice)
+                                    dismiss()
+                                }
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel("Show \(notice.title) on map")
                             }
                         }
                     }
