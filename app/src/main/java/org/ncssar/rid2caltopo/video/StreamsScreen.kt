@@ -416,7 +416,7 @@ fun StreamsScreen(
                     LandRestrictionStatusChip(state = landRestrictionUiState, onClick = { showLandRestrictionPanel = true }, outerPadding = PaddingValues(0.dp))
                     Spacer(Modifier.width(8.dp))
                     StreamsMapStatusButton(mapName = mapName, onClick = onMapStatusTap,
-                        modifier = Modifier.widthIn(max = 220.dp).height(36.dp))
+                        modifier = Modifier.width(280.dp))
                     Spacer(Modifier.width(8.dp))
                     Text(text = "Network: " + controllerNetwork.ssid, modifier = Modifier.padding(end = 8.dp), fontSize = 14.sp)
                     Text(text = serverStatus, modifier = Modifier.clickable { showPerformancePanel = true }.padding(end = 8.dp), fontSize = 14.sp)
@@ -1423,7 +1423,7 @@ private fun StreamsMapStatusButton(
         CaltopoActionInterface(
             state = streamsMapConnectionState(mapName),
             onActionClicked = onClick,
-            modifier = Modifier.height(36.dp)
+            modifier = Modifier.fillMaxWidth()
         )
     }
 }
@@ -1727,8 +1727,8 @@ private fun EmptyStreamsView(
                 mapName = mapName,
                 onClick = onMapStatusTap,
                 modifier = Modifier
-                    .width(220.dp)
-                    .height(48.dp)
+                    .widthIn(max = 280.dp)
+                    .fillMaxWidth()
             )
         }
 

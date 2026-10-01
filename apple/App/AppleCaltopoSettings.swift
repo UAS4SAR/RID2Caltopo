@@ -11,27 +11,61 @@ struct AppleCaltopoConfiguration: Sendable, Equatable {
     let credentialID: String
     let credentialSecret: String
     let teamID: String
+    var personalSessionID: UUID? = nil
+    var personalAccountID: String = ""
+    var personalMediaOwnerID: String = ""
     let connectKey: String
 
     var liveConfiguration: CaltopoLiveConfiguration? {
         guard enabled,
               !domainAndPort.isEmpty,
               !mapID.isEmpty,
-              !credentialID.isEmpty,
-              !credentialSecret.isEmpty
+              (personalSessionID != nil || (!credentialID.isEmpty && !credentialSecret.isEmpty))
         else { return nil }
         return CaltopoLiveConfiguration(
             domainAndPort: domainAndPort,
             mapID: mapID,
             credentialID: credentialID,
             credentialSecretBase64: credentialSecret,
-            connectKey: connectKey
+            connectKey: connectKey,
+            personalSessionID: personalSessionID,
+            personalAccountID: personalAccountID,
+            personalMediaOwnerID: personalMediaOwnerID
         )
     }
 }
 
 @MainActor
 final class AppleCaltopoSettings: ObservableObject {
+    @Published var usesPersonalCredentials = false
+    @Published private(set) var personalUsername = ""
+    @Published private(set) var personalMaps: [CaltopoTeamMapNode] = []
+    @Published private(set) var personalMapsStatus = "Sign in to load personal maps"
+    func acceptPersonalCatalog(_ username: String, maps: [CaltopoTeamMapNode]) {
+        personalUsername = username
+        personalMaps = maps
+        personalMapsStatus = maps.isEmpty ? "No maps available for this account" : "Personal maps loaded"
+    }
+    @Published private(set) var isLoadingPersonalMaps = false
+    func loadPersonalMaps() async -> Bool {
+        isLoadingPersonalMaps = true
+        defer { isLoadingPersonalMaps = false }
+        do {
+            let (username, maps) = try await PersonalProbeModel.shared.loadNativeCatalog()
+            acceptPersonalCatalog(username, maps: maps)
+            return true
+        } catch {
+            if case CaltopoLiveClientError.httpStatus(let code, _) = error, code == 401 || code == 403 {
+                personalUsername = ""
+            }
+            personalMaps = []
+            personalMapsStatus = "Open CalTopo to sign in and load your personal maps."
+            return false
+        }
+    }
+    private var selectedPersonalAccountID = ""
+    private var selectedPersonalMediaOwnerID = ""
+    @Published private(set) var personalSessionID: UUID?
     @Published var enabled: Bool
     @Published var domainAndPort: String
     @Published var mapID: String
@@ -77,12 +111,15 @@ final class AppleCaltopoSettings: ObservableObject {
         let normalizedDomain = domainAndPort.trimmingCharacters(in: .whitespacesAndNewlines)
         return AppleCaltopoConfiguration(
             enabled: enabled,
-            domainAndPort: normalizedDomain.isEmpty ? "caltopo.com" : normalizedDomain,
+            domainAndPort: personalSessionID != nil ? "caltopo.com" : (normalizedDomain.isEmpty ? "caltopo.com" : normalizedDomain),
             mapID: mapID.trimmingCharacters(in: .whitespacesAndNewlines),
             mapTitle: mapTitle.trimmingCharacters(in: .whitespacesAndNewlines),
             credentialID: credentialID.trimmingCharacters(in: .whitespacesAndNewlines),
             credentialSecret: credentialSecret.trimmingCharacters(in: .whitespacesAndNewlines),
             teamID: teamID.trimmingCharacters(in: .whitespacesAndNewlines),
+            personalSessionID: personalSessionID,
+            personalAccountID: selectedPersonalAccountID,
+            personalMediaOwnerID: selectedPersonalMediaOwnerID,
             connectKey: connectKey.trimmingCharacters(in: .whitespacesAndNewlines)
         )
     }
@@ -90,6 +127,17 @@ final class AppleCaltopoSettings: ObservableObject {
     @discardableResult
     func save(markCredentialsIndependent: Bool = true) -> AppleCaltopoConfiguration {
         let value = configuration
+        if usesPersonalCredentials {
+            // Organization refreshes may update saved credentials while a personal map is active.
+            // Never persist that map under the organization profile.
+            defaults.set(domainAndPort, forKey: "caltopo.domain")
+            defaults.set(credentialID, forKey: "caltopo.credentialID")
+            defaults.set(teamID, forKey: "caltopo.teamID")
+            defaults.set(connectKey, forKey: "caltopo.connectKey")
+            do { try Self.storeSecret(credentialSecret) }
+            catch { status = "Keychain save failed: \(error.localizedDescription)" }
+            return value
+        }
         if markCredentialsIndependent {
             credentialOrigin = Self.originIndependent
             defaults.set(credentialOrigin, forKey: Self.credentialOriginKey)
@@ -142,8 +190,11 @@ final class AppleCaltopoSettings: ObservableObject {
 
     func applyImported(mutualAid profile: MutualAidSharedProfile) throws {
         if !profile.domainAndPort.isEmpty { domainAndPort = profile.domainAndPort }
-        if !profile.targetMapID.isEmpty { mapID = profile.targetMapID }
-        mapTitle = profile.displayName
+        if !usesPersonalCredentials {
+            if !profile.targetMapID.isEmpty { mapID = profile.targetMapID }
+            mapTitle = profile.displayName
+            personalSessionID = nil
+        }
         if !profile.credentialID.isEmpty { credentialID = profile.credentialID }
         if !profile.credentialSecret.isEmpty { credentialSecret = profile.credentialSecret }
         teamID = profile.teamID
@@ -156,10 +207,13 @@ final class AppleCaltopoSettings: ObservableObject {
     }
 
     func apply(storedProfile profile: AppleStoredOperationalProfile, connectMap: Bool) throws {
-        enabled = profile.enabled
+        if !usesPersonalCredentials {
+            enabled = profile.enabled
+            mapID = connectMap && profile.autoConnect ? profile.mapID : ""
+            mapTitle = mapID.isEmpty ? "" : profile.mapTitle
+            personalSessionID = nil
+        }
         domainAndPort = profile.domainAndPort.isEmpty ? "caltopo.com" : profile.domainAndPort
-        mapID = connectMap && profile.autoConnect ? profile.mapID : ""
-        mapTitle = mapID.isEmpty ? "" : profile.mapTitle
         credentialID = profile.credentialID
         credentialSecret = profile.credentialSecret
         teamID = profile.teamID
@@ -240,16 +294,20 @@ final class AppleCaltopoSettings: ObservableObject {
 
     @discardableResult
     func selectMap(_ map: CaltopoTeamMap) -> AppleCaltopoConfiguration {
+        personalSessionID = map.personalSessionID
+        selectedPersonalAccountID = map.personalAccountID
+        selectedPersonalMediaOwnerID = map.personalMediaOwnerID
         mapID = map.id
-        mapTitle = map.title
+        mapTitle = map.personalSessionID != nil ? "\(personalUsername): \(map.title)" : map.title
         enabled = true
-        let value = save(markCredentialsIndependent: false)
+        let value = personalSessionID == nil ? save(markCredentialsIndependent: false) : configuration
         status = "Connected to \(map.title)"
         return value
     }
 
     @discardableResult
     func disconnectMap() -> AppleCaltopoConfiguration {
+        personalSessionID = nil
         mapID = ""
         mapTitle = ""
         defaults.removeObject(forKey: "caltopo.mapID")

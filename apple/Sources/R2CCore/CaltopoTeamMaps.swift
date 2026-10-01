@@ -6,9 +6,15 @@ import FoundationNetworking
 public struct CaltopoTeamMap: Sendable, Equatable, Identifiable {
     public let id: String
     public let title: String
+    public let personalSessionID: UUID?
+    public let personalAccountID: String
+    public let personalMediaOwnerID: String
     public let updatedMilliseconds: Int64
 
-    public init(id: String, title: String, updatedMilliseconds: Int64) {
+    public init(id: String, title: String, updatedMilliseconds: Int64, personalSessionID: UUID? = nil, personalAccountID: String = "", personalMediaOwnerID: String = "") {
+        self.personalSessionID = personalSessionID
+        self.personalAccountID = personalAccountID
+        self.personalMediaOwnerID = personalMediaOwnerID
         self.id = id
         self.title = title
         self.updatedMilliseconds = updatedMilliseconds

@@ -76,7 +76,6 @@ fun AppHeader(appUptime: String, hostName: String, viewModel: R2CViewModel?) {
     val colModifier = Modifier
         .fillMaxHeight()
         .background(MaterialTheme.colorScheme.surface)
-        .height(IntrinsicSize.Min)
     var showRidmapEntries by remember { mutableStateOf(false) }
     if (showRidmapEntries) {
         RidmapEntriesDialog(
@@ -86,9 +85,9 @@ fun AppHeader(appUptime: String, hostName: String, viewModel: R2CViewModel?) {
     }
     Row(
         modifier = Modifier
-            .height(70.dp)
+            .height(IntrinsicSize.Min)
             .background(MaterialTheme.colorScheme.primaryContainer)
-            .padding(2.dp)
+            .padding(start = 2.dp, end = 2.dp, top = 8.dp, bottom = 4.dp)
     ) {
         Column(modifier = colModifier) {
             if (null != viewModel) MapStateView(viewModel)
@@ -104,7 +103,7 @@ fun AppHeader(appUptime: String, hostName: String, viewModel: R2CViewModel?) {
             )
         }
         Column(
-            modifier = colModifier.width(150.dp),
+            modifier = colModifier.width((180 * androidx.compose.ui.platform.LocalDensity.current.fontScale).dp),
             verticalArrangement = Arrangement.Center,
         ) {
             PilotCallsignField(
@@ -526,9 +525,10 @@ fun DroneSpecConfirmationDialog(
 
 @Composable
 fun MapStateView(viewModel: R2CViewModel) {
-    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(6.dp)) {
+    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 4.dp)) {
         CaltopoActionInterface(
             state = viewModel.connectionState,
+            modifier = Modifier.width(280.dp),
             onActionClicked = { viewModel.openConnectionOverlayFromCurrentScreen() }
         )
     }
@@ -570,6 +570,7 @@ fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
         when (val currentOverlay = overlay) {
             is OverlayState.ConnectionSetup -> {
                 StandAloneOptionsDialog(
+                    onPersonalReady = { viewModel.selectOperationalProfile("personal") },
                     hasCreds = viewModel.hasCredentials,
                     hasNetwork = viewModel.hasNetwork,
                     onDismiss = { viewModel.onUIEvent(UIEvent.DismissRequested) },
@@ -579,6 +580,7 @@ fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
             }
             is OverlayState.RequestConfigFile -> {
                 StandAloneOptionsDialog(
+                    onPersonalReady = { viewModel.selectOperationalProfile("personal") },
                     hasCreds = viewModel.hasCredentials,
                     hasNetwork = viewModel.hasNetwork,
                     onDismiss = { viewModel.onUIEvent(UIEvent.DismissRequested) },
@@ -588,16 +590,18 @@ fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
             }
             is OverlayState.Connecting -> {
                 StandAloneOptionsDialog(
+                    onPersonalReady = { viewModel.selectOperationalProfile("personal") },
                     hasCreds = viewModel.hasCredentials,
                     hasNetwork = viewModel.hasNetwork,
                     onDismiss = { viewModel.onUIEvent(UIEvent.DismissRequested) },
                     loading = true,
+                    connectingToMap = CaltopoMap.GetMapNode() != null,
                     onAction = { viewModel.onUIEvent(UIEvent.ConnectionRequested) }
                 )
             }
 
             is OverlayState.MapBrowser -> {
-                val nodes = viewModel.mapHierarchy?: emptyList()
+                val nodes = if (org.ncssar.rid2caltopo.data.CaltopoPersonalSession.browsingPersonal) org.ncssar.rid2caltopo.data.CaltopoPersonalSession.maps else viewModel.mapHierarchy?: emptyList()
                 // The browser receives the data it needs and bubbles events back up
                 Dialog(
                     onDismissRequest = { viewModel.onUIEvent(UIEvent.DismissRequested) },
@@ -613,7 +617,8 @@ fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
                                 rootNodes = nodes,
                                 profileOptions = viewModel.mapBrowserProfiles,
                                 selectedProfileId = viewModel.selectedMapBrowserProfileId,
-                                onUIEvent = { viewModel.onUIEvent(it) }
+                                onUIEvent = { viewModel.onUIEvent(it) },
+                                loading = !org.ncssar.rid2caltopo.data.CaltopoPersonalSession.browsingPersonal && viewModel.mapHierarchy == null
                             )
                         }
                     }
@@ -703,11 +708,14 @@ fun StandAloneOptionsDialog(
     loading: Boolean,
     hasNetwork: Boolean,
     hasCreds: Boolean,
-    onAction: () -> Unit
+    onAction: () -> Unit,
+    connectingToMap: Boolean = false,
+    onPersonalReady: () -> Unit = {}
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val titleText = if (!hasNetwork) {
         "No Network Connection"
-    } else if (loading && hasCreds) {
+    } else if (connectingToMap || (loading && hasCreds)) {
         "Connect to Map"
     } else {
         "Credentials Required"
@@ -731,8 +739,10 @@ fun StandAloneOptionsDialog(
                     CircularProgressIndicator(modifier = Modifier.size(40.dp))
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        if (hasCreds) {
-                            "Fetching map hierarchy…"
+                        if (connectingToMap) {
+                            "Connecting to incident map…"
+                        } else if (hasCreds) {
+                            "Loading available maps…"
                         } else {
                             "Waiting for CalTopo credentials. Complete reauthentication, " +
                                 "or stay offline and load credentials manually."
@@ -740,7 +750,10 @@ fun StandAloneOptionsDialog(
                     )
                 }
             } else {
-                Text(msgText)
+                Column {
+                    PersonalCaltopoLoginButton(onReady = onPersonalReady)
+                    Text(msgText)
+                }
             }
         },
         confirmButton = {

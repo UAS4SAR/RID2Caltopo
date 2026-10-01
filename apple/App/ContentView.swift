@@ -58,6 +58,7 @@ struct ContentView: View {
     @StateObject private var droneConfirmations = AppleDroneConfirmationStore()
     @StateObject private var orgConfigSettings = AppleOrgConfigSettings()
     @StateObject private var orgConfigImporter = AppleOrgConfigImporter()
+    @StateObject private var deviceReconciliation = AppleTrackerDeviceReconciliation()
     @ObservedObject private var profileLifecycle = AppleCaltopoProfileLifecycle.shared
     @StateObject private var peerCoordinator = AppleTrackerCoordinator()
     @StateObject private var proximityAlerts = AppleProximityAlertCenter()
@@ -80,6 +81,8 @@ struct ContentView: View {
     @State private var pendingImportConfigNotice: ConfigImportNotice?
     @State private var showConfigurationTransfer = false
     @State private var showStorageManagement = false
+    @State private var showPersonalAccountEditor = false
+    @State private var showPersonalCredentialLogin = false
     @State private var showTeamMaps = false
     @State private var showMapOptions = false
     @State private var showConfirmExit = false
@@ -123,6 +126,10 @@ struct ContentView: View {
     // while decoding the combined navigation, presentation, and lifecycle type.
     private func mainHeaderTitle(centered: Bool) -> some View {
         Menu {
+            Button { requestCredentialProfileSwitch("personal") } label: {
+                Label("Personal: \(caltopoSettings.personalUsername.isEmpty ? "Sign in" : caltopoSettings.personalUsername)", systemImage: caltopoSettings.usesPersonalCredentials ? "checkmark.circle.fill" : "person.circle")
+            }
+            Button("Edit personal account", systemImage: "pencil") { showPersonalAccountEditor = true }
             ForEach(profileLifecycle.availableProfiles) { profile in
                 Button {
                     requestCredentialProfileSwitch(profile.id)
@@ -133,7 +140,7 @@ struct ContentView: View {
                             Text(profileMenuDetail(profile))
                         }
                     } icon: {
-                        Image(systemName: profile.id == profileLifecycle.activeProfileID
+                        Image(systemName: !caltopoSettings.usesPersonalCredentials && profile.id == profileLifecycle.activeProfileID
                             ? "checkmark.circle.fill" : "circle")
                     }
                 }
@@ -143,19 +150,23 @@ struct ContentView: View {
                 Text("RID-2-Caltopo")
                     .font(.headline)
                 HStack(spacing: 2) {
-                    Text("Team: \(profileLifecycle.activeCredentialLabel)")
+                    Text("Credentials: \(caltopoSettings.usesPersonalCredentials ? "Personal: " + caltopoSettings.personalUsername : profileLifecycle.activeCredentialLabel)")
                         .font(.caption)
                         .foregroundStyle(activeCredentialNearExpiry ? .orange : .secondary)
                     Image(systemName: "chevron.down")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+                if caltopoSettings.isLoadingPersonalMaps {
+                    ProgressView("Checking personal credentials…").font(.caption)
+                }
                 AppleOrganizationUserLabel(compactHeader: true)
             }
             .lineLimit(1)
             .foregroundStyle(.primary)
         }
-        .accessibilityLabel("Selected Teams credentials: \(profileLifecycle.activeCredentialLabel)")
+        .disabled(caltopoSettings.isLoadingPersonalMaps)
+        .accessibilityLabel("Selected credentials: \(caltopoSettings.usesPersonalCredentials ? "Personal: " + caltopoSettings.personalUsername : profileLifecycle.activeCredentialLabel)")
     }
 
 
@@ -290,7 +301,7 @@ struct ContentView: View {
                 .presentationDragIndicator(.visible)
             }
             .sheet(isPresented: $showTeamMaps) {
-                CaltopoTeamMapBrowser(settings: caltopoSettings) { map in
+                CaltopoTeamMapBrowser(settings: caltopoSettings, onCredentialSelect: requestCredentialProfileSwitch) { map in
                     orgConfigSettings.setIncidentMapTitle(map.title)
                     applyCaltopoConfiguration(caltopoSettings.selectMap(map))
                     showTeamMaps = false
@@ -319,22 +330,6 @@ struct ContentView: View {
             } message: {
                 Text("Check the App Store for Update. If no update is offered, return here and continue. Do not delete RID2Caltopo.")
             }
-            .modifier(TrackerReauthenticationPromptModifier(
-                isPresented: $showTrackerReauthenticationPrompt,
-                reauthenticationURL: $trackerReauthenticationURL,
-                browserOpen: $trackerReauthenticationBrowserOpen
-            ))
-            .alert("Tracker re-enrollment required", isPresented: $showTrackerReenrollmentRequired) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(
-                    "Tracker rejected this tablet's organization authorization. It may have "
-                        + "been retired, expired, or replaced. In Import Config, scan a current "
-                        + "organization enrollment QR to re-enroll this tablet. Saved flights stay "
-                        + "on this tablet; resubmit recent tracks after reconnecting. Offline RID and "
-                        + "the incident map remain available."
-                )
-            }
             .alert("Confirm Exit", isPresented: $showConfirmExit) {
                 Button("Cancel", role: .cancel) {
                     AppleLog.info("Lifecycle", "Quit cancelled")
@@ -346,7 +341,7 @@ struct ContentView: View {
             } message: {
                 Text("Do you really want to close this application?")
             }
-            .alert("Switch Teams Credentials?", isPresented: $showCredentialSwitchConfirmation) {
+            .alert("Switch Credentials?", isPresented: $showCredentialSwitchConfirmation) {
                 Button("Cancel", role: .cancel) {
                     pendingCredentialProfileID = nil
                 }
@@ -359,7 +354,7 @@ struct ContentView: View {
             } message: {
                 Text(
                     "Disconnect from the current map and stop arbitration for "
-                        + "\(ridTracks.tracks.count) active aircraft before switching Teams credentials?"
+                        + "\(ridTracks.tracks.count) active aircraft before switching credentials?"
                 )
             }
             .alert(item: $importConfigNotice) { notice in
@@ -884,6 +879,8 @@ struct ContentView: View {
             trackerReauthenticationURL = nil
             showTrackerReauthenticationPrompt = false
             if url.host == "complete" {
+                deviceReconciliation.markPending()
+                reconcileTrackerDevice()
                 AppleLog.info(
                     "TrackerPeer",
                     "Reauthentication completed; configuration preserved"
@@ -1099,6 +1096,7 @@ struct ContentView: View {
                 initial: true
             ) { _, generation in
                 guard generation > 0, peerCoordinator.reauthenticationURL != nil else { return }
+                deviceReconciliation.markPending()
                 let managedCaltopoCleared =
                     caltopoSettings.quarantineTrackerManagedCredentials()
                 if managedCaltopoCleared {
@@ -1120,6 +1118,7 @@ struct ContentView: View {
             }
             .onChange(of: peerCoordinator.heartbeatAcknowledgedAtMilliseconds) { _, _ in
                 publishLocalDeviceMarker()
+                reconcileTrackerDevice()
             }
             .onChange(of: peerCoordinator.peers.count) { _, _ in
                 publishLocalDeviceMarker(force: true)
@@ -1209,6 +1208,45 @@ struct ContentView: View {
             .navigationTitle("RID-2-Caltopo")
             .navigationBarTitleDisplayMode(.inline)
         }
+            .modifier(TrackerDeviceReconciliationModifier(
+                model: deviceReconciliation,
+                signInRequired: handleDeviceReconciliationSignIn,
+                authorizationRejected: handleDeviceReconciliationRejection
+            ) {
+                configurePeerCoordinator(forceReconnect: true)
+            })
+            .modifier(TrackerReauthenticationPromptModifier(
+                isPresented: $showTrackerReauthenticationPrompt,
+                reauthenticationURL: $trackerReauthenticationURL,
+                browserOpen: $trackerReauthenticationBrowserOpen
+            ))
+            .alert("Tracker re-enrollment required", isPresented: $showTrackerReenrollmentRequired) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(
+                    "Tracker rejected this tablet's organization authorization. It may have "
+                        + "been retired, expired, or replaced. In Import Config, scan a current "
+                        + "organization enrollment QR to re-enroll this tablet. Saved flights stay "
+                        + "on this tablet; resubmit recent tracks after reconnecting. Offline RID and "
+                        + "the incident map remain available."
+                )
+            }
+
+        .sheet(isPresented: $showPersonalAccountEditor, onDismiss: {
+            Task { _ = await caltopoSettings.loadPersonalMaps() }
+        }) {
+            NavigationStack {
+                AppleCaltopoPersonalProbeView()
+            }
+        }
+        .sheet(isPresented: $showPersonalCredentialLogin) {
+            NavigationStack {
+                AppleCaltopoPersonalProbeView(onCatalog: { username, maps in
+                    caltopoSettings.acceptPersonalCatalog(username, maps: maps)
+                    showPersonalCredentialLogin = false
+                })
+            }
+        }
         .safeAreaInset(edge: .bottom, alignment: .leading, spacing: 0) {
             if !organizationAccessBlocked {
                 AwaitingMapPublicationPanel(tracks: ridTracks, settings: caltopoSettings, clues: clueStore)
@@ -1228,6 +1266,11 @@ struct ContentView: View {
             .onOpenURL { url in
                 receiveIncomingURL(url)
             }
+            .onChange(of: organizationAccessGranted, initial: true) { _, granted in
+                if granted || !organizationAuthenticationRequired {
+                    reconcileTrackerDevice()
+                }
+            }
             .onChange(of: scenePhase) { _, phase in
                 guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
                 updateIdleTimerPolicy(for: phase)
@@ -1235,6 +1278,7 @@ struct ContentView: View {
                 case .active:
                     handleIncidentMapBecameActive()
                     if organizationAccessGranted || !organizationAuthenticationRequired {
+                        reconcileTrackerDevice()
                         resumeTrackerAfterBrowserReturnIfNeeded(
                             callbackPending: pendingOrganizationAccessURL?.scheme?.lowercased() == "r2creauth"
                         )
@@ -1516,6 +1560,8 @@ struct ContentView: View {
         )
         trackerReauthenticationBrowserOpen = false
         guard shouldRetry else { return }
+        deviceReconciliation.markPending()
+        reconcileTrackerDevice()
 
         trackerReauthenticationURL = nil
         showTrackerReauthenticationPrompt = false
@@ -1525,6 +1571,29 @@ struct ContentView: View {
         )
         configurePeerCoordinator(forceReconnect: true)
         Task { await refreshManagedOrganizationConfiguration(force: true) }
+    }
+
+    private func handleDeviceReconciliationSignIn(_ url: URL) {
+        if caltopoSettings.quarantineTrackerManagedCredentials() {
+            ridTracks.configureCaltopo(
+                caltopoSettings.configuration,
+                trackFolderName: orgConfigSettings.trackFolder
+            )
+        }
+        trackerReauthenticationURL = url
+        showTrackerReauthenticationPrompt = !showImportConfig
+    }
+
+    private func handleDeviceReconciliationRejection() {
+        AppleLog.info("TrackerPeer", "Presenting Tracker re-enrollment notice")
+        let credential = orgConfigSettings.trackerAPIKey
+        guard lastTrackerReenrollmentNoticeCredential != credential else { return }
+        lastTrackerReenrollmentNoticeCredential = credential
+        showTrackerReenrollmentRequired = true
+    }
+
+    private func reconcileTrackerDevice() {
+        Task { await deviceReconciliation.check(baseURL: orgConfigSettings.trackerURLPrefix, token: orgConfigSettings.trackerAPIKey) }
     }
 
     private func refreshManagedOrganizationConfiguration(force: Bool = false) async {
@@ -2322,7 +2391,7 @@ struct ContentView: View {
     }
 
     private func requestCredentialProfileSwitch(_ profileID: String) {
-        guard profileID != profileLifecycle.activeProfileID else { return }
+        guard profileID != (caltopoSettings.usesPersonalCredentials ? "personal" : profileLifecycle.activeProfileID) else { return }
         if ridTracks.tracks.isEmpty {
             activateCredentialProfile(profileID)
         } else {
@@ -2332,6 +2401,22 @@ struct ContentView: View {
     }
 
     private func activateCredentialProfile(_ profileID: String) {
+        showTeamMaps = false
+        showPersonalCredentialLogin = false
+        if profileID == "personal" {
+            applyCaltopoConfiguration(caltopoSettings.disconnectMap())
+            caltopoSettings.usesPersonalCredentials = true
+            Task {
+                let loaded = await caltopoSettings.loadPersonalMaps()
+                guard caltopoSettings.usesPersonalCredentials else { return }
+                showPersonalCredentialLogin = !loaded
+            }
+            return
+        }
+        if caltopoSettings.usesPersonalCredentials {
+            applyCaltopoConfiguration(caltopoSettings.disconnectMap())
+            caltopoSettings.usesPersonalCredentials = false
+        }
         guard orgConfigImporter.activateProfile(
             profileID,
             caltopoSettings: caltopoSettings,
@@ -2362,11 +2447,7 @@ struct ContentView: View {
     }
 
     private func openCaltopoMapActions() {
-        if caltopoSettings.teamID.isEmpty
-            || caltopoSettings.credentialID.isEmpty
-            || caltopoSettings.credentialSecret.isEmpty {
-            showImportConfig = true
-        } else if caltopoSettings.mapID.isEmpty {
+        if caltopoSettings.mapID.isEmpty {
             showTeamMaps = true
         } else {
             showMapOptions = true

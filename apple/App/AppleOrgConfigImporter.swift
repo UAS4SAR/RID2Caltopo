@@ -1676,7 +1676,7 @@ struct ConfigImportView: View {
 
 }
 
-private struct QRCodeScannerView: UIViewControllerRepresentable {
+struct QRCodeScannerView: UIViewControllerRepresentable {
     let onScanned: (String) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(onScanned: onScanned) }

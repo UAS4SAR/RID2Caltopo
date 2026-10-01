@@ -82,35 +82,53 @@ import Testing
     #expect(state(["drone-a"], adjusted: true).candidate == nil)
 }
 
-@Test func singleStreamArrivalClearsOnlyPreStreamMapAdjustment() {
+@Test func telemetryArrivalOverridesEarlierPanAndFocusWithoutRepeating() {
     var arrivals = OperationalStreamFocusArrival()
-    var adjusted = true // The operator moved the map before video arrived.
-    let begins = arrivals.observe(liveStreamIDs: ["mini"], followEnabled: true, hasFocus: false)
-    if begins { adjusted = false }
-    #expect(begins)
-    #expect(OperationalMapFocusPolicy.initialStreamFocus(followEnabled: true, focusedAircraftID: nil,
-        operatorAdjustedViewport: adjusted, liveStreamAircraftIDs: [nil]) == nil)
-    // RID arrives later and resolves the existing video stream.
-    #expect(OperationalMapFocusPolicy.initialStreamFocus(followEnabled: true, focusedAircraftID: nil,
-        operatorAdjustedViewport: adjusted, liveStreamAircraftIDs: ["mini-rid"]) == "mini-rid")
-    adjusted = true // A later operator pan releases follow.
-    let repeated = arrivals.observe(liveStreamIDs: ["mini"], followEnabled: true, hasFocus: false)
-    #expect(!repeated)
-    _ = arrivals.observe(liveStreamIDs: [], followEnabled: true, hasFocus: false)
-    let reconnected = arrivals.observe(liveStreamIDs: ["mini"], followEnabled: true, hasFocus: false)
-    #expect(!reconnected)
-    #expect(OperationalMapFocusPolicy.initialStreamFocus(followEnabled: true, focusedAircraftID: nil,
-        operatorAdjustedViewport: adjusted, liveStreamAircraftIDs: ["mini-rid"]) == nil)
+    var focus: String? = "other-drone"
+    var adjusted = true
+    #expect(arrivals.observe(resolvedAircraftIDs: [nil]) == nil)
+    if let aircraft = arrivals.observe(resolvedAircraftIDs: ["mini-rid"]) {
+        focus = aircraft
+        adjusted = false
+    }
+    #expect(focus == "mini-rid")
+    #expect(!adjusted)
+    // A later pan must not be undone by updates, loss, or reconnect.
+    #expect(arrivals.observe(resolvedAircraftIDs: ["mini-rid"]) == nil)
+    #expect(arrivals.observe(resolvedAircraftIDs: []) == nil)
+    #expect(arrivals.observe(resolvedAircraftIDs: ["mini-rid"]) == nil)
 }
 
-@Test func streamArrivalPreservesExistingFocusAndMultipleStreamChoices() {
+@Test func telemetryArrivalSelectsDroneIndependentlyOfFollowSetting() {
     var arrivals = OperationalStreamFocusArrival()
-    let multiple = arrivals.observe(liveStreamIDs: ["a", "b"], followEnabled: true, hasFocus: false)
-    #expect(!multiple)
-    let remaining = arrivals.observe(liveStreamIDs: ["b"], followEnabled: true, hasFocus: false)
-    #expect(!remaining)
-    let focused = arrivals.observe(liveStreamIDs: ["c"], followEnabled: true, hasFocus: true)
-    #expect(!focused)
-    let disabled = arrivals.observe(liveStreamIDs: ["d"], followEnabled: false, hasFocus: false)
-    #expect(!disabled)
+    #expect(arrivals.observe(resolvedAircraftIDs: ["mini-rid"]) == "mini-rid")
+}
+
+@Test func telemetryArrivalAvoidsAmbiguityButAcceptsOneNewMatch() {
+    var arrivals = OperationalStreamFocusArrival()
+    #expect(arrivals.observe(resolvedAircraftIDs: ["a", "b"]) == nil)
+    #expect(arrivals.observe(resolvedAircraftIDs: ["b"]) == nil)
+    #expect(arrivals.observe(resolvedAircraftIDs: ["b", "c", nil]) == "c")
+    #expect(arrivals.observe(resolvedAircraftIDs: ["b", "c"]) == nil)
+}
+
+
+@Test func pipFollowsVideoWithoutFullMapSelection() {
+    #expect(OperationalMapFocusPolicy.presentationFocus(inset: true, mapAircraftID: nil,
+        focusedVideoID: "video-a", videoAircraftID: "aircraft-a") == "aircraft-a")
+    #expect(OperationalMapFocusPolicy.presentationFocus(inset: true, mapAircraftID: "old",
+        focusedVideoID: "video-b", videoAircraftID: "aircraft-b") == "aircraft-b")
+    #expect(OperationalMapFocusPolicy.presentationFocus(inset: true, mapAircraftID: "old",
+        focusedVideoID: "video-b", videoAircraftID: nil) == nil)
+    #expect(OperationalMapFocusPolicy.presentationFocus(inset: false, mapAircraftID: "map",
+        focusedVideoID: "video-b", videoAircraftID: "aircraft-b") == "map")
+    #expect(OperationalMapFocusPolicy.presentationFocus(inset: true, mapAircraftID: "map",
+        focusedVideoID: nil, videoAircraftID: nil) == "map")
+}
+
+@Test func pipFollowIgnoresFullMapPanButRespectsFollowToggle() {
+    #expect(OperationalMapFocusPolicy.shouldFollow(inset: true, enabled: true, operatorAdjustedViewport: true))
+    #expect(!OperationalMapFocusPolicy.shouldFollow(inset: false, enabled: true, operatorAdjustedViewport: true))
+    #expect(!OperationalMapFocusPolicy.shouldFollow(inset: true, enabled: false, operatorAdjustedViewport: false))
+    #expect(OperationalMapFocusPolicy.shouldFollow(inset: false, enabled: true, operatorAdjustedViewport: false))
 }

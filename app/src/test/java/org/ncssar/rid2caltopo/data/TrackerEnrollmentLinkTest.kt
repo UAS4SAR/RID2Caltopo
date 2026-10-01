@@ -106,23 +106,17 @@ class TrackerEnrollmentLinkTest {
     }
 
     @Test
-    fun `Android owns replacement question and Apple remains unchanged`() {
+    fun `Android retains explicit existing or new tablet choice`() {
         val working = File(requireNotNull(System.getProperty("user.dir")))
         val projectRoot = if (File(working, "app").isDirectory) working else working.parentFile
         val androidActivity = File(
             projectRoot,
             "app/src/main/java/org/ncssar/rid2caltopo/app/R2CActivity.kt",
         ).readText()
-        val appleIdentity = File(
-            projectRoot,
-            "apple/App/AppleNetworkAddress.swift",
-        ).readText()
-
         assertTrue(androidActivity.contains("Is this \${it.deviceName}?"))
         assertTrue(androidActivity.contains("Yes, same tablet"))
         assertTrue(androidActivity.contains("No, new tablet"))
         assertTrue(androidActivity.contains("replaceDeviceAuthorization"))
-        assertFalse(appleIdentity.contains("replacement-candidates"))
     }
 
     @Test

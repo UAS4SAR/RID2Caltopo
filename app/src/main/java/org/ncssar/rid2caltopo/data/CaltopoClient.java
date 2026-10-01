@@ -1399,7 +1399,9 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         for (CaltopoProfileRecord profile : ccs.caltopoProfiles) {
             String label;
             if ("HOME".equals(profile.profileType)) {
-                label = "Home";
+                label = profile.sourceLabel != null ? profile.sourceLabel.trim() : "";
+                if (label.isEmpty() && profile.displayName != null) label = profile.displayName.trim();
+                if (label.isEmpty()) label = "Organization";
             } else if ("MUTUAL_AID".equals(profile.profileType)) {
                 label = (profile.displayName != null && !profile.displayName.isEmpty())
                         ? profile.displayName
@@ -4173,6 +4175,12 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         }
     }
 
+
+    public static boolean CanStartMapSession() {
+        synchronized (ShutdownLock) {
+            return !ShutdownInProgress && !AppExitRequested;
+        }
+    }
 
     public static void ShutdownAsync() {
         Thread shutdownThread = new Thread(CaltopoClient::Shutdown, "R2C-Shutdown");

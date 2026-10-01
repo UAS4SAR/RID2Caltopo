@@ -16,24 +16,35 @@ class InitialStreamMapFocusTest {
         if (shouldSuspendMapFollow(OperatorMapGesture.Pan)) adjusted = true
         assertNull(initialStreamMapFocus(true, null, adjusted, listOf("mini-rid")))
     }
-    @Test fun arrivalAllowsDelayedRidAfterPreStreamPanButDoesNotUndoLaterPan() {
+    @Test fun telemetryArrivalOverridesEarlierPanAndFocusWithoutRepeating() {
         val arrivals = StreamFocusArrival()
+        var focus: String? = "other-drone"
         var adjusted = true
-        if (arrivals.observe(setOf("mini"), true, false)) adjusted = false
-        assertNull(initialStreamMapFocus(true, null, adjusted, listOf(null)))
-        assertEquals("mini-rid", initialStreamMapFocus(true, null, adjusted, listOf("mini-rid")))
-        adjusted = true
-        assertEquals(false, arrivals.observe(setOf("mini"), true, false))
-        arrivals.observe(emptySet(), true, false)
-        assertEquals(false, arrivals.observe(setOf("mini"), true, false))
-        assertNull(initialStreamMapFocus(true, null, adjusted, listOf("mini-rid")))
+        assertNull(arrivals.observe(listOf(null)))
+        arrivals.observe(listOf("mini-rid"))?.let {
+            focus = it
+            adjusted = false
+        }
+        assertEquals("mini-rid", focus)
+        assertEquals(true, shouldFollowFocusedDrone(MapPanePresentationMode.Full, true, true, adjusted))
+        // A later pan must not be undone by updates, loss, or reconnect.
+        assertNull(arrivals.observe(listOf("MINI-RID")))
+        assertNull(arrivals.observe(emptyList()))
+        assertNull(arrivals.observe(listOf("mini-rid")))
     }
-    @Test fun arrivalPreservesExistingFocusDisabledFollowAndMultipleStreams() {
+
+    @Test fun telemetryArrivalSelectsDroneEvenWithFollowDisabled() {
         val arrivals = StreamFocusArrival()
-        assertEquals(false, arrivals.observe(setOf("a", "b"), true, false))
-        assertEquals(false, arrivals.observe(setOf("b"), true, false))
-        assertEquals(false, arrivals.observe(setOf("c"), true, true))
-        assertEquals(false, arrivals.observe(setOf("d"), false, false))
+        assertEquals("mini-rid", arrivals.observe(listOf("mini-rid")))
+        assertEquals(false, shouldFollowFocusedDrone(MapPanePresentationMode.Full, false, true, true))
+    }
+
+    @Test fun telemetryArrivalAvoidsAmbiguityButAcceptsOneNewMatch() {
+        val arrivals = StreamFocusArrival()
+        assertNull(arrivals.observe(listOf("a", "b")))
+        assertNull(arrivals.observe(listOf("b")))
+        assertEquals("c", arrivals.observe(listOf("b", "c", null)))
+        assertNull(arrivals.observe(listOf("b", "c")))
     }
 
     @Test fun soleResolvedStreamFocusesWhenFollowIsEnabled() {

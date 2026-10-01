@@ -107,6 +107,7 @@ struct AppleOperationalStatusChipLabel: View {
 
 @MainActor
 final class AppleMapViewportMemory: ObservableObject {
+    var streamFocusArrival = OperationalStreamFocusArrival()
     // Owned by ContentView so navigation cannot discard the operator's view.
     @Published var operatorAdjustedViewport = false
     var hasCenteredOnLocation = false
@@ -200,6 +201,9 @@ private final class AppleMapArtifactModel: ObservableObject {
 
     func configure(_ configuration: AppleCaltopoConfiguration) {
         let fingerprint = [
+            String(configuration.enabled),
+            configuration.personalSessionID?.uuidString ?? "",
+            configuration.personalAccountID,
             configuration.domainAndPort,
             configuration.mapID,
             configuration.credentialID,
@@ -223,10 +227,7 @@ private final class AppleMapArtifactModel: ObservableObject {
             fullReloadRequested = false
         }
         visibilityInitialized = false
-        guard !configuration.domainAndPort.isEmpty,
-              !configuration.mapID.isEmpty,
-              !configuration.credentialID.isEmpty,
-              !configuration.credentialSecret.isEmpty
+        guard let live = configuration.liveConfiguration
         else {
             snapshot = CaltopoArtifactSnapshot()
             status = "Map artifacts not configured"
@@ -239,12 +240,6 @@ private final class AppleMapArtifactModel: ObservableObject {
         } else {
             initializeVisibility(fallbackFolders: [])
         }
-        let live = CaltopoLiveConfiguration(
-            domainAndPort: configuration.domainAndPort,
-            mapID: configuration.mapID,
-            credentialID: configuration.credentialID,
-            credentialSecretBase64: configuration.credentialSecret
-        )
         refreshTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -604,7 +599,6 @@ struct RIDTrackMapView: View {
         get { viewportMemory.operatorAdjustedViewport }
         nonmutating set { viewportMemory.operatorAdjustedViewport = newValue }
     }
-    @State private var streamFocusArrival = OperationalStreamFocusArrival()
     @State private var pendingSnapshot: PendingClueSnapshot?
     @State private var selectedClueID: UUID?
     @State private var showTakeoffCalibration = false
@@ -870,9 +864,6 @@ struct RIDTrackMapView: View {
             operatorAdjustedViewport = true
             streamsFullScreen = false
             layout = .map
-        }
-        .onChange(of: liveFocusStreamIDs, initial: true) { _, streams in
-            handleFocusStreamArrival(streams)
         }
         .onChange(of: initialStreamFocusState, initial: true) { _, state in
             handleInitialStreamFocus(state)
@@ -1275,6 +1266,10 @@ struct RIDTrackMapView: View {
         )
         let cameraFovByAircraftID = self.cameraFovByAircraftID
         let activeSEITrackPointsByAircraftID = self.activeSEITrackPointsByAircraftID
+        let videoID = streamRegistry.focusedID == "demo" ? nil : streamRegistry.focusedID
+        let presentationFocus = OperationalMapFocusPolicy.presentationFocus(
+            inset: inset, mapAircraftID: focusedAircraftID,
+            focusedVideoID: videoID, videoAircraftID: videoID.flatMap { aircraftID(for: $0) })
         return ZStack(alignment: .bottomTrailing) {
             OperationalMKMapView(
                 tracks: mapTracks,
@@ -1299,7 +1294,7 @@ struct RIDTrackMapView: View {
                 viewportMemory: viewportMemory,
                 inset: inset,
                 predictiveHeadEnabled: orgSettings.predictiveHeadEnabled,
-                focusedAircraftID: focusedAircraftID,
+                focusedAircraftID: presentationFocus,
                 followFocusedDrone: followFocusedDrone,
                 artifactZoomRequest: artifacts.zoomRequest,
                 notamZoomRequest: notams.mapFocusRequest,
@@ -1594,11 +1589,6 @@ struct RIDTrackMapView: View {
         )
     }
 
-    private var liveFocusStreamIDs: Set<String> {
-        let sessions = streamRegistry.sessions.filter { $0.id != "demo" && $0.state == .live }
-        return Set(sessions.map(\.id))
-    }
-
     // Every Follow control must resume the manual-viewport gate consistently.
     private func followFocusedDroneBinding(aircraftID: String? = nil) -> Binding<Bool> {
         Binding(
@@ -1613,17 +1603,14 @@ struct RIDTrackMapView: View {
         )
     }
 
-    private func handleFocusStreamArrival(_ streams: Set<String>) {
-        guard notams.mapFocusRequest == nil, !operatorAdjustedViewport else { return }
-        if streamFocusArrival.observe(liveStreamIDs: streams, followEnabled: followFocusedDrone,
-                                      hasFocus: focusedAircraftID != nil) {
-            operatorAdjustedViewport = false
-            AppleLog.info("MapFocus", "New sole stream enables initial follow; waiting for aircraft position if needed")
-        }
-    }
-
     private func handleInitialStreamFocus(_ state: OperationalInitialStreamFocusState) {
         guard notams.mapFocusRequest == nil else { return }
+        if let arrivingAircraft = viewportMemory.streamFocusArrival.observe(resolvedAircraftIDs: state.liveStreamAircraftIDs) {
+            focusedAircraftID = arrivingAircraft
+            if state.followEnabled { operatorAdjustedViewport = false }
+            AppleLog.info("MapFocus", "Live video gained telemetry aircraft=\(arrivingAircraft)")
+            return
+        }
         let streams = state.liveStreamAircraftIDs.map { $0 ?? "unresolved" }.joined(separator: ",")
         let focus = state.focusedAircraftID ?? "none"
         AppleLog.info("MapFocus", "Automatic focus evaluation follow=\(state.followEnabled) adjusted=\(state.operatorAdjustedViewport) focused=\(focus) streams=\(streams)")
@@ -3988,12 +3975,13 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 }
                 map.removeAnnotation(annotation)
             }
-            if followFocusedDrone,
-               !operatorAdjustedViewport,
+            if OperationalMapFocusPolicy.shouldFollow(inset: inset, enabled: followFocusedDrone,
+                                                       operatorAdjustedViewport: operatorAdjustedViewport),
                let focusedAircraftID,
                let coordinate = renderCoordinates[focusedAircraftID] {
                 if !hasActiveViewportGesture(in: map) {
-                    setCenterAndPersist(coordinate, on: map)
+                    if inset { map.setCenter(coordinate, animated: false) }
+                    else { setCenterAndPersist(coordinate, on: map) }
                 }
                 if lastCenteredFocusedAircraftID != focusedAircraftID {
                     AppleLog.info("MapFocus", "Centered focused aircraft=\(focusedAircraftID) inset=\(inset)")
@@ -4259,7 +4247,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
         }
 
         func persistViewport(from map: MKMapView) {
-            guard restoredViewportBounds,
+            guard !currentInset, restoredViewportBounds,
                   map.bounds.width >= 32,
                   map.bounds.height >= 32
             else { return }
@@ -4276,7 +4264,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
         }
 
         func captureViewportForTransition(from map: MKMapView) {
-            guard map.bounds.width >= 32,
+            guard !currentInset, map.bounds.width >= 32,
                   map.bounds.height >= 32
             else { return }
             let region = map.region

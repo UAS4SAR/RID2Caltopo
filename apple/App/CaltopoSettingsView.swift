@@ -421,7 +421,14 @@ struct CaltopoSettingsView: View {
         }
         .onDisappear { proximityAlerts.cancelEnable() }
         .sheet(isPresented: $showingTeamMaps) {
-            CaltopoTeamMapBrowser(settings: settings) { map in
+            CaltopoTeamMapBrowser(settings: settings, onCredentialSelect: { profileID in
+                onSave(settings.disconnectMap())
+                settings.usesPersonalCredentials = profileID == "personal"
+                if profileID != "personal" {
+                    _ = importer.activateProfile(profileID, caltopoSettings: settings, orgSettings: orgSettings)
+                    onSave(settings.configuration)
+                }
+            }) { map in
                 orgSettings.setIncidentMapTitle(map.title)
                 onSave(settings.selectMap(map))
                 showingTeamMaps = false
@@ -709,6 +716,11 @@ private struct AppleDeveloperToolsView: View {
 
     var body: some View {
         Form {
+            Section("Experiments") {
+                NavigationLink("Personal CalTopo Login") {
+                    AppleCaltopoPersonalProbeView()
+                }
+            }
             Section("Configuration") {
                 Button("Load Config File", systemImage: "doc.badge.plus") {
                     importingConfig = true
@@ -1013,6 +1025,10 @@ struct AppleArchiveCleanupView: View {
 
 struct CaltopoTeamMapBrowser: View {
     @ObservedObject var settings: AppleCaltopoSettings
+    var onCredentialSelect: ((String) -> Void)? = nil
+    @ObservedObject private var profiles = AppleCaltopoProfileLifecycle.shared
+    @State private var showPersonalLogin = false
+    @State private var showWebsite = false
     let onSelect: (CaltopoTeamMap) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var navigationStack: [[CaltopoTeamMapNode]] = []
@@ -1025,24 +1041,36 @@ struct CaltopoTeamMapBrowser: View {
     }
 
     private var currentItems: [CaltopoTeamMapNode] {
-        navigationStack.last ?? settings.teamMaps
+        navigationStack.last ?? (settings.usesPersonalCredentials ? settings.personalMaps : settings.teamMaps)
     }
 
     private var filteredItems: [CaltopoTeamMapNode] {
         guard !search.isEmpty else { return currentItems }
-        return currentItems.filter { $0.title.localizedCaseInsensitiveContains(search) }
+        func maps(_ nodes: [CaltopoTeamMapNode]) -> [CaltopoTeamMapNode] {
+            nodes.flatMap { node in
+                switch node { case .directory(_, _, let children): return maps(children); case .map: return [node] }
+            }
+        }
+        return maps(settings.usesPersonalCredentials ? settings.personalMaps : settings.teamMaps)
+            .filter { $0.title.localizedCaseInsensitiveContains(search) }
+    }
+
+    private func loadSelectedMaps() async {
+        if settings.usesPersonalCredentials {
+            if !(await settings.loadPersonalMaps()) { showPersonalLogin = true }
+        } else { await settings.loadTeamMaps() }
     }
 
     var body: some View {
         NavigationStack {
             Group {
-                if settings.isLoadingTeamMaps {
-                    ProgressView("Loading team maps…")
-                } else if settings.teamMaps.isEmpty {
+                if settings.isLoadingTeamMaps || settings.isLoadingPersonalMaps {
+                    ProgressView(settings.isLoadingPersonalMaps ? "Loading personal maps…" : "Loading team maps…")
+                } else if (settings.usesPersonalCredentials ? settings.personalMaps : settings.teamMaps).isEmpty {
                     ContentUnavailableView(
-                        "Team Maps Unavailable",
+                        "Maps Unavailable",
                         systemImage: "map",
-                        description: Text(settings.status)
+                        description: Text(settings.usesPersonalCredentials ? settings.personalMapsStatus : settings.status)
                     )
                 } else {
                     List {
@@ -1085,24 +1113,55 @@ struct CaltopoTeamMapBrowser: View {
                     .searchable(text: $search, prompt: "Search maps")
                 }
             }
-            .navigationTitle("Team Maps")
+            .safeAreaInset(edge: .top) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Menu {
+                        Button("Personal: \(settings.personalUsername.isEmpty ? "Sign in" : settings.personalUsername)") { onCredentialSelect?("personal") }
+                        Button("Edit personal account", systemImage: "pencil") { showWebsite = true }
+                        ForEach(profiles.availableProfiles) { profile in
+                            Button(profile.credentialLabel) { onCredentialSelect?(profile.id) }
+                        }
+                    } label: {
+                        Label("Credentials: \(settings.usesPersonalCredentials ? "Personal: " + settings.personalUsername : profiles.activeCredentialLabel)", systemImage: "person.crop.circle.badge.checkmark")
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+                .background(.background)
+            }
+            .navigationTitle("Select Map")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
                 ToolbarItem(placement: .primaryAction) {
-                    Button { Task { await settings.loadTeamMaps() } } label: { Image(systemName: "arrow.clockwise") }
+                    Button { Task { await loadSelectedMaps() } } label: { Image(systemName: "arrow.clockwise") }
                         .disabled(settings.isLoadingTeamMaps)
                 }
             }
-            .task {
-                if settings.teamMaps.isEmpty { await settings.loadTeamMaps() }
+            .sheet(isPresented: $showPersonalLogin) {
+                NavigationStack {
+                    AppleCaltopoPersonalProbeView(onCatalog: { username, maps in
+                        settings.acceptPersonalCatalog(username, maps: maps)
+                        showPersonalLogin = false
+                    })
+                }
+            }
+            .sheet(isPresented: $showWebsite, onDismiss: {
+                Task { _ = await settings.loadPersonalMaps() }
+            }) {
+                NavigationStack { AppleCaltopoPersonalProbeView() }
             }
             .onChange(of: credentialsReady) { wasReady, isReady in
-                guard !wasReady, isReady,
+                guard !settings.usesPersonalCredentials, !wasReady, isReady,
                       settings.teamMaps.isEmpty,
                       !settings.isLoadingTeamMaps
                 else { return }
                 Task { await settings.loadTeamMaps() }
             }
+        }
+        .task(id: settings.usesPersonalCredentials ? "personal" : profiles.activeProfileID) {
+            navigationStack = []; search = ""
+            await loadSelectedMaps()
         }
     }
 }

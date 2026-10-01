@@ -151,7 +151,7 @@ public class CaltopoMap {
     private static String FolderId;
     private static String ArchiveFolderId;
     private static CaltopoNode.MapNode MapNode;
-    private static String FolderName;
+    private static String FolderName = "DroneTracks";
     private static MapStatusListener.mapStatus MapStatus = MapStatusListener.mapStatus.down;
     private static String LastStandaloneCoordinationScopeId = "";
     private static boolean StandaloneCoordinationStarted = false;
@@ -267,7 +267,7 @@ public class CaltopoMap {
                     "SessionVerifyCallback(): Parsing team data. queued:%d, sent:%d, received:%d",
                     verifyOp.queuedTimestampMsec, verifyOp.sentTimestampMsec, verifyOp.receivedTimestampMsec ));
             if (CaltopoClient.DebugLevel >= CaltopoClient.DebugLevelInfo) {
-                DumpJsonStructure(verifyOp.responseJson, "account");
+                CTInfo(TAG, "Account hierarchy received.");
             }
             SessionNodeMap = parseMapHierarchy(verifyOp.responseJson);
             CTDebug(TAG, String.format(Locale.US,
@@ -444,8 +444,7 @@ public class CaltopoMap {
         getCurrentRuntime().getCalTopoSessionGateway()
                 .verifyAccount(CaltopoMap::SessionVerifyCallback);
         // UsePeersFlag removed — MQTT starts unconditionally with the map (see SetMapStatus).
-        FolderName = CaltopoClient.GetTrackFolderName();
-        if (FolderName.isEmpty()) FolderName = "DroneTracks";
+        FolderName = normalizedTrackFolderName(CaltopoClient.GetTrackFolderName());
         if (null == MyUUID) GetMyUUID();
         return null;
     }
@@ -506,6 +505,19 @@ public class CaltopoMap {
      * @param mapNode  : If null, just reset map connection.
      */
     public static void OpenMap(CaltopoNode.MapNode mapNode) {
+        if (mapNode != null && mapNode.getPersonalSessionID() != null) {
+            if (!CaltopoClient.CanStartMapSession()) {
+                SetMapStatus(MapStatusListener.mapStatus.down, "App is closing. Reopen it before connecting.");
+                return;
+            }
+            // Personal login bypasses organization Init/VerifyAccount. Restore
+            // the credential-independent setup, including same-process reopen.
+            ShutdownInProgress = false;
+            CurrentRuntime = R2cRuntimeRegistry.getDefaultRuntime();
+            if (MyInstance == null) MyInstance = new CaltopoMap();
+            FolderName = normalizedTrackFolderName(CaltopoClient.GetTrackFolderName());
+            if (MyUUID == null) GetMyUUID();
+        }
         if (ShutdownInProgress) {
             CTDebug(TAG, "OpenMap(): ignoring request while shutdown in progress.");
             return;
@@ -515,6 +527,7 @@ public class CaltopoMap {
             CTDebug(TAG, "OpenMap(): Map connection reset.");
             ResetMapConnection(4_000L);
             MapNode = null;
+            CaltopoPersonalSession.activate(null, "");
             OperatingProfiles.endAssignment();
             SetMapStatus(MapStatusListener.mapStatus.down, "Disconnect request.");
             return;
@@ -524,6 +537,7 @@ public class CaltopoMap {
             ResetMapConnection(0);
             SetMapStatus(MapStatusListener.mapStatus.down, "Map switch request.");
         }
+        CaltopoPersonalSession.activate(mapNode.getPersonalSessionID(), mapNode.getId());
         MapNode = mapNode;
         OperatingProfiles.setScope(CaltopoClient.GetTrackerCoordinationUrlPfx(), GetMapId());
         DisconnectInProgress = false;
@@ -574,7 +588,7 @@ public class CaltopoMap {
             for (JSONObject feature : artifactSnapshot) try {
                 listener.onArtifactFeature(feature, "full", now);
             } catch (Exception e) {
-                CTError(TAG, "AddArtifactListener() replay listener raised", e);
+                CTError(TAG, "AddArtifactListener() replay listener raised" + " (" + e.getClass().getSimpleName() + ")");
             }
         }
     }
@@ -891,8 +905,7 @@ public class CaltopoMap {
             String classStr = prop.optString("class");
             if (!FolderId.equals(thisFolderId) && !classStr.equals("Folder")) {
                 if (CaltopoClient.DebugLevel > CaltopoClient.DebugLevelDebug) {
-                    CTInfo(TAG, String.format(Locale.US, "parseMapUpdate(): feature folder id '%s' doesn't match our folder id '%s': %s",
-                            thisFolderId, FolderId, feature));
+                    CTInfo(TAG, "parseMapUpdate(): feature belongs to a different folder.");
                 }
                 ignoreCount++;
                 continue;
@@ -987,10 +1000,10 @@ public class CaltopoMap {
         for (int i = 0; i < features.length(); i++) {
             JSONObject feature = features.getJSONObject(i);
             notifyArtifactFeature(feature, "full");
-            CTInfo(TAG, "parseMap(): Parsing returned feature:\n" + feature.toString(2));
+            CTInfo(TAG, "parseMap(): Parsing returned feature.");
             JSONObject prop = feature.optJSONObject("properties");
             if (null == prop) {
-                CTError(TAG, "parseMap(): feature missing 'properties' - skipping:" + feature);
+                CTError(TAG, "parseMap(): feature missing properties; skipped.");
                 continue;
             }
             String title = prop.optString("title");
@@ -1000,14 +1013,14 @@ public class CaltopoMap {
                 // list and wait until after we have a folderId and can confirm that the
                 // feature is within either of our directories before deleting.  We don't
                 // delete anything that we didn't create.
-                CTDebug(TAG, "parseMap(): found rogue feature missing title: " + feature.toString(4));
+                CTDebug(TAG, "parseMap(): feature missing title.");
                 RogueFeaturesPendingDeletes.add(feature);
                 continue;
             }
 
             String classProp = prop.optString("class", "");
             switch (classProp) {
-                case "": CTError(TAG, "parseMap(): feature missing class: " + feature.toString(4)); break;
+                case "": CTError(TAG, "parseMap(): feature missing class."); break;
                 case "Marker": markerFeatures.put(feature); break;
                 case "LiveTrack":
                     // collect the list of features that might be ours - don't know if they
@@ -1046,9 +1059,13 @@ public class CaltopoMap {
         } else LookForExistingLiveTracks();
     }
 
+    static String normalizedTrackFolderName(@Nullable String name) {
+        return name == null || name.trim().isEmpty() ? "DroneTracks" : name.trim();
+    }
+
     static String archiveFolderName(String trackFolderName, Date date) {
         SimpleDateFormat formatter = new SimpleDateFormat("ddMMM", Locale.US);
-        return trackFolderName.trim() + " " + formatter.format(date);
+        return normalizedTrackFolderName(trackFolderName) + " " + formatter.format(date);
     }
 
     private static void PollMapUpdates() {
@@ -1089,7 +1106,7 @@ public class CaltopoMap {
                     op -> UpdateMapFinished(
                             op, requestStartedAtMs, fullReconcile, refreshGeneration, requestMapNode.getId()));
         } catch (Exception e) {
-            CTError(TAG, "PollMapUpdates(): openMap() raised.", e);
+            CTError(TAG, "PollMapUpdates(): openMap() raised." + " (" + e.getClass().getSimpleName() + ")");
             FinishMapRefresh(false, fullReconcile, requestStartedAtMs, refreshGeneration);
         }
     }
@@ -1132,7 +1149,7 @@ public class CaltopoMap {
                     ParseMapUpdate(stateObj);
                 }
         } catch (Exception e) {
-            CTError(TAG, "updateMapFinished(): map artifact parse raised. ", e);
+            CTError(TAG, "updateMapFinished(): map artifact parse raised. " + " (" + e.getClass().getSimpleName() + ")");
             FinishMapRefresh(false, fullReconcile, requestStartedAtMs, refreshGeneration);
             return;
         }
@@ -1173,7 +1190,7 @@ public class CaltopoMap {
             try {
                 callback.run();
             } catch (Exception e) {
-                CTError(TAG, "FinishMapRefresh() callback raised.", e);
+                CTError(TAG, "FinishMapRefresh() callback raised." + " (" + e.getClass().getSimpleName() + ")");
             }
         }
         if (ShutdownInProgress || MapNode == null) return;
@@ -1343,7 +1360,7 @@ public class CaltopoMap {
         JSONObject responseJson = lOpenMapOp.responseJson;
         JSONObject state = (responseJson != null) ? responseJson.optJSONObject("state") : null;
         if (null == state) {
-            CTError(TAG, "OpenMapFinished(): state missing from response: " + lOpenMapOp.response );
+            CTError(TAG, "OpenMapFinished(): state missing from response. " + lOpenMapOp );
         } else try {
             ParseMap(state);
             synchronized (MapRefreshLock) {
@@ -1351,7 +1368,9 @@ public class CaltopoMap {
                 LastMapPollStartedAt = requestStartedAtMs;
             }
         } catch (Exception e) {
-            CTError(TAG, "OpenMapFinished(): parseMap() raised:", e);
+            CTError(TAG, "OpenMapFinished(): parseMap() raised:" + " (" + e.getClass().getSimpleName() + ")");
+            SetMapStatus(MapStatusListener.mapStatus.down, "Map could not load. Please try connecting again.");
+            return;
         }
         if (!MapCheckerDelay.isRunning()) {
             CTDebug(TAG, "openMapFinished(): starting map checker delay...");
@@ -1731,8 +1750,7 @@ public class CaltopoMap {
         try {
             String trackId = feature.optString("id", "");
             if (trackId.isEmpty()) {
-                CTError(TAG, "archiveFeature(): id for feature is empty - this shouldn't happen.\n  " +
-                        feature.toString(4));
+                CTError(TAG, "archiveFeature(): feature ID missing.");
                 if (onComplete != null) onComplete.accept(false);
                 return;
             }
@@ -1782,7 +1800,7 @@ public class CaltopoMap {
                 }
             }
         } catch (Exception e) {
-            CTError(TAG, "archiveFeature() raised:", e);
+            CTError(TAG, "archiveFeature() raised:" + " (" + e.getClass().getSimpleName() + ")");
             if (onComplete != null) onComplete.accept(false);
         }
     }
@@ -1834,7 +1852,7 @@ public class CaltopoMap {
             getCurrentRuntime().getPeerCoordinator().stop(); // always stop; no-op if never started
             getCurrentRuntime().getCalTopoSessionGateway().shutdown();
         } catch (Exception e) {
-            CTError(TAG, "Shutdown() raised: ", e);
+            CTError(TAG, "Shutdown() raised: " + " (" + e.getClass().getSimpleName() + ")");
         }
     }
 
@@ -1859,7 +1877,7 @@ public class CaltopoMap {
         for (ArtifactListener listener : listeners) try {
             listener.onArtifactFeature(feature, source, now);
         } catch (Exception e) {
-            CTError(TAG, "notifyArtifactFeature() listener raised", e);
+            CTError(TAG, "notifyArtifactFeature() listener raised" + " (" + e.getClass().getSimpleName() + ")");
         }
     }
 
@@ -1936,7 +1954,7 @@ public class CaltopoMap {
                                 markerOp != null ? markerOp.responseCode : -1));
                     });
         } catch (Exception e) {
-            CTError(TAG, "publishMyDeviceMarkerIfPossible() raised", e);
+            CTError(TAG, "publishMyDeviceMarkerIfPossible() raised" + " (" + e.getClass().getSimpleName() + ")");
         }
     }
 

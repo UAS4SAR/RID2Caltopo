@@ -33,8 +33,9 @@ class R2CViewModelDroneConfirmationTest {
             assertEquals(origin, model.activeScreen.value)
 
             model.onUIEvent(UIEvent.ConnectionStatusChanged(CaltopoMap.MapStatusListener.mapStatus.credentialsVerified))
-            assertEquals(OverlayState.MapBrowser, model.overlay)
+            assertEquals(OverlayState.None, model.overlay)
             model.openConnectionOverlayFromCurrentScreen()
+            assertEquals(OverlayState.MapBrowser, model.overlay)
             assertEquals(origin, model.activeScreen.value)
             model.onUIEvent(UIEvent.ConnectionStatusChanged(CaltopoMap.MapStatusListener.mapStatus.connecting))
             assertEquals(origin, model.activeScreen.value)
@@ -80,6 +81,15 @@ class R2CViewModelDroneConfirmationTest {
         model.onUIEvent(UIEvent.ConnectionStatusChanged(CaltopoMap.MapStatusListener.mapStatus.credentialsVerified))
         model.onUIEvent(UIEvent.DismissRequested)
         assertEquals(CaltopoConnectionState.CredentialsVerified, model.connectionState)
+        assertEquals(OverlayState.None, model.overlay)
+        model.onUIEvent(UIEvent.HeaderClicked)
+        assertEquals(OverlayState.MapBrowser, model.overlay)
+    }
+
+    @Test fun closingMapPickerDoesNotReopenItWhenCredentialCheckFinishes() {
+        val model = R2CViewModel(SimpleTimer())
+        model.onUIEvent(UIEvent.DismissRequested)
+        model.onUIEvent(UIEvent.ConnectionStatusChanged(CaltopoMap.MapStatusListener.mapStatus.credentialsVerified))
         assertEquals(OverlayState.None, model.overlay)
         model.onUIEvent(UIEvent.HeaderClicked)
         assertEquals(OverlayState.MapBrowser, model.overlay)

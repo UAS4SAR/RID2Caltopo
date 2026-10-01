@@ -14,9 +14,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -68,6 +68,7 @@ fun ScannerScreen(
             modifier = Modifier
                 .fillMaxWidth(0.94f)
                 .widthIn(max = 960.dp)
+                .fillMaxHeight(0.94f)
         ) {
             Column(
                 modifier = Modifier.padding(16.dp)
@@ -76,13 +77,15 @@ fun ScannerScreen(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    // Measure the title and actions first; the report gets only the
+                    // remaining window height, including in landscape/split screen.
+                    modifier = Modifier.fillMaxWidth().weight(1f),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(
                         modifier = Modifier
                             .weight(1f)
-                            .heightIn(max = 560.dp)
+                            .fillMaxHeight()
                     ) {
                         Box(
                             modifier = Modifier

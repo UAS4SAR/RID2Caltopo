@@ -1,6 +1,6 @@
 # RID2Caltopo Privacy Policy
 
-Last updated: July 27, 2026
+Last updated: September 30, 2026
 
 RID2Caltopo is an incident-support application for Android, iPhone, and iPad.
 It does not contain advertising or analytics SDKs, does not track people across
@@ -18,6 +18,14 @@ apps or websites, and does not sell personal data.
 - Configuration QR codes may contain organization, incident, Remote ID mapping,
   CalTopo, tracker, FAA, and mutual-aid settings. Credential secrets are stored
   in platform-protected storage, including Apple Keychain on iPhone and iPad.
+- Optional personal CalTopo sign-in uses an embedded browser. Its persistent,
+  app-private browser profile retains CalTopo session cookies and identity-provider
+  sign-in state until cleared in the app or expired by the provider. These browser
+  records use operating-system storage protection; they are not a separate
+  application-encrypted credential vault. Clear login removes this app's local
+  browser state, but does not revoke sessions already copied elsewhere.
+  Authorized native requests use the selected account's session to load maps
+  and publish operator-requested tracks or photo clues to CalTopo.
 - When tracker peer coordination is configured, the app uses an app-install
   zone identifier and device zone name to coordinate aircraft ownership with
   other RID2Caltopo instances.

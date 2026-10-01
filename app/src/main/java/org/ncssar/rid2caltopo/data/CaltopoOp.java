@@ -56,6 +56,7 @@ public class CaltopoOp implements Future <CaltopoOp> {
     public JSONObject responseJson; // if receivedTimestampInMsec && goodResponse == true;
 	public boolean goNaked;
     public boolean positionReport;
+    public CaltopoPersonalSession.Authorization personalAuthorization;
 	private boolean isDone;
 	    
     public CaltopoOp() throws RuntimeException {
@@ -103,28 +104,9 @@ public class CaltopoOp implements Future <CaltopoOp> {
 	@Override
 	@NonNull
 	public String toString() {
-		String jsonStringRep = "";
-		String responseJsonStringRep = "";
-		if (payload != null) {
-			try {
-				jsonStringRep = payload.toString(2);
-			} catch (JSONException e) {
-				CTError(TAG, "payload.toString() raised:", e);
-			}
-		}
-		if (responseJson != null) {
-			try {
-				responseJsonStringRep = responseJson.toString(2);
-			} catch (JSONException e) {
-				CTError(TAG, "responseJson.toString() raised:", e);
-			}
-		}
-		return String.format(Locale.US,
-			"CaltopoOp %d: %s, %s, payload:\n%s\n  queued:%d\n  sent:%d\n  " +
-					"received: %d  \n  isDone:%s good:%s, response:%s\n  jsonResponse:\n%s",
-			opNum, method, url, jsonStringRep,
-				queuedTimestampMsec, sentTimestampMsec, receivedTimestampMsec,
-				isDone, goodResponse, response, responseJsonStringRep);
+        return CaltopoDiagnostic.operation(method == null ? null : method.toString(), responseCode,
+                receivedTimestampMsec > 0 ? receivedTimestampMsec - sentTimestampMsec : 0);
+
     }
 	
 	// syncOp... options for blocking until completion for results:
@@ -133,7 +115,7 @@ public class CaltopoOp implements Future <CaltopoOp> {
 			throws ExecutionException, InterruptedException, JSONException {
 		this.get();
 		if (fail()) {
-			throw new JSONException("Op failed - '" + response + "'");
+			throw new JSONException("Op failed: " + this);
 		}
 		if (null == responseJson) {
 			throw new JSONException("op failed to return expected JSONObject in response.\n" + this);
@@ -149,15 +131,7 @@ public class CaltopoOp implements Future <CaltopoOp> {
 
 	@NonNull
 	public String responseString() {
-		String msg = "";
-		if (null != responseJson) {
-			try {
-				msg = responseJson.toString(4);
-			} catch (JSONException e) {
-				msg = (null != response) ? response : "";
-			}
-		}
-		return msg;
+        return toString();
 	}
 
     public JSONObject syncOpJSONObject(double timeoutInSeconds)
@@ -166,7 +140,7 @@ public class CaltopoOp implements Future <CaltopoOp> {
 
 		this.get((long)(timeoutInSeconds * 1000), TimeUnit.MILLISECONDS);
 		if (fail()) {
-			throw new JSONException("Op failed - '" + response + "'");
+			throw new JSONException("Op failed: " + this);
 		}
 		if (null == responseJson) {
 			throw new JSONException("op failed to return expected JSONObject in response.\n" + this);

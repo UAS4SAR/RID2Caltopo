@@ -841,7 +841,16 @@ internal fun SplitMapPane(
     var fullArtifactHydrationQueued by remember { mutableStateOf(false) }
     // Tracks which drone's info-window bubble is open so it can be restored after each overlay rebuild.
     var openBubbleDesignator by remember { mutableStateOf<String?>(null) }
-    val focusedPath by viewModel.mapFocusedDesignator.collectAsStateWithLifecycle()
+    val mapFocusedPath by viewModel.mapFocusedDesignator.collectAsStateWithLifecycle()
+    val focusedVideoPath by viewModel.focusedPath.collectAsStateWithLifecycle()
+    val focusedPath = mapPaneFocusedDesignator(
+        presentationMode, mapFocusedPath, focusedVideoPath,
+        focusedVideoPath?.let(viewModel::mapDesignatorForStream)
+    )
+    LaunchedEffect(isInsetMode, focusedVideoPath != null, focusedPath != null, followFocusedDroneEnabled) {
+        if (isInsetMode) CTDebug(MAP_PANE_TAG,
+            "PiP follow enabled=$followFocusedDroneEnabled videoFocused=${focusedVideoPath != null} aircraftResolved=${focusedPath != null}")
+    }
     val latestFocusedPath by rememberUpdatedState(focusedPath)
     var lastInsetFollowAtMs by remember { mutableStateOf(0L) }
     var lastInsetFollowDesignator by remember { mutableStateOf<String?>(null) }
@@ -1053,10 +1062,7 @@ internal fun SplitMapPane(
     }
     val dronePoints = dronePointEntries.map { it.first }
     val mapStreams by viewModel.streams.collectAsStateWithLifecycle()
-    val streamFocusArrival = remember { StreamFocusArrival() }
-    val liveMapStreamIds = mapStreams.values
-        .filter { it.state == StreamState.LIVE && !it.isLocalPlayback }
-        .map { it.designator.lowercase(java.util.Locale.US) }.toSet()
+    val streamFocusArrival = viewModel.mapStreamFocusArrival
     val droneDesignatorByMappedId = mapStreams.values
         .filter { it.state == StreamState.LIVE && !it.isLocalPlayback }
         .mapNotNull { stream ->
@@ -1065,11 +1071,6 @@ internal fun SplitMapPane(
             }
         }
         .toMap()
-    LaunchedEffect(liveMapStreamIds) {
-        if (!isInsetMode && !operatorAdjustedViewport && notamMapFocusRequest == null && streamFocusArrival.observe(liveMapStreamIds, followFocusedDroneEnabled, focusedPath != null)) {
-            operatorAdjustedViewport = false
-        }
-    }
     val liveStreamMapDesignators = mapStreams.values
         .filter { it.state == StreamState.LIVE && !it.isLocalPlayback }
         .map { stream ->
@@ -1078,6 +1079,14 @@ internal fun SplitMapPane(
         }
     LaunchedEffect(followFocusedDroneEnabled, focusedPath, operatorAdjustedViewport, liveStreamMapDesignators) {
         if (!isInsetMode && notamMapFocusRequest == null) {
+            val arrivingDrone = streamFocusArrival.observe(liveStreamMapDesignators)
+            if (arrivingDrone != null) {
+                viewModel.focusMapDrone(arrivingDrone)
+                initialViewportApplied = true
+                initialViewportArtifactCount = artifactOverlayState.totalFeatures
+                if (followFocusedDroneEnabled) operatorAdjustedViewport = false
+                return@LaunchedEffect
+            }
             initialStreamMapFocus(
                 followFocusedDroneEnabled, focusedPath, operatorAdjustedViewport, liveStreamMapDesignators
             )?.let(viewModel::focusMapDrone)
@@ -4288,9 +4297,6 @@ internal fun SplitMapPane(
                             previous.distanceToAsDouble(target) >= INSET_FOLLOW_MIN_MOVE_METERS
                         if (movedEnough) {
                             mapView.controller.setCenter(target)
-                            if (restoredViewport == null && mapView.zoomLevelDouble < STARTUP_MY_LOCATION_MIN_ZOOM) {
-                                mapView.controller.setZoom(STARTUP_MY_LOCATION_MIN_ZOOM)
-                            }
                             if (!isInsetMode) {
                                 persistFullMapViewport(mapView)
                             }

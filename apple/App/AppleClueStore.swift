@@ -27,6 +27,7 @@ final class AppleClueStore: ObservableObject {
     @Published private(set) var status = "No local clues"
 
     private let root: URL
+    private var personalLogin = false
     private var client: CaltopoLiveClient?
     private var teamID = ""
     private var mapID = ""
@@ -54,8 +55,9 @@ final class AppleClueStore: ObservableObject {
         uploadTasks.values.forEach { $0.cancel() }
         uploadTasks.removeAll()
         configurationGeneration += 1
+        personalLogin = configuration.personalSessionID != nil
         mapID = configuration.mapID
-        teamID = configuration.teamID
+        teamID = personalLogin ? "personal:" + configuration.personalAccountID : configuration.teamID
         self.trackFolderName = trackFolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "Drone Tracks"
             : trackFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -131,6 +133,7 @@ final class AppleClueStore: ObservableObject {
     }
 
     private func publicationDestination(for draft: AppleClueDraft) -> (map: String?, team: String?) {
+        if personalLogin { return (mapID.isEmpty ? nil : mapID, teamID) }
         let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("awaiting-map-flights.json")
         if let data = try? Data(contentsOf: url), let flights = try? JSONDecoder().decode([AwaitingMapFlight].self, from: data),
            let flight = flights.last(where: { !$0.finished && RidTrackStore.canonicalAircraftID($0.remoteID) == RidTrackStore.canonicalAircraftID(draft.aircraftID) && $0.decision != "local" &&

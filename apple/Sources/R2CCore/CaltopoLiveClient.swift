@@ -31,6 +31,9 @@ public struct CaltopoLiveConfiguration: Sendable, Equatable {
     public let mapID: String
     public let credentialID: String
     public let credentialSecretBase64: String
+    public let personalSessionID: UUID?
+    public let personalAccountID: String
+    public let personalMediaOwnerID: String
     public let connectKey: String
 
     public init(
@@ -38,12 +41,18 @@ public struct CaltopoLiveConfiguration: Sendable, Equatable {
         mapID: String,
         credentialID: String,
         credentialSecretBase64: String,
-        connectKey: String = ""
+        connectKey: String = "",
+        personalSessionID: UUID? = nil,
+        personalAccountID: String = "",
+        personalMediaOwnerID: String = ""
     ) {
         self.domainAndPort = domainAndPort
         self.mapID = mapID
         self.credentialID = credentialID
         self.credentialSecretBase64 = credentialSecretBase64
+        self.personalSessionID = personalSessionID
+        self.personalAccountID = personalAccountID
+        self.personalMediaOwnerID = personalMediaOwnerID
         self.connectKey = connectKey
     }
 }
@@ -153,6 +162,7 @@ public enum CaltopoRequestSigner {
 public actor CaltopoLiveClient {
     private let configuration: CaltopoLiveConfiguration
     private let session: URLSession
+    private let personalTransport: URLSession?
     private static let positionReports = LatestPositionReports(intervalProvider: {
         let stored = UserDefaults.standard.object(forKey: OperationalThumbnailRefreshInterval.storageKey) as? Double
         return .seconds(OperationalThumbnailRefreshInterval.normalized(stored))
@@ -165,14 +175,23 @@ public actor CaltopoLiveClient {
     ) throws {
         guard !configuration.domainAndPort.isEmpty,
               !configuration.mapID.isEmpty,
-              !configuration.credentialID.isEmpty,
-              !configuration.credentialSecretBase64.isEmpty
+              (configuration.personalSessionID != nil || (!configuration.credentialID.isEmpty &&
+              !configuration.credentialSecretBase64.isEmpty))
         else {
             throw CaltopoLiveClientError.invalidConfiguration
         }
         self.configuration = configuration
         self.session = session
+        if configuration.personalSessionID != nil {
+            let transport = session.configuration
+            transport.httpCookieStorage = nil
+            transport.httpShouldSetCookies = false
+            transport.urlCache = nil
+            personalTransport = URLSession(configuration: transport)
+        } else { personalTransport = nil }
     }
+
+    deinit { personalTransport?.invalidateAndCancel() }
 
     public func startLiveTrack(
         liveTrackID: String,
@@ -319,7 +338,30 @@ public actor CaltopoLiveClient {
 
     public func publishPhotoClue(_ clue: CaltopoPhotoClue, now: Date = Date()) async throws -> String {
         let requests = try makePhotoClueRequests(clue, now: now)
-        for request in requests { _ = try await perform(request) }
+        if let id = configuration.personalSessionID {
+            try await CaltopoPersonalSessions.shared.authorizeMedia(id, mediaID: clue.mediaID)
+        }
+        func acknowledged(_ request: URLRequest) async throws -> Data {
+            let data = try await perform(request)
+            guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  envelope["status"] as? String == "ok", envelope["error"] == nil
+            else { throw CaltopoLiveClientError.httpStatus(502, "Photo upload was not acknowledged; retained for retry.") }
+            return data
+        }
+        _ = try await acknowledged(requests[0])
+        var mediaExists = false
+        var mediaReady = false
+        let mediaOwner = configuration.personalSessionID != nil ? configuration.personalMediaOwnerID : clue.teamID
+        do {
+            let data = try await acknowledged(makeMediaSnapshotRequest(mediaID: clue.mediaID, now: now))
+            mediaReady = try CaltopoPhotoMediaState.isReady(data, mediaID: clue.mediaID, ownerID: mediaOwner)
+            mediaExists = true
+        } catch CaltopoLiveClientError.httpStatus(let code, _) where code == 400 || code == 404 {
+            // Media has not been created yet. Other errors must retain the clue for retry.
+        }
+        if !mediaExists { _ = try await acknowledged(requests[1]) }
+        if !mediaReady { _ = try await acknowledged(requests[2]) }
+        _ = try await acknowledged(requests[3])
         return clue.markerID.uuidString.lowercased()
     }
 
@@ -387,20 +429,20 @@ public actor CaltopoLiveClient {
         let path = "/api/v1/map/\(configuration.mapID)/Marker/\(normalizedID)"
         let expires = Int64(now.timeIntervalSince1970 * 1_000)
             + CaltopoRequestSigner.validityMilliseconds
-        let signature = try CaltopoRequestSigner.signature(
+        let signature = try configuration.personalSessionID == nil ? CaltopoRequestSigner.signature(
             method: "DELETE",
             path: path,
             expiresMilliseconds: expires,
             payload: "",
             credentialSecretBase64: configuration.credentialSecretBase64
-        )
+        ) : ""
         guard var components = URLComponents(url: httpsURL(path: path)!, resolvingAgainstBaseURL: false)
         else { throw CaltopoLiveClientError.invalidURL }
-        components.percentEncodedQuery = CaltopoRequestSigner.percentEncodedQuery([
+        components.percentEncodedQuery = configuration.personalSessionID == nil ? CaltopoRequestSigner.percentEncodedQuery([
             ("id", configuration.credentialID),
             ("expires", String(expires)),
             ("signature", signature),
-        ])
+        ]) : nil
         guard let url = components.url else { throw CaltopoLiveClientError.invalidURL }
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
@@ -408,7 +450,24 @@ public actor CaltopoLiveClient {
         return request
     }
 
+    func makeMediaSnapshotRequest(mediaID: UUID, now: Date) throws -> URLRequest {
+        let path = "/api/v1/media/\(mediaID.uuidString.lowercased())"
+        guard let url = httpsURL(path: path), var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else { throw CaltopoLiveClientError.invalidURL }
+        if configuration.personalSessionID == nil {
+            let expires = Int64(now.timeIntervalSince1970 * 1000) + CaltopoRequestSigner.validityMilliseconds
+            let signature = try CaltopoRequestSigner.signature(method: "GET", path: path, expiresMilliseconds: expires, payload: "", credentialSecretBase64: configuration.credentialSecretBase64)
+            components.percentEncodedQuery = CaltopoRequestSigner.percentEncodedQuery([("id", configuration.credentialID), ("expires", String(expires)), ("signature", signature)])
+        }
+        return URLRequest(url: components.url!)
+    }
+
     func makePhotoClueRequests(_ clue: CaltopoPhotoClue, now: Date) throws -> [URLRequest] {
+        if configuration.personalSessionID != nil {
+            guard !configuration.personalAccountID.isEmpty, !configuration.personalMediaOwnerID.isEmpty,
+                  clue.teamID == "personal:" + configuration.personalAccountID else { throw CaltopoLiveClientError.invalidConfiguration }
+        }
+        let mediaOwner = configuration.personalSessionID != nil ? configuration.personalMediaOwnerID : clue.teamID
         guard !clue.teamID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               clue.latitude.isFinite, clue.longitude.isFinite,
               !clue.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -445,10 +504,10 @@ public actor CaltopoLiveClient {
             "properties": markerProperties,
         ]
         let mediaPath = "/api/v1/media/\(mediaID)"
-        let mediaPayload: [String: Any] = ["properties": ["creator": clue.teamID]]
+        let mediaPayload: [String: Any] = ["properties": ["creator": mediaOwner]]
         let dataPath = mediaPath + "/data"
         let dataPayload: [String: Any] = [
-            "creator": clue.teamID,
+            "creator": mediaOwner,
             "data": clue.jpegData.base64EncodedString(),
         ]
         let linkPath = "/api/v1/map/\(configuration.mapID)/MapMediaObject/\(mediaID)"
@@ -489,20 +548,20 @@ public actor CaltopoLiveClient {
         let path = "/api/v1/map/\(configuration.mapID)/since/\(cursor)"
         let expires = Int64(now.timeIntervalSince1970 * 1_000)
             + CaltopoRequestSigner.validityMilliseconds
-        let signature = try CaltopoRequestSigner.signature(
+        let signature = try configuration.personalSessionID == nil ? CaltopoRequestSigner.signature(
             method: "GET",
             path: path,
             expiresMilliseconds: expires,
             payload: "",
             credentialSecretBase64: configuration.credentialSecretBase64
-        )
+        ) : ""
         guard var components = URLComponents(url: httpsURL(path: path)!, resolvingAgainstBaseURL: false)
         else { throw CaltopoLiveClientError.invalidURL }
-        components.percentEncodedQuery = CaltopoRequestSigner.percentEncodedQuery([
+        components.percentEncodedQuery = configuration.personalSessionID == nil ? CaltopoRequestSigner.percentEncodedQuery([
             ("id", configuration.credentialID),
             ("expires", String(expires)),
             ("signature", signature),
-        ])
+        ]) : nil
         guard let url = components.url else { throw CaltopoLiveClientError.invalidURL }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -540,19 +599,19 @@ public actor CaltopoLiveClient {
         let payload = String(decoding: payloadData, as: UTF8.self)
         let expires = Int64(now.timeIntervalSince1970 * 1_000)
             + CaltopoRequestSigner.validityMilliseconds
-        let signature = try CaltopoRequestSigner.signature(
+        let signature = try configuration.personalSessionID == nil ? CaltopoRequestSigner.signature(
             method: "POST",
             path: path,
             expiresMilliseconds: expires,
             payload: payload,
             credentialSecretBase64: configuration.credentialSecretBase64
-        )
+        ) : ""
         guard let url = httpsURL(path: path) else { throw CaltopoLiveClientError.invalidURL }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("RID2Caltopo/Apple", forHTTPHeaderField: "User-Agent")
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = Self.formBody([
+        request.httpBody = Self.formBody(configuration.personalSessionID != nil ? ["json": payload] : [
             "id": configuration.credentialID,
             "expires": String(expires),
             "signature": signature,
@@ -631,19 +690,19 @@ public actor CaltopoLiveClient {
         let payload = String(decoding: payloadData, as: UTF8.self)
         let expires = Int64(now.timeIntervalSince1970 * 1_000)
             + CaltopoRequestSigner.validityMilliseconds
-        let signature = try CaltopoRequestSigner.signature(
+        let signature = try configuration.personalSessionID == nil ? CaltopoRequestSigner.signature(
             method: "POST",
             path: path,
             expiresMilliseconds: expires,
             payload: payload,
             credentialSecretBase64: configuration.credentialSecretBase64
-        )
+        ) : ""
         guard let url = httpsURL(path: path) else { throw CaltopoLiveClientError.invalidURL }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("RID2Caltopo/Apple", forHTTPHeaderField: "User-Agent")
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = Self.formBody([
+        request.httpBody = Self.formBody(configuration.personalSessionID != nil ? ["json": payload] : [
             "id": configuration.credentialID,
             "expires": String(expires),
             "signature": signature,
@@ -732,20 +791,20 @@ public actor CaltopoLiveClient {
         let path = "/api/v1/map/\(configuration.mapID)/LiveTrack/\(liveTrackID)"
         let expires = Int64(now.timeIntervalSince1970 * 1_000)
             + CaltopoRequestSigner.validityMilliseconds
-        let signature = try CaltopoRequestSigner.signature(
+        let signature = try configuration.personalSessionID == nil ? CaltopoRequestSigner.signature(
             method: "DELETE",
             path: path,
             expiresMilliseconds: expires,
             payload: "",
             credentialSecretBase64: configuration.credentialSecretBase64
-        )
+        ) : ""
         guard var components = URLComponents(url: httpsURL(path: path)!, resolvingAgainstBaseURL: false)
         else { throw CaltopoLiveClientError.invalidURL }
-        components.percentEncodedQuery = CaltopoRequestSigner.percentEncodedQuery([
+        components.percentEncodedQuery = configuration.personalSessionID == nil ? CaltopoRequestSigner.percentEncodedQuery([
             ("id", configuration.credentialID),
             ("expires", String(expires)),
             ("signature", signature),
-        ])
+        ]) : nil
         guard let url = components.url else { throw CaltopoLiveClientError.invalidURL }
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
@@ -758,20 +817,20 @@ public actor CaltopoLiveClient {
         let path = "/api/v1/map/\(configuration.mapID)/Folder/\(folderID)"
         let expires = Int64(now.timeIntervalSince1970 * 1_000)
             + CaltopoRequestSigner.validityMilliseconds
-        let signature = try CaltopoRequestSigner.signature(
+        let signature = try configuration.personalSessionID == nil ? CaltopoRequestSigner.signature(
             method: "DELETE",
             path: path,
             expiresMilliseconds: expires,
             payload: "",
             credentialSecretBase64: configuration.credentialSecretBase64
-        )
+        ) : ""
         guard var components = URLComponents(url: httpsURL(path: path)!, resolvingAgainstBaseURL: false)
         else { throw CaltopoLiveClientError.invalidURL }
-        components.percentEncodedQuery = CaltopoRequestSigner.percentEncodedQuery([
+        components.percentEncodedQuery = configuration.personalSessionID == nil ? CaltopoRequestSigner.percentEncodedQuery([
             ("id", configuration.credentialID),
             ("expires", String(expires)),
             ("signature", signature),
-        ])
+        ]) : nil
         guard let url = components.url else { throw CaltopoLiveClientError.invalidURL }
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
@@ -783,7 +842,34 @@ public actor CaltopoLiveClient {
         _ request: URLRequest,
         acceptedStatusCodes: Set<Int> = []
     ) async throws -> Data {
-        let (data, response) = try await session.data(for: request)
+        var request = request
+        var personalCookieURL: URL?
+        var personalSendCookie = false
+        if configuration.personalSessionID != nil {
+            guard let url = request.url, url.scheme == "https", url.host == "caltopo.com", url.port == nil,
+                  url.user == nil, url.password == nil,
+                  url.path.hasPrefix("/api/v1/map/\(configuration.mapID)/") || url.path.hasPrefix("/api/v1/position/report/") || CaltopoPersonalProbe.mediaID(url.path) != nil
+            else { throw CaltopoLiveClientError.invalidURL }
+            let isPosition = url.path.hasPrefix("/api/v1/position/report/")
+            let cookieURL = isPosition ? CaltopoPersonalProbe.endpoint(configuration.mapID)! : url
+            personalCookieURL = cookieURL
+            personalSendCookie = !isPosition
+            request.httpShouldHandleCookies = false
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            if !isPosition {
+                request.setValue("https://caltopo.com", forHTTPHeaderField: "Origin")
+                request.setValue("https://caltopo.com/m/\(configuration.mapID)", forHTTPHeaderField: "Referer")
+            }
+
+        }
+        let data: Data
+        let response: URLResponse
+        if let personalID = configuration.personalSessionID, let cookieURL = personalCookieURL {
+            (data, response) = try await CaltopoPersonalSessions.shared.perform(personalID, cookieURL: cookieURL,
+                request: request, session: personalTransport ?? session, sendCookie: personalSendCookie)
+        } else {
+            (data, response) = try await session.data(for: request)
+        }
         guard let httpResponse = response as? HTTPURLResponse else {
             throw CaltopoLiveClientError.httpStatus(0, "Non-HTTP response")
         }
@@ -792,7 +878,7 @@ public actor CaltopoLiveClient {
         else {
             throw CaltopoLiveClientError.httpStatus(
                 httpResponse.statusCode,
-                String(decoding: data.prefix(1_024), as: UTF8.self)
+                configuration.personalSessionID == nil ? String(decoding: data.prefix(1_024), as: UTF8.self) : "Personal map request failed; check your login and map permissions."
             )
         }
         return data

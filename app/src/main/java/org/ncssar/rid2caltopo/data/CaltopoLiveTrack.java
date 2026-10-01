@@ -158,7 +158,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             try {
                 track.publishFreshSeiPositionIfAvailable();
             } catch (Exception error) {
-                CTError(TAG, "Unable to publish fresh video SEI position", error);
+                CTError(TAG, "Unable to publish fresh video SEI position" + " (" + error.getClass().getSimpleName() + ")");
             }
         }
     }
@@ -333,7 +333,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         try {
             featureCopy = new JSONObject(archivedFeature.toString());
         } catch (JSONException error) {
-            CTError(TAG, "Unable to copy archived feature for deferred video link.", error);
+            CTError(TAG, "Unable to copy archived feature for deferred video link." + " (" + error.getClass().getSimpleName() + ")");
             return;
         }
         DeferredVideoLinkExecutor.execute(() -> attemptDeferredVideoDescriptionUpdate(
@@ -385,7 +385,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             properties.put("updated", String.valueOf(System.currentTimeMillis()));
             properties.put("-updated-on", String.valueOf(System.currentTimeMillis()));
         } catch (JSONException error) {
-            CTError(TAG, "Unable to add deferred video link to archived feature.", error);
+            CTError(TAG, "Unable to add deferred video link to archived feature." + " (" + error.getClass().getSimpleName() + ")");
             return;
         }
         sessionGateway.editObjectWithId(
@@ -517,7 +517,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             logSideEffectIfSlow("NotifyLocalTrackPoint.listener." + listener.getClass().getName(),
                     remoteId, mappedId, System.currentTimeMillis() - listenerStartedAtMs);
         } catch (Exception e) {
-            CTError(TAG, "NotifyLocalTrackPoint() listener raised", e);
+            CTError(TAG, "NotifyLocalTrackPoint() listener raised" + " (" + e.getClass().getSimpleName() + ")");
         }
         logSideEffectIfSlow("NotifyLocalTrackPoint.total", remoteId, mappedId,
                 System.currentTimeMillis() - startedAtMs);
@@ -529,7 +529,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         for (LocalTrackFinishedListener listener : LocalTrackFinishedListeners) try {
             listener.onLocalTrackFinished(remoteId, mappedId, reason);
         } catch (Exception e) {
-            CTError(TAG, "NotifyLocalTrackFinished() listener raised", e);
+            CTError(TAG, "NotifyLocalTrackFinished() listener raised" + " (" + e.getClass().getSimpleName() + ")");
         }
     }
 
@@ -595,7 +595,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                                 }
                             });
                 } catch (Exception e) {
-                    CTError(TAG, "archiveTrackOnCaltopo(): deleteLiveTrackWithId() raised: ", e);
+                    CTError(TAG, "archiveTrackOnCaltopo(): deleteLiveTrackWithId() raised: " + " (" + e.getClass().getSimpleName() + ")");
                 }
             } else {
                 CTDebug(TAG, "archiveTrackOnCaltopo(): not the owner — skipping.");
@@ -658,7 +658,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                 properties.put("description", archiveDescription);
             }
         } catch (JSONException e) {
-            CTError(TAG, "archiveTrackCaltopo() JSONObject.put() raised - for no apparent reason.", e);
+            CTError(TAG, "archiveTrackCaltopo() JSONObject.put() raised - for no apparent reason." + " (" + e.getClass().getSimpleName() + ")");
         }
         String archivedLiveTrackId = archiveId;
         CaltopoMap.ArchiveFeature(
@@ -764,7 +764,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             runtime.getCalTopoSessionGateway()
                     .editObjectWithId("LiveTrack", liveTrackId, feature, this::renameTrackCompleted);
         } catch (Exception e) {
-            CTError(TAG, "renameTrack() raised.", e);
+            CTError(TAG, "renameTrack() raised." + " (" + e.getClass().getSimpleName() + ")");
         }
     }
 
@@ -802,7 +802,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             } catch (Exception e) {
                 startInFlight = false;
                 nextStartAttemptAtMs = System.currentTimeMillis() + 20_000L;
-                CTError(TAG, "startNewTrack(): startLiveTrack() raised: ", e);
+                CTError(TAG, "startNewTrack(): startLiveTrack() raised: " + " (" + e.getClass().getSimpleName() + ")");
             }
         }
     }
@@ -879,7 +879,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             try {
                 liveTrack.refreshActiveVideoCameraMetadata();
             } catch (Exception error) {
-                CTError(TAG, "Unable to refresh CalTopo video thumbnail metadata", error);
+                CTError(TAG, "Unable to refresh CalTopo video thumbnail metadata" + " (" + error.getClass().getSimpleName() + ")");
             }
         }
     }
@@ -909,7 +909,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             nextStartAttemptAtMs = System.currentTimeMillis() + 20_000L;
             return;
         } else try {
-            CTDebug(TAG, "startLiveTrackComplete(): succeeded. ResponseCode: " + op.responseCode + " response: " + op.response);
+            CTDebug(TAG, "startLiveTrackComplete(): succeeded. " + op);
             String returnedId = op.id();
             if (requestedLiveTrackId != null && !requestedLiveTrackId.equalsIgnoreCase(returnedId)) {
                 nextStartAttemptAtMs = Long.MAX_VALUE;
@@ -932,7 +932,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             }
             CaltopoMap.AddLiveTrack(liveTrackId, this);
         } catch (Exception e) {
-            CTError(TAG, "startLiveTrackComplete(): raised:", e);
+            CTError(TAG, "startLiveTrackComplete(): raised:" + " (" + e.getClass().getSimpleName() + ")");
         }
         forwardNextWaypoints(null);
     }
@@ -1058,7 +1058,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                 points.put(coordinate);
             }
         } catch (JSONException error) {
-            CTError(TAG, "Could not serialize interrupted LiveTrack points", error);
+            CTError(TAG, "Could not serialize interrupted LiveTrack points" + " (" + error.getClass().getSimpleName() + ")");
             return false;
         }
         boolean saved = CaltopoInterruptedTrackJournal.save(
@@ -1071,7 +1071,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         if (saved) {
             lastInterruptedJournalWriteMs = now;
             try { AwaitingMapFlights.notePublication(myRemoteId, publicationMapId != null ? publicationMapId : CaltopoMap.GetMapId()); }
-            catch (Exception error) { CTError(TAG, "Could not persist publication handoff", error); }
+            catch (Exception error) { CTError(TAG, "Could not persist publication handoff" + " (" + error.getClass().getSimpleName() + ")"); }
         }
         return saved;
     }
@@ -1105,7 +1105,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             runtime.getPeerCoordinator().updateCaltopoRtt(rtt);
             if (lastOp.fail()) {
                 consecutiveUpdateFails++;
-                CTError(TAG, "forwardNextWaypoints(): addLiveTrackPoint failed: " + lastOp.response);
+                CTError(TAG, "forwardNextWaypoints(): addLiveTrackPoint failed: " + lastOp);
                 if (consecutiveUpdateFails > 2) {
                     CTError(TAG, "forwardNextWaypoints(): connection unavailable; retaining LiveTrack identity. ");
                     return;
@@ -1133,7 +1133,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                                 });
             }
         } catch (Exception e) {
-            CTError(TAG, "forwardNextWaypoints(): addLiveTrackPoint() raised: ", e);
+            CTError(TAG, "forwardNextWaypoints(): addLiveTrackPoint() raised: " + " (" + e.getClass().getSimpleName() + ")");
         }
     }
 
@@ -1299,7 +1299,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             logSideEffectIfSlow("notifyLocalTrackPoint.listener." + listener.getClass().getName(),
                     myRemoteId, mappedId, System.currentTimeMillis() - listenerStartedAtMs);
         } catch (Exception e) {
-            CTError(TAG, "notifyLocalTrackPoint() listener raised", e);
+            CTError(TAG, "notifyLocalTrackPoint() listener raised" + " (" + e.getClass().getSimpleName() + ")");
         }
         logSideEffectIfSlow("notifyLocalTrackPoint.total", myRemoteId, mappedId,
                 System.currentTimeMillis() - startedAtMs);

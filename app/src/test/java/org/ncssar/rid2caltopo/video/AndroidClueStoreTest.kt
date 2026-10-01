@@ -12,6 +12,21 @@ class AndroidClueStoreTest {
     @get:Rule
     val temporaryFolder = TemporaryFolder()
 
+    @Test fun personalQueueSurvivesRelaunchButNeverSwitchesAccountOrMap() {
+        val root = temporaryFolder.newFolder("personal")
+        val record = clueRecord("personal", "map:ABC123").copy(destinationTeamId = "personal:USER01", uploadState = "pending")
+        AndroidClueStore.forDirectory(root).saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
+        val reopened = AndroidClueStore.forDirectory(root)
+        assertEquals(1, reopened.pendingForMap("ABC123", "personal:USER01").size)
+        assertTrue(reopened.pendingForMap("ABC123", "personal:USER02").isEmpty())
+        assertTrue(reopened.pendingForMap("ABC123", "USER01").isEmpty())
+        assertTrue(reopened.pendingForMap("DEF456", "personal:USER01").isEmpty())
+        reopened.recordUploadResult(record.id, false, "lost response")
+        assertEquals(record.id, reopened.pendingForMap("ABC123", "personal:USER01").single().id)
+        reopened.recordUploadResult(record.id, true)
+        assertTrue(reopened.pendingForMap("ABC123", "personal:USER01").isEmpty())
+    }
+
     @Test
     fun savedClueReloadsForItsMapAfterStoreRecreation() {
         val root = temporaryFolder.newFolder("clues")

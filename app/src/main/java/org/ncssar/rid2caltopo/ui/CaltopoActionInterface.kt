@@ -1,5 +1,11 @@
 package org.ncssar.rid2caltopo.ui
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -25,20 +31,26 @@ internal fun incidentMapDisplayValue(state: CaltopoConnectionState): String {
 fun CaltopoActionInterface(
     state: CaltopoConnectionState,
     onActionClicked: () -> Unit,
-    modifier: Modifier = Modifier.fillMaxSize()
+    modifier: Modifier = Modifier
 ) {
-    val colorScheme = MaterialTheme.colorScheme
-    Button(
-        onClick = onActionClicked,
-        modifier = modifier,
-        shape = RoundedCornerShape(6.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = colorScheme.primary),
+    val colors = MaterialTheme.colorScheme
+    androidx.compose.foundation.layout.Box(
+        modifier = modifier.clickable(role = androidx.compose.ui.semantics.Role.Button, onClick = onActionClicked)
+            .semantics { contentDescription = "Incident Map: ${incidentMapDisplayValue(state)}" }
     ) {
-        Text(
-            text = incidentMapDisplayValue(state),
-            style = MaterialTheme.typography.titleSmall,
+        androidx.compose.material3.OutlinedTextField(
+            value = incidentMapDisplayValue(state),
+            onValueChange = {},
+            enabled = false,
+            readOnly = true,
             maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
+            label = { Text("Incident Map") },
+            modifier = Modifier.fillMaxWidth().clearAndSetSemantics {},
+            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                disabledTextColor = colors.onSurface,
+                disabledBorderColor = colors.outline,
+                disabledLabelColor = colors.onSurfaceVariant,
+            ),
         )
     }
 }

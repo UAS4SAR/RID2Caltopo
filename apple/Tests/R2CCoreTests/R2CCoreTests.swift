@@ -3285,6 +3285,12 @@ private func proximityDrone(
     #expect(restored.canAutomaticallyPublish(mapID: "map-a", teamID: "team-a"))
     #expect(!restored.canAutomaticallyPublish(mapID: "map-b", teamID: "team-a"))
     #expect(!restored.canAutomaticallyPublish(mapID: "map-a", teamID: "team-b"))
+    bound.destinationTeamID = "personal:USER01"
+    let personal = try JSONDecoder().decode(OperationalClueRecord.self, from: JSONEncoder().encode(bound))
+    #expect(personal.canAutomaticallyPublish(mapID: "map-a", teamID: "personal:USER01"))
+    #expect(!personal.canAutomaticallyPublish(mapID: "map-a", teamID: "personal:USER02"))
+    #expect(!personal.canAutomaticallyPublish(mapID: "map-a", teamID: "USER01"))
+    #expect(!personal.canAutomaticallyPublish(mapID: "map-b", teamID: "personal:USER01"))
 }
 
 @Test func operationalAircraftLabelLayoutSeparatesOverlappingLabels() throws {

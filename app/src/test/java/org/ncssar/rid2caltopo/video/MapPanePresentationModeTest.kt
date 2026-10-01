@@ -6,6 +6,20 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MapPanePresentationModeTest {
+    @org.junit.Test fun insetFollowsVideoAircraftWithoutFullMapSelection() {
+        assertEquals("aircraft-a", mapPaneFocusedDesignator(MapPanePresentationMode.Inset, null, "video-a", "aircraft-a"))
+        assertEquals("aircraft-b", mapPaneFocusedDesignator(MapPanePresentationMode.Inset, "aircraft-a", "video-b", "aircraft-b"))
+    }
+    @org.junit.Test fun insetWaitsForPairingAndResumesWhenTelemetryResolves() {
+        assertEquals(null, mapPaneFocusedDesignator(MapPanePresentationMode.Inset, "old-aircraft", "video-a", null))
+        assertEquals("aircraft-a", mapPaneFocusedDesignator(MapPanePresentationMode.Inset, "old-aircraft", "video-a", "aircraft-a"))
+        assertEquals(null, mapPaneFocusedDesignator(MapPanePresentationMode.Inset, "old-aircraft", "video-a", null))
+    }
+    @org.junit.Test fun fullMapSelectionAndMapOnlyInsetRemainIndependent() {
+        assertEquals("map-aircraft", mapPaneFocusedDesignator(MapPanePresentationMode.Full, "map-aircraft", "video-a", "aircraft-a"))
+        assertEquals("map-aircraft", mapPaneFocusedDesignator(MapPanePresentationMode.Inset, "map-aircraft", null, null))
+    }
+
     @Test
     fun droneSelection_matchesStreamCapitalizationWithoutMatchingAnotherAircraft() {
         assertTrue(sameMapDrone("1sar7DjMn4Pr", "1sar7djmn4pr"))

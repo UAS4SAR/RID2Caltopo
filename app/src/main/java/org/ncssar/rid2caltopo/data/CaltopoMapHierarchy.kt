@@ -16,10 +16,11 @@ sealed class CaltopoNode {
         val children: MutableList<CaltopoNode> = mutableListOf()
     ) : CaltopoNode()
 
-    data class MapNode(
+    data class MapNode @JvmOverloads constructor(
         override val id: String,
         override val title: String,
-        val updated: Long
+        val updated: Long,
+        val personalSessionID: String? = null
     ) : CaltopoNode()
 }
 

@@ -7,6 +7,8 @@
 
 package org.ncssar.rid2caltopo.ui
 
+import androidx.compose.foundation.layout.size
+
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import StreamsViewModel
@@ -94,6 +96,7 @@ import org.ncssar.rid2caltopo.airspace.AirspaceCenter
 import org.ncssar.rid2caltopo.data.AppUpdateAdvisory
 import org.ncssar.rid2caltopo.data.BluetoothRidTestPrefs
 import org.ncssar.rid2caltopo.data.AppConfigStore
+import org.ncssar.rid2caltopo.data.CaltopoPersonalSession
 import org.ncssar.rid2caltopo.data.CaltopoClient
 import org.ncssar.rid2caltopo.data.TrackerEnrollmentClient
 import org.ncssar.rid2caltopo.data.TrackerEnrollmentResult
@@ -678,6 +681,10 @@ fun MainScreen(
     }
     var menuExpanded by remember { mutableStateOf(false) }
     var credentialMenuExpanded by remember { mutableStateOf(false) }
+    val editPersonalAccount = rememberPersonalAccountEditor()
+    val (personalCredentialsBusy, openPersonalCredentials) = rememberPersonalCredentialsAction {
+        localViewModel.selectOperationalProfile("personal")
+    }
     var pendingProfileRemoval by remember { mutableStateOf<OperationalProfileUiOption?>(null) }
     pendingProfileRemoval?.let { profile ->
         AlertDialog(
@@ -1792,7 +1799,7 @@ fun MainScreen(
                 OperatorMainHeader(
                     title = {
                         Box {
-                            TextButton(onClick = { credentialMenuExpanded = true }) {
+                            TextButton(onClick = { credentialMenuExpanded = true }, enabled = !personalCredentialsBusy) {
                                 Column(modifier = Modifier.weight(1f, fill = false), horizontalAlignment = if (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 600 * androidx.compose.ui.platform.LocalDensity.current.fontScale) Alignment.CenterHorizontally else Alignment.Start) {
                                     Text(
                                         "RID-2-Caltopo",
@@ -1801,7 +1808,7 @@ fun MainScreen(
                                         overflow = TextOverflow.Ellipsis,
                                     )
                                     Text(
-                                        "Team: ${selectedOperationalProfile?.credentialLabel ?: "None"}",
+                                        "Credentials: " + if (org.ncssar.rid2caltopo.data.CaltopoPersonalSession.browsingPersonal) "Personal: ${org.ncssar.rid2caltopo.data.CaltopoPersonalSession.username}" else (selectedOperationalProfile?.credentialLabel ?: "None"),
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                         style = MaterialTheme.typography.labelMedium,
@@ -1812,14 +1819,30 @@ fun MainScreen(
                                         ) MaterialTheme.colorScheme.tertiary
                                         else MaterialTheme.colorScheme.onSurfaceVariant
                                     )
+                                    if (personalCredentialsBusy) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                                            Text("Loading personal maps…", modifier = Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelMedium)
+                                        }
+                                    }
                                     OrganizationUserLabel(compactHeader = true)
                                 }
-                                Icon(Icons.Default.ArrowDropDown, contentDescription = "Select Teams credentials")
+                                Icon(Icons.Default.ArrowDropDown, contentDescription = "Select credentials")
                             }
                             DropdownMenu(
                                 expanded = credentialMenuExpanded,
                                 onDismissRequest = { credentialMenuExpanded = false }
                             ) {
+                                DropdownMenuItem(
+                                    text = { Text(if (personalCredentialsBusy) "Loading personal maps…" else "Personal: ${CaltopoPersonalSession.username.ifBlank { "Sign in" }}") },
+                                    enabled = !personalCredentialsBusy,
+                                    onClick = { credentialMenuExpanded = false; openPersonalCredentials() }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Edit personal account") },
+                                    enabled = !personalCredentialsBusy,
+                                    onClick = { credentialMenuExpanded = false; editPersonalAccount() }
+                                )
                                 operationalProfiles.forEach { profile ->
                                     DropdownMenuItem(
                                         text = {
@@ -2477,6 +2500,12 @@ fun MainScreen(
                 Column(
                     modifier = Modifier.verticalScroll(rememberScrollState())
                 ) {
+                    Button(
+                        onClick = {
+                            context.startActivity(android.content.Intent(context, CaltopoPersonalProbeActivity::class.java))
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Personal CalTopo Login (Experiment)") }
                     Button(
                         onClick = {
                             showTestingToolsDialog = false

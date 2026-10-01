@@ -24,6 +24,13 @@ class R2CApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // The personal-login experiment has a separate cookie store and must not
+        // start a second Tracker, scanner, or operational application session.
+        if (Application.getProcessName().endsWith(":caltopo_probe")) {
+            android.webkit.WebView.setDataDirectorySuffix("caltopo_probe")
+            android.webkit.WebView.setWebContentsDebuggingEnabled(false)
+            return
+        }
         instance = this;
         PersonRelevanceCoordinator.initialize(this)
 

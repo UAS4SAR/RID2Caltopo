@@ -298,7 +298,7 @@ public class CaltopoSession {
         try {
             op.asyncFuture = GetMainExecutorPool().submit(() -> BgSendRequest(op));
         } catch (RejectedExecutionException e) {
-            CTError(TAG, "SendRequest(): main executor rejected task, rebuilding pool", e);
+            CTError(TAG, "SendRequest(): main executor rejected task, rebuilding pool" + " (" + e.getClass().getSimpleName() + ")");
             synchronized (CaltopoSession.class) {
                 MainExecutorPool = null;
             }
@@ -311,7 +311,7 @@ public class CaltopoSession {
         try {
             op.asyncFuture = GetPhotoWaypointExecutorPool().submit(task);
         } catch (RejectedExecutionException e) {
-            CTError(TAG, "AddPhotoMarker(): photo executor rejected task, rebuilding pool", e);
+            CTError(TAG, "AddPhotoMarker(): photo executor rejected task, rebuilding pool" + " (" + e.getClass().getSimpleName() + ")");
             synchronized (CaltopoSession.class) {
                 PhotoWaypointExecutorPool = null;
             }
@@ -378,7 +378,7 @@ public class CaltopoSession {
 
                 // 1. Prepare Base Parameters
                 Map<String, String> params = new HashMap<>();
-                if (!op.goNaked) {
+                if (!op.goNaked && op.personalAuthorization == null) {
                     String signature = Sign(op.method, op.url, expires, payloadString);
                     params.put("id", Cred.credentialId);
                     params.put("expires", String.valueOf(expires));
@@ -392,11 +392,11 @@ public class CaltopoSession {
                 } else {
                     urlBuilder = new HttpUrl.Builder()
                             .scheme("https")
-                            .host(DomainAndPort.split(":")[0]) // Handle domain vs domain:port
+                            .host(op.personalAuthorization != null ? "caltopo.com" : DomainAndPort.split(":")[0]) // Handle domain vs domain:port
                             .addPathSegments(op.url.startsWith("/") ? op.url.substring(1) : op.url);
 
                     // Port handling if present in DomainAndPort
-                    if (DomainAndPort.contains(":")) {
+                    if (op.personalAuthorization == null && DomainAndPort.contains(":")) {
                         urlBuilder.port(Integer.parseInt(DomainAndPort.split(":")[1]));
                     }
                 }
@@ -421,9 +421,7 @@ public class CaltopoSession {
 
                 HttpUrl finalUrl = urlBuilder.build();
                 if (CaltopoClient.DebugLevel >= CaltopoClient.DebugLevelInfo) {
-                    CTInfo(TAG, String.format(Locale.US,
-                            "BgSendRequest(%s): fullUrl: '%s'\n payload:\n%s",
-                            op.method, finalUrl, payloadString));
+                    CTInfo(TAG, "Sending " + op);
                 }
 
                 // 3. Build and Execute Request
@@ -432,7 +430,25 @@ public class CaltopoSession {
                         .header("User-Agent", "RID2Caltopo/0.2")
                         .method(op.method.toString(), requestBody);
 
-                try (Response response = MyOkHttpClient.newCall(requestBuilder.build()).execute()) {
+                OkHttpClient requestClient = MyOkHttpClient;
+                if (op.personalAuthorization != null) {
+                    String cookie = CaltopoPersonalSession.cookie(op.personalAuthorization, op.goNaked
+                            ? "/api/v1/map/" + op.personalAuthorization.getMapID() + "/since/0" : op.url);
+                    if (!finalUrl.host().equals("caltopo.com") || !finalUrl.isHttps() || finalUrl.port() != 443)
+                        throw new IllegalStateException("Personal session cannot be sent to another server");
+                    if (!op.goNaked && !finalUrl.encodedPath().startsWith("/api/v1/map/" + op.personalAuthorization.getMapID() + "/") && CaltopoPersonalSession.mediaID(finalUrl.encodedPath()) == null)
+                        throw new IllegalStateException("Personal request left the selected map");
+                    if (!op.goNaked) requestBuilder.header("Cookie", cookie)
+                            .header("Origin", "https://caltopo.com")
+                            .header("Referer", "https://caltopo.com/m/" + op.personalAuthorization.getMapID());
+                    requestClient = MyOkHttpClient.newBuilder().followRedirects(false).followSslRedirects(false)
+                            .addNetworkInterceptor(new PersonalSessionDispatchInterceptor(() -> {
+                                CaltopoPersonalSession.requireValid(op.personalAuthorization, op.goNaked
+                                        ? "/api/v1/map/" + op.personalAuthorization.getMapID() + "/since/0" : op.url);
+                                return kotlin.Unit.INSTANCE;
+                            })).build();
+                }
+                try (Response response = requestClient.newCall(requestBuilder.build()).execute()) {
                     op.responseCode = response.code();
                     op.receivedTimestampMsec = System.currentTimeMillis();
 
@@ -446,21 +462,26 @@ public class CaltopoSession {
                                 JSONObject responseJson = new JSONObject(op.response);
                                 op.responseJson = responseJson.getJSONObject("result");
                                 if (CaltopoClient.DebugLevel >= CaltopoClient.DebugLevelInfo) {
-                                    CTInfo(TAG, "Good Response:\n  " + op.responseJson.toString(2));
+                                    CTInfo(TAG, "Completed " + op);
                                 }
                             } catch (JSONException e) {
-                                CTError(TAG, "parse JSON result raised: ", e);
+                                op.response = "CalTopo response could not be decoded.";
+                                CTError(TAG, op.response);
                             }
                         }
                     } else if (isAcceptedErrorCode(op)) {
                         goodResponse = true;
-                        CTInfo(TAG, "BgSendRequest() treating code " + op.responseCode + " as 'already gone' for " + op.url);
+                        op.response = "CalTopo object is already absent.";
+                        CTInfo(TAG, "BgSendRequest() treating code " + op.responseCode + " as 'already gone'");
                     } else {
+                        op.response = op.personalAuthorization != null
+                                ? "Personal map request failed; check your login and map permissions. Team credentials were not used."
+                                : "CalTopo request failed; check connection and permissions.";
                         CTError(TAG, "BgSendRequest() failed w/code " + op.responseCode + ":\n" + op.response);
                         Bundle eventParams = new Bundle();
                         eventParams.putInt("r2c_responseCode", op.responseCode);
                         eventParams.putString("r2c_response", op.response);
-                        eventParams.putString("r2c_url", op.url);
+                        eventParams.putString("r2c_operation", op.toString());
                         eventParams.putString("r2c_method", op.method.toString());
                         CaltopoClient.CTEvent(TAG, "CaltopoOpFailed", eventParams);
                         if (!op.positionReport && IsTransientResponseCode(op.responseCode)
@@ -475,19 +496,19 @@ public class CaltopoSession {
                 }
 
             } catch (UnknownHostException e) {
-                op.response = "UnknownHostException during request: " + ExceptionMessage(e);
+                op.response = "CalTopo hostname could not be resolved.";
                 if (op.positionReport || !RetryAfterDelay("DNS lookup failure", attemptNum)) {
                     break;
                 }
             } catch (IOException e) {
-                op.response = "IOException during request: " + ExceptionMessage(e);
-                CTError(TAG, "IOException raised during request", e);
+                op.response = "CalTopo request could not complete.";
+                CTError(TAG, op.response);
                 if (op.positionReport || !RetryAfterDelay("I/O exception", attemptNum)) {
                     break;
                 }
             } catch (Exception e) {
-                op.response = "Exception raised during request:\n  " + e;
-                CTError(TAG, "Exception raised during request:", e);
+                op.response = "CalTopo request authorization or processing failed.";
+                CTError(TAG, op.response);
                 break;
             }
         }
@@ -519,6 +540,7 @@ public class CaltopoSession {
     @NonNull
     private static CaltopoOp SendRequest(CaltopoOp op, CtsMethod_t method,
 								  String url, JSONObject payload, boolean goNaked) {
+        op.personalAuthorization = CaltopoPersonalSession.capture(url);
         op.goNaked = goNaked;
 		op.method = method;
 		op.url = url;
@@ -539,6 +561,7 @@ public class CaltopoSession {
     @NonNull
     private static CaltopoOp BgOp(CtsMethod_t method, @NonNull String urlEnd, @Nullable JSONObject payload, boolean goNaked) {
         CaltopoOp op = new CaltopoOp(null);
+        op.personalAuthorization = CaltopoPersonalSession.capture(urlEnd);
         op.goNaked = goNaked;
         op.method = method;
         op.url = urlEnd;
@@ -606,7 +629,7 @@ public class CaltopoSession {
 			top.put("type", "Feature");
 			top.put("properties", prop);
 		} catch (Exception e) {
-			CTError(TAG, "addFolder() raised.", e);
+			CTError(TAG, "addFolder() raised." + " (" + e.getClass().getSimpleName() + ")");
 			return null;
 		}
 
@@ -665,7 +688,7 @@ public class CaltopoSession {
 			top.put("properties", prop);
 			top.put("geometry", geometry);
 		} catch (Exception e){
-			CTError(TAG, "addLine() .put raised - for no apparent reason", e);
+			CTError(TAG, "addLine() .put raised - for no apparent reason" + " (" + e.getClass().getSimpleName() + ")");
 			return null;
 		}
 		String urlEnd = CALTOPO_MAP_API_V1 + MapId + "/Shape" + objid;
@@ -704,7 +727,7 @@ public class CaltopoSession {
                     prop.put(key, extraProperties.get(key));
                 }
 			} catch (Exception e) {
-				CTError(TAG, "exception processing extraProperties.", e);
+				CTError(TAG, "exception processing extraProperties." + " (" + e.getClass().getSimpleName() + ")");
 			}
 			JSONArray point = new JSONArray(String.format(Locale.US, "[%.7f,%.7f]", lng, lat));
 			geometry.put("coordinates", point);
@@ -718,7 +741,7 @@ public class CaltopoSession {
 				objid = "/" + existingMarkerId;
 			}
 		} catch (Exception e) {
-			CTError(TAG, "AddMarker() raised.", e);
+			CTError(TAG, "AddMarker() raised." + " (" + e.getClass().getSimpleName() + ")");
 			return null;
 		}
 		String urlEnd = CALTOPO_MAP_API_V1 + MapId + "/Marker" + objid;
@@ -822,7 +845,7 @@ public class CaltopoSession {
 			top.put("type", "Feature");
 			top.put("properties", prop);
 		} catch (Exception e) {
-			CTError(TAG, "startLiveTrack(): raised.", e);
+			CTError(TAG, "startLiveTrack(): raised." + " (" + e.getClass().getSimpleName() + ")");
 			return null;
 		}
 
@@ -868,7 +891,7 @@ public class CaltopoSession {
 		String lngStr = String.format(Locale.US, "%.7f", lng);
 		Long ele = (long)eleMeters;
 		String connectKey = CaltopoClient.GetConnectKey().trim();
-		StringBuilder urlBuilder = new StringBuilder("https://" + DomainAndPort +
+		StringBuilder urlBuilder = new StringBuilder("https://" + (CaltopoPersonalSession.capture("") != null ? "caltopo.com" : DomainAndPort) +
 				positionReportPath(connectKey) + "?" +
 				EncodeParm("id", deviceId) + "&" +
 				EncodeParm("lat", latStr) + "&" +
@@ -880,6 +903,7 @@ public class CaltopoSession {
 
 		CaltopoOp op = new CaltopoOp(onComplete);
 		op.positionReport = true;
+        op.personalAuthorization = CaltopoPersonalSession.capture(url);
         op.goNaked = true;
         op.method = positionReportMethod();
         op.url = url;
@@ -942,7 +966,7 @@ public class CaltopoSession {
                 putFinite(parameters, "camera:fov_height", cameraMetadata.verticalFovDegrees);
             }
         } catch (Exception e) {
-			CTError(TAG, "buildPositionQueryParameters() JSON put raised", e);
+			CTError(TAG, "buildPositionQueryParameters() JSON put raised" + " (" + e.getClass().getSimpleName() + ")");
             return parameters;
         }
         return parameters;
@@ -1157,7 +1181,7 @@ public class CaltopoSession {
 
         } catch (JSONException e) {
             String resp = "BgAttachPhotoToMarker(): error sending message(s)";
-            CTError(TAG, resp, e);
+            CTError(TAG, "CalTopo photo request could not complete.");
             apOp.response = resp;
             apOp.setOperationIsDone(false);
             return apOp;
@@ -1193,31 +1217,70 @@ public class CaltopoSession {
         }
     }
 
+    // Each stage uses the authorization captured for this clue, never the current account by accident.
+    private static CaltopoOp PhotoOp(CaltopoPersonalSession.Authorization personal, String credentialKey,
+            CtsMethod_t method, String path, JSONObject payload, boolean naked) {
+        if (!java.util.Objects.equals(personal, CaltopoPersonalSession.capture("")) ||
+            (personal == null && (Cred == null || !credentialKey.equals(Cred.teamId))))
+            throw new IllegalStateException("Clue upload paused: original credentials are no longer selected");
+        CaltopoOp op = new CaltopoOp(null);
+        op.personalAuthorization = personal;
+        op.goNaked = naked;
+        op.method = method;
+        op.url = path;
+        op.payload = payload;
+        BgSendRequest(op);
+        if (op.success()) {
+            try {
+                JSONObject envelope = new JSONObject(op.response);
+                if (!"ok".equals(envelope.optString("status")) || envelope.has("error")) throw new JSONException("Invalid response");
+            } catch (JSONException error) {
+                op.responseCode = 502;
+                op.response = "Photo upload was not acknowledged; retained for retry.";
+                op.setOperationIsDone(false);
+            }
+        }
+        return op;
+    }
+
     public static CaltopoOp PublishStoredPhoto(String mapId, String teamId, String markerId,
             double lat, double lng, String title, String description, String folderId,
             long createdAt, byte[] jpeg, Consumer<CaltopoOp> done) {
         CaltopoOp outer = new CaltopoOp(done);
+        final CaltopoPersonalSession.Authorization personal = CaltopoPersonalSession.capture("");
         SubmitPhotoRequest(outer, () -> {
             CaltopoOp result;
             try {
-                if (Cred == null || !teamId.equals(Cred.teamId)) throw new IllegalStateException("Original team is not selected");
+                if (personal != null && (!mapId.equals(personal.getMapID()) || !teamId.equals(personal.getCredentialKey()) || personal.getMediaOwnerID().isEmpty()))
+                    throw new IllegalStateException("Original personal account and map must be selected");
+                final String mediaOwner = personal != null ? personal.getMediaOwnerID() : teamId;
                 String mediaId = UUID.nameUUIDFromBytes((markerId + ":media").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+                if (personal != null) CaltopoPersonalSession.authorizeMedia(personal, mediaId);
                 String linkId = UUID.nameUUIDFromBytes((markerId + ":link").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
                 JSONObject geometry = new JSONObject().put("type", "Point").put("coordinates", new JSONArray().put(lng).put(lat));
                 JSONObject props = new JSONObject().put("class", "Marker").put("title", title)
                     .put("description", description).put("created", createdAt).put("folderId", folderId)
                     .put("marker-symbol", "Drone").put("marker-color", "#FF0000");
                 JSONObject marker = new JSONObject().put("id", markerId).put("type", "Feature").put("geometry", geometry).put("properties", props);
-                result = BgOp(CtsMethod_t.POST, CALTOPO_MAP_API_V1 + mapId + "/Marker/" + markerId, marker, false);
-                if (result.success()) result = BgOp(CtsMethod_t.POST, CALTOPO_MEDIA_API_V1 + mediaId,
-                    new JSONObject().put("properties", new JSONObject().put("creator", teamId)), false);
-                if (result.success()) result = BgOp(CtsMethod_t.POST, CALTOPO_MEDIA_API_V1 + mediaId + "/data",
-                    new JSONObject().put("creator", teamId).put("data", android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP)), false);
+                result = PhotoOp(personal, teamId, CtsMethod_t.POST, CALTOPO_MAP_API_V1 + mapId + "/Marker/" + markerId, marker, false);
+                boolean mediaReady = false;
+                if (result.success()) {
+                    CaltopoOp existing = PhotoOp(personal, teamId, CtsMethod_t.GET, CALTOPO_MEDIA_API_V1 + mediaId, null, false);
+                    if (existing.success()) {
+                        mediaReady = CaltopoPhotoMediaState.isReady(existing.responseJson, mediaId, mediaOwner);
+                        result = existing;
+                    } else if (existing.responseCode == 400 || existing.responseCode == 404) {
+                        result = PhotoOp(personal, teamId, CtsMethod_t.POST, CALTOPO_MEDIA_API_V1 + mediaId,
+                            new JSONObject().put("properties", new JSONObject().put("creator", mediaOwner)), false);
+                    } else result = existing;
+                }
+                if (result.success() && !mediaReady) result = PhotoOp(personal, teamId, CtsMethod_t.POST, CALTOPO_MEDIA_API_V1 + mediaId + "/data",
+                    new JSONObject().put("creator", mediaOwner).put("data", android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP)), false);
                 if (result.success()) {
                     JSONObject linkProps = new JSONObject().put("class", "MapMediaObject").put("title", title)
                         .put("description", description).put("parentId", "Marker:" + markerId).put("backendMediaId", mediaId)
                         .put("created", createdAt).put("marker-symbol", "aperture");
-                    result = BgOp(CtsMethod_t.POST, CALTOPO_MAP_API_V1 + mapId + "/MapMediaObject/" + linkId,
+                    result = PhotoOp(personal, teamId, CtsMethod_t.POST, CALTOPO_MAP_API_V1 + mapId + "/MapMediaObject/" + linkId,
                         new JSONObject().put("id", linkId).put("type", "Feature").put("geometry", geometry).put("properties", linkProps), false);
                 }
                 outer.responseCode = result.responseCode;
@@ -1307,6 +1370,13 @@ public class CaltopoSession {
                                            @Nullable Consumer<CaltopoOp> onComplete) {
 
         CaltopoOp apmOp = new CaltopoOp(onComplete);
+        CaltopoPersonalSession.Authorization personal = CaltopoPersonalSession.capture("");
+        if (personal != null) {
+            java.io.ByteArrayOutputStream image = new java.io.ByteArrayOutputStream();
+            photoBitmap.compress(Bitmap.CompressFormat.JPEG, 90, image);
+            return PublishStoredPhoto(personal.getMapID(), personal.getCredentialKey(), UUID.randomUUID().toString(),
+                lat, lng, markerTitle, markerDesc, folderId, clueTimestamp, image.toByteArray(), onComplete);
+        }
         if (null == MapId) {
             apmOp.response = "AddPhotoMarker(): Map not specified - call OpenMap() first";
             apmOp.setOperationIsDone(false);

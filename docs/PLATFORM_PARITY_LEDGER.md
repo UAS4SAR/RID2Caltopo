@@ -574,3 +574,33 @@ Moved Android video pan/zoom handling below the camera/settings/control layer, m
 ### 2026-09-29 camera divider clearance and declined-drone video prompts
 
 The Android camera gesture mitigation failed physical testing. Follow-up identifies overlap with the invisible collapsed split-divider restore target; camera trailing insets now clear that target on both platforms. Both platforms also keep declined RID-only flights quiet while allowing a new concrete local video publisher to offer confirmation once, without automatically publishing. See [camera retest evidence](validation/2026-09-29-android-fullscreen-controls.md) and [confirmation validation](validation/2026-09-29-declined-drone-video-confirmation.md). Installation/physical validation pending.
+
+
+### 2.4.0 — Personal CalTopo maps and photo clues (build 315)
+
+Both platforms support persistent personal login, explicit Org/Ma-Org/Personal
+credentials, native personal map browsing, username/map labels, personal account
+folder priority, and account-bound photo clue publication/retries. Personal media
+is scoped to explicitly authorized clue IDs, with correct personal/workspace
+ownership and reuse after lost responses. Live Android private-map photo upload,
+image readback and repeated-upload behavior passed. Normal iPad snapshot publication was confirmed by the user and the 09:41:07
+device log; physical WAN-loss qualification remains separate. One
+synthetic backend image is retained because CalTopo rejects backend DELETE, while
+all test map objects were removed. See [validation](validation/2026-09-30-personal-photo-clues-2.4.0.md).
+
+
+### Apple 2.4.0 (316) — Tracker identity choice and personal map refresh
+
+Added Apple parity with Android’s explicit existing/new tablet reconciliation after Tracker sign-in, including previously authorized installs. Corrected Apple artifact refresh to use the selected personal session. The interrupted iPad test coincides with the assistant’s installation at 09:43:20; 87 CalTopo publication points survived in its journal. 43 focused mobile checks and the signed build pass; Apple build 316 was installed with explicit approval. The server iOS enablement passed 162 checks but remains undeployed. Identity selection, CalTopo recovery, and Tracker archive verification remain pending. See [evidence and limits](validation/2026-09-30-ipad-interrupted-flight-and-device-identity.md).
+
+
+### Android 2.4.0 (316) — Personal map initialization
+
+Fixed the A5 Pro’s null track-folder error and stale shutdown flag when personal login bypasses organization initialization. Personal connections initialize shared map state without verifying Teams credentials; active shutdown remains guarded. All 40 focused tests and the debug build pass. Build 316 installed in place on A5 Pro with explicit user approval, launched, and version verified. Physical connection retest is pending. Apple uses a separate initialization path. See [device evidence](validation/2026-09-30-a5-personal-map-initialization.md).
+
+### 2026-09-30 — Live video telemetry map focus
+
+- Android and Apple: when a live video stream first resolves to map telemetry, select that drone even after an earlier viewport adjustment or another drone selection. Follow enabled centers it at the current scale; Follow disabled leaves the viewport alone.
+- Track resolved aircraft for the map session across pane recreation, telemetry loss, and reconnect, so repeat updates do not override a subsequent manual pan. Simultaneous new matches do not choose an arbitrary drone.
+- Android follow centering no longer applies a minimum zoom. Existing ordinary viewport restoration remains in place.
+- Validation: 26 focused Android tests and Debug build passed; 8 focused Apple core tests and unsigned generic iOS Debug build passed. No device installation or physical RTMP/telemetry arrival test was performed.

@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -54,13 +55,20 @@ fun formatCaltopoDate(timestamp: Long): String {
     return sdf.format(date)
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun CaltopoHybridBrowser(
     rootNodes: List<CaltopoNode>,
     profileOptions: List<MapBrowserProfileOption>,
     selectedProfileId: String,
-    onUIEvent: (UIEvent) -> Unit
+    onUIEvent: (UIEvent) -> Unit,
+    loading: Boolean = false
 ) {
+    var credentialsExpanded by remember { mutableStateOf(false) }
+    val editPersonal = org.ncssar.rid2caltopo.ui.rememberPersonalAccountEditor()
+    val (personalBusy, selectPersonal) = org.ncssar.rid2caltopo.ui.rememberPersonalCredentialsAction {
+        onUIEvent(UIEvent.BrowseProfileSelected("personal"))
+    }
     val navigationStack = remember(rootNodes) { mutableStateListOf(rootNodes) }
     val currentItems = navigationStack.lastOrNull() ?: rootNodes
     val tag = "CaltopoHybridBrowser"
@@ -80,41 +88,20 @@ fun CaltopoHybridBrowser(
                     Icon(Icons.Default.Close, contentDescription = "Close")
                 }
                 Text(
-                    text = "Team Maps",
+                    text = "Select Map",
                     style = MaterialTheme.typography.titleLarge
                 )
             }
 
-            if (profileOptions.size > 1) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Browse Maps As",
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    profileOptions.forEach { option ->
-                        FilterChip(
-                            selected = option.profileId == selectedProfileId,
-                            onClick = { onUIEvent(UIEvent.BrowseProfileSelected(option.profileId)) },
-                            label = { Text(option.label) },
-                            modifier = Modifier.padding(end = 8.dp)
-                        )
-                    }
-                }
-            }
-
-            HorizontalDivider(thickness = 10.dp)
             // Filter the current list based on the query
             var searchQuery by remember { mutableStateOf("") }
 
-            val filteredItems = remember(currentItems, searchQuery) {
+            fun allMaps(nodes: List<CaltopoNode>): List<CaltopoNode.MapNode> = nodes.flatMap {
+                when (it) { is CaltopoNode.Directory -> allMaps(it.children); is CaltopoNode.MapNode -> listOf(it) }
+            }
+            val filteredItems = remember(rootNodes, currentItems, searchQuery) {
                 if (searchQuery.isEmpty()) currentItems
-                else currentItems.filter { it.title.contains(searchQuery, ignoreCase = true) }
+                else allMaps(rootNodes).distinctBy { it.id }.filter { it.title.contains(searchQuery, ignoreCase = true) }
             }
             val keyboardController = LocalSoftwareKeyboardController.current
             val focusManager = LocalFocusManager.current
@@ -135,7 +122,39 @@ fun CaltopoHybridBrowser(
                 )
             )
 
-            HorizontalDivider(thickness = 5.dp)
+            androidx.compose.foundation.layout.Box {
+                androidx.compose.material3.TextButton(onClick = { credentialsExpanded = true }, enabled = !personalBusy) {
+                    Text(if (personalBusy) "Loading personal maps…" else "Credentials: " +
+                        if (CaltopoPersonalSession.browsingPersonal) "Personal: ${CaltopoPersonalSession.username.ifBlank { "Sign in" }}" else
+                        (profileOptions.firstOrNull { it.profileId == selectedProfileId }?.label ?: "Org"))
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Select credentials")
+                }
+                androidx.compose.material3.DropdownMenu(expanded = credentialsExpanded, onDismissRequest = { credentialsExpanded = false }) {
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("Personal: ${CaltopoPersonalSession.username.ifBlank { "Sign in" }}") },
+                        onClick = { credentialsExpanded = false; selectPersonal() }
+                    )
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("Edit personal account") },
+                        onClick = { credentialsExpanded = false; editPersonal() }
+                    )
+                    profileOptions.forEach { option ->
+                        androidx.compose.material3.DropdownMenuItem(text = { Text(option.label) }, onClick = {
+                            credentialsExpanded = false
+                            onUIEvent(UIEvent.BrowseProfileSelected(option.profileId))
+                        })
+                    }
+                }
+            }
+
+            HorizontalDivider()
+            if (loading) {
+                Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Text("Loading available maps…")
+                }
+            }
 
             LazyColumn(modifier = Modifier.fillMaxSize().weight(1f)) {
                 // 1. ADD THE BACK BUTTON AS THE FIRST ITEM

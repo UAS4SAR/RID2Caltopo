@@ -12,6 +12,7 @@ import android.view.Surface
 import org.osmdroid.api.IGeoPoint
 import org.ncssar.rid2caltopo.video.sameMapDrone
 import org.ncssar.rid2caltopo.video.MapViewportBounds
+import org.ncssar.rid2caltopo.video.StreamFocusArrival
 import org.ncssar.rid2caltopo.video.AndroidClueRecord
 import org.ncssar.rid2caltopo.video.AndroidClueStore
 import org.ncssar.rid2caltopo.video.folderHiddenAfterDefault
@@ -1366,6 +1367,7 @@ class StreamsViewModel(
     // Session state survives map recreation and incident-map reconnects.
     internal var mapInitialLocationApplied = false
     internal val mapOperatorAdjustedViewportState = mutableStateOf(false)
+    internal val mapStreamFocusArrival = StreamFocusArrival()
     private var persistedMapViewportState: MapViewportState? = null
     private var clueProjectionJob: Job? = null
     private val mutedComplianceAlertDesignators = mutableStateSetOf<String>()
@@ -2483,7 +2485,9 @@ class StreamsViewModel(
             return null
         }
         return try {
-            val destination = if (publish) org.ncssar.rid2caltopo.data.AwaitingMapFlights.clueDestination(clue.droneSpec.remoteId) else null
+            val personal = org.ncssar.rid2caltopo.data.CaltopoPersonalSession.capture("")
+            val destination = if (publish && personal != null) personal.mapID to personal.credentialKey
+                else if (publish) org.ncssar.rid2caltopo.data.AwaitingMapFlights.clueDestination(clue.droneSpec.remoteId) else null
             val destinationMapKey = destination?.first?.let { if (it.isBlank()) "unassigned" else "map:$it" } ?: currentLocalClueMapKey()
             val record = localClueStore.save(
                 mapKey = destinationMapKey,
@@ -2589,7 +2593,8 @@ class StreamsViewModel(
     private fun retryPendingClues() {
         if (CaltopoMap.GetMapStatus() != mapStatus.up) return
         val mapId = CaltopoMap.GetMapId()
-        val teamId = CaltopoClient.GetCaltopoCredentials().teamId.orEmpty()
+        val teamId = org.ncssar.rid2caltopo.data.CaltopoPersonalSession.capture("")?.credentialKey
+            ?: CaltopoClient.GetCaltopoCredentials().teamId.orEmpty()
         val folder = CaltopoMap.GetFolderId() ?: return
         // One photo at a time; the next poll advances the remaining queue.
         if (clueUploadsInFlight.isNotEmpty()) return

@@ -37,6 +37,39 @@ class CaltopoMapTest {
         assertEquals("Drone Tracks 24Jul", CaltopoMap.archiveFolderName(" Drone Tracks ", date))
     }
 
+    @Test fun personalMapWithoutTeamInitializationHasSafeFolderNames() {
+        val date = GregorianCalendar(2024, Calendar.JULY, 24, 12, 0).time
+        assertEquals("DroneTracks 24Jul", CaltopoMap.archiveFolderName(null, date))
+        assertEquals("DroneTracks 24Jul", CaltopoMap.archiveFolderName("  ", date))
+        assertEquals("My Tracks", CaltopoMap.normalizedTrackFolderName(" My Tracks "))
+    }
+
+    @Test fun mapStartupIsBlockedDuringExitButAllowedAfterReopen() {
+        appExitRequestedField.setBoolean(null, true)
+        assertFalse(CaltopoClient.CanStartMapSession())
+        appExitRequestedField.setBoolean(null, false)
+        assertTrue(CaltopoClient.CanStartMapSession())
+    }
+
+    @Test fun personalMapReopensAfterCompletedShutdownWithoutTeamVerification() {
+        val folder = CaltopoMap::class.java.getDeclaredField("FolderName").apply { isAccessible = true }
+        val savedFolder = folder.get(null)
+        try {
+            folder.set(null, null)
+            mapNodeField.set(null, null)
+            shutdownInProgressField.setBoolean(null, true)
+            CaltopoMap.OpenMap(CaltopoNode.MapNode("personal-test", "test", 0L, "session-test"))
+            assertFalse(shutdownInProgressField.getBoolean(null))
+            assertTrue((folder.get(null) as String).isNotBlank())
+            val operations = fixture.calTopoSessionGateway.snapshotOperations()
+            assertTrue(operations.any { it.kind == "openMap" })
+            assertFalse(operations.any { it.kind == "verifyAccount" })
+        } finally {
+            folder.set(null, savedFolder)
+            CaltopoPersonalSession.activate(null, "")
+        }
+    }
+
     private lateinit var fixture: TestR2cRuntimeFactory.Fixture
     private lateinit var mapStatusField: Field
     private lateinit var mapNodeField: Field

@@ -155,12 +155,28 @@ internal fun initialStreamMapFocus(
     return liveStreamDesignators.singleOrNull()?.takeIf { it.isNotBlank() }
 }
 
-/** Each stream gets one opportunity to initiate follow in this map-view session. */
+/** Focus once when a live video stream first gains matching map telemetry.
+ * Keep resolved identities seen after loss/reconnect so a later operator pan wins.
+ */
 internal class StreamFocusArrival {
     private val seen = mutableSetOf<String>()
-    fun observe(liveStreamIds: Set<String>, followEnabled: Boolean, hasFocus: Boolean): Boolean {
-        val begin = followEnabled && !hasFocus && liveStreamIds.size == 1 && liveStreamIds.first() !in seen
-        seen.addAll(liveStreamIds)
-        return begin
+    fun observe(resolvedDesignators: List<String?>): String? {
+        val resolved = resolvedDesignators.filterNotNull().filter { it.isNotBlank() }
+            .distinctBy { it.lowercase(java.util.Locale.US) }
+        val arrivals = resolved.filter { it.lowercase(java.util.Locale.US) !in seen }
+        seen.addAll(resolved.map { it.lowercase(java.util.Locale.US) })
+        // Simultaneous matches do not provide an unambiguous focus choice.
+        return arrivals.singleOrNull()
     }
 }
+
+/** The video-primary inset follows its video aircraft, independently of full-map selection. */
+internal fun mapPaneFocusedDesignator(
+    presentationMode: MapPanePresentationMode,
+    mapFocusedDesignator: String?,
+    focusedVideoDesignator: String?,
+    resolvedVideoAircraft: String?
+): String? = if (presentationMode == MapPanePresentationMode.Inset && focusedVideoDesignator != null) {
+    // An unresolved video must not silently follow a different aircraft.
+    resolvedVideoAircraft
+} else mapFocusedDesignator

@@ -33,6 +33,15 @@ public struct OperationalInitialStreamFocusState: Equatable {
 }
 
 public enum OperationalMapFocusPolicy {
+    public static func presentationFocus(inset: Bool, mapAircraftID: String?,
+                                         focusedVideoID: String?, videoAircraftID: String?) -> String? {
+        inset && focusedVideoID != nil ? videoAircraftID : mapAircraftID
+    }
+
+    public static func shouldFollow(inset: Bool, enabled: Bool, operatorAdjustedViewport: Bool) -> Bool {
+        enabled && (inset || !operatorAdjustedViewport)
+    }
+
     /// Wait for a sole live stream to resolve; never override the operator's view.
     public static func initialStreamFocus(
         followEnabled: Bool, focusedAircraftID: String?, operatorAdjustedViewport: Bool,
@@ -920,14 +929,16 @@ private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 
-/// Each stream gets one opportunity to initiate follow in this map-view session.
+/// Focus once when live video first gains matching map telemetry. Retain seen
+/// identities across telemetry loss/reconnect so a later operator pan wins.
 public struct OperationalStreamFocusArrival {
     private var seen: Set<String> = []
     public init() {}
-    public mutating func observe(liveStreamIDs: Set<String>, followEnabled: Bool, hasFocus: Bool) -> Bool {
-        defer { seen.formUnion(liveStreamIDs) }
-        guard followEnabled, !hasFocus, liveStreamIDs.count == 1,
-              let stream = liveStreamIDs.first else { return false }
-        return !seen.contains(stream)
+    public mutating func observe(resolvedAircraftIDs: [String?]) -> String? {
+        let resolved = Set(resolvedAircraftIDs.compactMap { $0 }.filter { !$0.isEmpty })
+        let arrivals = resolved.subtracting(seen)
+        seen.formUnion(resolved)
+        // Simultaneous matches do not provide an unambiguous focus choice.
+        return arrivals.count == 1 ? arrivals.first : nil
     }
 }
