@@ -663,6 +663,7 @@ internal fun SplitMapPane(
     var offlinePrepAolCatalogFailed by remember { mutableStateOf(false) }
     var offlinePrepAolCatalogChecking by remember { mutableStateOf(false) }
     var offlinePrepAolCatalogAttempt by remember { mutableIntStateOf(0) }
+    var offlinePrepRetryJob by remember { mutableStateOf<Job?>(null) }
     val offlinePrepAolWorkingBytes = if(offlinePrepIncludeAol) offlinePrepAolPlan?.let { if(it.reused) 0L else it.advertisedBytes*3/2+it.tiles*16_000_000L } ?: 0L else 0L
     var offlinePrepDemResolution by offlinePrepCoordinator.demResolution
     var offlinePrepIncludeContours by offlinePrepCoordinator.includeContours
@@ -1423,13 +1424,13 @@ internal fun SplitMapPane(
     }
     if(showOfflinePrepDialog && offlinePrepAolCatalogChecking) {
         AlertDialog(
-            onDismissRequest={ offlinePrepIncludeAol=false;offlinePrepAolCatalogChecking=false },
-            title={ Text("Checking USGS lidar catalog…") },
+            onDismissRequest={ offlinePrepRetryJob?.cancel();offlinePrepIncludeAol=false;offlinePrepAolCatalogChecking=false },
+            title={ Text("Checking download requirements…") },
             text={ Column(verticalArrangement=Arrangement.spacedBy(16.dp)) {
                 androidx.compose.material3.CircularProgressIndicator()
-                Text("Finding coverage and file sizes for the selected area. Temporary service failures are retried automatically.")
+                Text("Checking coverage, file sizes, and available storage for the selected area. Temporary service failures are retried automatically.")
             } },
-            confirmButton={ TextButton(onClick={ offlinePrepIncludeAol=false;offlinePrepAolCatalogChecking=false }) { Text("Cancel") } }
+            confirmButton={ TextButton(onClick={ offlinePrepRetryJob?.cancel();offlinePrepIncludeAol=false;offlinePrepAolCatalogChecking=false }) { Text("Cancel") } }
         )
     }
     val offlinePrepReadyByCompletion = remember(
@@ -4647,7 +4648,8 @@ internal fun SplitMapPane(
                             Text("Downloads USGS lidar and builds obstacle tiles on this device after map and terrain downloads. Prepare before flight. Uses the selected region's bounding rectangle plus a 200 ft margin. Prepared tiles are used automatically for AOL calculations.",fontSize=11.sp)
                             Text(offlinePrepAolPlanText,fontSize=12.sp)
                             if(offlinePrepAolCatalogFailed) {
-                                TextButton(onClick={ offlinePrepAolCatalogAttempt++ },enabled=!offlinePrepInFlight) { Text("Retry USGS catalog") }
+                                TextButton(onClick={ offlinePrepAolCatalogAttempt++ },enabled=!offlinePrepInFlight) { Text("Retry AOL check") }
+                                TextButton(onClick={ offlinePrepIncludeAol=false },enabled=!offlinePrepInFlight) { Text("Continue without AOL") }
                             }
                             if(offlinePrepAolWorkingBytes>0) Text("AOL temporary-space allowance: ${formatStorageBytes(offlinePrepAolWorkingBytes)}. Raw files are removed after assembly; existing prepared areas are retained.",fontSize=11.sp)
                             if(offlinePrepAolReport.isNotBlank()) Text(offlinePrepAolReport,fontSize=12.sp)
@@ -4908,26 +4910,73 @@ internal fun SplitMapPane(
                                     CaltopoClient.ShowToast("Offline prep needs visible map bounds.")
                                     return@TextButton
                                 }
-                                if (offlinePrepEstimate.ready) {
-                                    val capacity = OfflinePrepCapacity(
-                                        currentTileCacheBytes = offlinePrepCurrentTileCacheBytes,
-                                        estimatedTileBytes = (offlinePrepEstimate.estimatedTileCacheMb * 1024.0 * 1024.0).toLong()+offlinePrepAolWorkingBytes,
-                                        estimatedDemBytes = (offlinePrepEstimate.estimatedDemCacheMb * 1024.0 * 1024.0).toLong(),
-                                        maximumTileCacheBytes = offlinePrepTileCacheCapBytes,
-                                        availableVolumeBytes = offlinePrepAvailableBytes
-                                    )
-                                    if (capacity.exceedsCacheLimit) {
-                                        CaltopoClient.ShowToast("Increase the map-cache limit or choose a smaller download.")
-                                        return@TextButton
-                                    }
-                                    if (capacity.exceedsAvailableVolume) {
-                                        CaltopoClient.ShowToast("Estimated download exceeds available storage. Pick a smaller area/zoom.")
-                                        return@TextButton
+                                val selectionKey = currentOfflinePrepSelectionKey()
+                                val includeAol = offlinePrepIncludeAol
+                                val surfaceBounds = org.ncssar.rid2caltopo.video.surface.SurfaceBounds(
+                                    prepBounds.lonWest, prepBounds.latSouth, prepBounds.lonEast, prepBounds.latNorth
+                                )
+                                val matchingPlan = offlinePrepAolPlan?.takeIf { it.bounds == surfaceBounds }
+                                // Retry is an action, even when the pane has lost its local AOL plan.
+                                offlinePrepAolCatalogChecking = true
+                                offlinePrepAolCatalogFailed = false
+                                offlinePrepRetryJob = uiScope.launch {
+                                    try {
+                                        recoverOfflinePrep(
+                                            includeAol = includeAol,
+                                            matchingPlan = matchingPlan,
+                                            resolvePlan = {
+                                                offlinePrepAolPlanText = "Checking USGS lidar coverage and file sizes…"
+                                                try {
+                                                    org.ncssar.rid2caltopo.video.surface.SurfacePreparation.plan(
+                                                        surfaceBounds, demAutoFetchClient, context = context
+                                                    )
+                                                } catch (e: CancellationException) { throw e }
+                                                catch (e: Exception) {
+                                                    offlinePrepAolCatalogFailed = true
+                                                    offlinePrepAolPlanText = e.message ?: "AOL catalog unavailable"
+                                                    throw e
+                                                }
+                                            },
+                                            isCurrent = {
+                                                showOfflinePrepDialog && !offlinePrepInFlight &&
+                                                    selectionKey == currentOfflinePrepSelectionKey()
+                                            },
+                                            checkCapacity = { plan ->
+                                                offlinePrepAolPlan = plan
+                                                if (plan != null) offlinePrepAolPlanText = if (plan.reused) {
+                                                    "AOL already prepared — using cached tiles"
+                                                } else {
+                                                    "AOL: ${plan.sources.size} lidar files, ${plan.advertisedBytes / 1_000_000} MB advertised; ${plan.tiles} local 1 m tiles. Source sizes may differ."
+                                                }
+                                                // Read the applied setting again, including after an asynchronous lookup.
+                                                offlinePrepTileCacheCapBytes = MapCachePolicy.tileCacheMaxBytes(context)
+                                                offlinePrepAvailableBytes = withContext(Dispatchers.IO) { queryAvailableCacheBytes(context) }
+                                                val workingBytes = plan?.let {
+                                                    if (it.reused) 0L else it.advertisedBytes * 3 / 2 + it.tiles * 16_000_000L
+                                                } ?: 0L
+                                                val capacity = OfflinePrepCapacity(
+                                                    currentTileCacheBytes = offlinePrepCurrentTileCacheBytes,
+                                                    estimatedTileBytes = (offlinePrepEstimate.estimatedTileCacheMb * 1024.0 * 1024.0).toLong() + workingBytes,
+                                                    estimatedDemBytes = (offlinePrepEstimate.estimatedDemCacheMb * 1024.0 * 1024.0).toLong(),
+                                                    maximumTileCacheBytes = offlinePrepTileCacheCapBytes,
+                                                    availableVolumeBytes = offlinePrepAvailableBytes
+                                                )
+                                                check(!capacity.exceedsCacheLimit) { "Increase the map-cache limit or choose a smaller download." }
+                                                check(!capacity.exceedsAvailableVolume) { "Estimated download exceeds available storage. Pick a smaller area/zoom." }
+                                            },
+                                            start = { startOfflinePrep(prepBounds, boundary) }
+                                        )
+                                    } catch (e: CancellationException) { throw e }
+                                    catch (e: Exception) {
+                                        offlinePrepFailureNotice = e.message ?: "Download preparation failed. Try again."
+                                        CaltopoClient.ShowToast(offlinePrepFailureNotice!!)
+                                    } finally {
+                                        offlinePrepAolCatalogChecking = false
+                                        offlinePrepRetryJob = null
                                     }
                                 }
-                                startOfflinePrep(prepBounds, boundary)
                             },
-                            enabled = !offlinePrepInFlight && (offlinePrepIncludeImagery || offlinePrepIncludeOsm || offlinePrepIncludeContours || offlinePrepIncludeDem || offlinePrepIncludeAol) && offlinePrepEstimate.ready && (!offlinePrepIncludeAol || offlinePrepAolPlan!=null) &&
+                            enabled = !offlinePrepInFlight && !offlinePrepAolCatalogChecking && (offlinePrepIncludeImagery || offlinePrepIncludeOsm || offlinePrepIncludeContours || offlinePrepIncludeDem || offlinePrepIncludeAol) && offlinePrepEstimate.ready &&
                                 (mapBounds != null || selectedBoundary != null)
                         ) { Text(if(offlinePrepProgress.phase.startsWith("Failed")) "Retry" else "Start") }
                     }

@@ -548,3 +548,28 @@ public enum OperationalMapCacheBudget {
             reserved <= limit - used && incoming <= limit - used - reserved
     }
 }
+
+/// A missing AOL plan is recoverable; capacity must be checked after resolving it.
+public enum OperationalOfflineRetry {
+    @MainActor
+    public static func run<Plan>(
+        includeAOL: Bool,
+        matchingPlan: Plan?,
+        resolvePlan: @MainActor () async throws -> Plan,
+        isCurrent: @MainActor () -> Bool,
+        checkCapacity: @MainActor (Plan?) async throws -> Void,
+        start: @MainActor (Plan?) -> Void
+    ) async throws {
+        let plan: Plan?
+        if includeAOL {
+            if let matchingPlan { plan = matchingPlan }
+            else { plan = try await resolvePlan() }
+        }
+        else { plan = nil }
+        try Task.checkCancellation()
+        guard isCurrent() else { return }
+        try await checkCapacity(plan)
+        try Task.checkCancellation()
+        if isCurrent() { start(plan) }
+    }
+}

@@ -1015,6 +1015,11 @@ final class AppleMapOfflineManager: ObservableObject {
         startMaintenanceIfEligible()
     }
 
+    func refreshStatsForDownload() async {
+        cacheStats = await Task.detached(priority: .utility) { Self.scanCache() }.value
+        cacheStatsReady = true
+    }
+
     func refreshStats() {
         Task { [weak self] in
             let stats = await Task.detached(priority: .utility) { Self.scanCache() }.value
@@ -1370,6 +1375,7 @@ struct AppleOfflineMapPreparationView: View {
     @State private var aolCatalogAttempt = 0
     @State private var aolCatalogFailed = false
     @State private var aolCatalogChecking = false
+    @State private var retryTask: Task<Void, Never>?
     @State private var showDownloadFailure = false
     @State private var demResolution = OperationalDEMResolution.maximum1m
     @State private var cacheLimitInput: String
@@ -1464,6 +1470,71 @@ struct AppleOfflineMapPreparationView: View {
         return true
     }
 
+    @MainActor
+    private func retryDownload() {
+        guard retryTask == nil, !aolCatalogChecking, !manager.isRunning,
+              saveCacheLimit(showConfirmation: false) else { return }
+        let requestedBounds = bounds
+        let requestedSelection = selectionDescription
+        let requestedAOL = includeAOL
+        let matchingPlan = aolPlan.flatMap { $0.bounds == requestedBounds ? $0 : nil }
+        aolCatalogChecking = true
+        aolCatalogFailed = false
+        retryTask = Task { @MainActor in
+            defer { aolCatalogChecking = false; retryTask = nil }
+            do {
+                try await OperationalOfflineRetry.run(
+                    includeAOL: requestedAOL,
+                    matchingPlan: matchingPlan,
+                    resolvePlan: {
+                        aolPlanMessage = "Checking USGS lidar coverage and file sizes…"
+                        do { return try await AppleSurfacePreparationRunner.shared.plan(requestedBounds) }
+                        catch {
+                            if !Task.isCancelled {
+                                aolCatalogFailed = true
+                                aolPlanMessage = error.localizedDescription
+                            }
+                            throw error
+                        }
+                    },
+                    isCurrent: {
+                        !manager.isRunning && bounds == requestedBounds &&
+                            selectionDescription == requestedSelection && includeAOL == requestedAOL
+                    },
+                    checkCapacity: { plan in
+                        aolPlan = plan
+                        if let plan {
+                            aolPlanMessage = plan.reused ? "AOL already prepared — using cached tiles"
+                                : "AOL: \(plan.sources.count) lidar files, \(plan.advertisedBytes / 1_000_000) MB advertised; \(plan.tiles) local 1 m tiles. Source sizes may differ."
+                        }
+                        await manager.refreshStatsForDownload()
+                        guard !capacity.exceedsCacheLimit else {
+                            throw NSError(domain: "OfflinePreparation", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                                "Increase the map-cache limit or choose a smaller download."])
+                        }
+                        guard !capacity.exceedsAvailableVolume else {
+                            throw NSError(domain: "OfflinePreparation", code: 2, userInfo: [NSLocalizedDescriptionKey:
+                                "Estimated download exceeds available storage. Pick a smaller area or detail level."])
+                        }
+                    },
+                    start: { plan in
+                        manager.start(
+                            bounds: requestedBounds, preset: preset, baseLayer: baseLayer,
+                            selectedBaseLayers: selectedBaseLayers, includeContours: includeContours,
+                            includeDEM: includeDEM, demResolution: demResolution,
+                            selectionDescription: requestedSelection, aolPlan: plan
+                        )
+                    }
+                )
+            } catch {
+                if !Task.isCancelled {
+                    cacheLimitFeedback = error.localizedDescription
+                    cacheLimitFeedbackIsError = true
+                }
+            }
+        }
+    }
+
     private var selectionDescription: String {
         let area = boundaries.first(where: { $0.id == selectedBoundaryID })?.title ?? "Current visible map"
         let contents = [
@@ -1528,7 +1599,8 @@ struct AppleOfflineMapPreparationView: View {
                             .font(.footnote).foregroundStyle(.secondary)
                         Text(aolPlanMessage).font(.footnote)
                         if aolCatalogFailed {
-                            Button("Retry USGS catalog") { aolCatalogAttempt += 1 }
+                            Button("Retry AOL check") { aolCatalogAttempt += 1 }
+                            Button("Continue without AOL") { includeAOL = false }
                         }
                         if aolWorkingBytes>0 {
                             LabeledContent("AOL temporary-space allowance",value:AppleMapOfflineManager.formatBytes(aolWorkingBytes))
@@ -1705,35 +1777,22 @@ struct AppleOfflineMapPreparationView: View {
                             }
                         } else {
                             Button(manager.progress.failed > 0 ? "Retry" : "Start") {
-                                guard saveCacheLimit(showConfirmation: false) else { return }
-                                manager.start(
-                                    bounds: bounds,
-                                    preset: preset,
-                                    baseLayer: baseLayer,
-                                    selectedBaseLayers: selectedBaseLayers,
-                                    includeContours: includeContours,
-                                    includeDEM: includeDEM,
-                                    demResolution: demResolution,
-                                    selectionDescription: selectionDescription,
-                                    aolPlan: includeAOL ? aolPlan : nil
-                                )
+                                retryDownload()
                                 DispatchQueue.main.async {
                                     withAnimation { proxy.scrollTo(progressSectionID, anchor: .top) }
                                 }
                             }
-                            .disabled(!manager.cacheStatsReady
+                            .disabled(aolCatalogChecking || retryTask != nil || !manager.cacheStatsReady
                                 || (selectedBaseLayers.isEmpty && !includeContours && !includeDEM && !includeAOL)
-                                || (includeAOL && (aolPlan == nil || aolPlan?.bounds != bounds))
                                 || parsedCacheLimitGB == nil
-                                || estimate.tiles > 250_000
-                                || capacity.exceedsCacheLimit
-                                || capacity.exceedsAvailableVolume)
+                                || estimate.tiles > 250_000)
                         }
                     }
                 }
             }
         }
         .task { manager.refreshStats() }
+        .onDisappear { retryTask?.cancel() }
         .onChange(of: manager.isRunning) { wasRunning, running in
             if wasRunning && !running && manager.progress.failed > 0 { showDownloadFailure=true }
         }
@@ -1745,10 +1804,11 @@ struct AppleOfflineMapPreparationView: View {
         .sheet(isPresented: $aolCatalogChecking) {
             VStack(spacing: 20) {
                 ProgressView().controlSize(.large)
-                Text("Checking USGS lidar catalog…").font(.headline)
-                Text("Finding coverage and file sizes for the selected area. Temporary service failures are retried automatically.")
+                Text("Checking download requirements…").font(.headline)
+                Text("Checking coverage, file sizes, and available storage for the selected area. Temporary service failures are retried automatically.")
                     .multilineTextAlignment(.center)
                 Button("Cancel", role: .cancel) {
+                    retryTask?.cancel()
                     includeAOL=false
                     aolCatalogChecking=false
                     aolPlan=nil
