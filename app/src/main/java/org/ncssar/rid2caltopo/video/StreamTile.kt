@@ -1,5 +1,7 @@
 package org.ncssar.rid2caltopo.video
 
+import org.ncssar.rid2caltopo.ui.PanelSettingLabel
+
 import DroneDisplayState
 import StreamsViewModel
 import CenterpointElevationSample
@@ -26,11 +28,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.AlertDialog
+import org.ncssar.rid2caltopo.ui.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DropdownMenu
+import org.ncssar.rid2caltopo.ui.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -62,7 +64,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
+import org.ncssar.rid2caltopo.ui.Dialog
 import androidx.compose.ui.window.DialogProperties
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug
 import androidx.compose.runtime.getValue
@@ -274,6 +276,7 @@ fun StreamTile(
     var showUnmatchDialog by remember { mutableStateOf(false) }
     var pendingPairingWarning by remember { mutableStateOf<StreamTelemetryPairingWarning?>(null) }
     var anomalyMenuExpanded by remember { mutableStateOf(false) }
+    var showPerformance by remember { mutableStateOf(false) }
     var showAnomalySettingsDialog by remember { mutableStateOf(false) }
     var showAdHelpDialog by remember { mutableStateOf(false) }
     var showTakeoffCalibration by remember(streamDesignator) { mutableStateOf(false) }
@@ -589,6 +592,9 @@ fun StreamTile(
         CaltopoClient.ShowToast("No video image available for clue. Please try again when video is visible.")
     }
 
+    if (showPerformance) {
+        StreamPerformanceDialog(viewModel, streamDesignator, onDismiss = { showPerformance = false })
+    }
     Column(
         modifier = Modifier
             .border(
@@ -767,7 +773,9 @@ fun StreamTile(
             streamTileSize.width > 0 &&
             streamTileSize.height > 0
         ) {
-            Canvas(
+            AnomalyGuideBoxes(
+                anomalyConfig = anomalyConfig,
+                frameSize = streamTileSize,
                 modifier = Modifier
                     .then(streamFrameModifier)
                     .graphicsLayer {
@@ -776,37 +784,7 @@ fun StreamTile(
                         translationX = zoomOffset.x
                         translationY = zoomOffset.y
                     }
-            ) {
-                val guideColor = Color(0xFF80CBC4).copy(alpha = 0.70f)
-                val (scanZoneWidth, scanZoneHeight) = anomalyConfig.scanZoneSize(
-                    frameWidth = size.width,
-                    frameHeight = size.height,
-                )
-                val scanZoneTopLeft = Offset(
-                    x = (size.width - scanZoneWidth) * 0.5f,
-                    y = (size.height - scanZoneHeight) * 0.5f,
-                )
-                drawRect(
-                    color = guideColor,
-                    topLeft = scanZoneTopLeft,
-                    size = Size(scanZoneWidth, scanZoneHeight),
-                    style = Stroke(width = 1.5.dp.toPx())
-                )
-                val targetSpanPx = anomalyConfig.effectiveSmallTargetSpanPx(
-                    frameWidth = streamTileSize.width,
-                    frameHeight = streamTileSize.height,
-                ).coerceAtMost(size.minDimension * 0.35f)
-                val topLeft = Offset(
-                    x = (size.width - targetSpanPx) * 0.5f,
-                    y = (size.height - targetSpanPx) * 0.5f,
-                )
-                drawRect(
-                    color = guideColor,
-                    topLeft = topLeft,
-                    size = Size(targetSpanPx, targetSpanPx),
-                    style = Stroke(width = 1.5.dp.toPx())
-                )
-            }
+            )
         }
         Box(
             modifier = Modifier
@@ -951,6 +929,7 @@ fun StreamTile(
                         pauseLocalPlaybackOnOpen = pauseLocalPlaybackOnOpen,
                         onShowSettings = { showAnomalySettingsDialog = true },
                         onShowHelp = { showAdHelpDialog = true },
+                        onShowPerformance = { showPerformance = true },
                         onCloseStream = onCloseStream,
                         onRestartServer = if (!isLocalPlayback) onRestartServer else null,
                         onDismissMenu = { anomalyMenuExpanded = false },
@@ -1122,7 +1101,7 @@ fun StreamTile(
                         pendingPairingWarning = warning
                         showPicker = false
                     } else {
-                        viewModel.bindStreamTelemetry(streamDesignator, droneSpecState.remoteId)
+                        viewModel.pairAndOfferSetup(streamDesignator, droneSpecState.remoteId)
                         showPicker = false
                     }
                 },
@@ -1146,7 +1125,7 @@ fun StreamTile(
                 confirmButton = {
                     TextButton(onClick = {
                         CTDebug(tag, "StreamTile($streamDesignator) Pair Anyway runtime override remoteId=${warning.remoteId}")
-                        viewModel.bindStreamTelemetry(warning.streamDesignator, warning.remoteId)
+                        viewModel.pairAndOfferSetup(warning.streamDesignator, warning.remoteId)
                         pendingPairingWarning = null
                     }) { Text("Pair Anyway") }
                 },
@@ -1189,6 +1168,7 @@ internal fun AnomalySettingsMenuContent(
     pauseLocalPlaybackOnOpen: Boolean,
     onShowSettings: () -> Unit,
     onShowHelp: () -> Unit,
+    onShowPerformance: () -> Unit,
     onCloseStream: (() -> Unit)?,
     onRestartServer: (() -> Unit)?,
     onDismissMenu: () -> Unit,
@@ -1205,6 +1185,13 @@ internal fun AnomalySettingsMenuContent(
         onClick = {
             onDismissMenu()
             onShowHelp()
+        }
+    )
+    DropdownMenuItem(
+        text = { Text("Performance…") },
+        onClick = {
+            onDismissMenu()
+            onShowPerformance()
         }
     )
     if (isLocalPlayback) {
@@ -1320,7 +1307,7 @@ internal fun AnomalySettingsDialogs(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     val selectedMode = anomalyConfig.detectorMode()
-                    Text("AD Mode", style = MaterialTheme.typography.titleSmall)
+                    PanelSettingLabel("AD Mode")
                     Box(modifier = Modifier.fillMaxWidth()) {
                         OutlinedButton(
                             onClick = { modeMenuExpanded = true },
@@ -1354,7 +1341,7 @@ internal fun AnomalySettingsDialogs(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Realtime Defaults")
+                            PanelSettingLabel("Realtime Defaults")
                             TextButton(onClick = {
                                 val defaults = anomalyConfig.resetToRealtimeDefaults()
                                 syncDialogValues(defaults)
@@ -1372,7 +1359,7 @@ internal fun AnomalySettingsDialogs(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("Target Colors")
+                                PanelSettingLabel("Target Colors")
                                 Text(
                                     targetColorFamilySummary(targetColorFamilyMaskValue),
                                     style = MaterialTheme.typography.bodySmall,
@@ -1390,7 +1377,7 @@ internal fun AnomalySettingsDialogs(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Motion")
+                        PanelSettingLabel("Motion")
                         TextButton(onClick = {
                             viewModel.toggleAnomalyAlgorithm(streamDesignator, AnomalyAlgorithm.Motion)
                         }) {
@@ -1402,7 +1389,7 @@ internal fun AnomalySettingsDialogs(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Saliency")
+                        PanelSettingLabel("Saliency")
                         TextButton(onClick = { viewModel.toggleSaliencyEnabled(streamDesignator) }) {
                             Text(if (anomalyConfig.saliencyEnabled) "On" else "Off")
                         }
@@ -1412,7 +1399,7 @@ internal fun AnomalySettingsDialogs(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Show Guide Boxes")
+                        PanelSettingLabel("Show Guide Boxes")
                         TextButton(onClick = { viewModel.toggleShowGuideBoxes(streamDesignator) }) {
                             Text(if (anomalyConfig.showGuideBoxes) "On" else "Off")
                         }
@@ -1423,7 +1410,7 @@ internal fun AnomalySettingsDialogs(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Show Hottest Region")
+                            PanelSettingLabel("Show Hottest Region")
                             TextButton(onClick = { viewModel.toggleShowHotOverlay(streamDesignator) }) {
                                 Text(if (anomalyConfig.showHotOverlay) "On" else "Off")
                             }
@@ -1434,7 +1421,7 @@ internal fun AnomalySettingsDialogs(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Show Candidate Blobs")
+                        PanelSettingLabel("Show Candidate Blobs")
                         TextButton(onClick = { viewModel.toggleShowCandidateBlobs(streamDesignator) }) {
                             Text(if (anomalyConfig.showCandidateBlobs) "On" else "Off")
                         }
@@ -1444,7 +1431,7 @@ internal fun AnomalySettingsDialogs(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Troubleshooting Debug")
+                        PanelSettingLabel("Troubleshooting Debug")
                         TextButton(onClick = { viewModel.toggleAnomalyTroubleshootingDebug(streamDesignator) }) {
                             Text(if (anomalyConfig.troubleshootingDebug) "On" else "Off")
                         }
@@ -1457,7 +1444,7 @@ internal fun AnomalySettingsDialogs(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text("Person Relevance")
+                            PanelSettingLabel("Person Relevance")
                         }
                         SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                             PersonRelevanceMode.entries.forEachIndexed { index, mode ->
@@ -1491,7 +1478,7 @@ internal fun AnomalySettingsDialogs(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Registration")
+                        PanelSettingLabel("Registration")
                         TextButton(onClick = { viewModel.cycleAnomalyRegistrationMode(streamDesignator) }) {
                             Text(anomalyConfig.registrationMode.label)
                         }
@@ -1500,7 +1487,7 @@ internal fun AnomalySettingsDialogs(
                         modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Text("Movement Estimator")
+                        PanelSettingLabel("Movement Estimator")
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1543,19 +1530,19 @@ internal fun AnomalySettingsDialogs(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Infrared Palette")
+                            PanelSettingLabel("Infrared Palette")
                             TextButton(onClick = { viewModel.cycleAnomalyThermalPolarity(streamDesignator) }) {
                                 Text(anomalyConfig.thermalPolarity.label)
                             }
                         }
                     }
-                    Text("Sensitivity ${((sensitivityValue * 100f).toInt())}%")
+                    PanelSettingLabel("Sensitivity ${((sensitivityValue * 100f).toInt())}%", helpKey = "Sensitivity", centered = true)
                     Slider(value = sensitivityValue, onValueChange = { sensitivityValue = it }, valueRange = 0f..1f)
-                    Text("Motion Evidence ${((motionEvidenceSensitivityValue * 100f).toInt())}%")
+                    PanelSettingLabel("Motion Evidence ${((motionEvidenceSensitivityValue * 100f).toInt())}%", helpKey = "Motion Evidence", centered = true)
                     Slider(value = motionEvidenceSensitivityValue, onValueChange = { motionEvidenceSensitivityValue = it }, valueRange = 0f..1f)
-                    Text("Scan Zone ${((scanZoneValue * 100f).toInt())}%")
+                    PanelSettingLabel("Scan Zone ${((scanZoneValue * 100f).toInt())}%", helpKey = "Scan Zone", centered = true)
                     Slider(value = scanZoneValue, onValueChange = { scanZoneValue = it }, valueRange = 0.5f..1f)
-                    Text("Min Hits $minHitsValue")
+                    PanelSettingLabel("Min Hits $minHitsValue", helpKey = "Min Hits", centered = true)
                     Slider(
                         value = minHitsValue.toFloat(),
                         onValueChange = { minHitsValue = it.toInt().coerceIn(1, 5) },
@@ -1565,7 +1552,7 @@ internal fun AnomalySettingsDialogs(
                     if (selectedMode == AnomalyDetectorMode.ColorUniqueness ||
                         selectedMode == AnomalyDetectorMode.TargetColors
                     ) {
-                        Text("Color Candidates $colorTargetCandidateLimitValue")
+                        PanelSettingLabel("Color Candidates $colorTargetCandidateLimitValue", helpKey = "Color Candidates", centered = true)
                         Slider(
                             value = colorTargetCandidateLimitValue.toFloat(),
                             onValueChange = { colorTargetCandidateLimitValue = it.toInt().coerceIn(1, 4) },
@@ -1573,7 +1560,7 @@ internal fun AnomalySettingsDialogs(
                             steps = 2
                         )
                     }
-                    Text("Frame Stride ${frameStrideValue}x")
+                    PanelSettingLabel("Frame Stride ${frameStrideValue}x", helpKey = "Frame Stride", centered = true)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1600,21 +1587,21 @@ internal fun AnomalySettingsDialogs(
                         steps = 31
                     )
                     if (anomalyConfig.strideMode == AnomalyStrideMode.Adaptive) {
-                        Text("Adaptive Min ${adaptiveMinStrideValue} frames")
+                        PanelSettingLabel("Adaptive Min ${adaptiveMinStrideValue} frames", helpKey = "Adaptive Minimum", centered = true)
                         Slider(
                             value = adaptiveMinStrideValue.toFloat(),
                             onValueChange = { adaptiveMinStrideValue = it.toInt().coerceIn(2, 33) },
                             valueRange = 2f..33f,
                             steps = 30
                         )
-                        Text("Adaptive Max ${"%.1f".format(adaptiveMaxStrideSecondsValue)}s")
+                        PanelSettingLabel("Adaptive Max ${"%.1f".format(adaptiveMaxStrideSecondsValue)}s", helpKey = "Adaptive Maximum", centered = true)
                         Slider(
                             value = adaptiveMaxStrideSecondsValue,
                             onValueChange = { adaptiveMaxStrideSecondsValue = it.coerceIn(0.1f, 10.0f) },
                             valueRange = 0.1f..10.0f,
                         )
                     }
-                    Text(if (pixelStepValue <= 0) "Detail Auto" else "Detail ${pixelStepValue}px step")
+                    PanelSettingLabel(if (pixelStepValue <= 0) "Detail Auto" else "Detail ${pixelStepValue}px step", helpKey = "Detail", centered = true)
                     Slider(
                         value = pixelStepValue.toFloat(),
                         onValueChange = { pixelStepValue = it.toInt().coerceIn(0, 4) },
@@ -1622,7 +1609,7 @@ internal fun AnomalySettingsDialogs(
                         steps = 3
                     )
                     if (selectedMode == AnomalyDetectorMode.Infrared) {
-                        Text("Thermal Min Delta ${"%.1f".format(thermalMinDeltaValue)}")
+                        PanelSettingLabel("Thermal Min Delta ${"%.1f".format(thermalMinDeltaValue)}", helpKey = "Thermal Min Delta", centered = true)
                         Slider(
                             value = thermalMinDeltaValue,
                             onValueChange = { thermalMinDeltaValue = it },
@@ -1631,7 +1618,7 @@ internal fun AnomalySettingsDialogs(
                     }
                     val smallTargetDenominator =
                         (1.0f / smallTargetFractionValue.coerceIn(0.0015f, 0.03f)).roundToInt()
-                    Text("Small Target Scale 1/$smallTargetDenominator screen diagonal")
+                    PanelSettingLabel("Small Target Scale 1/$smallTargetDenominator screen diagonal", helpKey = "Small Target Scale", centered = true)
                     Slider(value = smallTargetFractionValue, onValueChange = { smallTargetFractionValue = it }, valueRange = 0.0015f..0.03f)
                     Box(
                         modifier = Modifier
@@ -2332,4 +2319,44 @@ internal fun VideoSafetyNotice() {
         style = MaterialTheme.typography.labelMedium,
         fontWeight = FontWeight.Bold
     )
+}
+
+/** Shared guides for decoded video and the waiting-for-controller preview. */
+@Composable
+internal fun AnomalyGuideBoxes(
+    anomalyConfig: AnomalyConfig,
+    frameSize: IntSize,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier) {
+        val guideColor = Color(0xFF80CBC4).copy(alpha = 0.70f)
+        val (scanZoneWidth, scanZoneHeight) = anomalyConfig.scanZoneSize(
+            frameWidth = size.width,
+            frameHeight = size.height,
+        )
+        val scanZoneTopLeft = Offset(
+            x = (size.width - scanZoneWidth) * 0.5f,
+            y = (size.height - scanZoneHeight) * 0.5f,
+        )
+        drawRect(
+            color = guideColor,
+            topLeft = scanZoneTopLeft,
+            size = Size(scanZoneWidth, scanZoneHeight),
+            style = Stroke(width = 1.5.dp.toPx())
+        )
+        val targetSpanPx = anomalyConfig.effectiveSmallTargetSpanPx(
+            frameWidth = frameSize.width,
+            frameHeight = frameSize.height,
+        ).coerceAtMost(size.minDimension * 0.35f)
+        val topLeft = Offset(
+            x = (size.width - targetSpanPx) * 0.5f,
+            y = (size.height - targetSpanPx) * 0.5f,
+        )
+        drawRect(
+            color = guideColor,
+            topLeft = topLeft,
+            size = Size(targetSpanPx, targetSpanPx),
+            style = Stroke(width = 1.5.dp.toPx())
+        )
+    }
 }

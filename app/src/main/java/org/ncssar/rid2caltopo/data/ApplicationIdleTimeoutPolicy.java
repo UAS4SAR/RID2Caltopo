@@ -42,11 +42,19 @@ public final class ApplicationIdleTimeoutPolicy {
             long lastProtectedActivityAtMsec,
             long maximumIdleMinutes,
             long nowMsec) {
+        return remainingDelayMsec(appStartedAtMsec, lastRidMessageAtMsec,
+                lastProtectedActivityAtMsec, 0L, maximumIdleMinutes, nowMsec);
+    }
+
+    public static long remainingDelayMsec(
+            long appStartedAtMsec, long lastRidMessageAtMsec,
+            long lastProtectedActivityAtMsec, long lastUserInteractionAtMsec,
+            long maximumIdleMinutes, long nowMsec) {
         if (maximumIdleMinutes <= 0) return DISABLED;
 
         long timeoutMsec = TimeUnit.MINUTES.toMillis(maximumIdleMinutes);
         long baselineMsec = Math.max(
-                appStartedAtMsec,
+                Math.max(appStartedAtMsec, lastUserInteractionAtMsec),
                 Math.max(lastRidMessageAtMsec, lastProtectedActivityAtMsec));
         long elapsedMsec = Math.max(0L, nowMsec - baselineMsec);
         return Math.max(0L, timeoutMsec - elapsedMsec);

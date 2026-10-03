@@ -24,6 +24,7 @@ class R2CApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        UserInteractionTracker.install(this)
         // The personal-login experiment has a separate cookie store and must not
         // start a second Tracker, scanner, or operational application session.
         if (Application.getProcessName().endsWith(":caltopo_probe")) {

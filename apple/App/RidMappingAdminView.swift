@@ -7,6 +7,7 @@ import VisionKit
 enum AppleAircraftOrganizationAccess {
     static var operatingAssignment = OperatingProfileAssignment()
     static var operatingIncidentID = ""
+    private static var resetGeneration = 0
     private static var authorizedToken = ""
     private static var expires = Date.distantPast
     private static var verifiedToken = ""
@@ -15,6 +16,16 @@ enum AppleAircraftOrganizationAccess {
     private static var accessMessage = "Account has not been verified. Refresh access while online."
     private static var messageToken = ""
     private static var messageScope = ""
+    static func resetRuntimeState() {
+        resetGeneration += 1
+        authorizedToken = ""; expires = .distantPast
+        verifiedToken = ""; verifiedScope = ""; username = ""
+        messageToken = ""; messageScope = ""
+        accessMessage = "Account has not been verified. Refresh access while online."
+        operatingAssignment = OperatingProfileAssignment()
+        operatingIncidentID = ""
+        NotificationCenter.default.post(name: Notification.Name("aircraftReadinessUpdated"), object: nil)
+    }
     static var accessStatus: String {
         guard belongsToOrganization else { return "Local aircraft entries. No organization account is signed in." }
         guard messageToken == AppleOrgConfigSettings.loadTrackerAPIKey(), messageScope == scope else {
@@ -38,7 +49,21 @@ enum AppleAircraftOrganizationAccess {
     static func requireEdit() throws {
         guard canEdit else { throw AppleTrackerEnrollmentClient.EnrollmentError.server("Organization aircraft changes require current config_admin authorization. Refresh RID Map Entries while online.") }
     }
+    private static var refreshInProgress = false
+    private static var refreshWaiters: [CheckedContinuation<Void, Never>] = []
     static func refresh(baseURL: String) async -> Bool {
+        while refreshInProgress {
+            await withCheckedContinuation { refreshWaiters.append($0) }
+        }
+        guard !Task.isCancelled, baseURL == scope else { return false }
+        let generation = resetGeneration
+        refreshInProgress = true
+        defer {
+            refreshInProgress = false
+            let waiters = refreshWaiters
+            refreshWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+        }
         authorizedToken = ""; expires = .distantPast
         username = ""
         defer { NotificationCenter.default.post(name: Notification.Name("aircraftReadinessUpdated"), object: nil) }
@@ -56,12 +81,13 @@ enum AppleAircraftOrganizationAccess {
         request.timeoutInterval = 20
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard token == AppleOrgConfigSettings.loadTrackerAPIKey(), baseURL == scope else { return false }
+            guard generation == resetGeneration, token == AppleOrgConfigSettings.loadTrackerAPIKey(), baseURL == scope else { return false }
             if [401, 403].contains((response as? HTTPURLResponse)?.statusCode ?? 0) {
                 UserDefaults.standard.removeObject(forKey: "readiness:" + baseURL)
                 NotificationCenter.default.post(name: Notification.Name("aircraftReadinessUpdated"), object: nil)
             }
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            AppleLog.info("OrganizationAccess", "Tracker account verification HTTP \(status)")
             guard status == 200 else {
                 accessMessage = [401, 403].contains(status)
                     ? "Tracker could not verify this tablet's enrollment (HTTP \(status)). Re-enroll using the current organization QR and sign in."
@@ -74,6 +100,7 @@ enum AppleAircraftOrganizationAccess {
             }
             verifiedToken = token; verifiedScope = baseURL
             username = value["username"] as? String ?? ""
+            AppleLog.info("OrganizationAccess", "Tracker account verification completed; identityPresent=\(!username.isEmpty)")
             UserDefaults.standard.set(data, forKey: "readiness:" + baseURL)
             NotificationCenter.default.post(name: Notification.Name("aircraftReadinessUpdated"), object: nil)
             guard value["canEditAircraft"] as? Bool == true else {
@@ -84,7 +111,9 @@ enum AppleAircraftOrganizationAccess {
             authorizedToken = token; expires = Date().addingTimeInterval(300)
             return canEdit
         } catch {
-            if token == AppleOrgConfigSettings.loadTrackerAPIKey(), baseURL == scope {
+            let diagnostic = error as NSError
+            AppleLog.warning("OrganizationAccess", "Tracker account verification failed; domain=\(diagnostic.domain) code=\(diagnostic.code)")
+            if generation == resetGeneration, token == AppleOrgConfigSettings.loadTrackerAPIKey(), baseURL == scope {
                 accessMessage = error is URLError
                     ? "Unable to reach Tracker to verify your account. Check your connection and try Refresh access again."
                     : "Tracker account verification could not be completed. Try Refresh access again."

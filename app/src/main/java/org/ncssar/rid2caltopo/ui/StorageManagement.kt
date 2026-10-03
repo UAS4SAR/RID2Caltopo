@@ -1,5 +1,7 @@
 package org.ncssar.rid2caltopo.ui
 
+import org.ncssar.rid2caltopo.ui.AlertDialog
+
 import android.content.Intent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*

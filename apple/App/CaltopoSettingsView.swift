@@ -1,3 +1,4 @@
+import WebKit
 import Foundation
 import R2CCore
 import Security
@@ -15,6 +16,7 @@ struct CaltopoSettingsView: View {
     @ObservedObject var proximityAlerts: AppleProximityAlertCenter
     @ObservedObject var bridgeAlerts: AppleDroneScoutBridgeAlertCenter
     let iCloudBackup: AppleICloudBackupCenter
+    var startAtProximity = false
     let onSave: (AppleCaltopoConfiguration) -> Void
     @ObservedObject private var notams = AppleNotamCenter.shared
     @ObservedObject private var airspace = AppleAirspaceCenter.shared
@@ -33,6 +35,7 @@ struct CaltopoSettingsView: View {
     @State private var showingTeamMaps = false
 
     var body: some View {
+        ScrollViewReader { scroll in
         Form {
             Section("Administration") {
                 NavigationLink {
@@ -50,7 +53,7 @@ struct CaltopoSettingsView: View {
                     .font(.footnote)
             }
             Section("Organization and operational defaults") {
-                TextField(
+                SettingsTextField(
                     "Organization designator",
                     text: Binding(
                         get: { orgSettings.organizationName },
@@ -59,117 +62,105 @@ struct CaltopoSettingsView: View {
                 )
                 .textInputAutocapitalization(.characters)
                 .autocorrectionDisabled()
-                TextField(
+                SettingsTextField(
                     "CalTopo track folder",
                     text: Binding(
                         get: { orgSettings.trackFolder },
                         set: { orgSettings.setTrackFolder($0) }
                     )
                 )
-                TextField(
+                SettingsTextField(
                     "Incident",
                     text: Binding(
                         get: { orgSettings.incident },
                         set: { orgSettings.setIncident($0) }
                     )
                 )
-                TextField(
+                SettingsTextField(
                     "Operational period",
                     text: Binding(
                         get: { orgSettings.operationalPeriod },
                         set: { orgSettings.setOperationalPeriod($0) }
                     )
                 )
-                Text("These are the same organization, track_folder, incident, and op_period values accepted by organization JSON.")
+                Text("Defaults used for this organization and operation. Tap a field title for help.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             Section("CalTopo Teams account") {
-                AppleScannableTextField(
+                SettingsScannableTextField(
                     title: "Team ID",
                     text: $settings.teamID,
                     mode: .credential
                 )
-                AppleScannableTextField(
+                SettingsScannableTextField(
                     title: "Credential ID",
                     text: $settings.credentialID,
                     mode: .credential
                 )
-                AppleScannableTextField(
+                SettingsScannableTextField(
                     title: "Credential secret",
                     text: $settings.credentialSecret,
                     mode: .credential,
                     secure: true
                 )
-                AppleScannableTextField(
+                SettingsScannableTextField(
                     title: "Connect Key",
                     text: $settings.connectKey,
                     mode: .credential
                 )
-                Text("Enter the CalTopo team ID, credential ID, and credential secret tuple. The secret is stored in Apple Keychain when the configuration is saved or the map browser is opened.")
+                Text("Optional: enter these three values together for CalTopo Teams API access. Personal sign-in does not need them. The credential secret is stored securely in Keychain.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             AppleTrackerConfigurationSection(settings: orgSettings)
-            AppleMutualAidTupleSection(settings: orgSettings)
             Section("Incident map") {
                 if settings.mapID.isEmpty {
                     Label("No CalTopo map selected", systemImage: "map")
                         .foregroundStyle(.secondary)
                 } else {
-                    LabeledContent("Connected Map", value: settings.mapTitle.isEmpty ? settings.mapID : settings.mapTitle)
-                    LabeledContent("Map ID", value: settings.mapID)
+                    SettingsValue("Connected Map", value: settings.mapTitle.isEmpty ? settings.mapID : settings.mapTitle)
+                    SettingsValue("Map ID", value: settings.mapID)
                 }
                 Button {
+                    if settings.teamID.isEmpty || settings.credentialID.isEmpty || settings.credentialSecret.isEmpty {
+                        settings.usesPersonalCredentials = true
+                    }
                     onSave(settings.save())
                     showingTeamMaps = true
                 } label: {
                     Label(settings.mapID.isEmpty ? "Connect to CalTopo Map" : "Switch CalTopo Map", systemImage: "map.fill")
                         .font(.headline)
                 }
-                .disabled(settings.teamID.isEmpty || settings.credentialID.isEmpty || settings.credentialSecret.isEmpty)
                 if settings.teamID.isEmpty || settings.credentialID.isEmpty || settings.credentialSecret.isEmpty {
-                    Text("Enter the CalTopo Teams account tuple above before browsing incident maps.")
+                    Text("Personal sign-in lets you browse and publish to maps you can access. Teams credentials are optional.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
-            Section("CalTopo profiles") {
-                LabeledContent(
-                    "Active profile",
-                    value: profileLifecycle.activeProfileID.isEmpty
-                        ? "Not selected"
-                        : profileLifecycle.activeProfileID
-                )
-                if let name = profileLifecycle.mutualAidDisplayName {
-                    LabeledContent("Mutual aid", value: name)
-                    if let expiresAt = profileLifecycle.mutualAidExpiresAt {
-                        LabeledContent("Expires", value: expiresAt.formatted(date: .abbreviated, time: .shortened))
-                    }
-                } else {
-                    Text("No mutual-aid profile installed")
-                        .foregroundStyle(.secondary)
-                }
-                Text("Home credentials are preserved securely in Keychain. Imported mutual-aid access is removed at expiry and the app falls back to the home profile, matching Android.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+            Section("CalTopo access") {
+                SettingsValue("Active profile", value: settings.usesPersonalCredentials
+                    ? "Personal: \(settings.personalUsername.isEmpty ? "Sign in" : settings.personalUsername)"
+                    : (settings.credentialID.isEmpty ? "No Teams credentials" : "Teams"))
+                Text("Use personal sign-in or a Teams profile to access a map. Selecting credentials does not select a destination map.")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
             Section("Publishing") {
-                Toggle("Enable live CalTopo publishing", isOn: $settings.enabled)
-                TextField("Domain", text: $settings.domainAndPort)
+                SettingsToggle("Enable live CalTopo publishing", isOn: $settings.enabled)
+                SettingsTextField("Domain", text: $settings.domainAndPort)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                TextField("Map ID", text: $settings.mapID)
+                SettingsTextField("Map ID", text: $settings.mapID)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
             }
             Section("This device") {
                 if managedDeviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    TextField("Device Name", text: $deviceName)
+                    SettingsTextField("Device Name", text: $deviceName)
                         .textInputAutocapitalization(.words)
                         .autocorrectionDisabled()
                 } else {
-                    LabeledContent("Device Name", value: managedDeviceName)
+                    SettingsValue("Device Name", value: managedDeviceName)
                 }
                 Text(managedDeviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     ? "Used for this device's R2C map marker, Map Folders item, tracker identity, and local track metadata."
@@ -178,20 +169,20 @@ struct CaltopoSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("Video Streams") {
-                Toggle("Restrict media server access", isOn: $restrictMediaServerAccess)
+                SettingsToggle("Restrict media server access", isOn: $restrictMediaServerAccess)
                 Text("Accept controller RTMP streams while blocking direct media-server viewing from other devices. Playback and recording on this tablet and authorized R2C sharing remain available. Turn off only for trusted local viewers. Changing this setting restarts video.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                Toggle("Capture Streams", isOn: $captureStreams)
+                SettingsToggle("Capture Streams", isOn: $captureStreams)
                 Text("When enabled, incoming streams are recorded as fMP4 under Files > RID2Caltopo > FlightStorage. Changing this setting restarts the local media server.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                Toggle("Remote Video Control", isOn: $remoteVideoControlEnabled)
+                SettingsToggle("Remote Video Control", isOn: $remoteVideoControlEnabled)
                 Text("When enabled, an authenticated requester chooses video quality after the link test without a per-request approval prompt. Only one viewer can use this iPad at a time.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Stepper {
-                    LabeledContent(
+                    SettingsValue(
                         "Thumbnail & LiveTrack update interval",
                         value: "\(OperationalThumbnailRefreshInterval.formatted(thumbnailRefreshSeconds)) seconds"
                     )
@@ -209,7 +200,7 @@ struct CaltopoSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("Bridge warnings") {
-                Toggle("Bridge audio warnings", isOn: Binding(
+                SettingsToggle("Bridge audio warnings", isOn: Binding(
                     get: { !bridgeAlerts.audioMuted },
                     set: { bridgeAlerts.setAudioMuted(!$0) }
                 ))
@@ -218,7 +209,7 @@ struct CaltopoSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("Traffic safety") {
-                Toggle(
+                SettingsToggle(
                     "Use tracker peers",
                     isOn: Binding(
                         get: { orgSettings.usePeers },
@@ -228,7 +219,9 @@ struct CaltopoSettingsView: View {
                 Text("Standalone flights stay independent. Live aircraft coordination requires an incident map. Organization access and archive uploads remain available.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                Toggle(
+            }
+            Section("Proximity Alerts") {
+                SettingsToggle(
                     "Proximity alerts: \(proximityAlerts.status)",
                     isOn: Binding(get: { proximityAlerts.consent.enabled }, set: { enabled in
                         if enabled { proximityAlerts.requestEnable() } else { proximityAlerts.disable() }
@@ -236,11 +229,11 @@ struct CaltopoSettingsView: View {
                 )
                 Text("Optional alerts based on received telemetry. No alert does not mean the airspace is clear.")
                     .font(.footnote).foregroundStyle(.secondary)
-                Toggle("Alert scope: \(proximityAlerts.alertAllAircraft ? "All aircraft" : "Published only")",
+                SettingsToggle("Alert scope: \(proximityAlerts.alertAllAircraft ? "All aircraft" : "Published only")",
                     isOn: Binding(get: { proximityAlerts.alertAllAircraft }, set: { proximityAlerts.setAlertAllAircraft($0) }))
                 Text("Published only: pairs involving an aircraft claimed by this tablet. All aircraft: any received pair, including ignored or unconfirmed flights. This does not change recording or publishing.")
                     .font(.footnote).foregroundStyle(.secondary)
-                Stepper(
+                SettingsStepper(
                     "Proximity spacing: \(orgSettings.proximityAlertSpacingFeet) ft",
                     value: Binding(
                         get: { orgSettings.proximityAlertSpacingFeet },
@@ -248,7 +241,10 @@ struct CaltopoSettingsView: View {
                     ),
                     in: 50 ... 1_000
                 )
-                Stepper(
+            }
+            .id("proximity-settings")
+            Section("Tracking and device") {
+                SettingsStepper(
                     "Min Dist: \(orgSettings.minimumTrackDistanceFeet) ft",
                     value: Binding(
                         get: { orgSettings.minimumTrackDistanceFeet },
@@ -256,7 +252,7 @@ struct CaltopoSettingsView: View {
                     ),
                     in: 2 ... 1_000
                 )
-                Stepper(
+                SettingsStepper(
                     "New Track Delay: \(orgSettings.newTrackDelaySeconds) s",
                     value: Binding(
                         get: { orgSettings.newTrackDelaySeconds },
@@ -264,7 +260,7 @@ struct CaltopoSettingsView: View {
                     ),
                     in: 1 ... 600
                 )
-                Picker("Minimum Location Accuracy", selection: $minimumHorizontalAccuracyCode) {
+                SettingsPicker("Minimum Location Accuracy", selection: $minimumHorizontalAccuracyCode) {
                     Text("30 m").tag(9)
                     Text("10 m").tag(10)
                     Text("3 m").tag(11)
@@ -274,7 +270,7 @@ struct CaltopoSettingsView: View {
                 Text("RID positions less accurate than this threshold remain signal-only and are not added to the track.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                Stepper(
+                SettingsStepper(
                     "Bridge Check Distance: \(orgSettings.bridgeCheckDistanceFeet) ft",
                     value: Binding(
                         get: { orgSettings.bridgeCheckDistanceFeet },
@@ -282,19 +278,19 @@ struct CaltopoSettingsView: View {
                     ),
                     in: 1 ... 1_000
                 )
-                Stepper(
-                    "Max RID Idle Time: \(orgSettings.maximumIdleMinutes) min",
+                SettingsStepper(
+                    "Max Idle Time: \(orgSettings.maximumIdleMinutes) min",
                     value: Binding(
                         get: { orgSettings.maximumIdleMinutes },
                         set: { orgSettings.setMaximumIdleMinutes($0) }
                     ),
                     in: 0 ... 1_440
                 )
-                Text("Track filtering, loss timing, bridge distance, proximity spacing, and maximum RID idle time use the same operator-adjustable controls as Android. Set Max RID Idle Time to 0 to disable automatic closing.")
+                Text("Track filtering, loss timing, bridge distance, proximity spacing, and maximum idle time use the same operator-adjustable controls as Android. RID messages and user interaction reset the idle timer. Set Max Idle Time to 0 to disable automatic closing.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 VStack(alignment: .leading) {
-                    Text("Audio Alarm Volume: \(spokenWarnings.volumePercent)%")
+                    SettingsHelpLabel("Audio Alarm Volume: \(spokenWarnings.volumePercent)%")
                     Slider(
                         value: Binding(
                             get: { Double(spokenWarnings.volumePercent) },
@@ -310,27 +306,27 @@ struct CaltopoSettingsView: View {
                 }
             }
             Section("NOTAM / TFR") {
-                Toggle("Enable FAA Facility Map / LAANC lookup", isOn: $airspace.enabled)
-                Toggle("Refresh controlled airspace automatically", isOn: $airspace.autoRefresh)
+                SettingsToggle("Enable FAA Facility Map / LAANC lookup", isOn: $airspace.enabled)
+                SettingsToggle("Refresh controlled airspace automatically", isOn: $airspace.autoRefresh)
                     .disabled(!airspace.enabled)
-                Toggle("Enable nearby NOTAM / TFR monitoring", isOn: $notams.enabled)
-                Toggle("Show NOTAMs on map", isOn: $notams.showOnMap)
+                SettingsToggle("Enable nearby NOTAM / TFR monitoring", isOn: $notams.enabled)
+                SettingsToggle("Show NOTAMs on map", isOn: $notams.showOnMap)
                     .disabled(!notams.enabled)
-                Toggle("Refresh automatically", isOn: $notams.autoRefresh)
+                SettingsToggle("Refresh automatically", isOn: $notams.autoRefresh)
                     .disabled(!notams.enabled)
-                Stepper(
+                SettingsStepper(
                     "NOTAM radius: \(notams.radiusStatuteMiles) statute " +
                         (notams.radiusStatuteMiles == 1 ? "mile" : "miles"),
                     value: $notams.radiusStatuteMiles,
                     in: 1 ... 100
                 )
                     .disabled(!notams.enabled)
-                Picker("Refresh interval", selection: $notams.refreshIntervalSeconds) {
+                SettingsPicker("Refresh interval", selection: $notams.refreshIntervalSeconds) {
                     Text("30 minutes").tag(1_800)
                     Text("60 minutes").tag(3_600)
                 }
                 .disabled(!notams.enabled || !notams.autoRefresh)
-                LabeledContent(
+                SettingsValue(
                     "FAA proxy",
                     value: orgSettings.hasNotamAdminConfiguration
                         ? "Organization configured"
@@ -341,12 +337,12 @@ struct CaltopoSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("Land / agency restrictions") {
-                Toggle("Enable protected-land checks", isOn: $landRestrictions.enabled)
-                Toggle("Show protected lands on map", isOn: $landRestrictions.showOnMap)
+                SettingsToggle("Enable protected-land checks", isOn: $landRestrictions.enabled)
+                SettingsToggle("Show protected lands on map", isOn: $landRestrictions.showOnMap)
                     .disabled(!landRestrictions.enabled)
-                Toggle("Refresh protected lands automatically", isOn: $landRestrictions.autoRefresh)
+                SettingsToggle("Refresh protected lands automatically", isOn: $landRestrictions.autoRefresh)
                     .disabled(!landRestrictions.enabled)
-                Stepper(
+                SettingsStepper(
                     "Boundary query radius: \(landRestrictions.radiusStatuteMiles) statute " +
                         (landRestrictions.radiusStatuteMiles == 1 ? "mile" : "miles"),
                     value: $landRestrictions.radiusStatuteMiles,
@@ -358,18 +354,18 @@ struct CaltopoSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("External display") {
-                Picker("Mode", selection: $externalDisplay.mode) {
+                SettingsPicker("Mode", selection: $externalDisplay.mode) {
                     ForEach(AppleExternalDisplayMode.allCases) { mode in Text(mode.label).tag(mode.rawValue) }
                 }
-                Picker("Content", selection: $externalDisplay.content) {
+                SettingsPicker("Content", selection: $externalDisplay.content) {
                     ForEach(AppleExternalDisplayContent.allCases) { content in Text(content.label).tag(content.rawValue) }
                 }
                 .disabled(externalDisplay.mode != AppleExternalDisplayMode.appManaged.rawValue)
-                Picker("Alert routing", selection: $externalDisplay.alertRouting) {
+                SettingsPicker("Alert routing", selection: $externalDisplay.alertRouting) {
                     ForEach(AppleExternalAlertRouting.allCases) { routing in Text(routing.label).tag(routing.rawValue) }
                 }
-                Toggle("Open automatically when connected", isOn: $externalDisplay.autoOpen)
-                Toggle("Allow interaction", isOn: $externalDisplay.allowInteraction)
+                SettingsToggle("Open automatically when connected", isOn: $externalDisplay.autoOpen)
+                SettingsToggle("Allow interaction", isOn: $externalDisplay.allowInteraction)
                     .disabled(externalDisplay.mode != AppleExternalDisplayMode.appManaged.rawValue)
                 Text("OS mirroring uses the system display controls. App-managed mode presents the selected streams/map layout independently on an attached display.")
                     .font(.footnote).foregroundStyle(.secondary)
@@ -408,6 +404,14 @@ struct CaltopoSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+        }
+        .task {
+            guard startAtProximity else { return }
+            // Form creates its rows lazily; wait for the sheet's initial layout.
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
+            scroll.scrollTo("proximity-settings", anchor: .top)
+        }
         }
         .navigationTitle("Settings")
         .alert(RidProximityConsent.title, isPresented: Binding(
@@ -451,10 +455,10 @@ private struct AppleTrackerConfigurationSection: View {
 
     var body: some View {
         Section("Tracker coordination") {
-            TextField("Tracker URL", text: $trackerURL)
+            SettingsTextField("Tracker URL", text: $trackerURL)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-            AppleScannableTextField(
+            SettingsScannableTextField(
                 title: "Tracker API key",
                 text: $trackerAPIKey,
                 mode: .credential,
@@ -472,87 +476,6 @@ private struct AppleTrackerConfigurationSection: View {
                 }
             }
             Text("Manual tracker values configure coordination only. Saving them clears the managed FAA-proxy association; import the r2c-tracker organization QR again to restore FAA proxy access.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            if !status.isEmpty {
-                Text(status)
-                    .font(.footnote)
-                    .foregroundStyle(status.hasPrefix("Unable") ? .red : .secondary)
-            }
-        }
-    }
-}
-
-private struct AppleMutualAidTupleSection: View {
-    @ObservedObject var settings: AppleOrgConfigSettings
-    @State private var teamID: String
-    @State private var credentialID: String
-    @State private var credentialSecret: String
-    @State private var domainAndPort: String
-    @State private var sourceLabel: String
-    @State private var targetFolderHint: String
-    @State private var connectKey: String
-    @State private var status = ""
-
-    init(settings: AppleOrgConfigSettings) {
-        self.settings = settings
-        let template = settings.mutualAidTemplate
-        _teamID = State(initialValue: template?.teamID ?? "")
-        _credentialID = State(initialValue: template?.credentialID ?? "")
-        _credentialSecret = State(initialValue: template?.credentialSecret ?? "")
-        _domainAndPort = State(initialValue: template?.domainAndPort ?? "caltopo.com")
-        _sourceLabel = State(initialValue: template?.sourceLabel ?? settings.organizationName)
-        _targetFolderHint = State(initialValue: template?.targetFolderHint ?? "MAI")
-        _connectKey = State(initialValue: template?.connectKey ?? "")
-    }
-
-    var body: some View {
-        Section("Mutual Aid Account") {
-            AppleScannableTextField(
-                title: "Team ID",
-                text: $teamID,
-                mode: .credential
-            )
-            AppleScannableTextField(
-                title: "Credential ID",
-                text: $credentialID,
-                mode: .credential
-            )
-            AppleScannableTextField(
-                title: "Credential secret",
-                text: $credentialSecret,
-                mode: .credential,
-                secure: true
-            )
-            TextField("Domain and port", text: $domainAndPort)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            TextField("Connect Key", text: $connectKey)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            TextField("Source organization label", text: $sourceLabel)
-            TextField("Target folder hint", text: $targetFolderHint)
-            Button("Save Mutual Aid Account") {
-                do {
-                    try settings.apply(mutualAidTemplate: .init(
-                        teamID: teamID.trimmingCharacters(in: .whitespacesAndNewlines),
-                        credentialID: credentialID.trimmingCharacters(in: .whitespacesAndNewlines),
-                        credentialSecret: credentialSecret.trimmingCharacters(in: .whitespacesAndNewlines),
-                        domainAndPort: domainAndPort.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            ? "caltopo.com"
-                            : domainAndPort.trimmingCharacters(in: .whitespacesAndNewlines),
-                        sourceLabel: sourceLabel.trimmingCharacters(in: .whitespacesAndNewlines),
-                        targetFolderHint: targetFolderHint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            ? "MAI"
-                            : targetFolderHint.trimmingCharacters(in: .whitespacesAndNewlines),
-                        connectKey: connectKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                    ))
-                    status = "Mutual Aid account saved securely."
-                } catch {
-                    status = "Unable to save Mutual Aid account: \(error.localizedDescription)"
-                }
-            }
-            Text("These values are accepted by ct_mutual_aid_credentials JSON. The Mutual Aid account may use the same Connect Key when both CalTopo teams share that key. Credential values are stored in Apple Keychain.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             if !status.isEmpty {
@@ -622,31 +545,13 @@ private final class AppleDeveloperToolsManager: ObservableObject {
                 options: [.sortedKeys]
             )
             let credentialText = String(decoding: credentialData, as: UTF8.self)
-            var configs: [[String: Any]] = [
+            let configs: [[String: Any]] = [
                 ridMap,
                 [
                     "type": "ct_credentials_enc",
                     "enc": OrgConfigTokenCodec.encryptPayload(credentialText),
                 ],
             ]
-            if let template = organization.mutualAidTemplate {
-                let mutualAid: [String: Any] = [
-                    "type": "ct_mutual_aid_credentials",
-                    "file_version": "1.0",
-                    "team_id": template.teamID,
-                    "credential_id": template.credentialID,
-                    "credential_secret": template.credentialSecret,
-                    "domain_and_port": template.domainAndPort,
-                    "connect_key": template.connectKey,
-                    "source_label": template.sourceLabel,
-                    "target_folder_hint": template.targetFolderHint,
-                ]
-                let mutualAidData = try JSONSerialization.data(withJSONObject: mutualAid, options: [.sortedKeys])
-                configs.append([
-                    "type": "ct_credentials_enc",
-                    "enc": OrgConfigTokenCodec.encryptPayload(String(decoding: mutualAidData, as: UTF8.self)),
-                ])
-            }
             let bundle: [String: Any] = [
                 "format": "rid2caltopo_org_config",
                 "version": 2,
@@ -681,7 +586,11 @@ private final class AppleDeveloperToolsManager: ObservableObject {
         identities: AppleDroneConfirmationStore,
         locationProvider: AppleLocationProvider,
         iCloudBackup: AppleICloudBackupCenter
-    ) {
+    ) async {
+        isWorking = true
+        defer { isWorking = false }
+        await PersonalProbeModel.shared.clearPersistedLogin()
+        await WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
         if let bundleID = Bundle.main.bundleIdentifier {
             UserDefaults.standard.removePersistentDomain(forName: bundleID)
         }
@@ -760,7 +669,7 @@ private struct AppleDeveloperToolsView: View {
             }
 
             Section("Simulate MyLocation") {
-                TextField("Latitude, longitude", text: $locationText)
+                SettingsTextField("Latitude, longitude", text: $locationText)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 Button("Apply Temporary Location") { applyLocationOverride() }
@@ -838,16 +747,18 @@ private struct AppleDeveloperToolsView: View {
         .alert("Reset Persisted App State?", isPresented: $showingResetConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Reset", role: .destructive) {
-                manager.resetPersistedState(
+                Task {
+                await manager.resetPersistedState(
                     caltopo: caltopo,
                     organization: organization,
                     identities: identities,
                     locationProvider: locationProvider,
                     iCloudBackup: iCloudBackup
                 )
+                }
             }
         } message: {
-            Text("This clears saved settings and credentials. Local operational files are retained. You must quit and reopen the app afterward.")
+            Text("This clears saved settings, credentials, browser logins, and acknowledgement acceptance. Local operational files are retained. You must quit and reopen the app afterward.")
         }
         .onAppear {
             if let override = locationProvider.locationOverride {
@@ -1138,7 +1049,9 @@ struct CaltopoTeamMapBrowser: View {
                         .disabled(settings.isLoadingTeamMaps)
                 }
             }
-            .sheet(isPresented: $showPersonalLogin) {
+            .sheet(isPresented: $showPersonalLogin, onDismiss: {
+                Task { _ = await settings.loadPersonalMaps() }
+            }) {
                 NavigationStack {
                     AppleCaltopoPersonalProbeView(onCatalog: { username, maps in
                         settings.acceptPersonalCatalog(username, maps: maps)
@@ -1205,8 +1118,8 @@ struct AppleFlightStorageLimits: View {
     @State private var message = ""
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextField("Max Size (GB)", text: $size).keyboardType(.decimalPad)
-            TextField("Max Age (days)", text: $days).keyboardType(.numberPad)
+            SettingsTextField("Max Size (GB)", text: $size).keyboardType(.decimalPad)
+            SettingsTextField("Max Age (days)", text: $days).keyboardType(.numberPad)
             Button("Save Limits") {
                 guard let gb = Double(size), gb.isFinite, (0.1...1000).contains(gb),
                       let age = Int(days), (1...3650).contains(age) else {
@@ -1243,4 +1156,149 @@ struct AppleFlightDirectoryBrowser: View {
             }.value
         }
     }
+}
+
+// Settings labels remain visible even when a field contains a value.
+struct SettingsHelpLabel: View {
+    let title: String
+    var detail: String = ""
+    var centered = false
+    var iconOnly = false
+    @State private var showingHelp = false
+    init(_ title: String, detail: String = "", centered: Bool = false, iconOnly: Bool = false) {
+        self.title = title; self.detail = detail; self.centered = centered; self.iconOnly = iconOnly
+    }
+    var body: some View {
+        Button { showingHelp = true } label: {
+            HStack(spacing: 6) {
+                if !iconOnly { Text(title).multilineTextAlignment(centered ? .center : .leading) }
+                Image(systemName: "questionmark.circle").font(.callout).foregroundStyle(.tint)
+            }
+            .frame(minWidth: iconOnly ? 44 : nil, maxWidth: centered ? .infinity : nil, minHeight: 44, alignment: centered ? .center : .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .environment(\.isEnabled, true)
+        .accessibilityLabel("Help: " + title)
+        .accessibilityHint("Explains this setting and its allowed values")
+        .sheet(isPresented: $showingHelp) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text(SettingsFieldHelp.description(for: title))
+                        if !detail.isEmpty { Text(detail) }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding()
+                }
+                .navigationTitle(title.components(separatedBy: ":").first ?? title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingHelp = false } } }
+            }.presentationDetents([.medium, .large])
+        }
+    }
+}
+
+struct SettingsFieldBox: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .textFieldStyle(.plain)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(minHeight: 48)
+            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.secondary.opacity(0.45), lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+    }
+}
+
+struct SettingsTextField: View {
+    let title: String
+    @Binding var text: String
+    init(_ title: String, text: Binding<String>) { self.title = title; _text = text }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            SettingsHelpLabel(title, centered: true)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.tint)
+            TextField(title, text: $text)
+                .accessibilityLabel(title)
+                .modifier(SettingsFieldBox())
+        }.padding(.vertical, 4)
+    }
+}
+
+private struct SettingsScannableTextField: View {
+    let title: String
+    @Binding var text: String
+    let mode: AppleScannedFieldMode
+    var secure = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            SettingsHelpLabel(title, centered: true)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.tint)
+            AppleScannableTextField(title: title, text: $text, mode: mode, secure: secure)
+                .accessibilityLabel(title)
+                .modifier(SettingsFieldBox())
+        }.padding(.vertical, 4)
+    }
+}
+
+struct SettingsToggle: View {
+    let title: String
+    @Binding var isOn: Bool
+    var helpKey: String? = nil
+    init(_ title: String, isOn: Binding<Bool>, helpKey: String? = nil) { self.title = title; _isOn = isOn; self.helpKey = helpKey }
+    var body: some View {
+        HStack {
+            Text(title)
+            SettingsHelpLabel(helpKey ?? title, detail: "Values: On or Off.", iconOnly: true)
+            Spacer(minLength: 4)
+            Toggle(title, isOn: $isOn).labelsHidden().fixedSize()
+        }
+    }
+}
+
+struct SettingsPicker<Selection: Hashable, Content: View>: View {
+    let title: String
+    @Binding var selection: Selection
+    @ViewBuilder let content: () -> Content
+    init(_ title: String, selection: Binding<Selection>, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title; _selection = selection; self.content = content
+    }
+    var body: some View {
+        VStack(spacing: 4) {
+            SettingsHelpLabel(title, centered: true).font(.subheadline.weight(.semibold)).foregroundStyle(.tint)
+            Picker(title, selection: $selection, content: content)
+                .labelsHidden().frame(maxWidth: .infinity).modifier(SettingsFieldBox())
+        }
+    }
+}
+
+struct SettingsStepper<Value: Strideable>: View where Value.Stride: SignedNumeric {
+    let title: String
+    @Binding var value: Value
+    let range: ClosedRange<Value>
+    init(_ title: String, value: Binding<Value>, in range: ClosedRange<Value>) {
+        self.title = title; _value = value; self.range = range
+    }
+    var body: some View {
+        VStack(spacing: 4) {
+            SettingsHelpLabel(title.components(separatedBy: ":").first ?? title,
+                              detail: "Allowed range: \(range.lowerBound)–\(range.upperBound).", centered: true)
+                .font(.subheadline.weight(.semibold)).foregroundStyle(.tint)
+            Stepper(value: $value, in: range) {
+                Text(title.components(separatedBy: ":").dropFirst().joined(separator: ":").trimmingCharacters(in: .whitespaces))
+            }.accessibilityLabel(title).modifier(SettingsFieldBox())
+        }
+    }
+}
+
+private struct SettingsValue: View {
+    let title: String
+    let value: String
+    init(_ title: String, value: String) { self.title = title; self.value = value }
+    var body: some View { LabeledContent { Text(value) } label: { SettingsHelpLabel(title) } }
 }

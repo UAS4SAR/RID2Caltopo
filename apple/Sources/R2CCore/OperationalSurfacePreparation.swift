@@ -151,7 +151,7 @@ public enum OperationalPreparedSurfaceSet {
     public static func fresh(prepared: Int64, now: Int64, maxAge: Int64) -> Bool {
         prepared>0 && prepared<=now && now-prepared<maxAge
     }
-    public static func validate(_ data: Data, read: (String) throws -> Data) throws {
+    public static func validate(_ data: Data, allowPartial: Bool = false, read: (String) throws -> Data) throws {
         struct Index: Decodable {
             struct Entry: Decodable { let file: String; let metadata: OperationalSurfacePackage.Metadata }
             let width,height:Int
@@ -163,7 +163,7 @@ public enum OperationalPreparedSurfaceSet {
         guard (1...4000).contains(index.width),(1...4000).contains(index.height) else { throw OperationalSurfacePreparationError.invalid("Invalid AOL grid") }
         var expected=Set<String>()
         for y in stride(from:0,to:index.height,by:1000) { for x in stride(from:0,to:index.width,by:1000) { expected.insert("tile-\(y)-\(x).aol") } }
-        guard expected.count==index.entries.count else { throw OperationalSurfacePreparationError.invalid("Incomplete AOL grid") }
+        guard !index.entries.isEmpty, index.entries.count <= expected.count, allowPartial || expected.count==index.entries.count else { throw OperationalSurfacePreparationError.invalid("Incomplete AOL grid") }
         for entry in index.entries {
             guard expected.remove(entry.file) != nil else { throw OperationalSurfacePreparationError.invalid("Unexpected or duplicate AOL tile") }
             let m=try OperationalSurfacePackage(data:read(entry.file)).metadata

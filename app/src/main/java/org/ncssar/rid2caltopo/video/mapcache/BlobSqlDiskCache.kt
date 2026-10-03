@@ -157,6 +157,12 @@ internal class BlobSqlDiskCache(
         staleServedCount.incrementAndGet()
     }
 
+    override fun cacheKeys(): List<String> = synchronized(lock) {
+        db.query("entries", arrayOf("cache_key"), null, null, null, null, null).use { cursor ->
+            buildList { while (cursor.moveToNext()) add(cursor.getString(0)) }
+        }
+    }
+
     override fun oldestEntries(): List<CacheEvictionEntry> = synchronized(lock) {
         db.query("entries", arrayOf("cache_key", "size_bytes", "accessed_at"), null, null,
             null, null, "accessed_at ASC", "128").use { cursor ->

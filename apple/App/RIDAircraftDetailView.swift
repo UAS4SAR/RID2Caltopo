@@ -366,6 +366,19 @@ final class AppleDroneConfirmationStore: ObservableObject {
         importedIdentities.values.sorted { $0.remoteID < $1.remoteID }
     }
 
+    /// A local pairing is operator-owned and never grants organization authority.
+    func saveLocalPairing(_ identity: RidAircraftIdentity) -> Bool {
+        guard importedIdentities[identity.remoteID] == nil,
+              !importedIdentities.values.contains(where: { $0.mappedID.caseInsensitiveCompare(identity.mappedID) == .orderedSame }) else { return false }
+        importedIdentities[identity.remoteID] = identity
+        var entries = defaults.array(forKey: "org.ridMappings") as? [[String: String]] ?? []
+        entries.append(["remoteID": identity.remoteID, "mappedID": identity.mappedID,
+                        "organization": "", "model": identity.droneDescription,
+                        "ownerCallsign": identity.pilotCallsign, "ownerName": ""])
+        defaults.set(entries, forKey: "org.ridMappings")
+        return true
+    }
+
     func confirm(_ identity: RidAircraftIdentity, recordUnresolvedPilot: Bool = false) {
         // Recording incomplete evidence never establishes pilot qualification.
         guard identity.isComplete || (recordUnresolvedPilot && !identity.remoteID.isEmpty) else { return }
@@ -487,26 +500,30 @@ struct DroneConfirmationView: View {
     let onConfirm: (RidAircraftIdentity) -> Void
     let onIgnore: (() -> Void)?
     private let mappedIDOverride: String?
+    private let bootstrapDesignator: String?
     private let existingIdentity: RidAircraftIdentity?
     @Environment(\.dismiss) private var dismiss
     @State private var organization: String
     @State private var pilotCallsign: String
     @State private var droneDescription: String
     @State private var showEquipment = false
+    @State private var pairingSaveError: String?
 
     init(
         remoteID: String,
         existing: RidAircraftIdentity?,
         identityStore: AppleDroneConfirmationStore,
         onConfirm: @escaping (RidAircraftIdentity) -> Void,
-        onIgnore: (() -> Void)? = nil
+        onIgnore: (() -> Void)? = nil,
+        bootstrapDesignator: String? = nil
     ) {
         self.remoteID = remoteID
         self.identityStore = identityStore
         self.onConfirm = onConfirm
         self.onIgnore = onIgnore
         existingIdentity = existing
-        mappedIDOverride = existing.flatMap { identity in
+        self.bootstrapDesignator = bootstrapDesignator
+        mappedIDOverride = bootstrapDesignator ?? existing.flatMap { identity in
             identity.mappedID == remoteID ? nil : identity.mappedID
         }
         let prior = OperatingProfiles.active(existing?.flightReadiness)["profile"] as? [String: Any]
@@ -522,12 +539,20 @@ struct DroneConfirmationView: View {
             saved: identityStore.preferredPilotCallsign,
             existing: existing?.pilotCallsign
         ))
-        _droneDescription = State(initialValue: existing?.droneDescription ?? "")
+        _droneDescription = State(initialValue: existing?.droneDescription.trimmingCharacters(in: .whitespacesAndNewlines).nonEmptyAircraftSuggestion ?? AircraftModelSuggestion.from(remoteID: remoteID))
     }
 
     var body: some View {
         NavigationStack {
             Form {
+                if let pairingSaveError { Text(pairingSaveError).foregroundStyle(.red) }
+                if let bootstrapDesignator {
+                    Section("Add and confirm this drone") {
+                        LabeledContent("Remote ID", value: remoteID)
+                        LabeledContent("Stream designator", value: bootstrapDesignator)
+                        Text("Save a local RID-map entry and confirm this flight for publishing to the selected map. Check the suggested model and enter the pilot callsign. Without a selected map, publication waits for map selection. Pair video only leaves track publishing off.").font(.footnote)
+                    }
+                }
                 Section {
                     LabeledContent("Pilot Callsign / RPIC") {
                         TextField("Callsign", text: $pilotCallsign).multilineTextAlignment(.trailing)
@@ -592,7 +617,7 @@ struct DroneConfirmationView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     if let onIgnore {
-                        Button("Don’t publish") {
+                        Button(bootstrapDesignator == nil ? "Don’t publish" : "Pair video only") {
                             onIgnore()
                             dismiss()
                         }
@@ -601,7 +626,7 @@ struct DroneConfirmationView: View {
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Publish track") {
+                    Button(bootstrapDesignator == nil ? "Publish track" : "Save and publish track") {
                         if organization.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             organization = UserDefaults.standard.string(forKey: "org.name") ?? ""
                         }
@@ -621,10 +646,15 @@ struct DroneConfirmationView: View {
                         var equipment = readiness.equipmentDictionary
                         if readiness.payloadWeightGrams == nil { equipment.removeValue(forKey: "payloadWeightGrams") }
                         UserDefaults.standard.set(equipment, forKey: "equipment:" + AppleAircraftOrganizationAccess.scope + remoteID)
+                        if bootstrapDesignator != nil && !identityStore.saveLocalPairing(identity) {
+                            pairingSaveError = "This RID or stream designator already has an entry. Reopen pairing to review it."
+                            return
+                        }
                         identityStore.confirm(identity, recordUnresolvedPilot: true)
                         onConfirm(identity)
                         dismiss()
                     }
+                    .disabled(bootstrapDesignator != nil && pilotCallsign.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }
@@ -736,7 +766,7 @@ struct DroneConfirmationView: View {
     private var identity: RidAircraftIdentity {
         RidAircraftIdentity(
             remoteID: remoteID,
-            organization: organization,
+            organization: bootstrapDesignator == nil ? organization : "",
             pilotCallsign: pilotCallsign,
             droneDescription: droneDescription,
             mappedIDOverride: mappedIDOverride,
@@ -804,4 +834,8 @@ private func formatRange(_ meters: Double) -> String {
         return String(format: "%.2f mi", feet / 5_280)
     }
     return "\(Int(feet.rounded())) ft"
+}
+
+private extension String {
+    var nonEmptyAircraftSuggestion: String? { isEmpty ? nil : self }
 }

@@ -7,6 +7,8 @@ import org.ncssar.rid2caltopo.app.R2CApplication
 
 /** Short-lived edit authority is never included in exports or supplied by an import. */
 object AircraftOrganizationAccess {
+    private val resetLock = Any()
+    @Volatile private var resetGeneration = 0L
     val changes = kotlinx.coroutines.flow.MutableStateFlow(0L)
     @Volatile private var authorizedToken = ""
     @Volatile private var validUntil = 0L
@@ -16,6 +18,16 @@ object AircraftOrganizationAccess {
     @Volatile private var accessMessage = "Account has not been verified. Refresh access while online."
     @Volatile private var messageToken = ""
     @Volatile private var messageScope = ""
+    @JvmStatic fun resetRuntimeState() = synchronized(resetLock) {
+        resetGeneration++
+        authorizedToken = ""; validUntil = 0L
+        verifiedToken = ""; verifiedScope = ""; username = ""
+        messageToken = ""; messageScope = ""
+        accessMessage = "Account has not been verified. Refresh access while online."
+        R2CApplication.getAppCtxt()?.getSharedPreferences("aircraft-readiness", Context.MODE_PRIVATE)?.edit()?.clear()?.apply()
+        changes.value += 1
+    }
+
     fun accessStatus(): String = when {
         !belongsToOrganization() -> "Local aircraft entries. No organization account is signed in."
         messageToken != CaltopoClient.GetTrackerCoordinationApiKey() || messageScope != scope() ->
@@ -75,9 +87,14 @@ object AircraftOrganizationAccess {
     }
 
     /** Run on the I/O dispatcher. A failed refresh removes edit authority. */
+    @Synchronized
     fun refresh(): Boolean {
+        val generation = resetGeneration
         authorizedToken = ""; validUntil = 0; username = ""
-        if (!belongsToOrganization()) return true
+        if (!belongsToOrganization()) {
+            changes.value += 1
+            return true
+        }
         val token = CaltopoClient.GetTrackerCoordinationApiKey()
         val requestedScope = scope()
         val endpoint = requestedScope + "/api/v1/aircraft-readiness"
@@ -87,11 +104,15 @@ object AircraftOrganizationAccess {
         return runCatching {
             val request = Request.Builder().url(endpoint).header("X-SAR-Token", token).build()
             CaltopoSession.MyOkHttpClient.newCall(request).execute().use { response ->
+                val responseBody = if (response.isSuccessful) JSONObject(response.body?.string().orEmpty()) else null
+                synchronized(resetLock) {
+                if (generation != resetGeneration) return@use false
                 check(token == CaltopoClient.GetTrackerCoordinationApiKey() && requestedScope == scope())
                 if (response.code == 401 || response.code == 403) {
                     preferences().edit().remove(requestedScope).apply()
                     changes.value = changes.value + 1
                 }
+                CaltopoClient.CTInfo("OrganizationAccess", "Tracker account verification HTTP ${response.code}")
                 if (!response.isSuccessful) {
                     accessMessage = when (response.code) {
                         401, 403 -> "Tracker could not verify this tablet's enrollment (HTTP ${response.code}). Re-enroll using the current organization QR and sign in."
@@ -99,8 +120,9 @@ object AircraftOrganizationAccess {
                     }
                     return@use false
                 }
-                val body = JSONObject(response.body?.string().orEmpty())
+                val body = requireNotNull(responseBody)
                 verifiedToken = token; verifiedScope = requestedScope; username = body.optString("username")
+                CaltopoClient.CTInfo("OrganizationAccess", "Tracker account verification completed; identityPresent=${username.isNotEmpty()}")
                 preferences().edit().putString(requestedScope, body.toString()).apply()
                 changes.value = changes.value + 1
                 if (body.optBoolean("canEditAircraft")) {
@@ -112,9 +134,11 @@ object AircraftOrganizationAccess {
                     "Read-only · this account does not have config_admin. Contact an organization administrator."
                 }
                 canEdit()
+                }
             }
         }.getOrElse { failure ->
-            if (token == CaltopoClient.GetTrackerCoordinationApiKey() && requestedScope == scope()) {
+            CaltopoClient.CTWarn("OrganizationAccess", "Tracker account verification failed; type=${failure.javaClass.simpleName}")
+            if (generation == resetGeneration && token == CaltopoClient.GetTrackerCoordinationApiKey() && requestedScope == scope()) {
                 accessMessage = when (failure) {
                     is java.io.IOException -> "Unable to reach Tracker to verify your account. Check your connection and try Refresh access again."
                     else -> "Tracker account verification could not be completed. Try Refresh access again."

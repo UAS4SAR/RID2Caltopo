@@ -234,6 +234,12 @@ internal class SafBlobCacheStore(
         staleServedCount.incrementAndGet()
     }
 
+    override fun cacheKeys(): List<String> = synchronized(dbLock) {
+        db.query("saf_entries", arrayOf("cache_key"), "namespace = ?", arrayOf(storageNamespace), null, null, null).use { cursor ->
+            buildList { while (cursor.moveToNext()) add(cursor.getString(0)) }
+        }
+    }
+
     override fun oldestEntries(): List<CacheEvictionEntry> = synchronized(dbLock) {
         db.query("saf_entries", arrayOf("cache_key", "size_bytes", "accessed_at"), "namespace = ?", arrayOf(storageNamespace),
             null, null, "accessed_at ASC", "128").use { cursor ->

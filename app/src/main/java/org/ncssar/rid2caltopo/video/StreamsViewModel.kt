@@ -1994,6 +1994,18 @@ class StreamsViewModel(
             ?: binding.primaryLabel
     }
 
+    var onPairedDroneSetup: ((String, String) -> Unit)? = null
+
+    fun pairAndOfferSetup(streamDesignator: String, remoteId: String) {
+        bindStreamTelemetry(streamDesignator, remoteId)
+        val live = CaltopoClient.GetDroneSpec(remoteId)
+        val saved = CaltopoClient.GetPersistedDroneSpecs()
+        if (live != null && (live.mappedId.isBlank() || live.mappedId == remoteId) &&
+            saved.none { it.remoteId.equals(remoteId, true) || it.mappedId.equals(streamDesignator, true) }) {
+            onPairedDroneSetup?.invoke(remoteId, streamDesignator)
+        }
+    }
+
     fun bindStreamTelemetry(streamDesignator: String, remoteId: String) {
         bindStreamToRemoteId(runtimeStreamTelemetryBindings, streamDesignator, remoteId)
         StreamFlightActivityRegistry.bindRuntime(streamDesignator, remoteId)

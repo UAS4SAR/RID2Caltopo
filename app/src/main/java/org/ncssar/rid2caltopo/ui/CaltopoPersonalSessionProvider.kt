@@ -10,6 +10,7 @@ import android.os.Bundle
 class CaltopoPersonalSessionProvider : ContentProvider() {
     override fun onCreate() = true
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle = Bundle().apply {
+        if (method == "reset") putBoolean("cleared", CaltopoPersonalProbeActivity.clearPersistedLogin())
         if (method == "catalog") runCatching { CaltopoPersonalProbeActivity.prepareCatalog(requireNotNull(context)); CaltopoPersonalProbeActivity.catalog() }.onSuccess { putString("catalog", it) }.onFailure { putBoolean("loginRequired", it is org.ncssar.rid2caltopo.data.PersonalCaltopoLoginRequired); putString("error", "Personal maps could not load.") }
         if (method == "authorizeMedia") putBoolean("authorized", CaltopoPersonalProbeActivity.authorizeMedia(arg, extras?.getString("mediaID")))
         if (method == "valid") putBoolean("valid", CaltopoPersonalProbeActivity.validSession(arg, extras?.getString("url")))

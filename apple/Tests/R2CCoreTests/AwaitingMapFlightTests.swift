@@ -96,3 +96,25 @@ private func awaitingSample(_ time: TimeInterval = 1_000_000, latitude: Double =
     #expect(restored.publication.liveTrackID == flight.id)
     #expect(restored.label == flight.label) // Publication does not mutate the saved base label.
 }
+
+@Test @MainActor func personalFlightCanBeAssignedAfterMapSelectionAndRestart() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("pending.json")
+    let journal = AwaitingMapFlightJournal(fileURL: url)
+    let samples = (0..<64).map { awaitingSample(Double(1_000_000 + $0)) }
+    try journal.record(remoteID: "RID-1", label: "Personal flight", observations: samples, mapID: "", teamID: "", finished: false)
+    try journal.record(remoteID: "RID-1", label: "Personal flight", observations: samples, mapID: "personal-map", teamID: "", finished: true)
+    let reopened = AwaitingMapFlightJournal(fileURL: url)
+    #expect(reopened.entries[0].decision == "review")
+    let scope = CaltopoPublicationScope.identifier(personalAccountID: "responder-a", teamID: "")
+    try reopened.decide(id: reopened.entries[0].id, mapID: "personal-map", teamID: scope)
+    let saved = AwaitingMapFlightJournal(fileURL: url).entries[0]
+    #expect(saved.decision == "publish")
+    #expect(saved.teamID == "personal:responder-a")
+    #expect(saved.publication.points.count == 64)
+    #expect(saved.publication.mapID == "personal-map")
+    #expect(scope != CaltopoPublicationScope.identifier(personalAccountID: "responder-b", teamID: ""))
+    #expect(CaltopoPublicationScope.identifier(personalAccountID: "", teamID: "team-a").isEmpty)
+    #expect(CaltopoPublicationScope.identifier(personalAccountID: nil, teamID: "team-a") == "team-a")
+}

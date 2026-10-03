@@ -372,6 +372,24 @@ class MapPaneArtifactOverlayStateTest {
     }
 
     @Test
+    fun offlinePrepIndependentLayers_includeOnlySelectedSuppliers() {
+        for (mask in 0..7) {
+            val imagery = mask and 1 != 0
+            val osm = mask and 2 != 0
+            val contours = mask and 4 != 0
+            val expected = buildList {
+                if (imagery) add(ArcGisWorldImageryTileSource.name())
+                if (osm) add(OsmStandardTileSource.name())
+                if (contours) add(UsgsContoursTileSource.name())
+            }
+            val sources = offlinePrepTileSources(imagery, osm, contours)
+            assertEquals(expected, sources.map { it.name() })
+            assertEquals(12 * expected.size, offlinePrepTileOperationCount(12, sources.size))
+        }
+        assertEquals(Int.MAX_VALUE, offlinePrepTileOperationCount(Int.MAX_VALUE, 3))
+    }
+
+    @Test
     fun offlinePrepTileOperationCount_countsContourCompanionTiles() {
         assertEquals(12, offlinePrepTileOperationCount(baseTileCount = 12, includeContours = false))
         assertEquals(24, offlinePrepTileOperationCount(baseTileCount = 12, includeContours = true))

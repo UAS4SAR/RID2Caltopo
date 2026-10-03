@@ -246,7 +246,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         delayedUptimePoll.start(this::uptimePoll, 1000, 1000)
     }
 
-    private fun refreshMapBrowserProfiles() {
+    fun refreshMapBrowserProfiles() {
         mapBrowserProfiles = CaltopoClient.GetMapBrowserProfileOptions().map { option ->
             MapBrowserProfileOption(
                 profileId = option.first.orEmpty(),
@@ -483,6 +483,12 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         CTDebug(tag, "showMain(): ${_activeScreen.value} -> ${ActiveScreen.MAIN}")
         _activeScreen.value = ActiveScreen.MAIN
     }
+    var proximitySettingsOpen by mutableStateOf(false)
+        private set
+
+    fun showProximitySettings() { proximitySettingsOpen = true }
+    fun dismissProximitySettings() { proximitySettingsOpen = false }
+
     fun showSettings() {
         CTDebug(tag, "showSettings(): ${_activeScreen.value} -> ${ActiveScreen.SETTINGS}")
         _activeScreen.value = ActiveScreen.SETTINGS
@@ -536,6 +542,13 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
 
     override fun onLocalTrackFinished(remoteId: String, mappedId: String, reason: String) {
         clearFinishedFlightConfirmationState(remoteId, "local track finished: $reason")
+    }
+
+    fun requestPairedDroneSetup(remoteId: String, designator: String) {
+        val drone = CaltopoClient.GetDroneSpec(remoteId) ?: return
+        requestDroneConfirmation(drone)
+        _pendingDroneConfirmation.value = _pendingDroneConfirmation.value?.copy(
+            bootstrapDesignator = designator, organization = "")
     }
 
     fun requestDroneConfirmation(drone: CtDroneSpec) {
@@ -607,8 +620,9 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
     fun savePendingDroneConfirmation(recordUnresolvedPilot: Boolean = false) {
         val current = _pendingDroneConfirmation.value ?: return
         val remoteId = current.remoteId.trim()
-        val organization = current.organization.trim().ifEmpty { CaltopoClient.GetHomeOrgName() }
+        val organization = if (current.bootstrapDesignator != null) "" else current.organization.trim().ifEmpty { CaltopoClient.GetHomeOrgName() }
         val callsign = if (recordUnresolvedPilot) "" else current.pilotCallsign.trim()
+        if (current.bootstrapDesignator != null && callsign.isBlank()) return
         val droneDescription = current.droneDescription.trim()
         CTDebug(
             tag,
@@ -631,7 +645,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             lastUnknownDroneConfirmationOrganization = organization
         }
         val existingMappedId = CaltopoClient.GetDroneSpec(remoteId)?.mappedId?.trim().orEmpty()
-        val mappedId = if (DroneSpecConfirmationLogic.shouldPreserveMappedId(
+        val mappedId = current.bootstrapDesignator ?: if (DroneSpecConfirmationLogic.shouldPreserveMappedId(
                 existingMappedId = existingMappedId,
                 remoteId = remoteId,
                 initialPilotCallsign = current.initialPilotCallsign,
@@ -650,6 +664,10 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             tag,
             "savePendingDroneConfirmation(): notifying peer remoteId=$remoteId mappedId='$mappedId' peer=${peerCoordinator.javaClass.simpleName}"
         )
+        if (current.bootstrapDesignator != null && !CaltopoClient.SaveLocalPairedDrone(remoteId, mappedId, droneDescription, callsign)) {
+            CaltopoClient.ShowToast("This RID or stream designator already has an entry. Reopen pairing to review it.")
+            return
+        }
         confirmedCurrentFlightRemoteIds.add(remoteId)
         CTDebug(tag, "savePendingDroneConfirmation(): saving local confirmation remoteId=$remoteId mappedId='$mappedId'")
         CaltopoClient.SaveDroneSpecConfirmation(

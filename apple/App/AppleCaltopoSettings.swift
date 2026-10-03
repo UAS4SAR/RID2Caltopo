@@ -16,6 +16,10 @@ struct AppleCaltopoConfiguration: Sendable, Equatable {
     var personalMediaOwnerID: String = ""
     let connectKey: String
 
+    var publicationScope: String {
+        CaltopoPublicationScope.identifier(personalAccountID: personalSessionID == nil ? nil : personalAccountID, teamID: teamID)
+    }
+
     var liveConfiguration: CaltopoLiveConfiguration? {
         guard enabled,
               !domainAndPort.isEmpty,
@@ -47,14 +51,18 @@ final class AppleCaltopoSettings: ObservableObject {
         personalMapsStatus = maps.isEmpty ? "No maps available for this account" : "Personal maps loaded"
     }
     @Published private(set) var isLoadingPersonalMaps = false
+    private var personalResetGeneration = 0
     func loadPersonalMaps() async -> Bool {
+        let generation = personalResetGeneration
         isLoadingPersonalMaps = true
-        defer { isLoadingPersonalMaps = false }
+        defer { if generation == personalResetGeneration { isLoadingPersonalMaps = false } }
         do {
             let (username, maps) = try await PersonalProbeModel.shared.loadNativeCatalog()
+            guard generation == personalResetGeneration else { return false }
             acceptPersonalCatalog(username, maps: maps)
             return true
         } catch {
+            guard generation == personalResetGeneration else { return false }
             if case CaltopoLiveClientError.httpStatus(let code, _) = error, code == 401 || code == 403 {
                 personalUsername = ""
             }
@@ -317,6 +325,15 @@ final class AppleCaltopoSettings: ObservableObject {
     }
 
     func resetPersistedState() {
+        personalResetGeneration += 1
+        personalMaps = []
+        personalMapsStatus = "Sign in to load personal maps"
+        isLoadingPersonalMaps = false
+        selectedPersonalAccountID = ""
+        selectedPersonalMediaOwnerID = ""
+        usesPersonalCredentials = false
+        personalUsername = ""
+        personalSessionID = nil
         enabled = false
         domainAndPort = "caltopo.com"
         mapID = ""

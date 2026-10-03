@@ -45,24 +45,36 @@ internal object SurfaceStore {
     private fun preparedAt(dir: SurfaceCacheFile, index: org.json.JSONObject): Long =
         index.optLong("preparedAtEpochMs", dir.name.substringBefore('-').toLongOrNull() ?: 0L)
 
-    /** Whole prepared sets preserve their overlap and survey reference when shared. */
+    /** Share intersecting core tiles with their original overlap and survey reference. */
     @Synchronized fun exportSets(context: Context, bounds: SurfaceBounds): List<Pair<String,ByteArray>> {
         val result=mutableListOf<Pair<String,ByteArray>>()
         for ((dir,index) in catalog(context)) {
             val (west,south)=xy(index,bounds.south,bounds.west)
             val (east,north)=xy(index,bounds.north,bounds.east)
             if(east < -index.getInt("width")/2.0 || west > index.getInt("width")/2.0 || north < -index.getInt("height")/2.0 || south > index.getInt("height")/2.0) continue
-            SurfacePreparedSet.validate(index) { name -> dir.child(name).readBytes() }
+            SurfacePreparedSet.validate(index, allowPartial = true) { name -> dir.child(name).readBytes() }
             val copy=org.json.JSONObject(index.toString()).put("preparedAtEpochMs",preparedAt(dir,index))
             val entries=copy.getJSONArray("entries")
+            val selected=org.json.JSONArray()
             for(i in 0 until entries.length()) {
-                val name=entries.getJSONObject(i).getString("file")
-                require(name.matches(Regex("tile-[0-9]+-[0-9]+\\.aol")))
+                val entry=entries.getJSONObject(i)
+                val m=entry.getJSONObject("metadata")
+                val tileWest=m.getDouble("coreWest");val tileSouth=m.getDouble("coreSouth")
+                if(east<=tileWest || west>=tileWest+m.getInt("coreWidth") || north<=tileSouth || south>=tileSouth+m.getInt("coreHeight")) continue
+                selected.put(entry)
+            }
+            if(selected.length()==0) continue
+            // A subset receives its own identity, so it cannot mask a later full-set import.
+            val id=if(selected.length()==entries.length()) dir.name else java.util.UUID.randomUUID().toString()
+            copy.put("entries",selected)
+            for(i in 0 until selected.length()) {
+                val name=selected.getJSONObject(i).getString("file")
                 val f=dir.child(name);require(f.length() in 1..SurfacePackage.MAX_BYTES.toLong())
                 val bytes=f.readBytes();SurfacePackage.decode(bytes)
-                result += "aol/${dir.name}/$name" to bytes
+                result += "aol/$id/$name" to bytes
             }
-            result += "aol/${dir.name}/index.json" to copy.toString().toByteArray()
+            result += "aol/$id/index.json" to copy.toString().toByteArray()
+
         }
         return result
     }
@@ -83,7 +95,7 @@ internal object SurfaceStore {
         for((id,entries) in groups) {
             require(id.matches(Regex("[0-9a-fA-F-]+"))) { "Invalid AOL set identifier" }
             val index=org.json.JSONObject(String(files["aol/$id/index.json"] ?: error("Missing AOL index"),Charsets.UTF_8))
-            SurfacePreparedSet.validate(index) { name -> files["aol/$id/$name"] ?: error("Missing AOL tile") }
+            SurfacePreparedSet.validate(index, allowPartial = true) { name -> files["aol/$id/$name"] ?: error("Missing AOL tile") }
             val list=index.getJSONArray("entries");require(list.length() in 1..16)
             val staged=File(context.cacheDir,"aol-import-${java.util.UUID.randomUUID()}");staged.mkdirs()
             try {

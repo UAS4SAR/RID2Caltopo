@@ -5,6 +5,22 @@ import org.junit.Test
 
 class ApplicationIdleTimeoutPolicyTest {
     @Test
+    fun userInputJustBeforeOldDeadlineGetsFullIdleInterval() {
+        val input = 119_000L
+        assertEquals(119_000L, ApplicationIdleTimeoutPolicy.remainingDelayMsec(0L, 0L, 0L, input, 2L, 120_000L))
+        assertEquals(1L, ApplicationIdleTimeoutPolicy.remainingDelayMsec(0L, 0L, 0L, input, 2L, 238_999L))
+        assertEquals(0L, ApplicationIdleTimeoutPolicy.remainingDelayMsec(0L, 0L, 0L, input, 2L, 239_000L))
+        assertEquals(ApplicationIdleTimeoutPolicy.DISABLED, ApplicationIdleTimeoutPolicy.remainingDelayMsec(0L, 0L, 0L, input, 0L, 999_000L))
+    }
+
+    @Test
+    fun latestRidProtectedOrUserActivityWins() {
+        for (times in listOf(listOf(50_000L, 70_000L, 90_000L), listOf(90_000L, 50_000L, 70_000L), listOf(70_000L, 90_000L, 50_000L))) {
+            assertEquals(110_000L, ApplicationIdleTimeoutPolicy.remainingDelayMsec(0L, times[0], times[1], times[2], 2L, 100_000L))
+        }
+    }
+
+    @Test
     fun activityRecreationPreservesSessionStart() {
         assertEquals(
             1_000L,

@@ -6,6 +6,23 @@ import FoundationNetworking
 #endif
 
 final class CaltopoPersonalProbeTests: XCTestCase {
+    func testCaltopoLinkImportRouting() {
+        let signup = "https://caltopo.com/group/ABC123/signup/EXAMPLE"
+        XCTAssertEqual(CaltopoPersonalProbe.caltopoLinkURL("  \(signup)\n")?.absoluteString, signup)
+        for value in ["https://caltopo.com", "https://caltopo.com/m/ABC123#ll=1,2",
+                      "https://caltopo.com/account/login?next=%2Fm%2FABC123", "https://caltopo.com:443/anything",
+                      "HTTPS://CALTOPO.COM/arbitrary/path"] {
+            XCTAssertEqual(CaltopoPersonalProbe.caltopoLinkURL(value)?.absoluteString, value)
+        }
+        for value in ["http://caltopo.com/group/ABC123/signup/EXAMPLE",
+                      "https://caltopo.com.evil.test/group/ABC123/signup/EXAMPLE",
+                      "https://user@caltopo.com/group/ABC123/signup/EXAMPLE",
+                      "https://caltopo.com:444/group/ABC123/signup/EXAMPLE",
+                      "https://caltopo.com@evil.test/", "https://www.caltopo.com/", "R2C2:test"] {
+            XCTAssertNil(CaltopoPersonalProbe.caltopoLinkURL(value))
+        }
+    }
+
     func testOnlyCaltopoInvitationAndMapLinksAreAccepted() {
         XCTAssertNotNil(CaltopoPersonalProbe.browserURL("https://caltopo.com/group/ABC123/signup/EXAMPLE"))
         XCTAssertEqual(CaltopoPersonalProbe.mapID("https://caltopo.com/m/ABC123#ll=1,2"), "ABC123")

@@ -130,7 +130,7 @@ object MutualAidPackageTransferManager {
         stopShareSession()
         val host = R2CMqttManager.GetMyIpAddress().trim()
         if (host.isBlank()) {
-            return false to "Could not determine local IP address for MA package sharing."
+            return false to "Could not determine local IP address for map package sharing."
         }
         return try {
             val serverTlsConfig = createServerTlsConfig(host)
@@ -173,11 +173,11 @@ object MutualAidPackageTransferManager {
                 "Share session ready host=$host port=$port file='${packageFile.name}' size=${packageFile.length()} sha256=$sha256"
             )
             serverExecutor.execute { runServerLoop(serverSocket, sessionId, packageFile) }
-            true to "MA package ready to share."
+            true to "map package ready to share."
         } catch (e: Exception) {
             CaltopoClient.CTWarn(TAG, "startShareSession() failed.", e)
             stopShareSession()
-            false to (e.message ?: "Failed to start MA package share session.")
+            false to (e.message ?: "Failed to start map package share session.")
         }
     }
 
@@ -211,7 +211,7 @@ object MutualAidPackageTransferManager {
     fun importFromToken(context: Context, token: String) {
         val config = MutualAidPackageTransferToken.decode(token.trim())
         if (config == null) {
-            _importState.value = MutualAidPackageImportState.Error("MA package", "Invalid MA package token.")
+            _importState.value = MutualAidPackageImportState.Error("map package", "Invalid map package token.")
             return
         }
         cancelImport()
@@ -219,7 +219,7 @@ object MutualAidPackageTransferManager {
         val appContext = context.applicationContext
         currentImportSessionId.set(config.sessionId)
         ioExecutor.execute {
-            val packageName = config.packageName.ifBlank { "MA package" }
+            val packageName = config.packageName.ifBlank { "map package" }
             val tempFile = File(appContext.cacheDir.resolve("ma-transfer"), "${config.sessionId}.zip").apply {
                 parentFile?.mkdirs()
                 if (exists()) delete()
@@ -230,7 +230,7 @@ object MutualAidPackageTransferManager {
                 if (currentImportSessionId.get() != config.sessionId) return@execute
                 val actualSha = sha256Hex(tempFile)
                 if (!actualSha.equals(config.sha256, ignoreCase = true)) {
-                    throw IllegalStateException("Downloaded MA package checksum did not match QR token.")
+                    throw IllegalStateException("Downloaded map package checksum did not match QR token.")
                 }
                 CaltopoClient.CTDebug(TAG, "Download complete sid=${config.sessionId} bytes=${tempFile.length()} sha256=$actualSha")
                 _importState.value = MutualAidPackageImportState.Importing(packageName, "Importing")
@@ -250,8 +250,8 @@ object MutualAidPackageTransferManager {
                 if (currentImportSessionId.get() == config.sessionId) {
                     CaltopoClient.CTWarn(TAG, "importFromToken() failed.", e)
                     _importState.value = MutualAidPackageImportState.Error(packageName, if (isRetryableImportException(e)) {
-                        "Could not reach the sharing device at ${config.host}:${config.port}. Connect both devices to the same Wi-Fi or hotspot and keep the sender’s MA Package QR panel open. Then retry. If sharing was restarted or its address changed, scan the new QR.\n\n${e.message.orEmpty()}"
-                    } else e.message ?: "MA package transfer failed.")
+                        "Could not reach the sharing device at ${config.host}:${config.port}. Connect both devices to the same Wi-Fi or hotspot and keep the sender’s Map Package QR panel open. Then retry. If sharing was restarted or its address changed, scan the new QR.\n\n${e.message.orEmpty()}"
+                    } else e.message ?: "map package transfer failed.")
                 } else {
                     CaltopoClient.CTDebug(TAG, "importFromToken(): ignoring late failure from canceled sid=${config.sessionId}")
                 }
@@ -406,7 +406,7 @@ object MutualAidPackageTransferManager {
                         }
                     }
                 }
-            } ?: throw IllegalStateException("Sender returned an empty MA package.")
+            } ?: throw IllegalStateException("Sender returned an empty map package.")
         }
     }
 

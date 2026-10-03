@@ -754,7 +754,8 @@ final class AppleMapOfflineManager: ObservableObject {
         preset: OperationalOfflinePreset,
         includeContours: Bool,
         includeDEM: Bool,
-        demResolution: OperationalDEMResolution = .maximum1m
+        demResolution: OperationalDEMResolution = .maximum1m,
+        baseLayerCount: Int = 1
     ) -> (tiles: Int, dem: Int, tileBytes: Int64, demBytes: Int64, bytes: Int64) {
         let tiles = OperationalOfflineMapPlanner.tileCount(
             bounds: bounds,
@@ -762,15 +763,12 @@ final class AppleMapOfflineManager: ObservableObject {
             maximumZoom: preset.maximumZoom
         )
         let dem = includeDEM ? OperationalOfflineMapPlanner.estimatedDEMTileCount(bounds: bounds, resolution: demResolution) : 0
-        let mapBytes = OperationalOfflineMapPlanner.estimatedBytes(
-            tileCount: tiles,
-            includeContours: includeContours,
-            demTileCount: 0
-        )
+        let tileOperations = OperationalOfflineMapPlanner.tileOperationCount(baseTileCount: tiles, baseLayerCount: baseLayerCount, includeContours: includeContours)
+        let mapBytes = Int64(tileOperations) * 32_000
         let demBytes = includeDEM
             ? OperationalOfflineMapPlanner.estimatedDEMBytes(bounds: bounds, resolution: demResolution)
             : 0
-        return (tiles, dem, mapBytes, demBytes, mapBytes + demBytes)
+        return (tileOperations, dem, mapBytes, demBytes, mapBytes + demBytes)
     }
 
     private var aolProgressRun = UUID()
@@ -779,6 +777,7 @@ final class AppleMapOfflineManager: ObservableObject {
         bounds: OperationalMapBounds,
         preset: OperationalOfflinePreset,
         baseLayer: OperationalMapBaseLayer,
+        selectedBaseLayers: [OperationalMapBaseLayer]? = nil,
         includeContours: Bool,
         includeDEM: Bool,
         demResolution: OperationalDEMResolution = .maximum1m,
@@ -786,13 +785,18 @@ final class AppleMapOfflineManager: ObservableObject {
         aolPlan: OperationalSurfacePreparationPlan? = nil
     ) {
         guard !isRunning else { return }
+        let baseLayers = selectedBaseLayers ?? [baseLayer]
+        guard !baseLayers.isEmpty || includeContours || includeDEM || aolPlan != nil else {
+            status = "Select at least one map layer or elevation data type."
+            return
+        }
         let aolRun=UUID();aolProgressRun=aolRun
         maintenanceTask?.cancel()
-        guard let tiles = OperationalOfflineMapPlanner.tiles(
+        guard let tiles = (baseLayers.isEmpty && !includeContours ? [] : OperationalOfflineMapPlanner.tiles(
             bounds: bounds,
             minimumZoom: preset.minimumZoom,
             maximumZoom: preset.maximumZoom
-        ) else {
+        )) else {
             status = "Selection exceeds the 250,000-tile safety limit. Choose a smaller area or preset."
             return
         }
@@ -802,7 +806,7 @@ final class AppleMapOfflineManager: ObservableObject {
         isRunning = true
         AppleApplicationCleanupCenter.shared.setIdleShutdownDeferral(active: true)
         activeSelectionDescription = selectionDescription
-        let tileOperationCount = tiles.count * (includeContours ? 2 : 1)
+        let tileOperationCount = OperationalOfflineMapPlanner.tileOperationCount(baseTileCount: tiles.count, baseLayerCount: baseLayers.count, includeContours: includeContours)
         let operationCount = tileOperationCount + estimatedDEMCount + (aolPlan?.tiles ?? 0)
         let estimatedTileBytes = Int64(tileOperationCount) * 32_000
         let estimatedDEMBytes = includeDEM
@@ -847,10 +851,26 @@ final class AppleMapOfflineManager: ObservableObject {
             }
             let aolWeight=(aolPlan?.advertisedBytes ?? 0)+Int64(aolPlan?.tiles ?? 0)*8_000_000
             self.progress.estimatedBytesTotal += aolWeight
-            for tile in tiles {
-                guard !Task.isCancelled else { break }
-                await self.fetchTile(tile, baseLayer: baseLayer)
-                if includeContours, !Task.isCancelled { await self.fetchContour(tile) }
+            // Supplier-specific workers are serial. Different suppliers may progress together.
+            // The former aggressive same-supplier throughput mode returned abuse tiles in field
+            // trials and does not appear supported by tile suppliers.
+            await withTaskGroup(of: Void.self) { group in
+                for layer in baseLayers {
+                    group.addTask {
+                        for tile in tiles {
+                            guard !Task.isCancelled else { return }
+                            await self.fetchTile(tile, baseLayer: layer)
+                        }
+                    }
+                }
+                if includeContours {
+                    group.addTask {
+                        for tile in tiles {
+                            guard !Task.isCancelled else { return }
+                            await self.fetchContour(tile)
+                        }
+                    }
+                }
             }
             timing.mark("map-downloads-ended")
             if !demDownloads.isEmpty, !Task.isCancelled {
@@ -1340,6 +1360,8 @@ struct AppleOfflineMapPreparationView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var preset = OperationalOfflinePreset.operations
     @State private var selectedBoundaryID = ""
+    @State private var includeImagery: Bool
+    @State private var includeOSM: Bool
     @State private var includeContours: Bool
     @State private var includeDEM = true
     @State private var includeAOL = false
@@ -1369,6 +1391,8 @@ struct AppleOfflineMapPreparationView: View {
         self.boundaries = boundaries
         self.baseLayer = baseLayer
         self.contoursInitiallyEnabled = contoursInitiallyEnabled
+        _includeImagery = State(initialValue: baseLayer == .imagery)
+        _includeOSM = State(initialValue: baseLayer == .openStreetMap)
         _includeContours = State(initialValue: contoursInitiallyEnabled)
         _cacheLimitInput = State(initialValue: String(format: "%.1f", manager.maximumCacheGB))
     }
@@ -1378,11 +1402,15 @@ struct AppleOfflineMapPreparationView: View {
         return OperationalMapBounds(coordinates: polygon.coordinates)
     }
 
+    private var selectedBaseLayers: [OperationalMapBaseLayer] {
+        (includeImagery ? [.imagery] : []) + (includeOSM ? [.openStreetMap] : [])
+    }
+
     private var aolWorkingBytes: Int64 { includeAOL ? (aolPlan.map { $0.reused ? 0 : $0.advertisedBytes*3/2+Int64($0.tiles)*16_000_000 } ?? 0) : 0 }
     private var estimate: (tiles: Int, dem: Int, tileBytes: Int64, demBytes: Int64, bytes: Int64) {
         let base=manager.estimate(
             bounds: bounds, preset: preset, includeContours: includeContours,
-            includeDEM: includeDEM, demResolution: demResolution
+            includeDEM: includeDEM, demResolution: demResolution, baseLayerCount: selectedBaseLayers.count
         )
         return (base.tiles,base.dem,base.tileBytes,base.demBytes,base.bytes+aolWorkingBytes)
     }
@@ -1403,7 +1431,7 @@ struct AppleOfflineMapPreparationView: View {
         let normalized = cacheLimitInput
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: decimalSeparator, with: ".")
-        guard let value = Double(normalized), value.isFinite, (0.1 ... 64).contains(value) else { return nil }
+        guard let value = Double(normalized), value.isFinite, (0.1 ... 1_000).contains(value) else { return nil }
         return value
     }
 
@@ -1422,7 +1450,7 @@ struct AppleOfflineMapPreparationView: View {
     private func saveCacheLimit(showConfirmation: Bool = true) -> Bool {
         cacheLimitFieldFocused = false
         guard let value = parsedCacheLimitGB else {
-            cacheLimitFeedback = "Enter a cache limit from 0.1 to 64 GB."
+            cacheLimitFeedback = "Enter a cache limit from 0.1 to 1,000 GB."
             cacheLimitFeedbackIsError = true
             return false
         }
@@ -1439,6 +1467,9 @@ struct AppleOfflineMapPreparationView: View {
     private var selectionDescription: String {
         let area = boundaries.first(where: { $0.id == selectedBoundaryID })?.title ?? "Current visible map"
         let contents = [
+            includeImagery ? "Imagery" : nil,
+            includeOSM ? "OSM" : nil,
+            includeAOL ? "AOL 1 m" : nil,
             includeContours ? "contours" : nil,
             includeDEM ? "DEM \(demResolution.label)" : nil,
         ].compactMap { $0 }.joined(separator: ", ")
@@ -1461,20 +1492,37 @@ struct AppleOfflineMapPreparationView: View {
         NavigationStack {
             ScrollViewReader { proxy in
                 Form {
-                Section("Area") {
-                    Picker("Boundary", selection: $selectedBoundaryID) {
-                        Text("Current visible map").tag("")
+                Section("Scope") {
+                    Picker("Area", selection: $selectedBoundaryID) {
+                        Text("Current Visible Map").tag("")
                         ForEach(boundaries) { Text($0.title).tag($0.id) }
+                    }.pickerStyle(.menu)
+                }.disabled(manager.isRunning)
+                Section("Map layers") {
+                    DownloadMapCheckbox("Imagery", isOn: $includeImagery)
+                    DownloadMapCheckbox("OpenStreetMap (OSM)", isOn: $includeOSM)
+                    DownloadMapCheckbox("Contours", isOn: $includeContours)
+                }.disabled(manager.isRunning)
+                Section("Detail") {
+                    Picker("Map detail", selection: $preset) {
+                        ForEach(OperationalOfflinePreset.all.reversed()) { Text($0.label).tag($0) }
+                    }.pickerStyle(.menu)
+                }.disabled(manager.isRunning)
+                Section("Elevation data") {
+                    HStack {
+                        DownloadMapCheckbox("DEM", isOn: $includeDEM)
+                        Picker("DEM resolution", selection: $demResolution) {
+                            Text("1 m").tag(OperationalDEMResolution.maximum1m)
+                            Text("10 m").tag(OperationalDEMResolution.enhanced10m)
+                            Text("30 m").tag(OperationalDEMResolution.standard30m)
+                        }
+                        .pickerStyle(.menu).labelsHidden().fixedSize()
+                        .accessibilityLabel("DEM resolution")
+                        .disabled(!includeDEM)
                     }
-                    Picker("Detail", selection: $preset) {
-                        ForEach(OperationalOfflinePreset.all) { Text($0.label).tag($0) }
-                    }
-                }
-                .disabled(manager.isRunning)
-                Section("Contents") {
-                    Toggle("Include contour tiles", isOn: $includeContours)
-                    Toggle("Include DEM tiles", isOn: $includeDEM)
-                    Toggle("Prepare 1 m AOL tiles", isOn: $includeAOL)
+                    DownloadMapCheckbox("AOL (1 m)", isOn: $includeAOL)
+                    if includeDEM { Text(demResolution.explanation).font(.footnote).foregroundStyle(.secondary) }
+                    if includeAOL { Text("AOL obstacle tiles are prepared at 1 m; DEM resolution does not change AOL detail.").font(.footnote).foregroundStyle(.secondary) }
                     if includeAOL {
                         Text("Downloads USGS lidar and builds obstacle tiles on this device after map and terrain downloads. Prepare before flight. Uses the selected region's bounding rectangle plus a 200 ft margin. Prepared tiles are used automatically for AOL calculations.")
                             .font(.footnote).foregroundStyle(.secondary)
@@ -1487,13 +1535,8 @@ struct AppleOfflineMapPreparationView: View {
                             Text("Raw files are removed after assembly; existing prepared areas are retained.").font(.footnote).foregroundStyle(.secondary)
                         }
                     }
-                    if includeDEM {
-                        Picker("DEM detail", selection: $demResolution) {
-                            ForEach(OperationalDEMResolution.allCases) { Text($0.label).tag($0) }
-                        }
-                        Text(demResolution.explanation)
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
+                }.disabled(manager.isRunning)
+                Section("Estimated download") {
                     LabeledContent("Map tiles", value: estimate.tiles.formatted())
                     LabeledContent("DEM tiles", value: estimate.dem.formatted())
                     LabeledContent("Map-tile download", value: AppleMapOfflineManager.formatBytes(estimate.tileBytes))
@@ -1524,14 +1567,13 @@ struct AppleOfflineMapPreparationView: View {
                 Section("Capacity") {
                     if manager.cacheStatsReady {
                         LabeledContent("Current map cache", value: AppleMapOfflineManager.formatBytes(capacity.currentOfflineStorageBytes))
-                        LabeledContent("Before removing older entries", value: AppleMapOfflineManager.formatBytes(capacity.projectedOfflineStorageBytes))
+                        LabeledContent("Estimated after download", value: AppleMapOfflineManager.formatBytes(capacity.projectedOfflineStorageBytes))
                         LabeledContent("Current DEM storage", value: AppleMapOfflineManager.formatBytes(capacity.currentDEMCacheBytes))
-                        LabeledContent("Conservative projected storage", value: AppleMapOfflineManager.formatBytes(capacity.projectedOfflineStorageBytes))
-                        LabeledContent("Combined map cache limit", value: AppleMapOfflineManager.formatBytes(capacity.maximumTileCacheBytes))
+                        LabeledContent("Configured cache limit", value: AppleMapOfflineManager.formatBytes(Int64(manager.maximumCacheGB * 1_000_000_000)))
                         if let available = capacity.availableVolumeBytes {
                             LabeledContent("Available on volume", value: AppleMapOfflineManager.formatBytes(available))
                         }
-                        Text("Imagery and terrain share this limit. Older cached entries are removed to make room.")
+                        Text("Map layers and elevation data share the configured limit. Estimated usage assumes selected files are not already cached and includes temporary AOL space, before cleanup. Older entries may be removed to stay within the limit or when they exceed the maximum tile age.")
                             .font(.footnote).foregroundStyle(.secondary)
                         if capacity.exceedsCacheLimit {
                             Text("This download is expected to exceed the map-cache limit. Increase the limit or reduce the selection before starting.")
@@ -1668,6 +1710,7 @@ struct AppleOfflineMapPreparationView: View {
                                     bounds: bounds,
                                     preset: preset,
                                     baseLayer: baseLayer,
+                                    selectedBaseLayers: selectedBaseLayers,
                                     includeContours: includeContours,
                                     includeDEM: includeDEM,
                                     demResolution: demResolution,
@@ -1679,6 +1722,7 @@ struct AppleOfflineMapPreparationView: View {
                                 }
                             }
                             .disabled(!manager.cacheStatsReady
+                                || (selectedBaseLayers.isEmpty && !includeContours && !includeDEM && !includeAOL)
                                 || (includeAOL && (aolPlan == nil || aolPlan?.bounds != bounds))
                                 || parsedCacheLimitGB == nil
                                 || estimate.tiles > 250_000
@@ -1742,8 +1786,8 @@ struct AppleMapCacheManagementView: View {
             Form {
                 // Keep these controls in the same order as Android's Map Management menu.
                 Section("Map Management") {
-                    Toggle(
-                        followFocusedDrone ? "Follow Focused Drone: On" : "Follow Focused Drone: Off",
+                    SettingsToggle(
+                        "Follow Focused Drone",
                         isOn: $followFocusedDrone
                     )
                     Button(action: onReloadMap) {
@@ -1773,7 +1817,7 @@ struct AppleMapCacheManagementView: View {
                             Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.secondary)
                         }
                     }
-                    Button("Export MA Package…", systemImage: "shippingbox") {
+                    Button("Export Map Package…", systemImage: "shippingbox") {
                         dismiss()
                         onExportMutualAid()
                     }
@@ -1865,7 +1909,7 @@ private struct AppleMapCacheSettingEditor: View {
                     }
                 }
                 Section {
-                    TextField(setting == .cacheSize ? "Decimal GB" : "Days", text: $input)
+                    SettingsTextField(setting == .cacheSize ? "Max Cache Size" : "Maximum Tile Age", text: $input)
                         .keyboardType(setting == .cacheSize ? .decimalPad : .numberPad)
                         .focused($inputFocused)
                         .accessibilityLabel(setting == .cacheSize ? "Cache size in decimal GB" : "Tile age in days")
@@ -1921,8 +1965,8 @@ private struct AppleBadTileManagementView: View {
                 NavigationLink("How To") {
                     AppleBadTileHowToView()
                 }
-                Toggle(
-                    manager.autoRemoveBadTiles ? "Auto Remove Bad Tiles: On" : "Auto Remove Bad Tiles: Off",
+                SettingsToggle(
+                    "Auto Remove Bad Tiles",
                     isOn: $manager.autoRemoveBadTiles
                 )
                 Button("Clear Bad Tile Flags (\(manager.badTileCount))") {
@@ -2078,15 +2122,26 @@ actor AppleSurfaceStore {
             let (west,south)=xy(.init(latitude:bounds.south,longitude:bounds.west),lat:index.originLatitude,lon:index.originLongitude)
             let (east,north)=xy(.init(latitude:bounds.north,longitude:bounds.east),lat:index.originLatitude,lon:index.originLongitude)
             if east < -Double(index.width)/2 || west > Double(index.width)/2 || north < -Double(index.height)/2 || south > Double(index.height)/2 { continue }
-            try OperationalPreparedSurfaceSet.validate(Data(contentsOf:dir.appendingPathComponent("index.json"))) { try Data(contentsOf:dir.appendingPathComponent($0)) }
-            let prefix="aol/\(dir.lastPathComponent)/"
-            for entry in index.entries {
+            try OperationalPreparedSurfaceSet.validate(Data(contentsOf:dir.appendingPathComponent("index.json")), allowPartial: true) { try Data(contentsOf:dir.appendingPathComponent($0)) }
+            let selected = index.entries.filter { entry in
+                let m = entry.metadata
+                guard let tileWest = m.coreWest, let tileSouth = m.coreSouth,
+                      let width = m.coreWidth, let height = m.coreHeight else { return false }
+                return east > tileWest && west < tileWest + Double(width)
+                    && north > tileSouth && south < tileSouth + Double(height)
+            }
+            if selected.isEmpty { continue }
+            let id = selected.count == index.entries.count ? dir.lastPathComponent : UUID().uuidString
+            let prefix="aol/\(id)/"
+            for entry in selected {
                 guard entry.file.range(of:"^tile-[0-9]+-[0-9]+\\.aol$",options:.regularExpression) != nil else { throw OperationalSurfacePreparationError.invalid("Invalid AOL tile name") }
                 let data=try Data(contentsOf:dir.appendingPathComponent(entry.file));_ = try OperationalSurfacePackage(data:data)
                 files.append(.init(path:prefix+entry.file,data:data))
             }
             var object=try JSONSerialization.jsonObject(with:Data(contentsOf:dir.appendingPathComponent("index.json"))) as! [String:Any]
             object["preparedAtEpochMs"]=preparedAt(dir,index)
+            let names = Set(selected.map(\.file))
+            object["entries"] = (object["entries"] as? [[String: Any]] ?? []).filter { names.contains($0["file"] as? String ?? "") }
             files.append(.init(path:prefix+"index.json",data:try JSONSerialization.data(withJSONObject:object)))
         }
         return files
@@ -2096,7 +2151,7 @@ actor AppleSurfaceStore {
         var count=0
         for (id,paths) in groups {
             guard id.range(of:"^[0-9a-fA-F-]+$",options:.regularExpression) != nil,let data=files["aol/\(id)/index.json"] else { throw OperationalSurfacePreparationError.invalid("Missing or invalid AOL index") }
-            try OperationalPreparedSurfaceSet.validate(data) { name in
+            try OperationalPreparedSurfaceSet.validate(data, allowPartial: true) { name in
                 guard let bytes=files["aol/\(id)/\(name)"] else { throw OperationalSurfacePreparationError.invalid("Missing AOL tile") };return bytes
             }
             let index=try JSONDecoder().decode(RegionIndex.self,from:data)
@@ -2379,5 +2434,21 @@ struct AppleStorageCacheView: View {
         .navigationTitle("Cache Management")
         .sheet(item: $editor) { AppleMapCacheSettingEditor(manager: manager, setting: $0) }
         .onAppear { manager.refreshStats() }
+    }
+}
+
+private struct DownloadMapCheckbox: View {
+    let title: String
+    @Binding var isOn: Bool
+    init(_ title: String, isOn: Binding<Bool>) { self.title = title; _isOn = isOn }
+    var body: some View {
+        Button { isOn.toggle() } label: {
+            HStack(spacing: 12) {
+                Image(systemName: isOn ? "checkmark.square.fill" : "square").foregroundStyle(.tint)
+                Text(title).foregroundStyle(.primary)
+                Spacer()
+            }.frame(minHeight: 44).contentShape(Rectangle())
+        }.buttonStyle(.plain)
+        .accessibilityLabel(title).accessibilityValue(isOn ? "Selected" : "Not selected")
     }
 }

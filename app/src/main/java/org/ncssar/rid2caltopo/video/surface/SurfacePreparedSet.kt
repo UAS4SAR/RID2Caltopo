@@ -4,13 +4,13 @@ import org.json.JSONObject
 
 /** Validates the complete core grid; an index alone is never proof of reusable coverage. */
 internal object SurfacePreparedSet {
-    fun validate(index: JSONObject, read: (String) -> ByteArray) {
+    fun validate(index: JSONObject, allowPartial: Boolean = false, read: (String) -> ByteArray) {
         val w=index.getInt("width");val h=index.getInt("height")
         require(w in 1..4000 && h in 1..4000)
         val expected=mutableSetOf<String>()
         for(y in 0 until h step 1000) for(x in 0 until w step 1000) expected+="tile-$y-$x.aol"
         val entries=index.getJSONArray("entries")
-        require(entries.length()==expected.size)
+        require(entries.length() in 1..expected.size && (allowPartial || entries.length()==expected.size))
         for(i in 0 until entries.length()) {
             val entry=entries.getJSONObject(i);val name=entry.getString("file")
             require(expected.remove(name)) { "Unexpected or duplicate AOL tile" }

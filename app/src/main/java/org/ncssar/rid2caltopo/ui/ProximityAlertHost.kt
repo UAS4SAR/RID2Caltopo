@@ -16,7 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
-import androidx.compose.material3.AlertDialog
+import org.ncssar.rid2caltopo.ui.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -1049,7 +1049,8 @@ fun ResumeProximityAlertButton(onSettings: (() -> Unit)? = null) {
         else -> "On"
     }
     androidx.compose.material3.AssistChip(
-        onClick = { if (suspended && consent.enabled) ProximityAlertCenter.resumeSuspendedAlert() else onSettings?.invoke() },
+        onClick = { if (onSettings != null) onSettings() else if (suspended && consent.enabled) ProximityAlertCenter.resumeSuspendedAlert() },
+        enabled = onSettings != null || (suspended && consent.enabled),
         label = { Text("Proximity Alerts: $status", maxLines = 1) }
     )
 }

@@ -239,26 +239,26 @@ struct AppleAnomalySettingsView: View {
     var body: some View {
         Form {
             Section("Detector") {
-                Picker("AD Mode", selection: modeBinding) {
+                SettingsPicker("AD Mode", selection: modeBinding) {
                     ForEach(AppleAnomalyMode.allCases) { Text($0.label).tag($0) }
                 }
                 if model.anomalyMode != .off {
                     HStack {
-                        Text("Realtime Defaults")
+                        SettingsHelpLabel("Realtime Defaults")
                         Spacer()
                         Button("Reset") {
                             configuration = configuration.resetToRealtimeDefaults(for: model.anomalyMode)
                             apply()
                         }
                     }
-                    Toggle("Motion", isOn: $configuration.motionEnabled)
-                    Toggle("Saliency", isOn: $configuration.saliencyEnabled)
-                    Toggle("Show Guide Boxes", isOn: $configuration.showGuideBoxes)
+                    SettingsToggle("Motion", isOn: $configuration.motionEnabled)
+                    SettingsToggle("Saliency", isOn: $configuration.saliencyEnabled)
+                    SettingsToggle("Show Guide Boxes", isOn: $configuration.showGuideBoxes)
                     if model.anomalyMode == .infrared {
-                        Toggle("Show Hottest Region", isOn: $configuration.showHotOverlay)
+                        SettingsToggle("Show Hottest Region", isOn: $configuration.showHotOverlay)
                     }
-                    Toggle("Show Candidate Blobs", isOn: $configuration.showCandidateBlobs)
-                    Toggle("Troubleshooting Debug", isOn: $configuration.troubleshootingDebug)
+                    SettingsToggle("Show Candidate Blobs", isOn: $configuration.showCandidateBlobs)
+                    SettingsToggle("Troubleshooting Debug", isOn: $configuration.troubleshootingDebug)
                 }
             }
             if model.anomalyMode == .targetColors { targetColorsSection }
@@ -266,7 +266,7 @@ struct AppleAnomalySettingsView: View {
                 Section("Sensitivity") {
                     valueSlider("Sensitivity", value: $configuration.sensitivity, range: 0 ... 1, format: .percent)
                     valueSlider("Motion Evidence", value: $configuration.motionEvidenceSensitivity, range: 0 ... 1, format: .percent)
-                    Stepper("Min Hits: \(configuration.minimumHits)", value: $configuration.minimumHits, in: 1 ... 5)
+                    SettingsStepper("Min Hits: \(configuration.minimumHits)", value: $configuration.minimumHits, in: 1 ... 5)
                 }
                 Section("Scan Frame & Target Size") {
                     valueSlider("Scan Zone", value: $configuration.scanZone, range: 0.5 ... 1, format: .percent)
@@ -293,27 +293,27 @@ struct AppleAnomalySettingsView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
                 Section("Cadence") {
-                    Picker("Stride", selection: $configuration.strideMode) {
+                    SettingsPicker("Stride", selection: $configuration.strideMode) {
                         ForEach(AppleAnomalyStrideMode.allCases) { Text($0.label).tag($0) }
                     }
-                    Stepper("Frame Stride: \(configuration.frameStride)x", value: $configuration.frameStride, in: 1 ... 33)
+                    SettingsStepper("Frame Stride: \(configuration.frameStride)x", value: $configuration.frameStride, in: 1 ... 33)
                     if configuration.strideMode == .adaptive {
-                        Stepper("Adaptive Minimum: \(configuration.adaptiveMinStrideFrames) frames", value: $configuration.adaptiveMinStrideFrames, in: 2 ... 33)
+                        SettingsStepper("Adaptive Minimum: \(configuration.adaptiveMinStrideFrames) frames", value: $configuration.adaptiveMinStrideFrames, in: 2 ... 33)
                         valueSlider("Adaptive Maximum", value: $configuration.adaptiveMaxStrideSeconds, range: 0.1 ... 10, format: .seconds)
                     }
-                    Stepper("Detail: \(configuration.pixelStep == 0 ? "Auto" : String(configuration.pixelStep))", value: $configuration.pixelStep, in: 0 ... 4)
+                    SettingsStepper("Detail: \(configuration.pixelStep == 0 ? "Auto" : String(configuration.pixelStep))", value: $configuration.pixelStep, in: 0 ... 4)
                 }
                 Section("Motion Registration") {
-                    Picker("Registration", selection: $configuration.registrationMode) {
+                    SettingsPicker("Registration", selection: $configuration.registrationMode) {
                         ForEach(AppleMotionRegistration.allCases) { Text($0.label).tag($0) }
                     }
-                    Picker("Movement Estimator", selection: $configuration.movementEstimator) {
+                    SettingsPicker("Movement Estimator", selection: $configuration.movementEstimator) {
                         ForEach(AppleMovementEstimator.allCases) { Text($0.label).tag($0) }
                     }
                 }
                 if model.anomalyMode == .infrared {
                     Section("Thermal") {
-                        Picker("Infrared Palette", selection: $configuration.thermalPolarity) {
+                        SettingsPicker("Infrared Palette", selection: $configuration.thermalPolarity) {
                             ForEach(AppleThermalPolarity.allCases) { Text($0.label).tag($0) }
                         }
                         valueSlider("Thermal Min Delta", value: $configuration.thermalMinimumDelta, range: 1 ... 64, format: .plain)
@@ -321,7 +321,7 @@ struct AppleAnomalySettingsView: View {
                 }
                 if model.anomalyMode == .colorUniqueness || model.anomalyMode == .targetColors {
                     Section("Color") {
-                        Stepper("Color Candidates: \(configuration.colorCandidateLimit)", value: $configuration.colorCandidateLimit, in: 1 ... 4)
+                        SettingsStepper("Color Candidates: \(configuration.colorCandidateLimit)", value: $configuration.colorCandidateLimit, in: 1 ... 4)
                     }
                 }
                 Section {
@@ -344,13 +344,13 @@ struct AppleAnomalySettingsView: View {
     private var targetColorsSection: some View {
         Section("Target Colors") {
             ForEach(AppleTargetColor.allCases) { color in
-                Toggle(color.label, isOn: Binding(
+                SettingsToggle(color.label, isOn: Binding(
                     get: { configuration.targetColorMask & color.rawValue != 0 },
                     set: { enabled in
                         if enabled { configuration.targetColorMask |= color.rawValue }
                         else { configuration.targetColorMask &= ~color.rawValue }
                     }
-                ))
+                ), helpKey: "Target Colors")
             }
         }
     }
@@ -359,8 +359,11 @@ struct AppleAnomalySettingsView: View {
 
     private func valueSlider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, format: SliderFormat) -> some View {
         VStack(alignment: .leading) {
-            HStack { Text(title); Spacer(); Text(label(value.wrappedValue, format: format)).foregroundStyle(.secondary) }
+            SettingsHelpLabel(title, centered: true).font(.subheadline.weight(.semibold)).foregroundStyle(.tint)
+            VStack {
+                Text(label(value.wrappedValue, format: format)).monospacedDigit()
             Slider(value: value, in: range)
+            }.modifier(SettingsFieldBox())
         }
     }
 

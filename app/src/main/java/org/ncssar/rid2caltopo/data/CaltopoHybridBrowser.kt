@@ -126,10 +126,10 @@ fun CaltopoHybridBrowser(
                 androidx.compose.material3.TextButton(onClick = { credentialsExpanded = true }, enabled = !personalBusy) {
                     Text(if (personalBusy) "Loading personal maps…" else "Credentials: " +
                         if (CaltopoPersonalSession.browsingPersonal) "Personal: ${CaltopoPersonalSession.username.ifBlank { "Sign in" }}" else
-                        (profileOptions.firstOrNull { it.profileId == selectedProfileId }?.label ?: "Org"))
+                        (profileOptions.firstOrNull { it.profileId == selectedProfileId }?.label ?: "No Teams credentials"))
                     Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Select credentials")
                 }
-                androidx.compose.material3.DropdownMenu(expanded = credentialsExpanded, onDismissRequest = { credentialsExpanded = false }) {
+                org.ncssar.rid2caltopo.ui.DropdownMenu(expanded = credentialsExpanded, onDismissRequest = { credentialsExpanded = false }) {
                     androidx.compose.material3.DropdownMenuItem(
                         text = { Text("Personal: ${CaltopoPersonalSession.username.ifBlank { "Sign in" }}") },
                         onClick = { credentialsExpanded = false; selectPersonal() }

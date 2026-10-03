@@ -71,6 +71,7 @@ struct ContentView: View {
     private let iCloudBackup = AppleICloudBackupCenter.shared
     @State private var showTrackMap = ProcessInfo.processInfo.arguments.contains("--show-map")
     @State private var showCaltopoSettings = false
+    @State private var showProximitySettings = false
     @State private var showDiagnosticLogs = false
     @State private var showStatus = false
     @State private var showReleaseNotes = false
@@ -83,6 +84,7 @@ struct ContentView: View {
     @State private var showStorageManagement = false
     @State private var showPersonalAccountEditor = false
     @State private var showPersonalCredentialLogin = false
+    @State private var openMapsAfterPersonalLogin = false
     @State private var showTeamMaps = false
     @State private var showMapOptions = false
     @State private var showConfirmExit = false
@@ -218,6 +220,23 @@ struct ContentView: View {
                         showTrackMap = false
                     }
             }
+            .sheet(isPresented: $showProximitySettings) {
+                NavigationStack {
+                    CaltopoSettingsView(
+                        settings: caltopoSettings, orgSettings: orgConfigSettings,
+                        locationProvider: locationProvider, importer: orgConfigImporter,
+                        identityStore: droneConfirmations, trackModel: ridTracks,
+                        proximityAlerts: proximityAlerts, bridgeAlerts: bridgeAlerts,
+                        iCloudBackup: iCloudBackup, startAtProximity: true
+                    ) { configuration in
+                        ridTracks.configureCaltopo(configuration, trackFolderName: orgConfigSettings.trackFolder)
+                        clueStore.configure(configuration, trackFolderName: orgConfigSettings.trackFolder)
+                    }
+                    .toolbar { ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { showProximitySettings = false }
+                    } }
+                }
+            }
             .navigationDestination(isPresented: $showCaltopoSettings) {
                 CaltopoSettingsView(
                     settings: caltopoSettings,
@@ -312,7 +331,7 @@ struct ContentView: View {
                 isPresented: $showMapOptions,
                 titleVisibility: .visible
             ) {
-                Button("Switch Map") { showTeamMaps = true }
+                Button("Switch Map") { openMapBrowser() }
                 Button("Disconnect", role: .destructive) {
                     applyCaltopoConfiguration(caltopoSettings.disconnectMap())
                 }
@@ -1023,10 +1042,19 @@ struct ContentView: View {
             }
             .onChange(of: networkDiagnostics.checkRecoveryGeneration) { _, _ in
                 guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
-                AppleLog.info("NetworkChecks", "Network path available; refreshing airspace, NOTAMs, and land rules")
+                AppleLog.info("NetworkChecks", "Network path available; refreshing safety data and organization Tracker check-in")
                 airspace.refreshNow(location: locationProvider.lastLocation)
                 notams.refreshNow(location: locationProvider.lastLocation)
                 landRestrictions.refreshNow(location: locationProvider.lastLocation)
+                Task {
+                    await refreshManagedOrganizationConfiguration(force: true, waitForInFlight: true)
+                }
+                Task {
+                    guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
+                    if AppleAircraftOrganizationAccess.belongsToOrganization {
+                        _ = await AppleAircraftOrganizationAccess.refresh(baseURL: AppleAircraftOrganizationAccess.scope)
+                    }
+                }
             }
             .onChange(of: networkDiagnostics.currentSnapshotID) { _, _ in
                 refreshControllerRTMPURL()
@@ -1239,10 +1267,21 @@ struct ContentView: View {
                 AppleCaltopoPersonalProbeView()
             }
         }
-        .sheet(isPresented: $showPersonalCredentialLogin) {
+        .sheet(isPresented: $showPersonalCredentialLogin, onDismiss: {
+            if openMapsAfterPersonalLogin {
+                openMapsAfterPersonalLogin = false
+                showTeamMaps = true
+            } else if caltopoSettings.usesPersonalCredentials {
+                // Closing the browser is not proof that sign-in was cancelled.
+                Task {
+                    if await caltopoSettings.loadPersonalMaps() { showTeamMaps = true }
+                }
+            }
+        }) {
             NavigationStack {
                 AppleCaltopoPersonalProbeView(onCatalog: { username, maps in
                     caltopoSettings.acceptPersonalCatalog(username, maps: maps)
+                    openMapsAfterPersonalLogin = true
                     showPersonalCredentialLogin = false
                 })
             }
@@ -1596,10 +1635,11 @@ struct ContentView: View {
         Task { await deviceReconciliation.check(baseURL: orgConfigSettings.trackerURLPrefix, token: orgConfigSettings.trackerAPIKey) }
     }
 
-    private func refreshManagedOrganizationConfiguration(force: Bool = false) async {
+    private func refreshManagedOrganizationConfiguration(force: Bool = false, waitForInFlight: Bool = false) async {
+        guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
         await orgConfigImporter.refreshManagedConfiguration(
             caltopoSettings: caltopoSettings, orgSettings: orgConfigSettings,
-            identityStore: droneConfirmations, force: force)
+            identityStore: droneConfirmations, force: force, waitForInFlight: waitForInFlight)
     }
 
     private var rootScreen: some View {
@@ -1750,7 +1790,7 @@ struct ContentView: View {
     private var androidRestrictionStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
           HStack(spacing: 8) {
-            AppleProximityStatusChip(center: proximityAlerts) { showCaltopoSettings = true }
+            AppleProximityStatusChip(center: proximityAlerts) { showProximitySettings = true }
             if airspace.enabled || notams.state.visible {
                 NavigationLink {
                     if usesAirspaceRestrictionStatus {
@@ -2331,8 +2371,10 @@ struct ContentView: View {
             bridgeSignalStrengthDbm: bluetoothScanner.bridgeSignalStrengthDbm,
             automaticStreamPairingAircraftID: $automaticStreamPairingAircraftID,
             onReturnToMain: closeLiveView,
+            onConfirmPairedDrone: confirmDrone,
             onMapStatusTap: openCaltopoMapActions,
-            onSwitchMap: { showTeamMaps = true },
+            onProximitySettings: { showProximitySettings = true },
+            onSwitchMap: { openMapBrowser() },
             onDisconnectMap: {
                 applyCaltopoConfiguration(caltopoSettings.disconnectMap())
             },
@@ -2410,6 +2452,7 @@ struct ContentView: View {
                 let loaded = await caltopoSettings.loadPersonalMaps()
                 guard caltopoSettings.usesPersonalCredentials else { return }
                 showPersonalCredentialLogin = !loaded
+                showTeamMaps = loaded
             }
             return
         }
@@ -2446,9 +2489,17 @@ struct ContentView: View {
         }
     }
 
+    private func openMapBrowser() {
+        if caltopoSettings.usesPersonalCredentials || caltopoSettings.credentialID.isEmpty || caltopoSettings.credentialSecret.isEmpty {
+            activateCredentialProfile("personal")
+        } else {
+            showTeamMaps = true
+        }
+    }
+
     private func openCaltopoMapActions() {
         if caltopoSettings.mapID.isEmpty {
-            showTeamMaps = true
+            openMapBrowser()
         } else {
             showMapOptions = true
         }
@@ -3138,7 +3189,7 @@ private struct AwaitingMapPublicationPanel: View {
                             }) { flight in
                                 Button {
                                     destinationMap = flight.mapID.isEmpty ? settings.mapID : flight.mapID
-                                    destinationTeam = flight.mapID.isEmpty ? settings.configuration.teamID : flight.teamID
+                                    destinationTeam = flight.mapID.isEmpty ? settings.configuration.publicationScope : flight.teamID
                                     destinationTitle = flight.mapID.isEmpty || flight.mapID == settings.mapID ? settings.mapTitle : "Original incident map"
                                     selected = flight
                                 } label: {
@@ -3158,14 +3209,15 @@ private struct AwaitingMapPublicationPanel: View {
                                 guard let flight = selected else { return }
                                 let map = destinationMap; let team = destinationTeam
                                 Task {
-                                    await tracks.decideAwaitingFlight(flight.id, mapID: map, teamID: team)
-                                    clues.bindAwaitingFlight(flight, mapID: map, teamID: team)
+                                    if await tracks.decideAwaitingFlight(flight.id, mapID: map, teamID: team) {
+                                        clues.bindAwaitingFlight(flight, mapID: map, teamID: team)
+                                    }
                                 }
                                 selected = nil
                             }
                             Button("Keep local") {
                                 guard let flight = selected else { return }
-                                Task { await tracks.decideAwaitingFlight(flight.id, mapID: nil, teamID: destinationTeam) }
+                                Task { _ = await tracks.decideAwaitingFlight(flight.id, mapID: nil, teamID: destinationTeam) }
                                 selected = nil
                             }
                             Button("Later", role: .cancel) { selected = nil }
@@ -3208,7 +3260,7 @@ struct AppleProximityStatusChip: View {
     var onSettings: (() -> Void)? = nil
     var body: some View {
         Button {
-            if center.isSuspended { center.resume() } else { onSettings?() }
+            if let onSettings { onSettings() } else if center.isSuspended { center.resume() }
         } label: {
             AppleOperationalStatusChipLabel(title: "Proximity Alerts: \(center.status)", tone: .neutral)
         }

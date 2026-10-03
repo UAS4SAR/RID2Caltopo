@@ -57,7 +57,7 @@ final class AppleClueStore: ObservableObject {
         configurationGeneration += 1
         personalLogin = configuration.personalSessionID != nil
         mapID = configuration.mapID
-        teamID = personalLogin ? "personal:" + configuration.personalAccountID : configuration.teamID
+        teamID = configuration.publicationScope
         self.trackFolderName = trackFolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "Drone Tracks"
             : trackFolderName.trimmingCharacters(in: .whitespacesAndNewlines)

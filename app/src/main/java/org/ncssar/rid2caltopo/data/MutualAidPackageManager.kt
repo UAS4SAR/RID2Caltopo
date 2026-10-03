@@ -11,6 +11,7 @@ import org.json.JSONObject
 import org.ncssar.rid2caltopo.video.mapcache.TileDiskCacheWriter
 import org.ncssar.rid2caltopo.video.ArcGisWorldImageryTileSource
 import org.ncssar.rid2caltopo.video.GeoBoundary
+import org.ncssar.rid2caltopo.video.UsgsContoursTileSource
 import org.ncssar.rid2caltopo.video.OsmStandardTileSource
 import org.osmdroid.tileprovider.tilesource.ITileSource
 import org.osmdroid.util.BoundingBox
@@ -46,91 +47,26 @@ object MutualAidPackageManager {
         val includesMapAccess: Boolean = true
     )
 
-    internal fun exportPackage(
-        context: Context,
-        destUri: Uri,
-        packageName: String,
-        displayName: String,
-        incident: String,
-        opPeriod: String,
-        targetMapId: String,
-        targetMapTitle: String,
-        expiresAtEpochMs: Long,
-        bounds: BoundingBox,
-        minZoom: Int,
-        maxZoom: Int,
-        tileSource: ITileSource,
-        includeDem: Boolean,
-        includeMapAccess: Boolean = true,
-        clipBoundary: GeoBoundary? = null
-    ): Pair<Boolean, String> {
-        return try {
-            val resolver = context.contentResolver
-            resolver.openOutputStream(destUri, "w")?.use { rawOut ->
-                writePackage(
-                    context = context,
-                    rawOut = rawOut,
-                    packageName = packageName,
-                    displayName = displayName,
-                    incident = incident,
-                    opPeriod = opPeriod,
-                    targetMapId = targetMapId,
-                    targetMapTitle = targetMapTitle,
-                    expiresAtEpochMs = expiresAtEpochMs,
-                    bounds = bounds,
-                    minZoom = minZoom,
-                    maxZoom = maxZoom,
-                    tileSource = tileSource,
-                    includeDem = includeDem,
-                    includeMapAccess = includeMapAccess,
-                    clipBoundary = clipBoundary
-                )
-            } ?: return false to "Could not open destination for MA package export."
-
-        } catch (e: Exception) {
-            CaltopoClient.CTWarn("MutualAidPackageMgr", "exportPackage() failed.", e)
-            false to (e.message ?: "Failed to save MA package.")
-        }
-    }
-
     internal fun exportPackageToTempFile(
         context: Context,
         packageName: String,
-        displayName: String,
-        incident: String,
-        opPeriod: String,
-        targetMapId: String,
-        targetMapTitle: String,
-        expiresAtEpochMs: Long,
         bounds: BoundingBox,
-        minZoom: Int,
-        maxZoom: Int,
-        tileSource: ITileSource,
+        tileSources: List<ITileSource>,
         includeDem: Boolean,
-        includeMapAccess: Boolean = true,
-        clipBoundary: GeoBoundary? = null
+        includeAol: Boolean,
     ): Pair<Boolean, File?> {
         return try {
             val tempDir = context.cacheDir.resolve("ma-transfer").apply { mkdirs() }
-            val file = File.createTempFile("${sanitizePath(packageName)}_mutual_aid_package_", ".zip", tempDir)
+            val file = File.createTempFile("${sanitizePath(packageName)}_map_package_", ".zip", tempDir)
             file.outputStream().use { rawOut ->
                 writePackage(
                     context = context,
                     rawOut = rawOut,
                     packageName = packageName,
-                    displayName = displayName,
-                    incident = incident,
-                    opPeriod = opPeriod,
-                    targetMapId = targetMapId,
-                    targetMapTitle = targetMapTitle,
-                    expiresAtEpochMs = expiresAtEpochMs,
                     bounds = bounds,
-                    minZoom = minZoom,
-                    maxZoom = maxZoom,
-                    tileSource = tileSource,
+                    tileSources = tileSources,
                     includeDem = includeDem,
-                    includeMapAccess = includeMapAccess,
-                    clipBoundary = clipBoundary
+                    includeAol = includeAol,
                 )
             }
             true to file
@@ -151,7 +87,7 @@ object MutualAidPackageManager {
             val manifestBytes = entryBytes[MANIFEST_PATH] ?: return false to "Package is missing manifest.json."
             val manifest = JSONObject(String(manifestBytes, Charsets.UTF_8))
             if (manifest.optString("format") != FORMAT) {
-                return false to "Unexpected MA package format."
+                return false to "Unexpected map package format."
             }
 
             val profileEnc = manifest.optString("profile_enc")
@@ -195,10 +131,10 @@ object MutualAidPackageManager {
             }
 
             val importedAol=org.ncssar.rid2caltopo.video.surface.SurfaceStore.importSets(context,entryBytes)
-            true to "Imported MA package: $importedAol AOL tile(s), $importedTiles tile(s), $importedDem DEM tile(s)."
+            true to "Imported map package: $importedAol AOL tile(s), $importedTiles tile(s), $importedDem DEM tile(s)."
         } catch (e: Exception) {
             CaltopoClient.CTWarn("MutualAidPackageMgr", "importPackage() failed.", e)
-            false to (e.message ?: "Failed to import MA package.")
+            false to (e.message ?: "Failed to import map package.")
         }
     }
 
@@ -263,13 +199,14 @@ object MutualAidPackageManager {
                     entry = zip.nextEntry
                 }
             }
-        } ?: throw IllegalStateException("Could not open selected MA package.")
+        } ?: throw IllegalStateException("Could not open selected map package.")
         return entryBytes
     }
 
     private fun resolveTileSource(sourceName: String): ITileSource? = when (sourceName) {
         OsmStandardTileSource.name() -> OsmStandardTileSource
         ArcGisWorldImageryTileSource.name() -> ArcGisWorldImageryTileSource
+        UsgsContoursTileSource.name() -> UsgsContoursTileSource
         else -> null
     }
 
@@ -280,64 +217,48 @@ object MutualAidPackageManager {
         context: Context,
         rawOut: OutputStream,
         packageName: String,
-        displayName: String,
-        incident: String,
-        opPeriod: String,
-        targetMapId: String,
-        targetMapTitle: String,
-        expiresAtEpochMs: Long,
         bounds: BoundingBox,
-        minZoom: Int,
-        maxZoom: Int,
-        tileSource: ITileSource,
+        tileSources: List<ITileSource>,
         includeDem: Boolean,
-        includeMapAccess: Boolean,
-        clipBoundary: GeoBoundary?
+        includeAol: Boolean,
     ): Pair<Boolean, String> {
         val resolver = context.contentResolver
         val tileWriter = TileDiskCacheWriter(context)
+        val region = MapPackageRegion(bounds.latNorth, bounds.lonEast, bounds.latSouth, bounds.lonWest)
         val tileEntries = ArrayList<JSONObject>()
         val demEntries = ArrayList<JSONObject>()
         val archiveDir = CaltopoClient.GetArchiveDir()
         val demDir = archiveDir?.findFile("cache")?.findFile("dem")
-        val profileEnc = if (includeMapAccess) MutualAidProfileManager.buildEncryptedProfilePayloadForCurrentIncident(
-            displayName = displayName,
-            incident = incident,
-            opPeriod = opPeriod,
-            targetMapId = targetMapId,
-            targetMapTitle = targetMapTitle,
-            expiresAtEpochMs = expiresAtEpochMs
-        )
-        else ""
-        if (includeMapAccess && profileEnc.isNullOrBlank()) {
-            throw IllegalStateException("Configure the Mutual Aid account in Settings before exporting an MA package.")
-        }
         var aolCount=0
         ZipOutputStream(rawOut).use { zip ->
-            forEachTileIndexForBounds(bounds, minZoom, maxZoom, clipBoundary) { tileIndex ->
-                val bytes = tileWriter.readTileBytes(tileSource, tileIndex) ?: return@forEachTileIndexForBounds
-                val z = MapTileIndex.getZoom(tileIndex)
-                val x = MapTileIndex.getX(tileIndex)
-                val y = MapTileIndex.getY(tileIndex)
-                val path = "tiles/${sanitizePath(tileSource.name())}/$z/$x/$y.bin"
-                zip.putNextEntry(ZipEntry(path))
-                zip.write(bytes)
-                zip.closeEntry()
-                tileEntries += JSONObject()
-                    .put("source", tileSource.name())
-                    .put("z", z)
-                    .put("x", x)
-                    .put("y", y)
-                    .put("expires_at_epoch_ms", tileWriter.getExpirationTimestamp(tileSource, tileIndex) ?: 0L)
-                    .put("path", path)
+            for (tileSource in tileSources) {
+                for (tileIndex in tileWriter.cachedTileIndices(tileSource)) {
+                    if (!region.includesTile(MapTileIndex.getZoom(tileIndex), MapTileIndex.getX(tileIndex), MapTileIndex.getY(tileIndex))) continue
+                    val bytes = tileWriter.readTileBytes(tileSource, tileIndex) ?: continue
+                    val z = MapTileIndex.getZoom(tileIndex)
+                    val x = MapTileIndex.getX(tileIndex)
+                    val y = MapTileIndex.getY(tileIndex)
+                    val path = "tiles/${sanitizePath(tileSource.name())}/$z/$x/$y.bin"
+                    zip.putNextEntry(ZipEntry(path))
+                    zip.write(bytes)
+                    zip.closeEntry()
+                    tileEntries += JSONObject()
+                        .put("source", tileSource.name())
+                        .put("z", z)
+                        .put("x", x)
+                        .put("y", y)
+                        .put("expires_at_epoch_ms", tileWriter.getExpirationTimestamp(tileSource, tileIndex) ?: 0L)
+                        .put("path", path)
+                }
+
             }
 
             if (includeDem) {
-                val demTileNames = demTileNamesForBounds(bounds)
-                for (tileName in demTileNames) {
-                    val fileName = "USGS_1_$tileName.tif"
-                    val demFile = demDir?.findFile(fileName) ?: continue
+                for (demFile in demDir?.listFiles().orEmpty()) {
                     if (!demFile.isFile) continue
+                    val fileName = demFile.name ?: continue
+                    val demBounds = MapPackageRegion.demBounds(fileName) ?: continue
+                    if (!region.overlaps(demBounds)) continue
                     val path = "dem/$fileName"
                     resolver.openInputStream(demFile.uri)?.use { input ->
                         zip.putNextEntry(ZipEntry(path))
@@ -345,14 +266,14 @@ object MutualAidPackageManager {
                         zip.closeEntry()
                     } ?: continue
                     demEntries += JSONObject()
-                        .put("tile_name", tileName)
+                        .put("tile_name", fileName)
                         .put("file_name", fileName)
                         .put("path", path)
                 }
             }
 
-            val aolFiles=org.ncssar.rid2caltopo.video.surface.SurfaceStore.exportSets(context,
-                org.ncssar.rid2caltopo.video.surface.SurfaceBounds(bounds.lonWest,bounds.latSouth,bounds.lonEast,bounds.latNorth))
+            val aolFiles=if (includeAol) org.ncssar.rid2caltopo.video.surface.SurfaceStore.exportSets(context,
+                org.ncssar.rid2caltopo.video.surface.SurfaceBounds(bounds.lonWest,bounds.latSouth,bounds.lonEast,bounds.latNorth)) else emptyList()
             aolCount=aolFiles.count { it.first.endsWith(".aol") }
             for((path,bytes) in aolFiles) { zip.putNextEntry(ZipEntry(path));zip.write(bytes);zip.closeEntry() }
             val manifest = JSONObject()
@@ -362,125 +283,14 @@ object MutualAidPackageManager {
                 .put("generated", CaltopoClient.TimeDatestampString(System.currentTimeMillis()))
                 .put("package_name", packageName)
                 .put("source_org", "")
-                .put("profile_enc", profileEnc)
+                .put("profile_enc", "")
                 .put("tile_entries", JSONArray(tileEntries))
                 .put("dem_entries", JSONArray(demEntries))
             zip.putNextEntry(ZipEntry(MANIFEST_PATH))
             zip.write(manifest.toString(2).toByteArray(Charsets.UTF_8))
             zip.closeEntry()
         }
-        return true to "Saved MA package with $aolCount AOL tile(s), ${tileEntries.size} tile(s) and ${demEntries.size} DEM tile(s)."
+        return true to "Saved map package with $aolCount AOL tile(s), ${tileEntries.size} tile(s) and ${demEntries.size} DEM tile(s)."
     }
 
-    private fun forEachTileIndexForBounds(
-        bounds: BoundingBox,
-        minZoom: Int,
-        maxZoom: Int,
-        clipBoundary: GeoBoundary? = null,
-        block: (Long) -> Unit
-    ) {
-        val north = bounds.latNorth.coerceIn(-85.05112878, 85.05112878)
-        val south = bounds.latSouth.coerceIn(-85.05112878, 85.05112878)
-        val west = bounds.lonWest
-        val east = bounds.lonEast
-        val loLat = minOf(north, south)
-        val hiLat = maxOf(north, south)
-        val loLon = minOf(west, east)
-        val hiLon = maxOf(west, east)
-        for (z in minZoom..maxZoom) {
-            val maxTile = (1 shl z) - 1
-            val minX = lonToTileX(loLon, z).coerceIn(0, maxTile)
-            val maxX = lonToTileX(hiLon, z).coerceIn(0, maxTile)
-            val minY = latToTileY(hiLat, z).coerceIn(0, maxTile)
-            val maxY = latToTileY(loLat, z).coerceIn(0, maxTile)
-            for (x in minX..maxX) {
-                for (y in minY..maxY) {
-                    if (!tileIndexInsideBoundary(z, x, y, clipBoundary)) continue
-                    block(MapTileIndex.getTileIndex(z, x, y))
-                }
-            }
-        }
-    }
-
-    private fun demTileNamesForBounds(bounds: BoundingBox): List<String> {
-        val latMin = minOf(bounds.latNorth, bounds.latSouth)
-        val latMax = maxOf(bounds.latNorth, bounds.latSouth)
-        val lonMin = minOf(bounds.lonWest, bounds.lonEast)
-        val lonMax = maxOf(bounds.lonWest, bounds.lonEast)
-        val latSouthBlock = floor(latMin).toInt()
-        val latNorthBlock = kotlin.math.ceil(latMax).toInt() - 1
-        val lonWestBlock = floor(lonMin).toInt()
-        val lonEastBlock = kotlin.math.ceil(lonMax).toInt() - 1
-        val names = mutableListOf<String>()
-        for (latBlock in latSouthBlock..latNorthBlock) {
-            val tileNorth = latBlock + 1
-            val latPart = if (tileNorth >= 0) "n%02d".format(tileNorth) else "s%02d".format(-tileNorth)
-            for (lonBlock in lonWestBlock..lonEastBlock) {
-                val lonPart = if (lonBlock < 0) "w%03d".format(-lonBlock) else "e%03d".format(lonBlock + 1)
-                names += "$latPart$lonPart"
-            }
-        }
-        return names
-    }
-
-    private fun lonToTileX(lon: Double, zoom: Int): Int {
-        val n = 1 shl zoom
-        val x = ((lon + 180.0) / 360.0 * n.toDouble())
-        return floor(x).toInt()
-    }
-
-    private fun latToTileY(lat: Double, zoom: Int): Int {
-        val latRad = Math.toRadians(lat)
-        val n = 1 shl zoom
-        val y = (1.0 - kotlin.math.ln(kotlin.math.tan(latRad) + 1.0 / kotlin.math.cos(latRad)) / Math.PI) / 2.0 * n.toDouble()
-        return floor(y).toInt()
-    }
-
-    private fun tileXToLon(x: Int, zoom: Int): Double {
-        val n = 1 shl zoom
-        return x.toDouble() / n.toDouble() * 360.0 - 180.0
-    }
-
-    private fun tileYToLat(y: Int, zoom: Int): Double {
-        val n = 1 shl zoom
-        val m = Math.PI * (1.0 - 2.0 * y.toDouble() / n.toDouble())
-        return Math.toDegrees(kotlin.math.atan(kotlin.math.sinh(m)))
-    }
-
-    private fun tileIndexInsideBoundary(
-        zoom: Int,
-        x: Int,
-        y: Int,
-        boundary: GeoBoundary?
-    ): Boolean {
-        if (boundary == null) return true
-        val west = tileXToLon(x, zoom)
-        val east = tileXToLon(x + 1, zoom)
-        val north = tileYToLat(y, zoom)
-        val south = tileYToLat(y + 1, zoom)
-        val corners = arrayOf(
-            north to west,
-            north to east,
-            south to west,
-            south to east
-        )
-        return corners.any { (lat, lon) -> pointInPolygon(lat, lon, boundary.ring) }
-    }
-
-    private fun pointInPolygon(lat: Double, lon: Double, ring: List<GeoPoint>): Boolean {
-        if (ring.size < 3) return false
-        var inside = false
-        var j = ring.size - 1
-        for (i in ring.indices) {
-            val yi = ring[i].latitude
-            val xi = ring[i].longitude
-            val yj = ring[j].latitude
-            val xj = ring[j].longitude
-            val intersects = ((yi > lat) != (yj > lat)) &&
-                (lon < (xj - xi) * (lat - yi) / ((yj - yi).takeIf { kotlin.math.abs(it) > 1e-12 } ?: 1e-12) + xi)
-            if (intersects) inside = !inside
-            j = i
-        }
-        return inside
-    }
 }

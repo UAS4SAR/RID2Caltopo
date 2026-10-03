@@ -1,5 +1,7 @@
 package org.ncssar.rid2caltopo.video
 
+import org.ncssar.rid2caltopo.ui.PanelSettingLabel
+
 import android.content.Context
 import org.ncssar.rid2caltopo.notam.mapCoordinates
 import androidx.compose.foundation.background
@@ -18,7 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
+import org.ncssar.rid2caltopo.ui.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -410,6 +412,7 @@ internal fun MapPaneManagementDialogs(
                             Text("Allow up to 80% of free space")
                         }
                     }
+                    PanelSettingLabel("Max Cache Size", centered = true)
                     OutlinedTextField(
                         value = mapCacheSizeInput,
                         onValueChange = onMapCacheSizeInputChange,
@@ -447,6 +450,7 @@ internal fun MapPaneManagementDialogs(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Enter the maximum tile retention age in days.")
+                    PanelSettingLabel("Maximum Tile Age", centered = true)
                     OutlinedTextField(
                         value = mapTileAgeDaysInput,
                         onValueChange = { onMapTileAgeDaysInputChange(it.filter { ch -> ch.isDigit() }) },

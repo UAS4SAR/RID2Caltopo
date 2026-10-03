@@ -1,5 +1,7 @@
 package org.ncssar.rid2caltopo.ui
 
+import org.ncssar.rid2caltopo.ui.AlertDialog
+
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -58,7 +60,7 @@ fun AwaitingMapPublicationPanel() {
         // Capture the displayed destination, so a map change cannot redirect the accepted offer.
         val destination = remember(flight) { flight.optString("map").ifBlank { mapId } }
         val destinationName = remember(flight) { if (flight.optString("map").isNotBlank() && flight.optString("map") != mapId) "Original incident map" else mapName }
-        val team = remember(flight) { if (flight.optString("map").isNotBlank()) flight.optString("team") else CaltopoClient.GetCaltopoCredentials().teamId.orEmpty() }
+        val team = remember(flight) { if (flight.optString("map").isNotBlank()) flight.optString("team") else AwaitingMapFlights.selectedPublicationScope() }
         AlertDialog(onDismissRequest = { selected = null }, title = { Text("Publish earlier flight?") },
             text = { Text("${flight.optString("label")}\nTo $destinationName ($destination)\nIncludes the recorded track and associated clues marked for publication. Clues kept local stay local.") },
             confirmButton = { TextButton(onClick = {

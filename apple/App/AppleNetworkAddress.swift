@@ -361,6 +361,7 @@ enum AppleDeviceIdentity {
 /// Own the subscription inside the retained navigation destination, rather than
 /// depending on value arguments captured when Live View was pushed.
 struct AppleLiveViewNetworkStatus: View {
+    var onDesignatorsTapped: (() -> Void)? = nil
     @ObservedObject private var network = AppleNetworkDiagnosticCenter.shared
 
     var body: some View {
@@ -368,7 +369,7 @@ struct AppleLiveViewNetworkStatus: View {
             Text("on \(network.currentControllerConnectionLabel)")
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-            AppleControllerConnectionURLs()
+            AppleControllerConnectionURLs(onDesignatorsTapped: onDesignatorsTapped)
         }
         .onChange(of: network.currentSnapshotID, initial: true) { _, snapshotID in
             AppleLog.info("Network", "Live View header snapshotId=\(snapshotID) ssid=\(network.currentControllerConnectionLabel) wifi=\(network.currentControllerIPv4Address ?? "none") wired=\(network.currentWiredIPv4Address ?? "none")")

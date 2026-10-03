@@ -1,5 +1,7 @@
 package org.ncssar.rid2caltopo.video
 
+import org.ncssar.rid2caltopo.ui.PanelSettingHelpButton
+
 import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -7,7 +9,7 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.DropdownMenu
+import org.ncssar.rid2caltopo.ui.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -80,6 +82,7 @@ internal fun BoxScope.MapPaneSettingsMenus(
             }
         ) {
             DropdownMenuItem(
+                trailingIcon = { PanelSettingHelpButton("Map layer") },
                 text = { Text("Layer: ${baseLayer.label}") },
                 onClick = {
                     onSettingsMenuExpandedChange(false)
@@ -110,6 +113,7 @@ internal fun BoxScope.MapPaneSettingsMenus(
             onDismissRequest = { onMapManagementMenuExpandedChange(false) }
         ) {
             DropdownMenuItem(
+                trailingIcon = { PanelSettingHelpButton("Follow Focused Drone") },
                 text = { Text(if (followFocusedDroneEnabled) "Follow Focused Drone: On" else "Follow Focused Drone: Off") },
                 onClick = onToggleFollowFocusedDrone
             )
@@ -123,6 +127,7 @@ internal fun BoxScope.MapPaneSettingsMenus(
                 onClick = onOpenBadTiles
             )
             DropdownMenuItem(
+                trailingIcon = { PanelSettingHelpButton("Max Cache Size") },
                 text = {
                     Text(
                         "Max Cache Size: ${MapCacheSettings.formatDecimalGb(MapCacheSettings.maxCacheBytes(context))}" +
@@ -132,11 +137,12 @@ internal fun BoxScope.MapPaneSettingsMenus(
                 onClick = onOpenCacheSize
             )
             DropdownMenuItem(
+                trailingIcon = { PanelSettingHelpButton("Maximum Tile Age") },
                 text = { Text("Maximum Tile Age: ${MapCacheSettings.formatTileAge(MapCacheSettings.maxTileAgeDays(context))}") },
                 onClick = onOpenTileAge
             )
             DropdownMenuItem(
-                text = { Text("Export MA Package...") },
+                text = { Text("Export Map Package...") },
                 onClick = onOpenMutualAidPackage
             )
         }
@@ -149,6 +155,7 @@ internal fun BoxScope.MapPaneSettingsMenus(
                 onClick = onOpenBadTilesHowTo
             )
             DropdownMenuItem(
+                trailingIcon = { PanelSettingHelpButton("Auto Remove Bad Tiles") },
                 text = { Text(if (autoRemoveBadTiles) "Auto Remove Bad Tiles: On" else "Auto Remove Bad Tiles: Off") },
                 onClick = onToggleAutoRemoveBadTiles
             )
@@ -175,6 +182,7 @@ internal fun BoxScope.MapPaneSettingsMenus(
                 )
             }
             DropdownMenuItem(
+                trailingIcon = { PanelSettingHelpButton("Contours") },
                 text = { Text(if (contourOverlayEnabled) "Contours: On" else "Contours: Off") },
                 onClick = onToggleContours
             )

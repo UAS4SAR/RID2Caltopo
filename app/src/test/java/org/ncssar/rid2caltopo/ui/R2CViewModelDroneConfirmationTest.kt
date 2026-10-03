@@ -17,6 +17,20 @@ import org.ncssar.rid2caltopo.data.CtDroneSpec
 import org.ncssar.rid2caltopo.data.SimpleTimer
 
 class R2CViewModelDroneConfirmationTest {
+    @Test fun proximitySettingsKeepsMainOrLiveViewUnderneath() {
+        for (liveView in listOf(false, true)) {
+            val model = R2CViewModel(SimpleTimer())
+            if (liveView) model.showStreams()
+            val origin = model.activeScreen.value
+            model.showProximitySettings()
+            assertTrue(model.proximitySettingsOpen)
+            assertEquals(origin, model.activeScreen.value)
+            model.dismissProximitySettings()
+            assertFalse(model.proximitySettingsOpen)
+            assertEquals(origin, model.activeScreen.value)
+        }
+    }
+
     @Test fun mapConnectionDialogsKeepTheOriginatingPageThroughCancelAndReconnect() {
         val mapField = CaltopoMap::class.java.getDeclaredField("MapNode").apply { isAccessible = true }
         val previousMap = mapField.get(null)
@@ -695,6 +709,39 @@ class R2CViewModelDroneConfirmationTest {
 
         assertNull(viewModel.pendingDroneConfirmation.value)
         assertEquals("1SAR8DjMtrc4td", CaltopoClient.GetDroneSpec("DRONENEXT")?.mappedId)
+    }
+
+    @Test fun pairedSetupSavesStreamDesignatorAndConfirmsWithoutTeams() {
+        val remoteID = "1581F6Z9C24BH0036EJL"
+        CaltopoClient.ClientForRemoteId(remoteID)
+        val model = R2CViewModel(SimpleTimer())
+        model.showStreams()
+        model.requestPairedDroneSetup(remoteID, "field-drone-1")
+        assertEquals("DJI Mini 4 Pro", model.pendingDroneConfirmation.value?.droneDescription)
+        assertEquals("field-drone-1", model.pendingDroneConfirmation.value?.bootstrapDesignator)
+        model.updatePendingDroneConfirmation(pilotCallsign = "Pilot 7")
+        model.savePendingDroneConfirmation()
+        val saved = CaltopoClient.GetPersistedDroneSpecs().single { it.remoteId == remoteID }
+        assertEquals("field-drone-1", saved.mappedId)
+        assertEquals("Pilot 7", saved.owner)
+        assertEquals("", saved.org)
+        assertFalse(saved.isCurrentFlightConfirmed)
+        assertTrue(CaltopoClient.GetDroneSpec(remoteID)!!.isCurrentFlightConfirmed)
+        assertEquals(ActiveScreen.STREAMS, model.activeScreen.value)
+        assertFalse(CaltopoClient.SaveLocalPairedDrone(remoteID, "replacement", "", ""))
+        assertFalse(CaltopoClient.SaveLocalPairedDrone("1581F8HGX255S00A0FZT", "FIELD-DRONE-1", "", ""))
+    }
+
+    @Test fun pairVideoOnlyDoesNotSaveOrConfirmDrone() {
+        val remoteID = "1581F6Z9C24BH0036EJK"
+        CaltopoClient.ClientForRemoteId(remoteID)
+        val model = R2CViewModel(SimpleTimer())
+        model.requestPairedDroneSetup(remoteID, "field-drone-1")
+        assertNotNull(model.pendingDroneConfirmation.value)
+        model.markPendingDroneConfirmationUnknown()
+        assertTrue(CaltopoClient.GetPersistedDroneSpecs().none { it.remoteId == remoteID })
+        assertFalse(CaltopoClient.GetDroneSpec(remoteID)!!.isCurrentFlightConfirmed)
+        assertNull(model.pendingDroneConfirmation.value)
     }
 
     private fun activeDrone(remoteId: String, waypointTimestampMsec: Long): CtDroneSpec {

@@ -7,6 +7,8 @@
 
 package org.ncssar.rid2caltopo.ui
 
+import org.ncssar.rid2caltopo.ui.AlertDialog
+
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image
@@ -36,7 +38,7 @@ import org.ncssar.rid2caltopo.data.CaltopoClient
 import org.ncssar.rid2caltopo.data.R2cRuntimeRegistry
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.window.Dialog
+import org.ncssar.rid2caltopo.ui.Dialog
 import androidx.compose.ui.window.DialogProperties
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug
 
@@ -462,6 +464,11 @@ fun DroneSpecConfirmationDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                state.bootstrapDesignator?.let { designator ->
+                    Text("Remote ID: ${state.remoteId}\nStream designator: $designator")
+                    Text("Save a local RID-map entry and confirm this flight for publishing to the selected map. Check the suggested model and enter the pilot callsign. Without a selected map, publication waits for map selection.")
+                    Text("Pair video only leaves track publishing off.")
+                }
                 if (!state.warning.isNullOrBlank()) {
                     Text(
                         text = state.warning,
@@ -491,6 +498,7 @@ fun DroneSpecConfirmationDialog(
         },
         confirmButton = {
             TextButton(
+                enabled = state.bootstrapDesignator == null || pilotCallsign.isNotBlank(),
                 onClick = {
                     readiness.operatingProfileJson?.let { raw ->
                         val selected = org.json.JSONObject(raw)
@@ -512,12 +520,12 @@ fun DroneSpecConfirmationDialog(
                     onSave()
                 }
             ) {
-                Text("Publish track")
+                Text(if (state.bootstrapDesignator != null) "Save and publish track" else "Publish track")
             }
         },
         dismissButton = {
             TextButton(onClick = onUnknown) {
-                Text("Don’t publish")
+                Text(if (state.bootstrapDesignator != null) "Pair video only" else "Don’t publish")
             }
         },
     )
@@ -570,7 +578,7 @@ fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
         when (val currentOverlay = overlay) {
             is OverlayState.ConnectionSetup -> {
                 StandAloneOptionsDialog(
-                    onPersonalReady = { viewModel.selectOperationalProfile("personal") },
+                    onPersonalReady = { viewModel.onUIEvent(UIEvent.BrowseProfileSelected("personal")) },
                     hasCreds = viewModel.hasCredentials,
                     hasNetwork = viewModel.hasNetwork,
                     onDismiss = { viewModel.onUIEvent(UIEvent.DismissRequested) },
@@ -580,7 +588,7 @@ fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
             }
             is OverlayState.RequestConfigFile -> {
                 StandAloneOptionsDialog(
-                    onPersonalReady = { viewModel.selectOperationalProfile("personal") },
+                    onPersonalReady = { viewModel.onUIEvent(UIEvent.BrowseProfileSelected("personal")) },
                     hasCreds = viewModel.hasCredentials,
                     hasNetwork = viewModel.hasNetwork,
                     onDismiss = { viewModel.onUIEvent(UIEvent.DismissRequested) },
@@ -590,7 +598,7 @@ fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
             }
             is OverlayState.Connecting -> {
                 StandAloneOptionsDialog(
-                    onPersonalReady = { viewModel.selectOperationalProfile("personal") },
+                    onPersonalReady = { viewModel.onUIEvent(UIEvent.BrowseProfileSelected("personal")) },
                     hasCreds = viewModel.hasCredentials,
                     hasNetwork = viewModel.hasNetwork,
                     onDismiss = { viewModel.onUIEvent(UIEvent.DismissRequested) },
@@ -713,6 +721,7 @@ fun StandAloneOptionsDialog(
     onPersonalReady: () -> Unit = {}
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val (personalBusy, openPersonal) = rememberPersonalCredentialsAction(onPersonalReady)
     val titleText = if (!hasNetwork) {
         "No Network Connection"
     } else if (connectingToMap || (loading && hasCreds)) {
@@ -725,7 +734,7 @@ fun StandAloneOptionsDialog(
     } else if (hasCreds) {
         "Existing credentials found. Would you like to select a map?"
     } else {
-        "No CalTopo credentials found. You need to load Team acct credentials first."
+        "Sign in with your personal CalTopo account to choose a map. Teams credentials are optional."
     }
     AlertDialog(
         onDismissRequest = if (loading) ({}) else onDismiss, // disable dismiss while loading
@@ -751,17 +760,17 @@ fun StandAloneOptionsDialog(
                 }
             } else {
                 Column {
-                    PersonalCaltopoLoginButton(onReady = onPersonalReady)
+                    if (hasCreds) PersonalCaltopoLoginButton(onReady = onPersonalReady)
                     Text(msgText)
                 }
             }
         },
         confirmButton = {
             Button(
-                onClick = onAction,
-                enabled = !loading && hasNetwork
+                onClick = if (hasCreds) onAction else openPersonal,
+                enabled = !loading && !personalBusy && hasNetwork
             ) {
-                Text(if (hasCreds) "Connect" else "Load Credential File")
+                Text(if (hasCreds) "Connect" else if (personalBusy) "Loading personal maps…" else "Personal: Sign in")
 
             }
         },

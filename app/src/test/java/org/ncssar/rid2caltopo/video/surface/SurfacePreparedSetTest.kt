@@ -14,6 +14,15 @@ class SurfacePreparedSetTest {
         assertFalse(SurfacePreparedSet.fresh(stamp,stamp-1,1000))
         assertFalse(SurfacePreparedSet.fresh(0,stamp,1000))
     }
+    @Test fun partialTransferDoesNotClaimCompletePreparedCoverage() {
+        val partialRoot=File(root.parentFile,"partial-set")
+        val partial=JSONObject(File(partialRoot,"index.json").readText())
+        SurfacePreparedSet.validate(partial, allowPartial=true) { File(partialRoot,it).readBytes() }
+        assertThrows(Exception::class.java) { SurfacePreparedSet.validate(partial) { File(partialRoot,it).readBytes() } }
+        assertThrows(Exception::class.java) { SurfacePreparedSet.validate(partial, allowPartial=true) { error("Missing tile") } }
+        val empty=JSONObject(partial.toString()).put("entries",org.json.JSONArray())
+        assertThrows(Exception::class.java) { SurfacePreparedSet.validate(empty, allowPartial=true) { error("Must not read") } }
+    }
     @Test fun coverageIncludesRequiredMarginAndRejectsPartialOverlap() {
         assertTrue(SurfacePreparedSet.contains(524,524,-200.0,-200.0,200.0,200.0))
         assertTrue(SurfacePreparedSet.contains(524,524,-100.0,-100.0,100.0,100.0))

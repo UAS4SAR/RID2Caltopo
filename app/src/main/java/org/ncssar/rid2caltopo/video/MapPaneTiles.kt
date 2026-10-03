@@ -100,6 +100,15 @@ internal fun offlinePrepTileSources(
     return sources
 }
 
+internal fun offlinePrepTileSources(includeImagery: Boolean, includeOsm: Boolean, includeContours: Boolean): List<OnlineTileSourceBase> = buildList {
+    if (includeImagery) add(ArcGisWorldImageryTileSource)
+    if (includeOsm) add(OsmStandardTileSource)
+    if (includeContours) add(UsgsContoursTileSource)
+}
+
+internal fun offlinePrepTileOperationCount(baseTileCount: Int, sourceCount: Int): Int =
+    (baseTileCount.toLong() * sourceCount.coerceAtLeast(0)).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+
 internal fun offlinePrepTileOperationCount(baseTileCount: Int, includeContours: Boolean): Int {
     val sourceCount = if (includeContours) 2 else 1
     return (baseTileCount.toLong() * sourceCount.toLong()).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()

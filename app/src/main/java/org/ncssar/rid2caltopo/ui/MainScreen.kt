@@ -7,6 +7,10 @@
 
 package org.ncssar.rid2caltopo.ui
 
+import org.ncssar.rid2caltopo.ui.DropdownMenu
+
+import org.ncssar.rid2caltopo.ui.AlertDialog
+
 import androidx.compose.foundation.layout.size
 
 import androidx.compose.ui.semantics.semantics
@@ -683,7 +687,7 @@ fun MainScreen(
     var credentialMenuExpanded by remember { mutableStateOf(false) }
     val editPersonalAccount = rememberPersonalAccountEditor()
     val (personalCredentialsBusy, openPersonalCredentials) = rememberPersonalCredentialsAction {
-        localViewModel.selectOperationalProfile("personal")
+        localViewModel.onUIEvent(UIEvent.BrowseProfileSelected("personal"))
     }
     var pendingProfileRemoval by remember { mutableStateOf<OperationalProfileUiOption?>(null) }
     pendingProfileRemoval?.let { profile ->
@@ -983,7 +987,7 @@ fun MainScreen(
                     return@rememberLauncherForActivityResult
                 }
                 ImportConfigFileKind.MUTUAL_AID_PACKAGE -> {
-                    CTDebug(tag, "importConfigFileLauncher(): routing '$displayName' ($mimeType) to MA package importer")
+                    CTDebug(tag, "importConfigFileLauncher(): routing '$displayName' ($mimeType) to map package importer")
                 }
                 ImportConfigFileKind.QR_IMAGE -> {
                     CTDebug(tag, "importConfigFileLauncher(): routing '$displayName' ($mimeType) to QR decoder")
@@ -1008,7 +1012,7 @@ fun MainScreen(
                 }
                 ImportConfigFileKind.UNSUPPORTED -> {
                     CTError(tag, "importConfigFileLauncher(): unsupported file '$displayName' ($mimeType)")
-                    CaltopoClient.ShowToast("Choose a QR image, .json config, or .zip MA package.")
+                    CaltopoClient.ShowToast("Choose a QR image, .json config, or .zip map package.")
                     return@rememberLauncherForActivityResult
                 }
             }
@@ -1020,7 +1024,7 @@ fun MainScreen(
                 }
                 if (requestId != mutualAidPreviewRequestId) return@launch
                 if (!preview.first || preview.second == null) {
-                    CaltopoClient.ShowToast("Could not read MA package preview.")
+                    CaltopoClient.ShowToast("Could not read map package preview.")
                     return@launch
                 }
                 pendingMutualAidImportUri = uri
@@ -1232,6 +1236,11 @@ fun MainScreen(
                     }
                 }
             },
+            onCaltopoLink = { url ->
+                showImportConfigDialog = false
+                context.startActivity(Intent(context, CaltopoPersonalProbeActivity::class.java)
+                    .putExtra("caltopoLinkUrl", url).putExtra("webOnly", true))
+            },
             onScannerStarted = onConfigQrScannerStarted,
             onScannerFinished = onConfigQrScannerFinished,
             onPickFile = {
@@ -1266,7 +1275,7 @@ fun MainScreen(
             text = {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     if (preview != null) {
-                        Text("Package: ${preview.packageName.ifBlank { "MA Package" }}")
+                        Text("Package: ${preview.packageName.ifBlank { "Map Package" }}")
                         if (preview.includesMapAccess) {
                             Text("Source org: ${preview.sourceOrg.ifBlank { "Unknown" }}")
                             Text("Display name: ${preview.displayName.ifBlank { "Mutual Aid" }}")
@@ -1279,7 +1288,7 @@ fun MainScreen(
                         }
                         Text("Offline cache: ${preview.tileCount} tile(s), ${preview.demCount} DEM tile(s), ${preview.aolCount} AOL tile(s)")
                     } else {
-                        Text("Could not read MA package preview.")
+                        Text("Could not read map package preview.")
                     }
                 }
             },
@@ -1320,7 +1329,7 @@ fun MainScreen(
     if (importingMutualAidConfig) {
         AlertDialog(
             onDismissRequest = { },
-            title = { Text("Importing MA Package") },
+            title = { Text("Importing Map Package") },
             text = {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     CircularProgressIndicator()
@@ -1808,7 +1817,7 @@ fun MainScreen(
                                         overflow = TextOverflow.Ellipsis,
                                     )
                                     Text(
-                                        "Credentials: " + if (org.ncssar.rid2caltopo.data.CaltopoPersonalSession.browsingPersonal) "Personal: ${org.ncssar.rid2caltopo.data.CaltopoPersonalSession.username}" else (selectedOperationalProfile?.credentialLabel ?: "None"),
+                                        "Credentials: " + if (org.ncssar.rid2caltopo.data.CaltopoPersonalSession.browsingPersonal) "Personal: ${org.ncssar.rid2caltopo.data.CaltopoPersonalSession.username}" else (if (localViewModel.hasCredentials) selectedOperationalProfile?.credentialLabel ?: "Teams credentials" else "No Teams credentials"),
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                         style = MaterialTheme.typography.labelMedium,
@@ -1978,7 +1987,7 @@ fun MainScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    ResumeProximityAlertButton(onSettings = { localViewModel.showSettings() })
+                    ResumeProximityAlertButton(onSettings = { localViewModel.showProximitySettings() })
                     NotamStatusChip(state = notamUiState, airspaceState = airspaceUiState, onClick = { showNotamPanel = true }, outerPadding = PaddingValues(0.dp))
                     LandRestrictionStatusChip(state = landRestrictionUiState, onClick = { showLandRestrictionPanel = true }, outerPadding = PaddingValues(0.dp))
                     val allOverLimitMuted = overLimitDrones.isNotEmpty() && overLimitDrones.all { it.muted }
@@ -2039,7 +2048,7 @@ fun MainScreen(
     }
 
     if (showTermsDialog) {
-        androidx.compose.ui.window.Dialog(
+        org.ncssar.rid2caltopo.ui.Dialog(
             onDismissRequest = { showTermsDialog = false },
             properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
         ) {
@@ -2738,22 +2747,25 @@ fun MainScreen(
             title = { Text("Reset Persisted App State?") },
             text = {
                 Text(
-                    "This rewrites app_config.pb from a fresh default ClientClassState and updates " +
-                        "future backup/restore from that clean baseline. It clears persistent rid " +
-                        "mappings, credentials, profiles, archive path, loaded-config history, and " +
-                        "other saved settings. Transient runtime activity may repopulate state after reset."
+                    "This clears saved settings, credentials, browser logins, and acknowledgement acceptance. Local operational files are retained. Quit and reopen the app afterward."
                 )
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        resetPersistedStateAndRequestRequiredSetup(
-                            requestArchiveSelection = { forceArchiveDirPrompt = true }
-                        )
-                        CaltopoClient.ShowToast(
-                            "Persisted app state reset. Select an archive directory to continue setup."
-                        )
                         showResetPersistentStateDialog = false
+                        coroutineScope.launch {
+                            try {
+                                CaltopoPersonalSession.clearPersistedLogin(context)
+                                resetPersistedStateAndRequestRequiredSetup(
+                                    requestArchiveSelection = { forceArchiveDirPrompt = true }
+                                )
+                                localViewModel.refreshMapBrowserProfiles()
+                                CaltopoClient.ShowToast("Saved settings and browser logins cleared. Quit and reopen the app to complete setup.")
+                            } catch (error: Exception) {
+                                CaltopoClient.ShowToast(error.message ?: "Reset could not finish. Please retry.")
+                            }
+                        }
                     }
                 ) {
                     Text("Reset")

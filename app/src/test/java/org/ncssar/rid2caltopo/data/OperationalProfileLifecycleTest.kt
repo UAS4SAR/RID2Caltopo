@@ -80,6 +80,55 @@ class OperationalProfileLifecycleTest {
         }
     }
 
+    @Test
+    fun resetImmediatelyRemovesCredentialOptionsAndVerifiedIdentity() {
+        CaltopoClient.ResetPersistedClientState()
+        val home = profile("home", "HOME", "TestOrg", 0L, "r2c_dev_reset_test")
+        CaltopoClient.UpsertCaltopoProfile(home, true, false)
+        fun seed(name: String, value: Any) {
+            AircraftOrganizationAccess::class.java.getDeclaredField(name).apply { isAccessible = true }.set(null, value)
+        }
+        seed("username", "test-user")
+        seed("verifiedToken", "r2c_dev_reset_test")
+        seed("verifiedScope", "https://r2c-tracker.com/testorg")
+        seed("authorizedToken", "r2c_dev_reset_test")
+        seed("validUntil", Long.MAX_VALUE)
+        assertEquals("test-user", AircraftOrganizationAccess.organizationUser())
+        val before = AircraftOrganizationAccess.changes.value
+        CaltopoPersonalSession.browsingPersonal = true
+        CaltopoPersonalSession.username = "personal-test-user"
+
+        CaltopoClient.ResetPersistedClientState()
+
+        assertEquals(emptyList<Array<String>>(), CaltopoClient.GetOperationalProfileOptions())
+        assertNull(AircraftOrganizationAccess.organizationUser())
+        org.junit.Assert.assertTrue(AircraftOrganizationAccess.changes.value > before)
+        assertEquals(false, CaltopoPersonalSession.browsingPersonal)
+        assertEquals("", CaltopoPersonalSession.username)
+        // Re-importing the same organization must not revive its previous edit grant.
+        CaltopoClient.UpsertCaltopoProfile(home, true, false)
+        assertNull(AircraftOrganizationAccess.organizationUser())
+        assertEquals(false, AircraftOrganizationAccess.canEdit())
+    }
+
+    @Test
+    fun cleanPersistedBaselineStaysUnconfiguredAfterRestart() {
+        val save = AppConfigStore::class.java.getDeclaredMethod("mergeStateIntoConfig", AppConfig::class.java,
+            ClientClassState::class.java, Boolean::class.javaPrimitiveType).apply { isAccessible = true }
+        val restore = AppConfigStore::class.java.getDeclaredMethod("toClientState", AppConfig::class.java).apply { isAccessible = true }
+        val saved = save.invoke(AppConfigStore, AppConfig.getDefaultInstance(), ClientClassState(), false) as AppConfig
+        val reopened = restore.invoke(AppConfigStore, AppConfig.parseFrom(saved.toByteArray())) as ClientClassState
+        val field = CaltopoClient::class.java.getDeclaredField("Ccstate").apply { isAccessible = true }
+        val old = field.get(null)
+        try {
+            field.set(null, reopened)
+            assertEquals(emptyList<Array<String>>(), CaltopoClient.GetOperationalProfileOptions())
+            assertEquals(emptyList<Any>(), CaltopoClient.GetMapBrowserProfileOptions())
+            assertEquals(false, CaltopoCredentials.sniffTest(CaltopoClient.GetCaltopoCredentials()))
+            assertEquals("", CaltopoClient.GetTrackerCoordinationApiKey())
+        } finally { field.set(null, old) }
+    }
+
     private fun profile(
         id: String,
         type: String,

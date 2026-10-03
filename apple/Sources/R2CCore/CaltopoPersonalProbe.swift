@@ -17,6 +17,14 @@ public enum CaltopoPersonalProbe {
                 matches(url.path, "^/m/[A-Za-z0-9]{3,16}/?$") else { return nil }
         return url
     }
+    /// Accept only the CalTopo HTTPS origin; paths, queries, and fragments are preserved.
+    public static func caltopoLinkURL(_ input: String) -> URL? {
+        guard let url = URL(string: input.trimmingCharacters(in: .whitespacesAndNewlines)),
+              url.scheme?.lowercased() == "https", url.host?.lowercased() == "caltopo.com",
+              url.port == nil || url.port == 443,
+              url.user == nil, url.password == nil else { return nil }
+        return url
+    }
     public static func mapID(_ input: String) -> String? {
         let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
         if matches(value, "^[A-Za-z0-9]{3,16}$") { return value }

@@ -20,6 +20,7 @@ internal class NetworkCheckRecoveryGate {
 
 /** Application-lifetime observer; controller LAN alone is not Internet recovery. */
 object NetworkCheckRecovery {
+    private val trackerExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     private var callback: ConnectivityManager.NetworkCallback? = null
     @Synchronized fun start(context: Context) {
         if (callback != null) return
@@ -36,10 +37,18 @@ object NetworkCheckRecovery {
                 val available = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
                     capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
                 if (!gate.update(available)) return
-                CaltopoClient.CTDebug("NetworkChecks", "Internet available; refreshing airspace, NOTAMs, and land rules")
+                CaltopoClient.CTDebug("NetworkChecks", "Internet available; refreshing safety data and organization Tracker check-in")
                 AirspaceCenter.requestImmediateRefresh()
                 NotamCenter.requestImmediateRefresh()
                 LandRestrictionCenter.requestImmediateRefresh()
+                trackerExecutor.execute {
+                    if (!CaltopoClient.IsExitRequested()) {
+                        org.ncssar.rid2caltopo.data.TrackerEnrollmentClient.retryManagedConfigurationBootstrap(context.applicationContext)
+                        if (org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.belongsToOrganization()) {
+                            org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.refresh()
+                        }
+                    }
+                }
             }
         }
         manager.registerDefaultNetworkCallback(observer)

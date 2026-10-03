@@ -155,6 +155,23 @@ class TileDiskCacheWriter(context: Context) : IFilesystemCache {
         return null
     }
 
+    /** Enumerate actual cached coordinates, including legacy OSM keys, at every zoom. */
+    fun cachedTileIndices(tileSource: ITileSource): List<Long> {
+        diskCache.prewarm()
+        val names = if (tileSource.name() == OSM_STANDARD_SOURCE) {
+            LEGACY_OSM_SOURCE_NAMES + OSM_STANDARD_SOURCE
+        } else listOf(tileSource.name())
+        return diskCache.cacheKeys().mapNotNull { key ->
+            val parts = key.split('|')
+            if (parts.size != 5 || parts[0] != "v${MapCachePolicy.TILE_CACHE_VERSION}" || parts[1] !in names) return@mapNotNull null
+            val z = parts[2].toIntOrNull() ?: return@mapNotNull null
+            val x = parts[3].toIntOrNull() ?: return@mapNotNull null
+            val y = parts[4].toIntOrNull() ?: return@mapNotNull null
+            if (z !in 0..29 || x !in 0 until (1 shl z) || y !in 0 until (1 shl z)) return@mapNotNull null
+            MapTileIndex.getTileIndex(z, x, y)
+        }.distinct()
+    }
+
     fun readTileBytes(tileSource: ITileSource, mapTileIndex: Long): ByteArray? {
         for (key in tileKeysForLookup(tileSource, mapTileIndex)) {
             val cached = diskCache.get(key, countHitMiss = false) ?: continue

@@ -1159,7 +1159,7 @@ public class CaltopoMap {
         }
         SetMapStatus(MapStatusListener.mapStatus.up, null);
         if (!DisconnectInProgress && ArchiveFolderId != null) {
-            AwaitingMapFlights.reconcile(GetMapId(), CaltopoClient.GetCaltopoCredentials().teamId);
+            AwaitingMapFlights.reconcile(GetMapId(), AwaitingMapFlights.selectedPublicationScope());
             CaltopoInterruptedTrackJournal.recover(GetMapId(), ArchiveFolderId, getCurrentRuntime(), GetArtifactFeatureSnapshot());
         }
         FinishMapRefresh(true, fullReconcile, requestStartedAtMs, refreshGeneration);

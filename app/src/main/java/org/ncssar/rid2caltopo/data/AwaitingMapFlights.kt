@@ -10,6 +10,14 @@ import java.util.UUID
 
 /** Durable per-flight destination choices; only unassigned Publish decisions are offered for review. */
 object AwaitingMapFlights {
+    internal fun destinationScope(personalAccountId: String?, teamId: String): String =
+        personalAccountId?.trim()?.let { if (it.isEmpty()) "" else "personal:$it" } ?: teamId
+
+    @JvmStatic fun selectedPublicationScope(): String {
+        val personal = CaltopoPersonalSession.capture("/")
+        return destinationScope(personal?.accountID, CaltopoClient.GetCaltopoCredentials().teamId.orEmpty())
+    }
+
     private var testFile: File? = null
     internal fun useFileForTesting(file: File?) { testFile = file; loaded = false; entries = JSONArray(); lastWrite.clear() }
     private var loaded = false
@@ -36,7 +44,7 @@ object AwaitingMapFlights {
     private fun all() = (0 until entries.length()).mapNotNull { entries.optJSONObject(it) }
 
     @JvmStatic @JvmOverloads @Synchronized fun record(id: String, remote: String, label: String, points: JSONArray, finished: Boolean,
-        selectedMap: String = CaltopoMap.GetMapId(), selectedTeam: String = CaltopoClient.GetCaltopoCredentials().teamId.orEmpty()) {
+        selectedMap: String = CaltopoMap.GetMapId(), selectedTeam: String = selectedPublicationScope()) {
         load()
         if (points.length() == 0) return
         val existing = all().firstOrNull { it.optString("id") == id }
@@ -58,7 +66,7 @@ object AwaitingMapFlights {
         }
         if (finished && item.optString("decision") == "publish") queueCompleted(item)
     }
-    @JvmStatic @JvmOverloads @Synchronized fun publicationId(remote: String, map: String, team: String = CaltopoClient.GetCaltopoCredentials().teamId.orEmpty()): String? {
+    @JvmStatic @JvmOverloads @Synchronized fun publicationId(remote: String, map: String, team: String = selectedPublicationScope()): String? {
         load()
         val item = all().lastOrNull { it.optString("remote") == remote && !it.optBoolean("finished") } ?: return null
         return when {

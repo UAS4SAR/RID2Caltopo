@@ -12,6 +12,7 @@ internal interface BlobCacheStore {
     fun usageBytes(): Long = snapshot().bytesUsed
     fun markStaleServed()
     fun prewarm() {}
+    fun cacheKeys(): List<String> = emptyList()
     fun oldestEntries(): List<CacheEvictionEntry> = emptyList()
     fun runMaintenance(
         maxEntryAgeCutoffMs: Long,

@@ -63,6 +63,16 @@ final class AppleCaltopoProfileLifecycle: ObservableObject {
         refreshPublishedProfiles()
     }
 
+    func resetPersistedState() {
+        try? Self.delete(account: Self.homeAccount)
+        try? Self.delete(account: Self.mutualAidAccount)
+        defaults.removeObject(forKey: Self.activeKey)
+        activeProfileID = ""
+        mutualAidDisplayName = nil
+        mutualAidExpiresAt = nil
+        availableProfiles = []
+    }
+
     var activeCredentialLabel: String {
         availableProfiles.first(where: { $0.id == activeProfileID })?.credentialLabel
             ?? "No Teams credentials"
@@ -244,7 +254,8 @@ final class AppleCaltopoProfileLifecycle: ObservableObject {
 
     private func refreshPublishedProfiles(now: Date = Date()) {
         var options: [AppleOperationalProfileOption] = []
-        if let home = try? Self.load(account: Self.homeAccount) {
+        if let home = try? Self.load(account: Self.homeAccount),
+           !home.credentialID.isEmpty, !home.credentialSecret.isEmpty {
             options.append(Self.option(for: home))
         }
         if let mutualAid = try? Self.load(account: Self.mutualAidAccount),
@@ -685,6 +696,8 @@ final class AppleOrgConfigSettings: ObservableObject {
     }
 
     func resetPersistedState() {
+        AppleCaltopoProfileLifecycle.shared.resetPersistedState()
+        AppleAircraftOrganizationAccess.resetRuntimeState()
         AppleDeviceIdentity.applyManagedDisplayName("")
         organizationName = ""
         incident = "Training"
@@ -773,17 +786,6 @@ final class AppleOrgConfigSettings: ObservableObject {
                 "client_id": faaConfiguration.clientID,
                 "client_secret": faaConfiguration.clientSecret,
                 "scope": faaConfiguration.scope,
-            ]
-        }
-        if let mutualAidTemplate {
-            value["mutual_aid_template"] = [
-                "team_id": mutualAidTemplate.teamID,
-                "credential_id": mutualAidTemplate.credentialID,
-                "credential_secret": mutualAidTemplate.credentialSecret,
-                "domain_and_port": mutualAidTemplate.domainAndPort,
-                "source_label": mutualAidTemplate.sourceLabel,
-                "target_folder_hint": mutualAidTemplate.targetFolderHint,
-                "connect_key": mutualAidTemplate.connectKey,
             ]
         }
         return value
@@ -962,7 +964,8 @@ final class AppleOrgConfigImporter: ObservableObject {
         caltopoSettings: AppleCaltopoSettings,
         orgSettings: AppleOrgConfigSettings,
         identityStore: AppleDroneConfirmationStore,
-        force: Bool = false
+        force: Bool = false,
+        waitForInFlight: Bool = false
     ) async {
         guard state != .downloading, orgSettings.hasManagedTrackerEnrollment,
               profileLifecycle.activeProfileID == "home" || profileLifecycle.activeProfileID.isEmpty
@@ -976,10 +979,14 @@ final class AppleOrgConfigImporter: ObservableObject {
         }
         do {
             let applied = try await managedBootstrap.refresh(
-                scope: prefix + "\n" + credential, force: force,
+                scope: prefix + "\n" + credential, force: force, waitForInFlight: waitForInFlight,
                 fetch: {
                     guard let managed = try await AppleTrackerEnrollmentClient.fetchManagedOrganizationConfig(
-                        trackerBaseURL: prefix, deviceToken: credential) else { return nil }
+                        trackerBaseURL: prefix, deviceToken: credential) else {
+                        AppleLog.info("OrgConfig", "Tracker check-in completed; no managed configuration published")
+                        return nil
+                    }
+                    AppleLog.info("OrgConfig", "Tracker check-in completed; organization configuration version=\(managed.versionMs)")
                     guard ManagedConfigurationRefreshPolicy.shouldApply(
                         remoteVersion: managed.versionMs,
                         localVersion: Int64(UserDefaults.standard.integer(forKey: AppleManagedOrganizationConfig.versionDefaultsKey)),
@@ -1224,7 +1231,8 @@ final class AppleOrgConfigImporter: ObservableObject {
         _ url: URL,
         caltopoSettings: AppleCaltopoSettings,
         orgSettings: AppleOrgConfigSettings,
-        identityStore: AppleDroneConfirmationStore
+        identityStore: AppleDroneConfirmationStore,
+        onCaltopoLink: ((URL) -> Void)? = nil
     ) async {
         state = .downloading
         let importStartedAt = ProcessInfo.processInfo.systemUptime
@@ -1256,6 +1264,11 @@ final class AppleOrgConfigImporter: ObservableObject {
                     "OrgConfig",
                     "Decoded local QR image bytes=\(data.count) durationMs=\(Int(((ProcessInfo.processInfo.systemUptime - decodeStartedAt) * 1_000).rounded()))"
                 )
+                if let linkURL = CaltopoPersonalProbe.caltopoLinkURL(payload), let onCaltopoLink {
+                    state = .idle
+                    onCaltopoLink(linkURL)
+                    return
+                }
                 if let enrollmentURL = AppleTrackerEnrollmentClient.normalizedEnrollmentURL(payload) {
                     await importTrackerEnrollment(
                         enrollmentURL,
@@ -1463,6 +1476,7 @@ struct ConfigImportView: View {
     @State private var showFileImporter = false
     @State private var submitting = false
     @State private var prepared = false
+    @State private var showCaltopoLink = false
 
     init(
         initialToken: String,
@@ -1483,7 +1497,7 @@ struct ConfigImportView: View {
     var body: some View {
         Form {
             Section {
-                Text("Scan or choose an MA package, R2C2 organization, or r2c-tracker enrollment QR. R2C1 organization tokens are no longer accepted.")
+                Text("Scan or choose a map package, R2C2 organization, r2c-tracker enrollment, or CalTopo link QR. R2C1 organization tokens are no longer accepted.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 HStack(alignment: .top, spacing: 10) {
@@ -1536,10 +1550,15 @@ struct ConfigImportView: View {
                         .buttonStyle(.bordered)
                         .disabled(submitting)
 
-                    Button(isFailed ? "Retry" : "Import") { submitToken() }
+                    Button(caltopoLinkURL != nil ? "Open CalTopo" : (isFailed ? "Retry" : "Import")) { submitToken() }
                         .buttonStyle(.borderedProminent)
                         .disabled(!canImport)
                 }
+            }
+        }
+        .sheet(isPresented: $showCaltopoLink) {
+            NavigationStack {
+                AppleCaltopoPersonalProbeView(initialCaltopoLinkURL: caltopoLinkURL)
             }
         }
         .interactiveDismissDisabled(submitting)
@@ -1579,17 +1598,22 @@ struct ConfigImportView: View {
         trackerEnrollmentURL != nil
     }
 
+    private var caltopoLinkURL: URL? {
+        CaltopoPersonalProbe.caltopoLinkURL(tokenText)
+    }
+
     private var canImport: Bool {
         !submitting
             && importer.state != .downloading
-            && (isTrackerEnrollment || decodedToken != nil || packageToken != nil)
+            && (caltopoLinkURL != nil || isTrackerEnrollment || decodedToken != nil || packageToken != nil)
     }
 
     private var recognitionText: String {
         if tokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "Scan QR, paste token, or choose a QR image, JSON config, MA ZIP, or prepared .aol surface package"
         }
-        if let packageToken { return "MA package: \(packageToken.packageName). Connect to the sender’s Wi-Fi or hotspot and keep its QR panel open." }
+        if caltopoLinkURL != nil { return "CalTopo link — opens in the embedded browser" }
+        if let packageToken { return "map package: \(packageToken.packageName). Connect to the sender’s Wi-Fi or hotspot and keep its QR panel open." }
         if isTrackerEnrollment { return "Managed r2c-tracker enrollment identified"
         }
         if let decodedToken {
@@ -1610,6 +1634,10 @@ struct ConfigImportView: View {
 
     private func submitToken() {
         guard canImport else { return }
+        if caltopoLinkURL != nil {
+            showCaltopoLink = true
+            return
+        }
         submitting = true
         let value = tokenText
         let normalizedTrackerEnrollment = trackerEnrollmentURL
@@ -1640,13 +1668,20 @@ struct ConfigImportView: View {
         guard !submitting else { return }
         submitting = true
         Task { @MainActor in
+            var openedCaltopoLink = false
             await importer.importFile(
                 url,
                 caltopoSettings: caltopoSettings,
                 orgSettings: orgSettings,
-                identityStore: identityStore
+                identityStore: identityStore,
+                onCaltopoLink: { linkURL in
+                    tokenText = linkURL.absoluteString
+                    openedCaltopoLink = true
+                    showCaltopoLink = true
+                }
             )
             submitting = false
+            if openedCaltopoLink { return }
             guard !isFailed else { return }
             reportResult()
             dismiss()

@@ -13,7 +13,7 @@ private final class PersonalProbeRedirectBlocker: NSObject, URLSessionTaskDelega
 }
 
 @MainActor
-final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
+final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     // A dedicated persistent WebKit profile retains site login/trust across
     // app launches. Only explicit Clear login removes the profile's website data.
     static let shared = PersonalProbeModel()
@@ -49,7 +49,20 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
         applyStoragePolicy()
         web.navigationDelegate = self
         web.uiDelegate = self
+        web.configuration.userContentController.add(self, contentWorld: .defaultClient, name: "r2cUserInput")
+        web.configuration.userContentController.addUserScript(WKUserScript(source: """
+            for (const kind of ['pointerdown', 'pointerup', 'pointermove', 'keydown', 'input', 'wheel']) {
+                document.addEventListener(kind, event => {
+                    if (event.isTrusted) window.webkit.messageHandlers.r2cUserInput.postMessage(null);
+                }, {capture: true, passive: true});
+            }
+            """, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .defaultClient))
         web.load(URLRequest(url: URL(string: CaltopoPersonalProbe.origin)!))
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "r2cUserInput" else { return }
+        AppleApplicationCleanupCenter.shared.noteUserInteraction()
     }
 
     /// Best effort: this WebKit-owned layout is observed, not a public path contract.
@@ -235,8 +248,8 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
     }
 
     func openLink() {
-        guard let url = CaltopoPersonalProbe.browserURL(link) else {
-            status = "Enter an https://caltopo.com invitation or map link."; return
+        guard let url = CaltopoPersonalProbe.caltopoLinkURL(link) else {
+            status = "Enter an https://caltopo.com link."; return
         }
         pickerReady = true
         web.load(URLRequest(url: url))
@@ -283,6 +296,10 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
     }
 
     func clear(reload: Bool = true) {
+        Task { await clearPersistedLogin(reload: reload) }
+    }
+
+    func clearPersistedLogin(reload: Bool = false) async {
         clearingLogin = true
         accountID = nil
         sessionGeneration = UUID()
@@ -293,15 +310,13 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
         web.stopLoading()
         web.loadHTMLString("", baseURL: nil)
         let attempt = sessionGeneration
-        Task {
-            await CaltopoPersonalSessions.shared.clear()
-            await web.configuration.websiteDataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
-            guard sessionGeneration == attempt else { return }
-            busy = false
-            clearingLogin = false
-            status = "Local login cleared."
-            if reload { web.load(URLRequest(url: URL(string: CaltopoPersonalProbe.origin + "/account/login")!)) }
-        }
+        await CaltopoPersonalSessions.shared.clear()
+        await web.configuration.websiteDataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
+        guard sessionGeneration == attempt else { return }
+        busy = false
+        clearingLogin = false
+        status = "Local login cleared."
+        if reload { web.load(URLRequest(url: URL(string: CaltopoPersonalProbe.origin + "/account/login")!)) }
     }
 
     func check() {
@@ -429,16 +444,17 @@ struct AppleCaltopoPersonalProbeView: View {
     var onSelect: ((CaltopoTeamMap) -> Void)? = nil
     var onCatalog: ((String, [CaltopoTeamMapNode]) -> Void)? = nil
     var diagnostics = false
+    var initialCaltopoLinkURL: URL? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var showScanner = false
     @State private var started = false
     @State private var confirmMarker = false
     var body: some View {
         VStack(spacing: 8) {
-            Text("Sign in or open a CalTopo invitation. Load maps returns to RID2Caltopo with your available maps. Close keeps your login.")
+            Text(onCatalog == nil ? "Sign in or open a CalTopo invitation. Close keeps your login." : "Sign in or open a CalTopo invitation. Load maps or Close continues to your map list after sign-in.")
                 .font(.footnote)
             HStack {
-                TextField("CalTopo invitation or map link", text: $model.link)
+                TextField("CalTopo HTTPS link", text: $model.link)
                     .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
                 Button { scanQR() } label: { Image(systemName: "qrcode.viewfinder") }
                     .accessibilityLabel("Scan CalTopo QR code").disabled(model.busy)
@@ -471,6 +487,11 @@ struct AppleCaltopoPersonalProbeView: View {
             guard !started else { return }
             started = true
             model.catalogFailed = false
+            if let url = initialCaltopoLinkURL,
+               let validated = CaltopoPersonalProbe.caltopoLinkURL(url.absoluteString) {
+                model.link = validated.absoluteString
+                model.openLink()
+            }
             if let onCatalog { model.beginCatalogLogin(onCatalog) } else if let onSelect { model.beginPicker(onSelect) }
         }
         .onDisappear { if !showScanner { model.endPicker() } }
@@ -478,10 +499,10 @@ struct AppleCaltopoPersonalProbeView: View {
             NavigationStack {
                 QRCodeScannerView { value in
                     showScanner = false
-                    if let url = CaltopoPersonalProbe.browserURL(value) {
+                    if let url = CaltopoPersonalProbe.caltopoLinkURL(value) {
                         model.link = url.absoluteString
                         model.status = "Link scanned. Tap Open link to continue."
-                    } else { model.status = "This QR code is not a CalTopo invitation or map link." }
+                    } else { model.status = "This QR code is not a CalTopo HTTPS link." }
                 }
                 .navigationTitle("Scan CalTopo QR")
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { showScanner = false } } }

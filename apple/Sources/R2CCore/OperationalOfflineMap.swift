@@ -198,9 +198,9 @@ public struct OperationalOfflinePreset: Sendable, Hashable, Identifiable {
         self.maximumZoom = maximumZoom
     }
 
-    public static let overview = Self(id: "overview", label: "Overview (z8-z12)", minimumZoom: 8, maximumZoom: 12)
-    public static let operations = Self(id: "operations", label: "Ops (z12-z16)", minimumZoom: 12, maximumZoom: 16)
-    public static let fullDetail = Self(id: "full", label: "Full detail (z8-z19)", minimumZoom: 8, maximumZoom: 19)
+    public static let overview = Self(id: "overview", label: "Low", minimumZoom: 8, maximumZoom: 12)
+    public static let operations = Self(id: "operations", label: "Medium", minimumZoom: 12, maximumZoom: 16)
+    public static let fullDetail = Self(id: "full", label: "High", minimumZoom: 8, maximumZoom: 19)
     public static let all = [overview, operations, fullDetail]
 }
 
@@ -308,6 +308,12 @@ public enum OperationalS1MCatalog {
 }
 
 public enum OperationalOfflineMapPlanner {
+    public static func tileOperationCount(baseTileCount: Int, baseLayerCount: Int, includeContours: Bool) -> Int {
+        let sources = max(0, baseLayerCount) + (includeContours ? 1 : 0)
+        let result = max(0, baseTileCount).multipliedReportingOverflow(by: sources)
+        return result.overflow ? Int.max : result.partialValue
+    }
+
     public static func tileCount(
         bounds: OperationalMapBounds,
         minimumZoom: Int,

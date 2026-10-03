@@ -43,13 +43,14 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.VideocamOff
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.AlertDialog
+import org.ncssar.rid2caltopo.ui.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.DropdownMenu
+import org.ncssar.rid2caltopo.ui.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -246,6 +247,7 @@ fun StreamsScreen(
     viewModel: StreamsViewModel = viewModel(),
     onBack: () -> Unit,
     onMapStatusTap: () -> Unit = {},
+    onProximitySettingsTap: (() -> Unit)? = null,
     onPlayCapturedVideo: (() -> Unit)? = null,
     showNavigation: Boolean = true,
     externalContentMode: ExternalDisplayContentMode? = null,
@@ -332,6 +334,7 @@ fun StreamsScreen(
     }
     var showNotamPanel by remember { mutableStateOf(false) }
     var showLandRestrictionPanel by remember { mutableStateOf(false) }
+    var showRegisteredDesignators by remember { mutableStateOf(false) }
     var showPerformancePanel by remember { mutableStateOf(false) }
     var showCompliancePanel by remember { mutableStateOf(false) }
     var showSignalLossPanel by remember { mutableStateOf(false) }
@@ -408,7 +411,7 @@ fun StreamsScreen(
                         .horizontalScroll(headerScrollState),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    ResumeProximityAlertButton()
+                    ResumeProximityAlertButton(onSettings = onProximitySettingsTap)
                     Spacer(Modifier.width(8.dp))
                     NotamStatusChip(state = notamUiState, airspaceState = airspaceUiState, onClick = { showNotamPanel = true }, outerPadding = PaddingValues(0.dp))
                     Spacer(Modifier.width(8.dp))
@@ -419,7 +422,18 @@ fun StreamsScreen(
                         modifier = Modifier.width(280.dp))
                     Spacer(Modifier.width(8.dp))
                     Text(text = "Network: " + controllerNetwork.ssid, modifier = Modifier.padding(end = 8.dp), fontSize = 14.sp)
-                    Text(text = serverStatus, modifier = Modifier.clickable { showPerformancePanel = true }.padding(end = 8.dp), fontSize = 14.sp)
+                    if (isServerRunning) {
+                        Box(Modifier.clickable { showPerformancePanel = true }.padding(end = 8.dp)) {
+                            androidx.compose.material3.ProvideTextStyle(MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp)) {
+                                ControllerEndpointInstructions(
+                                    endpoints = controllerEndpoints,
+                                    onDesignatorsClick = { showRegisteredDesignators = true }
+                                )
+                            }
+                        }
+                    } else {
+                        Text(text = serverStatus, modifier = Modifier.clickable { showPerformancePanel = true }.padding(end = 8.dp), fontSize = 14.sp)
+                    }
                             ComplianceAlertBell(
                                 overLimitDrones = overLimitDrones,
                                 allOverLimitMuted = allOverLimitMuted,
@@ -712,24 +726,12 @@ fun StreamsScreen(
             onDismiss = { showLandRestrictionPanel = false }
         )
     }
+    RegisteredDroneDesignatorsDialogs(
+        showDesignators = showRegisteredDesignators,
+        onDismiss = { showRegisteredDesignators = false }
+    )
     if (showPerformancePanel) {
-        AlertDialog(
-            onDismissRequest = { showPerformancePanel = false },
-            title = { Text("Performance") },
-            text = {
-                Box(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                    Text(
-                        text = viewModel.performancePanelText(focusedPath),
-                        fontSize = 14.sp,
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showPerformancePanel = false }) {
-                    Text("Close")
-                }
-            }
-        )
+        StreamPerformanceDialog(viewModel, focusedPath, onDismiss = { showPerformancePanel = false })
     }
 }
 
@@ -1659,16 +1661,35 @@ private fun EmptyStreamsView(
     onRestartServer: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var showPerformance by remember { mutableStateOf(false) }
+    if (showPerformance) {
+        StreamPerformanceDialog(viewModel, null, onDismiss = { showPerformance = false })
+    }
     var anomalyMenuExpanded by remember { mutableStateOf(false) }
     var showAnomalySettingsDialog by remember { mutableStateOf(false) }
     var showAdHelpDialog by remember { mutableStateOf(false) }
     var showRegisteredDesignators by remember { mutableStateOf(false) }
-    var showAircraftDetails by remember { mutableStateOf(false) }
     val settingsDesignator = EMPTY_STREAMS_SETTINGS_DESIGNATOR
     val anomalyConfig = viewModel.anomalyConfigFor(settingsDesignator)
     Box(
         modifier = modifier.fillMaxSize(),
     ) {
+        if (anomalyConfig.enabled && anomalyConfig.showGuideBoxes) {
+            BoxWithConstraints(Modifier.matchParentSize(), contentAlignment = Alignment.Center) {
+                // Match the default 16:9 video frame used by the iPad placeholder.
+                val frameWidth = minOf(maxWidth, maxHeight * (16f / 9f))
+                val frameHeight = frameWidth * (9f / 16f)
+                val density = LocalDensity.current
+                AnomalyGuideBoxes(
+                    anomalyConfig = anomalyConfig,
+                    frameSize = with(density) {
+                        androidx.compose.ui.unit.IntSize(frameWidth.roundToPx(), frameHeight.roundToPx())
+                    },
+                    modifier = Modifier.width(frameWidth).height(frameHeight)
+                )
+            }
+        }
+
         Box(
             modifier = Modifier
                 .align(Alignment.TopEnd)
@@ -1706,6 +1727,7 @@ private fun EmptyStreamsView(
                     pauseLocalPlaybackOnOpen = false,
                     onShowSettings = { showAnomalySettingsDialog = true },
                     onShowHelp = { showAdHelpDialog = true },
+                    onShowPerformance = { showPerformance = true },
                     onCloseStream = null,
                     onRestartServer = onRestartServer,
                     onDismissMenu = { anomalyMenuExpanded = false },
@@ -1717,6 +1739,17 @@ private fun EmptyStreamsView(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
+            Icon(
+                imageVector = Icons.Filled.VideocamOff,
+                contentDescription = null,
+                modifier = Modifier.size(36.dp)
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            Text(
+                text = "Waiting for controller to connect",
+                style = MaterialTheme.typography.titleMedium
+            )
+            Spacer(modifier = Modifier.height(10.dp))
             val endpoints = rememberControllerEndpoints()
             ControllerEndpointInstructions(
                 endpoints = endpoints,
@@ -1743,84 +1776,115 @@ private fun EmptyStreamsView(
             onDismissAdHelpDialog = { showAdHelpDialog = false },
         )
 
-        if (showRegisteredDesignators) {
-            val designators = remember {
-                CaltopoClient.GetPersistedDroneSpecs()
-                    .map { it.mappedId.orEmpty().trim() }
-                    .filter { it.isNotEmpty() }
-                    .distinctBy { it.lowercase(java.util.Locale.US) }
-                    .sortedBy { it.lowercase(java.util.Locale.US) }
-            }
-            AlertDialog(
-                onDismissRequest = { showRegisteredDesignators = false },
-                title = { Text("droneDesig's for registered drones") },
-                text = {
-                    if (designators.isEmpty()) {
-                        Text("No registered droneDesig values.")
-                    } else {
-                        val designatorScrollState = rememberScrollState()
-                        val density = LocalDensity.current
-                        BoxWithConstraints(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(280.dp),
-                        ) {
-                            val viewportHeight = maxHeight
-                            val maxScroll = designatorScrollState.maxValue
-                            val maxScrollDp = with(density) { maxScroll.toDp() }
-                            val thumbHeight = (viewportHeight *
-                                (viewportHeight / (viewportHeight + maxScrollDp)))
-                                .coerceIn(32.dp, viewportHeight)
-                            val thumbOffset = if (maxScroll == 0) {
-                                0.dp
-                            } else {
-                                (viewportHeight - thumbHeight) *
-                                    (designatorScrollState.value.toFloat() / maxScroll)
+        RegisteredDroneDesignatorsDialogs(
+            showDesignators = showRegisteredDesignators,
+            onDismiss = { showRegisteredDesignators = false }
+        )
+    }
+}
+
+@Composable
+private fun RegisteredDroneDesignatorsDialogs(showDesignators: Boolean, onDismiss: () -> Unit) {
+    var showAircraftDetails by remember { mutableStateOf(false) }
+    if (showDesignators) {
+        val designators = remember {
+            CaltopoClient.GetPersistedDroneSpecs()
+                .map { it.mappedId.orEmpty().trim() }
+                .filter { it.isNotEmpty() }
+                .distinctBy { it.lowercase(java.util.Locale.US) }
+                .sortedBy { it.lowercase(java.util.Locale.US) }
+        }
+        AlertDialog(
+            onDismissRequest = { onDismiss() },
+            title = { Text("droneDesig's for registered drones") },
+            text = {
+                if (designators.isEmpty()) {
+                    Text("No registered droneDesig values.")
+                } else {
+                    val designatorScrollState = rememberScrollState()
+                    val density = LocalDensity.current
+                    BoxWithConstraints(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(280.dp),
+                    ) {
+                        val viewportHeight = maxHeight
+                        val maxScroll = designatorScrollState.maxValue
+                        val maxScrollDp = with(density) { maxScroll.toDp() }
+                        val thumbHeight = (viewportHeight *
+                            (viewportHeight / (viewportHeight + maxScrollDp)))
+                            .coerceIn(32.dp, viewportHeight)
+                        val thumbOffset = if (maxScroll == 0) {
+                            0.dp
+                        } else {
+                            (viewportHeight - thumbHeight) *
+                                (designatorScrollState.value.toFloat() / maxScroll)
+                        }
+                        Row(modifier = Modifier.fillMaxSize()) {
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .verticalScroll(designatorScrollState),
+                            ) {
+                                designators.forEach { designator -> Text(designator) }
                             }
-                            Row(modifier = Modifier.fillMaxSize()) {
-                                Column(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .fillMaxHeight()
-                                        .verticalScroll(designatorScrollState),
-                                ) {
-                                    designators.forEach { designator -> Text(designator) }
-                                }
+                            Box(
+                                modifier = Modifier
+                                    .padding(start = 8.dp)
+                                    .width(6.dp)
+                                    .fillMaxHeight()
+                                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                            ) {
                                 Box(
                                     modifier = Modifier
-                                        .padding(start = 8.dp)
-                                        .width(6.dp)
-                                        .fillMaxHeight()
-                                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(thumbHeight)
-                                            .offset(y = thumbOffset)
-                                            .background(MaterialTheme.colorScheme.primary),
-                                    )
-                                }
+                                        .fillMaxWidth()
+                                        .height(thumbHeight)
+                                        .offset(y = thumbOffset)
+                                        .background(MaterialTheme.colorScheme.primary),
+                                )
                             }
                         }
                     }
-                },
-                confirmButton = {
-                    Row {
-                        TextButton(onClick = {
-                            showRegisteredDesignators = false
-                            showAircraftDetails = true
-                        }) { Text("Add aircraft") }
-                        TextButton(onClick = { showRegisteredDesignators = false }) { Text("Close") }
-                    }
-                },
-            )
-        }
-        if (showAircraftDetails) {
-            RidMappingAdminDialog(
-                onDismiss = { showAircraftDetails = false },
-                startWithAddAircraft = true,
-            )
-        }
+                }
+            },
+            confirmButton = {
+                Row {
+                    TextButton(onClick = {
+                        onDismiss()
+                        showAircraftDetails = true
+                    }) { Text("Add aircraft") }
+                    TextButton(onClick = { onDismiss() }) { Text("Close") }
+                }
+            },
+        )
     }
+    if (showAircraftDetails) {
+        RidMappingAdminDialog(
+            onDismiss = { showAircraftDetails = false },
+            startWithAddAircraft = true,
+        )
+    }
+
+}
+
+@Composable
+internal fun StreamPerformanceDialog(viewModel: StreamsViewModel, streamDesignator: String?, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = { onDismiss() },
+        title = { Text("Performance") },
+        text = {
+            Box(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    text = viewModel.performancePanelText(streamDesignator),
+                    fontSize = 14.sp,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onDismiss() }) {
+                Text("Close")
+            }
+        }
+    )
 }

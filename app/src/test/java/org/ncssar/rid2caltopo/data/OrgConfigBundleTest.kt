@@ -54,12 +54,13 @@ class OrgConfigBundleTest {
 
         val bundle = JSONObject(CaltopoClient.BuildOrgConfigBundle("NCSSAR"))
         val credentials = findConfig(bundle, "ct_credentials")
-        val mutualAidCredentials = findConfig(bundle, "ct_mutual_aid_credentials")
+        assertTrue(!bundle.toString().contains("ct_mutual_aid_credentials"))
+        assertTrue(!bundle.toString().contains("ma-secret"))
 
         assertEquals("NCSSAR", bundle.getString("org_name"))
         assertEquals("NCSSAR", credentials.getString("org_name"))
         assertEquals("NCSSAR-UAS", credentials.getString("connect_key"))
-        assertEquals("SHARED-UAS", mutualAidCredentials.getString("connect_key"))
+        assertTrue(!bundle.toString().contains("SHARED-UAS"))
         assertEquals(2, bundle.getInt("version"))
         assertEquals(
             "https://r2c-tracker.com/ncssar/enroll?token=campaign-token",
@@ -71,7 +72,7 @@ class OrgConfigBundleTest {
     }
 
     @Test
-    fun managedTrackerUploadIncludesPrimaryAndMutualAidConnectKeys() {
+    fun managedTrackerUploadIncludesPrimaryButOmitsRetiredMutualAidCredentials() {
         CaltopoClient.ResetPersistedClientState()
         CaltopoClient.SetHomeOrgName("NCSSAR")
         CaltopoClient.SetCaltopoCredentials(CaltopoCredentials("team", "cred", "secret"))
@@ -91,12 +92,9 @@ class OrgConfigBundleTest {
         val credentials = JSONObject(
             OrgConfigToken.decryptPayload(snapshot.getString("organizationCaltopoEnc"))
         )
-        val mutualAidCredentials = JSONObject(
-            OrgConfigToken.decryptPayload(snapshot.getString("mutualAidCaltopoEnc"))
-        )
 
         assertEquals("NCSSAR-UAS", credentials.getString("connect_key"))
-        assertEquals("SHARED-UAS", mutualAidCredentials.getString("connect_key"))
+        assertEquals("", snapshot.getString("mutualAidCaltopoEnc"))
     }
 
     @Test
@@ -124,7 +122,7 @@ class OrgConfigBundleTest {
 
         assertTrue(CaltopoClient.ApplyOrgConfigBundle(json.toString()))
         assertEquals("NCSSAR", CaltopoClient.GetHomeOrgName())
-        assertEquals("SHARED-UAS", CaltopoClient.GetMutualAidTemplateConnectKey())
+        assertEquals("", CaltopoClient.GetMutualAidTemplateConnectKey())
     }
 
     @Test

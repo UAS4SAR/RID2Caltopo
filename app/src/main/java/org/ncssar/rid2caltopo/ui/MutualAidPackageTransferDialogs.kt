@@ -13,7 +13,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
+import org.ncssar.rid2caltopo.ui.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -62,7 +62,7 @@ private fun PackageQrCodeImage(content: String, modifier: Modifier = Modifier) {
     if (bitmap != null) {
         Image(
             bitmap = bitmap.asImageBitmap(),
-            contentDescription = "MA package QR code",
+            contentDescription = "map package QR code",
             modifier = modifier
         )
     } else {
@@ -85,7 +85,7 @@ fun MutualAidPackageShareDialog(
     } else 0f
     AlertDialog(
         onDismissRequest = {},
-        title = { Text("MA Package QR") },
+        title = { Text("Map Package QR") },
         text = {
             Column(
                 modifier = Modifier
@@ -152,7 +152,7 @@ fun MutualAidPackageImportDialog(
                 onDismiss()
             }
         },
-        title = { Text("Import MA Package") },
+        title = { Text("Import Map Package") },
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 when (state) {

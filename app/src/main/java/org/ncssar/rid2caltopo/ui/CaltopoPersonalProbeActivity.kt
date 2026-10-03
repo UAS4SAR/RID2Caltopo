@@ -42,6 +42,36 @@ class CaltopoPersonalProbeActivity : Activity() {
         var status = "Enter your login directly in CalTopo."
     }
     companion object {
+        /** Called through the private provider on a worker, never on the UI thread. */
+        fun clearPersistedLogin(): Boolean {
+            check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper())
+            val finished = java.util.concurrent.CountDownLatch(1)
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                Session.grants.clear()
+                Session.username = null
+                Session.token = null
+                Session.ready = false
+                Session.onReady = null
+                Session.map = ""; Session.link = ""
+                Session.web?.apply {
+                    stopLoading()
+                    loadUrl("about:blank")
+                    clearCache(true)
+                    clearHistory()
+                    (parent as? ViewGroup)?.removeView(this)
+                    destroy()
+                }
+                Session.web = null
+                Session.context = null
+                WebStorage.getInstance().deleteAllData()
+                CookieManager.getInstance().removeAllCookies {
+                    CookieManager.getInstance().flush()
+                    finished.countDown()
+                }
+            }
+            return finished.await(15, TimeUnit.SECONDS)
+        }
+
         /** Cold-process cookie recovery must not launch a visible Activity. Called on a provider worker. */
         fun prepareCatalog(context: android.content.Context) {
             if (Session.accountID != null) return
@@ -58,7 +88,10 @@ class CaltopoPersonalProbeActivity : Activity() {
                 val browser = Session.web ?: run {
                     val wrapper = MutableContextWrapper(context.applicationContext)
                     Session.context = wrapper
-                    WebView(wrapper).also { Session.web = it }
+                    object : WebView(wrapper) {
+                        override fun onCreateInputConnection(info: android.view.inputmethod.EditorInfo): android.view.inputmethod.InputConnection? =
+                            super.onCreateInputConnection(info)?.let { org.ncssar.rid2caltopo.app.UserInteractionTracker.inputConnection(it, context) }
+                    }.also { Session.web = it }
                 }
                 Session.ready = true
                 browser.settings.apply {
@@ -195,10 +228,13 @@ class CaltopoPersonalProbeActivity : Activity() {
         }
         fun label(text: String) = TextView(this).apply { this.text = text; setTextColor(Color.BLACK); root.addView(this) }
         label("Personal CalTopo login")
-        label("Sign in or open a CalTopo invitation. Load maps returns to RID2Caltopo with your available maps. Close keeps your login.")
+        label(if (intent.getBooleanExtra("catalog", false)) "Sign in or open a CalTopo invitation. Load maps or Close continues to your map list after sign-in." else "Sign in or open a CalTopo invitation. Close keeps your login.")
         val linkRow = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL; root.addView(this) }
-        val link = EditText(this).apply {
-            hint = "CalTopo invitation or map link"; setSingleLine(true)
+        val link = object : EditText(this) {
+            override fun onCreateInputConnection(info: android.view.inputmethod.EditorInfo): android.view.inputmethod.InputConnection? =
+                super.onCreateInputConnection(info)?.let { org.ncssar.rid2caltopo.app.UserInteractionTracker.inputConnection(it, context) }
+        }.apply {
+            hint = "CalTopo HTTPS link"; setSingleLine(true)
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
             setTextColor(Color.BLACK); setHintTextColor(Color.DKGRAY)
             linkRow.addView(this, LinearLayout.LayoutParams(0, -2, 1f))
@@ -216,7 +252,10 @@ class CaltopoPersonalProbeActivity : Activity() {
         linkField = link
         link.setText(Session.link)
         val open = Button(this).apply { text = "Open link"; root.addView(this) }
-        val map = EditText(this).apply { hint = "Incident map ID or link"; setSingleLine(true); root.addView(this) }
+        val map = object : EditText(this) {
+            override fun onCreateInputConnection(info: android.view.inputmethod.EditorInfo): android.view.inputmethod.InputConnection? =
+                super.onCreateInputConnection(info)?.let { org.ncssar.rid2caltopo.app.UserInteractionTracker.inputConnection(it, context) }
+        }.apply { hint = "Incident map ID or link"; setSingleLine(true); root.addView(this) }
         mapField = map
         map.setText(Session.map)
         check = Button(this).apply { text = "Check personal map access"; isEnabled = false; root.addView(this) }
@@ -237,7 +276,9 @@ class CaltopoPersonalProbeActivity : Activity() {
                 .setMessage(if (cleanup) "Checks and removes only this experiment's pending marker." else
                     "Creates a labeled test marker at 0,0, reads it back, removes it, and checks removal. Other map objects are left alone.")
                 .setPositiveButton(if (cleanup) "Clean up" else "Run test") { _, _ -> runMarkerTest(cleanup) }
-                .setNegativeButton("Cancel", null).show()
+                .setNegativeButton("Cancel", null).show().also { dialog ->
+                    dialog.window?.let(org.ncssar.rid2caltopo.app.UserInteractionTracker::observe)
+                }
         }
         val origin = label("https://caltopo.com")
         val controls = LinearLayout(this)
@@ -257,7 +298,10 @@ class CaltopoPersonalProbeActivity : Activity() {
         web = (Session.web ?: run {
             val wrapper = MutableContextWrapper(this)
             Session.context = wrapper
-            WebView(wrapper).also { Session.web = it }
+            object : WebView(wrapper) {
+                        override fun onCreateInputConnection(info: android.view.inputmethod.EditorInfo): android.view.inputmethod.InputConnection? =
+                            super.onCreateInputConnection(info)?.let { org.ncssar.rid2caltopo.app.UserInteractionTracker.inputConnection(it, context) }
+                    }.also { Session.web = it }
         }).apply {
             setOnTouchListener { _, event ->
                 if (event.action == android.view.MotionEvent.ACTION_UP) selectionArmed = true
@@ -294,8 +338,8 @@ class CaltopoPersonalProbeActivity : Activity() {
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, false)
         open.setOnClickListener {
             if (publishing) return@setOnClickListener
-            val url = Probe.browserURL(link.text.toString())
-            if (url == null) status.text = "Enter an https://caltopo.com invitation or map link."
+            val url = Probe.caltopoLinkURL(link.text.toString())
+            if (url == null) status.text = "Enter an https://caltopo.com link."
             else { selectionArmed = true; web.loadUrl(url) }
         }
         check.setOnClickListener {
@@ -329,7 +373,14 @@ class CaltopoPersonalProbeActivity : Activity() {
                 updatePublishButton()
             }
         }
-        if (newSession) {
+        val caltopoLinkUrl = Probe.caltopoLinkURL(intent.getStringExtra("caltopoLinkUrl").orEmpty())
+        if (caltopoLinkUrl != null) {
+            Session.ready = true
+            Session.onReady?.invoke()
+            linkField.setText(caltopoLinkUrl)
+            Session.link = caltopoLinkUrl
+            web.loadUrl(caltopoLinkUrl)
+        } else if (newSession) {
             Session.ready = true
             Session.status = if (intent.getBooleanExtra("catalog", false)) "Sign in if needed. Loading your personal maps…" else "Sign in if needed, then open a map from Your Data."
             Session.onReady?.invoke()
@@ -350,8 +401,8 @@ class CaltopoPersonalProbeActivity : Activity() {
         val result = com.google.zxing.integration.android.IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
         if (result == null) { super.onActivityResult(requestCode, resultCode, data); return }
         val scanned = result.contents ?: return
-        val url = Probe.browserURL(scanned)
-        if (url == null) status.text = "This QR code is not a CalTopo invitation or map link."
+        val url = Probe.caltopoLinkURL(scanned)
+        if (url == null) status.text = "This QR code is not a CalTopo HTTPS link."
         else {
             linkField.setText(url)
             Session.link = url

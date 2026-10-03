@@ -1,6 +1,7 @@
 import R2CCore
 import SwiftUI
 import UIKit
+import ObjectiveC.runtime
 
 @MainActor
 final class AppleApplicationCleanupCenter {
@@ -18,6 +19,7 @@ final class AppleApplicationCleanupCenter {
     private var idleTimeoutTask: Task<Void, Never>?
     private var idleAppStartedAt = Date()
     private var idleLastRIDMessageAt: Date?
+    private var idleLastUserInteractionAt: Date?
     private var idleLastProtectedActivityAt: Date?
     private var idleProtectedActivityActive = false
     private var maximumIdleMinutes = 0
@@ -48,6 +50,13 @@ final class AppleApplicationCleanupCenter {
         idleLastRIDMessageAt = maxDate(idleLastRIDMessageAt, lastRIDMessageAt)
         self.maximumIdleMinutes = maximumIdleMinutes
         scheduleIdleTimeoutCheck()
+    }
+
+    func noteUserInteraction(at date: Date = Date()) {
+        guard !isShutdownRequested else { return }
+        idleLastUserInteractionAt = maxDate(idleLastUserInteractionAt, date)
+        // The pending deadline rechecks the latest input, avoiding a task per touch.
+        if idleTimeoutTask == nil { scheduleIdleTimeoutCheck() }
     }
 
     func noteRIDMessage(receivedAt: Date) {
@@ -122,7 +131,8 @@ final class AppleApplicationCleanupCenter {
             maximumIdleMinutes: maximumIdleMinutes,
             now: Date(),
             lastProtectedActivityAt: idleLastProtectedActivityAt,
-            protectedActivityActive: idleProtectedActivityActive
+            protectedActivityActive: idleProtectedActivityActive,
+            lastUserInteractionAt: idleLastUserInteractionAt
         ) else { return }
 
         idleTimeoutTask = Task { @MainActor in
@@ -143,14 +153,15 @@ final class AppleApplicationCleanupCenter {
             maximumIdleMinutes: maximumIdleMinutes,
             now: now,
             lastProtectedActivityAt: idleLastProtectedActivityAt,
-            protectedActivityActive: idleProtectedActivityActive
+            protectedActivityActive: idleProtectedActivityActive,
+            lastUserInteractionAt: idleLastUserInteractionAt
         ) else {
             scheduleIdleTimeoutCheck()
             return
         }
 
         let baseline = max(
-            idleAppStartedAt,
+            max(idleAppStartedAt, idleLastUserInteractionAt ?? idleAppStartedAt),
             max(
                 idleLastRIDMessageAt ?? idleAppStartedAt,
                 idleLastProtectedActivityAt ?? idleAppStartedAt
@@ -160,7 +171,7 @@ final class AppleApplicationCleanupCenter {
         AppleLog.warning(
             "Lifecycle",
             String(
-                format: "Maximum idle timeout expired after %.3f/%.3f minutes without RID messages or protected activity; closing the application session",
+                format: "Maximum idle timeout expired after %.3f/%.3f minutes without RID messages, user interaction, or protected activity; closing the application session",
                 idleMinutes,
                 Double(maximumIdleMinutes)
             )
@@ -446,5 +457,46 @@ struct RID2CaltopoAppleApp: App {
         WindowGroup {
             LaunchDisclaimerGate()
         }
+    }
+}
+
+// SwiftUI owns UIApplication creation. Observe its public input entry points once,
+// forwarding every event/action unchanged, including sheets and WKWebView windows.
+@MainActor
+enum AppleUserInteractionObserver {
+    private static var installed = false
+    static func install() {
+        guard !installed else { return }
+        installed = true
+        for (original, observer) in [
+            (#selector(UIApplication.sendEvent(_:)), #selector(UIApplication.r2c_sendEvent(_:))),
+            (#selector(UIApplication.sendAction(_:to:from:for:)), #selector(UIApplication.r2c_sendAction(_:to:from:for:)))
+        ] {
+            guard let method = class_getInstanceMethod(UIApplication.self, original),
+                  let replacement = class_getInstanceMethod(UIApplication.self, observer) else { continue }
+            method_exchangeImplementations(method, replacement)
+        }
+        // Software keyboards can edit text without sending a hardware key event.
+        for name in [UITextField.textDidChangeNotification, UITextView.textDidChangeNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { AppleApplicationCleanupCenter.shared.noteUserInteraction() }
+            }
+        }
+    }
+}
+
+extension UIApplication {
+    @objc fileprivate func r2c_sendEvent(_ event: UIEvent) {
+        let activeTouches = event.allTouches?.contains { $0.phase != .stationary } ?? false
+        if activeTouches || [.presses, .scroll, .hover, .transform, .remoteControl, .motion].contains(event.type) {
+            AppleApplicationCleanupCenter.shared.noteUserInteraction()
+        }
+        r2c_sendEvent(event) // Original implementation after installation.
+    }
+
+    @objc fileprivate func r2c_sendAction(_ action: Selector, to target: Any?, from sender: Any?, for event: UIEvent?) -> Bool {
+        // Includes accessibility activation, which may have no associated touch event.
+        AppleApplicationCleanupCenter.shared.noteUserInteraction()
+        return r2c_sendAction(action, to: target, from: sender, for: event)
     }
 }

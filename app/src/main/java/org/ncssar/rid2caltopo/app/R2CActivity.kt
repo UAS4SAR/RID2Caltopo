@@ -45,7 +45,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
-import androidx.compose.material3.AlertDialog
+import org.ncssar.rid2caltopo.ui.AlertDialog
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -346,7 +346,7 @@ private fun OrganizationAccessGate(
     if (state == OrganizationAccessState.WAITING_FOR_SYSTEM_UNLOCK) {
         // A separate opaque, modal window covers the retained page, including its
         // existing menus/dialogs, without disposing the page's remembered state.
-        androidx.compose.ui.window.Dialog(
+        org.ncssar.rid2caltopo.ui.Dialog(
             onDismissRequest = {},
             properties = DialogProperties(
                 dismissOnBackPress = false,
@@ -1316,6 +1316,7 @@ class R2CActivity :
                 ScanningService.ScannerUptime
             ))[R2CViewModel::class.java]
         streamsViewModel = ViewModelProvider(this)[StreamsViewModel::class.java]
+        streamsViewModel.onPairedDroneSetup = localViewModel::requestPairedDroneSetup
         CaltopoClient.AddDroneSpecsChangedListener(localViewModel)
         CaltopoClient.AddDroneConfirmationCandidateListener(localViewModel)
         displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
@@ -1596,6 +1597,21 @@ class R2CActivity :
                     }
                     androidx.compose.foundation.layout.Box(Modifier.weight(1f)) {
                 org.ncssar.rid2caltopo.ui.PrimaryPageTransition(activeScreen) {
+                if (localViewModel.proximitySettingsOpen) {
+                    CaltopoSettingsScreen(
+                        startAtProximity = true,
+                        onDismiss = {
+                            reloadExternalDisplayConfig(forceRecreate = true)
+                            localViewModel.dismissProximitySettings()
+                        },
+                        onShowDeveloperTools = {
+                            reloadExternalDisplayConfig(forceRecreate = true)
+                            localViewModel.dismissProximitySettings()
+                            openDeveloperToolsWhenMainOpens = true
+                            localViewModel.showMain()
+                        }
+                    )
+                }
                 when (activeScreen) {
                     ActiveScreen.MAIN -> {
                         MainScreen(
@@ -1654,6 +1670,7 @@ class R2CActivity :
                             onPlayCapturedVideo = playCapturedVideo,
                             onBack = { localViewModel.showMain() },
                             onMapStatusTap = { localViewModel.openConnectionOverlayFromCurrentScreen() },
+                            onProximitySettingsTap = { localViewModel.showProximitySettings() },
                             viewModel = streamsViewModel,
                             remoteVideoStatus = activeRemoteVideoRequest?.let { request ->
                                 val metrics = activeRemoteVideoMetrics
@@ -2605,6 +2622,7 @@ class R2CActivity :
             .setCancelable(false)
             .create()
         deviceReconciliationDialog?.show()
+        deviceReconciliationDialog?.window?.let(UserInteractionTracker::observe)
     }
 
     private fun showEarlierDeviceChooser(
@@ -2622,6 +2640,7 @@ class R2CActivity :
             .setCancelable(false)
             .create()
         deviceReconciliationDialog?.show()
+        deviceReconciliationDialog?.window?.let(UserInteractionTracker::observe)
     }
 
     private fun replaceEarlierDeviceAuthorization(

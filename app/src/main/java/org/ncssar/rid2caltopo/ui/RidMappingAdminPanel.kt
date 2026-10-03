@@ -19,7 +19,7 @@ import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.AlertDialog
+import org.ncssar.rid2caltopo.ui.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -43,7 +43,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
+import org.ncssar.rid2caltopo.ui.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DocumentScanner
@@ -526,7 +526,8 @@ fun OrganizationUserLabel(compactHeader: Boolean = false) {
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-    val username = remember(change, endpoint, credential) { AircraftOrganizationAccess.organizationUser() }
+    val rememberedUsername = remember(change, endpoint, credential) { AircraftOrganizationAccess.organizationUser() }
+    val username = rememberedUsername?.takeIf { it == AircraftOrganizationAccess.organizationUser() }
     if (compactHeader || AircraftOrganizationAccess.belongsToOrganization()) {
         Text((if (compactHeader) "Account: " else "Organization account: ") + (username ?: "Not verified"),
             style = if (compactHeader) MaterialTheme.typography.labelMedium else MaterialTheme.typography.bodySmall,

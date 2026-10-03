@@ -680,6 +680,17 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         ArchiveState("RID mapping removed in Admin settings");
     }
 
+    /** Add a previously unknown aircraft locally without changing organization-owned entries. */
+    public static boolean SaveLocalPairedDrone(String remoteId, String designator, String model, String callsign) {
+        if (RejectNonCanonicalRemoteId("SaveLocalPairedDrone()", remoteId) || designator.trim().isEmpty()) return false;
+        for (CtDroneSpec existing : GetPersistedDroneSpecs()) {
+            if (existing.getRemoteId().equalsIgnoreCase(remoteId) || existing.getMappedId().equalsIgnoreCase(designator.trim())) return false;
+        }
+        GetState().cachedDroneSpecTable.put(remoteId, new CtDroneSpec(remoteId, designator.trim(), "", model.trim(), callsign.trim()));
+        ArchiveState("Local aircraft added from video pairing");
+        return true;
+    }
+
     public static void SavePersistedDroneSpec(String organization, String originalRemoteId, EditableRidMapping mapping) {
         AircraftOrganizationAccess.requireEdit();
         List<EditableRidMapping> others = new ArrayList<>();
@@ -1397,6 +1408,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         ArrayList<Pair<String, String>> options = new ArrayList<>();
         if (ccs.caltopoProfiles == null) return options;
         for (CaltopoProfileRecord profile : ccs.caltopoProfiles) {
+            if (!CaltopoCredentials.sniffTest(profile.credentials)) continue;
             String label;
             if ("HOME".equals(profile.profileType)) {
                 label = profile.sourceLabel != null ? profile.sourceLabel.trim() : "";
@@ -1426,6 +1438,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         long nowMs = System.currentTimeMillis();
         for (CaltopoProfileRecord profile : ccs.caltopoProfiles) {
             if (HasExpired(profile, nowMs)) continue;
+            if (!CaltopoCredentials.sniffTest(profile.credentials)) continue;
             boolean mutualAid = "MUTUAL_AID".equals(profile.profileType);
             String baseLabel = profile.sourceLabel != null ? profile.sourceLabel.trim() : "";
             if (baseLabel.isEmpty() && profile.displayName != null) {
@@ -2710,35 +2723,6 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             credentials.put("notam_warn_inside_one_nm",        ccs.notamWarnInsideOneNm);
             configs.put(credentials);
 
-            // ── ct_mutual_aid_credentials ───────────────────────────────────
-            MutualAidTemplateRecord template = ccs.mutualAidTemplate;
-            if (template != null &&
-                    ((template.teamId != null && !template.teamId.isEmpty()) ||
-                     (template.credentialId != null && !template.credentialId.isEmpty()) ||
-                     (template.credentialSecret != null && !template.credentialSecret.isEmpty()) ||
-                     (template.connectKey != null && !template.connectKey.isEmpty()) ||
-                     (template.sourceLabel != null && !template.sourceLabel.isEmpty()) ||
-                     (template.targetFolderHint != null && !template.targetFolderHint.isEmpty()))) {
-                JSONObject mutualAidCredentials = new JSONObject();
-                mutualAidCredentials.put("type", "ct_mutual_aid_credentials");
-                mutualAidCredentials.put("file_version", "1.0");
-                if (template.teamId != null && !template.teamId.isEmpty())
-                    mutualAidCredentials.put("team_id", template.teamId);
-                if (template.credentialId != null && !template.credentialId.isEmpty())
-                    mutualAidCredentials.put("credential_id", template.credentialId);
-                if (template.credentialSecret != null && !template.credentialSecret.isEmpty())
-                    mutualAidCredentials.put("credential_secret", template.credentialSecret);
-                if (template.domainAndPort != null && !template.domainAndPort.isEmpty())
-                    mutualAidCredentials.put("domain_and_port", template.domainAndPort);
-                if (template.connectKey != null && !template.connectKey.isEmpty())
-                    mutualAidCredentials.put("connect_key", template.connectKey);
-                if (template.sourceLabel != null && !template.sourceLabel.isEmpty())
-                    mutualAidCredentials.put("source_label", template.sourceLabel);
-                if (template.targetFolderHint != null && !template.targetFolderHint.isEmpty())
-                    mutualAidCredentials.put("target_folder_hint", template.targetFolderHint);
-                configs.put(mutualAidCredentials);
-            }
-
             bundle.put("configs", configs);
             return bundle.toString(2);
 
@@ -2830,6 +2814,8 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
 
     public static void ResetPersistedClientState() {
         Ccstate = new ClientClassState();
+        AircraftOrganizationAccess.resetRuntimeState();
+        CaltopoPersonalSession.resetRuntimeState();
         if (R2CApplication.getAppCtxt() != null) {
             R2CActivity.MyDeviceName = AndroidDeviceIdentity.displayName(
                     R2CApplication.getAppCtxt());
@@ -2840,7 +2826,11 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         DebugLevel = DebugLevelDebug;
         ClearDebugTagFilter();
         ArchivePermissionMissingFlag = false;
-        ArchiveState("persistent client state reset");
+        Context resetContext = R2CApplication.getAppCtxt();
+        if (resetContext != null) {
+            AppConfigStore.resetState(resetContext, Ccstate);
+            new org.ncssar.rid2caltopo.ui.TermsAcceptanceStore(resetContext).clear();
+        }
         NotifySettingsChanged();
         UpdateDroneSpecs();
     }
@@ -4355,6 +4345,13 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
      * then this check is disabled.
      */
 
+    private static volatile long LastUserInteractionAtMsec = 0L;
+
+    public static void NoteUserInteraction() {
+        LastUserInteractionAtMsec = System.currentTimeMillis();
+        // The pending check re-evaluates this timestamp; no alarm churn on every touch.
+    }
+
     public static synchronized void CheckIdle() {
         long maxIdleInMinutes = GetMaxIdleTimeInMinutes();
         AppIdleDelay.stop();
@@ -4364,6 +4361,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         long appActiveStartedAtMsec = AppActiveStartedAtMsec;
         long lastRidMessageMsec = CtDroneSpec.LastRidMessageTimestampMsec();
         long lastProtectedActivityMsec = MapOfflinePrepRuntime.lastActivityAtMsec();
+        long lastUserInteractionMsec = LastUserInteractionAtMsec;
         long nowMsec = System.currentTimeMillis();
         if (MapOfflinePrepRuntime.isActive()) {
             Log.i(TAG, "CheckIdle(): offline map preparation is active; deferring automatic shutdown.");
@@ -4373,6 +4371,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
                 appActiveStartedAtMsec,
                 lastRidMessageMsec,
                 lastProtectedActivityMsec,
+                lastUserInteractionMsec,
                 maxIdleInMinutes,
                 nowMsec);
         if (remainingMsec == ApplicationIdleTimeoutPolicy.DISABLED) return;
@@ -4382,11 +4381,11 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             return;
         }
         long idleBaselineMsec = Math.max(
-                appActiveStartedAtMsec,
+                Math.max(appActiveStartedAtMsec, lastUserInteractionMsec),
                 Math.max(lastRidMessageMsec, lastProtectedActivityMsec));
         long idleInMsec = Math.max(0L, nowMsec - idleBaselineMsec);
         String exitMessage = String.format(Locale.US,
-                "CheckIdle(): app idle timeout expired after %.3f/%.3f minutes without RID messages or protected activity (appActiveStarted=%s lastRidMessage=%s). Shutting down app and map to save battery.",
+                "CheckIdle(): app idle timeout expired after %.3f/%.3f minutes without RID messages, user interaction, or protected activity (appActiveStarted=%s lastRidMessage=%s). Shutting down app and map to save battery.",
                 idleInMsec / 60000.0,
                 (double) maxIdleInMinutes,
                 TimeDatestampString(appActiveStartedAtMsec),

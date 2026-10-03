@@ -6482,3 +6482,33 @@ func aolHighlightRequiresNegativeNumberAndExcludesAdjacentFields() {
     #expect(header.contains("AppleControllerConnectionURLs()"))
     #expect(header.contains(".onChange(of: network.currentSnapshotID, initial: true)"))
 }
+
+@Test func applicationIdleTimeoutUserInputResetsDeadline() {
+    let start = Date(timeIntervalSince1970: 0)
+    let input = Date(timeIntervalSince1970: 119)
+    #expect(ApplicationIdleTimeoutPolicy.remainingDelay(appStartedAt: start, lastRIDMessageAt: nil,
+        maximumIdleMinutes: 2, now: Date(timeIntervalSince1970: 120), lastUserInteractionAt: input) == 119)
+    #expect(!ApplicationIdleTimeoutPolicy.isExpired(appStartedAt: start, lastRIDMessageAt: nil,
+        maximumIdleMinutes: 2, now: Date(timeIntervalSince1970: 238), lastUserInteractionAt: input))
+    #expect(ApplicationIdleTimeoutPolicy.isExpired(appStartedAt: start, lastRIDMessageAt: nil,
+        maximumIdleMinutes: 2, now: Date(timeIntervalSince1970: 239), lastUserInteractionAt: input))
+    #expect(ApplicationIdleTimeoutPolicy.deadline(appStartedAt: start, lastRIDMessageAt: nil,
+        maximumIdleMinutes: 0, lastUserInteractionAt: input) == nil)
+    #expect(ApplicationIdleTimeoutPolicy.deadline(appStartedAt: start, lastRIDMessageAt: nil,
+        maximumIdleMinutes: 2, protectedActivityActive: true, lastUserInteractionAt: input) == nil)
+    for times: [TimeInterval] in [[50, 70, 90], [90, 50, 70], [70, 90, 50]] {
+        #expect(ApplicationIdleTimeoutPolicy.deadline(appStartedAt: start,
+            lastRIDMessageAt: Date(timeIntervalSince1970: times[0]), maximumIdleMinutes: 2,
+            lastProtectedActivityAt: Date(timeIntervalSince1970: times[1]),
+            lastUserInteractionAt: Date(timeIntervalSince1970: times[2])) == Date(timeIntervalSince1970: 210))
+    }
+}
+
+@Test func offlineMapIndependentLayerCountsAllowTerrainOnly() {
+    for baseLayers in 0...2 {
+        for contours in [false, true] {
+            #expect(OperationalOfflineMapPlanner.tileOperationCount(baseTileCount: 12, baseLayerCount: baseLayers, includeContours: contours) == 12 * (baseLayers + (contours ? 1 : 0)))
+        }
+    }
+    #expect(OperationalOfflineMapPlanner.tileOperationCount(baseTileCount: Int.max, baseLayerCount: 2, includeContours: true) == Int.max)
+}

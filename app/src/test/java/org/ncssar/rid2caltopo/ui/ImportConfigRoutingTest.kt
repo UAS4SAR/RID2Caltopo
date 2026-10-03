@@ -11,6 +11,23 @@ import org.ncssar.rid2caltopo.data.TrackerEnrollmentResult
 
 class ImportConfigRoutingTest {
     @Test
+    fun `CalTopo HTTPS links route to browser while other origins are rejected`() {
+        val signup = "https://caltopo.com/group/ABC123/signup/EXAMPLE"
+        val probe = org.ncssar.rid2caltopo.data.CaltopoPersonalProbe
+        assertEquals(signup, probe.caltopoLinkURL("  $signup\n"))
+        listOf("https://caltopo.com", "https://caltopo.com/m/ABC123#ll=1,2",
+            "https://caltopo.com/account/login?next=%2Fm%2FABC123", "https://caltopo.com:443/anything",
+            "HTTPS://CALTOPO.COM/arbitrary/path").forEach { assertEquals(it, probe.caltopoLinkURL(it)) }
+        listOf("http://caltopo.com/group/ABC123/signup/EXAMPLE",
+            "https://caltopo.com.evil.test/group/ABC123/signup/EXAMPLE",
+            "https://user@caltopo.com/group/ABC123/signup/EXAMPLE",
+            "https://caltopo.com:444/group/ABC123/signup/EXAMPLE",
+            "https://caltopo.com@evil.test/", "https://www.caltopo.com/", "R2C2:test").forEach {
+            assertEquals(null, probe.caltopoLinkURL(it))
+        }
+    }
+
+    @Test
     fun `tracker enrollment wrapper is recognized and unwrapped for import`() {
         val enrollmentUrl = "https://r2c-tracker.com/ncssar/enroll?token=test-token"
         val wrapper =

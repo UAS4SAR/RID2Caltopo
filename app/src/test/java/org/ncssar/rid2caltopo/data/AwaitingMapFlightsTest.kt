@@ -45,6 +45,27 @@ class AwaitingMapFlightsTest {
             assertTrue(JSONObject(org.json.JSONArray(file.readText()).getJSONObject(0).toString()).optString("map") == "map-a")
         } finally { file.delete() }
     }
+    @Test fun personalMapUsesAccountScopeForConsentAndPublication() {
+        val file = File.createTempFile("personal-flight", ".json").also { it.delete() }
+        try {
+            AwaitingMapFlights.useFileForTesting(file)
+            val scope = AwaitingMapFlights.destinationScope("responder-a", "")
+            assertEquals("personal:responder-a", scope)
+            AwaitingMapFlights.record("personal", "RID", "Aircraft", flight().getJSONArray("points"), false, "", "")
+            assertEquals("", AwaitingMapFlights.publicationId("RID", "personal-map", scope))
+            AwaitingMapFlights.decide("personal", "personal-map", scope)
+            assertEquals("personal", AwaitingMapFlights.publicationId("RID", "personal-map", scope))
+            assertEquals("", AwaitingMapFlights.publicationId("RID", "personal-map", "personal:responder-b"))
+            assertEquals("", AwaitingMapFlights.publicationId("RID", "different-map", scope))
+            AwaitingMapFlights.useFileForTesting(file)
+            val saved = JSONArray(file.readText()).getJSONObject(0)
+            assertEquals(scope, saved.getString("team"))
+            assertEquals("publish", saved.getString("decision"))
+            assertEquals("", AwaitingMapFlights.destinationScope("", "team-a"))
+            assertEquals("team-a", AwaitingMapFlights.destinationScope(null, "team-a"))
+        } finally { file.delete() }
+    }
+
     @Test fun boundFlightDoesNotBecomeUnassignedAfterMapSwitch() {
         val file = File.createTempFile("flight-bound", ".json").also { it.delete() }
         try {

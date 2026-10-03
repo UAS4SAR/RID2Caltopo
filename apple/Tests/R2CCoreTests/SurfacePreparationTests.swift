@@ -136,3 +136,14 @@ private actor CatalogResponses {
     #expect(!OperationalPreparedSurfaceSet.contains(width:524,height:524,west:-200,south:-200,east:201,north:200))
     #expect(!OperationalPreparedSurfaceSet.contains(width:400,height:400,west:-200,south:-200,east:200,north:200))
 }
+
+@Test func preparedAOLPartialTransferDoesNotClaimCompleteCoverage() throws {
+    let root=surfaceFixtureRoot.appendingPathComponent("partial-set")
+    let data=try Data(contentsOf:root.appendingPathComponent("index.json"))
+    try OperationalPreparedSurfaceSet.validate(data, allowPartial:true) { try Data(contentsOf:root.appendingPathComponent($0)) }
+    #expect(throws:(any Error).self) { try OperationalPreparedSurfaceSet.validate(data) { try Data(contentsOf:root.appendingPathComponent($0)) } }
+    #expect(throws:(any Error).self) { try OperationalPreparedSurfaceSet.validate(data, allowPartial:true) { _ in Data([1,2,3]) } }
+    var empty=try JSONSerialization.jsonObject(with:data) as! [String:Any]
+    empty["entries"]=[] as [String]
+    #expect(throws:(any Error).self) { try OperationalPreparedSurfaceSet.validate(JSONSerialization.data(withJSONObject:empty), allowPartial:true) { _ in Data() } }
+}

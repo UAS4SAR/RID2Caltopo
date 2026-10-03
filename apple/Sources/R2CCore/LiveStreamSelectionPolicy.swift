@@ -5,6 +5,24 @@ import Foundation
 public enum LiveStreamSelectionPolicy {
     public static let placeholderID = "demo"
 
+    public struct TileFocusPresentation: Equatable, Sendable {
+        public let effectiveFocused: Bool
+        public let showFocusBorder: Bool
+    }
+
+    /// A sole tile (including the waiting placeholder) is implicitly focused.
+    /// A border is only useful when distinguishing a selection among tiles.
+    public static func tileFocusPresentation(
+        displayedTileCount: Int,
+        explicitlyFocused: Bool
+    ) -> TileFocusPresentation {
+        let singleTile = displayedTileCount == 1
+        return TileFocusPresentation(
+            effectiveFocused: singleTile || explicitlyFocused,
+            showFocusBorder: !singleTile && explicitlyFocused
+        )
+    }
+
     public static func focusAfterPublisherStarted(
         currentFocus: String,
         publisherPath: String,

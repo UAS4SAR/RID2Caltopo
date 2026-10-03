@@ -15,6 +15,15 @@ object CaltopoPersonalProbe {
         return if (invitation.matches(uri.path.orEmpty()) || Regex("/m/[A-Za-z0-9]{3,16}/?").matches(uri.path.orEmpty())) uri.toString() else null
     }
 
+    /** Accept only the CalTopo HTTPS origin; paths, queries, and fragments are preserved. */
+    fun caltopoLinkURL(input: String): String? {
+        val uri = runCatching { URI(input.trim()) }.getOrNull() ?: return null
+        if (!uri.scheme.equals("https", ignoreCase = true) ||
+            !uri.host.equals("caltopo.com", ignoreCase = true) ||
+            uri.port !in listOf(-1, 443) || uri.userInfo != null) return null
+        return uri.toString()
+    }
+
     fun mapID(input: String): String? {
         val value = input.trim()
         if (mapID.matches(value)) return value

@@ -12,6 +12,7 @@ data class DroneSpecConfirmationUiState(
     val warning: String? = null,
     val pilotCallsignWarning: String? = null,
     val usesUnknownOrganizationDefault: Boolean = false,
+    val bootstrapDesignator: String? = null,
     val mappedIdIsRemoteId: Boolean = false
 )
 

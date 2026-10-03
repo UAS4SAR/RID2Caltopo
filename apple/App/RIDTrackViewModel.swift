@@ -40,12 +40,16 @@ final class RIDTrackViewModel: ObservableObject {
         } catch { archiveStatus = "Could not save pending publication: \(error.localizedDescription)" }
     }
 
-    func decideAwaitingFlight(_ id: String, mapID: String?, teamID: String) async {
+    func decideAwaitingFlight(_ id: String, mapID: String?, teamID: String) async -> Bool {
         do {
             try awaitingMapJournal.decide(id: id, mapID: mapID, teamID: teamID)
             awaitingMapFlights = awaitingMapJournal.entries.filter { $0.decision == "review" }
             await queueCompletedDeferredFlights()
-        } catch { archiveStatus = "Publication choice was not saved: \(error.localizedDescription)" }
+            return true
+        } catch {
+            archiveStatus = "Publication choice was not saved: \(error.localizedDescription)"
+            return false
+        }
     }
 
     private func queueCompletedDeferredFlights() async {
@@ -700,7 +704,7 @@ final class RIDTrackViewModel: ObservableObject {
         trackFolderName: String = "Drone Tracks"
     ) {
         publicationMapID = configuration.mapID
-        publicationTeamID = configuration.teamID
+        publicationTeamID = configuration.publicationScope
         awaitingMapFlights = awaitingMapJournal.entries.filter { $0.decision == "review" }
         Task { [caltopoPublisher] in
             await caltopoPublisher.configure(

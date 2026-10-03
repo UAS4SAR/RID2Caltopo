@@ -81,9 +81,9 @@ internal data class OfflinePrepPreset(
 )
 
 internal val OFFLINE_PREP_PRESETS = listOf(
-    OfflinePrepPreset(label = "Overview (z8-z12)", minZoom = 8, maxZoom = 12, demStepMeters = 500.0),
-    OfflinePrepPreset(label = "Ops (z12-z16)", minZoom = 12, maxZoom = 16, demStepMeters = 250.0),
-    OfflinePrepPreset(label = "Full detail (z8-z19)", minZoom = 8, maxZoom = 19, demStepMeters = 120.0)
+    OfflinePrepPreset(label = "Low", minZoom = 8, maxZoom = 12, demStepMeters = 500.0),
+    OfflinePrepPreset(label = "Medium", minZoom = 12, maxZoom = 16, demStepMeters = 250.0),
+    OfflinePrepPreset(label = "High", minZoom = 8, maxZoom = 19, demStepMeters = 120.0)
 )
 
 internal data class OfflinePrepProgress(

@@ -135,7 +135,7 @@ private fun SoftwareLicenseDialog(onClose: () -> Unit) {
             context.assets.open("legal/$name").bufferedReader().use { it.readText() }
         }
     }
-    androidx.compose.ui.window.Dialog(
+    org.ncssar.rid2caltopo.ui.Dialog(
         onDismissRequest = onClose,
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
     ) {

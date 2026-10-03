@@ -78,10 +78,12 @@ fun ClueSubmissionSheet(
 
 
     ModalBottomSheet(
+        modifier = Modifier.observeUserInput(),
         onDismissRequest = onCancel,
         sheetState = sheetState,
         dragHandle = null
     ) {
+        ObserveSheetInput()
         ClueSheetContent(
             clue = pendingClue,
             coordinateDisplayFormat = coordinateDisplayFormat,
@@ -425,5 +427,14 @@ fun ClueSheetContent (
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ObserveSheetInput() {
+    val root = androidx.compose.ui.platform.LocalView.current.rootView
+    androidx.compose.runtime.DisposableEffect(root) {
+        val remove = org.ncssar.rid2caltopo.app.UserInteractionTracker.observeAccessibilityRoot(root)
+        onDispose { remove() }
     }
 }

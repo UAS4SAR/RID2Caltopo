@@ -567,7 +567,13 @@ struct RIDTrackMapView: View {
     @Binding var automaticStreamPairingAircraftID: String?
     @Environment(\.dismiss) private var dismissLiveView
     let onReturnToMain: () -> Void
+    let onConfirmPairedDrone: (RidAircraftIdentity) -> Void
+    @State private var mapSettingsOpen = false
+    @State private var pendingMapSettingsAction: (() -> Void)?
+    @State private var showRegisteredDesignators = false
+    @State private var showAddAircraft = false
     let onMapStatusTap: () -> Void
+    let onProximitySettings: () -> Void
     let onSwitchMap: () -> Void
     let onDisconnectMap: () -> Void
     let onRestartStreams: () -> Void
@@ -681,6 +687,22 @@ struct RIDTrackMapView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(streamsFullScreen ? .hidden : .visible, for: .navigationBar)
         .toolbar { mapToolbar }
+        .sheet(isPresented: $showRegisteredDesignators) {
+            RegisteredDroneDesignatorsView(
+                values: identityStore.importedMappings.map(\.mappedID),
+                onAddAircraft: {
+                    showRegisteredDesignators = false
+                    showAddAircraft = true
+                }
+            )
+        }
+        .sheet(isPresented: $showAddAircraft) {
+            RidMappingAdminView(
+                organization: orgSettings,
+                identities: identityStore,
+                startWithAddAircraft: true
+            )
+        }
         .sheet(isPresented: $showMapItems) {
             MapItemsVisibilityView(
                 model: artifacts,
@@ -762,6 +784,7 @@ struct RIDTrackMapView: View {
                     tracks: model.tracks,
                     identityStore: identityStore,
                     selectedAircraftID: streamRegistry.boundAircraftID(for: pairingStreamID),
+                    onConfirm: onConfirmPairedDrone,
                     onSelect: { aircraftID in
                         streamRegistry.pair(streamID: pairingStreamID, aircraftID: aircraftID)
                         self.pairingStreamID = nil
@@ -800,10 +823,7 @@ struct RIDTrackMapView: View {
         }
         .sheet(isPresented: $showMutualAidExport) {
             AppleMutualAidExportView(
-                bounds: viewport.offlineBounds,
-                layer: baseLayer,
-                caltopo: caltopoConfiguration,
-                organization: orgSettings
+                bounds: viewport.offlineBounds
             )
         }
         .takeoffCalibrationPanel(isPresented: $showTakeoffCalibration,
@@ -1177,7 +1197,7 @@ struct RIDTrackMapView: View {
         } else if fraction >= CGFloat(OperationalSplitSizing.maximumFraction) {
             layout = OperationalMapVideoLayout.video.withPictureInPicture(videoPipEnabled)
         } else {
-            videoPipEnabled = false
+            // Split view temporarily has no inset; retain the operator's saved PiP preference.
             pipEditorMode = false
             layout = .split
         }
@@ -1380,44 +1400,47 @@ struct RIDTrackMapView: View {
     }
 
     private var mapSettingsMenu: some View {
-        Menu {
-            Menu("Layer: \(baseLayer.label)") {
-                ForEach(OperationalMapBaseLayer.allCases, id: \.self) { option in
-                    Button {
-                        baseLayer = option
-                    } label: {
-                        if option == baseLayer {
-                            Label(option.label, systemImage: "checkmark")
-                        } else {
-                            Text(option.label)
-                        }
-                    }
-                }
-                Divider()
-                Button {
-                    showContours.toggle()
-                } label: {
-                    Text("Contours: \(showContours ? "On" : "Off")")
-                }
-            }
-            Button(
-                offlineMaps.downloadMenuStatus.map { "Download Map: \($0)" } ?? "Download Map…"
-            ) {
-                AppleLog.info("MapDownload", "Download Map selected layout=\(layout.rawValue)")
-                showOfflinePreparation = true
-            }
-            Button("Map Folders…") { showMapItems = true }
-                .disabled(artifacts.snapshot.folders.isEmpty)
-            Button("Map Management…") { showMapManagement = true }
-        } label: {
+        Button { mapSettingsOpen = true } label: {
             Image(systemName: "gearshape.fill")
                 .font(.title3)
                 .frame(width: 42, height: 42)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
         }
-        // SwiftUI otherwise reverses the visual order when this menu opens upward.
-        .menuOrder(.fixed)
         .accessibilityLabel("Map settings")
+        .popover(isPresented: $mapSettingsOpen) {
+            VStack(alignment: .leading, spacing: 16) {
+                SettingsHelpLabel("Map layer", centered: true).font(.headline).foregroundStyle(.tint)
+                ForEach(OperationalMapBaseLayer.allCases, id: \.self) { option in
+                    Button {
+                        baseLayer = option
+                    } label: {
+                        Label(option.label, systemImage: option == baseLayer ? "checkmark.circle.fill" : "circle")
+                    }
+                }
+                SettingsToggle("Contours", isOn: $showContours)
+                Divider()
+                Button(offlineMaps.downloadMenuStatus.map { "Download Map: \($0)" } ?? "Download Map…") {
+                    selectMapSettingsAction { showOfflinePreparation = true }
+                }
+                Button("Map Folders…") { selectMapSettingsAction { showMapItems = true } }
+                    .disabled(artifacts.snapshot.folders.isEmpty)
+                Button("Map Management…") { selectMapSettingsAction { showMapManagement = true } }
+            }
+            .buttonStyle(.plain)
+            .padding(20)
+            .frame(width: 300)
+            .presentationCompactAdaptation(.popover)
+            .onDisappear {
+                let action = pendingMapSettingsAction
+                pendingMapSettingsAction = nil
+                action?()
+            }
+        }
+    }
+
+    private func selectMapSettingsAction(_ action: @escaping () -> Void) {
+        pendingMapSettingsAction = action
+        mapSettingsOpen = false
     }
 
     private func mapAttribution(inset: Bool) -> String {
@@ -1475,6 +1498,8 @@ struct RIDTrackMapView: View {
             Color.black
             AppleStreamsGridView(
                 registry: streamRegistry,
+                incidentMapTitle: caltopoConfiguration.mapID.isEmpty ? "Standalone" : liveViewMapTitle,
+                onIncidentMapTap: openLiveViewMapActions,
                 showsSetupHeader: false,
                 showsNavigationTitle: false,
                 expandedSessionID: expandedStreamID,
@@ -1992,7 +2017,7 @@ struct RIDTrackMapView: View {
     private var androidLiveViewStatusBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
-                AppleProximityStatusChip(center: proximityAlerts)
+                AppleProximityStatusChip(center: proximityAlerts, onSettings: onProximitySettings)
                 if airspace.enabled || notams.state.visible {
                     operationalStatusChip(
                         conciseAirspaceOrNotamChipLabel,
@@ -2024,7 +2049,7 @@ struct RIDTrackMapView: View {
                 .contentShape(Rectangle())
                 .accessibilityLabel("Incident map")
                 .accessibilityValue(liveViewMapTitle)
-                AppleLiveViewNetworkStatus()
+                AppleLiveViewNetworkStatus(onDesignatorsTapped: { showRegisteredDesignators = true })
                 Label("\(model.tracks.count) active", systemImage: "airplane.circle")
                 Text("\(model.acceptedObservationCount) points")
             }
@@ -2224,10 +2249,12 @@ private struct StreamAircraftPairingView: View {
     let tracks: [RidAircraftTrack]
     @ObservedObject var identityStore: AppleDroneConfirmationStore
     let selectedAircraftID: String?
+    let onConfirm: (RidAircraftIdentity) -> Void
     let onSelect: (String) -> Void
     let onUnpair: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var pendingMismatchedTrack: RidAircraftTrack?
+    @State private var setupRemoteID: String?
 
     var body: some View {
         NavigationStack {
@@ -2243,7 +2270,10 @@ private struct StreamAircraftPairingView: View {
                         ForEach(orderedTracks) { track in
                             let isClosestMatch = track.aircraftID == closestMatchAircraftID
                             Button {
-                                if pairingMatchesStream(track) {
+                                if identityStore.isUnassociated(track.aircraftID) &&
+                                    !identityStore.importedMappings.contains(where: { $0.remoteID == track.aircraftID || $0.mappedID.caseInsensitiveCompare(streamID) == .orderedSame }) {
+                                    setupRemoteID = track.aircraftID
+                                } else if pairingMatchesStream(track) {
                                     onSelect(track.aircraftID)
                                 } else {
                                     pendingMismatchedTrack = track
@@ -2288,6 +2318,14 @@ private struct StreamAircraftPairingView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+            }
+            .navigationDestination(item: $setupRemoteID) { remoteID in
+                DroneConfirmationView(remoteID: remoteID, existing: identityStore.identity(for: remoteID), identityStore: identityStore,
+                    onConfirm: { identity in onSelect(remoteID); onConfirm(identity) },
+                    onIgnore: { identityStore.ignore(remoteID); onSelect(remoteID) }, bootstrapDesignator: streamID)
+            }
+            .onChange(of: tracks.map(\.aircraftID)) { _, activeIDs in
+                if let setupRemoteID, !activeIDs.contains(setupRemoteID) { self.setupRemoteID = nil }
             }
             .navigationTitle("Pair Stream")
             .navigationBarTitleDisplayMode(.inline)

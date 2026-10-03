@@ -11,6 +11,25 @@ import androidx.compose.runtime.mutableStateOf
 class PersonalCaltopoLoginRequired : IllegalStateException("Sign in to CalTopo to load personal maps.")
 
 object CaltopoPersonalSession {
+    @Volatile var generation = 0L
+        private set
+    suspend fun clearPersistedLogin(context: Context) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val result = context.contentResolver.call(Uri.parse("content://org.ncssar.rid2caltopo.personal-session"), "reset", null, null)
+            check(result?.getBoolean("cleared") == true) { "Could not clear saved CalTopo login. Please retry reset." }
+        }
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+            android.webkit.WebStorage.getInstance().deleteAllData()
+            kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
+                android.webkit.CookieManager.getInstance().removeAllCookies {
+                    android.webkit.CookieManager.getInstance().flush()
+                    if (continuation.isActive) continuation.resumeWith(Result.success(Unit))
+                }
+            }
+            resetRuntimeState()
+        }
+    }
+
     var accountID = ""
         private set
     private var mediaOwners = emptyMap<String, String>()
@@ -45,6 +64,16 @@ object CaltopoPersonalSession {
     }
     @Volatile private var selected: Authorization? = null
     private var context: Context? = null
+    @JvmStatic fun resetRuntimeState() {
+        generation++
+        selected = null
+        accountID = ""
+        mediaOwners = emptyMap()
+        username = ""
+        browsingPersonal = false
+        maps = emptyList()
+        catalogReady = false
+    }
     @JvmStatic fun initialize(context: Context) { this.context = context.applicationContext }
     @JvmStatic fun activate(token: String?, mapID: String) {
         selected = token?.let { Authorization(it, mapID, accountID, mediaOwners[mapID] ?: accountID) }

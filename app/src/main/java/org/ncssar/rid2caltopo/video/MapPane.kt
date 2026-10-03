@@ -48,10 +48,11 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.DropdownMenu
+import org.ncssar.rid2caltopo.ui.DropdownMenu
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.AlertDialog
+import org.ncssar.rid2caltopo.ui.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -109,6 +110,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.channels.Channel
@@ -650,6 +652,8 @@ internal fun SplitMapPane(
     var showMutualAidPackageDialog by remember { mutableStateOf(false) }
     var offlinePrepInFlight by offlinePrepCoordinator.inFlight
     var offlinePrepPreset by offlinePrepCoordinator.preset
+    var offlinePrepIncludeImagery by offlinePrepCoordinator.includeImagery
+    var offlinePrepIncludeOsm by offlinePrepCoordinator.includeOsm
     var offlinePrepIncludeDem by offlinePrepCoordinator.includeDem
     var offlinePrepIncludeAol by offlinePrepCoordinator.includeAol
     var offlinePrepAolReport by offlinePrepCoordinator.aolReport
@@ -662,7 +666,6 @@ internal fun SplitMapPane(
     val offlinePrepAolWorkingBytes = if(offlinePrepIncludeAol) offlinePrepAolPlan?.let { if(it.reused) 0L else it.advertisedBytes*3/2+it.tiles*16_000_000L } ?: 0L else 0L
     var offlinePrepDemResolution by offlinePrepCoordinator.demResolution
     var offlinePrepIncludeContours by offlinePrepCoordinator.includeContours
-    var offlinePrepMaxThroughput by offlinePrepCoordinator.maximizeThroughput
     var offlinePrepAreaMode by offlinePrepCoordinator.areaMode
     var offlinePrepBoundaryId by offlinePrepCoordinator.boundaryId
     var offlinePrepProgress by offlinePrepCoordinator.progress
@@ -705,27 +708,10 @@ internal fun SplitMapPane(
         mapScaleBar = mapScaleBarState(distance[0].toDouble() / samplePx, samplePx.toDouble())
     }
 
-    val packageZoneId = remember { ZoneId.systemDefault() }
-    val packageDateFormatter = remember { DateTimeFormatter.ofPattern("yyyy-MM-dd") }
-    val packageTimeFormatter = remember { DateTimeFormatter.ofPattern("HH:mm") }
-    val defaultPackageExpiry = remember {
-        LocalDateTime.ofInstant(
-            Instant.ofEpochMilli(MutualAidProfileManager.defaultExpiryAtNextMidnight()),
-            packageZoneId
-        )
-    }
-    var maPackageDisplayName by remember { mutableStateOf("") }
-    var maPackageIncident by remember { mutableStateOf(CaltopoClient.GetIncident()) }
-    var maPackageOpPeriod by remember { mutableStateOf(CaltopoClient.GetOpPeriod()) }
-    var maPackageMapId by remember { mutableStateOf(CaltopoMap.GetMapId()) }
-    var maPackageMapTitle by remember { mutableStateOf(CaltopoMap.GetMapName()) }
-    var maPackageExpiryDateText by remember { mutableStateOf(defaultPackageExpiry.format(packageDateFormatter)) }
-    var maPackageExpiryTimeText by remember { mutableStateOf(defaultPackageExpiry.format(packageTimeFormatter)) }
-    var maPackageIncludeMapAccess by remember { mutableStateOf(false) }
-    var maPackageUseMapPaneExtents by remember { mutableStateOf(true) }
+    var maPackageTiles by remember { mutableStateOf(setOf("Imagery", "OpenStreetMap", "Contours", "DEM", "AOL")) }
     val activeShareSession by MutualAidPackageTransferManager.shareSession.collectAsState()
     var preparingMutualAidShare by remember { mutableStateOf(false) }
-    val maximizeThroughputBlockedForOsm = baseLayer == BaseLayerOption.OpenStreetMap
+    // Offline download concurrency is deliberately conservative for all suppliers.
     var contourOverlayEnabled by remember { mutableStateOf(MapCacheSettings.contourOverlayEnabled(context)) }
     var autoRemoveBadTiles by remember { mutableStateOf(BadTilePolicy.isAutoRemoveEnabled(context)) }
     var badTileDialogState by remember { mutableStateOf<BadTileDialogState?>(null) }
@@ -1118,9 +1104,6 @@ internal fun SplitMapPane(
         }
     }
     LaunchedEffect(baseLayer) {
-        if (baseLayer == BaseLayerOption.OpenStreetMap) {
-            offlinePrepMaxThroughput = false
-        }
         tileIoActiveUntilMs = System.currentTimeMillis() + TILE_IO_ACTIVE_GRACE_MS
     }
     LaunchedEffect(autoRemoveBadTiles) {
@@ -1251,6 +1234,8 @@ internal fun SplitMapPane(
         offlinePrepIncludeDem,
         offlinePrepIncludeAol,
         offlinePrepDemResolution,
+        offlinePrepIncludeImagery,
+        offlinePrepIncludeOsm,
         offlinePrepIncludeContours,
         mapBounds,
         offlineBoundaryOptions
@@ -1277,7 +1262,7 @@ internal fun SplitMapPane(
                 maxZoom = offlinePrepPreset.maxZoom,
                 clipBoundary = selectedBoundary
             )
-            val tileEstimate = offlinePrepTileOperationCount(baseTileEstimate, offlinePrepIncludeContours)
+            val tileEstimate = offlinePrepTileOperationCount(baseTileEstimate, offlinePrepTileSources(offlinePrepIncludeImagery, offlinePrepIncludeOsm, offlinePrepIncludeContours).size)
             val demEstimate = if (offlinePrepIncludeDem) {
                 estimateDemDownloadCount(estimateBounds, offlinePrepDemResolution)
             } else 0
@@ -1313,6 +1298,8 @@ internal fun SplitMapPane(
         offlinePrepIncludeDem,
         offlinePrepIncludeAol,
         offlinePrepDemResolution,
+        offlinePrepIncludeImagery,
+        offlinePrepIncludeOsm,
         offlinePrepIncludeContours,
         baseLayer,
         mapBounds,
@@ -1340,7 +1327,7 @@ internal fun SplitMapPane(
             return@LaunchedEffect
         }
         offlinePrepCacheStatus = OfflinePrepCacheStatus(checked = false)
-        val tileSources = offlinePrepTileSources(baseLayer, offlinePrepIncludeContours)
+        val tileSources = offlinePrepTileSources(offlinePrepIncludeImagery, offlinePrepIncludeOsm, offlinePrepIncludeContours)
         val includeDem = offlinePrepIncludeDem
         val computed = withContext(Dispatchers.IO) {
             var tileMissing = 0
@@ -1383,15 +1370,6 @@ internal fun SplitMapPane(
         return tileSourceForBaseLayer(baseLayer)
     }
 
-    fun parseMutualAidPackageExpiry(): Long =
-        parseMutualAidPackageExpiry(
-            dateText = maPackageExpiryDateText,
-            timeText = maPackageExpiryTimeText,
-            zoneId = packageZoneId,
-            dateFormatter = packageDateFormatter,
-            timeFormatter = packageTimeFormatter
-        )
-
     fun currentOfflinePrepSelectionKey(): String? {
         val boundary =
             if (offlinePrepAreaMode == OfflinePrepAreaMode.MapBoundary) {
@@ -1407,7 +1385,8 @@ internal fun SplitMapPane(
                 "viewport"
             }
         return listOf(
-            "base=${baseLayer.name}",
+            "imagery=$offlinePrepIncludeImagery",
+            "osm=$offlinePrepIncludeOsm",
             "preset=${offlinePrepPreset.label}",
             "dem=$offlinePrepIncludeDem",
             "aol=$offlinePrepIncludeAol",
@@ -1462,6 +1441,8 @@ internal fun SplitMapPane(
         offlinePrepIncludeDem,
         offlinePrepIncludeAol,
         offlinePrepDemResolution,
+        offlinePrepIncludeImagery,
+        offlinePrepIncludeOsm,
         offlinePrepIncludeContours,
         baseLayer,
         mapBounds,
@@ -1473,45 +1454,30 @@ internal fun SplitMapPane(
     val offlinePackageReady = offlinePrepCacheStatus.readyForPackage || offlinePrepReadyByCompletion
 
     fun startMutualAidShare() {
-        val boundary =
-            if (!maPackageUseMapPaneExtents && offlinePrepAreaMode == OfflinePrepAreaMode.MapBoundary) {
-                offlineBoundaryOptions.firstOrNull { it.id == offlinePrepBoundaryId }?.boundary
-            } else {
-                null
-            }
-        val prepBounds = boundary?.bounds ?: mapBounds
+        val prepBounds = mapBounds
         if (prepBounds == null) {
-            CaltopoClient.ShowToast("Mutual aid package export needs visible map bounds.")
+            CaltopoClient.ShowToast("Map package export needs visible map bounds.")
             return
         }
         preparingMutualAidShare = true
         uiScope.launch(Dispatchers.IO) {
-            val packageName = buildString {
-                append(maPackageIncident.ifBlank { "incident" }.replace(' ', '_'))
-                append("_op")
-                append(maPackageOpPeriod.ifBlank { "1" })
-            }
+            val packageName = "Map_Package_${System.currentTimeMillis()}"
             val exportResult = MutualAidPackageManager.exportPackageToTempFile(
                 context = context,
                 packageName = packageName,
-                displayName = maPackageDisplayName.trim(),
-                incident = maPackageIncident.trim(),
-                opPeriod = maPackageOpPeriod.trim(),
-                targetMapId = maPackageMapId.trim(),
-                targetMapTitle = maPackageMapTitle.trim(),
-                expiresAtEpochMs = parseMutualAidPackageExpiry(),
                 bounds = prepBounds,
-                minZoom = offlinePrepPreset.minZoom,
-                maxZoom = offlinePrepPreset.maxZoom,
-                tileSource = selectedTileSource(),
-                includeDem = offlinePrepIncludeDem,
-                includeMapAccess = maPackageIncludeMapAccess,
-                clipBoundary = boundary
+                tileSources = buildList {
+                    if ("Imagery" in maPackageTiles) add(ArcGisWorldImageryTileSource)
+                    if ("OpenStreetMap" in maPackageTiles) add(OsmStandardTileSource)
+                    if ("Contours" in maPackageTiles) add(UsgsContoursTileSource)
+                },
+                includeDem = "DEM" in maPackageTiles,
+                includeAol = "AOL" in maPackageTiles,
             )
             val result = if (exportResult.first && exportResult.second != null) {
                 MutualAidPackageTransferManager.startShareSession(context, exportResult.second!!, packageName)
             } else {
-                false to "Failed to build MA package."
+                false to "Failed to build map package."
             }
             withContext(Dispatchers.Main.immediate) {
                 preparingMutualAidShare = false
@@ -1521,18 +1487,7 @@ internal fun SplitMapPane(
     }
 
     fun openMutualAidPackageDialog() {
-        maPackageIncident = CaltopoClient.GetIncident()
-        maPackageOpPeriod = CaltopoClient.GetOpPeriod()
-        maPackageMapId = CaltopoMap.GetMapId()
-        maPackageMapTitle = CaltopoMap.GetMapName()
-        maPackageUseMapPaneExtents = true
-        maPackageIncludeMapAccess = false
-        val nextMidnight = LocalDateTime.ofInstant(
-            Instant.ofEpochMilli(MutualAidProfileManager.defaultExpiryAtNextMidnight()),
-            packageZoneId
-        )
-        maPackageExpiryDateText = nextMidnight.format(packageDateFormatter)
-        maPackageExpiryTimeText = nextMidnight.format(packageTimeFormatter)
+        maPackageTiles = setOf("Imagery", "OpenStreetMap", "Contours", "DEM", "AOL")
         showMutualAidPackageDialog = true
     }
 
@@ -1557,9 +1512,10 @@ internal fun SplitMapPane(
         val includeDem = offlinePrepIncludeDem
         val demResolution = offlinePrepDemResolution
         val includeContours = offlinePrepIncludeContours
-        val tileSources = offlinePrepTileSources(baseLayer, includeContours)
-        val isOsmDownload = baseLayer == BaseLayerOption.OpenStreetMap
-        val maximizeThroughput = offlinePrepMaxThroughput && !isOsmDownload
+        val tileSources = offlinePrepTileSources(offlinePrepIncludeImagery, offlinePrepIncludeOsm, includeContours)
+        // Field trials returned supplier abuse tiles. High concurrency does not appear
+        // supported by tile suppliers; retain the implementation disabled for investigation.
+        val maximizeThroughput = false
         val estimatedTileOps = offlinePrepEstimate.tileEstimate
         var estimatedDemOps = if (includeDem) estimateDemDownloadCount(bounds, demResolution) else 0
         var estimatedTotalOps = (estimatedTileOps + estimatedDemOps + (aolPlan?.tiles ?: 0)).coerceAtLeast(1)
@@ -1571,12 +1527,12 @@ internal fun SplitMapPane(
             if (point.lat.isFinite() && point.lng.isFinite()) GeoPoint(point.lat, point.lng) else null
         }
         offlinePrepJob = offlinePrepCoordinator.scope.launch(Dispatchers.IO) {
-            if (tileSources.isEmpty()) {
+            if (tileSources.isEmpty() && !includeDem && aolPlan == null) {
                 withContext(Dispatchers.Main.immediate) {
                     offlinePrepInFlight = false
                     offlinePrepJob = null
                     offlinePrepCoordinator.finish()
-                    CaltopoClient.ShowToast("Selected base layer does not support map download.")
+                    CaltopoClient.ShowToast("Select at least one map layer or elevation data type.")
                 }
                 return@launch
             }
@@ -1859,16 +1815,9 @@ internal fun SplitMapPane(
                     }
 
                     if (!maximizeThroughput) {
-                        val workerCount = if (isOsmDownload) 1 else 3
-                        val tileQueue = Channel<Pair<OnlineTileSourceBase, Long>>(capacity = workerCount * 3)
-                        val workers = List(workerCount) {
-                            launch {
-                                for ((source, tileIndex) in tileQueue) {
-                                    processTile(source, tileIndex)
-                                }
-                            }
-                        }
-                        val orderedTileIndexes = orderedTileIndexesForOfflinePrep(
+                        // One serial worker per supplier; independent suppliers can run together.
+                        // Never queue multiple simultaneous requests to the same tile source.
+                        val orderedTileIndexes = if (tileSources.isEmpty()) emptyList() else orderedTileIndexesForOfflinePrep(
                             bounds = bounds,
                             minZoom = preset.minZoom,
                             maxZoom = preset.maxZoom,
@@ -1876,14 +1825,14 @@ internal fun SplitMapPane(
                             tabletLocation = tabletLocation,
                             dronePathPoints = dronePathPoints
                         )
-                        for (tileIndex in orderedTileIndexes) {
-                            currentCoroutineContext().ensureActive()
-                            for (source in tileSources) {
-                                tileQueue.send(source to tileIndex)
+                        tileSources.map { source ->
+                            launch {
+                                for (tileIndex in orderedTileIndexes) {
+                                    currentCoroutineContext().ensureActive()
+                                    processTile(source, tileIndex)
+                                }
                             }
-                        }
-                        tileQueue.close()
-                        workers.forEach { it.join() }
+                        }.joinAll()
 
                         if (includeDem) {
                             if (archiveDemDir == null) {
@@ -3114,7 +3063,7 @@ internal fun SplitMapPane(
                     lastViewportSignature = viewportSignature
                     tileIoActiveUntilMs = uiNowWallMsec + TILE_IO_ACTIVE_GRACE_MS
                 }
-                val suppressLiveMapNetwork = offlinePrepInFlight && baseLayer == BaseLayerOption.OpenStreetMap
+                val suppressLiveMapNetwork = offlinePrepInFlight
                 val tileNetworkActive = visibleTileNetworkActive(suppressLiveMapNetwork)
                 if (mapView.useDataConnection() != tileNetworkActive) {
                     mapView.setUseDataConnection(tileNetworkActive)
@@ -4510,26 +4459,8 @@ internal fun SplitMapPane(
         MapPaneMutualAidDialogs(
             showPackageDialog = showMutualAidPackageDialog,
             onShowPackageDialogChange = { showMutualAidPackageDialog = it },
-            sourceLabel = CaltopoClient.GetMutualAidSourceLabel(),
-            includeMapAccess = maPackageIncludeMapAccess,
-            onIncludeMapAccessChange = { maPackageIncludeMapAccess = it },
-            displayName = maPackageDisplayName,
-            onDisplayNameChange = { maPackageDisplayName = it },
-            incident = maPackageIncident,
-            onIncidentChange = { maPackageIncident = it },
-            opPeriod = maPackageOpPeriod,
-            onOpPeriodChange = { maPackageOpPeriod = it },
-            mapId = maPackageMapId,
-            onMapIdChange = { maPackageMapId = it },
-            mapTitle = maPackageMapTitle,
-            onMapTitleChange = { maPackageMapTitle = it },
-            expiryDateText = maPackageExpiryDateText,
-            onExpiryDateTextChange = { maPackageExpiryDateText = it },
-            expiryTimeText = maPackageExpiryTimeText,
-            onExpiryTimeTextChange = { maPackageExpiryTimeText = it },
-            useMapPaneExtents = maPackageUseMapPaneExtents,
-            onUseMapPaneExtentsChange = { maPackageUseMapPaneExtents = it },
-            parsedExpiryEpochMs = parseMutualAidPackageExpiry(),
+            selectedTiles = maPackageTiles,
+            onSelectedTilesChange = { maPackageTiles = it },
             preparingShare = preparingMutualAidShare,
             onStartShare = { startMutualAidShare() },
             activeShareSession = activeShareSession,
@@ -4639,7 +4570,7 @@ internal fun SplitMapPane(
                                     .padding(end = 10.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                        Text("Area")
+                        Text("Scope", style = MaterialTheme.typography.titleSmall)
                         OfflinePrepAreaMode.entries.forEach { area ->
                             val enabled = area != OfflinePrepAreaMode.MapBoundary || offlineBoundaryOptions.isNotEmpty()
                             Row(
@@ -4691,33 +4622,27 @@ internal fun SplitMapPane(
                                 }
                             }
                         }
-                        OFFLINE_PREP_PRESETS.forEach { preset ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable(enabled = !offlinePrepInFlight) { offlinePrepPreset = preset },
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Checkbox(
-                                    checked = offlinePrepPreset == preset,
-                                    onCheckedChange = {
-                                        if (!offlinePrepInFlight && it == true) offlinePrepPreset = preset
-                                    },
-                                    enabled = !offlinePrepInFlight
-                                )
-                                Column {
-                                    Text(preset.label)
-                                    Text(
-                                        demSamplingSummary(preset.demStepMeters),
-                                        fontSize = 11.sp
-                                    )
-                                }
+                        HorizontalDivider()
+                        Text("Map layers", style = MaterialTheme.typography.titleSmall)
+                        DownloadMapCheckbox("Imagery", offlinePrepIncludeImagery, !offlinePrepInFlight) { offlinePrepIncludeImagery = it }
+                        DownloadMapCheckbox("OpenStreetMap (OSM)", offlinePrepIncludeOsm, !offlinePrepInFlight) { offlinePrepIncludeOsm = it }
+                        DownloadMapCheckbox("Contours", offlinePrepIncludeContours, !offlinePrepInFlight) { offlinePrepIncludeContours = it }
+                        HorizontalDivider()
+                        Text("Detail", style = MaterialTheme.typography.titleSmall)
+                        DownloadMapChoice(offlinePrepPreset.label, OFFLINE_PREP_PRESETS.reversed().map { it.label }, !offlinePrepInFlight) { label ->
+                            offlinePrepPreset = OFFLINE_PREP_PRESETS.first { it.label == label }
+                        }
+                        HorizontalDivider()
+                        Text("Elevation data", style = MaterialTheme.typography.titleSmall)
+                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            DownloadMapCheckbox("DEM", offlinePrepIncludeDem, !offlinePrepInFlight, modifier = Modifier.weight(1f)) { offlinePrepIncludeDem = it }
+                            DownloadMapChoice("${offlinePrepDemResolution.meters} m", listOf("1 m", "10 m", "30 m"), !offlinePrepInFlight && offlinePrepIncludeDem, modifier = Modifier.width(120.dp)) { label ->
+                                offlinePrepDemResolution = DemResolutionOption.values().first { "${it.meters} m" == label }
                             }
                         }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked=offlinePrepIncludeAol,onCheckedChange={ if(!offlinePrepInFlight) offlinePrepIncludeAol=it },enabled=!offlinePrepInFlight)
-                            Text("Prepare 1 m AOL tiles")
-                        }
+                        DownloadMapCheckbox("AOL (1 m)", offlinePrepIncludeAol, !offlinePrepInFlight) { offlinePrepIncludeAol = it }
+                        if (offlinePrepIncludeDem) Text(offlinePrepDemResolution.explanation, fontSize = 11.sp)
+                        if (offlinePrepIncludeAol) Text("AOL obstacle tiles are prepared at 1 m; DEM resolution does not change AOL detail.", fontSize = 11.sp)
                         if(offlinePrepIncludeAol) {
                             Text("Downloads USGS lidar and builds obstacle tiles on this device after map and terrain downloads. Prepare before flight. Uses the selected region's bounding rectangle plus a 200 ft margin. Prepared tiles are used automatically for AOL calculations.",fontSize=11.sp)
                             Text(offlinePrepAolPlanText,fontSize=12.sp)
@@ -4727,65 +4652,8 @@ internal fun SplitMapPane(
                             if(offlinePrepAolWorkingBytes>0) Text("AOL temporary-space allowance: ${formatStorageBytes(offlinePrepAolWorkingBytes)}. Raw files are removed after assembly; existing prepared areas are retained.",fontSize=11.sp)
                             if(offlinePrepAolReport.isNotBlank()) Text(offlinePrepAolReport,fontSize=12.sp)
                         }
-                        Text(
-                            "DEM detail is planned separately from map zoom.",
-                            fontSize = 11.sp
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(
-                                checked = offlinePrepIncludeDem,
-                                onCheckedChange = { if (!offlinePrepInFlight) offlinePrepIncludeDem = it },
-                                enabled = !offlinePrepInFlight
-                            )
-                            Text("Include DEM tiles")
-                        }
-                        if (offlinePrepIncludeDem) {
-                            DemResolutionOption.values().forEach { resolution ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable(enabled = !offlinePrepInFlight) {
-                                            offlinePrepDemResolution = resolution
-                                        },
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Checkbox(
-                                        checked = offlinePrepDemResolution == resolution,
-                                        onCheckedChange = {
-                                            if (!offlinePrepInFlight && it == true) offlinePrepDemResolution = resolution
-                                        },
-                                        enabled = !offlinePrepInFlight
-                                    )
-                                    Column {
-                                        Text(resolution.label, fontSize = 12.sp)
-                                        Text(resolution.explanation, fontSize = 10.sp)
-                                    }
-                                }
-                            }
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(
-                                checked = offlinePrepIncludeContours,
-                                onCheckedChange = { if (!offlinePrepInFlight) offlinePrepIncludeContours = it },
-                                enabled = !offlinePrepInFlight
-                            )
-                            Text("Include contour tiles")
-                        }
-                        if (maximizeThroughputBlockedForOsm) {
-                            Text(
-                                "OpenStreetMap offline prep uses a conservative single-request mode with the app's OSM user agent.",
-                                fontSize = 11.sp
-                            )
-                        } else {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Checkbox(
-                                    checked = offlinePrepMaxThroughput,
-                                    onCheckedChange = { if (!offlinePrepInFlight) offlinePrepMaxThroughput = it },
-                                    enabled = !offlinePrepInFlight
-                                )
-                                Text("Maximize throughput")
-                            }
-                        }
+                        HorizontalDivider()
+                        Text("Estimated download and storage", style = MaterialTheme.typography.titleSmall)
                         Text(
                             if (offlinePrepEstimateRunning || !offlinePrepEstimate.ready) {
                                 "Estimate: calculating..."
@@ -4813,14 +4681,15 @@ internal fun SplitMapPane(
                                 availableVolumeBytes = offlinePrepAvailableBytes
                             )
                             Text(
-                                "Map cache: ${formatStorageBytes(capacity.currentTileCacheBytes)} currently; " +
-                                    "up to ${formatStorageBytes(capacity.projectedTileCacheBytes)} before older entries are removed",
+                                "Currently cached: ${formatStorageBytes(capacity.currentTileCacheBytes)}",
                                 fontSize = 11.sp
                             )
                             Text(
-                                "Configured limit: ${formatStorageBytes(capacity.maximumTileCacheBytes)}",
+                                "Configured cache limit: ${formatStorageBytes(capacity.maximumTileCacheBytes)}",
                                 fontSize = 11.sp
                             )
+                            Text("Estimated after download: ${formatStorageBytes(capacity.projectedTileCacheBytes)} (before cleanup; includes temporary AOL space).", fontSize = 11.sp)
+                            Text("The estimate assumes selected files are not already cached. Older entries may be removed to stay within the configured limit or when they exceed the maximum tile age.", fontSize = 11.sp)
                             if (capacity.exceedsCacheLimit) {
                                 Text(
                                     "This download is expected to exceed the map-cache limit. Increase the limit or reduce the selection before starting.",
@@ -5058,7 +4927,7 @@ internal fun SplitMapPane(
                                 }
                                 startOfflinePrep(prepBounds, boundary)
                             },
-                            enabled = !offlinePrepInFlight && offlinePrepEstimate.ready && (!offlinePrepIncludeAol || offlinePrepAolPlan!=null) &&
+                            enabled = !offlinePrepInFlight && (offlinePrepIncludeImagery || offlinePrepIncludeOsm || offlinePrepIncludeContours || offlinePrepIncludeDem || offlinePrepIncludeAol) && offlinePrepEstimate.ready && (!offlinePrepIncludeAol || offlinePrepAolPlan!=null) &&
                                 (mapBounds != null || selectedBoundary != null)
                         ) { Text(if(offlinePrepProgress.phase.startsWith("Failed")) "Retry" else "Start") }
                     }

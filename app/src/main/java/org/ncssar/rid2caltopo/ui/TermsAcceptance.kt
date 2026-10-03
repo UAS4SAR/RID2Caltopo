@@ -36,6 +36,7 @@ internal data class TermsAcceptance(
 
 internal class TermsAcceptanceStore(context: Context) {
     private val preferences = context.getSharedPreferences("application_terms_acceptance", Context.MODE_PRIVATE)
+    fun clear(): Boolean = preferences.edit().clear().commit()
     fun read(): TermsAcceptance? = runCatching { TermsAcceptance.decode(preferences.getString("record", null)) }.getOrNull()
     // One record prevents a partial version/timestamp update from being treated as acceptance.
     fun save(record: TermsAcceptance): Boolean = runCatching {

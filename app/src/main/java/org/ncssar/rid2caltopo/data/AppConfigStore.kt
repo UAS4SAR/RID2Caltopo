@@ -144,6 +144,15 @@ object AppConfigStore {
     }
 
     @JvmStatic
+    fun resetState(context: Context, state: Any) {
+        initialize(context)
+        val fresh = state as ClientClassState
+        updateCachedConfigAndEnqueueWrite(context, "resetState") {
+            mergeStateIntoConfig(AppConfig.getDefaultInstance(), fresh, false)
+        }
+    }
+
+    @JvmStatic
     fun persistState(context: Context, state: Any, archivePermissionMissing: Boolean) {
         initialize(context)
         val typedState = state as? ClientClassState ?: return

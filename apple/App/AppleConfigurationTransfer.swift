@@ -62,79 +62,51 @@ final class AppleConfigurationTransferManager: ObservableObject {
 
     func prepareMutualAidPackage(
         bounds: OperationalMapBounds,
-        preset: OperationalOfflinePreset,
-        layer: OperationalMapBaseLayer,
-        includeDEM: Bool,
-        includeMapAccess: Bool = true,
-        packageName: String,
-        displayName: String,
-        expiresAt: Date,
-        caltopo: AppleCaltopoConfiguration,
-        organization: AppleOrgConfigSettings
+        selectedTiles: Set<String>,
+        packageName: String
     ) async {
         exportURL = nil
-        if includeMapAccess && organization.mutualAidTemplate == nil {
-            status = "Configure the Mutual Aid account in Settings before exporting an MA package."
-            return
-        }
         isWorking = true
         status = "Collecting cached map data…"
         defer { isWorking = false }
         do {
-            guard let tiles = OperationalOfflineMapPlanner.tiles(
-                bounds: bounds, minimumZoom: preset.minimumZoom, maximumZoom: preset.maximumZoom
-            ) else { throw TransferError.packageTooLarge }
-            let trackerAPIKey = organization.trackerAPIKey
-            let cleanName = sanitize(packageName.isEmpty ? displayName : packageName)
-            var profileEncrypted = ""
-            if includeMapAccess, let template = organization.mutualAidTemplate {
-                let profile: [String: Any] = [
-                    "profile_id": "mai-\(sanitize(template.sourceLabel))-\(sanitize(organization.incident))-op\(sanitize(organization.operationalPeriod))",
-                    "display_name": displayName.isEmpty ? "\(template.sourceLabel) \(organization.incident)" : displayName,
-                    "team_id": template.teamID,
-                    "credential_id": template.credentialID,
-                    "credential_secret": template.credentialSecret,
-                    "domain_and_port": template.domainAndPort,
-                    "connect_key": template.connectKey,
-                    "track_folder": organization.trackFolder,
-                    "incident": organization.incident,
-                    "op_period": organization.operationalPeriod,
-                    "tracker_api_key": trackerAPIKey,
-                    "tracker_url_prefix": organization.trackerURLPrefix,
-                    "auto_connect": true,
-                    "expires_at_epoch_ms": Int64(expiresAt.timeIntervalSince1970 * 1_000),
-                    "quiet_remove_on_expiry": true,
-                    "source_label": template.sourceLabel,
-                    "target_map_id": caltopo.mapID,
-                    "target_map_title": organization.incident,
-                    "target_folder_hint": template.targetFolderHint,
-                    "imported_at_epoch_ms": Int64(Date().timeIntervalSince1970 * 1_000),
-                    "import_dedupe_key": "\(template.sourceLabel)|\(organization.incident)|\(organization.operationalPeriod)",
-                ]
-                profileEncrypted = try AndroidConfigTokenCodec.encryptMutualAidProfile(profile)
-            }
+            let cleanName = sanitize(packageName)
             var entries: [OperationalZipArchive.Entry] = []
             let maximumPackageBytes = 512 * 1_024 * 1_024
             var packageBytes = 0
             var tileManifest: [[String: Any]] = []
-            for tile in tiles {
-                let source = AppleMapCachePaths.tile(tile, layerKey: layer.cacheKey, fileExtension: layer.fileExtension)
-                guard let data = AppleMapCacheAccess.synchronized({ try? Data(contentsOf: source) }) else { continue }
-                guard data.count <= maximumPackageBytes - packageBytes else { throw TransferError.packageBytesTooLarge }
-                packageBytes += data.count
-                let path = "tiles/\(layer == .openStreetMap ? "osm-standard" : "arcgis-worldimagery")/\(tile.zoom)/\(tile.x)/\(tile.y).bin"
-                entries.append(.init(path: path, data: data))
-                tileManifest.append([
-                    "source": layer == .openStreetMap ? "OSM-Standard" : "ArcGIS-WorldImagery",
-                    "z": tile.zoom, "x": tile.x, "y": tile.y,
-                    "expires_at_epoch_ms": 0, "path": path,
-                ])
+            let sources: [(label: String, key: String, ext: String, source: String)] = [
+                ("Imagery", OperationalMapBaseLayer.imagery.cacheKey, OperationalMapBaseLayer.imagery.fileExtension, "ArcGIS-WorldImagery"),
+                ("OpenStreetMap", OperationalMapBaseLayer.openStreetMap.cacheKey, OperationalMapBaseLayer.openStreetMap.fileExtension, "OSM-Standard"),
+                ("Contours", "usgsContours", "png", "USGS-Contours"),
+            ]
+            for selected in sources where selectedTiles.contains(selected.label) {
+                let tiles = try MapPackageRegion.cachedTiles(
+                    root: AppleMapCachePaths.root.appendingPathComponent(selected.key),
+                    fileExtension: selected.ext, bounds: bounds)
+                for tile in tiles {
+                    let source = AppleMapCachePaths.tile(tile, layerKey: selected.key, fileExtension: selected.ext)
+                    guard let data = AppleMapCacheAccess.synchronized({ try? Data(contentsOf: source) }) else { continue }
+                    guard data.count <= maximumPackageBytes - packageBytes else { throw TransferError.packageBytesTooLarge }
+                    packageBytes += data.count
+                    let path = "tiles/\(selected.source.lowercased())/\(tile.zoom)/\(tile.x)/\(tile.y).bin"
+                    entries.append(.init(path: path, data: data))
+                    tileManifest.append([
+                        "source": selected.source,
+                        "z": tile.zoom, "x": tile.x, "y": tile.y,
+                        "expires_at_epoch_ms": 0, "path": path,
+                    ])
+                }
             }
             var demManifest: [[String: Any]] = []
-            if includeDEM {
-                for tileName in OperationalOfflineMapPlanner.demTileNames(bounds: bounds) {
-                    let fileName = "USGS_1_\(tileName).tif"
-                    let source = AppleMapCachePaths.demRoot.appendingPathComponent(fileName)
+            if selectedTiles.contains("DEM") {
+                let demFiles = FileManager.default.fileExists(atPath: AppleMapCachePaths.demRoot.path)
+                    ? try FileManager.default.contentsOfDirectory(at: AppleMapCachePaths.demRoot, includingPropertiesForKeys: [.isRegularFileKey]) : []
+                for source in demFiles {
+                    let fileName = source.lastPathComponent
+                    guard ["tif", "tiff"].contains(source.pathExtension.lowercased()),
+                          let b = GeoTiffElevationSource.tileBounds(fileName: fileName),
+                          MapPackageRegion.overlaps(bounds, .init(north: b.north, south: b.south, west: b.west, east: b.east)) else { continue }
                     guard let data = AppleMapCacheAccess.synchronized({ try? Data(contentsOf: source) }) else { continue }
                     guard data.count <= maximumPackageBytes - packageBytes else { throw TransferError.packageBytesTooLarge }
                     packageBytes += data.count
@@ -143,7 +115,12 @@ final class AppleConfigurationTransferManager: ObservableObject {
                     demManifest.append(["tile_name": fileName, "file_name": fileName, "path": path])
                 }
             }
-            let aolFiles=try await AppleSurfaceStore.shared.exportSets(bounds)
+            let aolFiles: [OperationalZipArchive.Entry]
+            if selectedTiles.contains("AOL") {
+                aolFiles = try await AppleSurfaceStore.shared.exportSets(bounds)
+            } else {
+                aolFiles = []
+            }
             for entry in aolFiles {
                 guard entry.data.count <= maximumPackageBytes-packageBytes else { throw TransferError.packageBytesTooLarge }
                 packageBytes+=entry.data.count;entries.append(entry)
@@ -152,16 +129,16 @@ final class AppleConfigurationTransferManager: ObservableObject {
                 "aol_entries": aolFiles.map(\.path),
                 "format": Self.packageFormat, "version": 1,
                 "generated": ISO8601DateFormatter().string(from: Date()),
-                "package_name": packageName, "source_org": includeMapAccess ? (organization.mutualAidTemplate?.sourceLabel ?? "") : "",
-                "profile_enc": profileEncrypted,
+                "package_name": packageName, "source_org": "",
+                "profile_enc": "",
                 "tile_entries": tileManifest, "dem_entries": demManifest,
             ]
             entries.append(.init(path: "manifest.json", data: try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])))
-            status = "Building mutual-aid package…"
+            status = "Building map package…"
             let archive = try await Task.detached(priority: .utility) { try OperationalZipArchive.encode(entries) }.value
-            exportURL = try writeExport(archive, name: "\(cleanName)_mutual_aid_package.zip")
-            status = "MA package ready: \(aolFiles.filter { $0.path.hasSuffix(".aol") }.count) AOL tile(s), \(tileManifest.count) tile(s), \(demManifest.count) DEM tile(s)."
-        } catch { status = "MA package export failed: \(error.localizedDescription)" }
+            exportURL = try writeExport(archive, name: "\(cleanName)_map_package.zip")
+            status = "Map package ready: \(aolFiles.filter { $0.path.hasSuffix(".aol") }.count) AOL tile(s), \(tileManifest.count) tile(s), \(demManifest.count) DEM tile(s)."
+        } catch { status = "Map package export failed: \(error.localizedDescription)" }
     }
 
     func configurationBackupData(
@@ -268,8 +245,21 @@ final class AppleConfigurationTransferManager: ObservableObject {
                   let z = (item["z"] as? NSNumber)?.intValue,
                   let x = (item["x"] as? NSNumber)?.intValue,
                   let y = (item["y"] as? NSNumber)?.intValue else { continue }
-            let layer: OperationalMapBaseLayer = (item["source"] as? String) == "ArcGIS-WorldImagery" ? .imagery : .openStreetMap
-            let destination = AppleMapCachePaths.tile(.init(zoom: z, x: x, y: y), layerKey: layer.cacheKey, fileExtension: layer.fileExtension)
+            let key: String
+            let ext: String
+            switch item["source"] as? String {
+            case "ArcGIS-WorldImagery":
+                key = OperationalMapBaseLayer.imagery.cacheKey
+                ext = OperationalMapBaseLayer.imagery.fileExtension
+            case "OSM-Standard":
+                key = OperationalMapBaseLayer.openStreetMap.cacheKey
+                ext = OperationalMapBaseLayer.openStreetMap.fileExtension
+            case "USGS-Contours":
+                key = "usgsContours"
+                ext = "png"
+            default: continue
+            }
+            let destination = AppleMapCachePaths.tile(.init(zoom: z, x: x, y: y), layerKey: key, fileExtension: ext)
             let bytesAdded = try AppleMapCacheAccess.write(bytes, to: destination)
             AppleMapOfflineManager.noteTileCached(bytes: Int(bytesAdded))
             importedTiles += 1
@@ -284,7 +274,7 @@ final class AppleConfigurationTransferManager: ObservableObject {
             importedDEM += 1
         }
         let importedAOL=try await AppleSurfaceStore.shared.importSets(lookup)
-        status = "Imported MA package: \(importedAOL) AOL tile(s), \(importedTiles) tile(s), \(importedDEM) DEM tile(s)."
+        status = "Imported Map package: \(importedAOL) AOL tile(s), \(importedTiles) tile(s), \(importedDEM) DEM tile(s)."
         return !(manifest["profile_enc"] as? String ?? "").isEmpty
     }
 
@@ -589,7 +579,7 @@ struct AppleConfigurationTransferView: View {
                 }
             }
             Section("Restore or join") {
-                Button("Import Backup or MA Package…", systemImage: "square.and.arrow.down") { importing = true }
+                Button("Import Backup or Map Package…", systemImage: "square.and.arrow.down") { importing = true }
                     .disabled(manager.isWorking)
                 Text("Configuration backups require their passphrase. Mutual-aid packages import cached map and terrain data without a passphrase. Packages with shared map access also install their incident profile.")
                     .font(.footnote).foregroundStyle(.secondary)
@@ -611,56 +601,61 @@ struct AppleConfigurationTransferView: View {
 
 struct AppleMutualAidExportView: View {
     let bounds: OperationalMapBounds
-    let layer: OperationalMapBaseLayer
-    let caltopo: AppleCaltopoConfiguration
-    @ObservedObject var organization: AppleOrgConfigSettings
     @StateObject private var manager = AppleConfigurationTransferManager()
-    @State private var preset = OperationalOfflinePreset.operations
-    @State private var includeDEM = true
-    @State private var includeMapAccess = false
-    @State private var packageName = "Mutual Aid"
-    @State private var displayName = "Mutual Aid"
-    @State private var expiresAt = Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
+    @State private var selectedTiles: Set<String> = ["Imagery", "OpenStreetMap", "Contours", "DEM", "AOL"]
+    @State private var packageName = "Map Package"
 
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Text("This exports cached tiles only; it does not download anything. For the checked tile types, all cached zoom levels overlapping the current visible map region are included. Tiles are included whole, so their edges may extend beyond the visible region.")
+                        .font(.footnote)
+                }
                 Section("Package") {
                     TextField("Package name", text: $packageName)
-                    TextField("Display name", text: $displayName)
-                    Toggle("Include shared map access", isOn: $includeMapAccess)
-                        .onChange(of: includeMapAccess) { _, _ in manager.discardPreparedPackage() }
-                    Text("Leave off for tiles only: cached map and terrain data, without account credentials or changes to your map/bookmark.").font(.footnote)
-                    if includeMapAccess { DatePicker("Access expires", selection: $expiresAt, in: Date()...) }
-                    Picker("Map detail", selection: $preset) {
-                        ForEach(OperationalOfflinePreset.all) { Text($0.label).tag($0) }
+                    ForEach(["Imagery", "OpenStreetMap", "Contours", "DEM", "AOL"], id: \.self) { tile in
+                        Toggle(isOn: Binding(
+                            get: { selectedTiles.contains(tile) },
+                            set: { checked in
+                                if checked { selectedTiles.insert(tile) } else { selectedTiles.remove(tile) }
+                            }
+                        )) { Text(tile) }
+                        .toggleStyle(MapPackageCheckboxStyle())
                     }
-                    Toggle("Include cached DEM", isOn: $includeDEM)
-                }
-                Section("Source") {
-                    LabeledContent("Organization", value: organization.mutualAidTemplate?.sourceLabel ?? "MA credentials not loaded")
-                    LabeledContent("Incident", value: organization.incident)
-                    LabeledContent("Map", value: caltopo.mapID.isEmpty ? "Not selected" : caltopo.mapID)
-                    LabeledContent("Base layer", value: layer.label)
                 }
                 Section {
-                    Button("Prepare MA Package", systemImage: "shippingbox") {
+                    Button("Prepare Map Package", systemImage: "shippingbox") {
                         Task {
                             await manager.prepareMutualAidPackage(
-                                bounds: bounds, preset: preset, layer: layer, includeDEM: includeDEM, includeMapAccess: includeMapAccess,
-                                packageName: packageName, displayName: displayName, expiresAt: expiresAt,
-                                caltopo: caltopo, organization: organization
+                                bounds: bounds, selectedTiles: selectedTiles, packageName: packageName
                             )
                         }
                     }
-                    .disabled(manager.isWorking || (includeMapAccess && (caltopo.mapID.isEmpty || organization.mutualAidTemplate == nil)))
-                    if let url = manager.exportURL { ShareLink(item: url) { Label("Share MA Package", systemImage: "square.and.arrow.up") } }
+                    .disabled(manager.isWorking || selectedTiles.isEmpty)
+                    if let url = manager.exportURL { ShareLink(item: url) { Label("Share Map Package", systemImage: "square.and.arrow.up") } }
                     if manager.isWorking { ProgressView() }
                     Text(manager.status).font(.footnote).foregroundStyle(.secondary)
                 }
             }
             .disabled(manager.isWorking)
-            .navigationTitle("Export MA Package")
+            .onChange(of: selectedTiles) { _, _ in manager.discardPreparedPackage() }
+            .onChange(of: packageName) { _, _ in manager.discardPreparedPackage() }
+            .navigationTitle("Export Map Package")
         }
+    }
+}
+
+private struct MapPackageCheckboxStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button { configuration.isOn.toggle() } label: {
+            HStack {
+                Image(systemName: configuration.isOn ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(Color.accentColor)
+                configuration.label.foregroundStyle(.primary)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(configuration.isOn ? "Selected" : "Not selected")
     }
 }

@@ -465,6 +465,8 @@ final class AppleStreamRegistry: ObservableObject {
 struct AppleStreamsGridView: View {
     @ObservedObject var registry: AppleStreamRegistry
     @ObservedObject private var networkDiagnostics = AppleNetworkDiagnosticCenter.shared
+    var incidentMapTitle: String? = nil
+    var onIncidentMapTap: (() -> Void)? = nil
     var showsSetupHeader = true
     var showsNavigationTitle = true
     var expandedSessionID: String? = nil
@@ -538,6 +540,11 @@ struct AppleStreamsGridView: View {
             }
             .background(.black)
         }
+        .onChange(of: visibleSessions.map(\.id), initial: true) { _, ids in
+            if ids.count == 1, let id = ids.first, registry.focusedID != id {
+                registry.focus(id)
+            }
+        }
         .modifier(StreamGridNavigationTitle(enabled: showsNavigationTitle))
         .sheet(isPresented: $showRegisteredDesignators) {
             RegisteredDroneDesignatorsView(
@@ -559,12 +566,19 @@ struct AppleStreamsGridView: View {
         _ session: AppleLiveStreamSession,
         fillsAvailableSpace: Bool
     ) -> some View {
-        AppleStreamTile(
+        let focus = LiveStreamSelectionPolicy.tileFocusPresentation(
+            displayedTileCount: visibleSessions.count,
+            explicitlyFocused: registry.focusedID == session.id
+        )
+        return AppleStreamTile(
             session: session,
+            incidentMapTitle: incidentMapTitle,
+            onIncidentMapTap: onIncidentMapTap,
             onDesignatorsTapped: {
                 showRegisteredDesignators = true
             },
-            focused: registry.focusedID == session.id,
+            focused: focus.effectiveFocused,
+            showFocusBorder: focus.showFocusBorder,
             fillsAvailableSpace: fillsAvailableSpace,
             primaryLabel: primaryLabel?(session.id),
             telemetryText: telemetryText?(session.id),
@@ -629,9 +643,6 @@ private struct StreamGridNavigationTitle: ViewModifier {
 private struct AppleStreamTile: View {
     @ObservedObject var session: AppleLiveStreamSession
     @ObservedObject private var model: AppleVideoFrameSource
-    @State private var showAnomalySettings = false
-    @State private var showAnomalyHelp = false
-    @State private var showPerformance = false
     @State private var zoom: CGFloat = 1
     @State private var zoomAtGestureStart: CGFloat = 1
     @State private var pan: CGSize = .zero
@@ -641,8 +652,11 @@ private struct AppleStreamTile: View {
     @State private var centerpointElevationSample: OperationalCenterpointElevation.Sample?
     @State private var centerpointReferenceElevationFeet: Int?
     @State private var centerpointDisplayMode: OperationalCenterpointElevation.DisplayMode = .msl
+    let incidentMapTitle: String?
+    let onIncidentMapTap: (() -> Void)?
     let onDesignatorsTapped: (() -> Void)?
     let focused: Bool
+    let showFocusBorder: Bool
     let fillsAvailableSpace: Bool
     let primaryLabel: String?
     private func coloredTelemetry(_ line: String) -> AttributedString {
@@ -674,8 +688,11 @@ private struct AppleStreamTile: View {
 
     init(
         session: AppleLiveStreamSession,
+        incidentMapTitle: String?,
+        onIncidentMapTap: (() -> Void)?,
         onDesignatorsTapped: (() -> Void)? = nil,
         focused: Bool,
+        showFocusBorder: Bool,
         fillsAvailableSpace: Bool,
         primaryLabel: String?,
         telemetryText: String?,
@@ -693,9 +710,12 @@ private struct AppleStreamTile: View {
         onRestartStreams: (() -> Void)?
     ) {
         self.session = session
+        self.incidentMapTitle = incidentMapTitle
+        self.onIncidentMapTap = onIncidentMapTap
         _model = ObservedObject(wrappedValue: session.model)
         self.onDesignatorsTapped = onDesignatorsTapped
         self.focused = focused
+        self.showFocusBorder = showFocusBorder
         self.fillsAvailableSpace = fillsAvailableSpace
         self.primaryLabel = primaryLabel
         self.telemetryText = telemetryText
@@ -794,36 +814,14 @@ private struct AppleStreamTile: View {
                 )
                 Spacer()
                 if focused || fillsAvailableSpace {
-                    Menu {
-                        Button("AD Mode: \(model.anomalyMode.label)") {
-                            showAnomalySettings = true
-                        }
-                        Button("AD Help") {
-                            showAnomalyHelp = true
-                        }
-                        Button("Performance…", systemImage: "gauge.with.dots.needle.67percent") {
-                            showPerformance = true
-                        }
-                        if let onRestartStreams {
-                            Button("Restart Streams Server", systemImage: "arrow.clockwise") {
-                                onRestartStreams()
-                            }
-                        }
-                        if let onClose {
-                            Button("Close Stream", systemImage: "xmark.rectangle", role: .destructive) {
-                                onClose()
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "gearshape.fill")
-                            .font(.body.bold())
-                            .padding(8)
-                            .background(.black.opacity(0.6), in: Circle())
-                    }
-                    .foregroundStyle(.white)
-                    .accessibilityLabel(session.id == "demo" ? "Streams settings" : "Anomaly detection settings")
+                    AppleStreamSettingsControl(
+                        session: session,
+                        model: model,
+                        anomalyModeLabel: model.anomalyMode.label,
+                        onClose: onClose,
+                        onRestartStreams: onRestartStreams
+                    )
                 }
-                if focused { Image(systemName: "scope").foregroundStyle(.yellow) }
             }
             .padding(6)
             if telemetryText != nil || coordinateText != nil {
@@ -925,7 +923,7 @@ private struct AppleStreamTile: View {
                     }
             }
         }
-        .overlay(RoundedRectangle(cornerRadius: 5).stroke(focused ? .yellow : .gray, lineWidth: focused ? 3 : 1))
+        .overlay(RoundedRectangle(cornerRadius: 5).stroke(showFocusBorder ? .yellow : .clear, lineWidth: showFocusBorder ? 3 : 0))
         .contentShape(Rectangle())
         .onChange(of: focused) { _, isFocused in
             if !isFocused {
@@ -941,38 +939,6 @@ private struct AppleStreamTile: View {
                 try? await Task.sleep(for: .milliseconds(500))
             }
         }
-        .sheet(isPresented: $showAnomalySettings) {
-            NavigationStack {
-                AppleAnomalySettingsView(model: model)
-                    .navigationTitle("Anomaly Detector")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { showAnomalySettings = false }
-                        }
-                    }
-            }
-        }
-        .sheet(isPresented: $showPerformance) {
-            NavigationStack {
-                StreamPerformanceView(session: session, model: model)
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { showPerformance = false }
-                }
-            }
-        }
-        .sheet(isPresented: $showAnomalyHelp) {
-            NavigationStack {
-                AppleAnomalyHelpView()
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { showAnomalyHelp = false }
-                        }
-                    }
-            }
-        }
-        }
     }
 
     private var waitingForController: some View {
@@ -985,6 +951,20 @@ private struct AppleStreamTile: View {
                 AppleControllerConnectionURLs(onDesignatorsTapped: onDesignatorsTapped)
                     .font(.subheadline.monospaced())
                     .multilineTextAlignment(.center)
+                if let incidentMapTitle, let onIncidentMapTap {
+                    Button(action: onIncidentMapTap) {
+                        Text("Incident Map: \(incidentMapTitle)")
+                            .font(.subheadline)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .frame(maxWidth: 280)
+                            .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(.gray))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 2)
+                }
             }
         }
         .foregroundStyle(.white)
@@ -1132,6 +1112,84 @@ private struct StreamTileSizing: ViewModifier {
     }
 }
 
+// Keep menu and presentation state outside the frame-observing tile. The panels
+// observe their own data, while the menu only needs the current mode label.
+private struct AppleStreamSettingsControl: View {
+    let session: AppleLiveStreamSession
+    let model: AppleVideoFrameSource
+    let anomalyModeLabel: String
+    let onClose: (() -> Void)?
+    let onRestartStreams: (() -> Void)?
+    @State private var panel: Panel?
+    @State private var menuOpen = false
+    @State private var pendingAction: (() -> Void)?
+
+    private enum Panel: String, Identifiable {
+        case settings, help, performance
+        var id: String { rawValue }
+    }
+
+    var body: some View {
+        Button { menuOpen = true } label: {
+            Image(systemName: "gearshape.fill")
+                .font(.body.bold())
+                .padding(8)
+                .background(.black.opacity(0.6), in: Circle())
+        }
+        .foregroundStyle(.white)
+        .accessibilityLabel(session.id == "demo" ? "Streams settings" : "Anomaly detection settings")
+        .popover(isPresented: $menuOpen) {
+            VStack(alignment: .leading, spacing: 18) {
+                Button("AD Mode: \(anomalyModeLabel)") { select { panel = .settings } }
+                Button("AD Help") { select { panel = .help } }
+                Button("Performance…", systemImage: "gauge.with.dots.needle.67percent") {
+                    select { panel = .performance }
+                }
+                if let onRestartStreams {
+                    Button("Restart Streams Server", systemImage: "arrow.clockwise", action: { select(onRestartStreams) })
+                }
+                if let onClose {
+                    Button("Close Stream", systemImage: "xmark.rectangle", role: .destructive, action: { select(onClose) })
+                }
+            }
+            .buttonStyle(.plain)
+            .padding(20)
+            .presentationCompactAdaptation(.popover)
+            .onDisappear {
+                let action = pendingAction
+                pendingAction = nil
+                action?()
+            }
+        }
+        .sheet(item: $panel) { selected in
+            NavigationStack {
+                Group {
+                    switch selected {
+                    case .settings:
+                        AppleAnomalySettingsView(model: model)
+                            .navigationTitle("Anomaly Detector")
+                            .navigationBarTitleDisplayMode(.inline)
+                    case .help:
+                        AppleAnomalyHelpView()
+                    case .performance:
+                        StreamPerformanceView(session: session, model: model)
+                    }
+                }
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { panel = nil }
+                    }
+                }
+            }
+        }
+    }
+    private func select(_ action: @escaping () -> Void) {
+        pendingAction = action
+        menuOpen = false
+    }
+
+}
+
 private struct StreamPerformanceView: View {
     @ObservedObject var session: AppleLiveStreamSession
     @ObservedObject var model: AppleVideoFrameSource
@@ -1250,7 +1308,7 @@ struct AppleExternalDisplayView: View {
     }
 }
 
-private struct RegisteredDroneDesignatorsView: View {
+struct RegisteredDroneDesignatorsView: View {
     let values: [String]
     let onAddAircraft: (() -> Void)?
 
@@ -1293,6 +1351,7 @@ final class RID2CaltopoAppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        AppleUserInteractionObserver.install()
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(primarySceneDidDisconnect(_:)),
