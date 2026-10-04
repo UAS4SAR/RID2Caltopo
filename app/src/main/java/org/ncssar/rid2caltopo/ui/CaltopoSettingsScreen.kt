@@ -14,6 +14,14 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.ScrollState
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -656,9 +664,42 @@ fun CaltopoSettingsScreen(
         AlertDialog(
             onDismissRequest = { ProximityAlertConsent.cancel() },
             title = { Text(ProximityAlertConsent.TITLE) },
-            text = { Text(ProximityAlertConsent.notice, modifier = Modifier.verticalScroll(rememberScrollState())) },
+            text = {
+                val consentScroll = rememberScrollState()
+                val scrollbarColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                Column(
+                    modifier = Modifier
+                        .verticalScrollbar(consentScroll, scrollbarColor)
+                        .verticalScroll(consentScroll)
+                        .padding(end = 10.dp)
+                ) {
+                    ProximityAlertConsent.noticeParagraphs.forEachIndexed { index, paragraph ->
+                        val checked = index in proximityConsent.acknowledged
+                        // Whole row is one checkbox target; its accessibility label is the paragraph.
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .toggleable(
+                                    value = checked,
+                                    role = Role.Checkbox,
+                                    onValueChange = { ProximityAlertConsent.toggleAcknowledgment(index) }
+                                )
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Checkbox(checked = checked, onCheckedChange = null)
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(paragraph, modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+            },
             confirmButton = {
-                TextButton(onClick = { ProximityAlertConsent.confirmEnable() }) { Text("Enable alerts") }
+                TextButton(
+                    onClick = { ProximityAlertConsent.confirmEnable() },
+                    enabled = proximityConsent.canConfirm
+                ) { Text(proximityConsent.confirmLabel) }
             },
             dismissButton = {
                 TextButton(onClick = { ProximityAlertConsent.cancel() }) { Text("Keep disabled") }
@@ -752,4 +793,20 @@ private fun SettingsHelpLabel(title: String, modifier: Modifier = Modifier) {
             confirmButton = { TextButton(onClick = { showing = false }) { Text("Done") } }
         )
     }
+}
+
+/** Always-visible thumb so long or large-text dialog content is obviously scrollable. */
+private fun Modifier.verticalScrollbar(state: ScrollState, color: Color): Modifier = drawWithContent {
+    drawContent()
+    if (state.maxValue <= 0 || state.maxValue == Int.MAX_VALUE) return@drawWithContent
+    val width = 4.dp.toPx()
+    val viewport = size.height
+    val thumbHeight = (viewport * viewport / (viewport + state.maxValue)).coerceAtLeast(24.dp.toPx())
+    val thumbTop = (viewport - thumbHeight) * state.value / state.maxValue
+    drawRoundRect(
+        color = color,
+        topLeft = Offset(size.width - width, thumbTop),
+        size = Size(width, thumbHeight),
+        cornerRadius = CornerRadius(width / 2)
+    )
 }

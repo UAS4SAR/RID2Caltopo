@@ -4363,17 +4363,20 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         long lastProtectedActivityMsec = MapOfflinePrepRuntime.lastActivityAtMsec();
         long lastUserInteractionMsec = LastUserInteractionAtMsec;
         long nowMsec = System.currentTimeMillis();
-        if (MapOfflinePrepRuntime.isActive()) {
-            Log.i(TAG, "CheckIdle(): offline map preparation is active; deferring automatic shutdown.");
-            return;
-        }
+        // A running offline map download (including AOL preparation) suspends the timeout;
+        // MapOfflinePrepRuntime.finish() re-runs CheckIdle, restarting the countdown from the download's end.
         long remainingMsec = ApplicationIdleTimeoutPolicy.remainingDelayMsec(
                 appActiveStartedAtMsec,
                 lastRidMessageMsec,
                 lastProtectedActivityMsec,
+                MapOfflinePrepRuntime.isActive(),
                 lastUserInteractionMsec,
                 maxIdleInMinutes,
                 nowMsec);
+        if (remainingMsec == ApplicationIdleTimeoutPolicy.SUSPENDED) {
+            Log.i(TAG, "CheckIdle(): offline map preparation is active; deferring automatic shutdown.");
+            return;
+        }
         if (remainingMsec == ApplicationIdleTimeoutPolicy.DISABLED) return;
         if (remainingMsec > 0) {
             AppIdleDelay.start(CaltopoClient::CheckIdle, remainingMsec, 0);

@@ -225,7 +225,7 @@ android {
         applicationId "org.ncssar.rid2caltopo"
         minSdk = 29
         targetSdk = 36
-        versionCode = 335
+        versionCode = 336
         versionName appVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
@@ -592,7 +592,8 @@ tasks.register("releaseVerification") {
             "testDebugUnitTest",
             "trackerCoordinationTests",
             "colorRealtimeQualification",
-            "personRelevanceQualification"
+            "personRelevanceQualification",
+            "storeNotesCheck"
     )
     // dependsOn("connectedDebugAndroidTest")
 }
@@ -652,6 +653,22 @@ tasks.matching {
 }.configureEach {
     dependsOn("releaseVerification")
     finalizedBy("uploadReleaseCrashlyticsArtifacts")
+}
+
+tasks.register("storeNotesCheck") {
+    group = "verification"
+    description = "Fails when the shared store release notes or App Store metadata name other platforms or stores."
+    inputs.files(canonicalReleaseNotesFile, fileTree(rootProject.file("apple/AppStore/metadata")),
+            fileTree(rootProject.file("tools/store_notes")))
+    outputs.upToDateWhen { false }
+    doLast {
+        runProcess(rootDir, ["python3", "-m", "unittest", "discover", "-s", "tools/store_notes", "-p", "test_*.py"])
+        def result = runProcess(rootDir, ["python3", "tools/store_notes/check_store_notes.py", "--version", appVersionName], [:], true)
+        if (result.exitValue != 0) {
+            throw new GradleException("Store notes check failed:\n${result.stdout}${result.stderr}")
+        }
+        logger.lifecycle(result.stdout.trim())
+    }
 }
 
 tasks.register("protectedLandCatalogCheck") {

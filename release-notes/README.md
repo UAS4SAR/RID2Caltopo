@@ -5,7 +5,8 @@ release note for both Android and Apple builds.
 
 Use one `Latest changes:` section for operator-visible improvements. Do not include
 `Platform-specific changes:` or `Known platform differences:` in public notes.
-Keep platform names and comparisons out of the shared public text.
+Keep platform names and comparisons out of the shared public text;
+`tools/store_notes/check_store_notes.py` enforces this in both release gates.
 
 Maintain differences and their resolution history in the project-only,
 cumulative [platform parity ledger](../docs/PLATFORM_PARITY_LEDGER.md).

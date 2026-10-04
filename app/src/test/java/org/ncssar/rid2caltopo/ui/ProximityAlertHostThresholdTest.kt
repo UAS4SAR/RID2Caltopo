@@ -24,6 +24,7 @@ class ProximityAlertHostThresholdTest {
     fun setUp() {
         ProximityAlertConsent.setAlertAllAircraft(false)
         ProximityAlertConsent.requestEnable()
+        ProximityAlertConsent.noticeParagraphs.indices.forEach { ProximityAlertConsent.toggleAcknowledgment(it) }
         ProximityAlertConsent.confirmEnable()
         ProximityAlertCenter.setEvaluationExecutorForTests(Executor { it.run() })
     }

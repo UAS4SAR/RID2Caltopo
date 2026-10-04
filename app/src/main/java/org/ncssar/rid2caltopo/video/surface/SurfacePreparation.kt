@@ -74,54 +74,101 @@ internal object SurfacePreparation {
         base.copy(sources=sources(pages))
         }
     }
-    suspend fun prepare(context: Context, plan: SurfacePreparationPlan, client: OkHttpClient, onCall: (Call,Boolean)->Unit, onActivity: () -> Unit = {}, progress: suspend (String)->Unit): String = withContext(dispatcher) {
-        if(SurfaceStore.reusable(context,plan.bounds)) return@withContext "AOL already prepared — using cached tiles"
+    const val REUSED_REPORT="AOL already prepared — using cached tiles"
+    /**
+     * Deletes AOL work folders (kept lidar files) except the one for [keep]; null deletes all.
+     * Called when the Download Map dialog closes, AOL is turned off, or the selection changes. Never while preparation runs.
+     */
+    fun discardRetained(context: Context, keep: SurfacePreparationPlan? = null) {
+        if(preparing) return
+        deleteStale(context,keep?.let { SurfaceSourceReuse.workDirectoryName(it) })
+    }
+    private fun deleteStale(context: Context, keepName: String?) {
+        SurfaceSourceReuse.deleteWorkDirectories(context.cacheDir,keepName)
+    }
+    @Volatile private var preparing=false
+    /** [onCounts] reports (lidar files ready, 1 m tiles built, files kept from an earlier attempt) as each completes. */
+    suspend fun prepare(context: Context, plan: SurfacePreparationPlan, client: OkHttpClient, onCall: (Call,Boolean)->Unit, onActivity: () -> Unit = {}, onCounts: suspend (Int,Int,Int)->Unit = { _, _, _ -> }, progress: suspend (String)->Unit): String = withContext(dispatcher) {
+        if(SurfaceStore.reusable(context,plan.bounds)) { deleteStale(context,null);return@withContext REUSED_REPORT }
         check(!plan.reused) { "Cached AOL coverage expired or changed. Reopen Download Map to refresh the plan." }
         SurfaceTiming("aol-prepare").use { timing ->
-        context.cacheDir.listFiles().orEmpty().filter { it.isDirectory && it.name.startsWith("aol-prep-") }.forEach { it.deleteRecursively() }
-        val scratch=File(context.cacheDir,"aol-prep-${UUID.randomUUID()}");scratch.mkdirs()
-        val staged=File(scratch,"prepared");staged.mkdirs()
+        // One work folder per AOL selection keeps verified lidar files for a retry of the same selection.
+        val scratch=File(context.cacheDir,SurfaceSourceReuse.workDirectoryName(plan))
+        preparing=true
+        deleteStale(context,scratch.name)
+        var succeeded=false
+        try {
+        scratch.mkdirs()
+        scratch.listFiles().orEmpty().filter { it.name.endsWith(SurfaceSourceReuse.PARTIAL_SUFFIX) || it.name=="surface.f32" || it.name=="ground.f32" }.forEach { it.delete() }
+        val staged=File(scratch,"prepared");staged.deleteRecursively();staged.mkdirs()
+        // Verify files kept from an earlier attempt before anything else; only exact, checksummed files count.
+        val hashes=arrayOfNulls<String>(plan.sources.size);var kept=0;var keptBytes=0L
+        if(plan.sources.indices.any { File(scratch,"source-$it.laz").exists() }) progress("Checking lidar files kept from the last attempt…")
+        for((index,source) in plan.sources.withIndex()) {
+            currentCoroutineContext().ensureActive()
+            val file=File(scratch,"source-$index.laz");val recordFile=File(scratch,"source-$index.record")
+            val record=RetainedSourceRecord.decode(recordFile.takeIf { it.isFile }?.readText())
+            val length=file.takeIf { it.isFile }?.length()
+            val sha=if(record!=null && length==record.bytes) sha256(file) else null
+            if(SurfaceSourceReuse.reusable(source,record,length,sha)) { hashes[index]=sha;kept++;keptBytes+=length!! }
+            else { file.delete();recordFile.delete() }
+        }
+        if(kept>0) timing.mark("kept-sources count=$kept bytes=$keptBytes")
         // Temporary source files count against the same cache allowance. Reserve
         // advertised bytes plus headroom; actual downloads have a per-file ceiling.
+        // Kept files already occupy part of that allowance on disk, so a retry needs less new space.
         val allowance=(plan.advertisedBytes*3/2+plan.tiles*16_000_000L)
-        check(context.cacheDir.usableSpace>=allowance+64_000_000) { "Not enough free working space for AOL; select a smaller region or free storage" }
+        check(context.cacheDir.usableSpace>=allowance-keptBytes+64_000_000) { "Not enough free working space for AOL; select a smaller region or free storage" }
         UnifiedMapCache.reserveWithoutEviction(context,allowance).use { reservation ->
-            try {
-                progress("AOL: ${plan.sources.size} lidar files, ${plan.advertisedBytes/1_000_000} MB advertised; ${plan.tiles} output tiles")
-                val files=mutableListOf<File>();val hashes=JSONObject();var used=0L
+                progress("AOL: ${plan.sources.size} lidar files, ${plan.advertisedBytes/1_000_000} MB advertised; ${plan.tiles} output tiles" + if(kept>0) "; $kept kept from last attempt" else "")
+                val files=plan.sources.indices.map { File(scratch,"source-$it.laz") };var used=keptBytes;var ready=kept
+                onCounts(ready,0,kept)
                 for((index,source) in plan.sources.withIndex()) {
+                    if(hashes[index]!=null) continue
                     currentCoroutineContext().ensureActive()
                     timing.mark("source-${index+1}-download-start")
-                    val file=File(scratch,"source-$index.laz");files+=file
-                    SurfaceTransferRetry.run(onRetry={ attempt ->
-                        file.delete()
-                        progress("Retrying AOL lidar ${index+1}/${plan.sources.size} after interrupted transfer (retry $attempt/2)")
-                    }) {
+                    val file=files[index];val partial=File(scratch,"source-$index.laz${SurfaceSourceReuse.PARTIAL_SUFFIX}")
+                    var received=0L
+                    SurfaceTransferRetry.run(onRetry={ attempt, failure ->
+                        partial.delete()
+                        progress(SurfaceTransferRetry.retryMessage(index+1,plan.sources.size,attempt,failure))
+                    },bytesReceived={ received },host=runCatching { java.net.URI(source.url).host }.getOrNull().orEmpty()) {
+                    received=0L
                     onActivity()
                     val call=client.newCall(Request.Builder().url(source.url).header("Accept-Encoding","identity").build());onCall(call,true)
                     val digest=MessageDigest.getInstance("SHA-256")
+                    var count=0L
                     try { call.execute().use { response ->
                         check(response.isSuccessful) { "Lidar download HTTP ${response.code}" }
                         val body=response.body ?: error("Empty lidar download")
                         val expected=body.contentLength();check(expected in 1..MAX_SOURCE_BYTES) { "Lidar file has unsupported size" }
                         check(used+expected+plan.tiles*16_000_000L<=allowance) { "Lidar files exceed the reserved space; select a smaller region" }
-                        var count=0L;var last=0L
-                        file.outputStream().use { output -> body.byteStream().use { input ->
+                        var last=0L
+                        partial.outputStream().use { output -> body.byteStream().use { input ->
                             val buffer=ByteArray(65536)
                             while(true) {
                                 currentCoroutineContext().ensureActive();val n=input.read(buffer);if(n<0)break
                                 onActivity()
-                                count+=n;check(count<=expected);output.write(buffer,0,n);digest.update(buffer,0,n)
+                                count+=n;received=count;check(count<=expected);output.write(buffer,0,n);digest.update(buffer,0,n)
                                 if(count-last>=2_000_000) { progress("AOL lidar ${index+1}/${filesCount(plan)}: ${count/1_000_000}/${expected/1_000_000} MB");last=count }
                             }
+                            output.fd.sync()
                         } }
-                        check(count==expected) { "Incomplete lidar download" };used+=count
+                        check(count==expected && partial.length()==expected) { "Incomplete lidar download" }
                     } } finally { onCall(call,false) }
-                    hashes.put(source.url,digest.digest().hex())
+                    // Only a complete file gets its final name, then its record; a retry never sees partial data.
+                    val sha=digest.digest().hex()
+                    file.delete();check(partial.renameTo(file)) { "Unable to keep lidar file" }
+                    val recordFile=File(scratch,"source-$index.record");val recordPartial=File(scratch,"source-$index.record${SurfaceSourceReuse.PARTIAL_SUFFIX}")
+                    recordPartial.writeText(RetainedSourceRecord(source.url,count,sha).encode());check(recordPartial.renameTo(recordFile)) { "Unable to keep lidar file" }
+                    used+=count;hashes[index]=sha
                     timing.mark("source-${index+1}-download-and-checksum-complete bytes=${file.length()}")
                     }
+                    ready++
+                    onCounts(ready,0,kept)
                 }
-                val reference=MessageDigest.getInstance("SHA-256").digest(hashes.toString().toByteArray()).hex()
+                val sourceHashes=JSONObject();plan.sources.forEachIndexed { index, source -> sourceHashes.put(source.url,hashes[index]!!) }
+                val reference=MessageDigest.getInstance("SHA-256").digest(sourceHashes.toString().toByteArray()).hex()
                 timing.mark("assembly-start tiles=${plan.tiles}")
                 val regionID="${System.currentTimeMillis()}-${UUID.randomUUID()}"
                 val entries=JSONArray();var tile=0;var missing=0L;var referenceCRS:String?=null
@@ -154,10 +201,11 @@ internal object SurfacePreparation {
                             .put("quality","Accepted LAS maxima; withheld and noise classes 7/18 excluded. Surface holes remain unknown. Ground uses nearest class 2 within 3 m. Same source reference for surface and ground; geoid realization is recorded in the source CRS when supplied. No wire completeness claim.")
                             .put("originLatitude",plan.latitude).put("originLongitude",plan.longitude).put("west",west).put("south",south).put("spacing",1).put("width",w).put("height",h)
                             .put("coreWest",coreWest).put("coreSouth",coreSouth).put("coreWidth",cw).put("coreHeight",ch)
-                            .put("referenceGroup",reference).put("sourceCRS",referenceCRS).put("sourceSHA256",hashes)
+                            .put("referenceGroup",reference).put("sourceCRS",referenceCRS).put("sourceSHA256",sourceHashes)
                         val name="tile-$row-$col.aol";writePackage(File(staged,name),metadata,sf,gf)
                         entries.put(JSONObject().put("file",name).put("metadata",metadata))
                     } finally { SurfaceNative.free(handle);sf.delete();gf.delete() }
+                    onCounts(files.size,tile,kept)
                 }
                 val index=JSONObject().put("schema",1).put("referenceGroup",reference).put("originLatitude",plan.latitude).put("originLongitude",plan.longitude)
                     .put("width",plan.width).put("height",plan.height).put("entries",entries)
@@ -167,10 +215,24 @@ internal object SurfacePreparation {
                 files.forEach { check(it.delete()) { "Unable to remove temporary lidar file" } }
                 SurfaceStore.installPrepared(context,staged,regionID,reservation)
                 timing.mark("publication-complete")
+                succeeded=true
                 "Prepared ${plan.tiles} AOL tiles; $missing missing surface cells including overlapping margins. AOL stays unavailable wherever its disk has gaps."
-            } finally { scratch.deleteRecursively() }
+        }
+        } catch(e: Throwable) {
+            // Cancel discards everything; any other failure keeps verified lidar files for Retry.
+            if(e is CancellationException || !currentCoroutineContext().isActive) scratch.deleteRecursively()
+            else { File(scratch,"prepared").deleteRecursively();scratch.listFiles().orEmpty().filter { it.name.endsWith(SurfaceSourceReuse.PARTIAL_SUFFIX) }.forEach { it.delete() } }
+            throw e
+        } finally {
+            if(succeeded) scratch.deleteRecursively()
+            preparing=false
+        }
         }
     }
+    private fun sha256(file: File): String {
+        val digest=MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input -> val buffer=ByteArray(65536);while(true) { val n=input.read(buffer);if(n<0)break;digest.update(buffer,0,n) } }
+        return digest.digest().hex()
     }
     private fun filesCount(plan: SurfacePreparationPlan)=plan.sources.size
     private fun ByteArray.hex()=joinToString("") { "%02x".format(it) }

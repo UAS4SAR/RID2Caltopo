@@ -1,11 +1,15 @@
 Latest changes:
+- Retry map downloads after increasing the cache limit without turning off AOL; missing AOL coverage plans are refreshed and storage is checked again.
 - Scan or paste any HTTPS caltopo.com link in Import Config, then tap Open CalTopo to continue in the embedded browser. Saved QR images are also supported.
 - User interaction resets the automatic idle shutdown timer, including use of the embedded CalTopo browser.
 - Organization account verification and configuration checks retry when the network returns, including before an incident map is selected.
 - Tap the Proximity Alerts chip on Main or Live View to open Settings at the proximity controls.
-- Correct iPad stream settings panel presentation, restore direct access to AD Help and Performance, and remove the redundant selected-stream crosshair icon.
-- Match the Android waiting-for-controller placeholder to iPad, and add the incident-map shortcut below the iPad controller setup instructions.
-- Use consistent single-tile focus on Android and iPad: the sole tile is focused automatically, with a yellow selection border only in multi-tile views.
-- Tap droneDesig in the Live View network status on either platform to open the registered-aircraft list and Add aircraft, just like the placeholder RTMP URL.
-- Improve iPad proximity-settings scrolling and stabilize Live View settings popovers; restore Performance access from Android stream settings.
-- Show AD scan-zone and small-target guides in the Android waiting tile, and preserve the iPad PiP preference when switching to split view.
+- Correct the stream settings panel presentation, restore direct access to AD Help and Performance, and remove the redundant selected-stream crosshair icon.
+- Make the waiting-for-controller placeholder consistent on all devices, and add the incident-map shortcut below the controller setup instructions.
+- Use consistent single-tile focus on all devices: the sole tile is focused automatically, with a yellow selection border only in multi-tile views.
+- Tap droneDesig in the Live View network status to open the registered-aircraft list and Add aircraft, just like the placeholder RTMP URL.
+- Improve proximity-settings scrolling and stabilize Live View settings popovers; restore Performance access from stream settings.
+- Show AD scan-zone and small-target guides in the waiting tile, and preserve the PiP preference when switching to split view.
+- Show the incident map name compactly on one line in the Live View status line.
+- Live View full-screen controls now sit in their own bar so they never cover the observation banner, and the main dashboard scrolls sideways like a spreadsheet with cells that grow with your text size.
+- Enabling proximity alerts now requires acknowledging each advisory statement.

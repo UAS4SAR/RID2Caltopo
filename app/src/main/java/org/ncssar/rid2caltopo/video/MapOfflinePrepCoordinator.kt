@@ -112,6 +112,8 @@ internal object AndroidMapOfflinePrepCoordinator {
     val includeAol = mutableStateOf(false)
     val aolReport = mutableStateOf("")
     val failureNotice = mutableStateOf<String?>(null)
+    /** True when failureNotice explains why Start did nothing (not a failure). */
+    val failureNoticeNeutral = mutableStateOf(false)
     val demResolution = mutableStateOf(DemResolutionOption.MAXIMUM_1M)
     val includeContours = mutableStateOf(false)
     val areaMode = mutableStateOf(OfflinePrepAreaMode.Viewport)

@@ -1,6 +1,10 @@
 package org.ncssar.rid2caltopo.ui
 
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
@@ -31,27 +35,47 @@ internal fun incidentMapDisplayValue(state: CaltopoConnectionState): String {
 fun CaltopoActionInterface(
     state: CaltopoConnectionState,
     onActionClicked: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    // Live View status line: shows only the map name, on one line that grows sideways inside
+    // its horizontal scroller instead of wrapping under an "Incident Map" label.
+    compact: Boolean = false,
 ) {
     val colors = MaterialTheme.colorScheme
     androidx.compose.foundation.layout.Box(
         modifier = modifier.clickable(role = androidx.compose.ui.semantics.Role.Button, onClick = onActionClicked)
             .semantics { contentDescription = "Incident Map: ${incidentMapDisplayValue(state)}" }
     ) {
-        androidx.compose.material3.OutlinedTextField(
-            value = incidentMapDisplayValue(state),
-            onValueChange = {},
-            enabled = false,
-            readOnly = true,
-            maxLines = 2,
-            label = { Text("Incident Map") },
-            modifier = Modifier.fillMaxWidth().clearAndSetSemantics {},
-            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                disabledTextColor = colors.onSurface,
-                disabledBorderColor = colors.outline,
-                disabledLabelColor = colors.onSurfaceVariant,
-            ),
-        )
+        if (compact) {
+            Text(
+                text = incidentMapDisplayValue(state),
+                color = colors.onSurface,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Visible,
+                modifier = Modifier
+                    .clearAndSetSemantics {}
+                    .border(1.dp, colors.outline, MaterialTheme.shapes.extraSmall)
+                    .heightIn(min = 48.dp)
+                    .wrapContentHeight(Alignment.CenterVertically)
+                    .padding(horizontal = 16.dp),
+            )
+        } else {
+            androidx.compose.material3.OutlinedTextField(
+                value = incidentMapDisplayValue(state),
+                onValueChange = {},
+                enabled = false,
+                readOnly = true,
+                maxLines = 2,
+                label = { Text("Incident Map") },
+                modifier = Modifier.fillMaxWidth().clearAndSetSemantics {},
+                colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                    disabledTextColor = colors.onSurface,
+                    disabledBorderColor = colors.outline,
+                    disabledLabelColor = colors.onSurfaceVariant,
+                ),
+            )
+        }
     }
 }
 

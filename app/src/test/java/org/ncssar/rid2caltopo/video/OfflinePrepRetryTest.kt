@@ -21,7 +21,7 @@ class OfflinePrepRetryTest {
             try { retry(); fail("Expected capacity failure") } catch (_: IllegalStateException) {}
             assertNull(started)
             limit = 100_000_000_000L
-            retry()
+            assertEquals(OfflinePrepRetryOutcome.Started, retry())
             assertEquals("aol-plan", started)
             assertEquals(if (cachedPlan == null) 2 else 0, lookups)
         }
@@ -55,24 +55,41 @@ class OfflinePrepRetryTest {
     @Test fun changedSelectionAndCancellationNeverStart() = runBlocking {
         var current = true
         var started = false
-        recoverOfflinePrep(true, null, { current = false; "old-region" }, { current },
-            { fail("Stale selection must not reach capacity check") }, { started = true })
+        assertEquals(OfflinePrepRetryOutcome.SelectionChanged, recoverOfflinePrep(true, null, { current = false; "old-region" }, { current },
+            { fail("Stale selection must not reach capacity check") }, { started = true }))
         val job = launch(start = CoroutineStart.UNDISPATCHED) {
             recoverOfflinePrep<String>(true, null, { awaitCancellation() }, { true }, {}, { started = true })
         }
         job.cancelAndJoin()
         assertFalse(started)
         current = true
-        recoverOfflinePrep(true, "plan", { error("Unexpected lookup") }, { current },
-            { current = false }, { started = true })
+        assertEquals(OfflinePrepRetryOutcome.SelectionChanged, recoverOfflinePrep(true, "plan", { error("Unexpected lookup") }, { current },
+            { current = false }, { started = true }))
         assertFalse(started)
+    }
+
+    @Test fun staleSelectionAfterCatalogLookupIsReportedNotSilentlyDropped() = runBlocking {
+        // Field case: the viewport key changed while the AOL lookup ran; the caller must surface a message.
+        var selectionKey = "viewport|n=40.00000"
+        val tapKey = selectionKey
+        var checked = false
+        var started = false
+        val outcome = recoverOfflinePrep(true, null, { selectionKey = "viewport|n=40.00100"; "aol-plan" },
+            { selectionKey == tapKey }, { checked = true }, { started = true })
+        assertEquals(OfflinePrepRetryOutcome.SelectionChanged, outcome)
+        assertFalse(checked)
+        assertFalse(started)
+        selectionKey = tapKey
+        assertEquals(OfflinePrepRetryOutcome.Started,
+            recoverOfflinePrep(true, "aol-plan", { error("Unexpected lookup") }, { selectionKey == tapKey }, {}, { started = true }))
+        assertTrue(started)
     }
 
     @Test fun explicitOptOutDoesNotFetchOrPassAol() = runBlocking {
         var started = false
-        recoverOfflinePrep(false, "old-plan", { error("Unexpected lookup") }, { true }, {}, {
+        assertEquals(OfflinePrepRetryOutcome.Started, recoverOfflinePrep(false, "old-plan", { error("Unexpected lookup") }, { true }, {}, {
             assertNull(it); started = true
-        })
+        }))
         assertTrue(started)
     }
 }

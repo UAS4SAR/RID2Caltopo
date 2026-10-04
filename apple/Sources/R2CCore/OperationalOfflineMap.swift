@@ -549,9 +549,12 @@ public enum OperationalMapCacheBudget {
     }
 }
 
+/// Started, or the selection changed while checking so the caller must tell the user.
+public enum OperationalOfflineRetryOutcome: Sendable, Equatable { case started, selectionChanged }
+
 /// A missing AOL plan is recoverable; capacity must be checked after resolving it.
 public enum OperationalOfflineRetry {
-    @MainActor
+    @MainActor @discardableResult
     public static func run<Plan>(
         includeAOL: Bool,
         matchingPlan: Plan?,
@@ -559,7 +562,7 @@ public enum OperationalOfflineRetry {
         isCurrent: @MainActor () -> Bool,
         checkCapacity: @MainActor (Plan?) async throws -> Void,
         start: @MainActor (Plan?) -> Void
-    ) async throws {
+    ) async throws -> OperationalOfflineRetryOutcome {
         let plan: Plan?
         if includeAOL {
             if let matchingPlan { plan = matchingPlan }
@@ -567,9 +570,11 @@ public enum OperationalOfflineRetry {
         }
         else { plan = nil }
         try Task.checkCancellation()
-        guard isCurrent() else { return }
+        guard isCurrent() else { return .selectionChanged }
         try await checkCapacity(plan)
         try Task.checkCancellation()
-        if isCurrent() { start(plan) }
+        guard isCurrent() else { return .selectionChanged }
+        start(plan)
+        return .started
     }
 }

@@ -664,6 +664,42 @@ final class AppleMapOfflineManager: ObservableObject {
         var activeTransferredBytes: Int64 = 0
         var activeExpectedBytes: Int64?
         var startedAt = Date()
+        // Per-part labels and counters for the progress panel (see OperationalOfflineProgressText).
+        var tileLayers: [String] = []
+        var includesDEM = false
+        var aolStage: OperationalOfflineAOLStage = .waiting
+        var aolFilesCompleted = 0
+        var aolFilesTotal = 0
+        var aolTilesCompleted = 0
+        var aolTilesTotal = 0
+        /// Lidar files reused from an earlier attempt of the same AOL selection (included in aolFilesCompleted).
+        var aolFilesKept = 0
+        /// Plain-words AOL failure; the raw error goes to the log only.
+        var aolFailure: String?
+        /// Plain-words reason the whole job stopped; the raw error goes to the log only.
+        var failure: String?
+
+        func runState(isRunning: Bool) -> OperationalOfflineRunState {
+            if isRunning { return phase == "Cancelling" ? .cancelling : .running }
+            if phase == "Cancelled" { return .cancelled }
+            if phase == "Failed" { return .failed }
+            return .finished
+        }
+
+        var textSnapshot: OperationalOfflineProgressText.Snapshot {
+            .init(
+                phase: phase, completed: completed, total: total, fraction: fraction,
+                bytesPerSecond: bytesPerSecond, etaSeconds: etaSeconds,
+                tileLayers: tileLayers, tileCompleted: tileCompleted, tileTotal: tileTotal,
+                tileCached: tileCacheHits, tileDownloaded: tileDownloaded, tileFailed: tileFailed,
+                includesDEM: includesDEM, demCompleted: demCompleted, demTotal: demTotal,
+                demCached: demCacheHits, demDownloaded: demDownloaded, demFailed: demFailed,
+                includesAOL: includesAOL, aolStage: aolStage,
+                aolFilesCompleted: aolFilesCompleted, aolFilesTotal: aolFilesTotal,
+                aolTilesCompleted: aolTilesCompleted, aolTilesTotal: aolTilesTotal, aolFilesKept: aolFilesKept,
+                aolFailure: aolFailure, failure: failure
+            )
+        }
 
         var weightedCompletedBytes: Int64 {
             OperationalOfflineProgress.weightedCompletedBytes(
@@ -710,6 +746,19 @@ final class AppleMapOfflineManager: ObservableObject {
     @Published private(set) var lastPreparationEndedAt: Date?
     @Published private(set) var isRunning = false
     @Published private(set) var activeSelectionDescription = ""
+    /// Kept lidar files only survive while the Download Map sheet stays open between a failure and Retry.
+    var preparationSheetOpen = false {
+        didSet { if !preparationSheetOpen { discardAOLWorkIfSheetClosed() } }
+    }
+    /// The operator dismissed (hid) Download Map while a download runs. Live View then does not reopen it on
+    /// return, matching Android, where the hidden dialog state lives in the coordinator.
+    var preparationSheetHiddenWhileRunning = false
+    /// Download Map choices for the app session, saved when the sheet closes or hides. Android keeps the same
+    /// choices in AndroidMapOfflinePrepCoordinator, so a reopened sheet shows the running download's selection.
+    var rememberedPreparationOptions: OperationalOfflineSheetOptions?
+    /// AOL plan in the sheet when it closed; restored only while that download is still running (Android keeps
+    /// its plan while in flight and looks it up again on a fresh open).
+    var rememberedAOLPlan: OperationalSurfacePreparationPlan?
     @Published var maximumCacheGB: Double
     @Published var maximumTileAgeDays: Int
     @Published var autoRemoveBadTiles: Bool
@@ -773,6 +822,14 @@ final class AppleMapOfflineManager: ObservableObject {
 
     private var aolProgressRun = UUID()
 
+    /// Deletes raw AOL lidar work off the main actor. The files live for one Download Map session, which ends on
+    /// Close, Cancel (`sessionEnded`), auto-close, a dismiss while idle, or a download ending while the sheet is
+    /// hidden. After a failure with the sheet showing they stay for Retry. Never runs while a download is active.
+    func discardAOLWorkIfSheetClosed(sessionEnded: Bool = false) {
+        guard !isRunning, sessionEnded || !preparationSheetOpen else { return }
+        Task.detached(priority: .utility) { await AppleSurfacePreparationRunner.shared.discardRetained(keep: nil) }
+    }
+
     func start(
         bounds: OperationalMapBounds,
         preset: OperationalOfflinePreset,
@@ -804,6 +861,8 @@ final class AppleMapOfflineManager: ObservableObject {
             ? OperationalOfflineMapPlanner.estimatedDEMTileCount(bounds: bounds, resolution: demResolution)
             : 0
         isRunning = true
+        preparationSheetHiddenWhileRunning = false
+        // Suspends the idle timeout for the whole run, including AOL; job end restarts the countdown.
         AppleApplicationCleanupCenter.shared.setIdleShutdownDeferral(active: true)
         activeSelectionDescription = selectionDescription
         let tileOperationCount = OperationalOfflineMapPlanner.tileOperationCount(baseTileCount: tiles.count, baseLayerCount: baseLayers.count, includeContours: includeContours)
@@ -822,7 +881,11 @@ final class AppleMapOfflineManager: ObservableObject {
             demTotal: estimatedDEMCount,
             includesAOL: aolPlan != nil,
             estimatedBytesTotal: Self.saturatedAdd(estimatedTileBytes, estimatedDEMBytes),
-            startedAt: Date()
+            startedAt: Date(),
+            tileLayers: baseLayers.map { $0 == .imagery ? "Imagery" : "OSM" } + (includeContours ? ["Contours"] : []),
+            includesDEM: includeDEM,
+            aolFilesTotal: aolPlan?.sources.count ?? 0,
+            aolTilesTotal: aolPlan?.tiles ?? 0
         )
         status = "Preparing \(operationCount) offline items"
         downloadTask = Task { [weak self] in
@@ -839,8 +902,11 @@ final class AppleMapOfflineManager: ObservableObject {
                 self.isRunning = false
                 AppleApplicationCleanupCenter.shared.setIdleShutdownDeferral(active: false)
                 self.progress.phase = "Failed"
+                self.progress.failure = "terrain catalog check failed: " + OperationalOfflineProgressText.describeFailure(error, service: "USGS")
+                AppleLog.error("MapOffline", "DEM planning failed: \(String(describing: error))")
                 self.status = "DEM planning failed: \(error.localizedDescription)"
                 self.downloadTask = nil
+                self.discardAOLWorkIfSheetClosed()
                 return
             }
             timing.mark("terrain-catalog-ready files=\(demDownloads.count)")
@@ -882,17 +948,46 @@ final class AppleMapOfflineManager: ObservableObject {
             timing.mark("terrain-downloads-ended")
             var aolReport=""
             if let aolPlan,!Task.isCancelled {
+                let aolFileCount=aolPlan.sources.count
+                self.progress.aolStage = .files
+                // AOL runs last; its failure must not hide completed map and terrain results.
                 do {
-                    aolReport=try await AppleSurfacePreparationRunner.shared.prepare(aolPlan) { [weak self] message in
-                        await MainActor.run {
-                            if let self,self.isRunning,self.aolProgressRun==aolRun,self.progress.phase != "Cancelling" { self.progress.phase=message }
+                    aolReport=try await AppleSurfacePreparationRunner.shared.prepare(
+                        aolPlan,
+                        counts: { [weak self] files, tiles, kept in
+                            await MainActor.run {
+                                guard let self,self.isRunning,self.aolProgressRun==aolRun else { return }
+                                self.progress.aolFilesKept=kept
+                                self.progress.aolFilesCompleted=files
+                                self.progress.aolTilesCompleted=tiles
+                                self.progress.aolStage = files >= aolFileCount ? .tiles : .files
+                            }
+                        },
+                        progress: { [weak self] message in
+                            await MainActor.run {
+                                if let self,self.isRunning,self.aolProgressRun==aolRun,self.progress.phase != "Cancelling" { self.progress.phase=message }
+                            }
                         }
+                    )
+                    if aolReport == AppleSurfacePreparationRunner.reusedReport {
+                        self.progress.aolStage = .reused
+                    } else {
+                        self.progress.aolFilesCompleted=aolFileCount
+                        self.progress.aolTilesCompleted=aolPlan.tiles
+                        self.progress.aolStage = .complete
                     }
                     self.progress.aolDownloaded=aolPlan.tiles
                     self.progress.completed+=aolPlan.tiles
                     self.progress.estimatedBytesCompleted+=aolWeight
                 } catch {
-                    if !Task.isCancelled { self.progress.aolFailed=1;aolReport="AOL preparation failed: \(error.localizedDescription)" }
+                    if !Task.isCancelled {
+                        let plain=OperationalOfflineProgressText.describeFailure(error, service: "USGS")
+                        AppleLog.error("MapOffline", "AOL preparation failed: \(String(describing: error))")
+                        self.progress.aolFailed=1
+                        self.progress.aolFailure=plain
+                        self.progress.aolStage = .failed
+                        aolReport="AOL failed: \(plain). Map and terrain results are kept. Retry before closing this window to reuse lidar files already downloaded."
+                    }
                 }
             }
             let cancelled = Task.isCancelled
@@ -907,6 +1002,8 @@ final class AppleMapOfflineManager: ObservableObject {
                 : "Offline preparation complete: \(self.progress.downloaded) downloaded, \(self.progress.cacheHits) cached, \(self.progress.failed) failed"
             if !aolReport.isEmpty { self.status += "\n" + aolReport }
             self.downloadTask = nil
+            // Cancel ends the session; otherwise a showing sheet keeps the files for Retry until it closes.
+            self.discardAOLWorkIfSheetClosed(sessionEnded: cancelled)
             self.refreshStats()
             if !cancelled { self.runMaintenance() }
         }
@@ -1365,6 +1462,9 @@ struct AppleOfflineMapPreparationView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var preset = OperationalOfflinePreset.operations
     @State private var selectedBoundaryID = ""
+    /// Visible-map bounds captured when the sheet opens, so map movement underneath it
+    /// (for example follow-drone) cannot change the selection. Matches Android.
+    @State private var frozenViewportBounds: OperationalMapBounds
     @State private var includeImagery: Bool
     @State private var includeOSM: Bool
     @State private var includeContours: Bool
@@ -1375,12 +1475,19 @@ struct AppleOfflineMapPreparationView: View {
     @State private var aolCatalogAttempt = 0
     @State private var aolCatalogFailed = false
     @State private var aolCatalogChecking = false
+    @State private var aolCatalogRun = 0
     @State private var retryTask: Task<Void, Never>?
+    // Start-time check is separate from the background AOL catalog check so neither can hide or end the other.
+    @State private var startChecking = false
     @State private var showDownloadFailure = false
+    /// Set after a clean run while the sheet shows; it closes itself shortly, like Android.
+    @State private var autoClosing = false
     @State private var demResolution = OperationalDEMResolution.maximum1m
     @State private var cacheLimitInput: String
     @State private var cacheLimitFeedback: String?
     @State private var cacheLimitFeedbackIsError = false
+    /// Selection-changed and already-running notices explain why Start did nothing; they are not failures.
+    @State private var cacheLimitFeedbackIsNotice = false
     @FocusState private var cacheLimitFieldFocused: Bool
 
     private let progressSectionID = "offline-map-progress"
@@ -1397,14 +1504,33 @@ struct AppleOfflineMapPreparationView: View {
         self.boundaries = boundaries
         self.baseLayer = baseLayer
         self.contoursInitiallyEnabled = contoursInitiallyEnabled
-        _includeImagery = State(initialValue: baseLayer == .imagery)
-        _includeOSM = State(initialValue: baseLayer == .openStreetMap)
-        _includeContours = State(initialValue: contoursInitiallyEnabled)
+        let options = OperationalOfflineSheetOptions.forOpening(
+            remembered: manager.rememberedPreparationOptions,
+            downloadRunning: manager.isRunning,
+            viewportBounds: viewportBounds,
+            contoursOverlayOn: contoursInitiallyEnabled,
+            baseLayer: baseLayer,
+            boundaryIDs: boundaries.map(\.id)
+        )
+        _preset = State(initialValue: options.preset)
+        _selectedBoundaryID = State(initialValue: options.selectedBoundaryID)
+        _frozenViewportBounds = State(initialValue: options.viewportBounds)
+        _includeImagery = State(initialValue: options.includeImagery)
+        _includeOSM = State(initialValue: options.includeOSM)
+        _includeContours = State(initialValue: options.includeContours)
+        _includeDEM = State(initialValue: options.includeDEM)
+        _includeAOL = State(initialValue: options.includeAOL)
+        _demResolution = State(initialValue: options.demResolution)
+        if manager.isRunning, options.includeAOL, let plan = manager.rememberedAOLPlan {
+            _aolPlan = State(initialValue: plan)
+            _aolPlanMessage = State(initialValue: plan.reused ? "AOL already prepared — using cached tiles"
+                : "AOL: \(plan.sources.count) lidar files, \(plan.advertisedBytes / 1_000_000) MB advertised; \(plan.tiles) local 1 m tiles. Source sizes may differ.")
+        }
         _cacheLimitInput = State(initialValue: String(format: "%.1f", manager.maximumCacheGB))
     }
 
     private var bounds: OperationalMapBounds {
-        guard let polygon = boundaries.first(where: { $0.id == selectedBoundaryID }) else { return viewportBounds }
+        guard let polygon = boundaries.first(where: { $0.id == selectedBoundaryID }) else { return frozenViewportBounds }
         return OperationalMapBounds(coordinates: polygon.coordinates)
     }
 
@@ -1448,6 +1574,7 @@ struct AppleOfflineMapPreparationView: View {
                 manager.maximumCacheGB = value
                 cacheLimitInput = String(format: "%.1f", value)
                 cacheLimitFeedback = nil
+                cacheLimitFeedbackIsNotice = false
             }
         )
     }
@@ -1457,6 +1584,7 @@ struct AppleOfflineMapPreparationView: View {
         cacheLimitFieldFocused = false
         guard let value = parsedCacheLimitGB else {
             cacheLimitFeedback = "Enter a cache limit from 0.1 to 1,000 GB."
+            cacheLimitFeedbackIsNotice = false
             cacheLimitFeedbackIsError = true
             return false
         }
@@ -1467,23 +1595,24 @@ struct AppleOfflineMapPreparationView: View {
             ? "Saved \(cacheLimitInput) GB map cache limit."
             : nil
         cacheLimitFeedbackIsError = false
+        cacheLimitFeedbackIsNotice = false
         return true
     }
 
     @MainActor
     private func retryDownload() {
-        guard retryTask == nil, !aolCatalogChecking, !manager.isRunning,
+        guard retryTask == nil, !aolCatalogChecking, !startChecking, !manager.isRunning,
               saveCacheLimit(showConfirmation: false) else { return }
         let requestedBounds = bounds
         let requestedSelection = selectionDescription
         let requestedAOL = includeAOL
         let matchingPlan = aolPlan.flatMap { $0.bounds == requestedBounds ? $0 : nil }
-        aolCatalogChecking = true
+        startChecking = true
         aolCatalogFailed = false
         retryTask = Task { @MainActor in
-            defer { aolCatalogChecking = false; retryTask = nil }
+            defer { startChecking = false; retryTask = nil }
             do {
-                try await OperationalOfflineRetry.run(
+                let outcome = try await OperationalOfflineRetry.run(
                     includeAOL: requestedAOL,
                     matchingPlan: matchingPlan,
                     resolvePlan: {
@@ -1526,9 +1655,17 @@ struct AppleOfflineMapPreparationView: View {
                         )
                     }
                 )
+                // Never end silently; Cancel or closing the sheet cancels the task and needs no message.
+                if outcome == .selectionChanged && !Task.isCancelled {
+                    cacheLimitFeedback = manager.isRunning ? "A download is already in progress."
+                        : "Download selection changed while checking. Review and tap Start again."
+                    cacheLimitFeedbackIsError = false
+                    cacheLimitFeedbackIsNotice = true
+                }
             } catch {
                 if !Task.isCancelled {
                     cacheLimitFeedback = error.localizedDescription
+                    cacheLimitFeedbackIsNotice = false
                     cacheLimitFeedbackIsError = true
                 }
             }
@@ -1547,18 +1684,6 @@ struct AppleOfflineMapPreparationView: View {
         return "\(area) · \(preset.label)" + (contents.isEmpty ? "" : " · \(contents)")
     }
 
-    private var tileProgressText: String {
-        let progress = manager.progress
-        return "Tiles: \(progress.tileCompleted)/\(progress.tileTotal) "
-            + "(hit=\(progress.tileCacheHits) fetched=\(progress.tileDownloaded) failed=\(progress.tileFailed))"
-    }
-
-    private var demProgressText: String {
-        let progress = manager.progress
-        return "DEM: \(progress.demCompleted)/\(progress.demTotal) "
-            + "(hit=\(progress.demCacheHits) fetched=\(progress.demDownloaded) failed=\(progress.demFailed))"
-    }
-
     var body: some View {
         NavigationStack {
             ScrollViewReader { proxy in
@@ -1568,6 +1693,10 @@ struct AppleOfflineMapPreparationView: View {
                         Text("Current Visible Map").tag("")
                         ForEach(boundaries) { Text($0.title).tag($0.id) }
                     }.pickerStyle(.menu)
+                    // Choosing the visible map again takes a fresh snapshot, as on Android.
+                    .onChange(of: selectedBoundaryID) { _, id in
+                        if id.isEmpty { frozenViewportBounds = viewportBounds }
+                    }
                 }.disabled(manager.isRunning)
                 Section("Map layers") {
                     DownloadMapCheckbox("Imagery", isOn: $includeImagery)
@@ -1620,22 +1749,6 @@ struct AppleOfflineMapPreparationView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .disabled(manager.isRunning)
-                .task(id: "\(includeAOL ? String(describing: bounds) : "off")-\(aolCatalogAttempt)") {
-                    aolPlan=nil;aolPlanMessage="";aolCatalogFailed=false;aolCatalogChecking=false
-                    if includeAOL {
-                        aolCatalogChecking=true
-                        aolPlanMessage="Checking USGS lidar coverage and file sizes…"
-                        do {
-                            let plan=try await AppleSurfacePreparationRunner.shared.plan(bounds)
-                            try Task.checkCancellation();aolPlan=plan
-                            aolPlanMessage=plan.reused ? "AOL already prepared — using cached tiles" : "AOL: \(plan.sources.count) lidar files, \(plan.advertisedBytes/1_000_000) MB advertised; \(plan.tiles) local 1 m tiles. Source sizes may differ."
-                        } catch { if !Task.isCancelled {
-                            aolCatalogFailed=true;aolPlanMessage=error.localizedDescription
-                            AppleLog.warning("AOLCatalog", error.localizedDescription)
-                        } }
-                        if !Task.isCancelled { aolCatalogChecking=false }
-                    }
-                }
                 Section("Capacity") {
                     if manager.cacheStatsReady {
                         LabeledContent("Current map cache", value: AppleMapOfflineManager.formatBytes(capacity.currentOfflineStorageBytes))
@@ -1690,75 +1803,76 @@ struct AppleOfflineMapPreparationView: View {
                     if let cacheLimitFeedback {
                         Label(
                             cacheLimitFeedback,
-                            systemImage: cacheLimitFeedbackIsError
+                            systemImage: cacheLimitFeedbackIsNotice ? "info.circle.fill"
+                                : cacheLimitFeedbackIsError
                                 ? "exclamationmark.triangle.fill"
                                 : "checkmark.circle.fill"
                         )
                         .font(.footnote)
-                        .foregroundStyle(cacheLimitFeedbackIsError ? Color.red : Color.green)
+                        .foregroundStyle(cacheLimitFeedbackIsNotice ? Color.orange : cacheLimitFeedbackIsError ? Color.red : Color.green)
                     }
                 }
                 if manager.isRunning || manager.progress.phase != "Idle" {
                     Section("Progress") {
-                        if !manager.isRunning && manager.progress.failed > 0 {
-                            Label("Download failed — retry available", systemImage: "exclamationmark.triangle.fill")
-                                .font(.headline).foregroundStyle(.red)
-                        }
-                        if manager.progress.phase == "Cancelling" {
-                            Label("Cancelling download…", systemImage: "hourglass")
-                                .font(.headline)
-                                .foregroundStyle(.orange)
-                        } else if manager.progress.phase == "Cancelled" {
-                            Label("Download cancelled", systemImage: "xmark.circle.fill")
-                                .font(.headline)
-                                .foregroundStyle(.orange)
-                        }
+                        let progressState = manager.progress.runState(isRunning: manager.isRunning)
+                        let snapshot = manager.progress.textSnapshot
+                        let headlineIsError = OperationalOfflineProgressText.hasFailure(snapshot, progressState)
+                        Label(
+                            OperationalOfflineProgressText.headline(snapshot, progressState),
+                            systemImage: headlineIsError ? "exclamationmark.triangle.fill"
+                                : progressState == .cancelling ? "hourglass"
+                                : progressState == .cancelled ? "xmark.circle.fill"
+                                : progressState == .finished ? "checkmark.circle.fill" : "arrow.down.circle"
+                        )
+                        .font(.headline)
+                        .foregroundStyle(headlineIsError ? Color.red
+                            : (progressState == .cancelling || progressState == .cancelled) ? Color.orange : Color.primary)
                         if !manager.activeSelectionDescription.isEmpty {
                             Text(manager.activeSelectionDescription)
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
-                        let percent = manager.progress.fraction * 100
                         if manager.isRunning && manager.progress.includesAOL {
-                            Text(manager.progress.phase).font(.title3)
                             ProgressView()
-                            Text("Map, terrain, then AOL preparation. Remaining time varies with lidar transfer and construction.")
-                                .font(.footnote)
                         } else {
-                        Text("\(percent, specifier: "%.0f")% complete")
-                            .font(.title3)
-                        ProgressView(value: manager.progress.fraction)
-                        Text(String(
-                            format: "Progress: %@ %d/%d (%.2f%%) rate=%@/s ETA=%@",
-                            manager.progress.phase,
-                            manager.progress.completed,
-                            manager.progress.total,
-                            percent,
-                            AppleMapOfflineManager.formatBytes(Int64(manager.progress.bytesPerSecond)),
-                            AppleMapOfflineManager.formatDuration(manager.progress.etaSeconds)
-                        ))
+                            ProgressView(value: Double(OperationalOfflineProgressText.percent(snapshot, progressState)) / 100)
+                        }
+                        ForEach(OperationalOfflineProgressText.partLines(snapshot, progressState), id: \.self) { line in
+                            Text(line).font(.caption.monospaced())
+                        }
+                        if let note = OperationalOfflineProgressText.noteLine(snapshot, progressState) {
+                            Text(note).font(.caption.monospaced())
+                        }
+                        Text(OperationalOfflineProgressText.overallLine(snapshot, progressState) {
+                            AppleMapOfflineManager.formatBytes($0)
+                        })
                         .font(.caption.monospaced())
-                        }
-                        Text(tileProgressText)
-                        .font(.caption.monospaced())
-                        if manager.progress.demTotal > 0 {
-                            Text(demProgressText)
-                            .font(.caption.monospaced())
-                        }
-                        if manager.progress.failed > 0 {
-                            Text("Total failures: \(manager.progress.failed)")
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.red)
-                        }
                         Text(manager.status).font(.footnote).foregroundStyle(.secondary)
+                        if autoClosing {
+                            Text("Closing automatically…").font(.caption2)
+                        }
                     }
                     .id(progressSectionID)
                 }
                 }
+                .safeAreaInset(edge: .bottom) {
+                    if startChecking {
+                        HStack(spacing: 12) {
+                            ProgressView()
+                            Text("Checking coverage, file sizes, and available storage for the selected area. Temporary service failures are retried automatically.")
+                                .font(.footnote)
+                            Button("Cancel") { retryTask?.cancel() }
+                        }
+                        .padding()
+                        .background(.bar)
+                    }
+                }
                 .navigationTitle("Download Map")
                 .toolbar {
+                    // Hide (or swipe down) leaves a running download going in the background; reopen it from
+                    // Settings > Download Map. Close ends the session when nothing is running. Matches Android.
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("Close") { dismiss() }
+                        Button(manager.isRunning ? OperationalOfflineProgressText.hideLabel : "Close") { dismiss() }
                     }
                     ToolbarItem(placement: .confirmationAction) {
                         if manager.isRunning {
@@ -1768,7 +1882,7 @@ struct AppleOfflineMapPreparationView: View {
                                     Text("Cancelling…")
                                 }
                             } else {
-                                Button("Cancel", role: .destructive) {
+                                Button(OperationalOfflineProgressText.cancelDownloadLabel, role: .destructive) {
                                     manager.cancel()
                                     DispatchQueue.main.async {
                                         withAnimation { proxy.scrollTo(progressSectionID, anchor: .top) }
@@ -1782,7 +1896,7 @@ struct AppleOfflineMapPreparationView: View {
                                     withAnimation { proxy.scrollTo(progressSectionID, anchor: .top) }
                                 }
                             }
-                            .disabled(aolCatalogChecking || retryTask != nil || !manager.cacheStatsReady
+                            .disabled(aolCatalogChecking || startChecking || retryTask != nil || !manager.cacheStatsReady
                                 || (selectedBaseLayers.isEmpty && !includeContours && !includeDEM && !includeAOL)
                                 || parsedCacheLimitGB == nil
                                 || estimate.tiles > 250_000)
@@ -1792,14 +1906,75 @@ struct AppleOfflineMapPreparationView: View {
             }
         }
         .task { manager.refreshStats() }
-        .onDisappear { retryTask?.cancel() }
+        // On the NavigationStack, not a Form row: rows scrolled out of view (e.g. when the AOL notes push the
+        // estimate section down) end their tasks, which left the check cancelled and the cover stuck.
+        .task(id: "\(includeAOL ? String(describing: bounds) : "off")-\(aolCatalogAttempt)-\(manager.isRunning)") {
+            // Whichever check runs last owns the "Checking download requirements…" cover: a check that ends
+            // for any reason (done, failed, cancelled, or skipped below) clears it unless a newer one started.
+            aolCatalogRun += 1
+            let run = aolCatalogRun
+            defer { if run == aolCatalogRun { aolCatalogChecking = false } }
+            guard !startChecking else { return } // The Start check owns the plan and status until it finishes.
+            // Like Android surfaceCatalogAction: keep the plan while a download runs and when it already
+            // matches the selection (so Retry after a failure reuses it); otherwise look it up again.
+            if manager.isRunning || (includeAOL && aolPlan?.bounds == bounds) { return }
+            aolPlan=nil;aolPlanMessage="";aolCatalogFailed=false;aolCatalogChecking=false
+            // Kept lidar files belong to one AOL selection: drop them when AOL is off or the selection changes.
+            if !includeAOL && !manager.isRunning { await AppleSurfacePreparationRunner.shared.discardRetained(keep: nil) }
+            if includeAOL {
+                aolCatalogChecking=true
+                aolPlanMessage="Checking USGS lidar coverage and file sizes…"
+                do {
+                    let plan=try await AppleSurfacePreparationRunner.shared.plan(bounds)
+                    try Task.checkCancellation();aolPlan=plan
+                    if !manager.isRunning { await AppleSurfacePreparationRunner.shared.discardRetained(keep: plan.reused ? nil : plan) }
+                    aolPlanMessage=plan.reused ? "AOL already prepared — using cached tiles" : "AOL: \(plan.sources.count) lidar files, \(plan.advertisedBytes/1_000_000) MB advertised; \(plan.tiles) local 1 m tiles. Source sizes may differ."
+                } catch { if !Task.isCancelled {
+                    aolCatalogFailed=true;aolPlanMessage=error.localizedDescription
+                    AppleLog.warning("AOLCatalog", error.localizedDescription)
+                } }
+            }
+        }
+        .onAppear {
+            manager.preparationSheetOpen = true
+            manager.preparationSheetHiddenWhileRunning = false
+        }
+        // Close, swipe-down while idle, and auto-close drop kept lidar files. Hiding during a download keeps
+        // everything; the manager drops them when the run ends with the sheet still hidden.
+        .onDisappear {
+            manager.rememberedPreparationOptions = OperationalOfflineSheetOptions(
+                preset: preset, includeImagery: includeImagery, includeOSM: includeOSM,
+                includeContours: includeContours, includeDEM: includeDEM, includeAOL: includeAOL,
+                demResolution: demResolution, selectedBoundaryID: selectedBoundaryID,
+                viewportBounds: frozenViewportBounds
+            )
+            manager.rememberedAOLPlan = aolPlan
+            retryTask?.cancel()
+            autoClosing = false
+            if manager.isRunning { manager.preparationSheetHiddenWhileRunning = true }
+            manager.preparationSheetOpen = false
+        }
         .onChange(of: manager.isRunning) { wasRunning, running in
+            if running { autoClosing = false }
             if wasRunning && !running && manager.progress.failed > 0 { showDownloadFailure=true }
+            // Also applies when the sheet was reopened during the run (Settings > Download Map). Matches Android.
+            if wasRunning && !running && OperationalOfflineProgressText.shouldAutoClose(
+                phase: manager.progress.phase,
+                failed: manager.progress.failed,
+                aolFailed: manager.progress.aolFailed > 0,
+                sheetShown: manager.preparationSheetOpen
+            ) {
+                autoClosing = true
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(OperationalOfflineProgressText.autoCloseDelaySeconds))
+                    if autoClosing && !manager.isRunning && manager.progress.phase == "Complete" { dismiss() }
+                }
+            }
         }
         .alert("Download failed", isPresented: $showDownloadFailure) {
             Button("Review and retry", role: .cancel) {}
         } message: {
-            Text(manager.status + "\nCompleted map and ground tiles remain available. Use Retry to try again.")
+            Text(manager.status + "\nCompleted map and terrain files remain available, along with any lidar files already downloaded. Retry fetches only what is missing.")
         }
         .sheet(isPresented: $aolCatalogChecking) {
             VStack(spacing: 20) {
@@ -1808,7 +1983,6 @@ struct AppleOfflineMapPreparationView: View {
                 Text("Checking coverage, file sizes, and available storage for the selected area. Temporary service failures are retried automatically.")
                     .multilineTextAlignment(.center)
                 Button("Cancel", role: .cancel) {
-                    retryTask?.cancel()
                     includeAOL=false
                     aolCatalogChecking=false
                     aolPlan=nil
@@ -2393,29 +2567,70 @@ actor AppleSurfacePreparationRunner {
         AppleLog.info("AOLCatalog", "Catalog ready files=\(plan.sources.count) bytes=\(plan.advertisedBytes)")
         return plan
     }
-    func prepare(_ plan: OperationalSurfacePreparationPlan,progress: @escaping @Sendable (String) async -> Void) async throws -> String {
-        if await AppleSurfaceStore.shared.reusable(plan.bounds) { return "AOL already prepared — using cached tiles" }
+    static let reusedReport = "AOL already prepared — using cached tiles"
+    /// Deletes AOL work folders (kept lidar files) except the one for `keep`; nil deletes all.
+    /// Called when the Download Map sheet closes, AOL is turned off, or the selection changes. Never while preparation runs.
+    func discardRetained(keep: OperationalSurfacePreparationPlan?) {
+        guard !busy else { return }
+        deleteStale(keepName: keep.map(OperationalSurfaceSourceReuse.workDirectoryName))
+    }
+    private func deleteStale(keepName: String?) {
+        OperationalSurfaceSourceReuse.deleteWorkDirectories(in:FileManager.default.temporaryDirectory,keepName:keepName)
+    }
+    private static func sha256(_ file: URL) throws -> String {
+        let handle=try FileHandle(forReadingFrom:file);defer { try? handle.close() }
+        var hash=SHA256()
+        while let data=try handle.read(upToCount:65536),!data.isEmpty { try Task.checkCancellation();hash.update(data:data) }
+        return hash.finalize().map { String(format:"%02x",$0) }.joined()
+    }
+    /// `counts` reports (lidar files ready, 1 m tiles built, files kept from an earlier attempt) as each completes.
+    func prepare(_ plan: OperationalSurfacePreparationPlan,counts: @escaping @Sendable (Int,Int,Int) async -> Void = { _,_,_ in },progress: @escaping @Sendable (String) async -> Void) async throws -> String {
+        if await AppleSurfaceStore.shared.reusable(plan.bounds) { deleteStale(keepName:nil);return Self.reusedReport }
         guard !plan.reused else { throw OperationalSurfacePreparationError.invalid("Cached AOL coverage expired or changed. Reopen Download Map to refresh the plan.") }
         guard !busy else { throw OperationalSurfacePreparationError.invalid("Previous AOL preparation is still stopping") }
         busy=true;defer { busy=false }
         let timing = AppleOfflineTiming("aol-prepare")
         defer { timing.mark("preparation-ended cancelled=\(Task.isCancelled)") }
-        let temporaryRoot=FileManager.default.temporaryDirectory
-        for directory in (try? FileManager.default.contentsOfDirectory(at:temporaryRoot,includingPropertiesForKeys:nil)) ?? [] where directory.lastPathComponent.hasPrefix("aol-prep-") {
-            try? FileManager.default.removeItem(at:directory)
+        let fm=FileManager.default
+        // One work folder per AOL selection keeps verified lidar files for a retry of the same selection.
+        let scratchName=OperationalSurfaceSourceReuse.workDirectoryName(plan)
+        let scratch=fm.temporaryDirectory.appendingPathComponent(scratchName)
+        deleteStale(keepName:scratchName)
+        var succeeded=false
+        defer { if succeeded { try? fm.removeItem(at:scratch) } }
+        do {
+        try fm.createDirectory(at:scratch,withIntermediateDirectories:true)
+        for name in (try? fm.contentsOfDirectory(atPath:scratch.path)) ?? [] where !name.hasPrefix("source-") || name.hasSuffix(OperationalSurfaceSourceReuse.partialSuffix) {
+            try? fm.removeItem(at:scratch.appendingPathComponent(name))
         }
-        let scratch=temporaryRoot.appendingPathComponent("aol-prep-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at:scratch,withIntermediateDirectories:true)
-        defer { try? FileManager.default.removeItem(at:scratch) }
         let staged=scratch.appendingPathComponent("\(Int64(Date().timeIntervalSince1970*1000))-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at:staged,withIntermediateDirectories:true)
-        let allowance=plan.advertisedBytes*3/2+Int64(plan.tiles)*16_000_000
-        let free=((try? FileManager.default.attributesOfFileSystem(forPath:scratch.path)[.systemFreeSize]) as? NSNumber)?.int64Value ?? 0
-        guard free>=allowance+64_000_000 else { throw OperationalSurfacePreparationError.invalid("Not enough free working space for AOL; select a smaller region or free storage") }
-        let reservation=try AppleUnifiedMapCache.reserveWithoutEviction(allowance);defer { reservation.close() }
-        await progress("AOL: \(plan.sources.count) lidar files, \(plan.advertisedBytes/1_000_000) MB advertised; \(plan.tiles) output tiles")
-        var files:[URL]=[],hashes:[String:String]=[:],used:Int64=0
+        try fm.createDirectory(at:staged,withIntermediateDirectories:true)
+        // Verify files kept from an earlier attempt first; only exact, checksummed files count.
+        let files=plan.sources.indices.map { scratch.appendingPathComponent("source-\($0).laz") }
+        var hashes:[String:String]=[:],kept=0,keptBytes:Int64=0
+        if files.contains(where: { fm.fileExists(atPath:$0.path) }) { await progress("Checking lidar files kept from the last attempt…") }
         for (index,source) in plan.sources.enumerated() {
+            try Task.checkCancellation()
+            let recordURL=scratch.appendingPathComponent("source-\(index).record")
+            let record=OperationalRetainedSourceRecord.decode(try? String(contentsOf:recordURL,encoding:.utf8))
+            let length=(try? fm.attributesOfItem(atPath:files[index].path)[.size] as? NSNumber)?.int64Value
+            let sha=(record != nil && length==record?.bytes) ? try? Self.sha256(files[index]) : nil
+            if OperationalSurfaceSourceReuse.reusable(source:source,record:record,fileLength:length,computedSHA256:sha), let sha, let length {
+                hashes[source.url]=sha;kept+=1;keptBytes+=length
+            } else {
+                try? fm.removeItem(at:files[index]);try? fm.removeItem(at:recordURL)
+            }
+        }
+        if kept>0 { timing.mark("kept-sources count=\(kept) bytes=\(keptBytes)") }
+        // Kept files already occupy part of the working allowance on disk, so a retry needs less new space.
+        let allowance=plan.advertisedBytes*3/2+Int64(plan.tiles)*16_000_000
+        let free=((try? fm.attributesOfFileSystem(forPath:scratch.path)[.systemFreeSize]) as? NSNumber)?.int64Value ?? 0
+        guard free>=allowance-keptBytes+64_000_000 else { throw OperationalSurfacePreparationError.invalid("Not enough free working space for AOL; select a smaller region or free storage") }
+        let reservation=try AppleUnifiedMapCache.reserveWithoutEviction(allowance);defer { reservation.close() }
+        await progress("AOL: \(plan.sources.count) lidar files, \(plan.advertisedBytes/1_000_000) MB advertised; \(plan.tiles) output tiles" + (kept>0 ? "; \(kept) kept from last attempt" : ""))
+        var used=keptBytes,ready=kept
+        await counts(ready,0,kept)
+        for (index,source) in plan.sources.enumerated() where hashes[source.url]==nil {
             try Task.checkCancellation()
             timing.mark("source-\(index+1)-download-start")
             await progress("Downloading AOL lidar \(index+1)/\(plan.sources.count), \(source.bytes/1_000_000) MB advertised")
@@ -2423,31 +2638,54 @@ actor AppleSurfacePreparationRunner {
             let delegate=AppleSurfaceDownloadLimit(limit:min(1_000_000_000,allowance-used-Int64(plan.tiles)*16_000_000)) { written,total in
                 Task { await progress("AOL lidar \(index+1)/\(plan.sources.count): \(written/1_000_000)/\(max(0,total)/1_000_000) MB") }
             }
-            let (temporary,response)=try await URLSession.shared.download(for:request,delegate:delegate)
-            defer { try? FileManager.default.removeItem(at:temporary) }
+            let (temporary,response): (URL,URLResponse)
+            do { (temporary,response)=try await URLSession.shared.download(for:request,delegate:delegate) }
+            catch {
+                // Like Android: a server that never accepted a connection fails at once and names the host.
+                if let unreachable=OperationalSurfaceTransferFailure.unreachableMessage(for:error,host:request.url?.host,bytesReceived:delegate.bytesReceived) {
+                    throw OperationalSurfacePreparationError.invalid(unreachable)
+                }
+                throw error
+            }
+            defer { try? fm.removeItem(at:temporary) }
             let size=Int64((try temporary.resourceValues(forKeys:[.fileSizeKey])).fileSize ?? 0)
             guard let http=response as? HTTPURLResponse,(200..<300).contains(http.statusCode),size>0,size<=delegate.limit,
                   response.expectedContentLength==size else { throw OperationalSurfacePreparationError.invalid("Incomplete or oversized lidar download") }
-            let file=scratch.appendingPathComponent("source-\(index).laz");try FileManager.default.moveItem(at:temporary,to:file);files.append(file);used+=size
+            // Only a complete, checksummed file gets its final name, then its record; a retry never sees partial data.
+            let partial=files[index].appendingPathExtension("part")
+            try? fm.removeItem(at:partial);try fm.moveItem(at:temporary,to:partial)
             timing.mark("source-\(index+1)-download-complete bytes=\(size)")
-            let handle=try FileHandle(forReadingFrom:file);defer { try? handle.close() }
-            var hash=SHA256()
-            while let data=try handle.read(upToCount:65536),!data.isEmpty { try Task.checkCancellation();hash.update(data:data) }
-            hashes[source.url]=hash.finalize().map { String(format:"%02x",$0) }.joined()
+            let sha=try Self.sha256(partial)
+            try? fm.removeItem(at:files[index]);try fm.moveItem(at:partial,to:files[index])
+            try Data(OperationalRetainedSourceRecord(url:source.url,bytes:size,sha256:sha).encode().utf8)
+                .write(to:scratch.appendingPathComponent("source-\(index).record"),options:.atomic)
+            hashes[source.url]=sha;used+=size;ready+=1
             timing.mark("source-\(index+1)-checksum-complete")
+            await counts(ready,0,kept)
         }
         timing.mark("assembly-start tiles=\(plan.tiles)")
-        let inputs=files,sourceHashes=hashes
+        let inputs=files,sourceHashes=hashes,keptCount=kept
         let worker=Task.detached(priority:.utility) {
-            try await OperationalSurfacePreparation.assemble(plan:plan,files:inputs,hashes:sourceHashes,directory:staged,progress:progress)
+            try await OperationalSurfacePreparation.assemble(plan:plan,files:inputs,hashes:sourceHashes,directory:staged,progress:progress,tileFinished:{ tile in await counts(inputs.count,tile,keptCount) })
         }
         let report=try await withTaskCancellationHandler(operation: { try await worker.value },onCancel: { worker.cancel() })
         timing.mark("assembly-complete")
         try Task.checkCancellation()
-        for file in files { try FileManager.default.removeItem(at:file) }
+        for file in files { try fm.removeItem(at:file) }
         try await AppleSurfaceStore.shared.installPrepared(staged,reservation:reservation)
         timing.mark("publication-complete")
+        succeeded=true
         return report
+        } catch {
+            // Cancel discards everything; any other failure keeps verified lidar files for Retry.
+            if error is CancellationError || Task.isCancelled { try? fm.removeItem(at:scratch) }
+            else {
+                for name in (try? fm.contentsOfDirectory(atPath:scratch.path)) ?? [] where !name.hasPrefix("source-") || name.hasSuffix(OperationalSurfaceSourceReuse.partialSuffix) {
+                    try? fm.removeItem(at:scratch.appendingPathComponent(name))
+                }
+            }
+            throw error
+        }
     }
 }
 
@@ -2456,9 +2694,13 @@ private final class AppleSurfaceDownloadLimit: NSObject, URLSessionDownloadDeleg
     private let onProgress: @Sendable (Int64,Int64)->Void
     private let lock=NSLock()
     private var lastReport:TimeInterval=0
+    private var received:Int64=0
+    /// Lidar bytes received so far; zero means the server never sent any.
+    var bytesReceived:Int64 { lock.lock();defer { lock.unlock() };return received }
     init(limit: Int64,onProgress:@escaping @Sendable (Int64,Int64)->Void) { self.limit=limit;self.onProgress=onProgress }
     func urlSession(_ session: URLSession,downloadTask: URLSessionDownloadTask,didFinishDownloadingTo location: URL) {}
     func urlSession(_ session: URLSession,downloadTask: URLSessionDownloadTask,didWriteData bytesWritten: Int64,totalBytesWritten: Int64,totalBytesExpectedToWrite: Int64) {
+        lock.lock();received=totalBytesWritten;lock.unlock()
         if totalBytesWritten>limit || totalBytesExpectedToWrite>limit { downloadTask.cancel();return }
         let now=ProcessInfo.processInfo.systemUptime
         lock.lock();let report=now-lastReport>=0.5;if report { lastReport=now };lock.unlock()

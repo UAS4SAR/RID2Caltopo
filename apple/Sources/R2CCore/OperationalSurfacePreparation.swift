@@ -45,7 +45,8 @@ public enum OperationalSurfacePreparation {
         return chosen.sorted { $0.url < $1.url }
     }
     /// Only called by explicit offline preparation, off the UI actor. Never from telemetry.
-    public static func assemble(plan: OperationalSurfacePreparationPlan, files: [URL], hashes: [String:String], directory: URL, progress: @Sendable (String) async -> Void) async throws -> String {
+    /// `tileFinished` reports how many 1 m tiles are built after each one completes.
+    public static func assemble(plan: OperationalSurfacePreparationPlan, files: [URL], hashes: [String:String], directory: URL, progress: @Sendable (String) async -> Void, tileFinished: @Sendable (Int) async -> Void = { _ in }) async throws -> String {
         guard files.count==plan.sources.count,!files.isEmpty else { throw OperationalSurfacePreparationError.invalid("Incomplete lidar source set") }
         let reference=hex(SHA256.hash(data:try JSONSerialization.data(withJSONObject:hashes,options:.sortedKeys)))
         let regionID=directory.lastPathComponent
@@ -88,6 +89,7 @@ public enum OperationalSurfacePreparation {
             _ = try OperationalSurfacePackage(data:bytes)
             let name="tile-\(row)-\(col).aol";try bytes.write(to:directory.appendingPathComponent(name),options:.atomic)
             entries.append(["file":name,"metadata":metadata])
+            await tileFinished(tile)
         } }
         let index: [String:Any] = ["schema":1,"referenceGroup":reference,"originLatitude":plan.latitude,"originLongitude":plan.longitude,"width":plan.width,"height":plan.height,"entries":entries]
         try JSONSerialization.data(withJSONObject:index,options:.sortedKeys).write(to:directory.appendingPathComponent("index.json"),options:.atomic)

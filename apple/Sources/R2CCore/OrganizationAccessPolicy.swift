@@ -38,4 +38,16 @@ public enum OrganizationAccessPolicy {
         // process still starts locked.
         accessWasGranted
     }
+
+    /// Longest reuse iOS allows (LATouchIDAuthenticationMaximumAllowableReuseDuration, 5 minutes).
+    public static let maximumBiometricUnlockReuseSeconds: TimeInterval = 300
+
+    /// How long a Face ID / Touch ID device unlock may satisfy the protected-access re-authentication
+    /// (LAContext.touchIDAuthenticationAllowableReuseDuration). Matches Android, which accepts the OS unlock
+    /// that ends a screen lock only for a session that was authenticated when the device locked: a fresh
+    /// process, or a session that was never unlocked, still gets the in-app prompt (0 = no reuse).
+    /// iOS can reuse only a biometric unlock; a passcode unlock still asks once in the app.
+    public static func biometricUnlockReuseSeconds(accessRevokedByDeviceLock: Bool) -> TimeInterval {
+        accessRevokedByDeviceLock ? maximumBiometricUnlockReuseSeconds : 0
+    }
 }

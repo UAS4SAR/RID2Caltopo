@@ -62,10 +62,11 @@ private func retryCapacity(_ limit: Int64, free: Int64 = 960_000_000_000) -> Ope
 @Test @MainActor func offlineRetryRejectsChangedSelectionAndCancellation() async throws {
     var current = true
     var started = false
-    try await OperationalOfflineRetry.run(includeAOL: true, matchingPlan: nil as String?,
+    let stale = try await OperationalOfflineRetry.run(includeAOL: true, matchingPlan: nil as String?,
         resolvePlan: { current = false; return "old-region" }, isCurrent: { current },
         checkCapacity: { _ in Issue.record("Stale selection must not reach capacity check") },
         start: { _ in started = true })
+    #expect(stale == .selectionChanged)
     let task = Task { @MainActor in
         try await OperationalOfflineRetry.run(includeAOL: true, matchingPlan: nil as String?,
             resolvePlan: { try await Task.sleep(for: .seconds(60)); return "cancelled" },
@@ -75,10 +76,26 @@ private func retryCapacity(_ limit: Int64, free: Int64 = 960_000_000_000) -> Ope
     do { try await task.value; Issue.record("Expected cancellation") } catch is CancellationError {}
     #expect(!started)
     current = true
-    try await OperationalOfflineRetry.run(includeAOL: true, matchingPlan: "plan",
+    let changedDuringCapacity = try await OperationalOfflineRetry.run(includeAOL: true, matchingPlan: "plan",
         resolvePlan: { Issue.record("Unexpected lookup"); return "bad" }, isCurrent: { current },
         checkCapacity: { _ in current = false }, start: { _ in started = true })
+    #expect(changedDuringCapacity == .selectionChanged)
     #expect(!started)
+}
+
+@Test @MainActor func offlineRetryReportsStaleSelectionInsteadOfReturningSilently() async throws {
+    var selection = "viewport|n=40.00000"
+    let tapSelection = selection
+    var started = false
+    let outcome = try await OperationalOfflineRetry.run(includeAOL: true, matchingPlan: nil as String?,
+        resolvePlan: { selection = "viewport|n=40.00100"; return "aol-plan" }, isCurrent: { selection == tapSelection },
+        checkCapacity: { _ in Issue.record("Stale selection must not reach capacity check") }, start: { _ in started = true })
+    #expect(outcome == .selectionChanged && !started)
+    selection = tapSelection
+    let retried = try await OperationalOfflineRetry.run(includeAOL: true, matchingPlan: "aol-plan",
+        resolvePlan: { Issue.record("Unexpected lookup"); return "bad" }, isCurrent: { selection == tapSelection },
+        checkCapacity: { _ in }, start: { _ in started = true })
+    #expect(retried == .started && started)
 }
 
 @Test @MainActor func offlineRetryExplicitOptOutSkipsAol() async throws {

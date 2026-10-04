@@ -121,6 +121,9 @@ xcodebuild -quiet \
     CURRENT_PROJECT_VERSION="$build_number" \
     MARKETING_VERSION="$marketing_version" >/dev/null
 
+# Runs even with --skip-release-check: App Review rejects store text naming other platforms.
+python3 "$repo_root/tools/store_notes/check_store_notes.py" --version "$marketing_version"
+
 if $preflight; then
     echo "Preflight completed without changing Apple or App Store Connect state."
     exit 0

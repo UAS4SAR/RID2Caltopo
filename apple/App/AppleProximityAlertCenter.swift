@@ -26,6 +26,8 @@ final class AppleProximityAlertCenter: ObservableObject {
 
     @Published private(set) var alertAllAircraft: Bool
     @Published private(set) var consent: RidProximityConsent
+    /// True once per launch after an update changed the notice a user had accepted.
+    @Published private(set) var reacknowledgmentPending = false
     private let consentDefaults: UserDefaults
     private let consentDeviceID: String?
     private static let consentVersionKey = "proximity.localConsent.version"
@@ -37,6 +39,9 @@ final class AppleProximityAlertCenter: ObservableObject {
         consentDefaults = defaults
         consentDeviceID = deviceID
         consent = RidProximityConsent(acceptedVersion: defaults.integer(forKey: Self.consentVersionKey),
+            acceptedDeviceID: defaults.string(forKey: Self.consentDeviceKey), currentDeviceID: deviceID)
+        reacknowledgmentPending = RidProximityConsent.needsReacknowledgment(
+            acceptedVersion: defaults.integer(forKey: Self.consentVersionKey),
             acceptedDeviceID: defaults.string(forKey: Self.consentDeviceKey), currentDeviceID: deviceID)
         freshnessTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -64,6 +69,16 @@ final class AppleProximityAlertCenter: ObservableObject {
 
     var status: String { !consent.enabled ? "Off" : isSuspended ? "Suspended" : "On" }
     func requestEnable() { consent.requestEnable() }
+    func toggleAcknowledgment(_ index: Int) { consent.toggleAcknowledgment(index) }
+    /// Opens the current notice once; the stale acceptance is cleared first so later launches never re-prompt.
+    func beginReacknowledgment() {
+        guard reacknowledgmentPending else { return }
+        reacknowledgmentPending = false
+        consentDefaults.removeObject(forKey: Self.consentVersionKey)
+        consentDefaults.removeObject(forKey: Self.consentDeviceKey)
+        consentDefaults.removeObject(forKey: Self.consentDateKey)
+        requestEnable()
+    }
     func cancelEnable() { consent.cancel() }
     func confirmEnable() {
         consent.confirmEnable()

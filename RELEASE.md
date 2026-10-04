@@ -55,6 +55,25 @@ apple/AppStore/verify-metadata.sh --marketing-version 2.0.4
 Replace the example with the selected version. Review the rendered Android
 in-app notes and the App Store metadata mirror, not only the source file.
 
+The same `whats_new.txt` ships to Google Play and the App Store, and App Review
+has rejected a release whose notes said "Android". Check the notes and the App
+Store metadata for platform, device, or store names (Android, Google Play,
+Samsung, iPad, iPhone, iOS, and similar) before either upload:
+
+```bash
+python3 tools/store_notes/check_store_notes.py            # version from app/build.gradle
+python3 tools/store_notes/check_store_notes.py --version 2.0.4
+```
+
+It prints `file:line:term` for each hit and exits nonzero. The denylist is the
+`DENYLIST` table at the top of `tools/store_notes/check_store_notes.py`. The
+check also runs automatically in `apple/AppStore/verify-metadata.sh` (and so in
+`apple/release-check.sh`), in `apple/archive-for-testflight.sh` even with
+`--skip-release-check`, and in the Gradle `storeNotesCheck` task that
+`releaseVerification` (and so `releaseCheck`, `assembleRelease`, and
+`bundleRelease`) depends on. Use neutral wording such as "on all devices", and
+keep platform-specific detail in the parity ledger.
+
 ### 3. Review and stabilize the candidate
 
 Before either store upload:
@@ -97,7 +116,8 @@ From the repository root:
 ./gradlew :app:releaseCheck :app:bundleRelease --console=plain
 ```
 
-The release gate runs the protected-land check, JVM and native verification,
+The release gate runs the protected-land check, the store-notes platform-name
+check, JVM and native verification,
 anomaly qualifications, tracker coordination tests when the sibling tracker is
 available, and a signed minified release APK. `bundleRelease` creates the Play
 artifact and also enforces release verification. Release builds upload the R8

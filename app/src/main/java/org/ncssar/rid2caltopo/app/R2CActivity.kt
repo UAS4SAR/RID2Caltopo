@@ -11,6 +11,7 @@ package org.ncssar.rid2caltopo.app
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.fillMaxSize
+import StreamsLayoutMode
 import StreamsViewModel
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
@@ -134,6 +135,7 @@ import org.ncssar.rid2caltopo.ui.SpokenWarningAlertHost
 import org.ncssar.rid2caltopo.ui.SpokenWarningCenter
 import org.ncssar.rid2caltopo.ui.SpokenWarningKind
 import org.ncssar.rid2caltopo.ui.theme.RID2CaltopoTheme
+import org.ncssar.rid2caltopo.video.AndroidMapOfflinePrepCoordinator
 import org.ncssar.rid2caltopo.video.StreamsScreen
 import org.ncssar.rid2caltopo.video.ManagedVideoStreamPresence
 import org.ncssar.rid2caltopo.video.ManagedVideoSessionRecordingCatalog
@@ -216,6 +218,27 @@ internal enum class OrganizationExternalFlow {
     TRACKER_REAUTHENTICATION_BROWSER,
 }
 
+/** What a protected-access request should do; see requestOrganizationAccessAuthentication(). */
+internal enum class OrganizationAccessRequestAction { SHOW_UNLOCKED, ACCEPT_SYSTEM_UNLOCK, WAIT_FOR_SYSTEM_UNLOCK, PROMPT }
+
+/**
+ * A completed OS unlock after a screen lock is the device owner's authentication: accept it instead of
+ * asking for the PIN again. Automatic requests wait for that unlock; only an explicit Unlock tap prompts
+ * while the device still reports itself locked.
+ */
+internal fun organizationAccessRequestAction(
+    sessionAuthenticated: Boolean,
+    awaitingSystemUnlock: Boolean,
+    deviceSecure: Boolean,
+    deviceLocked: Boolean,
+    userRequested: Boolean,
+): OrganizationAccessRequestAction = when {
+    sessionAuthenticated -> OrganizationAccessRequestAction.SHOW_UNLOCKED
+    awaitingSystemUnlock && deviceSecure && !deviceLocked -> OrganizationAccessRequestAction.ACCEPT_SYSTEM_UNLOCK
+    awaitingSystemUnlock && !userRequested -> OrganizationAccessRequestAction.WAIT_FOR_SYSTEM_UNLOCK
+    else -> OrganizationAccessRequestAction.PROMPT
+}
+
 internal class OrganizationAccessSession {
     private var authenticated = false
     private var trustedExternalFlow: OrganizationExternalFlow? = null
@@ -283,6 +306,33 @@ internal class OrganizationAccessSession {
         authenticated = true
         screenLockedAtElapsedRealtimeMs = null
         return true
+    }
+
+    /**
+     * Accepts the OS unlock that ended a screen lock, read directly from KeyguardManager so it does not
+     * depend on USER_PRESENT delivery or Android 15 authentication-time reporting. Grants nothing beyond the
+     * USER_PRESENT path: only a session that was authenticated when the screen locked, on a secure device
+     * that the OS reports unlocked.
+     */
+    @Synchronized
+    fun authenticateFromCompletedSystemUnlock(deviceSecure: Boolean, deviceLocked: Boolean): Boolean {
+        if (screenLockedAtElapsedRealtimeMs == null || !deviceSecure || deviceLocked) return false
+        authenticated = true
+        screenLockedAtElapsedRealtimeMs = null
+        return true
+    }
+
+    /**
+     * The in-app prompt ended without success. A prompt the screen-off handler cancelled keeps a pending
+     * system-unlock handoff, so the device unlock that follows still counts.
+     */
+    @Synchronized
+    fun authenticationPromptAbandoned(cancelledByScreenLock: Boolean) {
+        if (cancelledByScreenLock) {
+            authenticated = false
+            return
+        }
+        invalidate()
     }
 
     @Synchronized
@@ -790,6 +840,8 @@ class R2CActivity :
     private var termsAcceptanceSaving by mutableStateOf(false)
     private var termsAcceptanceError by mutableStateOf<String?>(null)
     private var organizationAccessState by mutableStateOf(OrganizationAccessState.LOCKED)
+    /** Set when ACTION_SCREEN_OFF cancels an open prompt, so its error callback keeps the unlock handoff. */
+    private var organizationPromptCancelledByScreenLock = false
     private var organizationAccessError by mutableStateOf<String?>(null)
     private var organizationAuthenticationCancellation: CancellationSignal? = null
     private var systemUnlockPresentationJob: Job? = null
@@ -828,6 +880,7 @@ class R2CActivity :
             when (intent?.action) {
                 Intent.ACTION_SCREEN_OFF -> {
                     organizationAccessSession.invalidateForScreenLock(SystemClock.elapsedRealtime())
+                    if (organizationAuthenticationCancellation != null) organizationPromptCancelledByScreenLock = true
                     organizationAuthenticationCancellation?.cancel()
                     organizationAuthenticationCancellation = null
                     CTDebug(TAG, "Organization access locked because the screen turned off")
@@ -835,12 +888,9 @@ class R2CActivity :
                 Intent.ACTION_USER_PRESENT -> {
                     CTDebug(TAG, "Organization access received the system user-present notification")
                     if (organizationAccessSession.authenticateFromUserPresent()) {
-                        systemUnlockPresentationJob?.cancel()
                         organizationAuthenticationCancellation?.cancel()
                         organizationAuthenticationCancellation = null
-                        organizationAccessState = OrganizationAccessState.UNLOCKED
-                        organizationAccessError = null
-                        CTDebug(TAG, "Organization access accepted the completed system unlock")
+                        grantOrganizationAccess("Organization access accepted the completed system unlock")
                     }
                 }
             }
@@ -1156,6 +1206,21 @@ class R2CActivity :
         localViewModel.showStreams()
     }
 
+    /**
+     * The offline-map notification reopens Download Map with the live progress. The extra is
+     * consumed so a later onStart with the same Intent does not reopen a window the operator hid.
+     */
+    private fun handleOpenDownloadMapIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(MapOfflineDownloadService.EXTRA_OPEN_DOWNLOAD_MAP, false) != true) return
+        intent.removeExtra(MapOfflineDownloadService.EXTRA_OPEN_DOWNLOAD_MAP)
+        if (!AndroidMapOfflinePrepCoordinator.inFlight.value) return
+        CTDebug(TAG, "Opening Download Map from the offline-map notification")
+        // Download Map is drawn by the full map pane: Streams screen, map visible (not the PiP inset).
+        if (streamsViewModel.layoutMode.value == StreamsLayoutMode.Streams) streamsViewModel.showMapOnly()
+        localViewModel.showStreams()
+        AndroidMapOfflinePrepCoordinator.showDialog.value = true
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -1169,6 +1234,7 @@ class R2CActivity :
             }
             handleR2cIntent(intent)
             handleStreamsQualificationIntent(intent)
+            handleOpenDownloadMapIntent(intent)
         }
     }
 
@@ -1196,6 +1262,7 @@ class R2CActivity :
                 organizationAccessState != OrganizationAccessState.AUTHENTICATING
             ) {
                 acceptSystemAuthenticationAfterScreenUnlock()
+                acceptCompletedSystemUnlock()
                 organizationAccessState = if (organizationAccessSession.isAuthenticated()) {
                     organizationAccessError = null
                     OrganizationAccessState.UNLOCKED
@@ -1206,16 +1273,7 @@ class R2CActivity :
                 }
             }
             if (organizationAccessSession.isAwaitingSystemUnlock()) {
-                systemUnlockPresentationJob?.cancel()
-                systemUnlockPresentationJob = lifecycleScope.launch {
-                    delay(750L)
-                    if (organizationAccessState == OrganizationAccessState.WAITING_FOR_SYSTEM_UNLOCK) {
-                        // Restore manual recovery if the platform never delivers unlock.
-                        // This timeout does not grant access or clear the pending handoff.
-                        organizationAccessState = OrganizationAccessState.LOCKED
-                    }
-                }
-                CTDebug(TAG, "Organization access is waiting for the completed system unlock")
+                waitForSystemUnlock()
             } else {
                 requestOrganizationAccessAuthentication()
             }
@@ -1429,13 +1487,21 @@ class R2CActivity :
                         protectedAccountName = organizationName.ifEmpty { "CalTopo Teams" },
                         state = organizationAccessState,
                         errorMessage = organizationAccessError,
-                        onUnlock = ::requestOrganizationAccessAuthentication,
+                        onUnlock = { requestOrganizationAccessAuthentication(userRequested = true) },
                         onOpenSecuritySettings = {
                             startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS))
                         },
                         onQuit = { CaltopoClient.QuitApplication() },
                     )
                     return@content
+                }
+                val proximityReacknowledgmentPending by
+                    org.ncssar.rid2caltopo.data.ProximityAlertConsent.reacknowledgmentPending.collectAsState()
+                LaunchedEffect(proximityReacknowledgmentPending, waitingForSystemUnlock) {
+                    // After a notice-version change, show the new notice once, over proximity settings.
+                    if (!proximityReacknowledgmentPending || waitingForSystemUnlock) return@LaunchedEffect
+                    localViewModel.showProximitySettings()
+                    org.ncssar.rid2caltopo.data.ProximityAlertConsent.beginReacknowledgment()
                 }
                 LaunchedEffect(pendingCapturedVideoUri, waitingForSystemUnlock) {
                     if (waitingForSystemUnlock) return@LaunchedEffect
@@ -1883,7 +1949,7 @@ class R2CActivity :
                         protectedAccountName = organizationName.ifEmpty { "CalTopo Teams" },
                         state = organizationAccessState,
                         errorMessage = null,
-                        onUnlock = ::requestOrganizationAccessAuthentication,
+                        onUnlock = { requestOrganizationAccessAuthentication(userRequested = true) },
                         onOpenSecuritySettings = {},
                         onQuit = { CaltopoClient.QuitApplication() },
                     )
@@ -1906,7 +1972,57 @@ class R2CActivity :
         requestOrganizationAccessAuthentication()
     }
 
-    private fun requestOrganizationAccessAuthentication() {
+    /**
+     * Waits briefly for the OS unlock behind the opaque cover. USER_PRESENT and the direct KeyguardManager check
+     * both end the wait; if neither arrives, the gate's Unlock button restores manual recovery. The timeout never
+     * grants access or clears the pending handoff.
+     */
+    private fun waitForSystemUnlock() {
+        organizationAccessState = OrganizationAccessState.WAITING_FOR_SYSTEM_UNLOCK
+        systemUnlockPresentationJob?.cancel()
+        systemUnlockPresentationJob = lifecycleScope.launch {
+            delay(750L)
+            if (organizationAccessState == OrganizationAccessState.WAITING_FOR_SYSTEM_UNLOCK &&
+                !acceptCompletedSystemUnlock()
+            ) {
+                organizationAccessState = OrganizationAccessState.LOCKED
+            }
+        }
+        CTDebug(TAG, "Organization access is waiting for the completed system unlock")
+    }
+
+    /** Accepts a completed OS unlock (secure device, now unlocked) that ended a screen lock. */
+    private fun acceptCompletedSystemUnlock(): Boolean {
+        val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+        if (!organizationAccessSession.authenticateFromCompletedSystemUnlock(
+                deviceSecure = keyguardManager.isDeviceSecure,
+                deviceLocked = keyguardManager.isDeviceLocked,
+            )
+        ) {
+            return false
+        }
+        grantOrganizationAccess("Organization access accepted the completed device unlock")
+        return true
+    }
+
+    /** Shows protected content and runs an intent that arrived while access was locked. */
+    private fun grantOrganizationAccess(logMessage: String) {
+        systemUnlockPresentationJob?.cancel()
+        organizationAccessState = OrganizationAccessState.UNLOCKED
+        organizationAccessError = null
+        CTDebug(TAG, logMessage)
+        pendingOrganizationAccessIntent?.let { pendingIntent ->
+            pendingOrganizationAccessIntent = null
+            setIntent(
+                Intent(this@R2CActivity, R2CActivity::class.java)
+                    .setAction(Intent.ACTION_MAIN)
+            )
+            handleR2cIntent(pendingIntent)
+            handleOpenDownloadMapIntent(pendingIntent)
+        }
+    }
+
+    private fun requestOrganizationAccessAuthentication(userRequested: Boolean = false) {
         if (!configuredAccessAuthenticationRequired()) {
             organizationAccessSession.invalidate()
             organizationAuthenticationCancellation?.cancel()
@@ -1922,6 +2038,28 @@ class R2CActivity :
         }
 
         val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+        when (
+            organizationAccessRequestAction(
+                sessionAuthenticated = organizationAccessSession.isAuthenticated(),
+                awaitingSystemUnlock = organizationAccessSession.isAwaitingSystemUnlock(),
+                deviceSecure = keyguardManager.isDeviceSecure,
+                deviceLocked = keyguardManager.isDeviceLocked,
+                userRequested = userRequested,
+            )
+        ) {
+            OrganizationAccessRequestAction.SHOW_UNLOCKED -> {
+                grantOrganizationAccess("Organization access is already authenticated; no prompt needed")
+                return
+            }
+            OrganizationAccessRequestAction.ACCEPT_SYSTEM_UNLOCK -> {
+                if (acceptCompletedSystemUnlock()) return
+            }
+            OrganizationAccessRequestAction.WAIT_FOR_SYSTEM_UNLOCK -> {
+                waitForSystemUnlock()
+                return
+            }
+            OrganizationAccessRequestAction.PROMPT -> Unit
+        }
         if (!keyguardManager.isDeviceSecure) {
             organizationAccessState = OrganizationAccessState.DEVICE_SECURITY_REQUIRED
             organizationAccessError =
@@ -1948,28 +2086,30 @@ class R2CActivity :
                     result: BiometricPrompt.AuthenticationResult
                 ) {
                     organizationAuthenticationCancellation = null
+                    organizationPromptCancelledByScreenLock = false
                     organizationAccessSession.markAuthenticated()
-                    organizationAccessState = OrganizationAccessState.UNLOCKED
-                    organizationAccessError = null
-                    CTDebug(TAG, "Device owner authenticated for organization access")
-                    pendingOrganizationAccessIntent?.let { pendingIntent ->
-                        pendingOrganizationAccessIntent = null
-                        setIntent(
-                            Intent(this@R2CActivity, R2CActivity::class.java)
-                                .setAction(Intent.ACTION_MAIN)
-                        )
-                        handleR2cIntent(pendingIntent)
-                    }
+                    grantOrganizationAccess("Device owner authenticated for organization access")
                 }
 
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                     organizationAuthenticationCancellation = null
+                    // The system may also dismiss the prompt itself as the screen turns off.
+                    val cancelledByScreenLock = organizationPromptCancelledByScreenLock ||
+                        !(getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive
+                    organizationPromptCancelledByScreenLock = false
                     if (organizationAccessSession.isAuthenticated()) {
                         organizationAccessState = OrganizationAccessState.UNLOCKED
                         organizationAccessError = null
                         return
                     }
-                    organizationAccessSession.invalidate()
+                    organizationAccessSession.authenticationPromptAbandoned(cancelledByScreenLock)
+                    if (organizationAccessSession.isAwaitingSystemUnlock()) {
+                        // The device unlock that follows this screen lock still counts (onResume accepts it).
+                        organizationAccessState = OrganizationAccessState.WAITING_FOR_SYSTEM_UNLOCK
+                        organizationAccessError = null
+                        CTDebug(TAG, "Organization prompt cancelled by screen lock; waiting for the device unlock")
+                        return
+                    }
                     organizationAccessState = OrganizationAccessState.LOCKED
                     organizationAccessError =
                         "Authentication was not completed. Organization maps remain locked."
@@ -2052,6 +2192,7 @@ class R2CActivity :
             handleR2cIntent(intent)
         }
         handleStreamsQualificationIntent(intent)
+        handleOpenDownloadMapIntent(intent)
         if (!InitializedCalled) {
 
 

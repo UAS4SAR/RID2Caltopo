@@ -20,6 +20,7 @@ import org.ncssar.rid2caltopo.data.CaltopoClient.CTError
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTInfo
 import org.ncssar.rid2caltopo.video.AndroidMapOfflinePrepCoordinator
 import org.ncssar.rid2caltopo.video.MapOfflinePrepRuntime
+import org.ncssar.rid2caltopo.video.OfflinePrepProgressText
 
 /** Keeps a user-requested offline-map download running while the display is asleep. */
 class MapOfflineDownloadService : Service() {
@@ -52,24 +53,49 @@ class MapOfflineDownloadService : Service() {
         createNotificationChannel()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    // Live percent in the notification; tapping it reopens Download Map with this progress.
+    private val notificationRefresh = object : Runnable {
+        override fun run() {
+            if (!MapOfflinePrepRuntime.isActive()) return
+            runCatching {
+                getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification())
+            }
+            handler.postDelayed(this, NOTIFICATION_REFRESH_MSEC)
+        }
+    }
+
+    private fun buildNotification(): android.app.Notification {
         val notificationIntent = Intent(this, R2CActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .putExtra(EXTRA_OPEN_DOWNLOAD_MAP, true)
         val pendingIntent = PendingIntent.getActivity(
             this,
             0,
             notificationIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+        val coordinator = AndroidMapOfflinePrepCoordinator
+        val progress = coordinator.progress.value
+        val status = OfflinePrepProgressText.activeDownloadStatus(
+            progress,
+            inFlight = true,
+            cancelRequested = coordinator.cancelRequested.value,
+        ) ?: "Downloading map…"
+        val determinate = progress.totalBytes > 0L && !progress.includesAol && !coordinator.cancelRequested.value
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification_r2c)
             .setContentTitle("Downloading offline map")
-            .setContentText("RID2Caltopo is keeping the map download active")
+            .setContentText("$status Tap to view progress or cancel.")
+            .setProgress(100, (progress.fraction * 100.0).toInt().coerceIn(0, 100), !determinate)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .build()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val notification = buildNotification()
         ServiceCompat.startForeground(
             this,
             NOTIFICATION_ID,
@@ -79,11 +105,14 @@ class MapOfflineDownloadService : Service() {
         acquireWakeLock()
         handler.removeCallbacks(stallWatchdog)
         handler.postDelayed(stallWatchdog, WATCHDOG_INTERVAL_MSEC)
+        handler.removeCallbacks(notificationRefresh)
+        handler.postDelayed(notificationRefresh, NOTIFICATION_REFRESH_MSEC)
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
         handler.removeCallbacks(stallWatchdog)
+        handler.removeCallbacks(notificationRefresh)
         wakeLock?.takeIf { it.isHeld }?.release()
         wakeLock = null
         super.onDestroy()
@@ -129,6 +158,9 @@ class MapOfflineDownloadService : Service() {
         private const val NOTIFICATION_ID = 4
         private const val WATCHDOG_INTERVAL_MSEC = 15_000L
         private const val STALL_RECOVERY_THRESHOLD_MSEC = 45_000L
+        private const val NOTIFICATION_REFRESH_MSEC = 5_000L
+        /** Set on the notification tap; R2CActivity reopens Download Map while a download is running. */
+        const val EXTRA_OPEN_DOWNLOAD_MAP = "org.ncssar.rid2caltopo.extra.OPEN_DOWNLOAD_MAP"
 
         fun start(context: Context) {
             runCatching {

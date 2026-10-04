@@ -1537,22 +1537,23 @@ struct ConfigImportView: View {
                 }
             }
             Section {
-                HStack(spacing: 12) {
-                    Button("Choose File", systemImage: "doc.badge.arrow.up") {
-                        showFileImporter = true
+                // On iPhone the three buttons do not fit on one line; stack the file picker
+                // above Cancel/Import instead of wrapping its label mid-word. (iPad sheets
+                // report a compact size class even when the row fits, so use the idiom.)
+                if UIDevice.current.userInterfaceIdiom == .phone {
+                    VStack(alignment: .leading, spacing: 12) {
+                        chooseFileButton
+                        HStack(spacing: 12) {
+                            Spacer()
+                            cancelAndImportButtons
+                        }
                     }
-                    .buttonStyle(.bordered)
-                    .disabled(submitting)
-
-                    Spacer()
-
-                    Button("Cancel", role: .cancel) { dismiss() }
-                        .buttonStyle(.bordered)
-                        .disabled(submitting)
-
-                    Button(caltopoLinkURL != nil ? "Open CalTopo" : (isFailed ? "Retry" : "Import")) { submitToken() }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!canImport)
+                } else {
+                    HStack(spacing: 12) {
+                        chooseFileButton
+                        Spacer()
+                        cancelAndImportButtons
+                    }
                 }
             }
         }
@@ -1583,6 +1584,25 @@ struct ConfigImportView: View {
             guard case let .success(url) = result else { return }
             submitFile(url)
         }
+    }
+
+    private var chooseFileButton: some View {
+        Button("Choose File", systemImage: "doc.badge.arrow.up") {
+            showFileImporter = true
+        }
+        .buttonStyle(.bordered)
+        .disabled(submitting)
+    }
+
+    @ViewBuilder
+    private var cancelAndImportButtons: some View {
+        Button("Cancel", role: .cancel) { dismiss() }
+            .buttonStyle(.bordered)
+            .disabled(submitting)
+
+        Button(caltopoLinkURL != nil ? "Open CalTopo" : (isFailed ? "Retry" : "Import")) { submitToken() }
+            .buttonStyle(.borderedProminent)
+            .disabled(!canImport)
     }
 
     private var packageToken: MutualAidPackageTransferToken? { MutualAidPackageTransferToken.decode(tokenText) }

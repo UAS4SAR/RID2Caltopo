@@ -56,6 +56,10 @@ if rg -q '^(Platform-specific changes:|Known platform differences:)$' "$whats_ne
     echo "Keep platform differences in docs/PLATFORM_PARITY_LEDGER.md, not public release notes." >&2
     exit 1
 fi
+# App Review rejects store text that names other platforms or stores (e.g. "Android").
+store_notes_args=()
+[[ -n "$marketing_version" ]] && store_notes_args=(--version "$marketing_version")
+python3 "$repo_root/tools/store_notes/check_store_notes.py" "${store_notes_args[@]}"
 
 if [[ -n "$marketing_version" ]]; then
     print -r -- "$marketing_version" | grep -Eq '^[0-9]+(\.[0-9]+){1,2}$' || {

@@ -1135,6 +1135,8 @@ private struct AppleStreamSettingsControl: View {
                 .font(.body.bold())
                 .padding(8)
                 .background(.black.opacity(0.6), in: Circle())
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
         }
         .foregroundStyle(.white)
         .accessibilityLabel(session.id == "demo" ? "Streams settings" : "Anomaly detection settings")
@@ -1352,6 +1354,11 @@ final class RID2CaltopoAppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         AppleUserInteractionObserver.install()
+        // Safety net: raw AOL lidar work only lives while Download Map stays open; remove any left by a killed app.
+        Task.detached(priority: .background) {
+            let removed = OperationalSurfaceSourceReuse.deleteWorkDirectories(in: FileManager.default.temporaryDirectory)
+            if removed > 0 { AppleLog.info("MapOffline", "Removed \(removed) leftover AOL work folder(s)") }
+        }
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(primarySceneDidDisconnect(_:)),

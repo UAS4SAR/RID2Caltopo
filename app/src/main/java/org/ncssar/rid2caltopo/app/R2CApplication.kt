@@ -49,6 +49,13 @@ class R2CApplication : Application() {
         NetworkCheckRecovery.start(this)
         R2CMqttManager.InitializeNetworkAddressMonitor(this)
         MapCacheStartupMaintenance.ensureStarted(this)
+        // Safety net: raw AOL lidar work only lives while Download Map stays open; remove any left by a killed process.
+        Thread({
+            // Never delete under a running download (cannot normally start this early; checked anyway).
+            if (org.ncssar.rid2caltopo.video.MapOfflinePrepRuntime.isActive()) return@Thread
+            runCatching { org.ncssar.rid2caltopo.video.surface.SurfaceSourceReuse.deleteWorkDirectories(cacheDir) }
+                .onSuccess { if (it > 0) CTDebug(TAG, "Removed $it leftover AOL work folder(s).") }
+        }, "AOL work cleanup").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }.start()
         MainThreadStallMonitor.start()
         logHistoricalProcessExitReasons()
         CTDebug(TAG, "onCreate().")

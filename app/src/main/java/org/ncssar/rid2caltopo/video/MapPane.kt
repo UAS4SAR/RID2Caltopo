@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -90,6 +91,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -658,12 +661,15 @@ internal fun SplitMapPane(
     var offlinePrepIncludeAol by offlinePrepCoordinator.includeAol
     var offlinePrepAolReport by offlinePrepCoordinator.aolReport
     var offlinePrepFailureNotice by offlinePrepCoordinator.failureNotice
+    var offlinePrepFailureNoticeNeutral by offlinePrepCoordinator.failureNoticeNeutral
     var offlinePrepAolPlan by remember { mutableStateOf<org.ncssar.rid2caltopo.video.surface.SurfacePreparationPlan?>(null) }
     var offlinePrepAolPlanText by remember { mutableStateOf("") }
     var offlinePrepAolCatalogFailed by remember { mutableStateOf(false) }
     var offlinePrepAolCatalogChecking by remember { mutableStateOf(false) }
     var offlinePrepAolCatalogAttempt by remember { mutableIntStateOf(0) }
     var offlinePrepRetryJob by remember { mutableStateOf<Job?>(null) }
+    // Start-time check is separate from the background AOL catalog check so neither can hide or end the other.
+    var offlinePrepStartChecking by remember { mutableStateOf(false) }
     val offlinePrepAolWorkingBytes = if(offlinePrepIncludeAol) offlinePrepAolPlan?.let { if(it.reused) 0L else it.advertisedBytes*3/2+it.tiles*16_000_000L } ?: 0L else 0L
     var offlinePrepDemResolution by offlinePrepCoordinator.demResolution
     var offlinePrepIncludeContours by offlinePrepCoordinator.includeContours
@@ -695,6 +701,12 @@ internal fun SplitMapPane(
     var offlinePrepAutoCloseJob by offlinePrepCoordinator.autoCloseJob
     val offlinePrepActiveCalls = offlinePrepCoordinator.activeCalls
     var mapBounds by remember { mutableStateOf<BoundingBox?>(null) }
+    // "Current visible map" is frozen while Download Map is open, so keyboard/layout resizes cannot change the selection.
+    var offlinePrepViewportBounds by remember { mutableStateOf<BoundingBox?>(null) }
+    fun offlinePrepMapBounds(): BoundingBox? = if (showOfflinePrepDialog) offlinePrepViewportBounds ?: mapBounds else mapBounds
+    LaunchedEffect(showOfflinePrepDialog, mapBounds != null) {
+        offlinePrepViewportBounds = if (showOfflinePrepDialog) offlinePrepViewportBounds ?: mapBounds else null
+    }
     var mapScaleBar by remember { mutableStateOf<MapScaleBarState?>(null) }
     fun updateMapScaleBar(mapView: MapView) {
         val density = mapView.resources.displayMetrics.density
@@ -1238,7 +1250,7 @@ internal fun SplitMapPane(
         offlinePrepIncludeImagery,
         offlinePrepIncludeOsm,
         offlinePrepIncludeContours,
-        mapBounds,
+        offlinePrepMapBounds(),
         offlineBoundaryOptions
     ) {
         if (!showOfflinePrepDialog) return@LaunchedEffect
@@ -1250,7 +1262,7 @@ internal fun SplitMapPane(
             } else {
                 null
             }
-        val estimateBounds = selectedBoundary?.bounds ?: mapBounds
+        val estimateBounds = selectedBoundary?.bounds ?: offlinePrepMapBounds()
         if (estimateBounds == null) {
             offlinePrepEstimateRunning = false
             offlinePrepEstimate = OfflinePrepEstimate(ready = false)
@@ -1303,7 +1315,7 @@ internal fun SplitMapPane(
         offlinePrepIncludeOsm,
         offlinePrepIncludeContours,
         baseLayer,
-        mapBounds,
+        offlinePrepMapBounds(),
         offlineBoundaryOptions,
         offlinePrepInFlight,
         offlinePrepProgress.phase
@@ -1322,7 +1334,7 @@ internal fun SplitMapPane(
             } else {
                 null
             }
-        val prepBounds = selectedBoundary?.bounds ?: mapBounds
+        val prepBounds = selectedBoundary?.bounds ?: offlinePrepMapBounds()
         if (prepBounds == null) {
             offlinePrepCacheStatus = OfflinePrepCacheStatus()
             return@LaunchedEffect
@@ -1378,7 +1390,7 @@ internal fun SplitMapPane(
             } else {
                 null
             }
-        val bounds = boundary?.bounds ?: mapBounds ?: return null
+        val bounds = boundary?.bounds ?: offlinePrepMapBounds() ?: return null
         val areaKey =
             if (offlinePrepAreaMode == OfflinePrepAreaMode.MapBoundary) {
                 "boundary:${offlinePrepBoundaryId ?: "none"}"
@@ -1401,13 +1413,14 @@ internal fun SplitMapPane(
         ).joinToString("|")
     }
 
-    LaunchedEffect(showOfflinePrepDialog,offlinePrepIncludeAol,offlinePrepAreaMode,offlinePrepBoundaryId,mapBounds,offlineBoundaryOptions,offlinePrepAolCatalogAttempt,offlinePrepInFlight) {
-        val selectedBounds=if(offlinePrepAreaMode==OfflinePrepAreaMode.MapBoundary) offlineBoundaryOptions.firstOrNull { it.id==offlinePrepBoundaryId }?.boundary?.bounds else mapBounds
+    LaunchedEffect(showOfflinePrepDialog,offlinePrepIncludeAol,offlinePrepAreaMode,offlinePrepBoundaryId,offlinePrepMapBounds(),offlineBoundaryOptions,offlinePrepAolCatalogAttempt,offlinePrepInFlight) {
+        if(offlinePrepStartChecking) return@LaunchedEffect // The Start check owns the plan and status until it finishes.
+        val selectedBounds=if(offlinePrepAreaMode==OfflinePrepAreaMode.MapBoundary) offlineBoundaryOptions.firstOrNull { it.id==offlinePrepBoundaryId }?.boundary?.bounds else offlinePrepMapBounds()
         val selectedSurfaceBounds=selectedBounds?.let { org.ncssar.rid2caltopo.video.surface.SurfaceBounds(it.lonWest,it.latSouth,it.lonEast,it.latNorth) }
         if(org.ncssar.rid2caltopo.video.surface.surfaceCatalogAction(offlinePrepInFlight,showOfflinePrepDialog,offlinePrepIncludeAol,offlinePrepAolPlan?.bounds,selectedSurfaceBounds)==org.ncssar.rid2caltopo.video.surface.SurfaceCatalogAction.Preserve) return@LaunchedEffect
         offlinePrepAolPlan=null;offlinePrepAolPlanText="";offlinePrepAolCatalogFailed=false;offlinePrepAolCatalogChecking=false
         if(showOfflinePrepDialog && offlinePrepIncludeAol && !offlinePrepInFlight) {
-            val selected=if(offlinePrepAreaMode==OfflinePrepAreaMode.MapBoundary) offlineBoundaryOptions.firstOrNull { it.id==offlinePrepBoundaryId }?.boundary?.bounds else mapBounds
+            val selected=if(offlinePrepAreaMode==OfflinePrepAreaMode.MapBoundary) offlineBoundaryOptions.firstOrNull { it.id==offlinePrepBoundaryId }?.boundary?.bounds else offlinePrepMapBounds()
             if(selected!=null) {
                 offlinePrepAolCatalogChecking=true
                 offlinePrepAolPlanText="Checking USGS lidar coverage and file sizes…"
@@ -1422,15 +1435,41 @@ internal fun SplitMapPane(
             }
         }
     }
+    /**
+     * Deletes raw AOL lidar work off the main thread. The files live for one Download Map session, which ends on
+     * Close, Cancel ([sessionEnded]), auto-close, a dismiss while idle, or a download ending while the window is
+     * hidden. After a failure with the window showing they stay for Retry. Never runs while a download is active.
+     */
+    fun discardAolWorkIfDialogClosed(sessionEnded: Boolean = false) {
+        if(offlinePrepInFlight || (showOfflinePrepDialog && !sessionEnded)) return
+        if(offlinePrepAolReport.startsWith("AOL failed")) offlinePrepAolReport=""
+        val appContext=context.applicationContext
+        offlinePrepCoordinator.scope.launch(Dispatchers.IO) {
+            org.ncssar.rid2caltopo.video.surface.SurfacePreparation.discardRetained(appContext)
+        }
+    }
+
+    // Kept lidar files only survive while the dialog stays open for a Retry of the same AOL selection:
+    // drop them when the dialog closes (any way), AOL is turned off, or the selection's plan changes.
+    LaunchedEffect(showOfflinePrepDialog,offlinePrepIncludeAol,offlinePrepAolPlan,offlinePrepInFlight,offlinePrepStartChecking) {
+        if(offlinePrepInFlight) return@LaunchedEffect
+        if(!showOfflinePrepDialog) { discardAolWorkIfDialogClosed();return@LaunchedEffect }
+        if(offlinePrepStartChecking) return@LaunchedEffect
+        val plan=offlinePrepAolPlan
+        if(offlinePrepIncludeAol && plan==null) return@LaunchedEffect // Still checking; decide once the plan is known.
+        withContext(Dispatchers.IO) {
+            org.ncssar.rid2caltopo.video.surface.SurfacePreparation.discardRetained(context,plan?.takeIf { offlinePrepIncludeAol && !it.reused })
+        }
+    }
     if(showOfflinePrepDialog && offlinePrepAolCatalogChecking) {
         AlertDialog(
-            onDismissRequest={ offlinePrepRetryJob?.cancel();offlinePrepIncludeAol=false;offlinePrepAolCatalogChecking=false },
+            onDismissRequest={ offlinePrepIncludeAol=false;offlinePrepAolCatalogChecking=false },
             title={ Text("Checking download requirements…") },
             text={ Column(verticalArrangement=Arrangement.spacedBy(16.dp)) {
                 androidx.compose.material3.CircularProgressIndicator()
                 Text("Checking coverage, file sizes, and available storage for the selected area. Temporary service failures are retried automatically.")
             } },
-            confirmButton={ TextButton(onClick={ offlinePrepRetryJob?.cancel();offlinePrepIncludeAol=false;offlinePrepAolCatalogChecking=false }) { Text("Cancel") } }
+            confirmButton={ TextButton(onClick={ offlinePrepIncludeAol=false;offlinePrepAolCatalogChecking=false }) { Text("Cancel") } }
         )
     }
     val offlinePrepReadyByCompletion = remember(
@@ -1446,7 +1485,7 @@ internal fun SplitMapPane(
         offlinePrepIncludeOsm,
         offlinePrepIncludeContours,
         baseLayer,
-        mapBounds,
+        offlinePrepMapBounds(),
         offlineBoundaryOptions
     ) {
         !offlinePrepInFlight && offlinePrepCompletedSelectionKey != null &&
@@ -1507,7 +1546,16 @@ internal fun SplitMapPane(
         offlinePrepActiveCalls.clear()
         offlinePrepCancelRequested = false
         offlinePrepInFlight = true
-        offlinePrepProgress = OfflinePrepProgress(phase = "Preparing", total = 0, completed = 0, includesAol = aolPlan != null)
+        val tileLayerLabels = buildList {
+            if (offlinePrepIncludeImagery) add("Imagery")
+            if (offlinePrepIncludeOsm) add("OSM")
+            if (offlinePrepIncludeContours) add("Contours")
+        }
+        offlinePrepProgress = OfflinePrepProgress(
+            phase = "Preparing", total = 0, completed = 0, includesAol = aolPlan != null,
+            tileLayers = tileLayerLabels, includesDem = offlinePrepIncludeDem,
+            aolFilesTotal = aolPlan?.sources?.size ?: 0, aolTilesTotal = aolPlan?.tiles ?: 0
+        )
         val offlinePrepTileFetchScheduler = offlinePrepCoordinator.begin(context)
         val preset = offlinePrepPreset
         val includeDem = offlinePrepIncludeDem
@@ -1546,8 +1594,13 @@ internal fun SplitMapPane(
                         offlinePrepInFlight = false
                         offlinePrepJob = null
                         offlinePrepCoordinator.finish()
-                        offlinePrepProgress = offlinePrepProgress.copy(phase = "Failed: ${e.message ?: e.javaClass.simpleName}")
-                    offlinePrepFailureNotice="${e.message ?: "Download interrupted"}. Completed map and ground tiles are still available. Retry reuses completed files; the interrupted lidar file is downloaded again."
+                        offlinePrepProgress = offlinePrepProgress.copy(
+                            phase = "Failed: ${e.message ?: e.javaClass.simpleName}",
+                            failure = "terrain catalog check failed: " + OfflinePrepProgressText.describeFailure(e, "USGS")
+                        )
+                    offlinePrepFailureNoticeNeutral=false
+                    discardAolWorkIfDialogClosed()
+                    offlinePrepFailureNotice="${e.message ?: "Download interrupted"}. Completed map and terrain files are still available, along with any lidar files already downloaded. Retry reuses them and fetches only what is missing."
                     CaltopoClient.CTError("OfflinePreparation", "Download failed: ${e.message ?: e.javaClass.simpleName}")
                         CaltopoClient.ShowToast("DEM planning failed: ${e.message ?: e.javaClass.simpleName}")
                     }
@@ -1592,6 +1645,11 @@ internal fun SplitMapPane(
             val startedAt = System.currentTimeMillis()
             var lastUiUpdateMs = 0L
             var phase = "Downloading map tiles"
+            val aolStage = java.util.concurrent.atomic.AtomicReference(OfflinePrepAolStage.Waiting)
+            val aolFilesDone = AtomicInteger(0)
+            val aolTilesDone = AtomicInteger(0)
+            val aolFilesKept = AtomicInteger(0)
+            val aolFailure = java.util.concurrent.atomic.AtomicReference<String?>(null)
             suspend fun pushProgress(force: Boolean = false) {
                 val now = System.currentTimeMillis()
                 if (!force && now - lastUiUpdateMs < 400L) return
@@ -1635,7 +1693,16 @@ internal fun SplitMapPane(
                         totalBytes = estimatedTotalBytes,
                         bytesPerSec = rate,
                         etaSeconds = eta,
-                        includesAol = aolPlan != null
+                        includesAol = aolPlan != null,
+                        tileLayers = tileLayerLabels,
+                        includesDem = includeDem,
+                        aolStage = aolStage.get(),
+                        aolFilesCompleted = aolFilesDone.get(),
+                        aolFilesTotal = aolPlan?.sources?.size ?: 0,
+                        aolTilesCompleted = aolTilesDone.get(),
+                        aolFilesKept = aolFilesKept.get(),
+                        aolTilesTotal = aolPlan?.tiles ?: 0,
+                        aolFailure = aolFailure.get()
                     )
                 }
             }
@@ -1981,19 +2048,52 @@ internal fun SplitMapPane(
                 }
 
                 if(aolPlan!=null) {
-                    val report=org.ncssar.rid2caltopo.video.surface.SurfacePreparation.prepare(
-                        context,aolPlan,geoTiffHttpClient,
-                        onCall={ call, active -> if(active) offlinePrepActiveCalls.add(call) else offlinePrepActiveCalls.remove(call) },
-                        onActivity=MapOfflinePrepRuntime::noteProgress,
-                        progress={ message -> phase=message;pushProgress(force=true) }
-                    )
-                    completed.addAndGet(aolPlan.tiles)
-                    completedEstimatedBytes.addAndGet(aolPlan.advertisedBytes+aolPlan.tiles*8_000_000L)
-                    withContext(Dispatchers.Main.immediate) { offlinePrepAolReport=report }
+                    aolStage.set(OfflinePrepAolStage.Files)
+                    pushProgress(force=true)
+                    // AOL runs last; its failure must not hide completed map and terrain results.
+                    try {
+                        val report=org.ncssar.rid2caltopo.video.surface.SurfacePreparation.prepare(
+                            context,aolPlan,geoTiffHttpClient,
+                            onCall={ call, active -> if(active) offlinePrepActiveCalls.add(call) else offlinePrepActiveCalls.remove(call) },
+                            onActivity=MapOfflinePrepRuntime::noteProgress,
+                            onCounts={ files, tiles, kept ->
+                                aolFilesDone.set(files);aolTilesDone.set(tiles);aolFilesKept.set(kept)
+                                aolStage.set(if(files>=aolPlan.sources.size) OfflinePrepAolStage.Tiles else OfflinePrepAolStage.Files)
+                                pushProgress(force=true)
+                            },
+                            progress={ message -> phase=message;pushProgress(force=true) }
+                        )
+                        if(report==org.ncssar.rid2caltopo.video.surface.SurfacePreparation.REUSED_REPORT) {
+                            aolStage.set(OfflinePrepAolStage.Reused)
+                        } else {
+                            aolFilesDone.set(aolPlan.sources.size);aolTilesDone.set(aolPlan.tiles)
+                            aolStage.set(OfflinePrepAolStage.Complete)
+                        }
+                        completed.addAndGet(aolPlan.tiles)
+                        completedEstimatedBytes.addAndGet(aolPlan.advertisedBytes+aolPlan.tiles*8_000_000L)
+                        withContext(Dispatchers.Main.immediate) { offlinePrepAolReport=report }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        ensureActive()
+                        val plain = OfflinePrepProgressText.describeFailure(e, "USGS")
+                        aolFailure.set(plain)
+                        aolStage.set(OfflinePrepAolStage.Failed)
+                        CTError(MAP_PANE_TAG, "DownloadMap AOL preparation failed: ${e.javaClass.simpleName}: ${e.message}")
+                        MapCacheDebug.log("download map aol failed err=${e.javaClass.simpleName}:${e.message}")
+                        withContext(Dispatchers.Main.immediate) {
+                            offlinePrepAolReport="AOL failed: $plain. Map and terrain results are kept. Retry before closing this window to reuse lidar files already downloaded."
+                        }
+                    }
                 }
                 val elapsedMs = System.currentTimeMillis() - startedAt
                 val failTotal = totalFailed.get()
-                phase = if (failTotal > 0) "Complete with failures" else "Complete"
+                val aolFailed = aolFailure.get() != null
+                phase = when {
+                    aolFailed -> OfflinePrepProgressText.FAILED_AOL_PHASE
+                    failTotal > 0 -> "Complete with failures"
+                    else -> "Complete"
+                }
                 pushProgress(force = true)
                 val hit = hits.get()
                 val fetch = fetched.get()
@@ -2002,12 +2102,15 @@ internal fun SplitMapPane(
                 withContext(Dispatchers.Main.immediate) {
                     offlinePrepInFlight = false
                     offlinePrepJob = null
-                    offlinePrepCompletedSelectionKey = if(failTotal==0) selectionKey else null
+                    offlinePrepCompletedSelectionKey = if(failTotal==0 && !aolFailed) selectionKey else null
+                    discardAolWorkIfDialogClosed()
                     offlinePrepActiveCalls.clear()
                     offlinePrepCancelRequested = false
                     offlinePrepCoordinator.finish()
                     val doneMsg =
-                        if (failTotal > 0) {
+                        if (aolFailed) {
+                            "Download map finished; AOL failed: ${aolFailure.get()}. hit=$hit fetched=$fetch tileFail=$tileFail demFail=$demFail totalFail=$failTotal in ${elapsedMs}ms"
+                        } else if (failTotal > 0) {
                             "Download map finished with failures: hit=$hit fetched=$fetch tileFail=$tileFail demFail=$demFail totalFail=$failTotal in ${elapsedMs}ms"
                         } else {
                             "Download map done: hit=$hit fetched=$fetch tileFail=$tileFail demFail=$demFail totalFail=$failTotal in ${elapsedMs}ms"
@@ -2015,12 +2118,14 @@ internal fun SplitMapPane(
                     CaltopoClient.ShowToast(doneMsg)
                     MapCacheDebug.log(doneMsg)
                     offlinePrepAutoCloseJob?.cancel()
-                    if (failTotal == 0 && !includeAol) {
+                    // Also applies when the window was reopened during the run; a hidden window stays hidden.
+                    if (OfflinePrepProgressText.shouldAutoClose(phase, failTotal, aolFailed, showOfflinePrepDialog)) {
                         offlinePrepAutoCloseJob = offlinePrepCoordinator.scope.launch {
-                            delay(1500L)
+                            delay(OfflinePrepProgressText.AUTO_CLOSE_DELAY_MSEC)
                             if (!offlinePrepInFlight && offlinePrepProgress.phase == "Complete") {
                                 showOfflinePrepDialog = false
                             }
+                            offlinePrepAutoCloseJob = null
                         }
                     } else {
                         offlinePrepAutoCloseJob = null
@@ -2037,6 +2142,8 @@ internal fun SplitMapPane(
                     offlinePrepAutoCloseJob?.cancel()
                     offlinePrepAutoCloseJob = null
                     offlinePrepProgress = offlinePrepProgress.copy(phase = "Cancelled")
+                    // Cancel ends the session: delete raw lidar files now that nothing is running.
+                    discardAolWorkIfDialogClosed(sessionEnded = true)
                     CaltopoClient.ShowToast("Download map cancelled.")
                 }
                 MapCacheDebug.log("download map cancelled at completed=${completed.get()}")
@@ -2050,7 +2157,11 @@ internal fun SplitMapPane(
                     offlinePrepCoordinator.finish()
                     offlinePrepAutoCloseJob?.cancel()
                     offlinePrepAutoCloseJob = null
-                    offlinePrepProgress = offlinePrepProgress.copy(phase = "Failed: ${e.message ?: e.javaClass.simpleName}")
+                    offlinePrepProgress = offlinePrepProgress.copy(
+                        phase = "Failed: ${e.message ?: e.javaClass.simpleName}",
+                        failure = OfflinePrepProgressText.describeFailure(e, "the download server")
+                    )
+                    discardAolWorkIfDialogClosed()
                     CaltopoClient.ShowToast("Download map failed: ${e.javaClass.simpleName}")
                 }
                 MapCacheDebug.log("download map failed err=${e.javaClass.simpleName}:${e.message}")
@@ -4344,12 +4455,16 @@ internal fun SplitMapPane(
                 contourOverlayEnabled = contourOverlayEnabled,
                 hasMapFolders = buildMapFolderUiStates(artifactStoreById).isNotEmpty(),
                 onDownloadMap = {
-                    offlinePrepIncludeContours = contourOverlayEnabled
-                    offlinePrepCacheLimitInput = String.format(
-                        Locale.US,
-                        "%.1f",
-                        MapCachePolicy.tileCacheMaxBytes(context) / 1_000_000_000.0
-                    )
+                    // Reopening during a download shows that download's live progress; keep its selection.
+                    if (!offlinePrepInFlight) {
+                        offlinePrepIncludeContours = contourOverlayEnabled
+                        offlinePrepCacheLimitInput = String.format(
+                            Locale.US,
+                            "%.1f",
+                            MapCachePolicy.tileCacheMaxBytes(context) / 1_000_000_000.0
+                        )
+                        offlinePrepViewportBounds = mapBounds
+                    }
                     settingsMenuExpanded = false
                     showOfflinePrepDialog = true
                 },
@@ -4476,10 +4591,18 @@ internal fun SplitMapPane(
                     null
                 }
             val effectiveBoundary = selectedBoundary
-            val bounds = effectiveBoundary?.bounds ?: mapBounds
+            val bounds = effectiveBoundary?.bounds ?: offlinePrepMapBounds()
             AlertDialog(
+                // Dismiss (back/outside tap) only hides the window while a download runs; it continues in the
+                // background and nothing is deleted (notification and Settings > Download Map lead back here).
+                // When idle, dismiss ends the session like Close. Only "Cancel download" stops a download.
                 onDismissRequest = {
-                    if (!offlinePrepInFlight) showOfflinePrepDialog = false
+                    if (!offlinePrepInFlight) {
+                        offlinePrepRetryJob?.cancel()
+                        offlinePrepAutoCloseJob?.cancel()
+                        offlinePrepAutoCloseJob = null
+                    }
+                    showOfflinePrepDialog = false
                 },
                 title = { Text("Download Map") },
                 text = {
@@ -4487,15 +4610,8 @@ internal fun SplitMapPane(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         if (offlinePrepInFlight || offlinePrepProgress.phase != "Idle") {
-                            val pct = if (offlinePrepProgress.totalBytes > 0L) {
-                                offlinePrepProgress.fraction * 100.0
-                            } else if (offlinePrepProgress.phase == "Complete" || offlinePrepProgress.phase == "Complete with failures") {
-                                100.0
-                            } else {
-                                0.0
-                            }
-                            val progressFraction = (pct / 100.0).toFloat()
-                            val etaText = offlinePrepProgress.etaSeconds?.let { formatDurationShort(it) } ?: "--:--"
+                            val progressState = OfflinePrepProgressText.runState(offlinePrepProgress, offlinePrepInFlight, offlinePrepCancelRequested)
+                            val progressFraction = OfflinePrepProgressText.percent(offlinePrepProgress, progressState) / 100f
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -4504,8 +4620,8 @@ internal fun SplitMapPane(
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 Text(
-                                    if(offlinePrepProgress.phase.startsWith("Failed")) "Download failed — retry available" else if (offlinePrepInFlight && offlinePrepProgress.includesAol) offlinePrepProgress.phase else "${String.format(Locale.US, "%.0f", pct)}% complete",
-                                    color=if(offlinePrepProgress.phase.startsWith("Failed")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                                    OfflinePrepProgressText.headline(offlinePrepProgress, progressState),
+                                    color = if (OfflinePrepProgressText.hasFailure(offlinePrepProgress, progressState)) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
                                     fontSize = 18.sp
                                 )
                                 if (offlinePrepInFlight && (offlinePrepProgress.includesAol || offlinePrepProgress.totalBytes <= 0L)) {
@@ -4516,32 +4632,15 @@ internal fun SplitMapPane(
                                         modifier = Modifier.fillMaxWidth()
                                     )
                                 }
+                                OfflinePrepProgressText.partLines(offlinePrepProgress, progressState).forEach { line ->
+                                    Text(line, fontSize = 12.sp)
+                                }
+                                OfflinePrepProgressText.noteLine(offlinePrepProgress, progressState)?.let { Text(it, fontSize = 12.sp) }
                                 Text(
-                                    if (offlinePrepInFlight && offlinePrepProgress.includesAol) "Map, terrain, then AOL preparation. Remaining time varies with lidar transfer and construction." else "Progress: ${offlinePrepProgress.phase} ${offlinePrepProgress.completed}/${offlinePrepProgress.total} " +
-                                        "(${String.format(Locale.US, "%.2f", pct)}%) " +
-                                        "rate=${formatStorageBytes(offlinePrepProgress.bytesPerSec.toLong())}/s " +
-                                        "ETA=$etaText",
+                                    OfflinePrepProgressText.overallLine(offlinePrepProgress, progressState, ::formatStorageBytes),
                                     fontSize = 12.sp
                                 )
-                                Text(
-                                    "Tiles: ${offlinePrepProgress.tileCompleted}/${offlinePrepProgress.tileTotal} " +
-                                        "(hit=${offlinePrepProgress.hits} fetched=${offlinePrepProgress.fetched} failed=${offlinePrepProgress.failed})",
-                                    fontSize = 12.sp
-                                )
-                                if (offlinePrepProgress.demTotal > 0) {
-                                    Text(
-                                        "DEM: ${offlinePrepProgress.demCompleted}/${offlinePrepProgress.demTotal} " +
-                                            "(hit=${offlinePrepProgress.demHits} fetched=${offlinePrepProgress.demFetched} failed=${offlinePrepProgress.demFailed})",
-                                        fontSize = 12.sp
-                                    )
-                                }
-                                if (offlinePrepProgress.totalFailed > 0) {
-                                    Text(
-                                        "Total failures: ${offlinePrepProgress.totalFailed}",
-                                        fontSize = 12.sp
-                                    )
-                                }
-                                if (!offlinePrepInFlight && offlinePrepProgress.phase == "Complete") {
+                                if (!offlinePrepInFlight && offlinePrepProgress.phase == "Complete" && offlinePrepAutoCloseJob != null) {
                                     Text(
                                         "Closing automatically...",
                                         fontSize = 11.sp
@@ -4553,6 +4652,14 @@ internal fun SplitMapPane(
                                         fontSize = 11.sp
                                     )
                                 }
+                            }
+                        }
+                        // Outside the options scroll so the Start check stays visible wherever the list is scrolled.
+                        if (offlinePrepStartChecking) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                androidx.compose.material3.CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                                Text("Checking coverage, file sizes, and available storage for the selected area. Temporary service failures are retried automatically.", fontSize = 12.sp, modifier = Modifier.weight(1f))
+                                TextButton(onClick = { offlinePrepRetryJob?.cancel() }) { Text("Cancel") }
                             }
                         }
                         val offlinePrepOptionsScrollState = rememberScrollState()
@@ -4578,6 +4685,7 @@ internal fun SplitMapPane(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable(enabled = enabled && !offlinePrepInFlight) {
+                                        if (area == OfflinePrepAreaMode.Viewport && offlinePrepAreaMode != area) offlinePrepViewportBounds = mapBounds
                                         offlinePrepAreaMode = area
                                     },
                                 verticalAlignment = Alignment.CenterVertically
@@ -4586,6 +4694,7 @@ internal fun SplitMapPane(
                                     checked = offlinePrepAreaMode == area,
                                     onCheckedChange = {
                                         if (enabled && !offlinePrepInFlight && it == true) {
+                                            if (area == OfflinePrepAreaMode.Viewport && offlinePrepAreaMode != area) offlinePrepViewportBounds = mapBounds
                                             offlinePrepAreaMode = area
                                         }
                                     },
@@ -4895,10 +5004,25 @@ internal fun SplitMapPane(
                     }
                 },
                 confirmButton = {
+                    // Read inside the dialog window so Start clears the Max cache field's focus there.
+                    val focusManager = LocalFocusManager.current
+                    val keyboardController = LocalSoftwareKeyboardController.current
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(
+                        if (offlinePrepInFlight) {
+                            TextButton(
+                                onClick = { if (!offlinePrepCancelRequested) offlinePrepCoordinator.requestCancel() },
+                                enabled = !offlinePrepCancelRequested
+                            ) {
+                                Text(
+                                    if (offlinePrepCancelRequested) "Cancelling..." else OfflinePrepProgressText.CANCEL_DOWNLOAD_LABEL,
+                                    color = if (offlinePrepCancelRequested) Color.Unspecified else MaterialTheme.colorScheme.error
+                                )
+                            }
+                        } else TextButton(
                             onClick = {
-                                val currentBounds = mapBounds
+                                focusManager.clearFocus()
+                                keyboardController?.hide()
+                                val currentBounds = offlinePrepMapBounds()
                                 val boundary =
                                     if (offlinePrepAreaMode == OfflinePrepAreaMode.MapBoundary) {
                                         offlineBoundaryOptions.firstOrNull { it.id == offlinePrepBoundaryId }?.boundary
@@ -4917,11 +5041,11 @@ internal fun SplitMapPane(
                                 )
                                 val matchingPlan = offlinePrepAolPlan?.takeIf { it.bounds == surfaceBounds }
                                 // Retry is an action, even when the pane has lost its local AOL plan.
-                                offlinePrepAolCatalogChecking = true
+                                offlinePrepStartChecking = true
                                 offlinePrepAolCatalogFailed = false
                                 offlinePrepRetryJob = uiScope.launch {
                                     try {
-                                        recoverOfflinePrep(
+                                        val outcome = recoverOfflinePrep(
                                             includeAol = includeAol,
                                             matchingPlan = matchingPlan,
                                             resolvePlan = {
@@ -4966,42 +5090,48 @@ internal fun SplitMapPane(
                                             },
                                             start = { startOfflinePrep(prepBounds, boundary) }
                                         )
+                                        // Never end silently; closing the dialog yourself needs no message.
+                                        if (outcome == OfflinePrepRetryOutcome.SelectionChanged && showOfflinePrepDialog) {
+                                            offlinePrepFailureNoticeNeutral = true
+                                            offlinePrepFailureNotice = if (offlinePrepInFlight) {
+                                                "A download is already in progress."
+                                            } else {
+                                                "Download selection changed while checking. Review and tap Start again."
+                                            }
+                                            CaltopoClient.ShowToast(offlinePrepFailureNotice!!)
+                                        }
                                     } catch (e: CancellationException) { throw e }
                                     catch (e: Exception) {
+                                        offlinePrepFailureNoticeNeutral = false
                                         offlinePrepFailureNotice = e.message ?: "Download preparation failed. Try again."
                                         CaltopoClient.ShowToast(offlinePrepFailureNotice!!)
                                     } finally {
-                                        offlinePrepAolCatalogChecking = false
+                                        offlinePrepStartChecking = false
                                         offlinePrepRetryJob = null
                                     }
                                 }
                             },
-                            enabled = !offlinePrepInFlight && !offlinePrepAolCatalogChecking && (offlinePrepIncludeImagery || offlinePrepIncludeOsm || offlinePrepIncludeContours || offlinePrepIncludeDem || offlinePrepIncludeAol) && offlinePrepEstimate.ready &&
-                                (mapBounds != null || selectedBoundary != null)
-                        ) { Text(if(offlinePrepProgress.phase.startsWith("Failed")) "Retry" else "Start") }
+                            enabled = !offlinePrepInFlight && !offlinePrepAolCatalogChecking && !offlinePrepStartChecking && (offlinePrepIncludeImagery || offlinePrepIncludeOsm || offlinePrepIncludeContours || offlinePrepIncludeDem || offlinePrepIncludeAol) && offlinePrepEstimate.ready &&
+                                (offlinePrepMapBounds() != null || selectedBoundary != null)
+                        ) { Text(if(offlinePrepProgress.phase.startsWith("Failed") || offlinePrepProgress.phase == "Complete with failures") "Retry" else "Start") }
                     }
                 },
                 dismissButton = {
                     TextButton(
                         onClick = {
                             if (offlinePrepInFlight) {
-                                if (offlinePrepCancelRequested) return@TextButton
-                                offlinePrepCoordinator.requestCancel()
+                                // Hide only: the download keeps running in the background.
+                                showOfflinePrepDialog = false
                             } else {
                                 offlinePrepAutoCloseJob?.cancel()
+                                offlinePrepAutoCloseJob = null
+                                offlinePrepRetryJob?.cancel()
                                 offlinePrepCancelRequested = false
                                 showOfflinePrepDialog = false
                             }
-                        },
-                        enabled = !offlinePrepCancelRequested || !offlinePrepInFlight
+                        }
                     ) {
-                        Text(
-                            when {
-                                offlinePrepInFlight && offlinePrepCancelRequested -> "Cancelling..."
-                                offlinePrepInFlight -> "Cancel"
-                                else -> "Close"
-                            }
-                        )
+                        Text(if (offlinePrepInFlight) OfflinePrepProgressText.HIDE_LABEL else "Close")
                     }
                 }
             )
@@ -5010,9 +5140,14 @@ internal fun SplitMapPane(
         if(showOfflinePrepDialog && !isInsetMode && offlinePrepFailureNotice!=null) {
             AlertDialog(
                 onDismissRequest={ offlinePrepFailureNotice=null },
-                title={ Text("Download failed",color=MaterialTheme.colorScheme.error) },
+                title={
+                    Text(
+                        offlinePrepNoticeTitle(offlinePrepFailureNoticeNeutral),
+                        color=if(offlinePrepFailureNoticeNeutral) androidx.compose.ui.graphics.Color.Unspecified else MaterialTheme.colorScheme.error
+                    )
+                },
                 text={ Text(offlinePrepFailureNotice.orEmpty()) },
-                confirmButton={ TextButton(onClick={ offlinePrepFailureNotice=null }) { Text("Review and retry") } }
+                confirmButton={ TextButton(onClick={ offlinePrepFailureNotice=null }) { Text(if(offlinePrepFailureNoticeNeutral) "OK" else "Review and retry") } }
             )
         }
 

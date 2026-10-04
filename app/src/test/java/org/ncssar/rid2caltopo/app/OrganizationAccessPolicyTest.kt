@@ -1,5 +1,6 @@
 package org.ncssar.rid2caltopo.app
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -261,5 +262,73 @@ class OrganizationAccessPolicyTest {
         session.markAuthenticated()
         assertTrue(session.beginTrustedExternalFlow(OrganizationExternalFlow.ARCHIVE_DIRECTORY_PICKER))
         assertFalse(session.beginTrustedExternalFlow(OrganizationExternalFlow.ARCHIVE_DIRECTORY_PICKER))
+    }
+
+    @Test
+    fun completedDeviceUnlockAfterScreenLockUnlocksWithoutSecondPrompt() {
+        val session = OrganizationAccessSession()
+        session.markAuthenticated()
+        session.invalidateForScreenLock(1_000L)
+        // Still on the lock screen: nothing granted, handoff kept.
+        assertFalse(session.authenticateFromCompletedSystemUnlock(deviceSecure = true, deviceLocked = true))
+        assertTrue(session.isAwaitingSystemUnlock())
+        // OS reports the device unlocked: accepted once, handoff consumed.
+        assertTrue(session.authenticateFromCompletedSystemUnlock(deviceSecure = true, deviceLocked = false))
+        assertTrue(session.isAuthenticated())
+        assertFalse(session.isAwaitingSystemUnlock())
+        assertFalse(session.authenticateFromCompletedSystemUnlock(deviceSecure = true, deviceLocked = false))
+    }
+
+    @Test
+    fun completedDeviceUnlockNeverAuthenticatesWithoutAScreenLockHandoff() {
+        // Fresh process (never authenticated) or explicit lock: the unlocked device alone grants nothing.
+        val fresh = OrganizationAccessSession()
+        assertFalse(fresh.authenticateFromCompletedSystemUnlock(deviceSecure = true, deviceLocked = false))
+        assertFalse(fresh.isAuthenticated())
+        val locked = OrganizationAccessSession()
+        locked.markAuthenticated()
+        locked.invalidateForScreenLock(1_000L)
+        locked.invalidate()
+        assertFalse(locked.authenticateFromCompletedSystemUnlock(deviceSecure = true, deviceLocked = false))
+        // A device without a secure lock screen cannot hand off authentication.
+        val insecure = OrganizationAccessSession()
+        insecure.markAuthenticated()
+        insecure.invalidateForScreenLock(1_000L)
+        assertFalse(insecure.authenticateFromCompletedSystemUnlock(deviceSecure = false, deviceLocked = false))
+    }
+
+    @Test
+    fun promptCancelledByScreenLockKeepsTheUnlockHandoff() {
+        val session = OrganizationAccessSession()
+        session.markAuthenticated()
+        session.invalidateForScreenLock(1_000L)
+        session.authenticationPromptAbandoned(cancelledByScreenLock = true)
+        assertTrue(session.isAwaitingSystemUnlock())
+        assertTrue(session.authenticateFromCompletedSystemUnlock(deviceSecure = true, deviceLocked = false))
+
+        val declined = OrganizationAccessSession()
+        declined.markAuthenticated()
+        declined.invalidateForScreenLock(1_000L)
+        declined.authenticationPromptAbandoned(cancelledByScreenLock = false)
+        assertFalse(declined.isAwaitingSystemUnlock())
+        assertFalse(declined.authenticateFromCompletedSystemUnlock(deviceSecure = true, deviceLocked = false))
+    }
+
+    @Test
+    fun accessRequestPromptsOnlyWhenNoSessionOrUnlockHandoffApplies() {
+        fun action(authenticated: Boolean, awaiting: Boolean, secure: Boolean = true, locked: Boolean, user: Boolean = false) =
+            organizationAccessRequestAction(authenticated, awaiting, secure, locked, user)
+        // Already authenticated (e.g. a recreated activity): show content, never prompt.
+        assertEquals(OrganizationAccessRequestAction.SHOW_UNLOCKED, action(authenticated = true, awaiting = false, locked = false))
+        // Handoff armed and the OS says unlocked: accept the device unlock.
+        assertEquals(OrganizationAccessRequestAction.ACCEPT_SYSTEM_UNLOCK, action(authenticated = false, awaiting = true, locked = false))
+        assertEquals(OrganizationAccessRequestAction.ACCEPT_SYSTEM_UNLOCK, action(authenticated = false, awaiting = true, locked = false, user = true))
+        // Handoff armed but the OS still reports locked: automatic requests wait behind the cover...
+        assertEquals(OrganizationAccessRequestAction.WAIT_FOR_SYSTEM_UNLOCK, action(authenticated = false, awaiting = true, locked = true))
+        // ...while an explicit Unlock tap still prompts, so the operator is never stuck.
+        assertEquals(OrganizationAccessRequestAction.PROMPT, action(authenticated = false, awaiting = true, locked = true, user = true))
+        // No handoff (fresh start, explicit lock): prompt.
+        assertEquals(OrganizationAccessRequestAction.PROMPT, action(authenticated = false, awaiting = false, locked = false))
+        assertEquals(OrganizationAccessRequestAction.PROMPT, action(authenticated = false, awaiting = true, secure = false, locked = false, user = true))
     }
 }

@@ -5,6 +5,63 @@ import R2CAppleRadios
 import SwiftUI
 import UIKit
 
+/// Lays children out left to right and wraps onto further rows when the offered width runs
+/// out, so fixed-width Android-parity cells and status chips stay on screen in portrait,
+/// on iPhone, and in narrow multitasking windows instead of clipping past the edge.
+struct AppleWrappingRow: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = arrange(subviews, maxWidth: proposal.width ?? .infinity)
+        return CGSize(width: rows.width, height: rows.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let rows = arrange(subviews, maxWidth: bounds.width)
+        for item in rows.items {
+            subviews[item.index].place(
+                at: CGPoint(x: bounds.minX + item.frame.minX, y: bounds.minY + item.frame.minY),
+                proposal: ProposedViewSize(item.frame.size)
+            )
+        }
+    }
+
+    private func arrange(
+        _ subviews: Subviews,
+        maxWidth: CGFloat
+    ) -> (items: [(index: Int, frame: CGRect)], width: CGFloat, height: CGFloat) {
+        var rows: [[(index: Int, size: CGSize)]] = [[]]
+        var x: CGFloat = 0
+        for index in subviews.indices {
+            var size = subviews[index].sizeThatFits(.unspecified)
+            if size.width > maxWidth {
+                size = subviews[index].sizeThatFits(ProposedViewSize(width: maxWidth, height: nil))
+            }
+            if x > 0, x + size.width > maxWidth {
+                rows.append([])
+                x = 0
+            }
+            rows[rows.count - 1].append((index, size))
+            x += size.width + spacing
+        }
+        var items: [(index: Int, frame: CGRect)] = []
+        var y: CGFloat = 0
+        var widest: CGFloat = 0
+        for row in rows where !row.isEmpty {
+            let rowHeight = row.map(\.size.height).max() ?? 0
+            var rowX: CGFloat = 0
+            for entry in row {
+                let origin = CGPoint(x: rowX, y: y + (rowHeight - entry.size.height) / 2)
+                items.append((entry.index, CGRect(origin: origin, size: entry.size)))
+                rowX += entry.size.width + spacing
+            }
+            widest = max(widest, rowX - spacing)
+            y += rowHeight + spacing
+        }
+        return (items, widest, max(0, y - spacing))
+    }
+}
+
 private struct DroneConfirmationRequest: Identifiable {
     let id: String
 }
@@ -43,6 +100,11 @@ struct ContentView: View {
     private let endpoint = MediaStreamEndpoint(designator: "demo")
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openURL) private var openURL
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// Dashboard grid cells keep their Android-parity sizes at the default text size and
+    /// grow with Dynamic Type (relative to caption, the grid's base text style) so labels
+    /// are not truncated; 100 means unscaled.
+    @ScaledMetric(relativeTo: .caption) private var dashboardCellScalePercent: CGFloat = 100
     @StateObject private var bluetoothScanner = BluetoothRIDScanner()
     @StateObject private var bridgeAlerts = AppleDroneScoutBridgeAlertCenter()
     @StateObject private var mediaMTX = MediaMTXViewModel()
@@ -113,6 +175,9 @@ struct ContentView: View {
     @State private var organizationAccessGranted = false
     @State private var organizationAccessObscured = false
     @State private var organizationAccessBackgroundedAt: Date?
+    /// Access was granted and then cleared by a device lock: the device unlock that follows may satisfy
+    /// re-authentication (biometric reuse window), like Android's screen-lock handoff.
+    @State private var organizationAccessRevokedByDeviceLock = false
     @State private var organizationAuthenticationInFlight = false
     @State private var organizationAuthenticationError: String?
     @State private var pendingOrganizationAccessURL: URL?
@@ -316,7 +381,8 @@ struct ContentView: View {
                     }
                     .id(pendingImportToken)
                 }
-                .presentationDetents([.height(440), .large])
+                // A 440pt detent hides the Import action below the fold on compact iPhones.
+                .presentationDetents(horizontalSizeClass == .compact ? [.large] : [.height(440), .large])
                 .presentationDragIndicator(.visible)
             }
             .sheet(isPresented: $showTeamMaps) {
@@ -735,6 +801,19 @@ struct ContentView: View {
                     try? await Task.sleep(for: .milliseconds(500))
                     showCaltopoSettings = true
                 }
+                #if DEBUG
+                // Screenshot hook: --demo-proximity-consent[=N] opens the consent sheet with the first N boxes checked.
+                if let argument = ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix("--demo-proximity-consent") }) {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    showProximitySettings = true
+                    try? await Task.sleep(for: .seconds(1))
+                    proximityAlerts.requestEnable()
+                    let checked = Int(argument.split(separator: "=").last ?? "") ?? 0
+                    for index in 0..<min(max(checked, 0), RidProximityConsent.noticeParagraphCount) {
+                        proximityAlerts.toggleAcknowledgment(index)
+                    }
+                }
+                #endif
                 if ProcessInfo.processInfo.arguments.contains("--show-anomaly") {
                     try? await Task.sleep(for: .milliseconds(500))
                     UserDefaults.standard.set(OperationalMapVideoLayout.video.rawValue, forKey: "map.videoLayout")
@@ -1086,6 +1165,17 @@ struct ContentView: View {
 
     private var monitoredRoot: some View {
         AnyView(lifecycleEventRoot)
+            .task {
+                // After a notice-version change, show the new notice once, over proximity settings.
+                // monitoredRoot exists only after terms and organization access checks pass.
+                guard proximityAlerts.reacknowledgmentPending else { return }
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled else { return }
+                showProximitySettings = true
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled else { return }
+                proximityAlerts.beginReacknowledgment()
+            }
             .onChange(of: ridTracks.caltopoRTTMilliseconds) { _, milliseconds in
                 peerCoordinator.updateCaltopoRTT(milliseconds: milliseconds)
             }
@@ -1421,6 +1511,7 @@ struct ContentView: View {
                 )
             ) { _ in
                 guard organizationAuthenticationRequired else { return }
+                if organizationAccessGranted { organizationAccessRevokedByDeviceLock = true }
                 organizationAccessGranted = false
                 organizationAccessObscured = true
                 organizationAccessBackgroundedAt = nil
@@ -1536,6 +1627,14 @@ struct ContentView: View {
         else { return }
 
         let context = LAContext()
+        // A Face ID / Touch ID device unlock within this window satisfies re-authentication without a
+        // second prompt, only after a device lock ended a granted session (see OrganizationAccessPolicy).
+        context.touchIDAuthenticationAllowableReuseDuration = min(
+            OrganizationAccessPolicy.biometricUnlockReuseSeconds(
+                accessRevokedByDeviceLock: organizationAccessRevokedByDeviceLock
+            ),
+            LATouchIDAuthenticationMaximumAllowableReuseDuration
+        )
         context.localizedCancelTitle = "Cancel"
         context.localizedFallbackTitle = "Use Device Passcode"
         var policyError: NSError?
@@ -1568,6 +1667,7 @@ struct ContentView: View {
                         callbackPending: trackerCallbackPending
                     )
                     organizationAccessGranted = true
+                    organizationAccessRevokedByDeviceLock = false
                     organizationAccessBackgroundedAt = nil
                     organizationAuthenticationInFlight = false
                     organizationAuthenticationError = nil
@@ -1579,6 +1679,12 @@ struct ContentView: View {
                 } else {
                     organizationAuthenticationInFlight = false
                     organizationAccessGranted = false
+                    // Like Android: a prompt the system dismissed (lock, app switch) keeps the device-unlock
+                    // handoff; a declined or failed prompt ends it.
+                    let laCode = (error as? LAError)?.code
+                    if laCode != .systemCancel && laCode != .appCancel {
+                        organizationAccessRevokedByDeviceLock = false
+                    }
                     organizationAuthenticationError =
                         "Authentication was not completed. Organization maps remain locked."
                     let code = (error as NSError?)?.code ?? -1
@@ -1692,16 +1798,24 @@ struct ContentView: View {
 
     private var androidParityDashboard: some View {
       VStack(spacing: 4) {
-        androidRestrictionStrip
         ScrollView(.vertical) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 8) {
-                    androidOperationsHeader
-                    androidAircraftTable
+            VStack(alignment: .leading, spacing: 8) {
+                // The restriction chips, the status header, and the aircraft table form one
+                // spreadsheet that scrolls sideways together with a visible indicator. Rows
+                // keep their (Dynamic Type-scaled) widths instead of wrapping.
+                ScrollView(.horizontal) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        androidRestrictionStrip
+                        androidOperationsHeader
+                        if !ridTracks.tracks.isEmpty { androidAircraftTable }
+                    }
                 }
-                .padding(8)
-                .frame(minWidth: 1_120, alignment: .topLeading)
+                .scrollIndicators(.visible)
+                .scrollIndicatorsFlash(onAppear: true)
+                if ridTracks.tracks.isEmpty { androidNoAircraftRow }
             }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .background(Color(uiColor: .systemBackground))
       }
@@ -1738,7 +1852,7 @@ struct ContentView: View {
             }
             .foregroundStyle(.white)
             .multilineTextAlignment(.center)
-            .frame(width: 190, height: 58)
+            .frame(width: cell(190), height: cell(58))
             .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
@@ -1763,7 +1877,7 @@ struct ContentView: View {
                 .accessibilityLabel("Op Period")
         }
         .padding(.horizontal, 6)
-        .frame(width: 120, height: 58)
+        .frame(width: cell(120), height: cell(58))
         .background(Color(uiColor: .secondarySystemBackground))
     }
 
@@ -1783,13 +1897,14 @@ struct ContentView: View {
                 .accessibilityLabel("Pilot Callsign/Name")
         }
         .padding(.horizontal, 6)
-        .frame(width: 140, height: 58)
+        .frame(width: cell(140), height: cell(58))
         .background(Color(uiColor: .secondarySystemBackground))
     }
 
+    /// One non-wrapping row inside the dashboard's sideways scroll. The chips size to their
+    /// text, which already grows with Dynamic Type; the gaps scale like the grid cells.
     private var androidRestrictionStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-          HStack(spacing: 8) {
+          HStack(spacing: cell(8)) {
             AppleProximityStatusChip(center: proximityAlerts) { showProximitySettings = true }
             if airspace.enabled || notams.state.visible {
                 NavigationLink {
@@ -1827,8 +1942,7 @@ struct ContentView: View {
                 .buttonStyle(.plain)
             }
         }
-          .padding(.horizontal, 6)
-        }
+          .fixedSize()
     }
 
     private var usesAirspaceRestrictionStatus: Bool {
@@ -1875,21 +1989,24 @@ struct ContentView: View {
         }
     }
 
+    /// Kept outside the sideways-scrolling spreadsheet so the message always fits the window.
+    private var androidNoAircraftRow: some View {
+        Text("No aircraft detected — Bluetooth and external Remote ID are monitoring.")
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: cell(58))
+            .background(Color(uiColor: .secondarySystemBackground))
+    }
+
     private var androidAircraftTable: some View {
         VStack(alignment: .leading, spacing: 1) {
-            if ridTracks.tracks.isEmpty {
-                Text("No aircraft detected — Bluetooth and external Remote ID are monitoring.")
-                    .foregroundStyle(.secondary)
-                    .frame(width: 1_118, height: 58)
-                    .background(Color(uiColor: .secondarySystemBackground))
-            } else {
-                if OperationalMainScreenPresentation.showsAircraftHeader(
-                    activeTrackCount: ridTracks.tracks.count
-                ) {
-                    androidAircraftHeader
-                }
-                ForEach(ridTracks.tracks) { track in androidAircraftRow(track) }
+            if OperationalMainScreenPresentation.showsAircraftHeader(
+                activeTrackCount: ridTracks.tracks.count
+            ) {
+                androidAircraftHeader
             }
+            ForEach(ridTracks.tracks) { track in androidAircraftRow(track) }
         }
     }
 
@@ -1901,7 +2018,7 @@ struct ContentView: View {
             VStack(spacing: 1) {
                 Text("Waypoints Received")
                     .font(.caption.bold())
-                    .frame(width: 484, height: 24)
+                    .frame(width: cell(120) * 2 + cell(80) * 3 + 4, height: cell(24))
                     .background(Color.accentColor.opacity(0.16))
                 HStack(spacing: 1) {
                     ForEach(["BT4:", "BT5:"], id: \.self) { label in
@@ -1927,7 +2044,7 @@ struct ContentView: View {
                         .foregroundStyle(.tint)
                 }
             }
-                .frame(width: 28, height: 42)
+                .frame(width: cell(28), height: cell(42))
                 .background(Color(uiColor: .secondarySystemBackground))
             Button(
                 identity?.displayLabel
@@ -1944,7 +2061,7 @@ struct ContentView: View {
                 .font(.caption.monospaced())
                 .lineLimit(1)
                 .buttonStyle(.bordered)
-                .frame(width: 200, height: 42)
+                .frame(width: cell(200), height: cell(42))
                 .background(Color(uiColor: .secondarySystemBackground))
             VStack(spacing: 2) {
                 Text(track.aircraftID)
@@ -1954,12 +2071,12 @@ struct ContentView: View {
                     track.lastDroneToBridgeSignalStrengthDbm
                 ) {
                     Text(bridgeRSSI)
-                        .font(.system(size: 9, design: .monospaced))
+                        .font(.system(size: 9 * dashboardCellScalePercent / 100, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
-            .frame(width: 240, height: 42)
+            .frame(width: cell(240), height: cell(42))
             .background(Color(uiColor: .secondarySystemBackground))
             androidTransportCell(track, source: .bluetoothLegacy)
             androidTransportCell(track, source: .bluetoothExtended)
@@ -1979,7 +2096,7 @@ struct ContentView: View {
                 rssi: track.lastDirectSignalSource == source
                     ? track.lastDirectSignalStrengthDbm : nil
             )
-            .frame(width: 40, height: 42)
+            .frame(width: cell(40), height: cell(42))
             .background(Color(uiColor: .secondarySystemBackground))
         }
     }
@@ -2011,13 +2128,18 @@ struct ContentView: View {
         }
     }
 
+    /// Scales an Android-parity dashboard cell dimension with Dynamic Type.
+    private func cell(_ length: CGFloat) -> CGFloat {
+        (length * dashboardCellScalePercent / 100).rounded()
+    }
+
     private func androidHeaderCell(_ title: String, _ value: String, width: CGFloat) -> some View {
         VStack(spacing: 2) {
             Text(title).font(.caption).foregroundStyle(.secondary)
             Text(value).font(.subheadline.bold()).lineLimit(2).minimumScaleFactor(0.7)
         }
         .multilineTextAlignment(.center)
-        .frame(width: width, height: 58)
+        .frame(width: cell(width), height: cell(58))
         .background(Color(uiColor: .secondarySystemBackground))
     }
 
@@ -2025,7 +2147,7 @@ struct ContentView: View {
         Text(value)
             .font(.caption.bold())
             .multilineTextAlignment(.center)
-            .frame(width: width, height: 36)
+            .frame(width: cell(width), height: cell(36))
             .background(Color.accentColor.opacity(0.16))
     }
 
@@ -2033,7 +2155,7 @@ struct ContentView: View {
         VStack(spacing: 1) {
             Text(top)
                 .font(.caption.bold())
-                .frame(width: width, height: 24)
+                .frame(width: cell(width), height: cell(24))
                 .background(Color.accentColor.opacity(0.16))
             androidTableHeader(bottom, width: width)
         }
@@ -2044,7 +2166,7 @@ struct ContentView: View {
             .font(monospaced ? .caption.monospaced() : .caption)
             .lineLimit(1)
             .minimumScaleFactor(0.65)
-            .frame(width: width, height: 42)
+            .frame(width: cell(width), height: cell(42))
             .background(Color(uiColor: .secondarySystemBackground))
     }
 

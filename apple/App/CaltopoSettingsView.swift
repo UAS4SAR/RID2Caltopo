@@ -414,14 +414,11 @@ struct CaltopoSettingsView: View {
         }
         }
         .navigationTitle("Settings")
-        .alert(RidProximityConsent.title, isPresented: Binding(
+        .sheet(isPresented: Binding(
             get: { proximityAlerts.consent.noticePending },
             set: { if !$0 { proximityAlerts.cancelEnable() } }
         )) {
-            Button("Keep disabled", role: .cancel) { proximityAlerts.cancelEnable() }
-            Button("Enable alerts") { proximityAlerts.confirmEnable() }
-        } message: {
-            Text(RidProximityConsent.notice)
+            ProximityConsentSheet(proximityAlerts: proximityAlerts)
         }
         .onDisappear { proximityAlerts.cancelEnable() }
         .sheet(isPresented: $showingTeamMaps) {
@@ -1301,4 +1298,106 @@ private struct SettingsValue: View {
     let value: String
     init(_ title: String, value: String) { self.title = title; self.value = value }
     var body: some View { LabeledContent { Text(value) } label: { SettingsHelpLabel(title) } }
+}
+
+/// Matches Android: one required checkbox per notice paragraph; Enable stays disabled until all are checked.
+/// Like Android's dialog, the actions sit below the scrolling text: side by side (dismiss, then confirm)
+/// when they fit, otherwise stacked full width with confirm on top.
+private struct ProximityConsentSheet: View {
+    @ObservedObject var proximityAlerts: AppleProximityAlertCenter
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(RidProximityConsent.title)
+                    .font(.title2.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
+                    .padding(.bottom, 4)
+                ForEach(Array(RidProximityConsent.noticeParagraphs.enumerated()), id: \.offset) { index, paragraph in
+                    ProximityConsentRow(text: paragraph, isChecked: proximityAlerts.consent.acknowledged.contains(index)) {
+                        proximityAlerts.toggleAcknowledgment(index)
+                    }
+                }
+            }
+            .padding()
+        }
+        .scrollIndicators(.visible)
+        .scrollIndicatorsFlash(onAppear: true)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                Divider()
+                actionBar
+                    .padding(.horizontal)
+                    .padding(.vertical, 12)
+            }
+            .background(.bar)
+        }
+    }
+
+    @ViewBuilder private var actionBar: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            stackedActions
+        } else {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    Spacer(minLength: 0)
+                    keepDisabledButton(fullWidth: false)
+                    confirmButton(fullWidth: false)
+                }
+                stackedActions
+            }
+        }
+    }
+
+    private var stackedActions: some View {
+        VStack(spacing: 8) {
+            confirmButton(fullWidth: true)
+            keepDisabledButton(fullWidth: true)
+        }
+    }
+
+    private func keepDisabledButton(fullWidth: Bool) -> some View {
+        Button { proximityAlerts.cancelEnable() } label: {
+            Text("Keep disabled")
+                .frame(maxWidth: fullWidth ? .infinity : nil, minHeight: 44)
+        }
+        .buttonStyle(.bordered)
+    }
+
+    private func confirmButton(fullWidth: Bool) -> some View {
+        Button { proximityAlerts.confirmEnable() } label: {
+            Text(proximityAlerts.consent.confirmLabel)
+                .frame(maxWidth: fullWidth ? .infinity : nil, minHeight: 44)
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(!proximityAlerts.consent.canConfirm)
+    }
+}
+
+/// The whole row is one checkbox target; its accessibility label is the paragraph.
+private struct ProximityConsentRow: View {
+    let text: String
+    let isChecked: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        Button(action: toggle) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Image(systemName: isChecked ? "checkmark.square.fill" : "square")
+                    .font(.title2)
+                    .foregroundStyle(isChecked ? Color.accentColor : Color.secondary)
+                Text(text)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.vertical, 6)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(text)
+        .accessibilityValue(isChecked ? "Checked" : "Not checked")
+        .accessibilityAddTraits(.isToggle)
+    }
 }

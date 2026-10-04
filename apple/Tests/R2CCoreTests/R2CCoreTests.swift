@@ -6472,14 +6472,14 @@ func aolHighlightRequiresNegativeNumberAndExcludesAdjacentFields() {
         .deletingLastPathComponent().deletingLastPathComponent()
     let map = try String(contentsOf: root.appendingPathComponent("App/RIDTrackMapView.swift"), encoding: .utf8)
     let network = try String(contentsOf: root.appendingPathComponent("App/AppleNetworkAddress.swift"), encoding: .utf8)
-    #expect(map.contains("AppleLiveViewNetworkStatus()"))
+    #expect(map.contains("AppleLiveViewNetworkStatus("))
     #expect(!map.contains("let networkSSID: String"))
     #expect(!map.contains("let ingestAddress: String"))
     let header = String(network.split(separator: "struct AppleLiveViewNetworkStatus: View")[1]
         .split(separator: "struct AppleControllerConnectionURLs: View")[0])
     #expect(header.contains("@ObservedObject private var network = AppleNetworkDiagnosticCenter.shared"))
     #expect(header.contains("network.currentControllerConnectionLabel"))
-    #expect(header.contains("AppleControllerConnectionURLs()"))
+    #expect(header.contains("AppleControllerConnectionURLs("))
     #expect(header.contains(".onChange(of: network.currentSnapshotID, initial: true)"))
 }
 

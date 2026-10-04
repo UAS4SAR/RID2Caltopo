@@ -566,6 +566,7 @@ struct RIDTrackMapView: View {
     let bridgeSignalStrengthDbm: Int?
     @Binding var automaticStreamPairingAircraftID: String?
     @Environment(\.dismiss) private var dismissLiveView
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     let onReturnToMain: () -> Void
     let onConfirmPairedDrone: (RidAircraftIdentity) -> Void
     @State private var mapSettingsOpen = false
@@ -650,31 +651,14 @@ struct RIDTrackMapView: View {
                         ? layout.fullScreenPresentation(pictureInPictureEnabled: videoPipEnabled)
                         : layout
                 )
-                if streamsFullScreen {
-                    HStack {
-                        Button("Exit FS") { streamsFullScreen = false }
-                            .accessibilityLabel("Exit full screen")
-                        Button(videoPipEnabled ? "PiP:On" : "PiP:Off") {
-                            videoPipEnabled.toggle()
-                            if !videoPipEnabled { pipEditorMode = false }
-                            applyPipPreference()
-                        }
-                        .accessibilityLabel(
-                            videoPipEnabled
-                                ? "Turn picture in picture off"
-                                : "Turn picture in picture on"
-                        )
-                        bridgeNavigationButton
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .padding(10)
-                }
             }
             .onAppear { headerWidth = geometry.size.width }
             .onChange(of: geometry.size.width) { _, width in headerWidth = width }
         }
         .safeAreaInset(edge: .top) {
-            if !streamsFullScreen {
+            if streamsFullScreen {
+                fullScreenControlBar
+            } else {
                 androidLiveViewStatusBar
             }
         }
@@ -962,7 +946,9 @@ struct RIDTrackMapView: View {
         }
         .modifier(CalTopoArtifactRefreshLifecycleModifier(artifacts: artifacts))
         .onAppear {
-            if offlineMaps.isRunning {
+            // Restore Download Map for a running download unless the operator hid it (Android keeps
+            // the same shown/hidden state in its coordinator).
+            if offlineMaps.isRunning && !offlineMaps.preparationSheetHiddenWhileRunning {
                 showOfflinePreparation = true
             }
             if notams.mapFocusRequest != nil {
@@ -1403,7 +1389,7 @@ struct RIDTrackMapView: View {
         Button { mapSettingsOpen = true } label: {
             Image(systemName: "gearshape.fill")
                 .font(.title3)
-                .frame(width: 42, height: 42)
+                .frame(width: 44, height: 44)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
         }
         .accessibilityLabel("Map settings")
@@ -1542,27 +1528,33 @@ struct RIDTrackMapView: View {
                     ))
                 }
             )
-            VStack {
-                Spacer()
-                HStack {
+            // Without video the control is always disabled; hiding it then keeps it off the
+            // "Waiting for controller" placeholder on narrow screens.
+            if videoModel.frameCount > 0 {
+                VStack {
                     Spacer()
-                    Button(action: { beginSnapshotCapture() }) {
-                        if capturingSnapshot {
-                            ProgressView().tint(.white)
-                        } else {
-                            Image(systemName: "camera.fill")
+                    HStack {
+                        Spacer()
+                        Button(action: { beginSnapshotCapture() }) {
+                            if capturingSnapshot {
+                                ProgressView().tint(.white)
+                            } else {
+                                Image(systemName: "camera.fill")
+                            }
                         }
+                        .buttonStyle(.borderedProminent)
+                        .buttonBorderShape(.circle)
+                        .controlSize(.large)
+                        .disabled(capturingSnapshot || model.tracks.isEmpty)
+                        .accessibilityLabel("Capture clue snapshot")
+                        // Keep the camera control clear of the enlarged divider grab area,
+                        // which is hidden in full screen.
+                        .padding(.trailing, streamsFullScreen ? 0 : Self.splitDividerTouchThickness + 12)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .clipShape(Circle())
-                    .disabled(capturingSnapshot || model.tracks.isEmpty || videoModel.frameCount == 0)
-                    .accessibilityLabel("Capture clue snapshot")
-                    // Keep the camera control clear of the enlarged divider grab area.
-                    .padding(.trailing, Self.splitDividerTouchThickness + 12)
+                    Spacer()
                 }
-                Spacer()
+                .padding(10)
             }
-            .padding(10)
         }
         .onAppear {
             if videoModel.state == .idle, let streamURL { videoModel.start(url: streamURL) }
@@ -2015,49 +2007,63 @@ struct RIDTrackMapView: View {
     }
 
     private var androidLiveViewStatusBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                AppleProximityStatusChip(center: proximityAlerts, onSettings: onProximitySettings)
-                if airspace.enabled || notams.state.visible {
-                    operationalStatusChip(
-                        conciseAirspaceOrNotamChipLabel,
-                        tone: usesAirspaceRestrictionStatus ? airspaceTone : notamTone
-                    ) {
-                        if usesAirspaceRestrictionStatus { showAirspace = true }
-                        else { showNotams = true }
-                    }
+        Group {
+            if horizontalSizeClass == .compact {
+                // Compact widths keep a single row so the video keeps its height, with a
+                // visible scroll indicator so the clipped items remain discoverable.
+                ScrollView(.horizontal) {
+                    HStack(spacing: 10) { liveViewStatusItems }
                 }
-                if landRestrictions.state.visible {
-                    operationalStatusChip(
-                        OperationalStatusChipText.land(
-                            severity: landRestrictions.state.severity,
-                            detailedLabel: landRestrictions.state.chipLabel
-                        ),
-                        tone: landRestrictionTone
-                    ) {
-                        showLandRestrictions = true
-                    }
-                }
-                Button(action: openLiveViewMapActions) {
-                    AppleOperationalStatusChipLabel(
-                        title: liveViewMapTitle,
-                        tone: .accent
-                    )
-                }
-                .buttonStyle(.plain)
-                .frame(minHeight: 44)
-                .contentShape(Rectangle())
-                .accessibilityLabel("Incident map")
-                .accessibilityValue(liveViewMapTitle)
-                AppleLiveViewNetworkStatus(onDesignatorsTapped: { showRegisteredDesignators = true })
-                Label("\(model.tracks.count) active", systemImage: "airplane.circle")
-                Text("\(model.acceptedObservationCount) points")
+                .scrollIndicators(.visible)
+                .scrollIndicatorsFlash(onAppear: true)
+            } else {
+                AppleWrappingRow(spacing: 10) { liveViewStatusItems }
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .font(.caption.monospacedDigit())
         .padding(.horizontal)
         .padding(.vertical, 6)
         .background(.regularMaterial)
+    }
+
+    @ViewBuilder
+    private var liveViewStatusItems: some View {
+        AppleProximityStatusChip(center: proximityAlerts, onSettings: onProximitySettings)
+        if airspace.enabled || notams.state.visible {
+            operationalStatusChip(
+                conciseAirspaceOrNotamChipLabel,
+                tone: usesAirspaceRestrictionStatus ? airspaceTone : notamTone
+            ) {
+                if usesAirspaceRestrictionStatus { showAirspace = true }
+                else { showNotams = true }
+            }
+        }
+        if landRestrictions.state.visible {
+            operationalStatusChip(
+                OperationalStatusChipText.land(
+                    severity: landRestrictions.state.severity,
+                    detailedLabel: landRestrictions.state.chipLabel
+                ),
+                tone: landRestrictionTone
+            ) {
+                showLandRestrictions = true
+            }
+        }
+        Button(action: openLiveViewMapActions) {
+            AppleOperationalStatusChipLabel(
+                title: liveViewMapTitle,
+                tone: .accent
+            )
+        }
+        .buttonStyle(.plain)
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
+        .accessibilityLabel("Incident map")
+        .accessibilityValue(liveViewMapTitle)
+        AppleLiveViewNetworkStatus(onDesignatorsTapped: { showRegisteredDesignators = true })
+        Label("\(model.tracks.count) active", systemImage: "airplane.circle")
+        Text("\(model.acceptedObservationCount) points")
     }
 
     private var usesAirspaceRestrictionStatus: Bool {
@@ -2136,17 +2142,77 @@ struct RIDTrackMapView: View {
     private var mapToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
             if !streamsFullScreen {
-                Button("Enter FS") { streamsFullScreen = true }.font(.caption)
-                Button(videoPipEnabled ? "PiP:On" : "PiP:Off") {
-                    videoPipEnabled.toggle()
-                    if !videoPipEnabled { pipEditorMode = false }
-                    applyPipPreference()
-                }
-                .font(.caption)
+                fullScreenButton(entering: true)
+                pipToggleButton
+                    .tint(videoPipEnabled ? Color.accentColor : Color.secondary)
                 bridgeNavigationButton
                     .fixedSize(horizontal: true, vertical: false)
             }
         }
+    }
+
+    /// Full-screen controls occupy their own strip above the video instead of floating
+    /// over it, so they can never cover the observation-only safety notice at the top
+    /// of each stream tile, at any width, orientation, or multitasking size.
+    private var fullScreenControlBar: some View {
+        fullScreenControlRow
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity)
+            .background(.black)
+    }
+
+    private var fullScreenControlRow: some View {
+        HStack(spacing: 10) {
+            fullScreenButton(entering: false)
+            pipToggleButton
+                .tint(videoPipEnabled ? Color.accentColor : Color(white: 0.4))
+            bridgeNavigationButton
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .fixedSize()
+    }
+
+    // Icon toggles shared by the toolbar and the full-screen strip. Android shows the text
+    // chips "Enter FS"/"Exit FS" and "PiP:On"/"PiP:Off" (StreamsScreen.kt) with no icons.
+    private func fullScreenButton(entering: Bool) -> some View {
+        let title = entering ? "Enter full screen" : "Exit full screen"
+        return Button { streamsFullScreen = entering } label: {
+            Label(
+                title,
+                systemImage: entering
+                    ? "arrow.up.left.and.arrow.down.right"
+                    : "arrow.down.right.and.arrow.up.left"
+            )
+            .labelStyle(.iconOnly)
+            .frame(minWidth: 24, minHeight: 24)
+        }
+        .frame(minWidth: 44, minHeight: 44)
+        .contentShape(Rectangle())
+        .accessibilityLabel(title)
+        .help(title)
+    }
+
+    /// Filled symbol and accent tint when the picture-in-picture map is on; outline and
+    /// neutral tint when it is off.
+    private var pipToggleButton: some View {
+        Button {
+            videoPipEnabled.toggle()
+            if !videoPipEnabled { pipEditorMode = false }
+            applyPipPreference()
+        } label: {
+            Label("Picture-in-picture map", systemImage: videoPipEnabled ? "pip.fill" : "pip")
+                .labelStyle(.iconOnly)
+                .frame(minWidth: 24, minHeight: 24)
+        }
+        .frame(minWidth: 44, minHeight: 44)
+        .contentShape(Rectangle())
+        .accessibilityLabel("Picture-in-picture map")
+        .accessibilityValue(videoPipEnabled ? "On" : "Off")
+        .accessibilityHint(videoPipEnabled ? "Turns picture in picture off" : "Turns picture in picture on")
+        .accessibilityAddTraits(videoPipEnabled ? .isSelected : [])
+        .help(videoPipEnabled ? "Turn picture-in-picture map off" : "Turn picture-in-picture map on")
     }
 
     private var bridgeNavigationButton: some View {

@@ -1,0 +1,3 @@
+<en-US>
+Map downloads retry after raising the cache limit, with AOL coverage refreshed. Import Config accepts any HTTPS caltopo.com link or saved QR image. Org checks retry when the network returns. The Proximity Alerts chip opens its settings, and enabling alerts requires acknowledging each statement. Consistent tile focus, controller placeholder and stream settings. Tap droneDesig to add aircraft. Clearer full-screen controls, a scrollable dashboard and a compact incident map name.
+</en-US>

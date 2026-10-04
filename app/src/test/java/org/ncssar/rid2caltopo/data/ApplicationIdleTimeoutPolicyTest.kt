@@ -94,4 +94,36 @@ class ApplicationIdleTimeoutPolicyTest {
             ),
         )
     }
+
+    @Test
+    fun activeOfflineDownloadSuspendsTimeoutEvenPastTheDeadline() {
+        // Two-minute timeout, nothing since t=0; a download running at t=10 min must not expire.
+        assertEquals(
+            ApplicationIdleTimeoutPolicy.SUSPENDED,
+            ApplicationIdleTimeoutPolicy.remainingDelayMsec(0L, 0L, 30_000L, true, 0L, 2L, 600_000L),
+        )
+        // Disabled stays disabled.
+        assertEquals(
+            ApplicationIdleTimeoutPolicy.DISABLED,
+            ApplicationIdleTimeoutPolicy.remainingDelayMsec(0L, 0L, 30_000L, true, 0L, 0L, 600_000L),
+        )
+    }
+
+    @Test
+    fun countdownRestartsFromOfflineDownloadEnd() {
+        val downloadEndedAt = 600_000L
+        // Older user input and RID do not shorten the countdown after the download ends.
+        assertEquals(
+            120_000L,
+            ApplicationIdleTimeoutPolicy.remainingDelayMsec(0L, 50_000L, downloadEndedAt, false, 90_000L, 2L, downloadEndedAt),
+        )
+        assertEquals(
+            60_000L,
+            ApplicationIdleTimeoutPolicy.remainingDelayMsec(0L, 50_000L, downloadEndedAt, false, 90_000L, 2L, downloadEndedAt + 60_000L),
+        )
+        assertEquals(
+            0L,
+            ApplicationIdleTimeoutPolicy.remainingDelayMsec(0L, 50_000L, downloadEndedAt, false, 90_000L, 2L, downloadEndedAt + 120_000L),
+        )
+    }
 }

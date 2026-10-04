@@ -105,8 +105,24 @@ internal data class OfflinePrepProgress(
     val totalBytes: Long = 0L,
     val bytesPerSec: Double = 0.0,
     val etaSeconds: Long? = null,
-    val includesAol: Boolean = false
+    val includesAol: Boolean = false,
+    // Per-part labels and counters for the progress panel (see OfflinePrepProgressText).
+    val tileLayers: List<String> = emptyList(),
+    val includesDem: Boolean = false,
+    val aolStage: OfflinePrepAolStage = OfflinePrepAolStage.Waiting,
+    val aolFilesCompleted: Int = 0,
+    val aolFilesTotal: Int = 0,
+    val aolTilesCompleted: Int = 0,
+    val aolTilesTotal: Int = 0,
+    /** Lidar files reused from an earlier attempt of the same AOL selection (included in aolFilesCompleted). */
+    val aolFilesKept: Int = 0,
+    /** Plain-words AOL failure; the raw error goes to the log only. */
+    val aolFailure: String? = null,
+    /** Plain-words reason the whole job stopped; the raw error goes to the log only. */
+    val failure: String? = null
 ) {
+    val includesMap: Boolean get() = tileLayers.isNotEmpty() || tileTotal > 0
+
     val fraction: Double
         get() = if (totalBytes > 0L) {
             (completedBytes.toDouble() / totalBytes.toDouble()).coerceIn(0.0, 1.0)
