@@ -138,7 +138,8 @@ public enum AlertBellThresholdPolicy {
 /// policy (in-memory only — mutes do not survive process restart).
 public struct AlertBellSessionState: Sendable, Equatable {
     public var muted: Set<AlertBellKind>
-    /// Latched true after any kind first reaches `.red` this process/session.
+    /// Latched true after a real alarm fires (speech requested via noteAlarmFired).
+    /// Ambient red/orange metrics alone must not show the bell at app start.
     public var hasEverAlarmed: Bool
     public var colors: [AlertBellKind: AlertBellColor]
 
@@ -165,9 +166,8 @@ public struct AlertBellSessionState: Sendable, Equatable {
 
     public mutating func updateColors(_ newColors: [AlertBellKind: AlertBellColor]) {
         colors = newColors
-        if newColors.values.contains(where: { $0 == .red }) {
-            hasEverAlarmed = true
-        }
+        // Do not latch hasEverAlarmed here: bridge/WiFi/signal-loss can paint red
+        // from ambient startup state before any operator-facing alarm speaks.
     }
 }
 

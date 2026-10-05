@@ -231,9 +231,10 @@ object AlertBellCenter {
 
     fun updateMetrics(metrics: AlertBellMetrics) {
         val colors = metrics.colors()
+        // Do not latch hasEverAlarmed from ambient red metrics (bridge never
+        // seen, weak WiFi, etc.). Visibility latches only via noteAlarmFired().
         _uiState.update { state ->
-            val alarmed = state.hasEverAlarmed || colors.values.any { it == AlertBellColor.Red }
-            state.copy(colors = colors, hasEverAlarmed = alarmed)
+            state.copy(colors = colors)
         }
     }
 

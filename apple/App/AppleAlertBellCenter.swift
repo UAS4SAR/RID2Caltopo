@@ -81,9 +81,9 @@ final class AppleAlertBellCenter: ObservableObject {
     /// Returns false when the kind is session-muted (caller should skip speech).
     @discardableResult
     func allowSpeech(for kind: AlertBellKind) -> Bool {
-        if isMuted(kind) { return false }
+        // Latch visibility whenever an alarm would speak, even if this kind is muted.
         noteAlarmFired()
-        return true
+        return !isMuted(kind)
     }
 
     func resetForTests() {

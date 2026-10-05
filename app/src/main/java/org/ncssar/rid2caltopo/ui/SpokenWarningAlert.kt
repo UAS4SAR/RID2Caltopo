@@ -74,8 +74,8 @@ object SpokenWarningCenter {
         val firstKind = kinds.firstOrNull() ?: return
         // Session mute (alert-bell panel) suppresses speech; settings enable/disable stay separate.
         // Settings "audio alarm test" still speaks so operators can verify volume.
-        if (sourceKey != "audio-alarm-test" && kinds.any { AlertBellCenter.isMuted(it) }) return
         if (sourceKey != "audio-alarm-test") AlertBellCenter.noteAlarmFired()
+        if (sourceKey != "audio-alarm-test" && kinds.any { AlertBellCenter.isMuted(it) }) return
         val key = WarningKey(firstKind, sourceKey)
         val lastRequestedAtMs = lastRequestedAtMsByKey[key]
         if (lastRequestedAtMs != null && nowMs - lastRequestedAtMs < cooldownMs) return
@@ -116,8 +116,8 @@ object SpokenWarningCenter {
         cooldownMs: Long = 0L,
         volumeFraction: Float = 1.0f,
     ) {
-        if (AlertBellCenter.isMuted(kind)) return
         AlertBellCenter.noteAlarmFired()
+        if (AlertBellCenter.isMuted(kind)) return
         val key = WarningKey(kind, sourceKey)
         val lastRequestedAtMs = lastRequestedAtMsByKey[key]
         if (lastRequestedAtMs != null && nowMs - lastRequestedAtMs < cooldownMs) return

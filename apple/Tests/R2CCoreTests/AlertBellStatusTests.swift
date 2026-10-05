@@ -90,9 +90,14 @@ final class AlertBellStatusTests: XCTestCase {
         XCTAssertFalse(state.showBell)
         XCTAssertEqual(state.aggregateColor, .orange)
 
+        // Ambient red metrics (e.g. bridge never seen) must not show the bell.
         state.updateColors([.altitude: .orange, .proximity: .red])
-        XCTAssertTrue(state.showBell)
+        XCTAssertFalse(state.showBell, "Colors alone do not latch bell visibility")
         XCTAssertEqual(state.aggregateColor, .red)
+
+        // A real alarm latch (speech path / noteAlarmFired) shows the bell.
+        state.hasEverAlarmed = true
+        XCTAssertTrue(state.showBell)
 
         state.updateColors([.altitude: .white, .proximity: .white])
         XCTAssertTrue(state.showBell, "Bell stays visible for the session after first alarm")

@@ -89,11 +89,15 @@ class AlertBellCenterTest {
         assertFalse(AlertBellCenter.uiState.value.showBell)
         assertEquals(AlertBellColor.Orange, AlertBellCenter.uiState.value.aggregateColor)
 
+        // Ambient red metrics alone must not latch the bell (startup bridge/WiFi).
         AlertBellCenter.updateMetrics(
             AlertBellMetrics(maxAglFt = 210.0),
         )
-        assertTrue(AlertBellCenter.uiState.value.showBell)
+        assertFalse(AlertBellCenter.uiState.value.showBell)
         assertEquals(AlertBellColor.Red, AlertBellCenter.uiState.value.aggregateColor)
+
+        AlertBellCenter.noteAlarmFired()
+        assertTrue(AlertBellCenter.uiState.value.showBell)
 
         AlertBellCenter.updateMetrics(AlertBellMetrics())
         assertTrue(
