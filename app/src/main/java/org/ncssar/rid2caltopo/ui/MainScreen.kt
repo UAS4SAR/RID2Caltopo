@@ -96,6 +96,8 @@ import org.ncssar.rid2caltopo.app.ScanningService
 import org.ncssar.rid2caltopo.app.canDeleteArchiveCleanupSelection
 import org.ncssar.rid2caltopo.app.defaultSelectedArchiveCleanupDirectories
 import org.ncssar.rid2caltopo.app.formatArchiveSize
+import org.ncssar.rid2caltopo.app.archiveCleanupDetail
+import org.ncssar.rid2caltopo.app.archiveDeleteConfirmation
 import org.ncssar.rid2caltopo.airspace.AirspaceCenter
 import org.ncssar.rid2caltopo.data.AppUpdateAdvisory
 import org.ncssar.rid2caltopo.data.BluetoothRidTestPrefs
@@ -2327,7 +2329,7 @@ fun MainScreen(
                                         browseFlightFolder = option.directoryName
                                     }) { Text(option.directoryName) }
                                     Text(
-                                        text = "Age ${option.ageLabel} • ${option.sizeLabel}${if (option.isToday) " • protected" else ""}",
+                                        text = archiveCleanupDetail(option),
                                         style = MaterialTheme.typography.bodySmall
                                     )
                                     Text(
@@ -2379,7 +2381,11 @@ fun MainScreen(
             text = {
                 Column {
                     Text(
-                        "Permanently delete ${selectedOptions.size} archive folder${if (selectedOptions.size == 1) "" else "s"} totaling $selectedSizeLabel?"
+                        archiveDeleteConfirmation(
+                            folderCount = selectedOptions.size,
+                            sizeLabel = selectedSizeLabel,
+                            unuploadedClueCount = selectedOptions.sumOf { it.unuploadedClueCount },
+                        )
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     selectedOptions.forEach { option ->

@@ -28,7 +28,28 @@ data class ArchiveCleanupDirectoryOption(
     val videoCount: Int,
     val lastModifiedMs: Long,
     val isToday: Boolean,
+    /** Why the folder cannot be deleted now (e.g. "today", "in use by archive upload"). */
+    val protectionReason: String? = if (isToday) "today" else null,
+    /** CalTopo-bound clues in this folder that never uploaded and would be lost on delete. */
+    val unuploadedClueCount: Int = 0,
 )
+
+/** Row detail for the flight-folder list. Same text as iOS `ArchiveFolderDisplay.detail`. */
+internal fun archiveCleanupDetail(option: ArchiveCleanupDirectoryOption): String = buildString {
+    append("Age ${option.ageLabel} • ${option.sizeLabel}")
+    option.protectionReason?.let { append(" • protected: $it") }
+    if (option.unuploadedClueCount > 0) {
+        append(" • ${option.unuploadedClueCount} clue${if (option.unuploadedClueCount == 1) "" else "s"} not uploaded")
+    }
+}
+
+/** Delete confirmation. Same text as iOS `ArchiveFolderDisplay.deleteConfirmation`. */
+internal fun archiveDeleteConfirmation(folderCount: Int, sizeLabel: String, unuploadedClueCount: Int): String = buildString {
+    append("Permanently delete $folderCount archive folder${if (folderCount == 1) "" else "s"} totaling $sizeLabel?")
+    if (unuploadedClueCount > 0) {
+        append(" $unuploadedClueCount clue${if (unuploadedClueCount == 1) " was" else "s were"} never uploaded to CalTopo and will be lost.")
+    }
+}
 
 data class ArchiveCleanupDeleteResult(
     val deletedCount: Int,
@@ -160,6 +181,11 @@ internal fun buildArchiveCleanupOption(
         videoCount = summary.videoCount,
         lastModifiedMs = lastModifiedMs,
         isToday = directoryName == todayName || FlightStorage.isProtected(directoryName),
+        protectionReason = when {
+            directoryName == todayName -> FlightFolderProtection.Today.label
+            FlightStorage.isProtected(directoryName) -> "in use"
+            else -> null
+        },
     )
 }
 

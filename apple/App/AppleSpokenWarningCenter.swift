@@ -1,5 +1,7 @@
 import AVFoundation
+import UIKit
 import R2CCore
+@preconcurrency import WebRTC
 
 @MainActor
 final class AppleSpokenWarningCenter: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
@@ -13,6 +15,9 @@ final class AppleSpokenWarningCenter: NSObject, ObservableObject, AVSpeechSynthe
     private let speech = AVSpeechSynthesizer()
     private var speakingProximity = false
     private var pendingUtterances: Set<ObjectIdentifier> = []
+    /// True while speech is using the WebRTC managed-video session instead of
+    /// its own short-lived playback session.
+    private var usingSharedWebRTCSession = false
 
     init(
         defaults: UserDefaults = .standard,
@@ -50,23 +55,35 @@ final class AppleSpokenWarningCenter: NSObject, ObservableObject, AVSpeechSynthe
 
     func speak(_ phrases: [String], volumeFraction: Float = 1) {
         guard !phrases.isEmpty else { return }
-        do {
-            try audioSession.setCategory(
-                .playback,
-                mode: .spokenAudio,
-                options: [.duckOthers]
-            )
-            try audioSession.setActive(true)
-        } catch {
-            AppleLog.error("SpokenWarning", "Unable to activate alarm audio session: \(error.localizedDescription)")
+        if Self.webRTCOwnsAudioSession(audioSession) {
+            // Managed video (WebRTC) holds an active .playAndRecord/.voiceChat
+            // session. Changing the category or deactivating it would stop the
+            // WebRTC audio unit, so speak through that session and leave it alone.
+            usingSharedWebRTCSession = true
+        } else {
+            usingSharedWebRTCSession = false
+            do {
+                // .duckOthers makes the session mixable, which iOS allows to be
+                // activated while the app runs in background (audio background
+                // mode). The session is active only while speaking.
+                try audioSession.setCategory(
+                    .playback,
+                    mode: .spokenAudio,
+                    options: [.duckOthers]
+                )
+                try audioSession.setActive(true)
+                AppleLog.info("SpokenWarning", "Audio session activated category=playback mode=spokenAudio options=duckOthers appState=\(Self.applicationStateDescription)")
+            } catch {
+                AppleLog.error("SpokenWarning", "Unable to activate alarm audio session appState=\(Self.applicationStateDescription) \(Self.describe(error))")
+            }
         }
 
         speech.stopSpeaking(at: .immediate)
-        speakingProximity = phrases == ["Proximity warning"]
+        speakingProximity = phrases == [OperationalSpokenWarningKind.proximity.phrase]
         let configuredVolume = OperationalAlarmAudioPolicy.volumeMultiplier(forPercent: volumePercent)
         let utteranceVolume = min(1, max(0, volumeFraction)) * configuredVolume
         let outputs = audioSession.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
-        AppleLog.info("SpokenWarning", "Requested phrases=\(phrases.joined(separator: " | ")) alarmVolume=\(volumePercent) systemVolume=\(audioSession.outputVolume) outputs=\(outputs)")
+        AppleLog.info("SpokenWarning", "Requested phrases=\(phrases.joined(separator: " | ")) alarmVolume=\(volumePercent) systemVolume=\(audioSession.outputVolume) outputs=\(outputs) session=\(usingSharedWebRTCSession ? "webrtc" : "playback") appState=\(Self.applicationStateDescription)")
         for phrase in phrases {
             let utterance = AVSpeechUtterance(string: phrase)
             utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.88
@@ -83,7 +100,7 @@ final class AppleSpokenWarningCenter: NSObject, ObservableObject, AVSpeechSynthe
     ) {
         let phrase = utterance.speechString
         Task { @MainActor in
-            AppleLog.info("SpokenWarning", "Speech started phrase=\(phrase)")
+            AppleLog.info("SpokenWarning", "Speech started phrase=\(phrase) appState=\(Self.applicationStateDescription)")
         }
     }
 
@@ -92,8 +109,9 @@ final class AppleSpokenWarningCenter: NSObject, ObservableObject, AVSpeechSynthe
         didFinish utterance: AVSpeechUtterance
     ) {
         let identifier = ObjectIdentifier(utterance)
+        let phrase = utterance.speechString
         Task { @MainActor in
-            AppleLog.info("SpokenWarning", "Speech finished")
+            AppleLog.info("SpokenWarning", "Speech finished phrase=\(phrase) appState=\(Self.applicationStateDescription)")
             finish(identifier)
         }
     }
@@ -103,19 +121,49 @@ final class AppleSpokenWarningCenter: NSObject, ObservableObject, AVSpeechSynthe
         didCancel utterance: AVSpeechUtterance
     ) {
         let identifier = ObjectIdentifier(utterance)
+        let phrase = utterance.speechString
         Task { @MainActor in
-            AppleLog.info("SpokenWarning", "Speech canceled")
+            AppleLog.warning("SpokenWarning", "Speech canceled phrase=\(phrase) appState=\(Self.applicationStateDescription)")
             finish(identifier)
         }
+    }
+
+    static var applicationStateDescription: String {
+        switch UIApplication.shared.applicationState {
+        case .active: "foreground"
+        case .inactive: "inactive"
+        case .background: "background"
+        @unknown default: "unknown"
+        }
+    }
+
+    /// AVAudioSession errors carry a four-character OSStatus such as '!int'
+    /// (insufficient priority) or '!pla' (cannot start playing).
+    static func describe(_ error: Error) -> String {
+        let nsError = error as NSError
+        let code = UInt32(bitPattern: Int32(truncatingIfNeeded: nsError.code))
+        let bytes = [24, 16, 8, 0].map { UInt8((code >> UInt32($0)) & 0xFF) }
+        let fourCC = bytes.allSatisfy { (0x20...0x7E).contains($0) }
+            ? " ('\(String(decoding: bytes, as: UTF8.self))')"
+            : ""
+        return "domain=\(nsError.domain) code=\(nsError.code)\(fourCC) \(nsError.localizedDescription)"
+    }
+
+    private static func webRTCOwnsAudioSession(_ session: AVAudioSession) -> Bool {
+        session.category == .playAndRecord && RTCAudioSession.sharedInstance().isAudioEnabled
     }
 
     private func finish(_ identifier: ObjectIdentifier) {
         pendingUtterances.remove(identifier)
         guard pendingUtterances.isEmpty else { return }
+        guard !usingSharedWebRTCSession else {
+            usingSharedWebRTCSession = false
+            return
+        }
         do {
             try audioSession.setActive(false, options: [.notifyOthersOnDeactivation])
         } catch {
-            AppleLog.warning("SpokenWarning", "Unable to release alarm audio session: \(error.localizedDescription)")
+            AppleLog.warning("SpokenWarning", "Unable to release alarm audio session \(Self.describe(error))")
         }
     }
 }

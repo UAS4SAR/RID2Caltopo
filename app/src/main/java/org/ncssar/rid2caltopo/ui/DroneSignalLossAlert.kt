@@ -3,9 +3,6 @@ package org.ncssar.rid2caltopo.ui
 import android.location.Location
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -596,29 +593,9 @@ object DroneSignalLossAlertCenter : CtDroneSpec.DroneSpecsChangedListener {
 
 @Composable
 fun DroneSignalLossAlertHost() {
-    val alert by DroneSignalLossAlertCenter.uiState.collectAsState()
-    val spokenWarningGate = remember {
-        DroneSignalLossSpokenWarningGate(alert?.flightKey)
-    }
-
+    // Speech is issued by AlertSpeechCoordinator so it continues while the
+    // display is off.
     LaunchedEffect(Unit) {
         DroneSignalLossAlertCenter.ensureRegistered()
-    }
-
-    LaunchedEffect(alert?.flightKey) {
-        val currentFlightKey = alert?.flightKey
-        if (!spokenWarningGate.shouldRequestWarning(currentFlightKey)) return@LaunchedEffect
-        val currentAlert = alert ?: return@LaunchedEffect
-        SpokenWarningCenter.requestSpokenPhrase(
-            kind = SpokenWarningKind.DroneTelemetry,
-            sourceKey = currentAlert.flightKey,
-            phrase = if (currentAlert.bridgeRecentlySeen) {
-                "Drone Location Stale"
-            } else {
-                "Drone Signal Lost"
-            },
-            nowMs = System.currentTimeMillis(),
-            cooldownMs = CaltopoClient.LOSS_OF_SIGNAL_TONE_DURATION_SECONDS * 1000L
-        )
     }
 }

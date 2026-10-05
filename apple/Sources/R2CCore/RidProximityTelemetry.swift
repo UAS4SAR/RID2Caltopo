@@ -4,8 +4,9 @@ import Foundation
 public struct RidProximityTelemetry: Sendable, Equatable {
     public enum Reference: String, Sendable { case unknown, geodetic, pressure }
     public static let unknownHorizontalMeters = 15.24 // Provisional 50 ft allowance, not measured SEI accuracy.
-    public static let maximumPositionAgeSeconds = 5.0
-    public static let maximumAltitudeAgeSeconds = 5.0
+    /// Foreground default; while locked use `RidAlertPositionFreshness.backgroundMaximumAgeSeconds`.
+    public static let maximumPositionAgeSeconds = RidAlertPositionFreshness.foregroundMaximumAgeSeconds
+    public static let maximumAltitudeAgeSeconds = RidAlertPositionFreshness.foregroundMaximumAgeSeconds
     public let horizontalAccuracyMeters: Double
     public let absoluteAltitudeMeters: Double?
     public let altitudeReference: Reference

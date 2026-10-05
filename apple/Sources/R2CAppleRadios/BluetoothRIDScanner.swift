@@ -236,6 +236,7 @@ private final class BluetoothRIDCentral: NSObject, @unchecked Sendable {
     private let packetHandler: PacketHandler
     private let restartHandler: RestartHandler
     private var scanRequested = false
+    private var applicationInBackground = false
     private var restartWorkItem: DispatchWorkItem?
     private var restartCount: UInt64 = 0
     private var discoveryCallbacks: UInt64 = 0
@@ -245,6 +246,19 @@ private final class BluetoothRIDCentral: NSObject, @unchecked Sendable {
 
     private static let serviceUUID = CBUUID(string: OpenDroneIDParser.bluetoothServiceUUID)
     private static let highPriorityRestartInterval: TimeInterval = 120
+    /// iOS delivers no results for an unfiltered scan in background and coalesces
+    /// duplicate advertisements into one discovery per transmitter per scan. While
+    /// the display is locked, scan for the Remote ID service and restart every
+    /// second so each transmitter keeps producing fresh discoveries. The 2 s
+    /// interval yielded about 2.6 RID packets/s while locked versus about 20/s in
+    /// foreground (field log 2026-10-04 18:27:49-18:28:25 PT), leaving most
+    /// positions older than the 5 s proximity limit.
+    static let backgroundRestartInterval: TimeInterval = 1
+
+    private var scanServices: [CBUUID]? { applicationInBackground ? [Self.serviceUUID] : nil }
+    private var restartInterval: TimeInterval {
+        applicationInBackground ? Self.backgroundRestartInterval : Self.highPriorityRestartInterval
+    }
 
     init(
         stateHandler: @escaping StateHandler,
@@ -262,6 +276,15 @@ private final class BluetoothRIDCentral: NSObject, @unchecked Sendable {
             scanRequested = true
             stateHandler(.waitingForBluetooth)
             startScanWhenReady()
+        }
+    }
+
+    func setApplicationInBackground(_ background: Bool) {
+        queue.async { [self] in
+            guard applicationInBackground != background else { return }
+            applicationInBackground = background
+            guard scanRequested, manager.state == .poweredOn else { return }
+            performHighPriorityRestart()
         }
     }
 
@@ -291,8 +314,9 @@ private final class BluetoothRIDCentral: NSObject, @unchecked Sendable {
             // do not populate even though their packet contains FFFA service data.
             // Scan broadly and keep the exact FFFA/service-data check in
             // didDiscover below. This is also how we retain visibility into
-            // non-RID callbacks for field diagnostics.
-            withServices: nil,
+            // non-RID callbacks for field diagnostics. In background iOS requires
+            // a service filter, so scanServices is [FFFA] there.
+            withServices: scanServices,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
         )
         scheduleHighPriorityRestart()
@@ -308,7 +332,7 @@ private final class BluetoothRIDCentral: NSObject, @unchecked Sendable {
         }
         restartWorkItem = workItem
         queue.asyncAfter(
-            deadline: .now() + Self.highPriorityRestartInterval,
+            deadline: .now() + restartInterval,
             execute: workItem
         )
     }
@@ -324,11 +348,15 @@ private final class BluetoothRIDCentral: NSObject, @unchecked Sendable {
 
         manager.stopScan()
         manager.scanForPeripherals(
-            withServices: nil,
+            withServices: scanServices,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
         )
         restartCount &+= 1
-        restartHandler(restartCount, Date())
+        // Background restarts run every second; report about every 30 s so the
+        // diagnostic log stays readable.
+        if !applicationInBackground || restartCount % 30 == 0 {
+            restartHandler(restartCount, Date())
+        }
         stateHandler(.scanning)
         scheduleHighPriorityRestart()
     }
@@ -504,6 +532,12 @@ public final class BluetoothRIDScanner: ObservableObject, RidObservationProvider
 
     public func start() async throws {
         central.start()
+    }
+
+    /// Switches CoreBluetooth to its background-compatible scan while the display
+    /// is locked or the app is otherwise in background, and back on return.
+    public func setApplicationInBackground(_ background: Bool) {
+        central.setApplicationInBackground(background)
     }
 
     public func stop() async {

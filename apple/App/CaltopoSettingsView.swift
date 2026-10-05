@@ -875,7 +875,12 @@ struct AppleArchiveCleanupView: View {
                             } label: {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(directory.name)
-                                    Text("Age \(directory.ageLabel) • \(directory.sizeLabel)" + (directory.isToday ? " • protected" : ""))
+                                    Text(ArchiveFolderDisplay.detail(
+                                        age: directory.ageLabel,
+                                        size: directory.sizeLabel,
+                                        protectionReason: directory.protectionReason,
+                                        unuploadedClueCount: directory.unuploadedClueCount
+                                    ))
                                         .font(.footnote).foregroundStyle(.secondary)
                                 }
                             }
@@ -907,7 +912,11 @@ struct AppleArchiveCleanupView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Permanently delete \(selectedDirectories.count) archive folder\(selectedDirectories.count == 1 ? "" : "s") totaling \(selectedSize)?")
+            Text(ArchiveFolderDisplay.deleteConfirmation(
+                folderCount: selectedDirectories.count,
+                sizeLabel: selectedSize,
+                unuploadedClueCount: selectedDirectories.reduce(0) { $0 + $1.unuploadedClueCount }
+            ))
         }
     }
 

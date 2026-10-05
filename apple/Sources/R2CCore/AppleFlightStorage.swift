@@ -1,5 +1,65 @@
 import Foundation
 
+/// Why a dated flight folder cannot be deleted right now. Same reasons and
+/// wording as Android `FlightFolderProtection` (FlightStorage.kt).
+public enum FlightFolderProtection: Equatable, Sendable {
+    case today
+    case recording
+    case inUse(String)
+    case clueUploading
+
+    /// Short text shown in the flight-folder list, e.g. "protected: today".
+    public var label: String {
+        switch self {
+        case .today: "today"
+        case .recording: "recording in progress"
+        case let .inUse(owner): "in use by \(owner)"
+        case .clueUploading: "clue upload in progress"
+        }
+    }
+
+    /// Human-readable name for a protect() owner key.
+    public static func ownerLabel(_ owner: String) -> String {
+        switch owner {
+        case "diagnostic-log": return "diagnostic log"
+        case "video-review": return "video review"
+        case "recorder": return "recording"
+        case "session": return "app session"
+        default:
+            if owner.hasPrefix("upload-") || owner.hasPrefix("archive-upload-") { return "archive upload" }
+            if owner.hasPrefix("finalize-") { return "recording finalization" }
+            return owner.replacingOccurrences(of: "-", with: " ")
+        }
+    }
+
+    /// Manual deletion is blocked only by these reasons. Pending or failed clue
+    /// uploads do not block it; the confirmation warns that they will be lost.
+    public static func evaluate(
+        name: String,
+        today: String,
+        owners: [String: String],
+        incompleteRecording: Bool,
+        clueStates: [OperationalClueUploadState]
+    ) -> FlightFolderProtection? {
+        if name == today { return .today }
+        if incompleteRecording { return .recording }
+        if let owner = owners.filter({ $0.value == name }).keys.map(ownerLabel).sorted().first { return .inUse(owner) }
+        if clueStates.contains(.uploading) { return .clueUploading }
+        return nil
+    }
+
+    /// Automatic cleanup also keeps days whose clues are still queued for upload.
+    /// Failed uploads are permanent and no longer hold a day forever.
+    public static func blocksAutomaticCleanup(clueStates: [OperationalClueUploadState]) -> Bool {
+        clueStates.contains { $0 == .pending || $0 == .uploading }
+    }
+
+    /// Clues in this day that never reached CalTopo and would be lost on delete.
+    public static func unuploadedClueCount(_ clueStates: [OperationalClueUploadState]) -> Int {
+        clueStates.count { $0 == .pending || $0 == .uploading || $0 == .failed }
+    }
+}
+
 /// All flight artifacts share a daily root. No legacy-root migration is performed.
 public final class AppleFlightStorage: @unchecked Sendable {
     public static let shared = AppleFlightStorage()
@@ -109,17 +169,39 @@ public final class AppleFlightStorage: @unchecked Sendable {
         shared.lock.lock(); defer { shared.lock.unlock() }; shared.recorderRunning = running
     }
     public static func isProtected(_ name: String) -> Bool {
+        protectionReason(name) != nil
+    }
+
+    /// Why manual deletion of this day is blocked, or nil when it may be deleted.
+    public static func protectionReason(_ name: String, at customRoot: URL? = nil, now: Date = Date()) -> FlightFolderProtection? {
         shared.lock.lock(); defer { shared.lock.unlock() }
-        if name == dayName(Date()) || shared.protections.values.contains(name) { return true }
-        let clueIndex = root.appendingPathComponent(name).appendingPathComponent("clues.json")
-        if let data = try? Data(contentsOf: clueIndex),
-           let clues = try? JSONDecoder().decode([OperationalClueRecord].self, from: data),
-           clues.contains(where: { $0.uploadState == .pending || $0.uploadState == .uploading || $0.uploadState == .failed }) { return true }
+        let folder = (customRoot ?? root).appendingPathComponent(name)
+        return FlightFolderProtection.evaluate(
+            name: name,
+            today: dayName(now),
+            owners: shared.protections,
+            incompleteRecording: hasIncompleteRecording(folder),
+            clueStates: clueStates(folder)
+        )
+    }
+
+    /// Clues in this day that never uploaded (pending, uploading, or failed).
+    public static func unuploadedClueCount(_ name: String, at customRoot: URL? = nil) -> Int {
+        FlightFolderProtection.unuploadedClueCount(clueStates((customRoot ?? root).appendingPathComponent(name)))
+    }
+
+    private static func clueStates(_ folder: URL) -> [OperationalClueUploadState] {
+        guard let data = try? Data(contentsOf: folder.appendingPathComponent("clues.json")),
+              let clues = try? JSONDecoder().decode([OperationalClueRecord].self, from: data) else { return [] }
+        return clues.map(\.uploadState)
+    }
+
+    private static func hasIncompleteRecording(_ folder: URL) -> Bool {
         // MediaMTX uses UTC paths until completion. Protect raw segments across local midnight.
-        if shared.recorderRunning, let files = FileManager.default.enumerator(at: root.appendingPathComponent(name), includingPropertiesForKeys: nil) {
-            for case let url as URL in files where ["mp4", "fmp4"].contains(url.pathExtension.lowercased()) {
-                if !ManagedVideoRecordingIdentity.isCompletedRecordingPath(url.path) { return true }
-            }
+        guard shared.recorderRunning,
+              let files = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil) else { return false }
+        for case let url as URL in files where ["mp4", "fmp4"].contains(url.pathExtension.lowercased()) {
+            if !ManagedVideoRecordingIdentity.isCompletedRecordingPath(url.path) { return true }
         }
         return false
     }
@@ -169,7 +251,10 @@ public final class AppleFlightStorage: @unchecked Sendable {
             guard let date = date(url.lastPathComponent),
                   let v = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
                   v.isDirectory == true, v.isSymbolicLink != true else { return nil }
-            return .init(name: url.lastPathComponent, date: date, bytes: bytes(url), protected: url.lastPathComponent == dayName(now) || isProtected(url.lastPathComponent))
+            let name = url.lastPathComponent
+            let protected = protectionReason(name, at: root, now: now) != nil
+                || FlightFolderProtection.blocksAutomaticCleanup(clueStates: clueStates(url))
+            return .init(name: name, date: date, bytes: bytes(url), protected: protected)
         }
         let extra = (customRoot == nil ? reviewRoots : []).reduce(Int64(0)) { $0 + bytes($1) }
         var used = bytes(root) + extra

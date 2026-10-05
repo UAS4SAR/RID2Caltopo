@@ -31,6 +31,8 @@ final class AppleOperationalAlertCenter: ObservableObject {
 
     private var exceededBridge: Set<String> = []
     private var lastSpoken: [String: Date] = [:]
+    private var altitudeNotifier = OperationalAltitudeAlertNotifier()
+    private var lastAltitudeSkipLog: [String: Date] = [:]
 
     func update(
         tracks: [RidAircraftTrack],
@@ -42,6 +44,9 @@ final class AppleOperationalAlertCenter: ObservableObject {
         maximumTrackDelaySeconds: Double = 30,
         bridgeLastSeenAt: Date? = nil,
         pairedSEILastActivityAt: [String: Date] = [:],
+        /// Own-ship SEI relative-up (metres) for streamed aircraft only. Used when RID AGL is stale.
+        pairedSEIRelativeUpMeters: [String: Double] = [:],
+        maximumSampleAgeSeconds: Double = OperationalAltitudeAlertNotifier.maximumSampleAge,
         now: Date = Date()
     ) {
         let activeIDs = Set(tracks.map(\.aircraftID))
@@ -53,8 +58,30 @@ final class AppleOperationalAlertCenter: ObservableObject {
 
         var lost: [AppleSignalLossAlert] = []
         var altitude: [AppleAltitudeComplianceAlert] = []
+        var altitudeCandidates: [OperationalAltitudeAlertCandidate] = []
         for track in tracks {
-            guard let identity = identityProvider(track.aircraftID), alertEligibility(track.aircraftID) else { continue }
+            let identity = identityProvider(track.aircraftID)
+            let eligible = alertEligibility(track.aircraftID)
+            if identity == nil || !eligible {
+                // Field-test breadcrumb: AGL can be live on the map while spoken altitude
+                // is gated. Log once-class cases when AGL is already over the limit.
+                if let agl = altitudeDisplay[track.aircraftID]?.aglFeet,
+                   agl.isFinite,
+                   agl >= OperationalAltitudeAlertNotifier.limitFeet {
+                    let key = track.aircraftID
+                    let last = lastAltitudeSkipLog[key] ?? .distantPast
+                    if now.timeIntervalSince(last) >= 15 {
+                        lastAltitudeSkipLog[key] = now
+                        AppleLog.info(
+                            "AltitudeAlert",
+                            "Skipped over-limit AGL remoteId=\(track.aircraftID) aglFeet=\(Int(agl.rounded())) "
+                                + "hasIdentity=\(identity != nil) eligible=\(eligible)"
+                        )
+                    }
+                }
+                continue
+            }
+            guard let identity else { continue }
             if let operatorLocation,
                let currentDistance = Self.distanceFeet(
                    from: operatorLocation.coordinate,
@@ -99,24 +126,42 @@ final class AppleOperationalAlertCenter: ObservableObject {
                 }
             }
 
-            if let agl = altitudeDisplay[track.aircraftID]?.aglFeet {
-                let severity = OperationalAltitudeAlertPolicy.severity(aglFeet: agl)
-                if severity != .normal, !mutedAltitudeFlights.contains(track.aircraftID) {
-                    altitude.append(.init(
-                        remoteID: track.aircraftID,
-                        mappedID: identity.mappedID,
-                        aglFeet: agl,
-                        severity: severity
-                    ))
-                }
-            }
+            // Mirrors Android StreamsViewModel: only fresh samples at or above the
+            // 200 ft AGL limit become altitude-alert candidates. At 180 ft only the
+            // map marker colour changes, on both platforms.
+            // Own-ship SEI: when RID/BLE AGL is stale but paired DJI SEI relative-up
+            // is fresh, prefer SEI for this altitude advisory only (never proximity).
+            guard !mutedAltitudeFlights.contains(track.aircraftID),
+                  let sample = OperationalOwnShipAltitudePreference.resolve(
+                    ridAglFeet: altitudeDisplay[track.aircraftID]?.aglFeet,
+                    ridTelemetryAt: track.lastAircraftMessageAt,
+                    seiRelativeUpMeters: pairedSEIRelativeUpMeters[track.aircraftID],
+                    seiTelemetryAt: pairedSEILastActivityAt[track.aircraftID],
+                    now: now,
+                    maximumAgeSeconds: maximumSampleAgeSeconds
+                  ),
+                  sample.aglFeet >= OperationalAltitudeAlertNotifier.limitFeet
+            else { continue }
+            let agl = sample.aglFeet
+            altitude.append(.init(
+                remoteID: track.aircraftID,
+                mappedID: identity.mappedID,
+                aglFeet: agl,
+                severity: OperationalAltitudeAlertPolicy.severity(aglFeet: agl)
+            ))
+            altitudeCandidates.append(.init(
+                remoteID: track.aircraftID,
+                aglFeet: agl,
+                telemetryAt: sample.telemetryAt,
+                maximumAgeSeconds: maximumSampleAgeSeconds
+            ))
         }
         lost.sort { $0.idleSeconds > $1.idleSeconds }
         altitude.sort { lhs, rhs in
             lhs.severity != rhs.severity ? lhs.severity > rhs.severity : lhs.aglFeet > rhs.aglFeet
         }
         announceNewSignalAlerts(lost, now: now)
-        announceAltitudeAlerts(altitude, now: now)
+        announceAltitudeAlert(altitudeNotifier.update(candidates: altitudeCandidates, now: now), alerts: altitude, now: now)
         if signalLossAlerts != lost { signalLossAlerts = lost }
         if altitudeAlerts != altitude { altitudeAlerts = altitude }
     }
@@ -151,18 +196,31 @@ final class AppleOperationalAlertCenter: ObservableObject {
         }
     }
 
-    private func announceAltitudeAlerts(_ alerts: [AppleAltitudeComplianceAlert], now: Date) {
-        for alert in alerts where alert.severity == .overLimit && shouldSpeak(key: "altitude:\(alert.remoteID)", now: now) {
-            speak("Altitude warning, \(alert.mappedID), \(Int(alert.aglFeet.rounded())) feet A G L")
-            AppleLog.warning(
-                "AltitudeAlert",
-                "Over limit remoteId=\(alert.remoteID) mappedId=\(alert.mappedID) aglFeet=\(Int(alert.aglFeet.rounded()))"
-            )
-        }
+    /// Android ComplianceAlertHost: every new alert instance (severity change, or
+    /// 15 s while over the limit) speaks "Altitude" with a 15 s per-aircraft
+    /// cooldown and vibrates.
+    private func announceAltitudeAlert(
+        _ decision: OperationalAltitudeAlertNotifier.Decision?,
+        alerts: [AppleAltitudeComplianceAlert],
+        now: Date
+    ) {
+        guard let decision, decision.shouldNotify else { return }
+        let mappedID = alerts.first { $0.remoteID == decision.remoteID }?.mappedID ?? decision.remoteID
+        AppleLog.warning(
+            "AltitudeAlert",
+            "\(decision.severity == .overLimit ? "Over" : "Near") limit remoteId=\(decision.remoteID) " +
+                "mappedId=\(mappedID) aglFeet=\(Int(decision.aglFeet.rounded()))"
+        )
+        guard shouldSpeak(
+            key: "altitude:\(mappedID)",
+            interval: OperationalAltitudeAlertNotifier.spokenCooldown,
+            now: now
+        ) else { return }
+        speak(OperationalAltitudeAlertNotifier.spokenPhrase)
     }
 
-    private func shouldSpeak(key: String, now: Date) -> Bool {
-        guard now.timeIntervalSince(lastSpoken[key] ?? .distantPast) >= 30 else { return false }
+    private func shouldSpeak(key: String, interval: TimeInterval = 30, now: Date) -> Bool {
+        guard now.timeIntervalSince(lastSpoken[key] ?? .distantPast) >= interval else { return false }
         lastSpoken[key] = now
         return true
     }

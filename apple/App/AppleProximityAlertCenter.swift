@@ -48,13 +48,24 @@ final class AppleProximityAlertCenter: ObservableObject {
                 try? await Task.sleep(for: .seconds(1))
                 guard !Task.isCancelled, let self else { return }
                 if let input = self.latestInput, self.consent.enabled {
-                    self.evaluate(drones: input.drones, thresholdFeet: input.threshold, predictiveEnabled: input.predictive, now: Date())
+                    self.evaluate(
+                        drones: input.drones,
+                        thresholdFeet: input.threshold,
+                        predictiveEnabled: input.predictive,
+                        maximumPositionAgeSeconds: input.maximumPositionAgeSeconds,
+                        now: Date()
+                    )
                 }
             }
         }
     }
 
     deinit { freshnessTask?.cancel() }
+
+    /// For lifecycle and background-heartbeat log lines.
+    var diagnosticSummary: String {
+        "proximity enabled=\(consent.enabled) suspended=\(isSuspended) active=\(activeAlert != nil) stale=\(stalePositionCount)"
+    }
 
     func setAlertAllAircraft(_ value: Bool) {
         guard alertAllAircraft != value else { return }
@@ -64,6 +75,7 @@ final class AppleProximityAlertCenter: ObservableObject {
         suspendedAlert = nil
         canResume = false
         lastAnnouncementByPair.removeAll()
+        speechSchedule = RidProximitySpeechSchedule()
         alertAllAircraft = value
     }
 
@@ -104,14 +116,16 @@ final class AppleProximityAlertCenter: ObservableObject {
         pairs = []
         stalePositionCount = 0
         lastAnnouncementByPair.removeAll()
+        speechSchedule = RidProximitySpeechSchedule()
     }
 
     private var freshnessTask: Task<Void, Never>?
-    private var latestInput: (drones: [RidProximityDrone], threshold: Int, predictive: Bool)?
+    private var latestInput: (drones: [RidProximityDrone], threshold: Int, predictive: Bool, maximumPositionAgeSeconds: Double)?
     private var lastDiagnosticAt = Date.distantPast
     private var engine = RidProximityAlertEngine()
     private var lastEvaluationSummary = ""
     private var lastAnnouncementByPair: [String: Date] = [:]
+    private var speechSchedule = RidProximitySpeechSchedule()
 
     func update(
         tracks: [RidAircraftTrack],
@@ -120,6 +134,7 @@ final class AppleProximityAlertCenter: ObservableObject {
         operatorLocation: CLLocation?,
         identityProvider: (String) -> RidAircraftIdentity?,
         alertEligibility: (String) -> Bool,
+        maximumPositionAgeSeconds: Double = RidProximityTelemetry.maximumPositionAgeSeconds,
         now: Date = Date()
     ) {
         let drones = tracks.map { track in
@@ -146,12 +161,24 @@ final class AppleProximityAlertCenter: ObservableObject {
                 telemetry: observation.proximityTelemetry
             )
         }
-        latestInput = (drones, thresholdFeet, predictiveEnabled)
-        evaluate(drones: drones, thresholdFeet: thresholdFeet, predictiveEnabled: predictiveEnabled, now: now)
+        latestInput = (drones, thresholdFeet, predictiveEnabled, maximumPositionAgeSeconds)
+        evaluate(
+            drones: drones,
+            thresholdFeet: thresholdFeet,
+            predictiveEnabled: predictiveEnabled,
+            maximumPositionAgeSeconds: maximumPositionAgeSeconds,
+            now: now
+        )
     }
 
-    private func evaluate(drones: [RidProximityDrone], thresholdFeet: Int, predictiveEnabled: Bool, now: Date) {
-        let fresh = drones.filter { (0...RidProximityTelemetry.maximumPositionAgeSeconds).contains(now.timeIntervalSince($0.sampleDate)) }
+    private func evaluate(
+        drones: [RidProximityDrone],
+        thresholdFeet: Int,
+        predictiveEnabled: Bool,
+        maximumPositionAgeSeconds: Double,
+        now: Date
+    ) {
+        let fresh = drones.filter { (0...maximumPositionAgeSeconds).contains(now.timeIntervalSince($0.sampleDate)) }
         stalePositionCount = consent.enabled && drones.count >= 2 ? drones.count - fresh.count : 0
         let summary = "stale=\(stalePositionCount) allAircraft=\(alertAllAircraft) enabled=\(consent.enabled) suspended=\(isSuspended) tracks=\(drones.count) team=\(drones.filter(\.teamDrone).count) eligible=\(drones.filter(\.localAlertEligible).map(\.remoteID).sorted().joined(separator: ","))"
         if summary != lastEvaluationSummary {
@@ -164,6 +191,7 @@ final class AppleProximityAlertCenter: ObservableObject {
                 enabled: consent.enabled,
                 alertAllAircraft: alertAllAircraft,
                 predictiveEnabled: predictiveEnabled,
+                maximumPositionAgeSeconds: maximumPositionAgeSeconds,
                 now: now
             )
         let teamDrones = alertAllAircraft ? fresh : fresh.filter(\.teamDrone)
@@ -175,8 +203,8 @@ final class AppleProximityAlertCenter: ObservableObject {
                     longitude: first.longitude, toLatitude: second.latitude, longitude: second.longitude) else { return nil }
                 let known = first.telemetry.hasUsableAltitude && second.telemetry.hasUsableAltitude
                     && first.telemetry.altitudeReference == second.telemetry.altitudeReference
-                    && (0...5).contains(now.timeIntervalSince(first.sampleDate))
-                    && (0...5).contains(now.timeIntervalSince(second.sampleDate))
+                    && (0...maximumPositionAgeSeconds).contains(now.timeIntervalSince(first.sampleDate))
+                    && (0...maximumPositionAgeSeconds).contains(now.timeIntervalSince(second.sampleDate))
                 let vertical = known ? abs(first.telemetry.absoluteAltitudeMeters! - second.telemetry.absoluteAltitudeMeters!) / 0.3048 : nil
                 let key = [first.remoteID, second.remoteID].sorted().joined(separator: "|")
                 return AppleProximityPair(firstRemoteID: first.remoteID, secondRemoteID: second.remoteID,
@@ -205,7 +233,9 @@ final class AppleProximityAlertCenter: ObservableObject {
 
     func resume() {
         guard consent.enabled else { return }
-        apply(engine.resume(), now: Date(), announce: false)
+        // Android: a resumed alert that is still inside the threshold is spoken
+        // again (subject to the per-pair 30 s cooldown).
+        apply(engine.resume(), now: Date())
         AppleLog.info("ProximityAlert", "Suspended proximity alert resumed")
     }
 
@@ -219,19 +249,27 @@ final class AppleProximityAlertCenter: ObservableObject {
         suspendedAlert = output.suspendedAlert
         canResume = output.canResume
         isSuspended = output.isSuspended
-        guard consent.enabled, announce,
-              let alert = output.activeAlert,
-              alert.alertInstanceID != previousID
+        // New alert instance, then every 30 s while it stays active and not
+        // suspended (same schedule as Android).
+        let scheduled = speechSchedule.shouldAnnounce(
+            activeAlertInstanceID: output.activeAlert?.alertInstanceID,
+            suspended: output.isSuspended,
+            enabled: consent.enabled,
+            now: now
+        )
+        guard consent.enabled, announce, scheduled,
+              let alert = output.activeAlert
         else { return }
 
         let last = lastAnnouncementByPair[alert.pairKey] ?? .distantPast
-        guard now.timeIntervalSince(last) >= 30 else { return }
+        guard now.timeIntervalSince(last) >= RidProximitySpeechSchedule.repeatInterval else { return }
         lastAnnouncementByPair[alert.pairKey] = now
-        UINotificationFeedbackGenerator().notificationOccurred(.warning)
-        AppleSpokenWarningCenter.shared.speak("Proximity warning")
+        let repeated = alert.alertInstanceID == previousID
+        if !repeated { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
+        AppleSpokenWarningCenter.shared.speak(OperationalSpokenWarningKind.proximity.phrase)
         AppleLog.info(
             "ProximityAlert",
-            "Alert pair=\(alert.pairKey) horizontalFt=\(Int(alert.horizontalSeparationFeet.rounded())) verticalFt=\(Int(alert.verticalSeparationFeet.rounded())) currentHorizontalFt=\(Int(alert.currentHorizontalSeparationFeet.rounded())) currentVerticalFt=\(Int(alert.currentVerticalSeparationFeet.rounded())) projected=\(alert.usesProjection) thresholdFt=\(Int(alert.thresholdFeet.rounded()))"
+            "\(repeated ? "Repeat" : "Alert") pair=\(alert.pairKey) horizontalFt=\(Int(alert.horizontalSeparationFeet.rounded())) verticalFt=\(Int(alert.verticalSeparationFeet.rounded())) currentHorizontalFt=\(Int(alert.currentHorizontalSeparationFeet.rounded())) currentVerticalFt=\(Int(alert.currentVerticalSeparationFeet.rounded())) projected=\(alert.usesProjection) thresholdFt=\(Int(alert.thresholdFeet.rounded()))"
         )
     }
 }

@@ -1,20 +1,19 @@
 package org.ncssar.rid2caltopo.ui
 
+import android.content.Context
 import android.media.AudioAttributes
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import org.ncssar.rid2caltopo.data.CaltopoClient
 import org.ncssar.rid2caltopo.data.ProximityAlertConsent
 
@@ -148,55 +147,73 @@ object SpokenWarningCenter {
     }
 }
 
-@Composable
-fun SpokenWarningAlertHost() {
-    val context = LocalContext.current
-    val request by SpokenWarningCenter.requests.collectAsState()
-    var ready by remember { mutableStateOf(false) }
-    val proximityConsent by ProximityAlertConsent.state.collectAsState()
-    var speakingKind by remember { mutableStateOf<SpokenWarningKind?>(null) }
-    val tts = remember(context) {
-        TextToSpeech(context.applicationContext) { status ->
-            ready = status == TextToSpeech.SUCCESS
-        }
-    }
+/**
+ * Plays [SpokenWarningCenter] requests with a process-scoped TextToSpeech engine.
+ * This used to live in a Compose effect, which does not run while the activity is
+ * stopped (display off). Behaviour is otherwise unchanged: USAGE_ALARM speech,
+ * rate 0.88, pitch 0.82, QUEUE_FLUSH, alarm-volume multiplier, and proximity
+ * speech stops when proximity advisories are turned off.
+ */
+object SpokenWarningPlayer {
+    private var tts: TextToSpeech? = null
+    private var ready = false
+    private var speakingKind: SpokenWarningKind? = null
 
-    LaunchedEffect(proximityConsent.enabled) {
-        if (!proximityConsent.enabled && speakingKind == SpokenWarningKind.Proximity) {
-            tts.stop()
-            speakingKind = null
+    fun start(context: Context, scope: CoroutineScope) {
+        if (tts != null) return
+        tts = TextToSpeech(context.applicationContext) { status ->
+            scope.launch { onInitialized(status == TextToSpeech.SUCCESS) }
         }
-    }
-
-    LaunchedEffect(ready) {
-        if (ready) {
-            tts.setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-            )
-            tts.setSpeechRate(0.88f)
-            tts.setPitch(0.82f)
-        }
-    }
-
-    DisposableEffect(tts) {
-        onDispose {
-            try {
-                tts.stop()
-                tts.shutdown()
-            } catch (_: Exception) {
+        scope.launch {
+            SpokenWarningCenter.requests.collect { request ->
+                if (request != null) play(request)
             }
         }
+        scope.launch {
+            ProximityAlertConsent.state
+                .map { it.enabled }
+                .distinctUntilChanged()
+                .collect { enabled ->
+                    if (!enabled && speakingKind == SpokenWarningKind.Proximity) {
+                        tts?.stop()
+                        speakingKind = null
+                    }
+                }
+        }
     }
 
-    LaunchedEffect(request?.requestId, ready) {
-        val pendingRequest = request ?: return@LaunchedEffect
-        if (!ready) return@LaunchedEffect
-        val currentRequest = SpokenWarningCenter.consume(pendingRequest.requestId)
-            ?: return@LaunchedEffect
-        if (currentRequest.kind == SpokenWarningKind.Proximity && !ProximityAlertConsent.state.value.enabled) return@LaunchedEffect
+    fun stop() {
+        val engine = tts ?: return
+        tts = null
+        ready = false
+        speakingKind = null
+        try {
+            engine.stop()
+            engine.shutdown()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun onInitialized(success: Boolean) {
+        val engine = tts ?: return
+        ready = success
+        if (!success) return
+        engine.setAudioAttributes(
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build()
+        )
+        engine.setSpeechRate(0.88f)
+        engine.setPitch(0.82f)
+        SpokenWarningCenter.requests.value?.let { play(it) }
+    }
+
+    private fun play(pendingRequest: SpokenWarningRequest) {
+        val engine = tts ?: return
+        if (!ready) return
+        val currentRequest = SpokenWarningCenter.consume(pendingRequest.requestId) ?: return
+        if (currentRequest.kind == SpokenWarningKind.Proximity && !ProximityAlertConsent.state.value.enabled) return
         speakingKind = currentRequest.kind
         val volume = (currentRequest.volumeFraction * CaltopoClient.GetAlarmVolumeMultiplier())
             .coerceIn(0f, 1f)
@@ -204,12 +221,21 @@ fun SpokenWarningAlertHost() {
             putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume)
         }
         currentRequest.phrases.forEachIndexed { index, phrase ->
-            tts.speak(
+            engine.speak(
                 phrase,
                 if (index == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD,
                 params,
                 "r2c-spoken-warning-${currentRequest.requestId}-$index"
             )
         }
+    }
+}
+
+/** Starts process-scoped alert speech; it keeps working while the display is off. */
+@Composable
+fun SpokenWarningAlertHost() {
+    val context = LocalContext.current
+    LaunchedEffect(Unit) {
+        AlertSpeechCoordinator.start(context.applicationContext)
     }
 }

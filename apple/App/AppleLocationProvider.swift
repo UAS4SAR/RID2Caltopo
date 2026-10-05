@@ -28,7 +28,11 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
     private var physicalLocation: CLLocation?
     private var physicalLocationIsProvisional = false
     private var started = false
-    private var incidentMapBackgroundMonitoringEnabled = false
+    /// True from session start until full cleanup, mirroring Android's
+    /// ScanningService foreground-service lifetime. While true, standard location
+    /// updates continue after the display locks, which keeps RID scanning, video
+    /// ingest, and spoken advisories running. Not tied to an incident map.
+    private var backgroundOperationEnabled = false
 
     // A Wi-Fi-only iPad can temporarily have no live Core Location fix even
     // though Location Services remain authorized. Prefer the device's recent
@@ -66,6 +70,9 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
     func start() {
         guard !started else { return }
         started = true
+        backgroundOperationEnabled = true
+        if let manager { applyBackgroundMonitoringConfiguration(to: manager) }
+        AppleLog.info("Location", "Background operation enabled for this session")
         guard CLLocationManager.locationServicesEnabled() else {
             errorMessage = "Location Services are disabled"
             AppleLog.error("Location", "Location Services are disabled")
@@ -81,6 +88,16 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
         manager?.stopUpdatingLocation()
         manager?.stopUpdatingHeading()
         started = false
+        backgroundOperationEnabled = false
+        if let manager { applyBackgroundMonitoringConfiguration(to: manager) }
+        AppleLog.info("Location", "Background operation disabled")
+    }
+
+    /// Whether this session will keep running after the display locks. Requires
+    /// location authorization; without it iOS suspends the app in background.
+    var backgroundOperationAvailable: Bool {
+        started && backgroundOperationEnabled
+            && (authorizationStatus == .authorizedWhenInUse || authorizationStatus == .authorizedAlways)
     }
 
     func requestPermission() {
@@ -95,25 +112,6 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
         @unknown default:
             errorMessage = "Unknown location authorization state"
         }
-    }
-
-    /// A map connection is an operator-started location session. Keep that
-    /// session alive after display lock so relocation and inactivity policy do
-    /// not depend on a SwiftUI view remaining active.
-    func setIncidentMapBackgroundMonitoringEnabled(_ enabled: Bool) {
-        incidentMapBackgroundMonitoringEnabled = enabled
-        let manager = makeManager()
-        applyBackgroundMonitoringConfiguration(to: manager)
-        if enabled,
-           started,
-           (manager.authorizationStatus == .authorizedWhenInUse
-            || manager.authorizationStatus == .authorizedAlways) {
-            manager.startUpdatingLocation()
-        }
-        AppleLog.info(
-            "Location",
-            "Incident-map background monitoring \(enabled ? "enabled" : "disabled")"
-        )
     }
 
     func setLocationOverride(latitude: Double, longitude: Double) {
@@ -214,9 +212,9 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
     }
 
     private func applyBackgroundMonitoringConfiguration(to manager: CLLocationManager) {
-        manager.allowsBackgroundLocationUpdates = incidentMapBackgroundMonitoringEnabled
-        manager.showsBackgroundLocationIndicator = incidentMapBackgroundMonitoringEnabled
-        manager.pausesLocationUpdatesAutomatically = !incidentMapBackgroundMonitoringEnabled
+        manager.allowsBackgroundLocationUpdates = backgroundOperationEnabled
+        manager.showsBackgroundLocationIndicator = backgroundOperationEnabled
+        manager.pausesLocationUpdatesAutomatically = !backgroundOperationEnabled
     }
 
     private func publishProvisionalLocationIfUsable(_ location: CLLocation?, source: String) {
@@ -284,6 +282,12 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
             verticalAccuracy: defaults.double(forKey: PersistedLocationKey.verticalAccuracy),
             timestamp: Date(timeIntervalSince1970: defaults.double(forKey: PersistedLocationKey.timestamp))
         )
+    }
+
+    /// For lifecycle and background-heartbeat log lines.
+    var backgroundStatusDescription: String {
+        "locationAuth=\(authorizationDescription(authorizationStatus).replacingOccurrences(of: " ", with: "")) "
+            + "backgroundLocation=\(backgroundOperationAvailable ? "active" : "unavailable")"
     }
 
     private func authorizationDescription(_ status: CLAuthorizationStatus) -> String {

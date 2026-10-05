@@ -23,6 +23,52 @@ internal object FlightRetentionPolicy {
     }
 }
 
+/**
+ * Why a dated flight folder cannot be deleted right now. Same reasons and wording
+ * as iOS `FlightFolderProtection` (AppleFlightStorage.swift).
+ */
+sealed class FlightFolderProtection(val label: String) {
+    object Today : FlightFolderProtection("today")
+    object Recording : FlightFolderProtection("recording in progress")
+    data class InUse(val owner: String) : FlightFolderProtection("in use by $owner")
+    object ClueUploading : FlightFolderProtection("clue upload in progress")
+
+    companion object {
+        fun ownerLabel(owner: String): String = when {
+            owner == "diagnostic-log" -> "diagnostic log"
+            owner == "video-review" -> "video review"
+            owner == "recorder" -> "recording"
+            owner == "session" -> "app session"
+            owner.startsWith("upload-") || owner.startsWith("archive-upload-") -> "archive upload"
+            owner.startsWith("finalize-") -> "recording finalization"
+            else -> owner.replace('-', ' ')
+        }
+
+        /** Manual deletion is blocked only by these reasons; pending/failed clues warn instead. */
+        fun evaluate(
+            name: String,
+            today: String,
+            owners: Map<String, String>,
+            recorderStaging: Boolean,
+            clueStates: List<String>,
+        ): FlightFolderProtection? = when {
+            name == today -> Today
+            recorderStaging -> Recording
+            owners.any { it.value == name } ->
+                InUse(owners.filter { it.value == name }.keys.map(::ownerLabel).sorted().first())
+            "uploading" in clueStates -> ClueUploading
+            else -> null
+        }
+
+        /** Automatic cleanup also keeps days whose clues are still queued. Failed is permanent. */
+        fun blocksAutomaticCleanup(clueStates: List<String>): Boolean =
+            clueStates.any { it == "pending" || it == "uploading" }
+
+        fun unuploadedClueCount(clueStates: List<String>): Int =
+            clueStates.count { it == "pending" || it == "uploading" || it == "failed" }
+    }
+}
+
 enum class FlightStorageIssue(val message: String) {
     ARCHIVE_REQUIRED("Choose or reconnect your archive folder to check its usage and enable flight recording. The previous folder may be suggested, but access must be granted again."),
     DEVICE_LOW("Device storage is low. Free device space in Manage Storage or Android Settings. Increasing the allowance will not create free device space."),
@@ -152,6 +198,20 @@ object FlightStorage {
     @JvmStatic fun isProtected(name: String): Boolean = synchronized(lock) {
         name == todayArchiveDirectoryName() || name in protectedDays.values
     }
+    /** Why manual deletion of this day is blocked, or null when it may be deleted. */
+    fun protectionReason(context: Context, name: String): FlightFolderProtection? = synchronized(lock) {
+        val auxiliary = auxiliaryFiles(context)
+        FlightFolderProtection.evaluate(
+            name = name,
+            today = todayArchiveDirectoryName(),
+            owners = protectedDays.toMap(),
+            recorderStaging = auxiliary.any { fileDay(it) == name && isRecorderStaging(context, it) },
+            clueStates = clueStates(context, name, auxiliary),
+        )
+    }
+    fun unuploadedClueCount(context: Context, name: String): Int = synchronized(lock) {
+        FlightFolderProtection.unuploadedClueCount(clueStates(context, name, auxiliaryFiles(context)))
+    }
     private fun size(file: DocumentFile, ledger: MutableMap<String, Long>? = null): Long =
         if (file.isDirectory) file.listFiles().sumOf { size(it, ledger) }
         else file.length().coerceAtLeast(0).also { ledger?.put(file.uri.toString(), it) }
@@ -178,19 +238,32 @@ object FlightStorage {
             val entries = folder?.listFiles().orEmpty().map(::documentFileToArchiveEntry) +
                 auxiliary[name].orEmpty().map { ArchiveCleanupFileEntry(it.name, null, false, it.length()) }
             buildArchiveCleanupOption(name, 0, entries)?.let { option ->
-                option.copy(isToday = option.isToday || auxiliary[name].orEmpty().any { isStaging(context, it) })
+                val reason = protectionReason(context, name)
+                option.copy(
+                    isToday = reason != null,
+                    protectionReason = reason?.label,
+                    unuploadedClueCount = unuploadedClueCount(context, name),
+                )
             }
         }.sortedByDescending { it.ageMs }
     }
-    private fun isStaging(context: Context, file: File): Boolean {
-        if (listOf(auxiliaryRoots(context)[0], auxiliaryRoots(context)[2]).any { file.path.startsWith(it.path + "/") }) return true
+    private fun isRecorderStaging(context: Context, file: File): Boolean =
+        listOf(auxiliaryRoots(context)[0], auxiliaryRoots(context)[2]).any { file.path.startsWith(it.path + "/") }
+
+    /** Upload states of CalTopo-bound clues whose image files belong to this day. */
+    private fun clueStates(context: Context, name: String, auxiliary: List<File>): List<String> {
         val clues = File(context.filesDir, "clues")
-        if (file.parentFile != clues || file.name == "clues.json") return false
-        val index = runCatching { org.json.JSONArray(File(clues, "clues.json").readText()) }.getOrNull() ?: return true
-        return (0 until index.length()).any { i ->
-            val entry = index.optJSONObject(i) ?: return@any false
-            entry.optBoolean("publishToCaltopo") && entry.optString("uploadState") in listOf("pending", "uploading", "failed") &&
-                file.name in listOf(entry.optString("imageFilename"), entry.optString("thumbnailFilename"))
+        val dayFiles = auxiliary.filter { it.parentFile == clues && it.name != "clues.json" && fileDay(it) == name }
+            .map { it.name }.toSet()
+        if (dayFiles.isEmpty()) return emptyList()
+        val index = runCatching { org.json.JSONArray(File(clues, "clues.json").readText()) }.getOrNull()
+            // Unreadable index: treat the day's clue files as still queued (safe for cleanup).
+            ?: return listOf("pending")
+        return (0 until index.length()).mapNotNull { i ->
+            val entry = index.optJSONObject(i) ?: return@mapNotNull null
+            if (!entry.optBoolean("publishToCaltopo")) return@mapNotNull null
+            if (listOf(entry.optString("imageFilename"), entry.optString("thumbnailFilename")).none { it in dayFiles }) return@mapNotNull null
+            entry.optString("uploadState")
         }
     }
 
@@ -199,7 +272,9 @@ object FlightStorage {
         var deleted = 0
         val auxiliary = auxiliaryFiles(context)
         for (name in names.distinct()) {
-            if (!isDatedArchiveDirectoryName(name) || isProtected(name) || auxiliary.any { fileDay(it) == name && isStaging(context, it) }) {
+            // Pending/failed clue uploads no longer block a manual delete; the
+            // confirmation warns how many clues were never uploaded.
+            if (!isDatedArchiveDirectoryName(name) || protectionReason(context, name) != null) {
                 failures.add(name); continue
             }
             val folder = CaltopoClient.GetArchiveDir()?.findFile(name)
@@ -225,8 +300,10 @@ object FlightStorage {
         val days = sizes.map { (name, bytes) ->
             val date = java.time.Instant.ofEpochMilli(parseArchiveDirectoryDateMs(name)!!).atZone(ZoneId.systemDefault()).toLocalDate()
             // Native recorder staging remains protected until its completion/sync path releases it.
-            val staging = auxiliary.any { fileDay(it) == name && isStaging(context, it) }
-            FlightRetentionPolicy.Day(name, date, bytes, isProtected(name) || staging)
+            // Queued (pending/uploading) clues are kept; failed uploads no longer pin a day forever.
+            val staging = auxiliary.any { fileDay(it) == name && isRecorderStaging(context, it) }
+            val clueHold = FlightFolderProtection.blocksAutomaticCleanup(clueStates(context, name, auxiliary))
+            FlightRetentionPolicy.Day(name, date, bytes, isProtected(name) || staging || clueHold)
         }
         val freeArchive = availableBytes(context, archive)
         val target = minOf((maximumBytes(context) * 9 / 10 - reserving).coerceAtLeast(0), freeArchive?.let { (used + it - RESERVE - reserving).coerceAtLeast(0) } ?: maximumBytes(context))

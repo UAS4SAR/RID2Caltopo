@@ -125,6 +125,7 @@ public struct RidProximityAlertEngine: Sendable {
         enabled: Bool = false,
         alertAllAircraft: Bool = false,
         predictiveEnabled: Bool = true,
+        maximumPositionAgeSeconds: Double = RidProximityTelemetry.maximumPositionAgeSeconds,
         now: Date = Date()
     ) -> RidProximityAlertOutput {
         if self.alertAllAircraft != alertAllAircraft {
@@ -141,10 +142,15 @@ public struct RidProximityAlertEngine: Sendable {
         let thresholdFeet = max(50, thresholdFeet)
         // Track retention is longer than collision telemetry validity. Never expand
         // uncertainty indefinitely around an old position.
-        let freshDrones = drones.filter { (0...RidProximityTelemetry.maximumPositionAgeSeconds).contains(now.timeIntervalSince($0.sampleDate)) }
+        let freshDrones = drones.filter { (0...maximumPositionAgeSeconds).contains(now.timeIntervalSince($0.sampleDate)) }
         updateSampleHistory(drones: freshDrones)
         let evaluated = freshDrones.map { evaluateDrone($0, predictiveEnabled: predictiveEnabled, now: now) }
-        let evaluations = evaluatePairs(drones: evaluated, thresholdFeet: thresholdFeet, predictiveEnabled: predictiveEnabled)
+        let evaluations = evaluatePairs(
+            drones: evaluated,
+            thresholdFeet: thresholdFeet,
+            predictiveEnabled: predictiveEnabled,
+            maximumAltitudeAgeSeconds: maximumPositionAgeSeconds
+        )
         latestPairs = Dictionary(uniqueKeysWithValues: evaluations.map { ($0.pairKey, $0) })
         let best = evaluations
             .filter(\.shouldAlert)
@@ -256,7 +262,8 @@ public struct RidProximityAlertEngine: Sendable {
     private func evaluatePairs(
         drones: [EvaluatedDrone],
         thresholdFeet: Double,
-        predictiveEnabled: Bool
+        predictiveEnabled: Bool,
+        maximumAltitudeAgeSeconds: Double
     ) -> [PairEvaluation] {
         var result: [PairEvaluation] = []
         for firstIndex in drones.indices {
@@ -293,8 +300,8 @@ public struct RidProximityAlertEngine: Sendable {
                 let altitudeSensitive = first.input.teamDrone && second.input.teamDrone
                     && first.input.telemetry.hasUsableAltitude && second.input.telemetry.hasUsableAltitude
                     && first.input.telemetry.altitudeReference == second.input.telemetry.altitudeReference
-                    && first.ageSeconds <= RidProximityTelemetry.maximumAltitudeAgeSeconds
-                    && second.ageSeconds <= RidProximityTelemetry.maximumAltitudeAgeSeconds
+                    && first.ageSeconds <= maximumAltitudeAgeSeconds
+                    && second.ageSeconds <= maximumAltitudeAgeSeconds
                 let verticalUncertainty = ((first.input.telemetry.verticalAccuracyMeters ?? 0)
                     + (second.input.telemetry.verticalAccuracyMeters ?? 0)) * 3.28084
                 let decisionVertical = altitudeSensitive ? max(0, verticalFeet - verticalUncertainty) : 0

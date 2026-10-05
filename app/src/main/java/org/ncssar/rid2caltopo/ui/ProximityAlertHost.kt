@@ -21,13 +21,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -978,20 +976,9 @@ fun ProximityAlertHost(
     onSuspend: () -> Unit,
     onMap: (ProximityAlertUiState) -> Unit
 ) {
-    val context = LocalContext.current
+    // Speech and vibration are issued by AlertSpeechCoordinator so they continue
+    // while the display is off; this host only shows the dialog.
     val alert by ProximityAlertCenter.uiState.collectAsState()
-
-    LaunchedEffect(alert?.alertInstanceId) {
-        if (alert != null && ProximityAlertConsent.state.value.enabled) {
-            SpokenWarningCenter.requestWarning(
-                kind = SpokenWarningKind.Proximity,
-                sourceKey = alert?.pairKey ?: "proximity",
-                nowMs = System.currentTimeMillis(),
-                cooldownMs = 30_000L
-            )
-            vibrateBriefly(context)
-        }
-    }
 
     alert?.let { uiState ->
         AlertDialog(
@@ -1009,31 +996,6 @@ fun ProximityAlertHost(
                 }
             }
         )
-    }
-}
-
-@Composable
-fun ComplianceAlertHost() {
-    val context = LocalContext.current
-    val alert by ComplianceAlertCenter.uiState.collectAsState()
-
-    LaunchedEffect(alert?.alertInstanceId) {
-        alert?.let { uiState ->
-            SpokenWarningCenter.requestWarning(
-                kind = SpokenWarningKind.Altitude,
-                sourceKey = uiState.mappedId,
-                nowMs = System.currentTimeMillis(),
-                cooldownMs = 15_000L
-            )
-            vibrateBriefly(context)
-            val staleSuffix = if (uiState.staleDem) " (DEM AGL may be stale)" else ""
-            val toastMessage = if (uiState.highSeverity) {
-                "${uiState.mappedId} above ${formatFeet(uiState.thresholdFt)} AGL at ${formatFeet(uiState.aglFt)}$staleSuffix"
-            } else {
-                "${uiState.mappedId} near ${formatFeet(uiState.thresholdFt)} AGL at ${formatFeet(uiState.aglFt)}$staleSuffix"
-            }
-            CaltopoClient.ShowToast(toastMessage)
-        }
     }
 }
 
@@ -1139,10 +1101,10 @@ private fun RowScope.GridCell(
     }
 }
 
-private fun formatFeet(value: Double): String =
+internal fun formatFeet(value: Double): String =
     String.format(Locale.US, "%.0f ft", value)
 
-private fun vibrateBriefly(context: Context) {
+internal fun vibrateBriefly(context: Context) {
     val effect = VibrationEffect.createOneShot(
         180L,
         VibrationEffect.DEFAULT_AMPLITUDE

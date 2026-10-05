@@ -239,10 +239,12 @@ final class AppleCapturedVideoReviewModel: ObservableObject {
             }
             install(destination, original: sourceURL)
         } catch is CancellationError {
+            AppleFlightStorage.release(owner: "video-review")
             state = "Captured-video preparation cancelled."
         } catch CapturedVideoError.staleSelection {
-            // A later picker result owns the UI and status.
+            // A later picker result owns the UI, status, and storage protection.
         } catch {
+            AppleFlightStorage.release(owner: "video-review")
             state = "Unable to open captured video: \(error.localizedDescription)"
         }
         if generation == openGeneration { isStaging = false }
@@ -485,6 +487,9 @@ struct AppleCapturedVideoReviewView: View {
         }
         .navigationTitle("Captured Video Review")
         .navigationBarTitleDisplayMode(.inline)
+        // Leaving the review screen ends the review: release the source day's
+        // flight-folder protection and the staged copy.
+        .onDisappear { if !importing { model.close() } }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button("Open", systemImage: "folder") { importing = true }

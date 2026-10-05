@@ -5,6 +5,7 @@ import CoreImage
 import Dispatch
 import QuartzCore
 import R2CCore
+import UIKit
 
 private struct PixelBufferTransfer: @unchecked Sendable {
     let value: CVPixelBuffer
@@ -399,6 +400,13 @@ final class AppleVideoFrameSource: ObservableObject {
     private var nativeFailureHandled = false
     private var nativeEndHandled = false
     private var displayLink: CADisplayLink?
+    /// CADisplayLink stops while the display is locked. In background a timer
+    /// keeps pulling decoded frames so DJI SEI telemetry, lag measurement, and
+    /// the managed (WebRTC) video consumer continue; only on-screen rendering
+    /// and GPU anomaly analysis are paused.
+    private var backgroundFrameTimer: Timer?
+    private var renderingSuspended = false
+    private static let backgroundFramePullInterval: TimeInterval = 1.0 / 30.0
     private var itemStatusObservation: NSKeyValueObservation?
     private var notificationObservers: [NSObjectProtocol] = []
     private var retryTask: Task<Void, Never>?
@@ -429,6 +437,50 @@ final class AppleVideoFrameSource: ObservableObject {
         anomalyMode = mode
         anomalyConfiguration = configuration
         anomalyProcessor = AppleAnomalyProcessor(mode: mode, configuration: configuration)
+        renderingSuspended = UIApplication.shared.applicationState == .background
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationDidEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationWillEnterForeground),
+            name: UIApplication.willEnterForegroundNotification,
+            object: nil
+        )
+    }
+
+    @objc private func applicationDidEnterBackground() {
+        guard !renderingSuspended else { return }
+        renderingSuspended = true
+        guard displayLink != nil else { return }
+        displayLink?.invalidate()
+        displayLink = nil
+        installBackgroundFrameTimer()
+        AppleLog.info("Video", "Display locked or app in background; frame pull continues, rendering paused path=\(currentPath ?? "unknown")")
+    }
+
+    @objc private func applicationWillEnterForeground() {
+        guard renderingSuspended else { return }
+        renderingSuspended = false
+        guard backgroundFrameTimer != nil else { return }
+        backgroundFrameTimer?.invalidate()
+        backgroundFrameTimer = nil
+        installDisplayLink()
+        AppleLog.info("Video", "Foreground; display rendering resumed path=\(currentPath ?? "unknown")")
+    }
+
+    private func installBackgroundFrameTimer() {
+        backgroundFrameTimer?.invalidate()
+        let timer = Timer(timeInterval: Self.backgroundFramePullInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.pullFrame(hostTime: CACurrentMediaTime())
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        backgroundFrameTimer = timer
     }
 
     func setManagedVideoFrameConsumer(_ consumer: AppleDecodedVideoFrameConsumer?) {
@@ -803,7 +855,12 @@ final class AppleVideoFrameSource: ObservableObject {
 
     private func installDisplayLink() {
         displayLink?.invalidate()
-        let displayLink = CADisplayLink(target: self, selector: #selector(pullFrame))
+        displayLink = nil
+        if renderingSuspended {
+            installBackgroundFrameTimer()
+            return
+        }
+        let displayLink = CADisplayLink(target: self, selector: #selector(pullFrame(_:)))
         // Poll above the source rate so adaptive deadlines can pace 30 fps without
         // rounding every slightly-slower frame to a 66 ms display callback.
         displayLink.preferredFrameRateRange = currentURL?.isFileURL == true
@@ -816,6 +873,8 @@ final class AppleVideoFrameSource: ObservableObject {
     private func tearDownPlayer() {
         displayLink?.invalidate()
         displayLink = nil
+        backgroundFrameTimer?.invalidate()
+        backgroundFrameTimer = nil
         itemStatusObservation = nil
         for observer in notificationObservers {
             NotificationCenter.default.removeObserver(observer)
@@ -850,6 +909,10 @@ final class AppleVideoFrameSource: ObservableObject {
     private var callbackMaxGapSeconds: TimeInterval = 0
 
     @objc private func pullFrame(_ displayLink: CADisplayLink) {
+        pullFrame(hostTime: displayLink.timestamp + displayLink.duration)
+    }
+
+    private func pullFrame(hostTime: CFTimeInterval) {
         let callbackStarted = CACurrentMediaTime()
         if callbackWindowStartedAt == 0 { callbackWindowStartedAt = callbackStarted }
         if callbackLastAt > 0 { callbackMaxGapSeconds = max(callbackMaxGapSeconds, callbackStarted - callbackLastAt) }
@@ -969,7 +1032,6 @@ final class AppleVideoFrameSource: ObservableObject {
             return
         }
         guard let output = videoOutput else { return }
-        let hostTime = displayLink.timestamp + displayLink.duration
         let itemTime = output.itemTime(forHostTime: hostTime)
         guard output.hasNewPixelBuffer(forItemTime: itemTime),
               let pixelBuffer = output.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: nil)
@@ -1044,10 +1106,13 @@ final class AppleVideoFrameSource: ObservableObject {
             let delay = LiveVideoLagEstimator.quantize(milliseconds: effectiveDelay)
             if renderDelayMilliseconds != delay { renderDelayMilliseconds = delay }
         }
-        if renderNatively {
-            enqueueForImmediateDisplay(pixelBuffer)
+        if !renderingSuspended {
+            if renderNatively {
+                enqueueForImmediateDisplay(pixelBuffer)
+            }
+            // GPU work is not permitted in background; analysis resumes with the display.
+            submitForAnomalyAnalysis(pixelBuffer: pixelBuffer, itemTime: itemTime)
         }
-        submitForAnomalyAnalysis(pixelBuffer: pixelBuffer, itemTime: itemTime)
         if state != .streaming { state = .streaming }
     }
 

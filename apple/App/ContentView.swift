@@ -1,3 +1,4 @@
+import Combine
 import CoreLocation
 import LocalAuthentication
 import R2CCore
@@ -125,6 +126,8 @@ struct ContentView: View {
     @StateObject private var peerCoordinator = AppleTrackerCoordinator()
     @StateObject private var proximityAlerts = AppleProximityAlertCenter()
     @StateObject private var operationalAlerts = AppleOperationalAlertCenter()
+    /// Widens alert freshness while locked; set by AppleAlertCoordinator lifecycle.
+    @State private var alertEvaluationInBackground = false
     @StateObject private var notams = AppleNotamCenter.shared
     @StateObject private var airspace = AppleAirspaceCenter.shared
     @StateObject private var landRestrictions = AppleLandRestrictionCenter.shared
@@ -910,9 +913,6 @@ struct ContentView: View {
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingFlightAllowance = false } } }
                 }
             }
-            .task {
-                await monitorOperationalState()
-            }
             .onChange(of: idleTimeoutFingerprint, initial: true) {
                 AppleApplicationCleanupCenter.shared.configureIdleTimeout(
                     appStartedAt: appStartedAt,
@@ -923,15 +923,8 @@ struct ContentView: View {
             .task(id: profileLifecycle.mutualAidExpiresAt) {
                 await enforceMutualAidExpiryAtDeadline()
             }
-            .task(id: scenePhase == .active) {
-                guard scenePhase == .active else { return }
-                while !Task.isCancelled,
-                      !AppleApplicationCleanupCenter.shared.isShutdownRequested {
-                    mediaMTX.ensureHealthy(captureStreams: captureStreams)
-                    clueStore.pruneDeletedStorage()
-                    try? await Task.sleep(for: .seconds(15))
-                }
-            }
+            // RTMP ingest health and storage pruning run in AppleAlertCoordinator's
+            // 15 s maintenance so they continue while the display is locked.
             .task(id: scenePhase == .active) {
                 guard scenePhase == .active else { return }
                 // NWPath can stay identical across SSID changes, including the same IP/subnet.
@@ -1049,33 +1042,8 @@ struct ContentView: View {
                         "bridgeRssiDbm=\(diagnostic.bridgeToDeviceRssiDbm)"
                 )
             }
-            .onChange(of: bluetoothScanner.ingressDiagnostic) { _, diagnostic in
-                guard let diagnostic else { return }
-                AppleLog.info(
-                    "BluetoothRID",
-                    "Ingress callbacks=\(diagnostic.discoveryCallbacks) " +
-                        "nonRID=\(diagnostic.nonRemoteIDCallbacks) packets=\(diagnostic.receivedPackets) " +
-                        "decoded=\(diagnostic.decodedPackets) locations=\(diagnostic.locationPackets) " +
-                        "observations=\(diagnostic.emittedObservations) relayPings=\(diagnostic.relayPings) " +
-                        "noFreshLocation=\(diagnostic.noFreshLocation) " +
-                        "missingIdentity=\(diagnostic.missingIdentity) " +
-                        "invalidLocation=\(diagnostic.invalidLocation) " +
-                        "decodeFailures=\(diagnostic.decodeFailures) streamDrops=\(diagnostic.streamDrops) " +
-                        "lastSequence=\(diagnostic.lastSequence) " +
-                        "lastTransmitter=\(diagnostic.lastTransmitterID.uuidString) " +
-                        "lastCounter=\(diagnostic.lastMessageCounter.map(String.init) ?? "unavailable") " +
-                        "lastKinds=\(diagnostic.lastMessageKinds) rssi=\(diagnostic.lastRSSIDbm) " +
-                        "serviceData=\(diagnostic.serviceDataSummary) " +
-                        "manufacturerData=\(diagnostic.manufacturerDataSummary)"
-                )
-            }
-            .onChange(of: bluetoothScanner.scanRestartCount) { _, count in
-                guard count > 0 else { return }
-                AppleLog.info(
-                    "BluetoothRID",
-                    "High-priority scan restart=\(count) callbacks=\(bluetoothScanner.ingressDiagnostic?.discoveryCallbacks ?? 0)"
-                )
-            }
+            // Bluetooth ingress and scan-restart diagnostics are logged by
+            // AppleAlertCoordinator so they continue while the display is locked.
             .onChange(of: mediaMTX.status) { _, status in
                 AppleLog.info("MediaMTX", status)
             }
@@ -1140,7 +1108,6 @@ struct ContentView: View {
             }
             .onChange(of: showTrackMap) { _, showing in
                 guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
-                updateIdleTimerPolicy(for: scenePhase)
                 if showing {
                     mediaMTX.ensureHealthy(captureStreams: captureStreams)
                 }
@@ -1155,7 +1122,6 @@ struct ContentView: View {
                     incidentMapBackgroundDisconnectTask = nil
                     incidentMapBackgroundedAt = nil
                 }
-                locationProvider.setIncidentMapBackgroundMonitoringEnabled(!newMapID.isEmpty)
             }
             .onChange(of: peerCoordinator.trackerSilenceGeneration) { _, _ in
                 guard scenePhase != .active else { return }
@@ -1241,26 +1207,8 @@ struct ContentView: View {
             .onChange(of: peerCoordinator.peers.count) { _, _ in
                 publishLocalDeviceMarker(force: true)
             }
-            .onReceive(ridTracks.$tracks) { tracks in
-                updateProximityAlerts(tracks: tracks)
-                reconcileStreamFlightPairings(tracks: tracks, offerConfirmation: false)
-                // @Published emits before ridTracks.tracks is assigned. Use this snapshot,
-                // especially the empty list that ends a video-only flight.
-                let remoteID = droneConfirmations.reconcileActiveFlights(
-                    confirmationActiveRemoteIDs(tracks: tracks),
-                    aircraftReceivedAt: Dictionary(tracks.map { ($0.aircraftID, $0.lastAircraftMessageAt) }, uniquingKeysWith: max),
-                    videoSessions: confirmationVideoSessions,
-                    allowPrompt: pendingDroneConfirmation == nil,
-                    mediaDiagnostics: confirmationMediaDiagnostics,
-                    onFlightEnded: dismissEndedDroneConfirmation
-                )
-                if !ProcessInfo.processInfo.arguments.contains("--suppress-auto-confirmation"),
-                   pendingDroneConfirmation == nil,
-                   let remoteID,
-                   !droneConfirmations.isUnassociated(remoteID) {
-                    pendingDroneConfirmation = DroneConfirmationRequest(id: remoteID)
-                }
-            }
+            // RID track snapshots are handled by AppleAlertCoordinator (handleTrackSnapshot),
+            // which keeps running while this subtree is replaced by the access gate.
             .onReceive(peerCoordinator.objectWillChange) { _ in
                 Task { @MainActor in
                     await Task.yield()
@@ -1326,6 +1274,9 @@ struct ContentView: View {
             .navigationTitle("RID-2-Caltopo")
             .navigationBarTitleDisplayMode(.inline)
         }
+            // Bound from body, not monitoredRoot: the access gate replaces
+            // monitoredRoot while the app is inactive or in background.
+            .task { startAlertCoordinator() }
             .modifier(TrackerDeviceReconciliationModifier(
                 model: deviceReconciliation,
                 signInRequired: handleDeviceReconciliationSignIn,
@@ -1402,7 +1353,8 @@ struct ContentView: View {
             }
             .onChange(of: scenePhase) { _, phase in
                 guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
-                updateIdleTimerPolicy(for: phase)
+                // Live View no longer holds the screen on (matches Android). Background
+                // scan mode and lifecycle logging are handled by AppleAlertCoordinator.
                 switch phase {
                 case .active:
                     handleIncidentMapBecameActive()
@@ -1419,7 +1371,12 @@ struct ContentView: View {
                         await ridTracks.setLocalDeviceMarkerPublishingEnabled(true)
                     }
                 case .background:
-                    removeLocalDeviceMarkerInBackground()
+                    // Android keeps the device marker while the display is off. Keep
+                    // it too when background location will keep this session running;
+                    // otherwise iOS may suspend the app, so remove it as before.
+                    if !locationProvider.backgroundOperationAvailable {
+                        removeLocalDeviceMarkerInBackground()
+                    }
                     scheduleIncidentMapBackgroundDisconnect()
                 case .inactive:
                     break
@@ -2509,18 +2466,6 @@ struct ContentView: View {
         )
     }
 
-    private func updateIdleTimerPolicy(for phase: ScenePhase) {
-        let keepScreenAwake = showTrackMap && phase == .active
-        guard UIApplication.shared.isIdleTimerDisabled != keepScreenAwake else { return }
-        UIApplication.shared.isIdleTimerDisabled = keepScreenAwake
-        AppleLog.info(
-            "Network",
-            keepScreenAwake
-                ? "Automatic screen lock disabled while Live View is active"
-                : "Automatic screen lock restored"
-        )
-    }
-
     private func closeLiveView() {
         AppleLog.info("Navigation", "Live View back selected; returning to Main Screen")
         showTrackMap = false
@@ -2961,6 +2906,66 @@ struct ContentView: View {
         }
     }
 
+    /// Every RID track snapshot, delivered by AppleAlertCoordinator so proximity
+    /// evaluation and flight reconciliation continue while the display is locked.
+    private func handleTrackSnapshot(_ tracks: [RidAircraftTrack]) {
+        updateProximityAlerts(tracks: tracks)
+        reconcileStreamFlightPairings(tracks: tracks, offerConfirmation: false)
+        // @Published emits before ridTracks.tracks is assigned. Use this snapshot,
+        // especially the empty list that ends a video-only flight.
+        let remoteID = droneConfirmations.reconcileActiveFlights(
+            confirmationActiveRemoteIDs(tracks: tracks),
+            aircraftReceivedAt: Dictionary(tracks.map { ($0.aircraftID, $0.lastAircraftMessageAt) }, uniquingKeysWith: max),
+            videoSessions: confirmationVideoSessions,
+            allowPrompt: pendingDroneConfirmation == nil,
+            mediaDiagnostics: confirmationMediaDiagnostics,
+            onFlightEnded: dismissEndedDroneConfirmation
+        )
+        if !ProcessInfo.processInfo.arguments.contains("--suppress-auto-confirmation"),
+           pendingDroneConfirmation == nil,
+           let remoteID,
+           !droneConfirmations.isUnassociated(remoteID) {
+            pendingDroneConfirmation = DroneConfirmationRequest(id: remoteID)
+        }
+    }
+
+    /// Binds the process-wide alert coordinator (iOS counterpart of Android's
+    /// AlertSpeechCoordinator). Idempotent; later calls only refresh the hooks.
+    private func startAlertCoordinator() {
+        AppleAlertCoordinator.shared.start(
+            hooks: AppleAlertCoordinator.Hooks(
+                tracks: { tracks in handleTrackSnapshot(tracks) },
+                evaluate: {
+                    guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
+                    updateProximityAlerts()
+                    evaluateOperationalState()
+                },
+                maintain: {
+                    guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
+                    mediaMTX.ensureHealthy(captureStreams: captureStreams)
+                    clueStore.pruneDeletedStorage()
+                },
+                status: {
+                    let freshness = AlertTrackFreshnessSummary(
+                        sampleDates: ridTracks.tracks.map(\.lastObservation.receivedAt),
+                        now: Date(),
+                        maximumAgeSeconds: RidAlertPositionFreshness.maximumAgeSeconds(
+                            inBackground: alertEvaluationInBackground
+                        )
+                    )
+                    return "\(locationProvider.backgroundStatusDescription) "
+                        + "\(proximityAlerts.diagnosticSummary) \(freshness.logDescription)"
+                },
+                lifecycle: { background in
+                    alertEvaluationInBackground = background
+                    bluetoothScanner.setApplicationInBackground(background)
+                }
+            ),
+            tracks: ridTracks.$tracks.eraseToAnyPublisher(),
+            scanner: bluetoothScanner
+        )
+    }
+
     private func updateProximityAlerts(tracks: [RidAircraftTrack]? = nil) {
         proximityAlerts.update(
             tracks: tracks ?? ridTracks.tracks,
@@ -2974,7 +2979,10 @@ struct ContentView: View {
                     coordinationRequired: peerCoordinator.coordinationRequired,
                     coordinatorEligible: peerCoordinator.isLocalAlertEligible(remoteID: remoteID)
                 )
-            }
+            },
+            maximumPositionAgeSeconds: RidAlertPositionFreshness.maximumAgeSeconds(
+                inBackground: alertEvaluationInBackground
+            )
         )
     }
 
@@ -3037,11 +3045,30 @@ struct ContentView: View {
             altitudeDisplay: ridTracks.altitudeDisplayByAircraftID,
             operatorLocation: locationProvider.lastLocation,
             identityProvider: droneConfirmations.identity,
-            alertEligibility: demoAlerts ? { _ in true } : peerCoordinator.isLocalAlertEligible,
+            // Same rule as proximity (and Android DefaultPeerCoordinator): local
+            // confirmation is enough in Standalone; a coordinated incident also
+            // needs the local owner/confirmation lease.
+            // Standalone altitude matches Android ComplianceAlertCenter: no flight-
+            // confirmation gate. identityProvider below already limits candidates to
+            // known team aircraft. Coordinated incidents still need the lease.
+            alertEligibility: demoAlerts ? { _ in true } : { remoteID in
+                if peerCoordinator.coordinationRequired {
+                    return RidProximityEligibility.allows(
+                        locallyConfirmed: droneConfirmations.isCurrentFlightConfirmed(remoteID),
+                        coordinationRequired: true,
+                        coordinatorEligible: peerCoordinator.isLocalAlertEligible(remoteID: remoteID)
+                    )
+                }
+                return true
+            },
             bridgeCheckDistanceFeet: Double(orgConfigSettings.bridgeCheckDistanceFeet),
             maximumTrackDelaySeconds: Double(orgConfigSettings.newTrackDelaySeconds),
             bridgeLastSeenAt: bluetoothScanner.bridgeLastSeenAt,
-            pairedSEILastActivityAt: streamRegistry.djiSEILastActivityByAircraftID()
+            pairedSEILastActivityAt: streamRegistry.djiSEILastActivityByAircraftID(),
+            pairedSEIRelativeUpMeters: streamRegistry.djiSEIRelativeUpMetersByAircraftID(),
+            maximumSampleAgeSeconds: RidAlertPositionFreshness.maximumAgeSeconds(
+                inBackground: alertEvaluationInBackground
+            )
         )
     }
 
@@ -3076,43 +3103,41 @@ struct ContentView: View {
         )
     }
 
-    private func monitorOperationalState() async {
-        while !Task.isCancelled,
-              !AppleApplicationCleanupCenter.shared.isShutdownRequested {
-            updateOperationalAlerts()
-            let activeAircraftIDs = ridTracks.tracks.map(\.aircraftID)
-            let allActiveFlightsCoveredByFreshPairedSEI =
-                streamRegistry.allAircraftHaveFreshPairedSEI(
-                    aircraftIDs: activeAircraftIDs
-                )
-            bridgeAlerts.update(
-                monitoringActive: OperationalBridgeAlertPolicy.shouldMonitor(
-                    scannerRunning: bluetoothScanner.state == .scanning,
-                    activeFlightCount: activeAircraftIDs.count,
-                    allActiveFlightsCoveredByFreshPairedSEI:
-                        allActiveFlightsCoveredByFreshPairedSEI
-                ),
-                lastPingAt: bluetoothScanner.bridgeLastSeenAt
+    /// Called every second by AppleAlertCoordinator (not by a view task, which the
+    /// protected-access gate cancels while the display is locked).
+    private func evaluateOperationalState() {
+        updateOperationalAlerts()
+        let activeAircraftIDs = ridTracks.tracks.map(\.aircraftID)
+        let allActiveFlightsCoveredByFreshPairedSEI =
+            streamRegistry.allAircraftHaveFreshPairedSEI(
+                aircraftIDs: activeAircraftIDs
             )
-            if !ProcessInfo.processInfo.arguments.contains("--demo-notam") {
-                notams.update(location: locationProvider.lastLocation)
-                airspace.update(location: locationProvider.lastLocation)
-                landRestrictions.update(location: locationProvider.lastLocation)
-            }
-            let altitudeText = operationalAlerts.altitudeAlerts.first.map {
-                "Altitude Limit Exceeded: " + ($0.mappedID.isEmpty ? $0.remoteID : $0.mappedID)
-            }
-            let signalText = operationalAlerts.signalLossAlerts.first.map {
-                ($0.bridgeRecentlySeen ? "Drone Location Stale: " : "Drone Signal Lost: ")
-                    + ($0.mappedID.isEmpty ? $0.remoteID : $0.mappedID)
-            }
-            let proximityText = proximityAlerts.activeAlert.map { _ in "Aircraft Proximity Alert" }
-            AppleExternalDisplayData.shared.update(
-                tracks: ridTracks.tracks,
-                alertText: altitudeText ?? signalText ?? proximityText
-            )
-            try? await Task.sleep(for: .seconds(1))
+        bridgeAlerts.update(
+            monitoringActive: OperationalBridgeAlertPolicy.shouldMonitor(
+                scannerRunning: bluetoothScanner.state == .scanning,
+                activeFlightCount: activeAircraftIDs.count,
+                allActiveFlightsCoveredByFreshPairedSEI:
+                    allActiveFlightsCoveredByFreshPairedSEI
+            ),
+            lastPingAt: bluetoothScanner.bridgeLastSeenAt
+        )
+        if !ProcessInfo.processInfo.arguments.contains("--demo-notam") {
+            notams.update(location: locationProvider.lastLocation)
+            airspace.update(location: locationProvider.lastLocation)
+            landRestrictions.update(location: locationProvider.lastLocation)
         }
+        let altitudeText = operationalAlerts.altitudeAlerts.first.map {
+            "Altitude Limit Exceeded: " + ($0.mappedID.isEmpty ? $0.remoteID : $0.mappedID)
+        }
+        let signalText = operationalAlerts.signalLossAlerts.first.map {
+            ($0.bridgeRecentlySeen ? "Drone Location Stale: " : "Drone Signal Lost: ")
+                + ($0.mappedID.isEmpty ? $0.remoteID : $0.mappedID)
+        }
+        let proximityText = proximityAlerts.activeAlert.map { _ in "Aircraft Proximity Alert" }
+        AppleExternalDisplayData.shared.update(
+            tracks: ridTracks.tracks,
+            alertText: altitudeText ?? signalText ?? proximityText
+        )
     }
 
     private func argumentValue(_ flag: String) -> String? {

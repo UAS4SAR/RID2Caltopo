@@ -174,7 +174,9 @@ final class MediaMTXViewModel: ObservableObject {
                 let storage = await Task.detached { AppleFlightStorage.maintain() }.value
                 recordingAllowed = !storage.blocked
                 reportStoragePressure(storage)
-                AppleFlightStorage.protect(AppleFlightStorage.dayName(Date()), owner: "recorder")
+                // No day-level "recorder" owner: it pinned the start day after
+                // midnight. Today is always protected, and incomplete segments are
+                // protected via setRecorderRunning (see AppleFlightStorage).
                 let configuration = try MediaMTXRuntimeConfiguration.build(
                     base: baseConfiguration,
                     captureStreams: captureStreams && recordingAllowed,

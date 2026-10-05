@@ -207,6 +207,23 @@ final class AppleStreamRegistry: ObservableObject {
         }
     }
 
+    /// Latest SEI relative-up (metres) per bound aircraft for own-ship altitude alerts
+    /// when RID/BLE AGL is stale. Not used for proximity between aircraft.
+    func djiSEIRelativeUpMetersByAircraftID() -> [String: Double] {
+        var bestAt: [String: Date] = [:]
+        var result: [String: Double] = [:]
+        for session in sessions {
+            guard let aircraftID = flightActivity.boundAircraftID(for: session.id),
+                  let telemetry = session.model.latestDJICameraTelemetry,
+                  let up = telemetry.relativeUpMeters, up.isFinite
+            else { continue }
+            if let existing = bestAt[aircraftID], existing >= telemetry.receivedAt { continue }
+            bestAt[aircraftID] = telemetry.receivedAt
+            result[aircraftID] = up
+        }
+        return result
+    }
+
     /** Once true, operational consumers must not silently downgrade this stream to RID. */
     func isSEIPositionAuthorityEstablished(streamID: String) -> Bool {
         seiPositionContinuationByStreamID[streamID]?.positionValidated == true

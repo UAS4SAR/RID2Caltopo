@@ -51,7 +51,12 @@ struct AppleArchiveDirectoryOption: Sendable, Identifiable, Equatable {
     let byteCount: Int64
     let sizeLabel: String
     let fileCount: Int
-    let isToday: Bool
+    /// Why the folder cannot be deleted now (e.g. "today", "in use by video review").
+    let protectionReason: String?
+    /// Clues in this folder that never uploaded to CalTopo and would be lost on delete.
+    let unuploadedClueCount: Int
+    /// True when deletion is blocked (kept for existing callers).
+    var isToday: Bool { protectionReason != nil }
 }
 
 actor AppleTrackArchiveStore {
@@ -217,7 +222,10 @@ actor AppleTrackArchiveStore {
                 byteCount: bytes,
                 sizeLabel: ArchiveFolderDisplay.size(bytes),
                 fileCount: files,
-                isToday: directory.lastPathComponent == today || AppleFlightStorage.isProtected(directory.lastPathComponent)
+                protectionReason: (directory.lastPathComponent == today
+                    ? FlightFolderProtection.today
+                    : AppleFlightStorage.protectionReason(directory.lastPathComponent))?.label,
+                unuploadedClueCount: AppleFlightStorage.unuploadedClueCount(directory.lastPathComponent)
             )
         }
         .sorted { $0.name < $1.name }

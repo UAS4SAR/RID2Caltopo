@@ -114,7 +114,6 @@ import org.ncssar.rid2caltopo.landrestrictions.LandRestrictionCenter
 import org.ncssar.rid2caltopo.notam.NotamCenter
 import org.ncssar.rid2caltopo.ui.ActiveScreen
 import org.ncssar.rid2caltopo.ui.CaltopoSettingsScreen
-import org.ncssar.rid2caltopo.ui.ComplianceAlertHost
 import org.ncssar.rid2caltopo.ui.ControllerSignalStrengthAlertHost
 import org.ncssar.rid2caltopo.ui.DroneScoutBridgeAlertHost
 import org.ncssar.rid2caltopo.ui.DroneSignalLossAlertHost
@@ -132,6 +131,7 @@ import org.ncssar.rid2caltopo.ui.R2CViewModel
 import org.ncssar.rid2caltopo.ui.R2CViewModelFactory
 import org.ncssar.rid2caltopo.ui.ScannerScreen
 import org.ncssar.rid2caltopo.ui.SpokenWarningAlertHost
+import org.ncssar.rid2caltopo.ui.AlertSpeechCoordinator
 import org.ncssar.rid2caltopo.ui.SpokenWarningCenter
 import org.ncssar.rid2caltopo.ui.SpokenWarningKind
 import org.ncssar.rid2caltopo.ui.theme.RID2CaltopoTheme
@@ -1819,7 +1819,6 @@ class R2CActivity :
                         ProximityAlertCenter.suspendCurrentAlert()
                     }
                 )
-                ComplianceAlertHost()
                 DroneSignalLossAlertHost()
                 ControllerSignalStrengthAlertHost()
                 DroneScoutBridgeAlertHost()
@@ -2884,6 +2883,7 @@ class R2CActivity :
                 MediaMTXService.requestStop(this)
                 CTDebug(TAG,"onDestroy() shutting down scanning service..." )
                 ScanningService.requestStop(this)
+                AlertSpeechCoordinator.stop()
                 CaltopoClient.ShutdownAsync()
                 CTDebug(TAG, "onDestroy() archiving tracks...")
                 AppActivity = null

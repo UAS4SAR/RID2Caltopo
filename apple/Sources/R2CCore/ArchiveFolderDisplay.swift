@@ -17,6 +17,26 @@ public enum ArchiveFolderDisplay {
         return unit(Int(age / year), singular: "year")
     }
 
+    /// Row detail for the flight-folder list. Same text as Android
+    /// `archiveCleanupDetail` (ArchiveCleanup.kt).
+    public static func detail(age: String, size: String, protectionReason: String?, unuploadedClueCount: Int) -> String {
+        var text = "Age \(age) • \(size)"
+        if let protectionReason { text += " • protected: \(protectionReason)" }
+        if unuploadedClueCount > 0 {
+            text += " • \(unuploadedClueCount) clue\(unuploadedClueCount == 1 ? "" : "s") not uploaded"
+        }
+        return text
+    }
+
+    /// Delete confirmation, warning when clues that never reached CalTopo would be lost.
+    public static func deleteConfirmation(folderCount: Int, sizeLabel: String, unuploadedClueCount: Int) -> String {
+        var text = "Permanently delete \(folderCount) archive folder\(folderCount == 1 ? "" : "s") totaling \(sizeLabel)?"
+        if unuploadedClueCount > 0 {
+            text += " \(unuploadedClueCount) clue\(unuploadedClueCount == 1 ? " was" : "s were") never uploaded to CalTopo and will be lost."
+        }
+        return text
+    }
+
     public static func size(_ bytes: Int64) -> String {
         let safeBytes = max(0, bytes)
         if safeBytes < 1_024 { return "\(safeBytes) B" }

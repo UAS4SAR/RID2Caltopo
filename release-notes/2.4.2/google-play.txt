@@ -1,0 +1,3 @@
+<en-US>
+Tracking, video, and spoken advisories continue when the display locks. Proximity speech repeats about every 30 seconds. Standalone altitude alerts no longer need flight confirmation and can use DJI SEI when Bluetooth Remote ID is stale. Locked-screen position freshness is 15 seconds. Live View no longer keeps the screen awake. Flight-folder protection is consistent, and pending or failed clues no longer block manual delete.
+</en-US>

@@ -1,0 +1,9 @@
+Latest changes:
+- Keep Remote ID tracking, video ingest, and spoken advisories running when the display locks, using When-In-Use location for the session.
+- Spoken proximity warnings repeat about every 30 seconds while an alert stays active, including with the display off.
+- Spoken altitude advisories work in Standalone without requiring flight confirmation; known team aircraft are scoped by identity. Prefer DJI SEI altitude for the streamed aircraft when Bluetooth Remote ID is stale.
+- While the display is locked, widen the fresh-position window for proximity and altitude to 15 seconds to tolerate slower Bluetooth Remote ID delivery.
+- Bluetooth Remote ID scanning uses a service filter and one-second restarts only in background; foreground keeps the prior high-priority scan.
+- Live View no longer holds the screen awake; the display may sleep while operations continue.
+- Flight-folder protection matches across tablets: today, recording, in use, and clue upload in progress. Pending or failed clues no longer block manual delete; the delete warning explains clue loss.
+- Process-wide alert evaluation continues while the UI is covered by the protected-access gate.
