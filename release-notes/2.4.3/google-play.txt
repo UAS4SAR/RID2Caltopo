@@ -1,0 +1,3 @@
+<en-US>
+Smaller app download size. Main-screen drone list order stays stable by flight start.
+</en-US>

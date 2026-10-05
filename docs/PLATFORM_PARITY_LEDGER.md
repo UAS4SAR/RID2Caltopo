@@ -12,6 +12,15 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### 2.4.3
+
+Platform-specific changes:
+- Android: Ship a single stripped MediaMTX asset (`assets/mediamtx`) instead of a symlink plus versioned ELF duplicate; keep the unstripped binary under `.build/mediamtx/` for debugging.
+
+Known platform differences:
+- Apple MediaMTX packaging remains the separate XCFramework path and is unchanged by the Android asset layout.
+
+
 Imported on 2026-09-23 from existing canonical release notes. Entries below preserve historical wording; their present status has not been re-audited. Prior shipped release sources are retained for provenance. From 2.3.5 onward, these sections belong only in this ledger.
 
 ### 2.0.1
