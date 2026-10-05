@@ -59,6 +59,9 @@ public struct RidTrackPoint: Sendable, Equatable, Identifiable {
 public struct RidAircraftTrack: Sendable, Equatable, Identifiable {
     public var id: String { aircraftID }
     public let aircraftID: String
+    /// Receive time of the first accepted observation for this flight. Fixed for the life of
+    /// the track (a new flight creates a new track), so it gives the aircraft list a stable order.
+    public let flightStartedAt: Date
     public fileprivate(set) var points: [RidTrackPoint]
     public fileprivate(set) var lastObservation: RidObservation
     public fileprivate(set) var lastAircraftMessageAt: Date
@@ -135,6 +138,7 @@ public actor RidTrackStore {
             let point = RidTrackPoint(observation: observation)
             let track = RidAircraftTrack(
                 aircraftID: aircraftID,
+                flightStartedAt: observation.receivedAt,
                 points: [point],
                 lastObservation: observation,
                 lastAircraftMessageAt: observation.receivedAt,
@@ -227,13 +231,18 @@ public actor RidTrackStore {
         }
     }
 
+    /// Aircraft ordered by flight start, earliest first, with the canonical aircraft ID as a
+    /// deterministic tie-break. Do not sort by last-message recency: with two aircraft
+    /// broadcasting alternately that order flips on every message and the list jumps.
     public func snapshot() -> [RidAircraftTrack] {
-        tracksByAircraftID.values.sorted {
-            if $0.lastAircraftMessageAt != $1.lastAircraftMessageAt {
-                return $0.lastAircraftMessageAt > $1.lastAircraftMessageAt
-            }
-            return $0.aircraftID < $1.aircraftID
+        tracksByAircraftID.values.sorted(by: Self.flightStartOrder)
+    }
+
+    public static func flightStartOrder(_ lhs: RidAircraftTrack, _ rhs: RidAircraftTrack) -> Bool {
+        if lhs.flightStartedAt != rhs.flightStartedAt {
+            return lhs.flightStartedAt < rhs.flightStartedAt
         }
+        return lhs.aircraftID < rhs.aircraftID
     }
 
     /// Refresh flight lifecycle presence without changing the last known position or the

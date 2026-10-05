@@ -1309,8 +1309,16 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         return this.remoteId.compareTo(other.remoteId);
     }
 
+    /** Aircraft-list order: flight start (first accepted waypoint) earliest first, with the
+     *  unique remoteId as a deterministic tie-break. A drone whose current flight has no
+     *  accepted waypoint yet (start == 0) sorts after every drone with a known start, so it
+     *  does not briefly jump to the top and then move once its first waypoint arrives.
+     *  Never sort by most-recent update: that order flips as two drones report alternately.
+     */
     public int compareToAge(@NonNull CtDroneSpec other) {
-        int byFirstWaypoint = Long.compare(this.startMsecTimestamp, other.startMsecTimestamp);
+        long thisStart = this.startMsecTimestamp > 0 ? this.startMsecTimestamp : Long.MAX_VALUE;
+        long otherStart = other.startMsecTimestamp > 0 ? other.startMsecTimestamp : Long.MAX_VALUE;
+        int byFirstWaypoint = Long.compare(thisStart, otherStart);
         if (byFirstWaypoint != 0) return byFirstWaypoint;
         return this.remoteId.compareTo(other.remoteId);
     }
