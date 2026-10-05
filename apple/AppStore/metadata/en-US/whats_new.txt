@@ -1,15 +1,9 @@
 Latest changes:
-- Retry map downloads after increasing the cache limit without turning off AOL; missing AOL coverage plans are refreshed and storage is checked again.
-- Scan or paste any HTTPS caltopo.com link in Import Config, then tap Open CalTopo to continue in the embedded browser. Saved QR images are also supported.
-- User interaction resets the automatic idle shutdown timer, including use of the embedded CalTopo browser.
-- Organization account verification and configuration checks retry when the network returns, including before an incident map is selected.
-- Tap the Proximity Alerts chip on Main or Live View to open Settings at the proximity controls.
-- Correct the stream settings panel presentation, restore direct access to AD Help and Performance, and remove the redundant selected-stream crosshair icon.
-- Make the waiting-for-controller placeholder consistent on all devices, and add the incident-map shortcut below the controller setup instructions.
-- Use consistent single-tile focus on all devices: the sole tile is focused automatically, with a yellow selection border only in multi-tile views.
-- Tap droneDesig in the Live View network status to open the registered-aircraft list and Add aircraft, just like the placeholder RTMP URL.
-- Improve proximity-settings scrolling and stabilize Live View settings popovers; restore Performance access from stream settings.
-- Show AD scan-zone and small-target guides in the waiting tile, and preserve the PiP preference when switching to split view.
-- Show the incident map name compactly on one line in the Live View status line.
-- Live View full-screen controls now sit in their own bar so they never cover the observation banner, and the main dashboard scrolls sideways like a spreadsheet with cells that grow with your text size.
-- Enabling proximity alerts now requires acknowledging each advisory statement.
+- Keep Remote ID tracking, video ingest, and spoken advisories running when the display locks, using When-In-Use location for the session.
+- Spoken proximity warnings repeat about every 30 seconds while an alert stays active, including with the display off.
+- Spoken altitude advisories work in Standalone without requiring flight confirmation; known team aircraft are scoped by identity. Prefer DJI SEI altitude for the streamed aircraft when Bluetooth Remote ID is stale.
+- While the display is locked, widen the fresh-position window for proximity and altitude to 15 seconds to tolerate slower Bluetooth Remote ID delivery.
+- Bluetooth Remote ID scanning uses a service filter and one-second restarts only in background; foreground keeps the prior high-priority scan.
+- Live View no longer holds the screen awake; the display may sleep while operations continue.
+- Flight-folder protection matches across tablets: today, recording, in use, and clue upload in progress. Pending or failed clues no longer block manual delete; the delete warning explains clue loss.
+- Process-wide alert evaluation continues while the UI is covered by the protected-access gate.
