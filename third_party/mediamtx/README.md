@@ -56,11 +56,19 @@ Build and install the Android arm64 executable:
 tools/build_mediamtx_android_arm64.sh
 ```
 
-The default build intentionally matches the known-good untrimmed build command.
-Set `MEDIAMTX_TRIMPATH=1` only when explicitly evaluating a trimmed build.
-The manifest records both the byte-identical historical untrimmed binary hash
-and the path-independent corrected trimpath binary hash. Trimpath builds are
-rejected when their SHA-256 differs from the pinned reference.
+The unstripped binary is written to `.build/mediamtx/mediamtx-1.16.2-rid2caltopo`
+for debugging and SHA verification. The default install copies a
+`llvm-strip --strip-all` binary to `app/src/main/assets/mediamtx` only, so
+Android packaging ships a single MediaMTX asset. Set `MEDIAMTX_STRIP=0` to
+install the unstripped binary into assets for debugging. Do not place a
+versioned `mediamtx-*` copy under `assets/` (Android dereferences symlinks and
+would ship duplicates).
+
+The default build intentionally matches the known-good untrimmed build command,
+then strips for release packaging. Set `MEDIAMTX_TRIMPATH=1` only when
+explicitly evaluating a trimmed build. The manifest records the unstripped,
+stripped, and path-independent trimpath SHA-256 values. Builds are rejected
+when those hashes differ from the pinned references.
 
 The build runs MediaMTX's standard generators. Those generators download
 checksum-verified HLS and Raspberry Pi camera release assets into the ignored
