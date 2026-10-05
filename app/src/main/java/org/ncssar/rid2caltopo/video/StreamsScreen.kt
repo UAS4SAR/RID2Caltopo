@@ -402,6 +402,7 @@ fun StreamsScreen(
                                 )
                                 Spacer(Modifier.width(6.dp))
                             }
+                            AlertStatusBell(onClick = { showAlertPanel = true })
                             BridgeSignalIndicator(rssi = bridgeRssi, onClick = handleBack, enabled = showNavigation)
                         }
                     }
@@ -435,11 +436,6 @@ fun StreamsScreen(
                     } else {
                         Text(text = serverStatus, modifier = Modifier.clickable { showPerformancePanel = true }.padding(end = 8.dp), fontSize = 14.sp)
                     }
-                            AlertStatusBell(
-                                onClick = { showAlertPanel = true },
-                                chipRow = true,
-                            )
-
                 }
             }
             if (!remoteVideoStatus.isNullOrBlank()) {
@@ -665,6 +661,7 @@ fun StreamsScreen(
                                 viewModel.setStreamPipEnabled(!streamPipUiState.enabled)
                             },
                         )
+                        AlertStatusBell(onClick = { showAlertPanel = true })
                         BridgeSignalIndicator(rssi = bridgeRssi, onClick = handleBack, enabled = showNavigation, overlay = true)
                     }
                 }

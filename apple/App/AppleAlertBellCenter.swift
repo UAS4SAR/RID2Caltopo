@@ -122,9 +122,11 @@ struct AppleAlertStatusBell: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(center.aggregateColor.swiftUIColor)
                 }
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Alert panel")
+            .accessibilityLabel("Alert panel. Tap to mute or unmute alerts.")
             .accessibilityValue(center.aggregateColor == .red ? "active" :
                 center.aggregateColor == .orange ? "approaching" : "idle")
             .accessibilityIdentifier("alert-status-bell")

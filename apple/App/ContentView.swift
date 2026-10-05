@@ -248,6 +248,10 @@ struct ContentView: View {
                 AdaptiveOperatorHeader { centered in
                     mainHeaderTitle(centered: centered)
                 } actions: {
+                    // Unified session alert bell lives beside the Bridge RSSI gauge so it
+                    // never overlays the horizontally scrolling chip / URL row.
+                    AppleAlertStatusBell(center: alertBell)
+                        .padding(.trailing, 6)
                     Button {
                         if showTrackMap { closeLiveView() }
                         else { openLiveViewFromBridgeChip() }

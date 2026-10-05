@@ -1906,6 +1906,9 @@ fun MainScreen(
                         }
                     },
                     actions = {
+                        // Unified session alert bell sits beside the Bridge RSSI gauge, never in
+                        // the horizontally scrolling chip row.
+                        AlertStatusBell(onClick = { showAlertPanel = true })
                         MainBridgeSignalIndicator(rssi = bridgeRssi, onClick = { localViewModel.showStreams() })
                         Spacer(Modifier.width(16.dp))
                         IconButton(onClick = { menuExpanded = true }) {
@@ -2003,14 +2006,6 @@ fun MainScreen(
                     ResumeProximityAlertButton(onSettings = { localViewModel.showProximitySettings() })
                     NotamStatusChip(state = notamUiState, airspaceState = airspaceUiState, onClick = { showNotamPanel = true }, outerPadding = PaddingValues(0.dp))
                     LandRestrictionStatusChip(state = landRestrictionUiState, onClick = { showLandRestrictionPanel = true }, outerPadding = PaddingValues(0.dp))
-                    // Unified session alert bell (replaces ComplianceAlertBell + SignalLoss
-                    // buttons and the duplicate top-bar AlertStatusBell). Type mutes live in
-                    // AlertStatusPanel; per-drone altitude/signal dialogs remain available
-                    // from the panel flow via unmute clearing.
-                    AlertStatusBell(
-                        onClick = { showAlertPanel = true },
-                        chipRow = true,
-                    )
                 }
             }
         }

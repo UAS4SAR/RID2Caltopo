@@ -343,8 +343,9 @@ struct ProximityAlertBanner: View {
 }
 
 
-/// Unified session alert bell (chip-row / top-trailing). Replaces the old
-/// proximity-only orange circle and the duplicate bridge-adjacent status bell.
+/// Brief proximity notice (top-trailing overlay). The unified alert bell itself sits
+/// beside the Bridge RSSI gauge in the top bar; this host renders nothing unless a
+/// notice is showing, so it never blocks the horizontally scrolling chip / URL row.
 /// Hiding the brief notice never acknowledges, suspends, or clears the engine.
 struct AppleProximityWarningHost: View {
     @ObservedObject var center: AppleProximityAlertCenter
@@ -353,18 +354,6 @@ struct AppleProximityWarningHost: View {
     @State private var noticeID: Int64?
 
     private var showBell: Bool { alertBell.showBell }
-    private var strokeColor: Color {
-        switch alertBell.aggregateColor {
-        case .red: return .red
-        case .orange: return Color(red: 0.96, green: 0.49, blue: 0)
-        case .white: return Color.secondary.opacity(0.55)
-        }
-    }
-    private var bellLabel: String {
-        let tone = alertBell.aggregateColor == .red ? "active" :
-            alertBell.aggregateColor == .orange ? "approaching" : "idle"
-        return "Alert panel, \(tone). Tap to mute or unmute alerts."
-    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -376,7 +365,7 @@ struct AppleProximityWarningHost: View {
                                 .font(.subheadline.bold()).foregroundStyle(.red)
                             Text("\(alert.nearestDroneMappedID) · \(Int(alert.horizontalSeparationFeet.rounded())) ft horizontal")
                                 .font(.caption).lineLimit(2)
-                            Text("Tap the bell for the alert mute panel.").font(.caption2)
+                            Text("Tap the bell by Bridge for the alert mute panel.").font(.caption2)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .multilineTextAlignment(.leading)
@@ -392,21 +381,6 @@ struct AppleProximityWarningHost: View {
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(.red, lineWidth: 1))
                 .accessibilityIdentifier("proximity-brief-notice")
-            }
-            if showBell {
-                Button { alertBell.showPanel = true } label: {
-                    Image(systemName: "bell.badge.fill")
-                        .font(.title3)
-                        .foregroundStyle(alertBell.aggregateColor == .white
-                                         ? Color.primary
-                                         : alertBell.aggregateColor.swiftUIColor)
-                        .frame(width: 48, height: 48)
-                        .background(.regularMaterial, in: Circle())
-                        .overlay(Circle().stroke(strokeColor, lineWidth: 1))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(bellLabel)
-                .accessibilityIdentifier("proximity-alarm-bell")
             }
         }
         .fixedSize(horizontal: false, vertical: true)
