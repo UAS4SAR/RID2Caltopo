@@ -126,6 +126,7 @@ struct ContentView: View {
     @StateObject private var peerCoordinator = AppleTrackerCoordinator()
     @StateObject private var proximityAlerts = AppleProximityAlertCenter()
     @StateObject private var operationalAlerts = AppleOperationalAlertCenter()
+    @ObservedObject private var alertBell = AppleAlertBellCenter.shared
     /// Widens alert freshness while locked; set by AppleAlertCoordinator lifecycle.
     @State private var alertEvaluationInBackground = false
     @StateObject private var notams = AppleNotamCenter.shared
@@ -247,6 +248,7 @@ struct ContentView: View {
                 AdaptiveOperatorHeader { centered in
                     mainHeaderTitle(centered: centered)
                 } actions: {
+                    AppleAlertStatusBell(center: alertBell)
                     Button {
                         if showTrackMap { closeLiveView() }
                         else { openLiveViewFromBridgeChip() }
@@ -287,6 +289,9 @@ struct ContentView: View {
                         )
                         showTrackMap = false
                     }
+            }
+            .sheet(isPresented: $alertBell.showPanel) {
+                AppleAlertStatusPanel(center: alertBell)
             }
             .sheet(isPresented: $showProximitySettings) {
                 NavigationStack {
@@ -3038,6 +3043,63 @@ struct ContentView: View {
         automaticStreamPairingAircraftID = confirmedCandidateIDs[0]
     }
 
+    private func ensureAlertBellMuteBridges() {
+        if alertBell.onProximityMuteChanged == nil {
+            alertBell.onProximityMuteChanged = { [proximityAlerts] muted in
+                if muted {
+                    proximityAlerts.suspend()
+                } else if proximityAlerts.consent.enabled {
+                    proximityAlerts.resume()
+                }
+            }
+            alertBell.onBridgeMuteChanged = { [bridgeAlerts] muted in
+                bridgeAlerts.setAudioMuted(muted)
+            }
+            alertBell.onAltitudeTypeUnmuted = { [operationalAlerts] in
+                operationalAlerts.clearAltitudeMutes()
+            }
+            alertBell.onDroneSignalLossTypeUnmuted = { [operationalAlerts] in
+                operationalAlerts.clearSignalMutes()
+            }
+        }
+        alertBell.reflectExternalMute(.bridgeSignalLoss, muted: bridgeAlerts.audioMuted)
+    }
+
+    private func refreshAlertBellMetrics() {
+        ensureAlertBellMuteBridges()
+        let threshold = Double(orgConfigSettings.proximityAlertSpacingFeet)
+        let proximityActive = proximityAlerts.activeAlert != nil && !proximityAlerts.isSuspended
+        let separation = proximityAlerts.activeAlert?.horizontalSeparationFeet
+            ?? proximityAlerts.pairs.map(\.horizontalFeet).min()
+        let maxAgl = ridTracks.altitudeDisplayByAircraftID.values.compactMap(\.aglFeet).max()
+        let maxRange = ridTracks.altitudeDisplayByAircraftID.values.compactMap(\.rangeFeet).max()
+        let bridgeAge: Double? = {
+            guard let last = bluetoothScanner.bridgeLastSeenAt else { return nil }
+            return Date().timeIntervalSince(last)
+        }()
+        let activeIDs = ridTracks.tracks.map(\.aircraftID)
+        let allSEI = streamRegistry.allAircraftHaveFreshPairedSEI(aircraftIDs: activeIDs)
+        let bridgeMonitoring = OperationalBridgeAlertPolicy.shouldMonitor(
+            scannerRunning: bluetoothScanner.state == .scanning,
+            activeFlightCount: activeIDs.count,
+            allActiveFlightsCoveredByFreshPairedSEI: allSEI
+        )
+        alertBell.updateMetrics(
+            AlertBellMetrics(
+                proximitySeparationFeet: separation,
+                proximityThresholdFeet: threshold,
+                proximityActivelyAlerting: proximityActive,
+                maxAglFeet: maxAgl,
+                maxRangeFeet: maxRange,
+                droneSignalLossActive: !operationalAlerts.signalLossAlerts.isEmpty,
+                bridgeSecondsSinceLastPing: bridgeAge,
+                bridgeMonitoringActive: bridgeMonitoring,
+                wifiSignalPercent: nil,
+                videoRequestPending: peerCoordinator.pendingVideoStreamRequest != nil
+            )
+        )
+    }
+
     private func updateOperationalAlerts() {
         let demoAlerts = ProcessInfo.processInfo.arguments.contains("--demo-operational-alert")
         operationalAlerts.update(
@@ -3107,6 +3169,7 @@ struct ContentView: View {
     /// protected-access gate cancels while the display is locked).
     private func evaluateOperationalState() {
         updateOperationalAlerts()
+        refreshAlertBellMetrics()
         let activeAircraftIDs = ridTracks.tracks.map(\.aircraftID)
         let allActiveFlightsCoveredByFreshPairedSEI =
             streamRegistry.allAircraftHaveFreshPairedSEI(

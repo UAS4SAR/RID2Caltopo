@@ -81,9 +81,12 @@ public struct DroneScoutRelayMetadata: Equatable, Sendable {
 }
 
 public enum DroneScoutRelayPing {
-    // Match the loss-announcement decision so normal ping jitter never blanks the most recent
-    // signal reading before the bridge has actually been classified as absent.
-    public static let signalFreshnessSeconds: Int64 = 32
+    /// Visual Bridge RSSI meter retention after the last relay ping (seconds).
+    /// Short so the meter blanks within a few seconds of unplug/loss; distinct from
+    /// [lossAnnouncementSeconds].
+    public static let signalFreshnessSeconds: Int64 = 4
+    /// Sustained gap before spoken "Bridge Not Detected".
+    public static let lossAnnouncementSeconds: Int64 = 32
 
     private static let defaultIdentity = "DRONESCOUTBRIDGE"
 
@@ -111,7 +114,7 @@ public enum DroneScoutRelayPing {
 }
 
 public struct DroneScoutBridgeLossAnnouncementGate: Sendable {
-    public static let defaultThreshold: TimeInterval = 32
+    public static let defaultThreshold: TimeInterval = TimeInterval(DroneScoutRelayPing.lossAnnouncementSeconds)
 
     private var monitoringStartedAt: Date?
     private var lossActive = false

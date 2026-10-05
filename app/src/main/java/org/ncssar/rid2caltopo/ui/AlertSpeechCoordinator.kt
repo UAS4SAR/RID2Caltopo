@@ -84,6 +84,7 @@ object AlertSpeechCoordinator {
             while (isActive) {
                 delay(1_000L)
                 evaluateProximity(appContext, System.currentTimeMillis())
+                refreshAlertBellMetrics()
             }
         }
 
@@ -94,6 +95,7 @@ object AlertSpeechCoordinator {
                 .distinctUntilChangedBy { it?.alertInstanceId }
                 .collect { uiState ->
                     uiState ?: return@collect
+                    if (AlertBellCenter.isMuted(AlertBellKind.Altitude)) return@collect
                     SpokenWarningCenter.requestWarning(
                         kind = SpokenWarningKind.Altitude,
                         sourceKey = uiState.mappedId,
@@ -119,6 +121,7 @@ object AlertSpeechCoordinator {
                 .collect { alert ->
                     if (!signalLossGate.shouldRequestWarning(alert?.flightKey)) return@collect
                     alert ?: return@collect
+                    if (AlertBellCenter.isMuted(AlertBellKind.DroneSignalLoss)) return@collect
                     SpokenWarningCenter.requestSpokenPhrase(
                         kind = SpokenWarningKind.DroneTelemetry,
                         sourceKey = alert.flightKey,
@@ -137,6 +140,41 @@ object AlertSpeechCoordinator {
         SpokenWarningPlayer.stop()
     }
 
+    private fun refreshAlertBellMetrics() {
+        val proximity = ProximityAlertCenter.uiState.value
+        val thresholdFt = proximity?.thresholdFt
+            ?: org.ncssar.rid2caltopo.data.CaltopoClient.GetProximityAlertSpacingFeet().toDouble()
+        val bridgeSignal = org.opendroneid.android.bluetooth.DroneScoutBridgeMonitor.signal.value
+        val nowMono = System.nanoTime() / 1_000_000L
+        val bridgeAgeSec = bridgeSignal?.let { (nowMono - it.lastSeenMonotonicMs) / 1000.0 }
+        val activeFlightCount = org.ncssar.rid2caltopo.data.CaltopoClient.GetActiveFlightCountSnapshot()
+        val bridgeMonitoring = shouldMonitorDroneScoutBridgeAlerts(
+            scannerRunning = org.ncssar.rid2caltopo.app.ScanningService.IsRunning(),
+            activeFlightCount = activeFlightCount,
+        )
+        AlertBellCenter.updateMetrics(
+            AlertBellMetrics(
+                proximitySeparationFt = proximity?.horizontalSeparationFt,
+                proximityThresholdFt = thresholdFt,
+                proximityActivelyAlerting = proximity != null && !ProximityAlertCenter.isSuspended.value,
+                maxAglFt = alertBellMaxAglFtProvider?.invoke(),
+                maxRangeFt = alertBellMaxRangeFtProvider?.invoke(),
+                droneSignalLossActive = DroneSignalLossAlertCenter.uiState.value != null,
+                bridgeSecondsSinceLastPing = bridgeAgeSec,
+                bridgeMonitoringActive = bridgeMonitoring,
+                wifiSignalPercent = ControllerSignalStrengthAlertCenter.lastSignalPercent.value,
+                videoRequestPending = AlertBellCenter.videoRequestPending(),
+            )
+        )
+    }
+
+    /** Optional providers filled by the main UI when StreamsViewModel is available. */
+    @Volatile
+    var alertBellMaxAglFtProvider: (() -> Double?)? = null
+
+    @Volatile
+    var alertBellMaxRangeFtProvider: (() -> Double?)? = null
+
     private fun evaluateProximity(context: Context, nowMs: Long) {
         val alert = ProximityAlertCenter.uiState.value
         val announcement = proximitySchedule.next(
@@ -146,6 +184,7 @@ object AlertSpeechCoordinator {
             nowMs = nowMs,
         ) ?: return
         alert ?: return
+        if (AlertBellCenter.isMuted(AlertBellKind.Proximity)) return
         SpokenWarningCenter.requestWarning(
             kind = SpokenWarningKind.Proximity,
             sourceKey = alert.pairKey,

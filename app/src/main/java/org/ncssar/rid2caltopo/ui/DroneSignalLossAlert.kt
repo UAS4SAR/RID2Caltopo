@@ -123,6 +123,14 @@ object DroneSignalLossAlertCenter : CtDroneSpec.DroneSpecsChangedListener {
         }
     }
 
+    fun clearAllMutes() {
+        synchronized(this) {
+            if (mutedFlightKeys.isEmpty()) return
+            mutedFlightKeys.clear()
+            recomputeLocked()
+        }
+    }
+
     private fun recomputeLocked() {
         val activeFlights = linkedMapOf<String, CtDroneSpec>()
         lastDroneSpecs.forEach { spec ->

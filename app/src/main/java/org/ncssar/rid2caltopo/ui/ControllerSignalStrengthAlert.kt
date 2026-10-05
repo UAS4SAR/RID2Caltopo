@@ -30,6 +30,10 @@ object ControllerSignalStrengthAlertCenter {
     private val _uiState = MutableStateFlow<ControllerSignalStrengthAlertUiState?>(null)
     val uiState: StateFlow<ControllerSignalStrengthAlertUiState?> = _uiState.asStateFlow()
 
+    private val _lastSignalPercent = MutableStateFlow<Int?>(null)
+    /** Latest Wi-Fi percent while live streams exist; used by the alert-bell colour logic. */
+    val lastSignalPercent: StateFlow<Int?> = _lastSignalPercent.asStateFlow()
+
     private var weakSinceMs: Long? = null
     private var lastSpokenAtMs: Long? = null
     private var nextAlertInstanceId = 1L
@@ -40,11 +44,13 @@ object ControllerSignalStrengthAlertCenter {
         nowMs: Long = System.currentTimeMillis(),
     ) {
         if (liveStreamCount <= 0 || signalPercent == null) {
+            _lastSignalPercent.value = null
             clearProblem()
             return
         }
 
         val clampedSignal = signalPercent.coerceIn(0, 100)
+        _lastSignalPercent.value = clampedSignal
         if (clampedSignal >= RESTORE_SIGNAL_THRESHOLD_PERCENT) {
             clearProblem()
             return
@@ -84,6 +90,7 @@ object ControllerSignalStrengthAlertCenter {
 
     fun resetForTests() {
         _uiState.value = null
+        _lastSignalPercent.value = null
         weakSinceMs = null
         lastSpokenAtMs = null
         nextAlertInstanceId = 1L

@@ -23,7 +23,7 @@ class DroneScoutBridgeMonitorTest {
 
     @Test
     fun exposesFreshSignalAndAgesItOut() {
-        assertEquals(32_000L, DroneScoutBridgeMonitor.SIGNAL_STALE_AFTER_MS)
+        assertEquals(4_000L, DroneScoutBridgeMonitor.SIGNAL_STALE_AFTER_MS)
         assertEquals(32_000L, DroneScoutBridgeMonitor.LOSS_ANNOUNCEMENT_AFTER_MS)
         DroneScoutBridgeMonitor.noteCandidate("DroneScout Bridge", -67, 1_000L)
         val signal = DroneScoutBridgeMonitor.signal.value
@@ -85,7 +85,7 @@ class DroneScoutBridgeMonitorTest {
         )
         assertTrue(blank!!.contains("state=blank"))
         assertTrue(blank.contains("reason=stale"))
-        assertTrue(blank.contains("ageMs=32001"))
+        assertTrue(blank.contains("ageMs=4001"))
 
         gate.reset()
         assertTrue(gate.transitionMessage("main", changedRssi, 4_001L)!!.contains("state=visible"))

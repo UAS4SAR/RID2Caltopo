@@ -2029,10 +2029,12 @@ final class AppleTrackerCoordinator: ObservableObject {
             videoPreflightPeer.cancel()
             resetVideoPreflightState()
             startVideoPreflightWatchdog(requestID: request.requestId)
-            AppleSpokenWarningCenter.shared.speak(
-                "Video Stream Request from, "
-                    + Self.spokenEmailAddress(request.requesterEmail)
-            )
+            if AppleAlertBellCenter.shared.allowSpeech(for: .videoRequest) {
+                AppleSpokenWarningCenter.shared.speak(
+                    "Video Stream Request from, "
+                        + Self.spokenEmailAddress(request.requesterEmail)
+                )
+            }
             AppleLog.info(
                 "VideoApproval",
                 "Preparing routed request=\(request.requestId); confirmation deferred"

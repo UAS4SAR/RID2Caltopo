@@ -72,6 +72,10 @@ object SpokenWarningCenter {
         volumeFraction: Float = 1.0f,
     ) {
         val firstKind = kinds.firstOrNull() ?: return
+        // Session mute (alert-bell panel) suppresses speech; settings enable/disable stay separate.
+        // Settings "audio alarm test" still speaks so operators can verify volume.
+        if (sourceKey != "audio-alarm-test" && kinds.any { AlertBellCenter.isMuted(it) }) return
+        if (sourceKey != "audio-alarm-test") AlertBellCenter.noteAlarmFired()
         val key = WarningKey(firstKind, sourceKey)
         val lastRequestedAtMs = lastRequestedAtMsByKey[key]
         if (lastRequestedAtMs != null && nowMs - lastRequestedAtMs < cooldownMs) return
@@ -112,6 +116,8 @@ object SpokenWarningCenter {
         cooldownMs: Long = 0L,
         volumeFraction: Float = 1.0f,
     ) {
+        if (AlertBellCenter.isMuted(kind)) return
+        AlertBellCenter.noteAlarmFired()
         val key = WarningKey(kind, sourceKey)
         val lastRequestedAtMs = lastRequestedAtMsByKey[key]
         if (lastRequestedAtMs != null && nowMs - lastRequestedAtMs < cooldownMs) return
@@ -214,6 +220,7 @@ object SpokenWarningPlayer {
         if (!ready) return
         val currentRequest = SpokenWarningCenter.consume(pendingRequest.requestId) ?: return
         if (currentRequest.kind == SpokenWarningKind.Proximity && !ProximityAlertConsent.state.value.enabled) return
+        if (AlertBellCenter.isMuted(currentRequest.kind)) return
         speakingKind = currentRequest.kind
         val volume = (currentRequest.volumeFraction * CaltopoClient.GetAlarmVolumeMultiplier())
             .coerceIn(0f, 1f)

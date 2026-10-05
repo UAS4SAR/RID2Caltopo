@@ -559,6 +559,7 @@ struct RIDTrackMapView: View {
     @ObservedObject var orgSettings: AppleOrgConfigSettings
     @ObservedObject var notams: AppleNotamCenter
     @ObservedObject var proximityAlerts: AppleProximityAlertCenter
+    @ObservedObject private var alertBell = AppleAlertBellCenter.shared
     @ObservedObject var peerCoordinator: AppleTrackerCoordinator
     @ObservedObject private var airspace = AppleAirspaceCenter.shared
     @ObservedObject private var landRestrictions = AppleLandRestrictionCenter.shared
@@ -2216,15 +2217,18 @@ struct RIDTrackMapView: View {
     }
 
     private var bridgeNavigationButton: some View {
-        Button {
-            dismissLiveView()
-            onReturnToMain()
-        } label: {
-            BridgeSignalIndicator(rssi: bridgeSignalStrengthDbm)
+        HStack(spacing: 6) {
+            AppleAlertStatusBell(center: alertBell)
+            Button {
+                dismissLiveView()
+                onReturnToMain()
+            } label: {
+                BridgeSignalIndicator(rssi: bridgeSignalStrengthDbm)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Show Main Screen")
+            .accessibilityIdentifier("bridge-show-main-screen")
         }
-        .buttonStyle(.plain)
-        .accessibilityHint("Show Main Screen")
-        .accessibilityIdentifier("bridge-show-main-screen")
     }
 
     private func applyPipPreference() {

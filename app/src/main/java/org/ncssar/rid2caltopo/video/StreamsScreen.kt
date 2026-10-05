@@ -116,6 +116,8 @@ import org.ncssar.rid2caltopo.ui.ClueSubmissionSheet
 import org.ncssar.rid2caltopo.ui.DroneSignalLossAlertCenter
 import org.ncssar.rid2caltopo.ui.ResumeProximityAlertButton
 import org.ncssar.rid2caltopo.ui.SignalStrengthBars
+import org.ncssar.rid2caltopo.ui.AlertStatusBell
+import org.ncssar.rid2caltopo.ui.AlertStatusPanel
 import org.ncssar.rid2caltopo.ui.SignalLossAlertButton
 import org.ncssar.rid2caltopo.ui.SignalLossAlertDialog
 import org.opendroneid.android.bluetooth.DroneScoutBridgeMonitor
@@ -337,6 +339,7 @@ fun StreamsScreen(
     var showRegisteredDesignators by remember { mutableStateOf(false) }
     var showPerformancePanel by remember { mutableStateOf(false) }
     var showCompliancePanel by remember { mutableStateOf(false) }
+    var showAlertPanel by remember { mutableStateOf(false) }
     var showSignalLossPanel by remember { mutableStateOf(false) }
     var streamsFullScreen by remember { mutableStateOf(false) }
     BackHandler(enabled = showNavigation) {
@@ -400,6 +403,7 @@ fun StreamsScreen(
                                 )
                                 Spacer(Modifier.width(6.dp))
                             }
+                            AlertStatusBell(onClick = { showAlertPanel = true })
                             BridgeSignalIndicator(rssi = bridgeRssi, onClick = handleBack, enabled = showNavigation)
                         }
                     }
@@ -689,7 +693,11 @@ fun StreamsScreen(
             }
         }
 
-        ComplianceAlertDialog(
+        AlertStatusPanel(
+            visible = showAlertPanel,
+            onDismiss = { showAlertPanel = false },
+        )
+    ComplianceAlertDialog(
             visible = showCompliancePanel,
             overLimitDrones = overLimitDrones,
             onDismiss = { showCompliancePanel = false },

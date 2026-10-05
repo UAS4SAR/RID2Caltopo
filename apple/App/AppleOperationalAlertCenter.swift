@@ -178,7 +178,20 @@ final class AppleOperationalAlertCenter: ObservableObject {
         AppleLog.info("AltitudeAlert", "Muted flight remoteId=\(remoteID)")
     }
 
+    func clearAltitudeMutes() {
+        guard !mutedAltitudeFlights.isEmpty else { return }
+        mutedAltitudeFlights.removeAll()
+        AppleLog.info("AltitudeAlert", "Cleared all altitude mutes")
+    }
+
+    func clearSignalMutes() {
+        guard !mutedSignalFlights.isEmpty else { return }
+        mutedSignalFlights.removeAll()
+        AppleLog.info("SignalLossAlert", "Cleared all signal-loss mutes")
+    }
+
     private func announceNewSignalAlerts(_ alerts: [AppleSignalLossAlert], now: Date) {
+        guard AppleAlertBellCenter.shared.allowSpeech(for: .droneSignalLoss) else { return }
         for alert in alerts where shouldSpeak(key: "signal:\(alert.remoteID)", now: now) {
             speak(
                 alert.bridgeRecentlySeen
@@ -211,6 +224,7 @@ final class AppleOperationalAlertCenter: ObservableObject {
             "\(decision.severity == .overLimit ? "Over" : "Near") limit remoteId=\(decision.remoteID) " +
                 "mappedId=\(mappedID) aglFeet=\(Int(decision.aglFeet.rounded()))"
         )
+        guard AppleAlertBellCenter.shared.allowSpeech(for: .altitude) else { return }
         guard shouldSpeak(
             key: "altitude:\(mappedID)",
             interval: OperationalAltitudeAlertNotifier.spokenCooldown,
@@ -251,8 +265,9 @@ final class AppleDroneScoutBridgeAlertCenter: ObservableObject {
             monitoringActive: monitoringActive,
             lastPingAt: lastPingAt,
             now: now,
-            muted: audioMuted
+            muted: audioMuted || AppleAlertBellCenter.shared.isMuted(.bridgeSignalLoss)
         ) else { return }
+        guard AppleAlertBellCenter.shared.allowSpeech(for: .bridgeSignalLoss) else { return }
 
         AppleSpokenWarningCenter.shared.speak("Bridge Not Detected")
         AppleLog.warning(

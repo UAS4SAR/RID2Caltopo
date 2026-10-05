@@ -547,6 +547,11 @@ object ProximityAlertCenter {
     }
 
     fun suspendCurrentAlert() {
+        // Keep the alert-bell panel mute row in sync with Suspend.
+        if (!AlertBellCenter.isMuted(AlertBellKind.Proximity)) {
+            // Update mute flag only; setMuted would call suspend again.
+            AlertBellCenter.reflectExternalMute(AlertBellKind.Proximity, true)
+        }
         synchronized(stateLock) {
             alertsSuspended = true
             clearEligibleSinceMs = null
@@ -557,6 +562,7 @@ object ProximityAlertCenter {
     }
 
     fun resumeSuspendedAlert() {
+        AlertBellCenter.reflectExternalMute(AlertBellKind.Proximity, false)
         synchronized(stateLock) {
             if (!ProximityAlertConsent.state.value.enabled) return
             alertsSuspended = false

@@ -228,6 +228,7 @@ final class AppleProximityAlertCenter: ObservableObject {
 
     func suspend() {
         apply(engine.suspend(), now: Date(), announce: false)
+        AppleAlertBellCenter.shared.reflectExternalMute(.proximity, muted: true)
         AppleLog.info("ProximityAlert", "Current proximity alert suspended")
     }
 
@@ -235,6 +236,7 @@ final class AppleProximityAlertCenter: ObservableObject {
         guard consent.enabled else { return }
         // Android: a resumed alert that is still inside the threshold is spoken
         // again (subject to the per-pair 30 s cooldown).
+        AppleAlertBellCenter.shared.reflectExternalMute(.proximity, muted: false)
         apply(engine.resume(), now: Date())
         AppleLog.info("ProximityAlert", "Suspended proximity alert resumed")
     }
@@ -260,6 +262,7 @@ final class AppleProximityAlertCenter: ObservableObject {
         guard consent.enabled, announce, scheduled,
               let alert = output.activeAlert
         else { return }
+        guard AppleAlertBellCenter.shared.allowSpeech(for: .proximity) else { return }
 
         let last = lastAnnouncementByPair[alert.pairKey] ?? .distantPast
         guard now.timeIntervalSince(last) >= RidProximitySpeechSchedule.repeatInterval else { return }

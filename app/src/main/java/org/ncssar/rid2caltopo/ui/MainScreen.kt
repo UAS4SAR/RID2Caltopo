@@ -771,6 +771,7 @@ fun MainScreen(
     var showLocationOverrideDialog by remember { mutableStateOf(false) }
     var locationOverrideText by remember { mutableStateOf("") }
     var showCompliancePanel by remember { mutableStateOf(false) }
+    var showAlertPanel by remember { mutableStateOf(false) }
     var showSignalLossPanel by remember { mutableStateOf(false) }
     var locationOverrideError by remember { mutableStateOf<String?>(null) }
     var locationOverrideLabel by remember { mutableStateOf(formatLocationOverride(CaltopoMap.GetMyLocationOverride())) }
@@ -778,6 +779,13 @@ fun MainScreen(
     val airspaceUiState by AirspaceCenter.uiState.collectAsStateWithLifecycle()
     val landRestrictionUiState by LandRestrictionCenter.uiState.collectAsStateWithLifecycle()
     val overLimitDrones by streamsViewModel.overLimitDrones.collectAsStateWithLifecycle()
+
+    LaunchedEffect(streamsViewModel) {
+        AlertSpeechCoordinator.alertBellMaxAglFtProvider = { streamsViewModel.alertBellMaxAglFt.value }
+        AlertSpeechCoordinator.alertBellMaxRangeFtProvider = { streamsViewModel.alertBellMaxRangeFt.value }
+        AlertBellCenter.onAltitudeTypeUnmuted = { streamsViewModel.clearAllComplianceAlertMutes() }
+        AlertBellCenter.onDroneSignalLossTypeUnmuted = { DroneSignalLossAlertCenter.clearAllMutes() }
+    }
     val signalLossFlights by DroneSignalLossAlertCenter.flights.collectAsStateWithLifecycle()
     val bridgeSignal by DroneScoutBridgeMonitor.signal.collectAsStateWithLifecycle()
     var bridgeSignalClockMs by remember {
@@ -1389,6 +1397,10 @@ fun MainScreen(
             onDismiss = { showLandRestrictionPanel = false }
         )
     }
+    AlertStatusPanel(
+        visible = showAlertPanel,
+        onDismiss = { showAlertPanel = false },
+    )
     ComplianceAlertDialog(
         visible = showCompliancePanel,
         overLimitDrones = overLimitDrones,
@@ -1895,6 +1907,7 @@ fun MainScreen(
                         }
                     },
                     actions = {
+                        AlertStatusBell(onClick = { showAlertPanel = true })
                         MainBridgeSignalIndicator(rssi = bridgeRssi, onClick = { localViewModel.showStreams() })
                         Spacer(Modifier.width(16.dp))
                         IconButton(onClick = { menuExpanded = true }) {

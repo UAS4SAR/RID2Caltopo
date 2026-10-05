@@ -1856,6 +1856,7 @@ class R2CActivity :
                                 )
                             pendingVideoRequestExpiryJob?.cancel()
                             pendingVideoRequestExpiryJob = null
+                            org.ncssar.rid2caltopo.ui.AlertBellCenter.setVideoRequestPending(false)
                             pendingVideoStreamRequest = null
                             pendingVideoPreflightRouteKind = null
                             pendingVideoPreflightBps = null
@@ -1869,6 +1870,7 @@ class R2CActivity :
                             releaseManagedVideoLiveSource(request.requestId)
                             pendingVideoRequestExpiryJob?.cancel()
                             pendingVideoRequestExpiryJob = null
+                            org.ncssar.rid2caltopo.ui.AlertBellCenter.setVideoRequestPending(false)
                             pendingVideoStreamRequest = null
                             pendingVideoPreflightRouteKind = null
                             pendingVideoPreflightBps = null
@@ -2940,6 +2942,7 @@ class R2CActivity :
                 return@runOnUiThread
             }
             pendingVideoStreamRequest = request
+            org.ncssar.rid2caltopo.ui.AlertBellCenter.setVideoRequestPending(true)
             schedulePendingVideoRequestExpiry(request)
             pendingVideoPreflightRouteKind = null
             pendingVideoPreflightBps = null
@@ -2997,7 +3000,8 @@ class R2CActivity :
         pendingVideoRequestExpiryJob = lifecycleScope.launch {
             delay(requestExpiryDelayMillis(request.expiresAt))
             if (pendingVideoStreamRequest?.requestId != request.requestId) return@launch
-            pendingVideoStreamRequest = null
+            org.ncssar.rid2caltopo.ui.AlertBellCenter.setVideoRequestPending(false)
+                            pendingVideoStreamRequest = null
             pendingVideoPreflightRouteKind = null
             pendingVideoPreflightBps = null
             pendingVideoPreflightFailure = null
@@ -3077,7 +3081,8 @@ class R2CActivity :
             if (pendingVideoStreamRequest?.requestId == requestId) {
                 pendingVideoRequestExpiryJob?.cancel()
                 pendingVideoRequestExpiryJob = null
-                pendingVideoStreamRequest = null
+                org.ncssar.rid2caltopo.ui.AlertBellCenter.setVideoRequestPending(false)
+                            pendingVideoStreamRequest = null
                 pendingVideoPreflightRouteKind = null
                 pendingVideoPreflightBps = null
                 pendingVideoPreflightFailure = null

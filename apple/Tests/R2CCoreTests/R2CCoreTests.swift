@@ -3757,7 +3757,7 @@ private func proximityDrone(
 }
 
 @Test func droneScoutBridgeLossGateAnnouncesOnceAndResetsAfterPing() {
-    #expect(DroneScoutRelayPing.signalFreshnessSeconds == 32)
+    #expect(DroneScoutRelayPing.signalFreshnessSeconds == 4)
     #expect(DroneScoutBridgeLossAnnouncementGate.defaultThreshold == 32)
     var gate = DroneScoutBridgeLossAnnouncementGate()
     let start = Date(timeIntervalSince1970: 1_000)

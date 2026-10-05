@@ -1373,6 +1373,10 @@ class StreamsViewModel(
     private val mutedComplianceAlertDesignators = mutableStateSetOf<String>()
     private val _overLimitDrones = MutableStateFlow<List<OverLimitDroneUiState>>(emptyList())
     val overLimitDrones: StateFlow<List<OverLimitDroneUiState>> = _overLimitDrones.asStateFlow()
+    private val _alertBellMaxAglFt = MutableStateFlow<Double?>(null)
+    val alertBellMaxAglFt: StateFlow<Double?> = _alertBellMaxAglFt.asStateFlow()
+    private val _alertBellMaxRangeFt = MutableStateFlow<Double?>(null)
+    val alertBellMaxRangeFt: StateFlow<Double?> = _alertBellMaxRangeFt.asStateFlow()
 
     private var lastLiveRevisions: Map<String, Long> = emptyMap()
     private var lastLivePublisherConnIds: Map<String, String?> = emptyMap()
@@ -1400,6 +1404,8 @@ class StreamsViewModel(
             }
         }
         val complianceNowMs = System.currentTimeMillis()
+        var maxAglFt: Double? = null
+        var maxRangeFt: Double? = null
         val overLimit = _droneStates.mapNotNull { (designator, state) ->
             if (state.source.isLocalArchiveOnly) return@mapNotNull null
             if (!ComplianceAlertCenter.isFreshAltitudeSample(
@@ -1408,8 +1414,15 @@ class StreamsViewModel(
                 )
             ) return@mapNotNull null
             val displayState = altitudeCoordinator.displayStateByDesignator[designator] ?: return@mapNotNull null
-            val aglFt = displayState.aglFt ?: return@mapNotNull null
-            if (aglFt < COMPLIANCE_ALERT_AGL_LIMIT_FT) return@mapNotNull null
+            val aglFt = displayState.aglFt
+            if (aglFt != null && aglFt.isFinite()) {
+                maxAglFt = maxOf(maxAglFt ?: aglFt, aglFt)
+            }
+            val rangeFt = displayState.rangeFt
+            if (rangeFt != null && rangeFt.isFinite()) {
+                maxRangeFt = maxOf(maxRangeFt ?: rangeFt, rangeFt)
+            }
+            if (aglFt == null || aglFt < COMPLIANCE_ALERT_AGL_LIMIT_FT) return@mapNotNull null
             OverLimitDroneUiState(
                 remoteId = state.remoteId,
                 mappedId = designator,
@@ -1422,6 +1435,8 @@ class StreamsViewModel(
             )
         }.sortedByDescending { it.aglFt }
         _overLimitDrones.value = overLimit
+        _alertBellMaxAglFt.value = maxAglFt
+        _alertBellMaxRangeFt.value = maxRangeFt
         ComplianceAlertCenter.updateCandidates(
             overLimit
                 .filterNot { it.muted }
@@ -1468,6 +1483,28 @@ class StreamsViewModel(
                 }
         )
     }
+
+    fun clearAllComplianceAlertMutes() {
+        if (mutedComplianceAlertDesignators.isEmpty()) return
+        mutedComplianceAlertDesignators.clear()
+        _overLimitDrones.value = _overLimitDrones.value.map { it.copy(muted = false) }
+        ComplianceAlertCenter.updateCandidates(
+            _overLimitDrones.value.map {
+                ComplianceAlertCandidate(
+                    remoteId = it.remoteId,
+                    mappedId = it.mappedId,
+                    aglFt = it.aglFt,
+                    thresholdFt = it.thresholdFt,
+                    staleDem = it.staleDem,
+                    telemetryTimestampMs = _droneStates[it.mappedId]
+                        ?.source
+                        ?.mostRecentMsecTimestamp
+                        ?: 0L,
+                )
+            }
+        )
+    }
+
 
     fun isStreamVisible(stream: StreamInfo): Boolean {
         return dismissedStreamRevisions[stream.designator] != stream.revision

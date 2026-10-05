@@ -12,10 +12,15 @@ data class DroneScoutBridgeSignal(
 
 /** Tracks the synthetic Basic ID emitted when DroneScout Relay ping is enabled. */
 object DroneScoutBridgeMonitor {
+    /** Sustained gap before spoken "Bridge Not Detected" (avoids nuisance chirps). */
     const val LOSS_ANNOUNCEMENT_AFTER_MS = 32_000L
-    // Retain the most recent measured RSSI throughout the same interval used to decide that
-    // the bridge is absent. A normal relay-ping delay must not flash the bars off prematurely.
-    const val SIGNAL_STALE_AFTER_MS = LOSS_ANNOUNCEMENT_AFTER_MS
+    /**
+     * Visual Bridge RSSI meter retention after the last relay ping. Kept short so the
+     * meter goes blank within a few seconds of unplug/loss; distinct from
+     * [LOSS_ANNOUNCEMENT_AFTER_MS]. A couple of missed pings is enough — normal
+     * DroneScout ping cadence is well under this window.
+     */
+    const val SIGNAL_STALE_AFTER_MS = 4_000L
     private const val DEFAULT_RELAY_PING_IDENTITY = "DRONESCOUTBRIDGE"
 
     private val _signal = MutableStateFlow<DroneScoutBridgeSignal?>(null)
