@@ -39,27 +39,39 @@ private val AlertBellIdleBackdrop = Color(0xFF424242)
 fun AlertStatusBell(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Larger circled control for the status-chip row (iOS proximity-bell location). */
+    chipRow: Boolean = false,
 ) {
     val state by AlertBellCenter.uiState.collectAsStateWithLifecycle()
     if (!state.showBell) return
+    val tone = state.aggregateColor.name.lowercase()
     IconButton(
         onClick = onClick,
         modifier = modifier.semantics {
-            contentDescription = "Alert panel, ${state.aggregateColor.name.lowercase()} status"
+            contentDescription = "Alert panel, $tone status"
         },
     ) {
-        // Dark circle keeps the white idle tint readable on the light main header.
+        val size = if (chipRow) 48.dp else 28.dp
+        val icon = if (chipRow) 22.dp else 18.dp
+        val stroke = state.aggregateColor.toBellTint(panel = false)
         Box(
             modifier = Modifier
-                .size(28.dp)
-                .background(AlertBellIdleBackdrop, CircleShape),
+                .size(size)
+                .background(
+                    if (chipRow) MaterialTheme.colorScheme.surfaceVariant else AlertBellIdleBackdrop,
+                    CircleShape,
+                ),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 imageVector = Icons.Default.Notifications,
                 contentDescription = null,
-                tint = state.aggregateColor.toBellTint(),
-                modifier = Modifier.size(18.dp),
+                tint = if (state.aggregateColor == AlertBellColor.White) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    stroke
+                },
+                modifier = Modifier.size(icon),
             )
         }
     }

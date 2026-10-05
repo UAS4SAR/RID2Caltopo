@@ -357,8 +357,7 @@ fun StreamsScreen(
     LaunchedEffect(streamsFullScreen, viewModel.pendingClue != null) {
         CTDebug("StreamsPane", "Controls fullScreen=$streamsFullScreen cluePanel=${viewModel.pendingClue != null} dialogsAllowed=$allowModalDialogs")
     }
-    val allOverLimitMuted = overLimitDrones.isNotEmpty() && overLimitDrones.all { it.muted }
-    val allSignalLossMuted = signalLossFlights.isNotEmpty() && signalLossFlights.all { it.muted }
+    // Per-drone altitude / signal-loss dialogs remain; unified AlertStatusBell opens AlertStatusPanel.
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -403,7 +402,6 @@ fun StreamsScreen(
                                 )
                                 Spacer(Modifier.width(6.dp))
                             }
-                            AlertStatusBell(onClick = { showAlertPanel = true })
                             BridgeSignalIndicator(rssi = bridgeRssi, onClick = handleBack, enabled = showNavigation)
                         }
                     }
@@ -437,15 +435,9 @@ fun StreamsScreen(
                     } else {
                         Text(text = serverStatus, modifier = Modifier.clickable { showPerformancePanel = true }.padding(end = 8.dp), fontSize = 14.sp)
                     }
-                            ComplianceAlertBell(
-                                overLimitDrones = overLimitDrones,
-                                allOverLimitMuted = allOverLimitMuted,
-                                onClick = { showCompliancePanel = true }
-                            )
-                            SignalLossAlertButton(
-                                flights = signalLossFlights,
-                                allMuted = allSignalLossMuted,
-                                onClick = { showSignalLossPanel = true }
+                            AlertStatusBell(
+                                onClick = { showAlertPanel = true },
+                                chipRow = true,
                             )
 
                 }

@@ -125,7 +125,6 @@ import org.ncssar.rid2caltopo.notam.NotamStatusChip
 import org.ncssar.rid2caltopo.landrestrictions.LandRestrictionCenter
 import org.ncssar.rid2caltopo.landrestrictions.LandRestrictionPanel
 import org.ncssar.rid2caltopo.landrestrictions.LandRestrictionStatusChip
-import org.ncssar.rid2caltopo.video.ComplianceAlertBell
 import org.ncssar.rid2caltopo.video.ComplianceAlertDialog
 import org.ncssar.rid2caltopo.video.ffmpeg.FfmpegBridge
 import org.opendroneid.android.bluetooth.DroneScoutBridgeMonitor
@@ -1907,7 +1906,6 @@ fun MainScreen(
                         }
                     },
                     actions = {
-                        AlertStatusBell(onClick = { showAlertPanel = true })
                         MainBridgeSignalIndicator(rssi = bridgeRssi, onClick = { localViewModel.showStreams() })
                         Spacer(Modifier.width(16.dp))
                         IconButton(onClick = { menuExpanded = true }) {
@@ -2005,17 +2003,13 @@ fun MainScreen(
                     ResumeProximityAlertButton(onSettings = { localViewModel.showProximitySettings() })
                     NotamStatusChip(state = notamUiState, airspaceState = airspaceUiState, onClick = { showNotamPanel = true }, outerPadding = PaddingValues(0.dp))
                     LandRestrictionStatusChip(state = landRestrictionUiState, onClick = { showLandRestrictionPanel = true }, outerPadding = PaddingValues(0.dp))
-                    val allOverLimitMuted = overLimitDrones.isNotEmpty() && overLimitDrones.all { it.muted }
-                    val allSignalLossMuted = signalLossFlights.isNotEmpty() && signalLossFlights.all { it.muted }
-                    ComplianceAlertBell(
-                        overLimitDrones = overLimitDrones,
-                        allOverLimitMuted = allOverLimitMuted,
-                        onClick = { showCompliancePanel = true }
-                    )
-                    SignalLossAlertButton(
-                        flights = signalLossFlights,
-                        allMuted = allSignalLossMuted,
-                        onClick = { showSignalLossPanel = true }
+                    // Unified session alert bell (replaces ComplianceAlertBell + SignalLoss
+                    // buttons and the duplicate top-bar AlertStatusBell). Type mutes live in
+                    // AlertStatusPanel; per-drone altitude/signal dialogs remain available
+                    // from the panel flow via unmute clearing.
+                    AlertStatusBell(
+                        onClick = { showAlertPanel = true },
+                        chipRow = true,
                     )
                 }
             }

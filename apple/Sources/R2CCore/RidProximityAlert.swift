@@ -64,6 +64,9 @@ public struct RidProximityAlertOutput: Sendable, Equatable {
     public let suspendedAlert: RidProximityAlertState?
     public let canResume: Bool
     public let isSuspended: Bool
+    /// Uncertainty-adjusted horizontal separation of the nearest alert-eligible pair.
+    /// Used for alert-bell approaching colour; nil when no eligible pair is fresh.
+    public let nearestDecisionHorizontalFeet: Double?
 }
 
 /// Stateful Android-parity alert policy. UI presentation, speech, and haptics
@@ -100,6 +103,7 @@ public struct RidProximityAlertEngine: Sendable {
         let decisionHorizontalFeet: Double
         let decisionVerticalFeet: Double
         let shouldAlert: Bool
+        let isBellEligible: Bool
         let highSeverity: Bool
         let severityScore: Double
 
@@ -251,11 +255,16 @@ public struct RidProximityAlertEngine: Sendable {
         let canResume = suspendedAlert.flatMap { alert in
             latestPairs[alert.pairKey]?.isInside(thresholdFeet: alert.thresholdFeet)
         } == true
+        let nearestDecision = latestPairs.values
+            .filter(\.isBellEligible)
+            .map(\.decisionHorizontalFeet)
+            .min()
         return RidProximityAlertOutput(
             activeAlert: activeAlert,
             suspendedAlert: suspendedAlert,
             canResume: canResume,
-            isSuspended: alertsSuspended
+            isSuspended: alertsSuspended,
+            nearestDecisionHorizontalFeet: nearestDecision
         )
     }
 
@@ -323,6 +332,7 @@ public struct RidProximityAlertEngine: Sendable {
                         decisionHorizontalFeet: decisionHorizontal,
                         decisionVerticalFeet: decisionVertical,
                         shouldAlert: inside && eligible,
+                        isBellEligible: eligible,
                         highSeverity: decisionHorizontal < thresholdFeet * 0.75
                             || decisionVertical < thresholdFeet * 0.75,
                         severityScore: max(decisionHorizontal / thresholdFeet, decisionVertical / thresholdFeet)

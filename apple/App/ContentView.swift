@@ -248,7 +248,6 @@ struct ContentView: View {
                 AdaptiveOperatorHeader { centered in
                     mainHeaderTitle(centered: centered)
                 } actions: {
-                    AppleAlertStatusBell(center: alertBell)
                     Button {
                         if showTrackMap { closeLiveView() }
                         else { openLiveViewFromBridgeChip() }
@@ -1340,7 +1339,7 @@ struct ContentView: View {
         // Keep the compact warning host above navigation, including Live View.
         .overlay(alignment: .topTrailing) {
             if !organizationAccessBlocked {
-                AppleProximityWarningHost(center: proximityAlerts, onMap: { showTrackMap = true })
+                AppleProximityWarningHost(center: proximityAlerts, alertBell: alertBell, onMap: { showTrackMap = true })
                     .padding(.top, 52)
                     .padding(.trailing, 12)
                     .padding(.leading, 12)
@@ -3069,8 +3068,11 @@ struct ContentView: View {
         ensureAlertBellMuteBridges()
         let threshold = Double(orgConfigSettings.proximityAlertSpacingFeet)
         let proximityActive = proximityAlerts.activeAlert != nil && !proximityAlerts.isSuspended
+        // Use engine decision-bound separation (and active alert), never raw UI pair
+        // feet — co-located dual IDs (e.g. DB150 + aircraft serial) painted the bell
+        // red/orange without an engine alert or spoken proximity warning.
         let separation = proximityAlerts.activeAlert?.horizontalSeparationFeet
-            ?? proximityAlerts.pairs.map(\.horizontalFeet).min()
+            ?? proximityAlerts.nearestDecisionHorizontalFeet
         let maxAgl = ridTracks.altitudeDisplayByAircraftID.values.compactMap(\.aglFeet).max()
         let maxRange = ridTracks.altitudeDisplayByAircraftID.values.compactMap(\.rangeFeet).max()
         let bridgeAge: Double? = {

@@ -22,6 +22,8 @@ final class AppleProximityAlertCenter: ObservableObject {
     @Published private(set) var canResume = false
     @Published private(set) var isSuspended = false
     @Published private(set) var stalePositionCount = 0
+    /// Engine decision-bound separation for alert-bell colour (not raw UI pair feet).
+    @Published private(set) var nearestDecisionHorizontalFeet: Double?
     @Published private(set) var pairs: [AppleProximityPair] = []
 
     @Published private(set) var alertAllAircraft: Bool
@@ -194,6 +196,7 @@ final class AppleProximityAlertCenter: ObservableObject {
                 maximumPositionAgeSeconds: maximumPositionAgeSeconds,
                 now: now
             )
+        nearestDecisionHorizontalFeet = output.nearestDecisionHorizontalFeet
         let teamDrones = alertAllAircraft ? fresh : fresh.filter(\.teamDrone)
         pairs = teamDrones.indices.flatMap { firstIndex in
             teamDrones.indices.compactMap { secondIndex -> AppleProximityPair? in
@@ -325,34 +328,40 @@ struct ProximityAlertBanner: View {
 }
 
 
-/// Presentation only. Hiding the notice never acknowledges, suspends, or clears
-/// the collision engine; the bell remains while an alert or degraded state exists.
+/// Unified session alert bell (chip-row / top-trailing). Replaces the old
+/// proximity-only orange circle and the duplicate bridge-adjacent status bell.
+/// Hiding the brief notice never acknowledges, suspends, or clears the engine.
 struct AppleProximityWarningHost: View {
     @ObservedObject var center: AppleProximityAlertCenter
+    @ObservedObject var alertBell: AppleAlertBellCenter
     let onMap: () -> Void
     @State private var noticeID: Int64?
-    @State private var showDetails = false
 
-    private var visible: Bool {
-        center.consent.enabled && (center.activeAlert != nil || center.isSuspended || center.stalePositionCount > 0)
+    private var showBell: Bool { alertBell.showBell }
+    private var strokeColor: Color {
+        switch alertBell.aggregateColor {
+        case .red: return .red
+        case .orange: return Color(red: 0.96, green: 0.49, blue: 0)
+        case .white: return Color.secondary.opacity(0.55)
+        }
     }
     private var bellLabel: String {
-        center.isSuspended ? "Proximity alerts suspended. Tap to resume or view details." :
-        center.activeAlert != nil ? "Active proximity warning. Tap for details or Suspend." :
-        "Proximity telemetry unavailable. Tap for details."
+        let tone = alertBell.aggregateColor == .red ? "active" :
+            alertBell.aggregateColor == .orange ? "approaching" : "idle"
+        return "Alert panel, \(tone). Tap to mute or unmute alerts."
     }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             if let alert = center.activeAlert, noticeID == alert.alertInstanceID {
                 HStack(alignment: .top, spacing: 8) {
-                    Button { showDetails = true } label: {
+                    Button { alertBell.showPanel = true } label: {
                         VStack(alignment: .leading, spacing: 3) {
                             Label("Proximity warning", systemImage: "exclamationmark.triangle.fill")
                                 .font(.subheadline.bold()).foregroundStyle(.red)
                             Text("\(alert.nearestDroneMappedID) · \(Int(alert.horizontalSeparationFeet.rounded())) ft horizontal")
                                 .font(.caption).lineLimit(2)
-                            Text("Tap the bell for details or Suspend.").font(.caption2)
+                            Text("Tap the bell for the alert mute panel.").font(.caption2)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .multilineTextAlignment(.leading)
@@ -369,52 +378,20 @@ struct AppleProximityWarningHost: View {
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(.red, lineWidth: 1))
                 .accessibilityIdentifier("proximity-brief-notice")
             }
-            if visible {
-                Button { showDetails.toggle() } label: {
-                    Image(systemName: center.isSuspended ? "bell.slash.fill" : "bell.badge.fill")
+            if showBell {
+                Button { alertBell.showPanel = true } label: {
+                    Image(systemName: "bell.badge.fill")
                         .font(.title3)
-                        .foregroundStyle(center.activeAlert != nil ? Color.red : Color.orange)
+                        .foregroundStyle(alertBell.aggregateColor == .white
+                                         ? Color.primary
+                                         : alertBell.aggregateColor.swiftUIColor)
                         .frame(width: 48, height: 48)
                         .background(.regularMaterial, in: Circle())
-                        .overlay(Circle().stroke(center.activeAlert != nil ? Color.red : Color.orange, lineWidth: 1))
+                        .overlay(Circle().stroke(strokeColor, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(bellLabel)
                 .accessibilityIdentifier("proximity-alarm-bell")
-                .popover(isPresented: $showDetails, arrowEdge: .top) {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack {
-                                Text("Proximity alerts: \(center.status)").font(.headline)
-                                Spacer()
-                                Button("Done") { showDetails = false }
-                            }.padding(.horizontal)
-                            if let alert = center.activeAlert {
-                                ProximityAlertBanner(alert: alert, onMap: {
-                                    showDetails = false
-                                    onMap()
-                                }, onSuspend: {
-                                    center.suspend()
-                                    showDetails = false
-                                })
-                            } else if center.isSuspended {
-                                Text("Proximity warnings are suspended.").padding(.horizontal)
-                                Button("Resume proximity alerts") {
-                                    center.resume()
-                                    showDetails = false
-                                }.buttonStyle(.borderedProminent).padding(.horizontal)
-                            } else {
-                                Text("No active proximity warning.").padding(.horizontal)
-                            }
-                            if center.stalePositionCount > 0 {
-                                Text("Proximity unavailable for \(center.stalePositionCount) aircraft: position telemetry is over 5 seconds old or has an invalid time.")
-                                    .font(.footnote).padding(.horizontal)
-                            }
-                        }.padding(.vertical)
-                    }
-                    .frame(idealWidth: 420, maxWidth: 460, idealHeight: 340, maxHeight: 440)
-                    .presentationCompactAdaptation(.popover)
-                }
             }
         }
         .fixedSize(horizontal: false, vertical: true)
@@ -429,8 +406,8 @@ struct AppleProximityWarningHost: View {
             guard !Task.isCancelled else { return }
             noticeID = nil
         }
-        .onChange(of: visible) { _, isVisible in
-            if !isVisible { showDetails = false; noticeID = nil }
+        .onChange(of: showBell) { _, isVisible in
+            if !isVisible { noticeID = nil }
         }
     }
 }
