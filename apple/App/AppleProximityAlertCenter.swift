@@ -124,6 +124,7 @@ final class AppleProximityAlertCenter: ObservableObject {
     private var freshnessTask: Task<Void, Never>?
     private var latestInput: (drones: [RidProximityDrone], threshold: Int, predictive: Bool, maximumPositionAgeSeconds: Double)?
     private var lastDiagnosticAt = Date.distantPast
+    private var lastPairDiagnosticAt = Date.distantPast
     private var engine = RidProximityAlertEngine()
     private var lastEvaluationSummary = ""
     private var lastAnnouncementByPair: [String: Date] = [:]
@@ -160,7 +161,9 @@ final class AppleProximityAlertCenter: ObservableObject {
                 distanceToOperatorMeters: distance,
                 teamDrone: identity != nil,
                 localAlertEligible: alertEligibility(track.aircraftID),
-                telemetry: observation.proximityTelemetry
+                telemetry: observation.proximityTelemetry,
+                grounded: observation.grounded,
+                heightMeters: observation.heightMeters
             )
         }
         latestInput = (drones, thresholdFeet, predictiveEnabled, maximumPositionAgeSeconds)
@@ -222,6 +225,18 @@ final class AppleProximityAlertCenter: ObservableObject {
             let quality = drones.filter { $0.remoteID == alert.pairKey.components(separatedBy: "|").first || $0.remoteID == alert.pairKey.components(separatedBy: "|").last }
                 .map { "\($0.remoteID):age=\(String(format: "%.1f", now.timeIntervalSince($0.sampleDate)))s,error=\(String(format: "%.1f", $0.telemetry.horizontalAccuracyMeters))m" }.joined(separator: ";")
             AppleLog.info("ProximityAlert", "Active horizontalFt=\(Int(alert.horizontalSeparationFeet)) quality=\(quality)")
+        }
+        if fresh.count >= 2, now.timeIntervalSince(lastPairDiagnosticAt) >= 5 {
+            lastPairDiagnosticAt = now
+            let pairLines = pairs.prefix(4).map { pair in
+                let vert = pair.verticalFeet.map { String(Int($0)) } ?? "unk"
+                return "\(pair.firstMappedID)/\(pair.secondMappedID) H=\(Int(pair.horizontalFeet)) V=\(vert) alert=\(pair.alerting)"
+            }.joined(separator: "; ")
+            let nearest = output.nearestDecisionHorizontalFeet.map { String(Int($0)) } ?? "nil"
+            AppleLog.info(
+                "ProximityAlert",
+                "Pairs fresh=\(fresh.count) nearestDecisionH=\(nearest) \(pairLines)"
+            )
         }
         if activeAlert != nil && output.activeAlert == nil {
             AppleLog.info("ProximityAlert", "Alert cleared stalePositions=\(stalePositionCount)")

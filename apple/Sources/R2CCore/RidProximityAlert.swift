@@ -1,5 +1,18 @@
 import Foundation
 
+/// Vertical mid-air gating only applies when both aircraft look airborne.
+/// Ground / near-surface RID modules (height ≤ ~10 ft or explicit grounded) still
+/// participate in horizontal proximity against a flying teammate.
+public enum RidProximityVerticalParticipation: Sendable {
+    public static let nearSurfaceHeightMeters: Double = 3.0
+
+    public static func participatesInVerticalGate(grounded: Bool?, heightMeters: Double?) -> Bool {
+        if grounded == true { return false }
+        if let height = heightMeters, height.isFinite, height <= nearSurfaceHeightMeters { return false }
+        return true
+    }
+}
+
 public struct RidProximityDrone: Sendable, Equatable {
     public let remoteID: String
     public let mappedID: String
@@ -11,6 +24,10 @@ public struct RidProximityDrone: Sendable, Equatable {
     public let teamDrone: Bool
     public let localAlertEligible: Bool
     public let telemetry: RidProximityTelemetry
+    /// Explicit RID ground status when known.
+    public let grounded: Bool?
+    /// RID height above takeoff/ground when known (metres).
+    public let heightMeters: Double?
 
     public init(
         remoteID: String,
@@ -22,7 +39,9 @@ public struct RidProximityDrone: Sendable, Equatable {
         distanceToOperatorMeters: Double? = nil,
         teamDrone: Bool,
         localAlertEligible: Bool,
-        telemetry: RidProximityTelemetry = .init()
+        telemetry: RidProximityTelemetry = .init(),
+        grounded: Bool? = nil,
+        heightMeters: Double? = nil
     ) {
         self.remoteID = remoteID
         self.mappedID = mappedID
@@ -34,6 +53,8 @@ public struct RidProximityDrone: Sendable, Equatable {
         self.teamDrone = teamDrone
         self.localAlertEligible = localAlertEligible
         self.telemetry = telemetry
+        self.grounded = grounded
+        self.heightMeters = heightMeters
     }
 }
 
@@ -307,6 +328,10 @@ public struct RidProximityAlertEngine: Sendable {
                 let decisionHorizontal = min(currentLowerBound, projectedLowerBound)
                 let verticalFeet = currentVerticalFeet
                 let altitudeSensitive = first.input.teamDrone && second.input.teamDrone
+                    && RidProximityVerticalParticipation.participatesInVerticalGate(
+                        grounded: first.input.grounded, heightMeters: first.input.heightMeters)
+                    && RidProximityVerticalParticipation.participatesInVerticalGate(
+                        grounded: second.input.grounded, heightMeters: second.input.heightMeters)
                     && first.input.telemetry.hasUsableAltitude && second.input.telemetry.hasUsableAltitude
                     && first.input.telemetry.altitudeReference == second.input.telemetry.altitudeReference
                     && first.ageSeconds <= maximumAltitudeAgeSeconds

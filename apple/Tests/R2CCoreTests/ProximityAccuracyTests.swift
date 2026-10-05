@@ -168,3 +168,29 @@ private func geo(_ altitude: Double, error: Double = 1, horizontal: Double = 1) 
         #expect(alert(aircraft("A", quality: geo(100, horizontal: 30), age: age), aircraft("B", feet: 200, quality: geo(100, horizontal: 3), age: age)) != nil)
     }
 }
+
+@Test func proximityGroundedTeamModuleAlertsHorizontallyAgainstAirborneTeammate() {
+    // Confirmed Mini over a team RID module on the ground: vertical would exceed
+    // threshold, but near-surface / grounded partners must not suppress horizontal alerts.
+    let mini = aircraft("A", feet: 40, displayAltitude: 150, quality: geo(150))
+    let module = RidProximityDrone(
+        remoteID: "B", mappedID: "B", latitude: 39, longitude: -121,
+        altitudeMeters: 50, sampleDate: proximityNow, teamDrone: true, localAlertEligible: true,
+        telemetry: geo(100), grounded: true, heightMeters: 0
+    )
+    #expect(alert(mini, module) != nil)
+    #expect(alert(mini, module)?.verticalSeparationKnown == false)
+    let airborneStacked = alert(aircraft("A", quality: geo(100)), aircraft("B", quality: geo(200)))
+    #expect(airborneStacked == nil)
+}
+
+@Test func proximityNearSurfaceHeightSkipsVerticalGateWithoutGroundedFlag() {
+    let flying = aircraft("A", feet: 20, quality: geo(140))
+    let surface = RidProximityDrone(
+        remoteID: "B", mappedID: "B", latitude: 39, longitude: -121,
+        altitudeMeters: 100, sampleDate: proximityNow, teamDrone: true, localAlertEligible: false,
+        telemetry: geo(100), heightMeters: 1.5
+    )
+    #expect(alert(flying, surface) != nil)
+}
+

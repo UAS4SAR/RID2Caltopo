@@ -267,6 +267,28 @@ class ProximityAlertHostThresholdTest {
         assertFalse(decision.shouldAlert)
     }
 
+    @Test
+    fun groundedTeamModuleAlertsHorizontallyAgainstAirborneTeammate() {
+        CaltopoClient.SetProximityAlertSpacingFeet(100)
+        CaltopoClient.SetPredictiveHeadEnabled(false)
+        val fixture = TestR2cRuntimeFactory.create("proximity-grounded")
+        fixture.setAsDefaultRuntime()
+        (fixture.peerCoordinator as FakePeerCoordinator).setLocalOwnership("A", true)
+        (fixture.peerCoordinator as FakePeerCoordinator).setLocalOwnership("B", true)
+        val now = System.currentTimeMillis()
+        val mini = proximityDrone("A", "A", 39.0 + 40.0 * 0.3048 / 6371000 * 180 / Math.PI, -121.0, 150.0, false)
+        val module = proximityDrone("B", "B", 39.0, -121.0, 50.0, false)
+        mini.proximityPosition = ProximityPosition(mini.lastLat, mini.lastLng, now, geodetic(150.0))
+        module.proximityPosition = ProximityPosition(module.lastLat, module.lastLng, now, geodetic(100.0))
+        mini.updateAltitudeContext(150.0, CtDroneSpec.AltSourceEnum.GEODETIC, 45.0, true, now)
+        module.updateAltitudeContext(100.0, CtDroneSpec.AltSourceEnum.GEODETIC, 0.0, true, now)
+        ProximityAlertCenter.resetForTests()
+        ProximityAlertCenter.updateDrones(listOf(mini, module))
+        val alert = ProximityAlertCenter.uiState.value
+        assertNotNull(alert)
+        assertFalse(alert!!.verticalSeparationKnown)
+    }
+
     private fun qualityAlert(feet: Double, first: ProximityTelemetry = ProximityTelemetry(),
                              second: ProximityTelemetry = ProximityTelemetry(), ageMs: Long = 0): ProximityAlertUiState? {
         CaltopoClient.SetProximityAlertSpacingFeet(100) // Default; lower configured values are tested separately.

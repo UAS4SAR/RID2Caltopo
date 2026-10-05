@@ -42,3 +42,30 @@ import Testing
     let widened = engine.update(drones: [a,b], thresholdFeet: 100, enabled: true, alertAllAircraft: true, now: now)
     #expect(widened.isSuspended && widened.suspendedAlert != nil && widened.activeAlert == nil)
 }
+
+@Test func confirmedMiniAlertsForConfirmedGroundTeamModule() {
+    let now = Date()
+    let miniEligible = RidProximityEligibility.allows(locallyConfirmed: true, coordinationRequired: false, coordinatorEligible: false)
+    let moduleEligible = RidProximityEligibility.allows(locallyConfirmed: true, coordinationRequired: false, coordinatorEligible: false)
+    let mini = RidProximityDrone(
+        remoteID: "1581F6Z9C24BH0036EJL", mappedID: "1sar7DjMn4Pr", latitude: 39.00001,
+        longitude: -121, altitudeMeters: 523, sampleDate: now, teamDrone: true,
+        localAlertEligible: miniEligible, telemetry: .init(
+            horizontalAccuracyMeters: 1, absoluteAltitudeMeters: 160,
+            altitudeReference: .geodetic, verticalAccuracyMeters: 1
+        ), heightMeters: 45
+    )
+    let module = RidProximityDrone(
+        remoteID: "1787F11BM25050013511", mappedID: "1SAR7Db150Brdg", latitude: 39,
+        longitude: -121, altitudeMeters: 100, sampleDate: now, teamDrone: true,
+        localAlertEligible: moduleEligible, telemetry: .init(
+            horizontalAccuracyMeters: 1, absoluteAltitudeMeters: 100,
+            altitudeReference: .geodetic, verticalAccuracyMeters: 1
+        ), grounded: true, heightMeters: 0
+    )
+    var engine = RidProximityAlertEngine()
+    let output = engine.update(drones: [mini, module], thresholdFeet: 100, enabled: true, now: now)
+    #expect(output.activeAlert != nil)
+    #expect(output.activeAlert?.verticalSeparationKnown == false)
+}
+

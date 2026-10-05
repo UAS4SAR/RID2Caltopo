@@ -202,6 +202,10 @@ object ProximityAlertCenter {
     private const val FT_PER_METER = 3.28084
     private const val METERS_PER_FOOT = 0.3048
     private const val PROXIMITY_UPDATE_SLOW_MS = 250L
+    /** Height at or below this (metres ATO/AGL) skips vertical mid-air gating. */
+    private const val NEAR_SURFACE_HEIGHT_METERS = 3.0
+    private const val PAIR_DIAGNOSTIC_INTERVAL_MS = 5_000L
+
 
     private data class DroneSample(
         val remoteId: String,
@@ -221,7 +225,9 @@ object ProximityAlertCenter {
         val mostRecentMsecTimestamp: Long,
         val localArchiveOnly: Boolean,
         val telemetry: ProximityTelemetry,
-        val locallyConfirmed: Boolean
+        val locallyConfirmed: Boolean,
+        val heightMeters: Double? = null,
+        val grounded: Boolean? = null
     )
 
     private data class ProximityUpdateRequest(
@@ -245,7 +251,9 @@ object ProximityAlertCenter {
         val ageSeconds: Double,
         val horizontalUncertaintyFt: Double,
         val projectedUncertaintyFt: Double,
-        val projectionSeconds: Double
+        val projectionSeconds: Double,
+        val heightMeters: Double? = null,
+        val grounded: Boolean? = null
     )
 
     private data class PairSnapshot(
@@ -314,6 +322,7 @@ object ProximityAlertCenter {
         get() = _isSuspended.value
         set(value) { _isSuspended.value = value }
     private var clearEligibleSinceMs: Long? = null
+    private var lastPairDiagnosticAtMs: Long = 0L
 
     private fun logUpdateIfSlow(
         elapsedMs: Long,
@@ -342,6 +351,7 @@ object ProximityAlertCenter {
             // Apply the same flight membership rule before counting stale positions.
             drones = drones.filter { it.isActive }.map { spec ->
                 val position = spec.proximityPosition
+                val ridHeight = spec.lastRidHeightM.takeIf { it.isFinite() && it > -999.0 }
                 DroneInput(
                     remoteId = spec.remoteId,
                     mappedId = spec.mappedId,
@@ -351,7 +361,9 @@ object ProximityAlertCenter {
                     mostRecentMsecTimestamp = position?.receivedAtMillis ?: spec.mostRecentMsecTimestamp,
                     localArchiveOnly = spec.isLocalArchiveOnly,
                     telemetry = position?.telemetry ?: ProximityTelemetry(),
-                    locallyConfirmed = spec.isCurrentFlightConfirmed
+                    locallyConfirmed = spec.isCurrentFlightConfirmed,
+                    heightMeters = ridHeight,
+                    grounded = ridHeight?.let { it <= NEAR_SURFACE_HEIGHT_METERS }
                 )
             },
             submittedAtMs = System.currentTimeMillis()
@@ -472,6 +484,17 @@ object ProximityAlertCenter {
                     alerting = evaluation.shouldAlert
                 )
             }
+        if (activeDrones.size >= 2 && nowMs - lastPairDiagnosticAtMs >= PAIR_DIAGNOSTIC_INTERVAL_MS) {
+            lastPairDiagnosticAtMs = nowMs
+            val pairSummary = _debugPairs.value.take(4).joinToString("; ") { pair ->
+                val vert = if (pair.verticalSeparationKnown) pair.verticalSeparationFt.toInt().toString() else "unk"
+                "${pair.firstMappedId}/${pair.secondMappedId} H=${pair.horizontalSeparationFt.toInt()} V=$vert alert=${pair.alerting}"
+            }
+            CaltopoClient.CTInfo(
+                "ProximityAlert",
+                "Pairs fresh=${activeDrones.size} $pairSummary"
+            )
+        }
         val bestCandidate = evaluations
             .asSequence()
             .filter { it.shouldAlert }
@@ -623,7 +646,9 @@ object ProximityAlertCenter {
             ageSeconds = age,
             horizontalUncertaintyFt = uncertainty,
             projectedUncertaintyFt = projectedUncertainty,
-            projectionSeconds = 0.0
+            projectionSeconds = 0.0,
+            heightMeters = spec.heightMeters,
+            grounded = spec.grounded
         )
     }
 
@@ -659,6 +684,7 @@ object ProximityAlertCenter {
         if (!effectiveHorizontalFt.isFinite() || !effectiveVerticalFt.isFinite()) return null
 
         val altitudeSensitive = first.teamDrone && second.teamDrone &&
+            participatesInVerticalGate(first) && participatesInVerticalGate(second) &&
             first.telemetry.hasUsableAltitude() && second.telemetry.hasUsableAltitude() &&
             first.telemetry.altitudeReference == second.telemetry.altitudeReference &&
             first.ageSeconds <= ProximityTelemetry.MAX_ALTITUDE_AGE_SECONDS &&
@@ -700,6 +726,13 @@ object ProximityAlertCenter {
             highSeverity = decision.highSeverity,
             severityScore = decision.severityScore
         )
+    }
+
+    private fun participatesInVerticalGate(drone: EvaluatedDrone): Boolean {
+        if (drone.grounded == true) return false
+        val height = drone.heightMeters
+        if (height != null && height.isFinite() && height <= NEAR_SURFACE_HEIGHT_METERS) return false
+        return true
     }
 
     private fun shouldAlertForPair(first: EvaluatedDrone, second: EvaluatedDrone): Boolean =
