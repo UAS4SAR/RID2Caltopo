@@ -1,28 +1,23 @@
 package org.ncssar.rid2caltopo.ui
 
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.Alignment
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import org.ncssar.rid2caltopo.ui.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 
 internal fun incidentMapDisplayValue(state: CaltopoConnectionState): String {
     if (state !is CaltopoConnectionState.MapSelected) return "Standalone"
@@ -36,40 +31,46 @@ fun CaltopoActionInterface(
     state: CaltopoConnectionState,
     onActionClicked: () -> Unit,
     modifier: Modifier = Modifier,
-    // Live View status line: shows only the map name, on one line that grows sideways inside
-    // its horizontal scroller instead of wrapping under an "Incident Map" label.
+    // Live View status line: AssistChip form factor matching Proximity Alerts /
+    // NOTAM chips (single line, same height/padding/corners).
     compact: Boolean = false,
 ) {
     val colors = MaterialTheme.colorScheme
-    androidx.compose.foundation.layout.Box(
-        modifier = modifier.clickable(role = androidx.compose.ui.semantics.Role.Button, onClick = onActionClicked)
-            .semantics { contentDescription = "Incident Map: ${incidentMapDisplayValue(state)}" }
-    ) {
-        if (compact) {
-            Text(
-                text = incidentMapDisplayValue(state),
-                color = colors.onSurface,
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 1,
-                softWrap = false,
-                overflow = TextOverflow.Visible,
-                modifier = Modifier
-                    .clearAndSetSemantics {}
-                    .border(1.dp, colors.outline, MaterialTheme.shapes.extraSmall)
-                    .heightIn(min = 48.dp)
-                    .wrapContentHeight(Alignment.CenterVertically)
-                    .padding(horizontal = 16.dp),
-            )
-        } else {
-            androidx.compose.material3.OutlinedTextField(
-                value = incidentMapDisplayValue(state),
+    val label = incidentMapDisplayValue(state)
+    if (compact) {
+        AssistChip(
+            onClick = onActionClicked,
+            label = {
+                Text(
+                    text = label,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Clip,
+                )
+            },
+            colors = AssistChipDefaults.assistChipColors(
+                containerColor = colors.surfaceVariant,
+                labelColor = colors.onSurfaceVariant,
+            ),
+            modifier = modifier.semantics {
+                contentDescription = "Incident Map: $label"
+            },
+        )
+    } else {
+        androidx.compose.foundation.layout.Box(
+            modifier = modifier
+                .clickable(role = Role.Button, onClick = onActionClicked)
+                .semantics { contentDescription = "Incident Map: $label" }
+        ) {
+            OutlinedTextField(
+                value = label,
                 onValueChange = {},
                 enabled = false,
                 readOnly = true,
                 maxLines = 2,
                 label = { Text("Incident Map") },
                 modifier = Modifier.fillMaxWidth().clearAndSetSemantics {},
-                colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                colors = OutlinedTextFieldDefaults.colors(
                     disabledTextColor = colors.onSurface,
                     disabledBorderColor = colors.outline,
                     disabledLabelColor = colors.onSurfaceVariant,

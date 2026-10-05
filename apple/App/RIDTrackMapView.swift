@@ -2057,7 +2057,6 @@ struct RIDTrackMapView: View {
             )
         }
         .buttonStyle(.plain)
-        .frame(minHeight: 44)
         .contentShape(Rectangle())
         .accessibilityLabel("Incident map")
         .accessibilityValue(liveViewMapTitle)
@@ -2072,7 +2071,7 @@ struct RIDTrackMapView: View {
 
     private var liveViewMapTitle: String {
         caltopoConfiguration.mapTitle.isEmpty
-            ? (caltopoConfiguration.mapID.isEmpty ? "STANDALONE" : caltopoConfiguration.mapID)
+            ? (caltopoConfiguration.mapID.isEmpty ? "Standalone" : caltopoConfiguration.mapID)
             : caltopoConfiguration.mapTitle
     }
 
