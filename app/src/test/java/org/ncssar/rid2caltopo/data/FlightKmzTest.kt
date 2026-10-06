@@ -33,7 +33,7 @@ class FlightKmzTest {
 
     @Test fun flightKmzIncludesLocalMarkersAndBindingData() {
         val binding = ClueBinder.bind("RID-1", "flight-1", t0, "stream-pts", t0 + 400,
-            listOf(ClueBindingPoint(t0 - 1_234, t0 - 900, 39.15, -121.13, 100.0, "rid", true)), null, false, true, t0 + 500)
+            listOf(ClueBindingPoint(t0 - 1_234, t0 - 900, 39.15, -121.13, 100.0, "rid", true)), null, false)
         val published = FlightKmzClue("Jacket <red>", ClueBindingText.publishedDescription("Seen & photographed", binding), t0,
             39.151, -121.131, 98.5, byteArrayOf(1, 2, 3), localOnly = false, binding = binding)
         val marker = FlightKmzClue("Local marker", "", t0 + 5_000, 39.152, -121.132, null, null, localOnly = true, binding = null)
@@ -107,14 +107,13 @@ class FlightKmzTest {
             FlightArchiveRebuild.ownedClues("day/a.json", archives, clues).map { it.id })
         assertEquals(listOf("gap"), FlightArchiveRebuild.ownedClues("day/b.json", archives, clues).map { it.id })
         // A clue saved without a usable binding binds to the archive's nearest stored point.
-        val fallback = FlightArchiveRebuild.bindingFallback(record("lead", t0 + 3_400), first, t0 + 100_000)
+        val fallback = FlightArchiveRebuild.bindingFallback(record("lead", t0 + 3_400), first)
         val binding = assertNotNullAndGet(fallback.binding)
         assertEquals(-400L, binding.offsetMs)
-        assertTrue(binding.final)
         assertFalse(binding.originIsWaypoint)
         // An existing binding with a nearest point is never replaced.
         val kept = record("k", t0, binding = binding)
-        assertEquals(kept, FlightArchiveRebuild.bindingFallback(kept, second, t0))
+        assertEquals(kept, FlightArchiveRebuild.bindingFallback(kept, second))
         val kmzClue = FlightArchiveRebuild.kmzClue(clues[3], null)
         assertTrue(kmzClue.localOnly)
     }

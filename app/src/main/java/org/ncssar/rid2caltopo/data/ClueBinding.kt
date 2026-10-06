@@ -94,7 +94,7 @@ data class ClueBinding(
     val captureTimeMs: Long,
     /** "stream-pts" (drone encoder clock) or "app-receive" (fallback). */
     val captureTimeSource: String,
-    /** App receive time of the captured frame (diagnostic; also bounds how long binding waits). */
+    /** App receive time of the captured frame (diagnostic). */
     val captureReceivedAtMs: Long,
     val waypoint: ClueBindingPoint? = null,
     val offsetMs: Long? = null,
@@ -102,15 +102,12 @@ data class ClueBinding(
     val nearestOffsetMs: Long? = null,
     val quality: ClueBindingQuality = ClueBindingQuality.UNBOUND,
     val hovering: Boolean = false,
-    val final: Boolean = false,
     /** True when the clue was projected from the bound waypoint (no frame-matched drone position). */
     val originIsWaypoint: Boolean = false,
     /** Drone position decoded from the frame itself (DJI SEI), when present. */
     val framePosition: ClueBindingFramePosition? = null,
     /** Waypoint nearest in time even beyond the binding limit; the projection origin when [originIsWaypoint]. */
     val nearest: ClueBindingPoint? = null,
-    /** Clue position before a nearer waypoint moved it after submit (null when never moved). */
-    val movedFrom: ClueBindingFramePosition? = null,
 ) {
     /** True when the operator should look at the position (approximate and not hovering, or unbound). */
     val flagged: Boolean get() = quality != ClueBindingQuality.EXACT
@@ -127,11 +124,9 @@ data class ClueBinding(
         .put("nearestOffsetMs", nearestOffsetMs ?: JSONObject.NULL)
         .put("quality", quality.raw)
         .put("hovering", hovering)
-        .put("final", final)
         .put("originIsWaypoint", originIsWaypoint)
         .put("framePosition", framePosition?.toJson() ?: JSONObject.NULL)
         .put("nearest", nearest?.toJson() ?: JSONObject.NULL)
-        .put("movedFrom", movedFrom?.toJson() ?: JSONObject.NULL)
 
     companion object {
         fun fromJson(json: JSONObject?): ClueBinding? {
@@ -149,11 +144,9 @@ data class ClueBinding(
                 nearestOffsetMs = json.optLongOrNull("nearestOffsetMs"),
                 quality = ClueBindingQuality.of(json.optString("quality")),
                 hovering = json.optBoolean("hovering"),
-                final = json.optBoolean("final"),
                 originIsWaypoint = json.optBoolean("originIsWaypoint"),
                 framePosition = ClueBindingFramePosition.fromJson(json.optJSONObject("framePosition")),
                 nearest = ClueBindingPoint.fromJson(json.optJSONObject("nearest")),
-                movedFrom = ClueBindingFramePosition.fromJson(json.optJSONObject("movedFrom")),
             )
         }
     }
@@ -172,8 +165,6 @@ object ClueBinder {
     const val BINDING_LIMIT_MS = 30_000L
     /** Waypoints this close together (or to the frame's own position) mean the drone was hovering. */
     const val HOVER_RADIUS_METERS = 5.0
-    /** App-clock time after capture at which a still-open binding is finalized anyway. */
-    const val FINALIZE_AFTER_MS = 35_000L
 
     fun quality(offsetMs: Long?, hovering: Boolean): ClueBindingQuality {
         offsetMs ?: return ClueBindingQuality.UNBOUND
@@ -207,8 +198,6 @@ object ClueBinder {
         points: List<ClueBindingPoint>,
         framePosition: ClueBindingFramePosition?,
         originIsWaypoint: Boolean,
-        flightEnded: Boolean,
-        nowReceivedAtMs: Long,
     ): ClueBinding {
         val sorted = points.sortedBy { it.timeMs }
         var binding = ClueBinding(
@@ -226,31 +215,18 @@ object ClueBinder {
                     hovering = hovering(sorted, captureTimeMs, nearest, framePosition))
             }
         }
-        binding = binding.copy(quality = quality(binding.offsetMs, binding.hovering))
-        return binding.copy(final = isFinal(binding, sorted, flightEnded, nowReceivedAtMs))
+        return binding.copy(quality = quality(binding.offsetMs, binding.hovering))
     }
 
-    /** Recomputes an open binding from the flight's current waypoints. A final binding never changes. */
-    fun refresh(binding: ClueBinding, points: List<ClueBindingPoint>, flightEnded: Boolean, nowReceivedAtMs: Long): ClueBinding {
-        if (binding.final) return binding
-        var next = bind(binding.aircraftId, binding.flightId, binding.captureTimeMs, binding.captureTimeSource,
-            binding.captureReceivedAtMs, points, binding.framePosition, binding.originIsWaypoint, flightEnded, nowReceivedAtMs)
-        if (next.flightStartMs == null) next = next.copy(flightStartMs = binding.flightStartMs)
-        next = next.copy(movedFrom = binding.movedFrom)
-        if (next.waypoint == null && points.isEmpty()) {
-            // Points unavailable (e.g. flight archived): keep what was stored, only finalize.
-            return binding.copy(final = next.final)
-        }
-        return next
-    }
-
-    /** A binding is final once no later waypoint could be nearer, the flight ended, or the wait expired. */
-    fun isFinal(binding: ClueBinding, points: List<ClueBindingPoint>, flightEnded: Boolean, nowReceivedAtMs: Long): Boolean {
-        if (flightEnded) return true
-        if (nowReceivedAtMs - binding.captureReceivedAtMs >= FINALIZE_AFTER_MS) return true
-        val latest = points.maxOfOrNull { it.timeMs } ?: return false
-        val horizon = binding.offsetMs?.let { abs(it) } ?: BINDING_LIMIT_MS
-        return latest >= binding.captureTimeMs + horizon
+    /**
+     * Re-binds against the waypoints available now (used while the clue form is open and once more
+     * on Submit). Without any points the stored binding is kept. A submitted clue is never re-bound.
+     */
+    fun refresh(binding: ClueBinding, points: List<ClueBindingPoint>): ClueBinding {
+        if (points.isEmpty()) return binding
+        val next = bind(binding.aircraftId, binding.flightId, binding.captureTimeMs, binding.captureTimeSource,
+            binding.captureReceivedAtMs, points, binding.framePosition, binding.originIsWaypoint)
+        return if (next.flightStartMs == null) next.copy(flightStartMs = binding.flightStartMs) else next
     }
 
     internal fun hovering(
@@ -273,8 +249,21 @@ object ClueBinder {
         RidGeometry.relativePosition(lat1, lon1, lat2, lon2)?.distanceMeters
 
     /**
-     * Moves a clue that was projected from the bound waypoint when a nearer waypoint replaces it:
-     * the camera vector (bearing, range) is unchanged, so the clue shifts by the origin's displacement.
+     * The origin move a Submit applies: when the clue was projected from the bound waypoint and the
+     * submit-time binding found a nearer waypoint than the one the form last showed (from, to).
+     */
+    fun originShift(shown: ClueBinding?, submitted: ClueBinding?): Pair<ClueBindingPoint, ClueBindingPoint>? {
+        submitted ?: return null
+        if (!submitted.originIsWaypoint) return null
+        val from = shown?.nearest ?: return null
+        val to = submitted.nearest ?: return null
+        return if (from != to) from to to else null
+    }
+
+    /**
+     * Moves a clue that was projected from the bound waypoint when a nearer waypoint replaces it at
+     * Submit: the camera vector (bearing, range) is unchanged, so the clue shifts by the origin's
+     * displacement.
      */
     fun translated(latitude: Double, longitude: Double, from: ClueBindingPoint, to: ClueBindingPoint): Pair<Double, Double> {
         val originCos = cos(Math.toRadians(from.latitude))
@@ -282,43 +271,6 @@ object ClueBinder {
         val longitudeShift = to.longitude - from.longitude
         val scaled = if (abs(clueCos) > 1e-9) longitudeShift * originCos / clueCos else longitudeShift
         return (latitude + (to.latitude - from.latitude)) to (longitude + scaled)
-    }
-}
-
-/** Result of applying a binding refresh to a saved or pending clue. */
-data class ClueBindingUpdateResult(
-    val binding: ClueBinding,
-    val latitude: Double,
-    val longitude: Double,
-    /** New projection origin when the clue moved with a nearer waypoint. */
-    val origin: ClueBindingPoint?,
-) {
-    val moved: Boolean get() = origin != null
-}
-
-object ClueBindingUpdate {
-    /**
-     * Refreshes [binding] and, when the clue was projected from the waypoint (no frame-matched drone
-     * position) and a nearer waypoint replaces it, moves the clue with the origin.
-     */
-    fun apply(
-        binding: ClueBinding,
-        latitude: Double,
-        longitude: Double,
-        points: List<ClueBindingPoint>,
-        flightEnded: Boolean,
-        nowReceivedAtMs: Long,
-    ): ClueBindingUpdateResult {
-        if (binding.final) return ClueBindingUpdateResult(binding, latitude, longitude, null)
-        var next = ClueBinder.refresh(binding, points, flightEnded, nowReceivedAtMs)
-        val from = binding.nearest
-        val to = next.nearest
-        if (binding.originIsWaypoint && from != null && to != null && from != to) {
-            val (lat, lon) = ClueBinder.translated(latitude, longitude, from, to)
-            if (next.movedFrom == null) next = next.copy(movedFrom = ClueBindingFramePosition(latitude, longitude))
-            return ClueBindingUpdateResult(next, lat, lon, to)
-        }
-        return ClueBindingUpdateResult(next, latitude, longitude, null)
     }
 }
 
@@ -345,13 +297,11 @@ object ClueBindingText {
     fun formSummary(binding: ClueBinding): String {
         val bound = binding.offsetMs
         val nearest = binding.nearestOffsetMs
-        var text = when {
+        return when {
             bound != null -> "${offset(bound)} · ${qualityLabel(binding)}"
             nearest != null -> "${qualityLabel(binding)}; nearest ${offset(nearest)}"
             else -> qualityLabel(binding)
         }
-        if (!binding.final) text += " · waiting for next fix"
-        return text
     }
 
     fun iso(milliseconds: Long): String = isoFormatter.format(Instant.ofEpochMilli(milliseconds))
@@ -372,11 +322,6 @@ object ClueBindingText {
                 iso(waypoint.timeMs), waypoint.source, if (waypoint.droneClock) "" else ", receive time")
         }
         lines += "  Capture: ${iso(binding.captureTimeMs)} (${binding.captureTimeSource})"
-        binding.movedFrom?.let { moved ->
-            lines += String.format(Locale.US, "  Position: moved after submit to the nearer waypoint (was %.6f, %.6f)",
-                moved.latitude, moved.longitude)
-        }
-        if (!binding.final) lines += "  Binding: provisional"
         val diagnostics = mutableListOf("capture ${iso(binding.captureReceivedAtMs)}")
         binding.waypoint?.receivedAtMs?.let { diagnostics += "waypoint ${iso(it)}" }
         lines += "  App receive times (diagnostic): ${diagnostics.joinToString(", ")}"
@@ -396,7 +341,6 @@ object ClueBindingText {
         val pairs = mutableListOf(
             "r2c_binding_quality" to binding.quality.raw,
             "r2c_binding_hovering" to binding.hovering.toString(),
-            "r2c_binding_final" to binding.final.toString(),
             "r2c_capture_time" to iso(binding.captureTimeMs),
             "r2c_capture_time_source" to binding.captureTimeSource,
             "r2c_capture_received_at" to iso(binding.captureReceivedAtMs),

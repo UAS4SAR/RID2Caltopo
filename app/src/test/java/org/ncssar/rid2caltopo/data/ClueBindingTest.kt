@@ -15,8 +15,8 @@ class ClueBindingTest {
         ClueBindingPoint(t0 + offsetMs, received ?: (t0 + offsetMs + 350), lat, -121.0, 100.0, "rid", true)
 
     private fun bind(points: List<ClueBindingPoint>, captureMs: Long = t0, receivedAt: Long = captureMs + 400,
-                     frame: ClueBindingFramePosition? = null, ended: Boolean = false, now: Long = receivedAt) =
-        ClueBinder.bind("RID-1", "flight-1", captureMs, "stream-pts", receivedAt, points, frame, false, ended, now)
+                     frame: ClueBindingFramePosition? = null) =
+        ClueBinder.bind("RID-1", "flight-1", captureMs, "stream-pts", receivedAt, points, frame, false)
 
     @Test fun qualityThresholds() {
         assertEquals(ClueBindingQuality.EXACT, ClueBinder.quality(0, false))
@@ -59,10 +59,9 @@ class ClueBindingTest {
 
     @Test fun bindingUsesCaptureTimeNeverSubmissionOrReceiveTime() {
         // Received 9 s after capture (and submitted later still): the waypoint near the capture wins.
-        val binding = bind(listOf(point(0), point(9_000)), captureMs = t0, receivedAt = t0 + 9_000, now = t0 + 60_000)
+        val binding = bind(listOf(point(0), point(9_000)), captureMs = t0, receivedAt = t0 + 9_000)
         assertEquals(0L, binding.offsetMs)
         assertEquals(t0 + 9_000, binding.captureReceivedAtMs)
-        assertTrue(binding.final)
     }
 
     @Test fun approximateBindingsAreFlaggedUnlessHovering() {
@@ -90,44 +89,46 @@ class ClueBindingTest {
         assertTrue(ClueBindingText.descriptionLines(binding).contains("  Offset: none; nearest waypoint -31.000 s"))
     }
 
-    @Test fun bindingStaysOpenUntilNoNearerWaypointCanArrive() {
-        val open = bind(listOf(point(-4_000)))
-        assertFalse(open.final)
-        // A waypoint 1 s after capture is nearer: the binding moves and is final (latest >= capture + |offset|).
-        val next = ClueBinder.refresh(open, listOf(point(-4_000), point(1_000)), false, open.captureReceivedAtMs + 1_000)
+    @Test fun bindingUsesWaypointsAvailableNowWithoutWaitingForLaterFixes() {
+        // Only a fix 4 s before the capture so far: bound to it, nothing provisional or held.
+        val first = bind(listOf(point(-4_000)))
+        assertEquals(-4_000L, first.offsetMs)
+        assertEquals("-4.000 s · approximate", ClueBindingText.formSummary(first))
+        assertFalse(ClueBindingText.descriptionLines(first).any { it.contains("provisional") })
+        assertNull(ClueBindingText.extendedData(first).toMap()["r2c_binding_final"])
+        assertFalse(first.toJson().has("final"))
+        // While the form is open (and once more on Submit) a nearer fix re-binds.
+        val next = ClueBinder.refresh(first, listOf(point(-4_000), point(1_000)))
         assertEquals(1_000L, next.offsetMs)
-        assertTrue(next.final)
-        // A final binding never changes.
-        assertEquals(next, ClueBinder.refresh(next, listOf(point(0)), false, next.captureReceivedAtMs + 2_000))
-        // The flight ending or the 35 s app-clock wait also finalizes.
-        assertTrue(ClueBinder.refresh(open, listOf(point(-4_000)), true, open.captureReceivedAtMs).final)
-        assertTrue(ClueBinder.refresh(open, listOf(point(-4_000)), false, open.captureReceivedAtMs + 35_000).final)
-        // With no points available the stored binding is kept, only finalized.
-        val kept = ClueBinder.refresh(open, emptyList(), true, open.captureReceivedAtMs)
-        assertEquals(open.waypoint, kept.waypoint)
-        assertTrue(kept.final)
+        assertEquals(first.flightStartMs, next.flightStartMs)
+        // Without points (flight over) the stored binding is kept.
+        assertEquals(first, ClueBinder.refresh(first, emptyList()))
+        // Bindings saved by the previous build ("final"/"movedFrom" keys) still load.
+        val legacy = JSONObject(first.toJson().toString()).put("final", false)
+            .put("movedFrom", JSONObject().put("latitude", 39.1).put("longitude", -121.1))
+        assertEquals(first, ClueBinding.fromJson(legacy))
     }
 
-    @Test fun nearerWaypointMovesAWaypointProjectedClue() {
-        val open = bind(listOf(point(-4_000, lat = 39.0))).copy(originIsWaypoint = true)
-        val result = ClueBindingUpdate.apply(open, 39.001, -121.001, listOf(point(-4_000, lat = 39.0), point(500, lat = 39.0005)),
-            false, open.captureReceivedAtMs + 600)
-        assertTrue(result.moved)
-        assertEquals(39.0015, result.latitude, 1e-9)
-        assertEquals(-121.001, result.longitude, 1e-6)
-        assertEquals(ClueBindingFramePosition(39.001, -121.001), result.binding.movedFrom)
-        assertTrue(ClueBindingText.descriptionLines(result.binding).any { it.startsWith("  Position: moved after submit") })
+    @Test fun submitOriginShiftOnlyMovesWaypointProjectedClues() {
+        val shown = bind(listOf(point(-4_000, lat = 39.0))).copy(originIsWaypoint = true)
+        val submitted = ClueBinder.refresh(shown, listOf(point(-4_000, lat = 39.0), point(500, lat = 39.0005)))
+        val (from, to) = ClueBinder.originShift(shown, submitted)!!
+        assertEquals(t0 - 4_000, from.timeMs)
+        assertEquals(t0 + 500, to.timeMs)
+        val (lat, lng) = ClueBinder.translated(39.001, -121.001, from, to)
+        assertEquals(39.0015, lat, 1e-9)
+        assertEquals(-121.001, lng, 1e-6)
+        // Same waypoint: no shift.
+        assertNull(ClueBinder.originShift(submitted, submitted))
         // A clue projected from the frame's own position never moves.
-        val framed = open.copy(originIsWaypoint = false)
-        val still = ClueBindingUpdate.apply(framed, 39.001, -121.001, listOf(point(-4_000, lat = 39.0), point(500)), false, framed.captureReceivedAtMs)
-        assertFalse(still.moved)
-        assertEquals(39.001, still.latitude, 0.0)
+        val framed = shown.copy(originIsWaypoint = false)
+        val framedSubmitted = ClueBinder.refresh(framed, listOf(point(-4_000, lat = 39.0), point(500)))
+        assertEquals(500L, framedSubmitted.offsetMs)
+        assertNull(ClueBinder.originShift(framed, framedSubmitted))
     }
 
     @Test fun publishedDescriptionCarriesTheBinding() {
-        val binding = bind(listOf(point(1_500, received = t0 + 1_900)), receivedAt = t0 + 400).let {
-            ClueBinder.refresh(it, listOf(point(1_500, received = t0 + 1_900)), true, t0 + 2_000)
-        }
+        val binding = bind(listOf(point(1_500, received = t0 + 1_900)), receivedAt = t0 + 400)
         val text = ClueBindingText.publishedDescription("Red jacket\n", binding)
         assertTrue(text.startsWith("Red jacket\n\nWaypoint binding:\n  Offset: +1.500 s (waypoint minus capture, drone clock)"))
         assertTrue(text.contains("  Quality: exact"))

@@ -58,7 +58,7 @@ object FlightArchiveRebuild {
     }
 
     /** Binds a clue saved without a usable binding to the archived flight's nearest stored point. */
-    fun bindingFallback(record: AndroidClueRecord, contents: FlightArchiveContents, nowReceivedAtMs: Long): AndroidClueRecord {
+    fun bindingFallback(record: AndroidClueRecord, contents: FlightArchiveContents): AndroidClueRecord {
         val existing = record.binding
         if (existing?.nearest != null) return record
         val binding = ClueBinder.bind(
@@ -70,8 +70,6 @@ object FlightArchiveRebuild {
             points = contents.points,
             framePosition = existing?.framePosition,
             originIsWaypoint = false,
-            flightEnded = true,
-            nowReceivedAtMs = nowReceivedAtMs,
         )
         return record.copy(binding = binding)
     }

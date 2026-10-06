@@ -92,8 +92,8 @@ object FlightArchiveStore {
 
     /**
      * Archives a finished flight: GeoJSON first, then its KMZ with every clue and local marker it owns.
-     * Bindings of the flight's clues are finalized against the complete track first. A KMZ failure is
-     * queued for a retry; returns whether the GeoJSON was written.
+     * Clue bindings were fixed at Submit and are not changed here. A KMZ failure is queued for a
+     * retry; returns whether the GeoJSON was written.
      */
     @JvmStatic
     fun writeFlight(
@@ -112,7 +112,6 @@ object FlightArchiveStore {
         try {
             val store = AndroidClueStore.shared(context)
             val designator = AwaitingMapClueMatch.designatorOfLabel(title)
-            finalizeBindings(store, flightId, designator, points, System.currentTimeMillis())
             val self = AwaitingMapClueMatch.Candidate(flightId, designator, points.map { it.timeMs })
             val others = AwaitingMapFlights.allEntries().filter { it.optString("id") != flightId }
                 .map { AwaitingMapClueMatch.Candidate.of(it) } +
@@ -133,19 +132,6 @@ object FlightArchiveStore {
 
     private fun jpeg(store: AndroidClueStore, record: AndroidClueRecord): ByteArray? =
         runCatching { store.imageFile(record).takeIf { it.isFile }?.readBytes() }.getOrNull()
-
-    /** Final bindings for clues of [flightId] once the whole track is known. */
-    fun finalizeBindings(store: AndroidClueStore, flightId: String, designator: String, points: List<ClueBindingPoint>, nowMs: Long) {
-        val changed = store.openBindings().filter {
-            it.binding?.flightId == flightId ||
-                (it.binding?.flightId == null && it.sourceDesignator.equals(designator, ignoreCase = true))
-        }.map { record ->
-            val binding = record.binding ?: return@map record
-            val result = ClueBindingUpdate.apply(binding, record.lat, record.lng, points, flightEnded = true, nowReceivedAtMs = nowMs)
-            record.copy(binding = result.binding, lat = result.latitude, lng = result.longitude)
-        }
-        store.update(changed)
-    }
 
     data class ArchiveEntry(val dayDirectory: String, val fileName: String, val contents: FlightArchiveContents)
 
@@ -220,9 +206,7 @@ object FlightArchiveStore {
                 val archives = archivesAround(days).filterKeys { it != selfId } + (selfId to ArchiveEntry(job.dayDirectory, job.geoJsonFilename, contents))
                 val owned = FlightArchiveRebuild.ownedClues(selfId,
                     archives.mapValues { it.value.contents }, store.allRecords())
-                val now = System.currentTimeMillis()
-                val bound = owned.map { FlightArchiveRebuild.bindingFallback(it, contents, now) }
-                    .map { it.binding?.takeIf { b -> !b.final }?.let { b -> it.copy(binding = b.copy(final = true)) } ?: it }
+                val bound = owned.map { FlightArchiveRebuild.bindingFallback(it, contents) }
                 changedRecords += store.update(bound)
                 val kmz = FlightKmz.archive(contents.title, contents.kmzPoints, bound.map { FlightArchiveRebuild.kmzClue(it, jpeg(store, it)) })
                 if (!writeFile(dir, job.kmzFilename, KMZ_MIME, kmz)) throw IOException("KMZ write failed")
