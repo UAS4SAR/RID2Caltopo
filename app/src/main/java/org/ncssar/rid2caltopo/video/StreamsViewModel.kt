@@ -156,8 +156,12 @@ data class PendingClue(
     val demSource: String? = null,
     val demResolutionMeters: Double? = null,
     val demSampleStale: Boolean = false,
-    /** Waypoint nearest in time to the frame capture (drone clock); refreshed until final. */
+    /** Waypoint nearest in time to the frame capture (drone clock); re-bound while the form is open, fixed at Submit. */
     val binding: org.ncssar.rid2caltopo.data.ClueBinding? = null,
+    /** The "Current flight ignored" panel is showing over the clue form. */
+    val ignoredFlightPrompt: Boolean = false,
+    /** The operator answered No: the flight stays ignored and Submit keeps the clue local only. */
+    val ignoredFlightKept: Boolean = false,
 )
 
 internal data class ClueProjectionHeightSelection(
@@ -440,7 +444,6 @@ internal fun capturedVideoPlaybackPlan(
 private val clueTimeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 private const val DEFAULT_CLUE_GIMBAL_ANGLE_DEG = -90.0
 /** Shown when a second snapshot is requested while a clue form is open (same wording as Apple). */
-const val CLUE_ALREADY_OPEN_MESSAGE = "Submit or cancel the current clue first."
 private const val METERS_TO_FEET = 3.28084
 private const val RID_INVALID_ALTITUDE_METERS = -1000.0
 
@@ -2306,13 +2309,6 @@ class StreamsViewModel(
 
     fun captureClueFrame(designator: String) = ffmpegProbeService?.captureClueFrame(designator)
 
-    /** True (after telling the operator) when a clue form is already open; one snapshot at a time. */
-    fun refuseClueCaptureWhileFormOpen(): Boolean {
-        if (_pendingClue.value == null) return false
-        CaltopoClient.ShowToast(CLUE_ALREADY_OPEN_MESSAGE)
-        return true
-    }
-
     fun onSnapshotCaptured(
         designator: String,
         bitmap: Bitmap,
@@ -2321,9 +2317,8 @@ class StreamsViewModel(
     ) {
         val startedAtMs = System.currentTimeMillis()
         if (_pendingClue.value != null) {
-            // One snapshot at a time: the open form owns its binding and projection.
-            CaltopoClient.ShowToast(CLUE_ALREADY_OPEN_MESSAGE)
-            CTDebug(tag, "onSnapshotCaptured(${designator}): refused, a clue form is already open.")
+            // Defensive: the camera control is disabled while a clue is pending.
+            CTDebug(tag, "onSnapshotCaptured(${designator}): ignored, a clue is pending.")
             return
         }
         fun logSnapshotIfSlow(step: String, elapsedMs: Long) {
@@ -2387,8 +2382,6 @@ class StreamsViewModel(
             points = org.ncssar.rid2caltopo.data.WaypointTrack.GetBindingPointsSnapshot(droneSpec),
             framePosition = framePosition,
             originIsWaypoint = false,
-            flightEnded = false,
-            nowReceivedAtMs = startedAtMs,
         )
         // Projection origin: the frame's own drone position (SEI) when present, else the waypoint
         // nearest the capture, else the latest RID fix.
@@ -2501,7 +2494,9 @@ class StreamsViewModel(
                 else -> "RID"
             },
             binding = binding,
+            ignoredFlightPrompt = isFlightIgnored(droneSpec),
         )
+        if (isFlightIgnored(droneSpec)) CTDebug(tag, "Clue captured on an ignored flight remoteId=${droneSpec.remoteId}; asking to publish it")
         startPendingBindingRefresh()
 
         requestDemClueProjectionRefresh(designator)
@@ -2611,7 +2606,6 @@ class StreamsViewModel(
                 (record.binding?.let { org.ncssar.rid2caltopo.data.ClueBindingText.formSummary(it) } ?: "no binding"))
             localMapMarkers.add(record.toLocalMapMarker())
             scheduleArchiveRewrite(record)
-            startSavedBindingRefresh()
             registerClueSnapshot(
                 title = record.title,
                 fullImage = bitmap,
@@ -2727,12 +2721,43 @@ class StreamsViewModel(
         }
     }
 
+    /** Opens the Drone Confirmation Panel for a drone (set by the activity). */
+    var onReviewIgnoredFlight: ((String) -> Unit)? = null
+
+    /** The drone's current flight was ignored ("Don't publish") in the Drone Confirmation Panel. */
+    private fun isFlightIgnored(droneSpec: CtDroneSpec): Boolean =
+        droneSpec.remoteId.isNotBlank() && CaltopoClient.IsSessionUnknownDrone(droneSpec.remoteId)
+
+    /**
+     * Answer to "Current flight ignored. Do you want to publish it?". Yes reopens the Drone
+     * Confirmation Panel for the clue's drone; the clue form stays open underneath and is back in
+     * front when the panel closes. No keeps the flight ignored and returns to the clue form.
+     */
+    fun answerIgnoredFlightPrompt(publish: Boolean) {
+        val clue = _pendingClue.value ?: return
+        _pendingClue.value = clue.copy(ignoredFlightPrompt = false, ignoredFlightKept = clue.ignoredFlightKept || !publish)
+        CTDebug(tag, "Ignored flight prompt answered publish=$publish remoteId=${clue.droneSpec.remoteId}")
+        if (publish) onReviewIgnoredFlight?.invoke(clue.droneSpec.remoteId)
+    }
+
     fun submitClue() {
         val clue = pendingClue ?: return
         if (clue.projectionHeightMeters == null) {
             CaltopoClient.ShowToast("Clue projection needs fresh AGL or a valid relative altitude.")
             CTWarn(tag, "Clue submission blocked: projection height unavailable")
             return
+        }
+        when (org.ncssar.rid2caltopo.data.IgnoredFlightClue.submitAction(isFlightIgnored(clue.droneSpec), clue.ignoredFlightKept)) {
+            org.ncssar.rid2caltopo.data.IgnoredFlightClue.SubmitAction.ASK -> {
+                _pendingClue.value = clue.copy(ignoredFlightPrompt = true)
+                CTDebug(tag, "Clue submit on an ignored flight remoteId=${clue.droneSpec.remoteId}; asking to publish it")
+                return
+            }
+            org.ncssar.rid2caltopo.data.IgnoredFlightClue.SubmitAction.LOCAL_ONLY -> {
+                submitIgnoredFlightClueLocally(clue)
+                return
+            }
+            org.ncssar.rid2caltopo.data.IgnoredFlightClue.SubmitAction.UPLOAD -> Unit
         }
         CTDebug(tag, String.format(
             Locale.US,
@@ -2750,18 +2775,31 @@ class StreamsViewModel(
             clue.atoMeters?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
             clue.gimbalAngleDeg,
         ))
+        val submitted = bindAtSubmit(clue)
         val withCaptureSummary = appendTelemetrySummary(
-            clue.description,
-            buildClueCaptureSummary(clue, coordinateDisplayFormat),
+            submitted.description,
+            buildClueCaptureSummary(submitted, coordinateDisplayFormat),
         )
-        val finalDescription = appendTelemetrySummary(withCaptureSummary, clue.streamTelemetrySummary)
-        val saved = persistClueLocally(clue, clue.title, finalDescription, publish = true) ?: return
+        val finalDescription = appendTelemetrySummary(withCaptureSummary, submitted.streamTelemetrySummary)
+        persistClueLocally(submitted, submitted.title, finalDescription, publish = true) ?: return
+        // The binding was fixed at Submit; the upload starts right away.
         retryPendingClues()
-        CaltopoClient.ShowToast(
-            if (saved.bindingFinal) "Clue saved locally; publication will finish when its map is available."
-            else "Clue saved locally; it will publish once its waypoint binding is final."
-        )
+        CaltopoClient.ShowToast("Clue saved locally; publication will finish when its map is available.")
 
+        clearPendingClue()
+    }
+
+    /** Submit after No on an ignored flight: the full clue is kept on this device, nothing goes to CalTopo. */
+    private fun submitIgnoredFlightClueLocally(clue: PendingClue) {
+        val submitted = bindAtSubmit(clue)
+        val withCaptureSummary = appendTelemetrySummary(
+            submitted.description,
+            buildClueCaptureSummary(submitted, coordinateDisplayFormat),
+        )
+        val finalDescription = appendTelemetrySummary(withCaptureSummary, submitted.streamTelemetrySummary)
+        persistClueLocally(submitted, submitted.title, finalDescription, publish = false) ?: return
+        CTDebug(tag, "Clue on ignored flight kept local only remoteId=${submitted.droneSpec.remoteId}")
+        CaltopoClient.ShowToast(org.ncssar.rid2caltopo.data.IgnoredFlightClue.LOCAL_ONLY_SAVED)
         clearPendingClue()
     }
 
@@ -2772,21 +2810,22 @@ class StreamsViewModel(
             CTWarn(tag, "Local clue submission blocked: projection height unavailable")
             return
         }
-        val markerTitle = clue.title.ifBlank { "Local marker" }
+        val submitted = bindAtSubmit(clue)
+        val markerTitle = submitted.title.ifBlank { "Local marker" }
         val markerDescription = appendTelemetrySummary(
-            clue.description,
-            buildClueCaptureSummary(clue, coordinateDisplayFormat),
+            submitted.description,
+            buildClueCaptureSummary(submitted, coordinateDisplayFormat),
         )
-        if (persistClueLocally(clue, markerTitle, markerDescription, publish = false) == null) return
+        if (persistClueLocally(submitted, markerTitle, markerDescription, publish = false) == null) return
         CaltopoClient.ShowToast("Local marker added to R2C Map Pane.")
         CTDebug(tag, String.format(
             Locale.US,
             "submitLocalMarkerOnly: '%s' designator=%s lat=%.6f lng=%.6f alt=%.1f",
             markerTitle,
-            clue.designator,
-            clue.lat,
-            clue.lng,
-            clue.alt
+            submitted.designator,
+            submitted.lat,
+            submitted.lng,
+            submitted.alt
         ))
         clearPendingClue()
     }
@@ -2834,34 +2873,51 @@ class StreamsViewModel(
     }
 
     private var pendingBindingJob: Job? = null
-    private var savedBindingJob: Job? = null
     private var archiveRewriteJob: Job? = null
     @Volatile private var archiveRewriteAgain = false
 
+    /** Waypoints of the clue's flight available right now (empty once that flight is over). */
     private fun bindingPointsFor(binding: org.ncssar.rid2caltopo.data.ClueBinding, droneSpec: CtDroneSpec?):
-        Pair<List<org.ncssar.rid2caltopo.data.ClueBindingPoint>, Boolean> {
+        List<org.ncssar.rid2caltopo.data.ClueBindingPoint> {
         val flightId = binding.flightId
-        if (flightId != null) {
-            val live = org.ncssar.rid2caltopo.data.WaypointTrack.GetBindingPointsForFlight(flightId)
-            return (live ?: emptyList()) to (live == null)
-        }
+        if (flightId != null) return org.ncssar.rid2caltopo.data.WaypointTrack.GetBindingPointsForFlight(flightId).orEmpty()
         // No track existed at capture: a track that started since may still bind it.
-        val points = droneSpec?.let { org.ncssar.rid2caltopo.data.WaypointTrack.GetBindingPointsSnapshot(it) }.orEmpty()
-        return points to false
+        return droneSpec?.let { org.ncssar.rid2caltopo.data.WaypointTrack.GetBindingPointsSnapshot(it) }.orEmpty()
     }
 
-    /** While the form is open, refreshes the binding and re-projects from a nearer waypoint origin. */
+    /** The pending clue's binding against the waypoints available now. */
+    private fun currentBinding(clue: PendingClue): org.ncssar.rid2caltopo.data.ClueBinding? {
+        val binding = clue.binding ?: return null
+        val points = bindingPointsFor(binding, clue.droneSpec)
+        val withFlight = if (binding.flightId == null && points.isNotEmpty())
+            binding.copy(flightId = org.ncssar.rid2caltopo.data.WaypointTrack.GetLiveFlightId(clue.droneSpec)) else binding
+        return org.ncssar.rid2caltopo.data.ClueBinder.refresh(withFlight, points)
+    }
+
+    /**
+     * Submit binds once more to the waypoint nearest the capture among those available now; that
+     * binding is final (never revisited after Submit). A clue projected from its waypoint follows a
+     * nearer origin by translation, keeping its camera vector and any DEM refinement.
+     */
+    private fun bindAtSubmit(clue: PendingClue): PendingClue {
+        val submitted = currentBinding(clue) ?: return clue
+        val shift = org.ncssar.rid2caltopo.data.ClueBinder.originShift(clue.binding, submitted)
+            ?: return clue.copy(binding = submitted)
+        val (from, to) = shift
+        val (lat, lng) = org.ncssar.rid2caltopo.data.ClueBinder.translated(clue.lat, clue.lng, from, to)
+        CTDebug(tag, "Submit re-bound to a nearer waypoint " + org.ncssar.rid2caltopo.data.ClueBindingText.formSummary(submitted))
+        return clue.copy(binding = submitted, lat = lat, lng = lng, droneLat = to.latitude, droneLng = to.longitude,
+            droneAlt = to.altitudeMeters ?: clue.droneAlt)
+    }
+
+    /** While the form is open, re-binds as waypoints arrive and re-projects from a nearer waypoint origin. */
     private fun startPendingBindingRefresh() {
         pendingBindingJob?.cancel()
         pendingBindingJob = viewModelScope.launch {
             while (true) {
                 val clue = _pendingClue.value ?: break
                 val binding = clue.binding ?: break
-                if (binding.final) break
-                val (points, ended) = bindingPointsFor(binding, clue.droneSpec)
-                val withFlight = if (binding.flightId == null && points.isNotEmpty())
-                    binding.copy(flightId = org.ncssar.rid2caltopo.data.WaypointTrack.GetLiveFlightId(clue.droneSpec)) else binding
-                val next = org.ncssar.rid2caltopo.data.ClueBinder.refresh(withFlight, points, ended, System.currentTimeMillis())
+                val next = currentBinding(clue) ?: break
                 if (next != binding) {
                     val origin = next.nearest
                     val moveOrigin = binding.originIsWaypoint && origin != null && origin != binding.nearest
@@ -2890,48 +2946,11 @@ class StreamsViewModel(
         }
     }
 
-    /**
-     * Finalizes saved clues whose binding is still open. A clue projected from its waypoint moves with
-     * a nearer one; once final, a held upload is released and an archived flight's KMZ is rewritten.
-     */
-    private fun startSavedBindingRefresh() {
-        if (savedBindingJob?.isActive == true) return
-        savedBindingJob = viewModelScope.launch {
-            while (true) {
-                val open = localClueStore.openBindings()
-                if (open.isEmpty()) break
-                val now = System.currentTimeMillis()
-                val updated = open.map { record ->
-                    val binding = checkNotNull(record.binding)
-                    val (points, ended) = bindingPointsFor(binding, null)
-                    val result = org.ncssar.rid2caltopo.data.ClueBindingUpdate.apply(
-                        binding, record.lat, record.lng, points, ended || binding.flightId == null, now)
-                    record.copy(binding = result.binding, lat = result.latitude, lng = result.longitude)
-                }
-                val changed = runCatching { localClueStore.update(updated) }.getOrElse {
-                    CTError(tag, "Unable to save clue binding refresh", it as? Exception ?: Exception(it)); emptyList()
-                }
-                changed.forEach { record ->
-                    val index = localMapMarkers.indexOfFirst { it.id == record.id }
-                    if (index >= 0) localMapMarkers[index] = record.toLocalMapMarker()
-                    if (record.bindingFinal) {
-                        CTDebug(tag, "Clue binding final id=${record.id} " +
-                            (record.binding?.let { org.ncssar.rid2caltopo.data.ClueBindingText.formSummary(it) } ?: ""))
-                        scheduleArchiveRewrite(record)
-                    }
-                }
-                if (changed.any { it.bindingFinal && it.publishToCaltopo }) retryPendingClues()
-                kotlinx.coroutines.delay(1_000L)
-            }
-        }
-    }
-
     /** Queues a durable KMZ rewrite when [record]'s flight has already been archived, then runs the queue. */
     private fun scheduleArchiveRewrite(record: AndroidClueRecord?) {
         if (record != null) {
             val flightId = record.binding?.flightId
             if (flightId != null && org.ncssar.rid2caltopo.data.WaypointTrack.IsLiveFlight(flightId)) return
-            if (!record.bindingFinal) return
         }
         if (archiveRewriteJob?.isActive == true) {
             archiveRewriteAgain = true
@@ -4164,7 +4183,6 @@ class StreamsViewModel(
                     val index = localMapMarkers.indexOfFirst { it.id == record.id }
                     if (index >= 0) localMapMarkers[index] = record.toLocalMapMarker()
                 }
-                startSavedBindingRefresh()
             }
         }
         viewModelScope.launch {

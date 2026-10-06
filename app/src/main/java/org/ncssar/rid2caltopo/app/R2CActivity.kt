@@ -1375,6 +1375,10 @@ class R2CActivity :
             ))[R2CViewModel::class.java]
         streamsViewModel = ViewModelProvider(this)[StreamsViewModel::class.java]
         streamsViewModel.onPairedDroneSetup = localViewModel::requestPairedDroneSetup
+        // "Current flight ignored" Yes: the same Drone Confirmation Panel as the Main Screen designator.
+        streamsViewModel.onReviewIgnoredFlight = { remoteId ->
+            CaltopoClient.GetDroneSpec(remoteId)?.let(localViewModel::requestDroneConfirmation)
+        }
         CaltopoClient.AddDroneSpecsChangedListener(localViewModel)
         CaltopoClient.AddDroneConfirmationCandidateListener(localViewModel)
         displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager

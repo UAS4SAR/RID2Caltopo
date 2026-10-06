@@ -557,8 +557,9 @@ fun StreamTile(
         if (!currentIsFocused) {
             viewModel.ensureFocus(streamDesignator)
         }
-        if (viewModel.refuseClueCaptureWhileFormOpen()) {
-            CTDebug(tag, "Clue capture refused for $streamDesignator: a clue form is already open.")
+        // The camera control is disabled while a clue is pending; a double tap meanwhile is ignored.
+        if (viewModel.pendingClue != null) {
+            CTDebug(tag, "Clue capture ignored for $streamDesignator: a clue is pending.")
             return
         }
         if (!viewModel.hasPairedTelemetry(streamDesignator)) {
@@ -887,20 +888,26 @@ fun StreamTile(
             )
         }
         if (shouldShowStreamClueCaptureButton(showTileControls, isLocalPlayback, streamState)) {
+            // Greyed and not tappable while a clue is pending (until it is submitted or canceled).
+            val clueCaptureEnabled = viewModel.pendingClue == null
             IconButton(
                 onClick = { requestClueCapture("camera-button") },
+                enabled = clueCaptureEnabled,
                 modifier = Modifier
                     .zIndex(2f)
                     .align(Alignment.CenterEnd)
                     .offset(x = (-streamCameraTrailingInsetDp()).dp)
                     .size(56.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.88f))
+                    .background(
+                        if (clueCaptureEnabled) MaterialTheme.colorScheme.primary.copy(alpha = 0.88f)
+                        else Color.Gray.copy(alpha = 0.55f)
+                    )
             ) {
                 Icon(
                     imageVector = Icons.Filled.CameraAlt,
                     contentDescription = "Capture clue snapshot",
-                    tint = MaterialTheme.colorScheme.onPrimary,
+                    tint = if (clueCaptureEnabled) MaterialTheme.colorScheme.onPrimary else Color.White.copy(alpha = 0.5f),
                 )
             }
         }

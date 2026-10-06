@@ -52,6 +52,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.platform.testTag
+import androidx.compose.material3.AlertDialog
+import androidx.compose.ui.window.DialogProperties
+import org.ncssar.rid2caltopo.data.IgnoredFlightClue
 import org.ncssar.rid2caltopo.data.ClueBindingQuality
 import org.ncssar.rid2caltopo.data.ClueBindingText
 import org.ncssar.rid2caltopo.video.CoordinateDisplayFormat
@@ -70,6 +73,7 @@ fun ClueSubmissionSheet(
     onCancel: () -> Unit,
     onSubmitLocalMarkerOnly: () -> Unit,
     onSubmit: () -> Unit,
+    onIgnoredFlightAnswer: (Boolean) -> Unit = {},
 ) {
     val sheetState = rememberModalBottomSheetState(
         skipPartiallyExpanded = true,
@@ -98,6 +102,18 @@ fun ClueSubmissionSheet(
             onSubmit = onSubmit,
             onCancel = onCancel
         )
+        if (pendingClue.ignoredFlightPrompt) {
+            // Over the clue form; Yes opens the Drone Confirmation Panel, No returns to the form.
+            AlertDialog(
+                onDismissRequest = {},
+                properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
+                title = { Text(IgnoredFlightClue.TITLE) },
+                text = { Text(IgnoredFlightClue.MESSAGE) },
+                confirmButton = { TextButton(onClick = { onIgnoredFlightAnswer(true) }) { Text(IgnoredFlightClue.YES) } },
+                dismissButton = { TextButton(onClick = { onIgnoredFlightAnswer(false) }) { Text(IgnoredFlightClue.NO) } },
+                modifier = Modifier.testTag("ignored-flight-prompt"),
+            )
+        }
     }
 }
 
@@ -408,6 +424,14 @@ fun ClueSheetContent (
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                if (clue.ignoredFlightKept) {
+                    Text(
+                        text = IgnoredFlightClue.LOCAL_ONLY_NOTE,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFFFF9800),
+                        modifier = Modifier.testTag("ignored-flight-local-only"),
+                    )
+                }
                 if (!clue.gimbalAngleConfirmed) {
                     Text(
                         text = "No current camera angle telemetry. Assuming −90° (straight down). Adjust the gimbal angle if needed.",

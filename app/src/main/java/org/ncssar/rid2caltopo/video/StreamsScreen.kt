@@ -677,6 +677,7 @@ fun StreamsScreen(
                         onSubmit = viewModel::submitClue,
                         onSubmitLocalMarkerOnly = viewModel::submitLocalMarkerOnly,
                         onCancel = viewModel::clearPendingClue,
+                        onIgnoredFlightAnswer = viewModel::answerIgnoredFlightPrompt,
                     )
                 }
             }

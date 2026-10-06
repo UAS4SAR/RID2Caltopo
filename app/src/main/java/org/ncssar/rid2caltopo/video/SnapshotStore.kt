@@ -37,9 +37,6 @@ data class AndroidClueRecord(
     /** Capture time used for flight ownership: the bound capture time on the drone clock. */
     val ownershipTimeMs: Long get() = binding?.captureTimeMs ?: createdAtMs
 
-    /** Uploads wait until no nearer waypoint can arrive. Records without a binding are final. */
-    val bindingFinal: Boolean get() = binding?.final ?: true
-
     /** Text for CalTopo and the KMZ: the stored description plus the binding block. */
     val publishedDescription: String get() = ClueBindingText.publishedDescription(description, binding)
 }
@@ -192,14 +189,10 @@ class AndroidClueStore private constructor(
         return applied
     }
 
-    /** Records whose binding is still open (waiting for a nearer waypoint). */
-    @Synchronized
-    fun openBindings(): List<AndroidClueRecord> = records.values.filter { !it.bindingFinal }
-
     @Synchronized
     fun pendingForMap(mapId: String, teamId: String): List<AndroidClueRecord> {
         loadIndex()
-        return records.values.filter { it.publishToCaltopo && it.uploadState == "pending" && it.bindingFinal &&
+        return records.values.filter { it.publishToCaltopo && it.uploadState == "pending" &&
             mapId.isNotBlank() && teamId.isNotBlank() && it.mapKey == "map:$mapId" && it.destinationTeamId == teamId }
     }
 
