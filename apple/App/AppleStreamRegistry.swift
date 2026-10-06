@@ -1370,6 +1370,12 @@ final class RID2CaltopoAppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        // Open the session log for every launch, foreground or background,
+        // before any UI (terms gate, ContentView) exists.
+        let launchOptionKeys = (launchOptions ?? [:]).keys.map(\.rawValue)
+        Task { @MainActor in
+            await AppleDiagnosticsCenter.startAtLaunch(launchOptionKeys: launchOptionKeys)
+        }
         AppleUserInteractionObserver.install()
         // Safety net: raw AOL lidar work only lives while Download Map stays open; remove any left by a killed app.
         Task.detached(priority: .background) {

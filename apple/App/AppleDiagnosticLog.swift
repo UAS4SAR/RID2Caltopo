@@ -271,6 +271,30 @@ final class AppleDiagnosticsCenter: ObservableObject {
     @Published private(set) var status = "Preparing diagnostics…"
     @Published private(set) var isPreparing = false
 
+    /// Opens the session log as soon as the process launches, from the app
+    /// delegate. Before this the file was only created from ContentView's
+    /// `.task`, so background relaunches (Bluetooth/location restoration) and
+    /// any launch that stopped at the terms gate wrote no log at all.
+    static func startAtLaunch(launchOptionKeys: [String]) async {
+        let state: String
+        switch UIApplication.shared.applicationState {
+        case .active: state = "active"
+        case .inactive: state = "inactive"
+        case .background: state = "background"
+        @unknown default: state = "unknown"
+        }
+        do {
+            let url = try await AppleDiagnosticLogStore.shared.start(metadata: processHeader)
+            AppleLog.info(
+                "App",
+                "Process launched pid=\(ProcessInfo.processInfo.processIdentifier) state=\(state) " +
+                    "options=[\(launchOptionKeys.sorted().joined(separator: ","))] log=\(url.lastPathComponent)"
+            )
+        } catch {
+            NSLog("RID2Caltopo: diagnostic log failed to open at launch: \(error)")
+        }
+    }
+
     func start() async {
         do {
             let url = try await AppleDiagnosticLogStore.shared.start(metadata: header)
@@ -318,8 +342,26 @@ final class AppleDiagnosticsCenter: ObservableObject {
         }
     }
 
-    private var header: String {
-        "# RID2Caltopo \(appVersion) running on \(UIDevice.current.systemName) \(UIDevice.current.systemVersion) (\(hardwareIdentifier))"
+    private var header: String { Self.processHeader }
+
+    static var processHeader: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return "# RID2Caltopo \(version) (\(build)) running on \(UIDevice.current.systemName) \(UIDevice.current.systemVersion) (\(staticHardwareIdentifier))"
+    }
+
+    private static var staticHardwareIdentifier: String {
+        if let simulatorModel = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] {
+            return simulatorModel
+        }
+        var systemInfo = utsname()
+        guard uname(&systemInfo) == 0 else { return UIDevice.current.model }
+        let machineSize = MemoryLayout.size(ofValue: systemInfo.machine)
+        return withUnsafePointer(to: &systemInfo.machine) {
+            $0.withMemoryRebound(to: CChar.self, capacity: machineSize) {
+                String(cString: $0)
+            }
+        }
     }
 
     private var diagnosticManifest: String {

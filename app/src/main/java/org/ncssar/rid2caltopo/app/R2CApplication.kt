@@ -9,6 +9,7 @@ import com.google.firebase.crashlytics.FirebaseCrashlytics
 import org.ncssar.rid2caltopo.BuildConfig
 import org.ncssar.rid2caltopo.airspace.AirspaceCenter
 import org.ncssar.rid2caltopo.data.AppConfigStore
+import org.ncssar.rid2caltopo.data.CaltopoClient
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTError
 import org.ncssar.rid2caltopo.data.FaaConfigManager
@@ -59,6 +60,29 @@ class R2CApplication : Application() {
         MainThreadStallMonitor.start()
         logHistoricalProcessExitReasons()
         CTDebug(TAG, "onCreate().")
+        openSessionLogAtProcessStart()
+    }
+
+    /**
+     * Every process start gets a Log_ file. Previously the file was only opened from
+     * R2CActivity.initialize(), which runs after all runtime permissions are granted,
+     * so a process started for a broadcast/service (e.g. AppIdleAlarmReceiver) or a
+     * launch waiting on a permission prompt wrote nothing to disk. SAF I/O stays off
+     * the main thread; persisted state is loaded here first so the worker doesn't race
+     * the main thread's first state load.
+     */
+    private fun openSessionLogAtProcessStart() {
+        runCatching { CaltopoClient.HasArchiveDirForCurrentSession() }
+        Thread({
+            runCatching { CaltopoClient.InitArchiveDir() }
+                .onSuccess {
+                    CaltopoClient.CTInfo(
+                        TAG,
+                        "Process started pid=${android.os.Process.myPid()}; session log opened at process start"
+                    )
+                }
+                .onFailure { android.util.Log.e(TAG, "CTError: session log open at process start failed", it) }
+        }, "Session log open").apply { isDaemon = true }.start()
     }
 
     private fun initializeCrashlyticsProbe() {

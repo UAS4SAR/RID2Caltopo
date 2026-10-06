@@ -3902,7 +3902,20 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         ArchiveState("faa remote config marked stale");
     }
 
+    private static final Object InitArchiveDirLock = new Object();
+
+    /**
+     * Opens today's session log. Serialized because it now runs at process start
+     * (R2CApplication) as well as from R2CActivity.initialize(); without the lock
+     * two callers could each create a Log_ file.
+     */
     public static void InitArchiveDir() {
+        synchronized (InitArchiveDirLock) {
+            InitArchiveDirLocked();
+        }
+    }
+
+    private static void InitArchiveDirLocked() {
         DocumentFile todaysArchiveDir = GetTodaysTrackDir();
         if (null == todaysArchiveDir) {
             CTError(TAG, "InitArchiveDir(): archive dir is mia.");
