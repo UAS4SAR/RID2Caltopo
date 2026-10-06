@@ -136,8 +136,9 @@ final class AppleClueStore: ObservableObject {
         if personalLogin { return (mapID.isEmpty ? nil : mapID, teamID) }
         let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("awaiting-map-flights.json")
         if let data = try? Data(contentsOf: url), let flights = try? JSONDecoder().decode([AwaitingMapFlight].self, from: data),
-           let flight = flights.last(where: { !$0.finished && RidTrackStore.canonicalAircraftID($0.remoteID) == RidTrackStore.canonicalAircraftID(draft.aircraftID) && $0.decision != "local" &&
-               draft.capturedAt >= $0.firstTime && draft.capturedAt.timeIntervalSince($0.lastTime) <= 30 }) {
+           let flight = flights.last(where: { !$0.finished && $0.decision != "local" &&
+               AwaitingMapClueMatch.matches(clueAircraftID: draft.aircraftID, capturedAt: draft.capturedAt,
+                   flightRemoteID: $0.remoteID, firstTime: $0.firstTime, lastTime: $0.lastTime) }) {
             return (flight.mapID.isEmpty ? nil : flight.mapID, flight.teamID.isEmpty ? nil : flight.teamID)
         }
         return (mapID.isEmpty ? nil : mapID, teamID.isEmpty ? nil : teamID)
@@ -147,8 +148,7 @@ final class AppleClueStore: ObservableObject {
         let previous = records
         for index in records.indices where records[index].destinationMapID == nil &&
                 records[index].uploadState != .localOnly && records[index].uploadState != .published &&
-                RidTrackStore.canonicalAircraftID(records[index].aircraftID) == RidTrackStore.canonicalAircraftID(flight.remoteID) &&
-                records[index].capturedAt >= flight.firstTime && records[index].capturedAt <= flight.lastTime {
+                AwaitingMapClueMatch.matches(records[index], flight: flight) {
             records[index].destinationMapID = mapID
             records[index].destinationTeamID = teamID
         }
@@ -167,15 +167,23 @@ final class AppleClueStore: ObservableObject {
         enqueueUpload(id)
     }
 
-    func delete(_ id: UUID) {
+    /// Returns true when the clue's photo is gone from this device afterwards.
+    @discardableResult
+    func delete(_ id: UUID) -> Bool {
         uploadTasks.removeValue(forKey: id)?.cancel()
-        guard let index = records.firstIndex(where: { $0.id == id }) else { return }
+        guard let index = records.firstIndex(where: { $0.id == id }) else { return false }
         let record = records.remove(at: index)
         try? FileManager.default.removeItem(at: imageURL(for: record))
         try? FileManager.default.removeItem(at: thumbnailURL(for: record))
         try? persistIndex()
         updateStatus()
         AppleLog.info("Clue", "Local clue deleted id=\(id)")
+        return !FileManager.default.fileExists(atPath: imageURL(for: record).path)
+    }
+
+    /// Clue photos that belong to an awaiting-map flight (shared rule in AwaitingMapClueMatch).
+    func awaitingFlightClues(_ flight: AwaitingMapFlight, otherFlights: [AwaitingMapFlight]) -> [OperationalClueRecord] {
+        AwaitingMapClueMatch.ownedClues(records, flight: flight, otherFlights: otherFlights)
     }
 
     func imageURL(for record: OperationalClueRecord) -> URL {

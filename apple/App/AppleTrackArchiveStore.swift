@@ -267,6 +267,14 @@ actor AppleTrackArchiveStore {
         return failed
     }
 
+    /// Deletes only the GeoJSON and clue KMZ written for this flight.
+    func deleteFlightArchive(_ flight: AwaitingMapFlight) -> AwaitingMapArchiveDeletion {
+        guard let rootURL else { return AwaitingMapArchiveDeletion(failures: ["archive folder unavailable"]) }
+        let result = AwaitingMapFlightArchive.deleteFiles(for: flight, root: rootURL)
+        for path in result.deleted { AppleFlightStorage.fileChanged(rootURL.appendingPathComponent(path), size: 0) }
+        return result
+    }
+
     private func process(data: Data, file: URL) async -> AppleTrackArchiveOutcome.TrackerResult {
         await uploadWork.run(key: file.standardizedFileURL.path) {
             await self.processOnce(data: data, file: file)

@@ -116,11 +116,16 @@ public enum RidTrackGeoJSON {
         timeZone: TimeZone = .current
     ) -> String {
         let startDate = track.points.first?.receivedAt ?? track.lastObservation.receivedAt
-        let timestamp = OperationalDiagnosticLogFormat.filenameTimestamp(
-            startDate,
-            timeZone: timeZone
-        )
-        return "\(track.aircraftID)-\(timestamp).json"
+        return suggestedFilenameBase(aircraftID: track.aircraftID, startDate: startDate, timeZone: timeZone) + ".json"
+    }
+
+    /// Shared by archive writing and Discard, so both resolve the same filename.
+    public static func suggestedFilenameBase(
+        aircraftID: String,
+        startDate: Date,
+        timeZone: TimeZone = .current
+    ) -> String {
+        "\(aircraftID)-\(OperationalDiagnosticLogFormat.filenameTimestamp(startDate, timeZone: timeZone))"
     }
 
     public static func suggestedClueReportFilename(

@@ -52,6 +52,35 @@ final class RIDTrackViewModel: ObservableObject {
         }
     }
 
+    /// Every journal entry, including decided ones, so clue ownership can avoid neighbours.
+    var awaitingMapJournalEntries: [AwaitingMapFlight] { awaitingMapJournal.entries }
+
+    /// Permanently deletes a completed awaiting-map flight: its clue photos, its local track
+    /// archive files, and its journal entry. Works without a connected map.
+    @discardableResult
+    func discardAwaitingFlight(_ flight: AwaitingMapFlight, clues: AppleClueStore) async -> Bool {
+        guard let current = awaitingMapJournal.entries.first(where: { $0.id == flight.id }), current.finished else {
+            AppleLog.warning("AwaitingMap", "Discard refused id=\(flight.id) remoteId=\(flight.remoteID): flight not found or still in progress")
+            return false
+        }
+        let owned = clues.awaitingFlightClues(current, otherFlights: awaitingMapJournal.entries)
+        let result = await AwaitingMapFlightDiscarder.discard(
+            flight: current,
+            journal: awaitingMapJournal,
+            clueIDs: owned.map(\.id),
+            deleteClue: { clues.delete($0) },
+            deleteArchive: { [archiveStore] in await archiveStore.deleteFlightArchive(current) }
+        )
+        awaitingMapFlights = awaitingMapJournal.entries.filter { $0.decision == "review" }
+        if result.succeeded {
+            AppleLog.info("AwaitingMap", result.logSummary(for: current))
+        } else {
+            AppleLog.warning("AwaitingMap", result.logSummary(for: current))
+            archiveStatus = "Flight log was not fully discarded; try again."
+        }
+        return result.succeeded
+    }
+
     private func queueCompletedDeferredFlights() async {
         for entry in awaitingMapJournal.entries where entry.finished && entry.decision == "publish" &&
                 entry.mapID == publicationMapID && entry.teamID == publicationTeamID {

@@ -1337,7 +1337,8 @@ struct ContentView: View {
         }
         .safeAreaInset(edge: .bottom, alignment: .leading, spacing: 0) {
             if !organizationAccessBlocked {
-                AwaitingMapPublicationPanel(tracks: ridTracks, settings: caltopoSettings, clues: clueStore)
+                AwaitingMapPublicationPanel(tracks: ridTracks, settings: caltopoSettings, clues: clueStore,
+                    location: locationProvider, onChooseMap: openCaltopoMapActions)
             }
         }
         // Keep the compact warning host above navigation, including Live View.
@@ -3381,9 +3382,13 @@ private struct AwaitingMapPublicationPanel: View {
     @ObservedObject var tracks: RIDTrackViewModel
     @ObservedObject var settings: AppleCaltopoSettings
     @ObservedObject var clues: AppleClueStore
+    @ObservedObject var location: AppleLocationProvider
+    let onChooseMap: () -> Void
     @State private var reviewing = false
     @State private var reminder = AwaitingMapReminder()
     @State private var selected: AwaitingMapFlight?
+    @State private var discardCandidate: AwaitingMapFlight?
+    @State private var chooseMapAfterDismiss = false
     @State private var destinationMap = ""
     @State private var destinationTeam = ""
     @State private var destinationTitle = ""
@@ -3400,29 +3405,26 @@ private struct AwaitingMapPublicationPanel: View {
                         reviewing = true
                     }
                 }
-                .sheet(isPresented: $reviewing) {
+                .sheet(isPresented: $reviewing, onDismiss: {
+                    // Open the incident-map picker only after this sheet has gone away.
+                    guard chooseMapAfterDismiss else { return }
+                    chooseMapAfterDismiss = false
+                    onChooseMap()
+                }) {
                     NavigationStack {
-                        List {
-                            Text(settings.mapID.isEmpty ? "Select an incident map to publish. Flights and clues remain saved locally." : "Destination: \(settings.mapTitle) (\(settings.mapID))")
-                            ForEach(tracks.awaitingMapFlights.sorted { a, b in
-                                a.suggested(icLocations: tracks.incidentCommandLocations) && !b.suggested(icLocations: tracks.incidentCommandLocations)
-                            }) { flight in
-                                Button {
-                                    destinationMap = flight.mapID.isEmpty ? settings.mapID : flight.mapID
-                                    destinationTeam = flight.mapID.isEmpty ? settings.configuration.publicationScope : flight.teamID
-                                    destinationTitle = flight.mapID.isEmpty || flight.mapID == settings.mapID ? settings.mapTitle : "Original incident map"
-                                    selected = flight
-                                } label: {
-                                    VStack(alignment: .leading) {
-                                        Text(flight.label)
-                                        Text(flight.firstTime.formatted()).font(.caption)
-                                        if flight.suggested(icLocations: tracks.incidentCommandLocations) { Text("Recent flight near IC").font(.caption) }
-                                    }
-                                }.disabled(settings.mapID.isEmpty)
+                        ScrollView {
+                            reviewContent
+                                .padding(.horizontal, 22)
+                                .padding(.vertical, 18)
+                        }
+                        .background(Color(uiColor: .systemGroupedBackground))
+                        .navigationTitle(AwaitingMapFlightText.title)
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button("Dismiss") { reviewing = false }
                             }
                         }
-                        .navigationTitle("Flights awaiting a map")
-                        .toolbar { Button("Later") { reviewing = false } }
                         .task { await tracks.refreshIncidentCommandLocations() }
                         .alert("Publish earlier flight?", isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } })) {
                             Button("Publish") {
@@ -3445,8 +3447,354 @@ private struct AwaitingMapPublicationPanel: View {
                             Text("\(selected?.label ?? "Flight")\nTo \(destinationTitle) (\(destinationMap))\nIncludes the recorded track and associated clues marked for publication. Clues kept local stay local.")
                         }
                     }
+                    .alert(
+                        AwaitingMapFlightText.discardTitle,
+                        isPresented: Binding(get: { discardCandidate != nil }, set: { if !$0 { discardCandidate = nil } }),
+                        presenting: discardCandidate
+                    ) { flight in
+                        Button("Cancel", role: .cancel) { discardCandidate = nil }
+                        Button("Discard", role: .destructive) {
+                            discardCandidate = nil
+                            Task { await tracks.discardAwaitingFlight(flight, clues: clues) }
+                        }
+                    } message: { flight in
+                        Text(verbatim: "\(flight.label) · \(flight.firstTime.formatted())\n"
+                            + AwaitingMapFlightText.discardMessage(cluePhotoCount: cluePhotoCount(flight)))
+                    }
+                    .modifier(AwaitingMapSheetSizing())
                 }
         }
+    }
+
+    private var sortedFlights: [AwaitingMapFlight] {
+        tracks.awaitingMapFlights.sorted { a, b in
+            a.suggested(icLocations: tracks.incidentCommandLocations) && !b.suggested(icLocations: tracks.incidentCommandLocations)
+        }
+    }
+
+    /// A usable fix, or nil when Core Location has none (negative accuracy means invalid).
+    private var currentFix: CLLocation? {
+        guard let fix = location.lastLocation, fix.horizontalAccuracy >= 0 else { return nil }
+        return fix
+    }
+
+    private var locationSummary: String {
+        guard let fix = currentFix else { return AwaitingMapFlightText.locationUnavailable }
+        return AwaitingMapFlightText.locationSummary(accuracyMeters: fix.horizontalAccuracy,
+            fixTime: fix.timestamp.formatted(date: .omitted, time: .shortened))
+    }
+
+    private func cluePhotoCount(_ flight: AwaitingMapFlight) -> Int {
+        clues.awaitingFlightClues(flight, otherFlights: tracks.awaitingMapJournalEntries).count
+    }
+
+    private func proximity(_ flight: AwaitingMapFlight) -> AwaitingMapFlightProximity? {
+        currentFix.flatMap { flight.proximity(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude) }
+    }
+
+    private func beginPublish(_ flight: AwaitingMapFlight) {
+        destinationMap = flight.mapID.isEmpty ? settings.mapID : flight.mapID
+        destinationTeam = flight.mapID.isEmpty ? settings.configuration.publicationScope : flight.teamID
+        destinationTitle = flight.mapID.isEmpty || flight.mapID == settings.mapID ? settings.mapTitle : "Original incident map"
+        selected = flight
+    }
+
+    private var reviewContent: some View {
+        let flights = sortedFlights
+        return VStack(alignment: .leading, spacing: 0) {
+            mapBanner
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    Text(verbatim: AwaitingMapFlightText.flightCountHeader(flights.count))
+                    Spacer(minLength: 12)
+                    Text(verbatim: locationSummary)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(verbatim: AwaitingMapFlightText.flightCountHeader(flights.count))
+                    Text(verbatim: locationSummary)
+                }
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .padding(.horizontal, 16)
+            .padding(.top, 22)
+            .padding(.bottom, 7)
+            // One layout decision for every row, so rows never mix wide and stacked forms.
+            ViewThatFits(in: .horizontal) {
+                flightGroup(flights, wide: true)
+                flightGroup(flights, wide: false)
+            }
+            Text("Publish needs a connected map. **Discard** permanently deletes a flight's track and clue photos from this device. **Dismiss** only hides this list; flights stay saved and can be reviewed again from Live View.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 16)
+                .padding(.top, 9)
+        }
+    }
+
+    private func flightGroup(_ flights: [AwaitingMapFlight], wide: Bool) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(flights.enumerated()), id: \.element.id) { index, flight in
+                AwaitingMapFlightRow(
+                    flight: flight,
+                    proximity: proximity(flight),
+                    cluePhotoCount: cluePhotoCount(flight),
+                    nearIC: flight.suggested(icLocations: tracks.incidentCommandLocations),
+                    canPublish: !settings.mapID.isEmpty,
+                    wide: wide,
+                    onPublish: { beginPublish(flight) },
+                    onDiscard: { discardCandidate = flight }
+                )
+                if index < flights.count - 1 { Divider().padding(.leading, 74) }
+            }
+        }
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder private var mapBanner: some View {
+        Group {
+            if settings.mapID.isEmpty {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) {
+                        bannerIcon
+                        bannerText.lineLimit(1)
+                        Spacer(minLength: 12)
+                        chooseMapButton
+                    }
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .top, spacing: 12) {
+                            bannerIcon
+                            bannerText.fixedSize(horizontal: false, vertical: true)
+                        }
+                        chooseMapButton
+                    }
+                }
+            } else {
+                HStack(spacing: 12) {
+                    Image(systemName: "map").foregroundStyle(.tint)
+                    Text(verbatim: "Destination: \(settings.mapTitle) (\(settings.mapID))")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .font(.subheadline)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var bannerIcon: some View {
+        Image(systemName: "info.circle").font(.title3).foregroundStyle(.orange)
+    }
+
+    private var bannerText: Text {
+        Text("**No map connected.** \(AwaitingMapFlightText.noMapBanner)")
+    }
+
+    private var chooseMapButton: some View {
+        Button {
+            chooseMapAfterDismiss = true
+            reviewing = false
+        } label: {
+            Label("Choose Map…", systemImage: "map")
+        }
+        .buttonStyle(.bordered)
+        .font(.subheadline.weight(.semibold))
+        .fixedSize()
+    }
+}
+
+private struct AwaitingMapFlightRow: View {
+    let flight: AwaitingMapFlight
+    let proximity: AwaitingMapFlightProximity?
+    let cluePhotoCount: Int
+    let nearIC: Bool
+    let canPublish: Bool
+    let wide: Bool
+    let onPublish: () -> Void
+    let onDiscard: () -> Void
+
+    var body: some View {
+        Group {
+            if wide {
+                HStack(spacing: 14) {
+                    AwaitingMapCompassChip(proximity: proximity)
+                    details
+                    Spacer(minLength: 12)
+                    actions
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .top, spacing: 14) {
+                        AwaitingMapCompassChip(proximity: proximity)
+                        details
+                        Spacer(minLength: 0)
+                    }
+                    actions.padding(.leading, 58)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+    }
+
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(verbatim: flight.label).font(.title3.weight(.semibold))
+                Text(verbatim: flight.firstTime.formatted()).font(.callout).foregroundStyle(.secondary)
+            }
+            .lineLimit(1)
+            if wide {
+                HStack(spacing: 10) {
+                    durationItem
+                    separator
+                    photosItem
+                    separator
+                    locationItem
+                }
+                .fixedSize()
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    durationItem
+                    photosItem
+                    locationItem
+                }
+            }
+            if nearIC {
+                Text("Recent flight near IC").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .font(.callout)
+    }
+
+    private var separator: some View {
+        Text(verbatim: "·").foregroundStyle(.tertiary)
+    }
+
+    private var durationItem: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "timer").foregroundStyle(.secondary)
+            Text(verbatim: AwaitingMapFlightText.duration(seconds: flight.durationSeconds))
+        }
+        .lineLimit(1)
+    }
+
+    private var photosItem: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "camera").foregroundStyle(.secondary)
+            Text(verbatim: AwaitingMapFlightText.cluePhotos(cluePhotoCount))
+                .foregroundStyle(cluePhotoCount == 0 ? .secondary : .primary)
+        }
+        .lineLimit(1)
+    }
+
+    @ViewBuilder private var locationItem: some View {
+        switch proximity {
+        case .inside:
+            HStack(spacing: 6) {
+                Image(systemName: "dot.square")
+                Text(verbatim: AwaitingMapFlightText.insideArea).fontWeight(.medium)
+            }
+            .foregroundStyle(Color.green)
+            .lineLimit(1)
+        case .away:
+            HStack(spacing: 6) {
+                Image(systemName: "mappin.and.ellipse").foregroundStyle(Color.blue)
+                Text(verbatim: AwaitingMapFlightText.location(proximity))
+            }
+            .lineLimit(1)
+        case nil:
+            HStack(spacing: 6) {
+                Image(systemName: "location.slash")
+                Text(verbatim: AwaitingMapFlightText.distanceUnavailable)
+            }
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        }
+    }
+
+    private var actions: some View {
+        HStack(spacing: 10) {
+            Button(action: onPublish) {
+                Label("Publish…", systemImage: "square.and.arrow.up")
+            }
+            .buttonStyle(.bordered)
+            .disabled(!canPublish)
+            Button(role: .destructive, action: onDiscard) {
+                Label("Discard", systemImage: "trash")
+            }
+            .buttonStyle(.bordered)
+            .tint(.red)
+            // A flight still in the air keeps recording; it can be discarded once it ends.
+            .disabled(!flight.finished)
+        }
+        .font(.subheadline.weight(.semibold))
+        .fixedSize()
+    }
+}
+
+private struct AwaitingMapCompassChip: View {
+    let proximity: AwaitingMapFlightProximity?
+
+    var body: some View {
+        ZStack {
+            Circle().fill(Color(uiColor: .tertiarySystemFill))
+            Circle().strokeBorder(ringColor, lineWidth: 1.2)
+            Text(verbatim: "N")
+                .font(.system(size: 7, weight: .bold))
+                .foregroundStyle(.secondary)
+                .offset(y: -15)
+            switch proximity {
+            case .inside:
+                Circle()
+                    .stroke(Color.green, style: StrokeStyle(lineWidth: 2, dash: [3, 2.4]))
+                    .frame(width: 20, height: 20)
+                Circle().fill(Color.green).frame(width: 9, height: 9)
+            case let .away(_, degrees, _):
+                Image(systemName: "location.north.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Color.blue)
+                    .rotationEffect(.degrees(Double(degrees)))
+            case nil:
+                Image(systemName: "location.slash")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 44, height: 44)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(verbatim: AwaitingMapFlightText.location(proximity)))
+    }
+
+    private var ringColor: Color {
+        if case .inside = proximity { return .green }
+        return Color(uiColor: .separator)
+    }
+}
+
+/// iPad sheets default to portrait-page width; widen so each row stays on one line.
+private struct AwaitingMapSheetSizing: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.presentationSizing(AwaitingMapWideSheetSizing())
+        } else {
+            content
+        }
+    }
+}
+
+@available(iOS 18.0, *)
+private struct AwaitingMapWideSheetSizing: PresentationSizing {
+    func proposedSize(for root: PresentationSizingRoot, context: PresentationSizingContext) -> ProposedViewSize {
+        var size = PagePresentationSizing.page.proposedSize(for: root, context: context)
+        size.width = 1_120 // The system clamps this to the window.
+        return size
     }
 }
 

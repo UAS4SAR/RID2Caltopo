@@ -84,6 +84,13 @@ public final class AwaitingMapFlightJournal {
     public func discard(remoteID: String, startedAt: Date) throws {
         try commit(entries.filter { !($0.remoteID == remoteID && $0.firstTime == startedAt && ["review", "bound", "local"].contains($0.decision)) })
     }
+    /// Removes exactly one undecided or local entry. Returns false when nothing matched.
+    @discardableResult
+    public func discard(id: String) throws -> Bool {
+        guard entries.contains(where: { $0.id == id && ["review", "bound", "local"].contains($0.decision) }) else { return false }
+        try commit(entries.filter { $0.id != id })
+        return true
+    }
     public func markQueued(id: String) throws {
         var next = entries
         if let index = next.firstIndex(where: { $0.id == id }) {
