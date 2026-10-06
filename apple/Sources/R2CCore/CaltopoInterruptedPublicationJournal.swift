@@ -6,6 +6,11 @@ public struct CaltopoInterruptedPublicationPoint: Codable, Sendable, Equatable {
     public let latitude: Double
     public let longitude: Double
     public let altitudeMeters: Double?
+    /// Drone-provided waypoint time (RID timestamp or stream clock); nil in older journals.
+    public let droneTime: Date?
+
+    /// Clock used for clue binding and ownership: the drone's time when known.
+    public var bindingTime: Date { droneTime ?? receivedAt }
 
     public init(observation: RidObservation) {
         source = observation.source
@@ -13,6 +18,7 @@ public struct CaltopoInterruptedPublicationPoint: Codable, Sendable, Equatable {
         latitude = observation.latitude
         longitude = observation.longitude
         altitudeMeters = observation.altitudeMeters
+        droneTime = observation.droneTimestamp
     }
 
     public func observation(remoteID: String) -> RidObservation {
@@ -22,7 +28,8 @@ public struct CaltopoInterruptedPublicationPoint: Codable, Sendable, Equatable {
             receivedAt: receivedAt,
             latitude: latitude,
             longitude: longitude,
-            altitudeMeters: altitudeMeters
+            altitudeMeters: altitudeMeters,
+            droneTimestamp: droneTime
         )
     }
 }

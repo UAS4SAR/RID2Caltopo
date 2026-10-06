@@ -12,6 +12,9 @@ public struct AwaitingMapFlight: Codable, Sendable, Equatable, Identifiable {
     public var publicationStarted: Bool?
     public var firstTime: Date { points.first?.receivedAt ?? .distantPast }
     public var lastTime: Date { points.last?.receivedAt ?? .distantPast }
+    /// First/last waypoint on the drone clock (falls back to receive time), used for clue ownership.
+    public var firstBindingTime: Date { points.map(\.bindingTime).min() ?? .distantPast }
+    public var lastBindingTime: Date { points.map(\.bindingTime).max() ?? .distantPast }
 
     public init(remoteID: String, label: String, observations: [RidObservation], teamID: String) {
         id = UUID().uuidString.lowercased()

@@ -13,11 +13,11 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
     public let capturedAt: Date
     public let aircraftID: String
     public let designator: String
-    public let droneLatitude: Double
-    public let droneLongitude: Double
+    public var droneLatitude: Double
+    public var droneLongitude: Double
     public let droneAltitudeMeters: Double?
-    public let clueLatitude: Double
-    public let clueLongitude: Double
+    public var clueLatitude: Double
+    public var clueLongitude: Double
     public let clueAltitudeMeters: Double?
     public let headingDegrees: Double?
     public let aglMeters: Double?
@@ -35,9 +35,24 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
     // Optional for compatibility with older indexes. Missing destinations require review.
     public var destinationMapID: String?
     public var destinationTeamID: String?
+    /// Waypoint binding (nil for clues saved before binding existed).
+    public var binding: ClueBinding?
+
+    /// CalTopo upload waits until the binding is final.
+    public var bindingFinal: Bool { binding?.final ?? true }
+
+    /// Capture time on the drone clock when bound; otherwise the stored capture time.
+    public var ownershipTime: Date {
+        binding.map { Date(timeIntervalSince1970: Double($0.captureTimeMs) / 1_000) } ?? capturedAt
+    }
+
+    /// Description sent to CalTopo and written to the KMZ (stored text plus the binding block).
+    public var publishedDescription: String {
+        ClueBindingText.publishedDescription(clueDescription, binding: binding)
+    }
 
     public func canAutomaticallyPublish(mapID: String, teamID: String) -> Bool {
-        !mapID.isEmpty && !teamID.isEmpty && destinationMapID == mapID && destinationTeamID == teamID
+        !mapID.isEmpty && !teamID.isEmpty && destinationMapID == mapID && destinationTeamID == teamID && bindingFinal
     }
 
     public init(
@@ -65,7 +80,8 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
         caltopoMarkerID: String? = nil,
         caltopoMediaID: UUID = UUID(),
         destinationMapID: String? = nil,
-        destinationTeamID: String? = nil
+        destinationTeamID: String? = nil,
+        binding: ClueBinding? = nil
     ) {
         self.id = id
         self.capturedAt = capturedAt
@@ -92,6 +108,7 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
         self.caltopoMediaID = caltopoMediaID
         self.destinationMapID = destinationMapID
         self.destinationTeamID = destinationTeamID
+        self.binding = binding
     }
 }
 

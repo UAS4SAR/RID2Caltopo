@@ -42,6 +42,9 @@ public struct RidObservation: Sendable, Equatable {
     public let operatorLongitude: Double?
     public let signalStrengthDbm: Int?
     public let droneScoutRelay: DroneScoutRelayMetadata?
+    /// Drone-provided time of this position (RID Location timestamp or the video stream clock).
+    /// `receivedAt` stays the app receive time; clue binding uses this when present.
+    public let droneTimestamp: Date?
 
     public init(
         source: Source,
@@ -62,7 +65,8 @@ public struct RidObservation: Sendable, Equatable {
         droneScoutRelay: DroneScoutRelayMetadata? = nil,
         videoReferenceLatitude: Double? = nil,
         videoReferenceLongitude: Double? = nil,
-        proximityTelemetry: RidProximityTelemetry? = nil
+        proximityTelemetry: RidProximityTelemetry? = nil,
+        droneTimestamp: Date? = nil
     ) {
         self.source = source
         self.aircraftId = aircraftId
@@ -84,6 +88,7 @@ public struct RidObservation: Sendable, Equatable {
         self.operatorLongitude = operatorLongitude
         self.signalStrengthDbm = signalStrengthDbm
         self.droneScoutRelay = droneScoutRelay
+        self.droneTimestamp = droneTimestamp
     }
 }
 
@@ -99,5 +104,33 @@ public struct RidAircraftMessage: Sendable, Equatable {
         self.source = source
         self.aircraftID = aircraftID
         self.receivedAt = receivedAt
+    }
+}
+
+public extension RidObservation {
+    /// The same observation at another position (the bound waypoint used as a clue projection origin).
+    func relocated(latitude: Double, longitude: Double, altitudeMeters: Double?) -> RidObservation {
+        RidObservation(
+            source: source,
+            aircraftId: aircraftId,
+            receivedAt: receivedAt,
+            latitude: latitude,
+            longitude: longitude,
+            altitudeMeters: altitudeMeters ?? self.altitudeMeters,
+            heightMeters: heightMeters,
+            heightReference: heightReference,
+            grounded: grounded,
+            horizontalAccuracyCode: horizontalAccuracyCode,
+            headingDegrees: headingDegrees,
+            speedMetersPerSecond: speedMetersPerSecond,
+            operatorLatitude: operatorLatitude,
+            operatorLongitude: operatorLongitude,
+            signalStrengthDbm: signalStrengthDbm,
+            droneScoutRelay: droneScoutRelay,
+            videoReferenceLatitude: videoReferenceLatitude,
+            videoReferenceLongitude: videoReferenceLongitude,
+            proximityTelemetry: proximityTelemetry,
+            droneTimestamp: droneTimestamp
+        )
     }
 }

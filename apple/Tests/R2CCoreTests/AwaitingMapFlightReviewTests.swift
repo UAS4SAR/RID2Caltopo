@@ -97,14 +97,17 @@ private func clue(_ aircraftID: String, at time: TimeInterval, file: String = "f
     #expect(AwaitingMapFlightText.locationSummary(accuracyMeters: nil, fixTime: "7:03 AM") == "Distances from your current location · 7:03 AM")
 }
 
-@Test func clueWindowSpansFirstPointThroughThirtySecondsAfterLastPoint() {
+@Test func clueWindowSpansThirtySecondsBeforeFirstPointThroughThirtySecondsAfterLastPoint() {
     let flight = reviewFlight()
     let first = flight.firstTime.timeIntervalSince1970, last = flight.lastTime.timeIntervalSince1970
     #expect(AwaitingMapClueMatch.matches(clue("RID-1", at: first), flight: flight))
     #expect(AwaitingMapClueMatch.matches(clue("rid1", at: last), flight: flight)) // canonical ID
     #expect(AwaitingMapClueMatch.matches(clue("RID-1", at: last + 30), flight: flight))
     #expect(!AwaitingMapClueMatch.matches(clue("RID-1", at: last + 30.5), flight: flight))
-    #expect(!AwaitingMapClueMatch.matches(clue("RID-1", at: first - 0.5), flight: flight))
+    // Leading window: clues up to 30 s before the first waypoint belong to the flight.
+    #expect(AwaitingMapClueMatch.matches(clue("RID-1", at: first - 0.5), flight: flight))
+    #expect(AwaitingMapClueMatch.matches(clue("RID-1", at: first - 30), flight: flight))
+    #expect(!AwaitingMapClueMatch.matches(clue("RID-1", at: first - 30.5), flight: flight))
     #expect(!AwaitingMapClueMatch.matches(clue("RID-2", at: first + 10), flight: flight))
     // A trailing-window clue inside the next flight of the same aircraft belongs to that flight.
     let next = reviewFlight(start: last + 10)

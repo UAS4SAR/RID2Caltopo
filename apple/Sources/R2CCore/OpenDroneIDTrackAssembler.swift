@@ -139,7 +139,11 @@ public actor OpenDroneIDTrackAssembler {
             droneScoutRelay: state.droneScoutRelay,
             proximityTelemetry: .fromRID(horizontalCode: location.horizontalAccuracyCode,
                 geodetic: location.geodeticAltitudeMeters, pressure: location.pressureAltitudeMeters,
-                verticalCode: location.verticalAccuracyCode, barometerCode: location.barometerAccuracyCode)
+                verticalCode: location.verticalAccuracyCode, barometerCode: location.barometerAccuracyCode),
+            droneTimestamp: RidDroneTimestamp.utcMilliseconds(
+                tenths: location.timestampTenths,
+                receivedAtMs: Int64((receivedAt.timeIntervalSince1970 * 1_000).rounded())
+            ).map { Date(timeIntervalSince1970: Double($0) / 1_000) }
         )
         return OpenDroneIDTrackAssemblyResult(
             observation: observation,

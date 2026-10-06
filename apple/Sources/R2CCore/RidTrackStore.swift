@@ -44,9 +44,17 @@ public struct RidTrackPoint: Sendable, Equatable, Identifiable {
     public let altitudeMeters: Double?
     public let headingDegrees: Double?
     public let speedMetersPerSecond: Double?
+    /// Drone-provided time (nil when the source carried none). Diagnostics keep `receivedAt`.
+    public let droneTime: Date?
+    public let source: RidObservation.Source?
+
+    /// Clock used for clue binding: the drone's time when known.
+    public var bindingTime: Date { droneTime ?? receivedAt }
 
     init(observation: RidObservation) {
         id = UUID()
+        droneTime = observation.droneTimestamp
+        source = observation.source
         receivedAt = observation.receivedAt
         latitude = observation.latitude
         longitude = observation.longitude
@@ -338,7 +346,8 @@ private extension RidObservation {
             droneScoutRelay: droneScoutRelay,
             videoReferenceLatitude: videoReferenceLatitude,
             videoReferenceLongitude: videoReferenceLongitude,
-            proximityTelemetry: proximityTelemetry
+            proximityTelemetry: proximityTelemetry,
+            droneTimestamp: droneTimestamp
         )
     }
 }

@@ -137,37 +137,94 @@ extension AwaitingMapFlight {
     }
 }
 
-/// The single rule that associates clue photos with an awaiting-map flight. Used for
-/// clue routing, binding on publish, the panel's photo count, and Discard.
+/// The single rule that associates clue photos with a flight. Used for clue routing, binding on
+/// publish, the awaiting-map panel's photo count, Discard, and the flight KMZ. Android mirrors it in
+/// AwaitingMapClueMatch (AwaitingMapFlightReview.kt).
+///
+/// A clue belongs to the flight it was bound to at capture. Otherwise a flight is a candidate when the
+/// capture falls between 30 s before its first waypoint and 30 s after its last, and among candidates
+/// of the same aircraft the flight with the waypoint nearest in time to the capture owns the clue.
 public enum AwaitingMapClueMatch {
-    /// Clues captured shortly after the last RID point still belong to the flight.
+    /// Clues captured shortly after the last waypoint still belong to the flight.
     public static let trailingSeconds: TimeInterval = 30
+    /// Clues captured shortly before the first recorded waypoint belong to the flight.
+    public static let leadingSeconds: TimeInterval = 30
 
     public static func matches(clueAircraftID: String, capturedAt: Date,
                                flightRemoteID: String, firstTime: Date, lastTime: Date) -> Bool {
         RidTrackStore.canonicalAircraftID(clueAircraftID) == RidTrackStore.canonicalAircraftID(flightRemoteID)
-            && capturedAt >= firstTime
+            && capturedAt.timeIntervalSince(firstTime) >= -leadingSeconds
             && capturedAt.timeIntervalSince(lastTime) <= trailingSeconds
     }
 
     public static func matches(_ clue: OperationalClueRecord, flight: AwaitingMapFlight) -> Bool {
-        matches(clueAircraftID: clue.aircraftID, capturedAt: clue.capturedAt,
-                flightRemoteID: flight.remoteID, firstTime: flight.firstTime, lastTime: flight.lastTime)
+        if let bound = clue.binding?.flightID { return bound == flight.id }
+        return matches(clueAircraftID: clue.aircraftID, capturedAt: clue.ownershipTime,
+                       flightRemoteID: flight.remoteID, firstTime: flight.firstBindingTime,
+                       lastTime: flight.lastBindingTime)
     }
 
-    /// Clues that belong to `flight` and to no other known flight. A clue in this flight's
-    /// trailing window that falls inside another flight of the same aircraft stays with that one.
+    /// A flight as seen by the ownership rule: an awaiting-map journal entry, a live track, or an
+    /// archived track file.
+    public struct Candidate: Sendable, Equatable {
+        public let id: String
+        public let remoteID: String
+        /// Waypoint times on the drone clock (receive time when the drone gave none).
+        public let times: [Date]
+        public init(id: String, remoteID: String, times: [Date]) {
+            self.id = id; self.remoteID = remoteID; self.times = times
+        }
+        public init(flight: AwaitingMapFlight) {
+            self.init(id: flight.id, remoteID: flight.remoteID, times: flight.points.map(\.bindingTime))
+        }
+        var first: Date { times.min() ?? .distantPast }
+        var last: Date { times.max() ?? .distantPast }
+    }
+
+    /// Seconds from the capture to the candidate's nearest waypoint.
+    static func nearestPointDistance(_ capturedAt: Date, candidate: Candidate) -> TimeInterval {
+        candidate.times.map { abs($0.timeIntervalSince(capturedAt)) }.min() ?? .infinity
+    }
+
+    /// Id of the candidate that owns a clue, or nil when none does.
+    public static func ownerID(clueAircraftID: String, capturedAt: Date, boundFlightID: String?,
+                               candidates: [Candidate]) -> String? {
+        let aircraft = RidTrackStore.canonicalAircraftID(clueAircraftID)
+        let sameAircraft = candidates.filter { RidTrackStore.canonicalAircraftID($0.remoteID) == aircraft }
+        if let boundFlightID, sameAircraft.contains(where: { $0.id == boundFlightID }) { return boundFlightID }
+        return sameAircraft
+            .filter { !$0.times.isEmpty && matches(clueAircraftID: clueAircraftID, capturedAt: capturedAt,
+                                                   flightRemoteID: $0.remoteID, firstTime: $0.first, lastTime: $0.last) }
+            .min { lhs, rhs in
+                let left = nearestPointDistance(capturedAt, candidate: lhs)
+                let right = nearestPointDistance(capturedAt, candidate: rhs)
+                return left == right ? lhs.first < rhs.first : left < right
+            }?.id
+    }
+
+    public static func ownerID(_ clue: OperationalClueRecord, candidates: [Candidate]) -> String? {
+        ownerID(clueAircraftID: clue.aircraftID, capturedAt: clue.ownershipTime,
+                boundFlightID: clue.binding?.flightID, candidates: candidates)
+    }
+
+    /// The flight that owns a clue, or nil when none does.
+    public static func owner(clueAircraftID: String, capturedAt: Date, boundFlightID: String?,
+                             flights: [AwaitingMapFlight]) -> AwaitingMapFlight? {
+        let id = ownerID(clueAircraftID: clueAircraftID, capturedAt: capturedAt, boundFlightID: boundFlightID,
+                         candidates: flights.map(Candidate.init(flight:)))
+        return flights.first { $0.id == id }
+    }
+
+    public static func owner(_ clue: OperationalClueRecord, flights: [AwaitingMapFlight]) -> AwaitingMapFlight? {
+        owner(clueAircraftID: clue.aircraftID, capturedAt: clue.ownershipTime,
+              boundFlightID: clue.binding?.flightID, flights: flights)
+    }
+
+    /// Clues owned by `flight` when `otherFlights` are also known.
     public static func ownedClues(_ clues: [OperationalClueRecord], flight: AwaitingMapFlight,
                                   otherFlights: [AwaitingMapFlight]) -> [OperationalClueRecord] {
-        let others = otherFlights.filter {
-            $0.id != flight.id
-                && RidTrackStore.canonicalAircraftID($0.remoteID) == RidTrackStore.canonicalAircraftID(flight.remoteID)
-        }
-        return clues.filter { clue in
-            matches(clue, flight: flight) && !(clue.capturedAt > flight.lastTime && others.contains {
-                clue.capturedAt >= $0.firstTime && clue.capturedAt <= $0.lastTime
-            })
-        }
+        let flights = [flight] + otherFlights.filter { $0.id != flight.id }
+        return clues.filter { owner($0, flights: flights)?.id == flight.id }
     }
 }
 

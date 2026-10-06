@@ -58,9 +58,13 @@ public enum RidTrackGeoJSON {
                 String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), point.longitude),
                 String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), point.latitude),
                 String(format: "%.0f", locale: Locale(identifier: "en_US_POSIX"), point.altitudeMeters ?? -1_000),
-                String(Int64(point.receivedAt.timeIntervalSince1970 * 1_000)),
+                // Drone clock (RID timestamp / stream clock) like Android; receive time when unknown.
+                String(Int64((point.bindingTime.timeIntervalSince1970 * 1_000).rounded())),
             ]
         }
+        // Diagnostic only: the app's receive time per point, so a drone clock offset can be measured.
+        let receivedMilliseconds = track.points.map { Int64(($0.receivedAt.timeIntervalSince1970 * 1_000).rounded()) }
+        let droneClock = track.points.map { $0.droneTime != nil }
         let miles = track.distanceMeters / 1_609.344
         let r2cProperties: [String: Any] = [
             "flightReadiness": metadata.flightReadiness?.dictionary ?? [:],
@@ -85,6 +89,8 @@ public enum RidTrackGeoJSON {
                 "title": archiveTitle(for: track, metadata: metadata),
                 "start_time": startTime,
                 "r2c_prop": r2cProperties,
+                "r2c_point_received_ms": receivedMilliseconds,
+                "r2c_point_drone_clock": droneClock,
             ],
             "geometry": [
                 "type": "LineString",
@@ -95,6 +101,44 @@ public enum RidTrackGeoJSON {
             withJSONObject: ["type": "FeatureCollection", "features": [feature]],
             options: [.prettyPrinted, .sortedKeys]
         )
+    }
+
+    /// Points, title and aircraft of an archived track, for KMZ rebuilds and late clue binding.
+    public struct ArchiveContents: Sendable, Equatable {
+        public let title: String
+        public let remoteID: String
+        public let points: [ClueBindingPoint]
+    }
+
+    /// Reads an archive written by either platform. Coordinates are [lng, lat, alt, timeMs] as strings
+    /// or numbers; the optional receive-time arrays are absent in older files.
+    public static func decodeArchive(_ data: Data) -> ArchiveContents? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let feature = (root["features"] as? [[String: Any]])?.first,
+              let geometry = feature["geometry"] as? [String: Any],
+              let coordinates = geometry["coordinates"] as? [[Any]]
+        else { return nil }
+        let properties = feature["properties"] as? [String: Any] ?? [:]
+        let r2c = properties["r2c_prop"] as? [String: Any] ?? [:]
+        let received = properties["r2c_point_received_ms"] as? [Any]
+        let droneClock = properties["r2c_point_drone_clock"] as? [Any]
+        func number(_ value: Any?) -> Double? {
+            if let value = value as? NSNumber { return value.doubleValue }
+            if let value = value as? String { return Double(value) }
+            return nil
+        }
+        var points: [ClueBindingPoint] = []
+        for (index, coordinate) in coordinates.enumerated() {
+            guard coordinate.count >= 4, let lng = number(coordinate[0]), let lat = number(coordinate[1]),
+                  let time = number(coordinate[3]) else { continue }
+            let altitude = number(coordinate[2]).flatMap { $0 <= -999 ? nil : $0 }
+            let receivedAt = received.flatMap { index < $0.count ? number($0[index]) : nil }.map { Int64($0) }
+            let isDrone = droneClock.flatMap { index < $0.count ? ($0[index] as? Bool) : nil } ?? true
+            points.append(ClueBindingPoint(timeMs: Int64(time), receivedAtMs: receivedAt, latitude: lat, longitude: lng,
+                                           altitudeMeters: altitude, source: "archive", droneClock: isDrone))
+        }
+        return ArchiveContents(title: properties["title"] as? String ?? "", remoteID: r2c["rid"] as? String ?? "",
+                               points: points)
     }
 
     /// Match live CalTopo publication, including when no incident map is selected.
