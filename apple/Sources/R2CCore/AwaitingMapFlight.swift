@@ -5,7 +5,7 @@ import Foundation
 /// (receive time of the track's first accepted observation, in ms). It is the awaiting-map journal id
 /// (and so the CalTopo live-track id), the flightID of clue bindings and the archive's
 /// `r2c_flight_id`, so all of them agree for the life of the flight and after a relaunch. Android
-/// writes its per-track id under the same `r2c_flight_id` key.
+/// builds the identical id (RidFlightId.kt) and writes it under the same `r2c_flight_id` key.
 public enum RidFlightID {
     public static func make(aircraftID: String, startedAt: Date) -> String {
         let milliseconds = Int64((startedAt.timeIntervalSince1970 * 1_000).rounded())

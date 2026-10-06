@@ -413,3 +413,11 @@ private func record(capture: Date = Date(timeIntervalSince1970: 1_790_553_873), 
     #expect(IgnoredFlightClue.submitAction(flightIgnored: true, keptIgnored: false) == .ask)
     #expect(IgnoredFlightClue.submitAction(flightIgnored: true, keptIgnored: true) == .localOnly)
 }
+
+// Shared vector with app/src/test/java/org/ncssar/rid2caltopo/data/RidFlightIdTest.kt: Android builds the
+// identical id for the same drone and start time, so archives cross-match by r2c_flight_id.
+@Test func flightIDMatchesAndroidForTheSameDroneAndStart() {
+    let start = Date(timeIntervalSince1970: 1_791_234_567.890)
+    #expect(RidFlightID.make(aircraftID: "1581F5FJC23A0012345", startedAt: start) == "c61d005e-78b2-57bc-b1ab-c3e23d8d182f")
+    #expect(RidFlightID.make(aircraftID: "1581f5fj-c23a 0012345", startedAt: start) == "c61d005e-78b2-57bc-b1ab-c3e23d8d182f")
+}

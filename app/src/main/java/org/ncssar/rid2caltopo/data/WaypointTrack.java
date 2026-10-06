@@ -140,7 +140,10 @@ public class WaypointTrack {
     private final List<Long> pointReceivedAtMs = new ArrayList<>();
     private final List<Boolean> pointDroneClock = new ArrayList<>();
     private final List<String> pointSources = new ArrayList<>();
-    private final String deferredPublicationId = java.util.UUID.randomUUID().toString();
+    // Flight start (app clock, Unix ms) and the stable flight id derived from it and the drone's
+    // remote id with the iOS scheme (RidFlightId), so both platforms name the same flight alike.
+    private final long startedAtMs;
+    private final String deferredPublicationId;
     private boolean archivePrepared = false;
     private String archivedOwner = "";
     private String archivedFlightReadinessJson = "{}";
@@ -156,7 +159,11 @@ public class WaypointTrack {
 
 	public WaypointTrack(@NonNull String trackLabel, @NonNull CtDroneSpec droneSpec) {
 		SimpleDateFormat sdf = new SimpleDateFormat("ddMMMyyyy-HHmmss", Locale.US);
-		startTimeStr = sdf.format(new Date());
+		startedAtMs = System.currentTimeMillis();
+		startTimeStr = sdf.format(new Date(startedAtMs));
+		String remoteId = droneSpec.getRemoteId();
+		deferredPublicationId = RidFlightId.make(
+				remoteId == null || remoteId.isEmpty() ? trackLabel : remoteId, startedAtMs);
         this.droneSpec = droneSpec;
 		this.trackLabel = trackLabel;
 		this.coordinates = new JSONArray();
