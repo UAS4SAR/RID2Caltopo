@@ -10,6 +10,32 @@ class SpokenWarningCenterTest {
     @After
     fun tearDown() {
         SpokenWarningCenter.resetForTests()
+        AlertSpeechCoordinator.resetForTests()
+        AlertBellCenter.resetForTests()
+    }
+
+    @Test
+    fun everyNewProximityInstanceIsSpokenAndMarkedAnnounced() {
+        // Same pair re-enters 5 s after the first alert: new instance must speak
+        // (the old 30 s per-pair cooldown left the bell red but silent).
+        assertTrue(AlertSpeechCoordinator.announceProximity("A|B", 1L, ProximitySpeechSchedule.Announcement.NewInstance, 1_000L))
+        assertEquals(SpokenWarningKind.Proximity, SpokenWarningCenter.requests.value?.kind)
+        assertEquals(1L, AlertSpeechCoordinator.announcedProximityInstanceId)
+        val firstRequest = SpokenWarningCenter.requests.value!!.requestId
+        SpokenWarningCenter.consume(firstRequest)
+        assertTrue(AlertSpeechCoordinator.announceProximity("A|B", 2L, ProximitySpeechSchedule.Announcement.NewInstance, 6_000L))
+        assertEquals(SpokenWarningKind.Proximity, SpokenWarningCenter.requests.value?.kind)
+        assertEquals(2L, AlertSpeechCoordinator.announcedProximityInstanceId)
+        assertTrue(AlertBellThresholdPolicy.proximityAlarmAnnounced(2L, AlertSpeechCoordinator.announcedProximityInstanceId, suspended = false))
+    }
+
+    @Test
+    fun laterWarningDoesNotDropPendingProximityPhrase() {
+        SpokenWarningCenter.requestWarning(SpokenWarningKind.Proximity, "A|B", nowMs = 1_000L)
+        SpokenWarningCenter.requestSpokenPhrase(SpokenWarningKind.DroneTelemetry, "flight", "Drone Signal Lost", nowMs = 1_000L)
+        val pending = SpokenWarningCenter.requests.value
+        assertEquals(SpokenWarningKind.Proximity, pending?.kind)
+        assertEquals(listOf(SpokenWarningKind.Proximity.phrase, "Drone Signal Lost"), pending?.phrases)
     }
 
     @Test

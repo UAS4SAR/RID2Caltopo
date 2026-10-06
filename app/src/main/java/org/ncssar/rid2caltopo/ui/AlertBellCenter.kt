@@ -70,14 +70,23 @@ object AlertBellThresholdPolicy {
         thresholdFt: Double,
         isActivelyAlerting: Boolean,
     ): AlertBellColor {
+        // Red is reserved for an engine alert that has actually been spoken.
+        // Geometry alone (even inside the minimum) is at most "approaching".
         if (isActivelyAlerting) return AlertBellColor.Red
         if (separationFt == null || !separationFt.isFinite() || thresholdFt <= 0.0) {
             return AlertBellColor.White
         }
-        if (separationFt <= thresholdFt) return AlertBellColor.Red
         if (separationFt <= thresholdFt * PROXIMITY_APPROACH_MULTIPLIER) return AlertBellColor.Orange
         return AlertBellColor.White
     }
+
+    /** True only when the active alert instance was spoken (red ⇒ audio played). */
+    fun proximityAlarmAnnounced(
+        activeAlertInstanceId: Long?,
+        announcedAlertInstanceId: Long?,
+        suspended: Boolean,
+    ): Boolean = !suspended && activeAlertInstanceId != null &&
+        announcedAlertInstanceId == activeAlertInstanceId
 
     fun wifiColor(
         signalPercent: Int?,

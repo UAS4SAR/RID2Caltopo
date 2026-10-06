@@ -65,6 +65,10 @@ internal class ProximitySpeechSchedule {
 object AlertSpeechCoordinator {
     private var scope: CoroutineScope? = null
     private val proximitySchedule = ProximitySpeechSchedule()
+    /** Alert instance whose proximity phrase was requested; bell is red only for it. */
+    @Volatile
+    internal var announcedProximityInstanceId: Long? = null
+        private set
 
     @Synchronized
     fun start(context: Context) {
@@ -156,7 +160,11 @@ object AlertSpeechCoordinator {
             AlertBellMetrics(
                 proximitySeparationFt = proximity?.horizontalSeparationFt,
                 proximityThresholdFt = thresholdFt,
-                proximityActivelyAlerting = proximity != null && !ProximityAlertCenter.isSuspended.value,
+                proximityActivelyAlerting = AlertBellThresholdPolicy.proximityAlarmAnnounced(
+                    activeAlertInstanceId = proximity?.alertInstanceId,
+                    announcedAlertInstanceId = announcedProximityInstanceId,
+                    suspended = ProximityAlertCenter.isSuspended.value,
+                ),
                 maxAglFt = alertBellMaxAglFtProvider?.invoke(),
                 maxRangeFt = alertBellMaxRangeFtProvider?.invoke(),
                 droneSignalLossActive = DroneSignalLossAlertCenter.uiState.value != null,
@@ -184,15 +192,41 @@ object AlertSpeechCoordinator {
             nowMs = nowMs,
         ) ?: return
         alert ?: return
-        if (AlertBellCenter.isMuted(AlertBellKind.Proximity)) return
-        SpokenWarningCenter.requestWarning(
-            kind = SpokenWarningKind.Proximity,
-            sourceKey = alert.pairKey,
-            nowMs = nowMs,
-            cooldownMs = ProximitySpeechSchedule.REPEAT_INTERVAL_MS
-        )
-        if (announcement == ProximitySpeechSchedule.Announcement.NewInstance) {
+        if (announceProximity(alert.pairKey, alert.alertInstanceId, announcement, nowMs) &&
+            announcement == ProximitySpeechSchedule.Announcement.NewInstance
+        ) {
             vibrateBriefly(context)
         }
+    }
+
+    /**
+     * Requests the spoken proximity phrase. Every new alert instance is spoken
+     * (no per-pair cooldown — that used to leave a re-entered alert red but
+     * silent for up to 30 s); repeats are already paced by [ProximitySpeechSchedule].
+     * Returns false only when the user has session-muted proximity.
+     */
+    internal fun announceProximity(
+        pairKey: String,
+        alertInstanceId: Long,
+        announcement: ProximitySpeechSchedule.Announcement,
+        nowMs: Long,
+    ): Boolean {
+        if (AlertBellCenter.isMuted(AlertBellKind.Proximity)) {
+            CaltopoClient.CTInfo("ProximityAlert", "Speech skipped (session-muted) pair=$pairKey instance=$alertInstanceId")
+            return false
+        }
+        SpokenWarningCenter.requestWarning(
+            kind = SpokenWarningKind.Proximity,
+            sourceKey = pairKey,
+            nowMs = nowMs,
+            cooldownMs = 0L
+        )
+        announcedProximityInstanceId = alertInstanceId
+        CaltopoClient.CTInfo("ProximityAlert", "${if (announcement == ProximitySpeechSchedule.Announcement.NewInstance) "Alert" else "Repeat"} spoken pair=$pairKey instance=$alertInstanceId")
+        return true
+    }
+
+    internal fun resetForTests() {
+        announcedProximityInstanceId = null
     }
 }

@@ -141,6 +141,7 @@ public struct RidProximityAlertEngine: Sendable {
     private var clearEligibleSince: Date?
     private var nextAlertInstanceID: Int64 = 1
     private var alertAllAircraft = false
+    private var lastThresholdFeet: Double = 0
 
     public init() {}
 
@@ -165,6 +166,7 @@ public struct RidProximityAlertEngine: Sendable {
         }
 
         let thresholdFeet = max(50, thresholdFeet)
+        lastThresholdFeet = thresholdFeet
         // Track retention is longer than collision telemetry validity. Never expand
         // uncertainty indefinitely around an old position.
         let freshDrones = drones.filter { (0...maximumPositionAgeSeconds).contains(now.timeIntervalSince($0.sampleDate)) }
@@ -276,8 +278,10 @@ public struct RidProximityAlertEngine: Sendable {
         let canResume = suspendedAlert.flatMap { alert in
             latestPairs[alert.pairKey]?.isInside(thresholdFeet: alert.thresholdFeet)
         } == true
+        // Only pairs that could actually alert (vertical gate passed) count as
+        // "approaching"; a vertically separated pair never colours the bell.
         let nearestDecision = latestPairs.values
-            .filter(\.isBellEligible)
+            .filter { $0.isBellEligible && $0.decisionVerticalFeet <= lastThresholdFeet }
             .map(\.decisionHorizontalFeet)
             .min()
         return RidProximityAlertOutput(

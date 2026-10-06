@@ -40,13 +40,37 @@ class AlertBellCenterTest {
             AlertBellColor.Orange,
             AlertBellThresholdPolicy.proximityColor(125.0, 100.0, false),
         )
+        // Inside the minimum but not spoken: never red.
         assertEquals(
-            AlertBellColor.Red,
+            AlertBellColor.Orange,
             AlertBellThresholdPolicy.proximityColor(100.0, 100.0, false),
+        )
+        assertEquals(
+            AlertBellColor.Orange,
+            AlertBellThresholdPolicy.proximityColor(10.0, 100.0, false),
         )
         assertEquals(
             AlertBellColor.Red,
             AlertBellThresholdPolicy.proximityColor(200.0, 100.0, true),
+        )
+    }
+
+    @Test
+    fun proximityRedRequiresSpokenActiveAlert() {
+        assertTrue(AlertBellThresholdPolicy.proximityAlarmAnnounced(7L, 7L, suspended = false))
+        assertFalse(AlertBellThresholdPolicy.proximityAlarmAnnounced(7L, null, suspended = false))
+        assertFalse(AlertBellThresholdPolicy.proximityAlarmAnnounced(8L, 7L, suspended = false))
+        assertFalse(AlertBellThresholdPolicy.proximityAlarmAnnounced(7L, 7L, suspended = true))
+        assertFalse(AlertBellThresholdPolicy.proximityAlarmAnnounced(null, 7L, suspended = false))
+        assertEquals(
+            AlertBellColor.Orange,
+            AlertBellMetrics(proximitySeparationFt = 20.0, proximityThresholdFt = 100.0,
+                proximityActivelyAlerting = false).colors()[AlertBellKind.Proximity],
+        )
+        assertEquals(
+            AlertBellColor.Red,
+            AlertBellMetrics(proximitySeparationFt = 20.0, proximityThresholdFt = 100.0,
+                proximityActivelyAlerting = true).colors()[AlertBellKind.Proximity],
         )
     }
 

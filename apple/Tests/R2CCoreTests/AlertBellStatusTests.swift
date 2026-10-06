@@ -35,7 +35,13 @@ final class AlertBellStatusTests: XCTestCase {
             AlertBellThresholdPolicy.proximityColor(
                 separationFeet: 100, thresholdFeet: threshold, isActivelyAlerting: false
             ),
-            .red
+            .orange // inside the minimum but not spoken: never red
+        )
+        XCTAssertEqual(
+            AlertBellThresholdPolicy.proximityColor(
+                separationFeet: 10, thresholdFeet: threshold, isActivelyAlerting: false
+            ),
+            .orange
         )
         XCTAssertEqual(
             AlertBellThresholdPolicy.proximityColor(
@@ -43,6 +49,28 @@ final class AlertBellStatusTests: XCTestCase {
             ),
             .red
         )
+    }
+
+    func testProximityRedRequiresSpokenActiveAlert() {
+        // Red ⇒ the active engine alert was spoken. Not announced, a different
+        // (older) announced instance, suspended, or no alert ⇒ not red.
+        XCTAssertTrue(AlertBellThresholdPolicy.proximityAlarmAnnounced(
+            activeAlertInstanceID: 7, announcedAlertInstanceID: 7, suspended: false))
+        XCTAssertFalse(AlertBellThresholdPolicy.proximityAlarmAnnounced(
+            activeAlertInstanceID: 7, announcedAlertInstanceID: nil, suspended: false))
+        XCTAssertFalse(AlertBellThresholdPolicy.proximityAlarmAnnounced(
+            activeAlertInstanceID: 8, announcedAlertInstanceID: 7, suspended: false))
+        XCTAssertFalse(AlertBellThresholdPolicy.proximityAlarmAnnounced(
+            activeAlertInstanceID: 7, announcedAlertInstanceID: 7, suspended: true))
+        XCTAssertFalse(AlertBellThresholdPolicy.proximityAlarmAnnounced(
+            activeAlertInstanceID: nil, announcedAlertInstanceID: 7, suspended: false))
+
+        let unspoken = AlertBellMetrics(proximitySeparationFeet: 20, proximityThresholdFeet: 100,
+                                        proximityActivelyAlerting: false)
+        XCTAssertEqual(unspoken.colors()[.proximity], .orange)
+        let spoken = AlertBellMetrics(proximitySeparationFeet: 20, proximityThresholdFeet: 100,
+                                      proximityActivelyAlerting: true)
+        XCTAssertEqual(spoken.colors()[.proximity], .red)
     }
 
     func testWifiApproachCeiling() {

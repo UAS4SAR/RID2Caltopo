@@ -3071,10 +3071,14 @@ struct ContentView: View {
     private func refreshAlertBellMetrics() {
         ensureAlertBellMuteBridges()
         let threshold = Double(orgConfigSettings.proximityAlertSpacingFeet)
-        let proximityActive = proximityAlerts.activeAlert != nil && !proximityAlerts.isSuspended
-        // Use engine decision-bound separation (and active alert), never raw UI pair
-        // feet — co-located dual IDs (e.g. DB150 + aircraft serial) painted the bell
-        // red/orange without an engine alert or spoken proximity warning.
+        // Red ⇔ the engine's active alert has been spoken (never geometry alone).
+        let proximityActive = AlertBellThresholdPolicy.proximityAlarmAnnounced(
+            activeAlertInstanceID: proximityAlerts.activeAlert?.alertInstanceID,
+            announcedAlertInstanceID: proximityAlerts.announcedAlertInstanceID,
+            suspended: proximityAlerts.isSuspended
+        )
+        // Approach colour uses engine decision-bound separation of pairs that pass
+        // the vertical gate, never raw UI pair feet.
         let separation = proximityAlerts.activeAlert?.horizontalSeparationFeet
             ?? proximityAlerts.nearestDecisionHorizontalFeet
         let maxAgl = ridTracks.altitudeDisplayByAircraftID.values.compactMap(\.aglFeet).max()

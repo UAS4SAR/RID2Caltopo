@@ -24,6 +24,9 @@ final class AppleProximityAlertCenter: ObservableObject {
     @Published private(set) var stalePositionCount = 0
     /// Engine decision-bound separation for alert-bell colour (not raw UI pair feet).
     @Published private(set) var nearestDecisionHorizontalFeet: Double?
+    /// Alert instance whose proximity phrase was actually requested from speech.
+    /// The bell is red only when this matches the active alert.
+    @Published private(set) var announcedAlertInstanceID: Int64?
     @Published private(set) var pairs: [AppleProximityPair] = []
 
     @Published private(set) var alertAllAircraft: Bool
@@ -280,11 +283,16 @@ final class AppleProximityAlertCenter: ObservableObject {
         guard consent.enabled, announce, scheduled,
               let alert = output.activeAlert
         else { return }
-        guard AppleAlertBellCenter.shared.allowSpeech(for: .proximity) else { return }
+        guard AppleAlertBellCenter.shared.allowSpeech(for: .proximity) else {
+            AppleLog.info("ProximityAlert", "Speech skipped (session-muted) pair=\(alert.pairKey) instance=\(alert.alertInstanceID)")
+            return
+        }
 
-        let last = lastAnnouncementByPair[alert.pairKey] ?? .distantPast
-        guard now.timeIntervalSince(last) >= RidProximitySpeechSchedule.repeatInterval else { return }
+        // Every new alert instance is spoken; repeats follow the 30 s schedule.
+        // (A per-pair cooldown here used to silence a re-entry within 30 s while
+        // the bell was already red.)
         lastAnnouncementByPair[alert.pairKey] = now
+        announcedAlertInstanceID = alert.alertInstanceID
         let repeated = alert.alertInstanceID == previousID
         if !repeated { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
         AppleSpokenWarningCenter.shared.speak(OperationalSpokenWarningKind.proximity.phrase)

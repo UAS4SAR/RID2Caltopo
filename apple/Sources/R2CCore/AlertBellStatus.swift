@@ -47,9 +47,10 @@ public enum AlertBellColor: Int, Sendable, Comparable {
 ///   Map-marker “near” colour remains 90% / 180 ft elsewhere; this 80% rule is
 ///   only for the bell indicator.
 /// - **Distance**: orange at ≥ 80% of the 1-mile (5280 ft) range limit; red at ≥ limit.
-/// - **Proximity**: red while an alert is active (inside the configured minimum
-///   separation). Orange while horizontal separation is within 1.25× the minimum
-///   (i.e. 1 / 0.8) but not yet actively alerting. White farther out.
+/// - **Proximity**: red only while an engine alert is active **and has been
+///   spoken** (red ⇒ audio). Orange while the alert-relevant separation is within
+///   1.25× the minimum (i.e. 1 / 0.8), including inside it, without a spoken
+///   alert. White farther out.
 /// - **WiFi strength**: red below the weak threshold (60%). Orange below
 ///   threshold / 0.8 (75%) but still at or above 60%. White at ≥ 75% or unknown.
 /// - **Bridge signal loss**: red when monitoring and last ping age ≥ loss
@@ -90,11 +91,24 @@ public enum AlertBellThresholdPolicy {
         thresholdFeet: Double,
         isActivelyAlerting: Bool
     ) -> AlertBellColor {
+        // Red is reserved for an engine alert that has actually been announced
+        // (spoken). Geometry alone — including separation at/inside the minimum —
+        // is at most "approaching" so the bell never shows red without speech.
         if isActivelyAlerting { return .red }
         guard let separationFeet, separationFeet.isFinite, thresholdFeet > 0 else { return .white }
-        if separationFeet <= thresholdFeet { return .red }
         if separationFeet <= thresholdFeet * proximityApproachMultiplier { return .orange }
         return .white
+    }
+
+    /// True only when the engine's current alert instance has been spoken.
+    /// Session-muted / suspended alerts are never red (red ⇒ audio played).
+    public static func proximityAlarmAnnounced(
+        activeAlertInstanceID: Int64?,
+        announcedAlertInstanceID: Int64?,
+        suspended: Bool
+    ) -> Bool {
+        guard !suspended, let activeAlertInstanceID else { return false }
+        return announcedAlertInstanceID == activeAlertInstanceID
     }
 
     public static func wifiColor(

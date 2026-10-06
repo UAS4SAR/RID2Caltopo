@@ -81,14 +81,33 @@ object SpokenWarningCenter {
         if (lastRequestedAtMs != null && nowMs - lastRequestedAtMs < cooldownMs) return
 
         lastRequestedAtMsByKey[key] = nowMs
-        val phrases = kinds.map { it.phrase }
-        _requests.value = SpokenWarningRequest(
-            requestId = nextRequestId++,
-            kind = firstKind,
-            phrase = firstKind.phrase,
-            phrases = phrases,
-            volumeFraction = volumeFraction.coerceIn(0f, 1f),
-        )
+        publish(firstKind, firstKind.phrase, kinds.map { it.phrase }, volumeFraction)
+    }
+
+    /**
+     * Single-slot hand-off to [SpokenWarningPlayer]. A pending (not yet played)
+     * proximity phrase is never dropped by a later warning in the same tick: the
+     * new phrases are queued after it instead of replacing it.
+     */
+    private fun publish(kind: SpokenWarningKind, phrase: String, phrases: List<String>, volumeFraction: Float) {
+        val pending = _requests.value
+        val keepProximity = pending != null && pending.kind == SpokenWarningKind.Proximity &&
+            kind != SpokenWarningKind.Proximity
+        _requests.value = if (keepProximity) {
+            pending!!.copy(
+                requestId = nextRequestId++,
+                phrases = pending.phrases + phrases,
+                volumeFraction = maxOf(pending.volumeFraction, volumeFraction.coerceIn(0f, 1f)),
+            )
+        } else {
+            SpokenWarningRequest(
+                requestId = nextRequestId++,
+                kind = kind,
+                phrase = phrase,
+                phrases = phrases,
+                volumeFraction = volumeFraction.coerceIn(0f, 1f),
+            )
+        }
     }
 
     @Synchronized
@@ -122,13 +141,7 @@ object SpokenWarningCenter {
         val lastRequestedAtMs = lastRequestedAtMsByKey[key]
         if (lastRequestedAtMs != null && nowMs - lastRequestedAtMs < cooldownMs) return
         lastRequestedAtMsByKey[key] = nowMs
-        _requests.value = SpokenWarningRequest(
-            requestId = nextRequestId++,
-            kind = kind,
-            phrase = phrase,
-            phrases = listOf(phrase),
-            volumeFraction = volumeFraction.coerceIn(0f, 1f),
-        )
+        publish(kind, phrase, listOf(phrase), volumeFraction)
     }
 
     @Synchronized

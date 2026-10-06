@@ -194,3 +194,36 @@ private func geo(_ altitude: Double, error: Double = 1, horizontal: Double = 1) 
     #expect(alert(flying, surface) != nil)
 }
 
+@Test func proximityVerticallySeparatedPairDoesNotColourBellApproach() {
+    // Mini 150 ft above a teammate at the same spot: no alert, and the bell must
+    // not show approach/red from horizontal-only geometry.
+    var engine = RidProximityAlertEngine()
+    let out = engine.update(drones: [aircraft("A", quality: geo(150)), aircraft("B", quality: geo(100))],
+                            thresholdFeet: 100, enabled: true, predictiveEnabled: false, now: proximityNow)
+    #expect(out.activeAlert == nil)
+    #expect(out.nearestDecisionHorizontalFeet == nil)
+    var near = RidProximityAlertEngine()
+    let alerting = near.update(drones: [aircraft("A", quality: geo(100)), aircraft("B", feet: 20, quality: geo(100))],
+                               thresholdFeet: 100, enabled: true, predictiveEnabled: false, now: proximityNow)
+    #expect(alerting.activeAlert != nil)
+    #expect(alerting.nearestDecisionHorizontalFeet != nil)
+}
+
+@Test func proximityNewAlertInstanceIsAlwaysScheduledForSpeech() {
+    // Re-entry of the same pair within 30 s is a new instance and must speak.
+    var schedule = RidProximitySpeechSchedule()
+    let t0 = proximityNow
+    func announce(_ id: Int64?, _ dt: Double) -> Bool {
+        schedule.shouldAnnounce(activeAlertInstanceID: id, suspended: false, enabled: true, now: t0.addingTimeInterval(dt))
+    }
+    let first = announce(1, 0)
+    let tooSoon = announce(1, 5)
+    let cleared = announce(nil, 8)
+    let reentry = announce(2, 10)
+    let repeatAt30 = announce(2, 40)
+    #expect(first)
+    #expect(!tooSoon)
+    #expect(!cleared)
+    #expect(reentry)
+    #expect(repeatAt30)
+}
