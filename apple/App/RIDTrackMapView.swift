@@ -1920,7 +1920,6 @@ struct RIDTrackMapView: View {
                     reportTelemetry.timestampMicroseconds = frameTelemetry.sourceTimestampMicroseconds
                 }
                 if let completeSEITelemetry {
-                    reportTelemetry.magneticDeclinationDegrees = completeSEITelemetry.magneticDeclinationDegrees
                     reportTelemetry.seiLatitude = completeSEITelemetry.latitudeDegrees
                     reportTelemetry.seiLongitude = completeSEITelemetry.longitudeDegrees
                     reportTelemetry.relativeUpMeters = completeSEITelemetry.relativeUpMeters

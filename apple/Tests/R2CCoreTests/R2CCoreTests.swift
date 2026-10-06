@@ -4706,10 +4706,6 @@ private func proximityDrone(
     #expect(abs((OperationalClueGeometry.djiControllerCameraAzimuthDegrees(
         seiCameraAzimuthDegrees: 16.733
     ) ?? 0) - 286.733) < 0.000001)
-    #expect(abs((OperationalClueGeometry.djiControllerCameraAzimuthDegrees(
-        seiCameraAzimuthDegrees: 16.733,
-        magneticDeclinationDegrees: 13.3
-    ) ?? 0) - 300.033) < 0.000001)
     #expect(abs((OperationalClueGeometry.djiCalibratedTiltDegrees(
         rawTiltDegrees: -29.264
     ) ?? 0) - (-17.54)) < 0.01)
@@ -6344,16 +6340,35 @@ func aolHighlightRequiresNegativeNumberAndExcludesAdjacentFields() {
 }
 
 @Test func recordedHeadingCrossingRemainsContinuousThroughMapFov() throws {
-    for declination in [0.0, 13.3] {
-        let rays = try [179.9354051, 180.6050268].map { heading in
-            let bearing = OperationalClueGeometry.djiControllerCameraAzimuthDegrees(
-                seiCameraAzimuthDegrees: heading, magneticDeclinationDegrees: declination)
-            return try #require(OperationalMapGeometry.cameraFovBoundaryBearings(
-                cameraAzimuthDegrees: bearing, horizontalFovDegrees: 37.703125))
-        }
-        #expect(abs(rays[1].leftDegrees - rays[0].leftDegrees - 0.6696217) < 1e-7)
-        #expect(abs(rays[1].rightDegrees - rays[0].rightDegrees - 0.6696217) < 1e-7)
+    let rays = try [179.9354051, 180.6050268].map { heading in
+        let bearing = OperationalClueGeometry.djiControllerCameraAzimuthDegrees(seiCameraAzimuthDegrees: heading)
+        return try #require(OperationalMapGeometry.cameraFovBoundaryBearings(
+            cameraAzimuthDegrees: bearing, horizontalFovDegrees: 37.703125))
     }
+    #expect(abs(rays[1].leftDegrees - rays[0].leftDegrees - 0.6696217) < 1e-7)
+    #expect(abs(rays[1].rightDegrees - rays[0].rightDegrees - 0.6696217) < 1e-7)
+}
+
+/// 2026-10-06 circular flights: the DJI type-245 SEI azimuth already references true
+/// north. Nevada County declination is about +13°; adding it skewed bearings ~12.9°.
+@Test func djiSeiCameraAzimuthIsTrueNorthWithNoDeclinationAdded() {
+    #expect(OperationalClueGeometry.djiControllerCameraAzimuthDegrees(seiCameraAzimuthDegrees: 111.46)
+        .map { abs($0 - 21.46) < 1e-9 } == true)
+    #expect(OperationalClueGeometry.djiControllerCameraAzimuthDegrees(seiCameraAzimuthDegrees: 16.733)
+        .map { abs($0 - 286.733) < 1e-9 } == true)
+    #expect(OperationalClueGeometry.djiControllerCameraAzimuthDegrees(seiCameraAzimuthDegrees: 90) == 0)
+    #expect(OperationalClueGeometry.djiControllerCameraAzimuthDegrees(seiCameraAzimuthDegrees: 89.5)
+        .map { abs($0 - 359.5) < 1e-9 } == true)
+    #expect(OperationalClueGeometry.djiControllerCameraAzimuthDegrees(seiCameraAzimuthDegrees: .nan) == nil)
+    // The published report no longer claims a declination correction for SEI bearings.
+    let observation = RidObservation(source: .bluetoothLegacy, aircraftId: "RID123", receivedAt: .distantPast,
+        latitude: 39.153083, longitude: -121.132845, altitudeMeters: 574, headingDegrees: 21.46, speedMetersPerSecond: 0)
+    var telemetry = OperationalClueReportTelemetry(observation: observation)
+    telemetry.rawAzimuthDegrees = 111.46
+    telemetry.source = "dji-sei-245"
+    let report = OperationalClueDescription.telemetrySummary(telemetry, designator: "1SAR7", format: .decimal)
+    #expect(report.contains("DJI raw azimuth encoder: 111.5°"))
+    #expect(!report.contains("declination"))
 }
 
 @Test func safetyChipLabelsPreserveDataAndCachedWarnings() {

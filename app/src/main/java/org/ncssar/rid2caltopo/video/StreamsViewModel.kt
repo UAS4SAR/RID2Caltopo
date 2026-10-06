@@ -3334,13 +3334,6 @@ class StreamsViewModel(
                     String.format(Locale.US, "  Camera yaw: %.1f\u00b0", raw)
                 }
             }
-            djiCameraSample?.let { sample ->
-                lines += String.format(
-                    Locale.US,
-                    "  Magnetic declination applied: %+.1f\u00b0",
-                    sample.magneticDeclinationDeg,
-                )
-            }
             telemetry.horizontalFovDeg?.let { lines += String.format(Locale.US, "  Horizontal FOV: %.2f\u00b0", it) }
             telemetry.verticalFovDeg?.let { lines += String.format(Locale.US, "  Vertical FOV: %.2f\u00b0", it) }
             telemetry.sourceTag?.let { src ->

@@ -5,15 +5,12 @@ object DjiCameraOrientation {
     private const val RAW_HORIZONTAL_REFERENCE_DEG = -14.5625
     private const val RAW_DOWN_REFERENCE_DEG = -90.0
     @JvmStatic
-    fun controllerAzimuthDeg(
-        cameraAzimuthDeg: Double?,
-        magneticDeclinationDeg: Double? = 0.0,
-    ): Double? {
+    fun controllerAzimuthDeg(cameraAzimuthDeg: Double?): Double? {
         val finite = cameraAzimuthDeg?.takeIf { it.isFinite() } ?: return null
-        val declination = magneticDeclinationDeg?.takeIf { it.isFinite() } ?: 0.0
-        // Tag-4 offset 3 increases clockwise, but its north reference is magnetic.
-        // CalTopo bearings are true north, so preserve the direction and add declination.
-        return normalize(finite - 90.0 + declination)
+        // Tag-4 offset 3 increases clockwise and already references true north
+        // (2026-10-06 circular flights: adding declination put bearings ~12.9 deg off).
+        // CalTopo bearings are true north too, so no magnetic declination is applied.
+        return normalize(finite - 90.0)
     }
 
     private fun normalize(degrees: Double): Double = ((degrees % 360.0) + 360.0) % 360.0

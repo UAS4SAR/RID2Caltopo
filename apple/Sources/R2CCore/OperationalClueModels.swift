@@ -246,14 +246,12 @@ public enum OperationalClueGeometry {
             ? observedRelativeUpMeters : nil
     }
 
-    /// Clockwise true-north camera bearing derived from DJI's magnetic encoder.
-    public static func djiControllerCameraAzimuthDegrees(
-        seiCameraAzimuthDegrees: Double?,
-        magneticDeclinationDegrees: Double? = nil
-    ) -> Double? {
+    /// Clockwise true-north camera bearing from DJI's type-245 SEI azimuth.
+    /// The SEI azimuth already references true north (2026-10-06 circular flights:
+    /// adding magnetic declination put bearings ~12.9° off), so none is applied.
+    public static func djiControllerCameraAzimuthDegrees(seiCameraAzimuthDegrees: Double?) -> Double? {
         guard let seiCameraAzimuthDegrees, seiCameraAzimuthDegrees.isFinite else { return nil }
-        let declination = magneticDeclinationDegrees.flatMap { $0.isFinite ? $0 : nil } ?? 0
-        return RidHeading.normalized(seiCameraAzimuthDegrees - 90 + declination)
+        return RidHeading.normalized(seiCameraAzimuthDegrees - 90)
     }
 
     /// Matrice 4TD calibration: raw -90 is down; controlled raw -14.5625 is horizontal.

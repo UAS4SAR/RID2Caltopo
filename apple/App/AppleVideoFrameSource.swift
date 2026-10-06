@@ -307,7 +307,6 @@ struct AppleDJICameraTelemetry: Sendable, Equatable {
     let relativeNorthMillimeters: Int32?
     let relativeEastMillimeters: Int32?
     let downMillimeters: Int32?
-    let magneticDeclinationDegrees: Double?
     let sourceTimestampMicroseconds: Int64?
     let receivedAt: Date
     /// SEI sample time on the drone's stream clock; nil when the PTS clock is not established.
@@ -333,7 +332,6 @@ struct AppleDJICameraTelemetry: Sendable, Equatable {
             relativeNorthMillimeters: relativeNorthMillimeters,
             relativeEastMillimeters: relativeEastMillimeters,
             downMillimeters: downMillimeters,
-            magneticDeclinationDegrees: magneticDeclinationDegrees,
             sourceTimestampMicroseconds: sourceTimestampMicroseconds,
             receivedAt: receivedAt,
             droneTime: droneTime
@@ -974,12 +972,10 @@ final class AppleVideoFrameSource: ObservableObject {
                         &payloadSequence
                     )
                 }
-                let magneticDeclinationDegrees = AppleMagneticNorth.declinationDegrees
                 latestDJICameraTelemetry = AppleDJICameraTelemetry(
                     rawAzimuthCandidateDegrees: RidHeading.normalized(djiAzimuthDegrees) ?? djiAzimuthDegrees,
                     cameraAzimuthDegrees: OperationalClueGeometry.djiControllerCameraAzimuthDegrees(
-                        seiCameraAzimuthDegrees: djiAzimuthDegrees,
-                        magneticDeclinationDegrees: magneticDeclinationDegrees
+                        seiCameraAzimuthDegrees: djiAzimuthDegrees
                     ),
                     courseDegrees: RidHeading.normalized(djiPositionValues[6]),
                     rawTiltDegrees: djiTiltDegrees,
@@ -999,7 +995,6 @@ final class AppleVideoFrameSource: ObservableObject {
                     relativeNorthMillimeters: copiedPayload ? northMillimeters : nil,
                     relativeEastMillimeters: copiedPayload ? eastMillimeters : nil,
                     downMillimeters: copiedPayload ? downMillimeters : nil,
-                    magneticDeclinationDegrees: magneticDeclinationDegrees,
                     sourceTimestampMicroseconds: djiSourceTimestampMicroseconds > 0
                         ? djiSourceTimestampMicroseconds
                         : nil,

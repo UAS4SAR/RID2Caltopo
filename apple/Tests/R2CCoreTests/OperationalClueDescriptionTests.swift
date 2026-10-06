@@ -30,7 +30,6 @@ private func report(heading: Double? = 273.2, telemetry: OperationalClueReportTe
     telemetry.rawTiltDegrees = -90
     telemetry.calibratedTiltDegrees = -45
     telemetry.rawAzimuthDegrees = 180
-    telemetry.magneticDeclinationDegrees = 13.2
     telemetry.horizontalFovDegrees = 70
     telemetry.verticalFovDegrees = 40
     telemetry.source = "dji-sei-245"
@@ -53,7 +52,6 @@ private func report(heading: Double? = 273.2, telemetry: OperationalClueReportTe
       Track: 273.2°
       Camera tilt: -45.0° (raw -90.0°)
       DJI raw azimuth encoder: 180.0°
-      Magnetic declination applied: +13.2°
       Horizontal FOV: 70.00°
       Vertical FOV: 40.00°
       Telemetry source: dji-sei-245 (confidence=0.95)

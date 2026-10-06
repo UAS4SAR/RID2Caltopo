@@ -10,7 +10,6 @@ public struct OperationalClueReportTelemetry: Sendable {
     public var rawTiltDegrees: Double?
     public var calibratedTiltDegrees: Double?
     public var rawAzimuthDegrees: Double?
-    public var magneticDeclinationDegrees: Double?
     public var horizontalFovDegrees: Double?
     public var verticalFovDegrees: Double?
     public var source: String?
@@ -105,7 +104,6 @@ public enum OperationalClueDescription {
             } else { lines.append("  Gimbal pitch: \(number(raw, "%.1f°"))") }
         }
         if let raw = data.rawAzimuthDegrees, raw.isFinite { lines.append("  DJI raw azimuth encoder: \(number(raw, "%.1f°"))") }
-        if let declination = data.magneticDeclinationDegrees, declination.isFinite { lines.append("  Magnetic declination applied: \(number(declination, "%+.1f°"))") }
         if let fov = data.horizontalFovDegrees, fov.isFinite { lines.append("  Horizontal FOV: \(number(fov, "%.2f°"))") }
         if let fov = data.verticalFovDegrees, fov.isFinite { lines.append("  Vertical FOV: \(number(fov, "%.2f°"))") }
         if let source = data.source { lines.append("  Telemetry source: \(source) (confidence=\(data.confidence.map { number($0, "%.2f") } ?? "n/a"))") }

@@ -10,15 +10,13 @@ import org.ncssar.rid2caltopo.data.PilotDisplayPreference
 class MapPanePilotDisplayTest {
     @Test
     fun recordedHeadingCrossingRemainsContinuousThroughMapFov() {
-        for (declination in listOf(0.0, 13.3)) {
-            val rays = listOf(179.9354051, 180.6050268).map {
-                val bearing = org.ncssar.rid2caltopo.video.ffmpeg.DjiCameraOrientation
-                    .controllerAzimuthDeg(it, declination)
-                cameraFovBoundaryBearings(bearing, 37.703125)!!
-            }
-            assertEquals(0.6696217, rays[1].leftBearingDeg - rays[0].leftBearingDeg, 1e-7)
-            assertEquals(0.6696217, rays[1].rightBearingDeg - rays[0].rightBearingDeg, 1e-7)
+        val rays = listOf(179.9354051, 180.6050268).map {
+            val bearing = org.ncssar.rid2caltopo.video.ffmpeg.DjiCameraOrientation
+                .controllerAzimuthDeg(it)
+            cameraFovBoundaryBearings(bearing, 37.703125)!!
         }
+        assertEquals(0.6696217, rays[1].leftBearingDeg - rays[0].leftBearingDeg, 1e-7)
+        assertEquals(0.6696217, rays[1].rightBearingDeg - rays[0].rightBearingDeg, 1e-7)
     }
 
     @Test fun mapAndVideoHonorRefreshDeadlineAndStaleOverride() {
