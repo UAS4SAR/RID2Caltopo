@@ -13,6 +13,8 @@ public struct RidTrackArchiveMetadata: Sendable, Equatable {
     public var buildVersion: String
     public var buildTime: String
     public var localArchiveOnly: Bool
+    /// Stable flight id (RidFlightID), written as `properties.r2c_flight_id` like Android.
+    public var flightID: String
 
     public init(
         mappedID: String = "",
@@ -26,7 +28,8 @@ public struct RidTrackArchiveMetadata: Sendable, Equatable {
         buildVersion: String = "",
         buildTime: String = "",
         localArchiveOnly: Bool = false,
-        flightReadiness: FlightReadiness? = nil
+        flightReadiness: FlightReadiness? = nil,
+        flightID: String = ""
     ) {
         self.flightReadiness = flightReadiness
         self.mappedID = mappedID
@@ -40,6 +43,7 @@ public struct RidTrackArchiveMetadata: Sendable, Equatable {
         self.buildVersion = buildVersion
         self.buildTime = buildTime
         self.localArchiveOnly = localArchiveOnly
+        self.flightID = flightID
     }
 }
 
@@ -83,15 +87,17 @@ public enum RidTrackGeoJSON {
             "BUILD_TIME": metadata.buildTime,
             "distance_mi": String(format: "%.4f", locale: Locale(identifier: "en_US_POSIX"), miles),
         ]
+        var properties: [String: Any] = [
+            "title": archiveTitle(for: track, metadata: metadata),
+            "start_time": startTime,
+            "r2c_prop": r2cProperties,
+            "r2c_point_received_ms": receivedMilliseconds,
+            "r2c_point_drone_clock": droneClock,
+        ]
+        if !metadata.flightID.isEmpty { properties["r2c_flight_id"] = metadata.flightID }
         let feature: [String: Any] = [
             "type": "Feature",
-            "properties": [
-                "title": archiveTitle(for: track, metadata: metadata),
-                "start_time": startTime,
-                "r2c_prop": r2cProperties,
-                "r2c_point_received_ms": receivedMilliseconds,
-                "r2c_point_drone_clock": droneClock,
-            ],
+            "properties": properties,
             "geometry": [
                 "type": "LineString",
                 "coordinates": coordinates,
@@ -108,6 +114,15 @@ public enum RidTrackGeoJSON {
         public let title: String
         public let remoteID: String
         public let points: [ClueBindingPoint]
+        /// `properties.r2c_flight_id` (both platforms); nil in files written before it existed.
+        public let flightID: String?
+
+        public init(title: String, remoteID: String, points: [ClueBindingPoint], flightID: String? = nil) {
+            self.title = title
+            self.remoteID = remoteID
+            self.points = points
+            self.flightID = flightID
+        }
     }
 
     /// Reads an archive written by either platform. Coordinates are [lng, lat, alt, timeMs] as strings
@@ -137,8 +152,9 @@ public enum RidTrackGeoJSON {
             points.append(ClueBindingPoint(timeMs: Int64(time), receivedAtMs: receivedAt, latitude: lat, longitude: lng,
                                            altitudeMeters: altitude, source: "archive", droneClock: isDrone))
         }
+        let flightID = (properties["r2c_flight_id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         return ArchiveContents(title: properties["title"] as? String ?? "", remoteID: r2c["rid"] as? String ?? "",
-                               points: points)
+                               points: points, flightID: flightID)
     }
 
     /// Match live CalTopo publication, including when no incident map is selected.

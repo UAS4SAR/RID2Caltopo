@@ -118,3 +118,18 @@ private func awaitingSample(_ time: TimeInterval = 1_000_000, latitude: Double =
     #expect(CaltopoPublicationScope.identifier(personalAccountID: "", teamID: "team-a").isEmpty)
     #expect(CaltopoPublicationScope.identifier(personalAccountID: nil, teamID: "team-a") == "team-a")
 }
+
+@Test @MainActor func journalEntriesUseTheStableFlightID() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let journal = AwaitingMapFlightJournal(fileURL: root.appendingPathComponent("pending.json"))
+    let flightID = RidFlightID.make(aircraftID: "RID-1", startedAt: Date(timeIntervalSince1970: 1_000_000))
+    try journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample()], mapID: "", teamID: "team-a",
+                       finished: false, flightID: flightID)
+    #expect(journal.entries.map(\.id) == [flightID])
+    // Later snapshots of the same open flight keep the id (and it stays a UUID for CalTopo live tracks).
+    try journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample(), awaitingSample(1_000_010)],
+                       mapID: "", teamID: "team-a", finished: false, flightID: "other")
+    #expect(journal.entries.map(\.id) == [flightID])
+    #expect(journal.entries[0].publication.liveTrackID == flightID)
+}

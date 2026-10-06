@@ -38,9 +38,6 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
     /// Waypoint binding (nil for clues saved before binding existed).
     public var binding: ClueBinding?
 
-    /// CalTopo upload waits until the binding is final.
-    public var bindingFinal: Bool { binding?.final ?? true }
-
     /// Capture time on the drone clock when bound; otherwise the stored capture time.
     public var ownershipTime: Date {
         binding.map { Date(timeIntervalSince1970: Double($0.captureTimeMs) / 1_000) } ?? capturedAt
@@ -52,7 +49,7 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
     }
 
     public func canAutomaticallyPublish(mapID: String, teamID: String) -> Bool {
-        !mapID.isEmpty && !teamID.isEmpty && destinationMapID == mapID && destinationTeamID == teamID && bindingFinal
+        !mapID.isEmpty && !teamID.isEmpty && destinationMapID == mapID && destinationTeamID == teamID
     }
 
     public init(

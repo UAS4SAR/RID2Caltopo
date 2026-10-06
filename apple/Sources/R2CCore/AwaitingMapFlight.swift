@@ -1,4 +1,23 @@
+import CryptoKit
 import Foundation
+
+/// Stable flight identity: a UUID derived from the aircraft's canonical RID and the flight start time
+/// (receive time of the track's first accepted observation, in ms). It is the awaiting-map journal id
+/// (and so the CalTopo live-track id), the flightID of clue bindings and the archive's
+/// `r2c_flight_id`, so all of them agree for the life of the flight and after a relaunch. Android
+/// writes its per-track id under the same `r2c_flight_id` key.
+public enum RidFlightID {
+    public static func make(aircraftID: String, startedAt: Date) -> String {
+        let milliseconds = Int64((startedAt.timeIntervalSince1970 * 1_000).rounded())
+        let name = "\(RidTrackStore.canonicalAircraftID(aircraftID))|\(milliseconds)"
+        var bytes = Array(SHA256.hash(data: Data(name.utf8)).prefix(16))
+        bytes[6] = (bytes[6] & 0x0F) | 0x50 // name-based UUID
+        bytes[8] = (bytes[8] & 0x3F) | 0x80 // RFC 4122 variant
+        let uuid = UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                               bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
+        return uuid.uuidString.lowercased()
+    }
+}
 
 public struct AwaitingMapFlight: Codable, Sendable, Equatable, Identifiable {
     public let id: String
@@ -16,8 +35,8 @@ public struct AwaitingMapFlight: Codable, Sendable, Equatable, Identifiable {
     public var firstBindingTime: Date { points.map(\.bindingTime).min() ?? .distantPast }
     public var lastBindingTime: Date { points.map(\.bindingTime).max() ?? .distantPast }
 
-    public init(remoteID: String, label: String, observations: [RidObservation], teamID: String) {
-        id = UUID().uuidString.lowercased()
+    public init(id: String? = nil, remoteID: String, label: String, observations: [RidObservation], teamID: String) {
+        self.id = id ?? UUID().uuidString.lowercased()
         self.remoteID = remoteID; self.label = label
         points = observations.map(CaltopoInterruptedPublicationPoint.init)
         finished = false; decision = "review"; mapID = ""; self.teamID = teamID
@@ -54,7 +73,9 @@ public final class AwaitingMapFlightJournal {
             return result
         }
     }
-    public func record(remoteID: String, label: String, observations: [RidObservation], mapID: String, teamID: String, finished: Bool) throws {
+    /// `flightID` (RidFlightID) becomes the id of a newly created entry; an open entry keeps its id.
+    public func record(remoteID: String, label: String, observations: [RidObservation], mapID: String, teamID: String, finished: Bool,
+                       flightID: String? = nil) throws {
         guard let first = observations.first else { return }
         var next = entries
         if let index = next.lastIndex(where: { $0.remoteID == remoteID && !$0.finished }) {
@@ -64,7 +85,7 @@ public final class AwaitingMapFlightJournal {
             if finished && ["bound", "local"].contains(next[index].decision) { next.remove(at: index) }
         } else {
             guard !finished, !next.contains(where: { $0.remoteID == remoteID && $0.firstTime == first.receivedAt }) else { return }
-            var entry = AwaitingMapFlight(remoteID: remoteID, label: label, observations: observations, teamID: teamID)
+            var entry = AwaitingMapFlight(id: flightID, remoteID: remoteID, label: label, observations: observations, teamID: teamID)
             if !mapID.isEmpty { entry.mapID = mapID; entry.decision = "bound" }
             next.append(entry)
         }

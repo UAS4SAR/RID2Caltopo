@@ -143,7 +143,7 @@ public extension OperationalFlightKMZ {
 
     /// Binds clues saved without a usable binding to the archived flight's nearest stored point.
     static func bindingFallback(_ record: OperationalClueRecord,
-                                contents: RidTrackGeoJSON.ArchiveContents, nowReceivedAtMs: Int64) -> OperationalClueRecord {
+                                contents: RidTrackGeoJSON.ArchiveContents) -> OperationalClueRecord {
         guard record.binding?.nearest == nil else { return record }
         var updated = record
         let captureMs = record.binding?.captureTimeMs ?? ClueBindingPoint.milliseconds(record.capturedAt)
@@ -152,7 +152,7 @@ public extension OperationalFlightKMZ {
             captureTimeSource: record.binding?.captureTimeSource ?? "app-receive",
             captureReceivedAtMs: record.binding?.captureReceivedAtMs ?? ClueBindingPoint.milliseconds(record.capturedAt),
             points: contents.points, framePosition: record.binding?.framePosition,
-            originIsWaypoint: false, flightEnded: true, nowReceivedAtMs: nowReceivedAtMs)
+            originIsWaypoint: false)
         return updated
     }
 }

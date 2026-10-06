@@ -59,7 +59,7 @@ public struct ClueBinding: Codable, Sendable, Equatable {
     public var captureTimeMs: Int64
     /// "stream-pts" (drone encoder clock) or "app-receive" (fallback).
     public var captureTimeSource: String
-    /// App receive time of the captured frame (diagnostic; also bounds how long binding waits).
+    /// App receive time of the captured frame (diagnostic).
     public var captureReceivedAtMs: Int64
     public var waypoint: ClueBindingPoint?
     public var offsetMs: Int64?
@@ -67,7 +67,6 @@ public struct ClueBinding: Codable, Sendable, Equatable {
     public var nearestOffsetMs: Int64?
     public var quality: ClueBindingQuality
     public var hovering: Bool
-    public var final: Bool
     /// True when the clue was projected from the bound waypoint (no frame-matched drone position).
     public var originIsWaypoint: Bool
     /// Drone position decoded from the frame itself (DJI SEI), when present.
@@ -75,13 +74,11 @@ public struct ClueBinding: Codable, Sendable, Equatable {
     /// Waypoint nearest in time even beyond the binding limit; the projection origin when
     /// `originIsWaypoint` (equals `waypoint` whenever the clue is bound).
     public var nearest: ClueBindingPoint?
-    /// Clue position before a nearer waypoint moved it after submit (nil when never moved).
-    public var movedFrom: ClueBindingFramePosition?
 
     public init(aircraftID: String, flightID: String?, flightStartMs: Int64?, captureTimeMs: Int64,
                 captureTimeSource: String, captureReceivedAtMs: Int64, waypoint: ClueBindingPoint?,
                 offsetMs: Int64?, nearestOffsetMs: Int64?, quality: ClueBindingQuality, hovering: Bool,
-                final: Bool, originIsWaypoint: Bool, framePosition: ClueBindingFramePosition?) {
+                originIsWaypoint: Bool, framePosition: ClueBindingFramePosition?) {
         self.aircraftID = aircraftID
         self.flightID = flightID
         self.flightStartMs = flightStartMs
@@ -93,7 +90,6 @@ public struct ClueBinding: Codable, Sendable, Equatable {
         self.nearestOffsetMs = nearestOffsetMs
         self.quality = quality
         self.hovering = hovering
-        self.final = final
         self.originIsWaypoint = originIsWaypoint
         self.framePosition = framePosition
     }
@@ -109,8 +105,6 @@ public enum ClueBinder {
     public static let bindingLimitMs: Int64 = 30_000
     /// Waypoints this close together (or to the frame's own position) mean the drone was hovering.
     public static let hoverRadiusMeters = 5.0
-    /// App-clock time after capture at which a still-open binding is finalized anyway.
-    public static let finalizeAfterMs: Int64 = 35_000
 
     public static func quality(offsetMs: Int64?, hovering: Bool) -> ClueBindingQuality {
         guard let offsetMs else { return .unbound }
@@ -143,16 +137,14 @@ public enum ClueBinder {
         captureReceivedAtMs: Int64,
         points unsorted: [ClueBindingPoint],
         framePosition: ClueBindingFramePosition?,
-        originIsWaypoint: Bool,
-        flightEnded: Bool,
-        nowReceivedAtMs: Int64
+        originIsWaypoint: Bool
     ) -> ClueBinding {
         let points = unsorted.sorted { $0.timeMs < $1.timeMs }
         var binding = ClueBinding(
             aircraftID: aircraftID, flightID: flightID, flightStartMs: points.first?.timeMs,
             captureTimeMs: captureTimeMs, captureTimeSource: captureTimeSource,
             captureReceivedAtMs: captureReceivedAtMs, waypoint: nil, offsetMs: nil, nearestOffsetMs: nil,
-            quality: .unbound, hovering: false, final: false, originIsWaypoint: originIsWaypoint,
+            quality: .unbound, hovering: false, originIsWaypoint: originIsWaypoint,
             framePosition: framePosition)
         if let index = nearestIndex(points, captureTimeMs: captureTimeMs) {
             let nearest = points[index]
@@ -167,38 +159,19 @@ public enum ClueBinder {
             }
         }
         binding.quality = quality(offsetMs: binding.offsetMs, hovering: binding.hovering)
-        binding.final = isFinal(binding, points: points, flightEnded: flightEnded, nowReceivedAtMs: nowReceivedAtMs)
         return binding
     }
 
-    /// Recomputes an open binding from the flight's current waypoints. A final binding never changes.
-    public static func refresh(_ binding: ClueBinding, points: [ClueBindingPoint], flightEnded: Bool,
-                               nowReceivedAtMs: Int64) -> ClueBinding {
-        guard !binding.final else { return binding }
+    /// Re-binds against the waypoints available now (used while the clue form is open and once more
+    /// on Submit). Without any points the stored binding is kept. A submitted clue is never re-bound.
+    public static func refresh(_ binding: ClueBinding, points: [ClueBindingPoint]) -> ClueBinding {
+        guard !points.isEmpty else { return binding }
         var next = bind(aircraftID: binding.aircraftID, flightID: binding.flightID,
                         captureTimeMs: binding.captureTimeMs, captureTimeSource: binding.captureTimeSource,
                         captureReceivedAtMs: binding.captureReceivedAtMs, points: points,
-                        framePosition: binding.framePosition, originIsWaypoint: binding.originIsWaypoint,
-                        flightEnded: flightEnded, nowReceivedAtMs: nowReceivedAtMs)
+                        framePosition: binding.framePosition, originIsWaypoint: binding.originIsWaypoint)
         if next.flightStartMs == nil { next.flightStartMs = binding.flightStartMs }
-        next.movedFrom = binding.movedFrom
-        if next.waypoint == nil, points.isEmpty {
-            // Points unavailable (e.g. flight archived): keep what was stored, only finalize.
-            var kept = binding
-            kept.final = next.final
-            return kept
-        }
         return next
-    }
-
-    /// A binding is final once no later waypoint could be nearer, the flight ended, or the wait expired.
-    public static func isFinal(_ binding: ClueBinding, points: [ClueBindingPoint], flightEnded: Bool,
-                               nowReceivedAtMs: Int64) -> Bool {
-        if flightEnded { return true }
-        if nowReceivedAtMs - binding.captureReceivedAtMs >= finalizeAfterMs { return true }
-        guard let latest = points.map(\.timeMs).max() else { return false }
-        let horizon = binding.offsetMs.map { abs($0) } ?? bindingLimitMs
-        return latest >= binding.captureTimeMs + horizon
     }
 
     static func hovering(points: [ClueBindingPoint], captureTimeMs: Int64, waypoint: ClueBindingPoint,
@@ -220,8 +193,18 @@ public enum ClueBinder {
         RidGeometry.relativePosition(fromLatitude: lat1, longitude: lon1, toLatitude: lat2, longitude: lon2)?.distanceMeters
     }
 
-    /// Moves a clue that was projected from the bound waypoint when a nearer waypoint replaces it:
-    /// the camera vector (bearing, range) is unchanged, so the clue shifts by the origin's displacement.
+    /// The origin move a Submit applies: when the clue was projected from the bound waypoint and the
+    /// submit-time binding found a nearer waypoint than the one the form last showed.
+    public static func originShift(shown: ClueBinding?, submitted: ClueBinding?)
+        -> (from: ClueBindingPoint, to: ClueBindingPoint)? {
+        guard let submitted, submitted.originIsWaypoint, let from = shown?.nearest, let to = submitted.nearest,
+              from != to else { return nil }
+        return (from, to)
+    }
+
+    /// Moves a clue that was projected from the bound waypoint when a nearer waypoint replaces it at
+    /// Submit: the camera vector (bearing, range) is unchanged, so the clue shifts by the origin's
+    /// displacement.
     public static func translated(latitude: Double, longitude: Double, from old: ClueBindingPoint,
                                   to new: ClueBindingPoint) -> (latitude: Double, longitude: Double) {
         let originCos = cos(old.latitude * .pi / 180)
@@ -254,16 +237,9 @@ public enum ClueBindingText {
 
     /// One line for the clue form.
     public static func formSummary(_ binding: ClueBinding) -> String {
-        var text: String
-        if let bound = binding.offsetMs {
-            text = "\(Self.offset(bound)) · \(qualityLabel(binding))"
-        } else if let nearest = binding.nearestOffsetMs {
-            text = "\(qualityLabel(binding)); nearest \(Self.offset(nearest))"
-        } else {
-            text = qualityLabel(binding)
-        }
-        if !binding.final { text += " · waiting for next fix" }
-        return text
+        if let bound = binding.offsetMs { return "\(Self.offset(bound)) · \(qualityLabel(binding))" }
+        if let nearest = binding.nearestOffsetMs { return "\(qualityLabel(binding)); nearest \(Self.offset(nearest))" }
+        return qualityLabel(binding)
     }
 
     public static func iso(_ milliseconds: Int64) -> String {
@@ -289,11 +265,6 @@ public enum ClueBindingText {
                                 waypoint.droneClock ? "" : ", receive time"))
         }
         lines.append("  Capture: \(iso(binding.captureTimeMs)) (\(binding.captureTimeSource))")
-        if let moved = binding.movedFrom {
-            lines.append(String(format: "  Position: moved after submit to the nearer waypoint (was %.6f, %.6f)",
-                                locale: posix, moved.latitude, moved.longitude))
-        }
-        if !binding.final { lines.append("  Binding: provisional") }
         var diagnostics = ["capture \(iso(binding.captureReceivedAtMs))"]
         if let received = binding.waypoint?.receivedAtMs { diagnostics.append("waypoint \(iso(received))") }
         lines.append("  App receive times (diagnostic): \(diagnostics.joined(separator: ", "))")
@@ -313,7 +284,6 @@ public enum ClueBindingText {
         var pairs: [(String, String)] = [
             ("r2c_binding_quality", binding.quality.rawValue),
             ("r2c_binding_hovering", binding.hovering ? "true" : "false"),
-            ("r2c_binding_final", binding.final ? "true" : "false"),
             ("r2c_capture_time", iso(binding.captureTimeMs)),
             ("r2c_capture_time_source", binding.captureTimeSource),
             ("r2c_capture_received_at", iso(binding.captureReceivedAtMs)),
@@ -346,30 +316,6 @@ public extension ClueBindingPoint {
         self.init(timeMs: Self.milliseconds(point.bindingTime), receivedAtMs: Self.milliseconds(point.receivedAt),
                   latitude: point.latitude, longitude: point.longitude, altitudeMeters: point.altitudeMeters,
                   source: point.source.rawValue, droneClock: point.droneTime != nil)
-    }
-}
-
-/// Applies a binding refresh to a saved clue. When the clue was projected from the waypoint (no
-/// frame-matched drone position) and a nearer waypoint replaces it, the clue moves with the origin.
-public enum ClueBindingUpdate {
-    public static func apply(_ record: OperationalClueRecord, points: [ClueBindingPoint], flightEnded: Bool,
-                             nowReceivedAtMs: Int64) -> OperationalClueRecord {
-        guard let old = record.binding, !old.final else { return record }
-        var next = ClueBinder.refresh(old, points: points, flightEnded: flightEnded, nowReceivedAtMs: nowReceivedAtMs)
-        var updated = record
-        if old.originIsWaypoint, let from = old.nearest, let to = next.nearest, from != to {
-            let moved = ClueBinder.translated(latitude: record.clueLatitude, longitude: record.clueLongitude,
-                                              from: from, to: to)
-            if next.movedFrom == nil {
-                next.movedFrom = ClueBindingFramePosition(latitude: record.clueLatitude, longitude: record.clueLongitude)
-            }
-            updated.clueLatitude = moved.latitude
-            updated.clueLongitude = moved.longitude
-            updated.droneLatitude = to.latitude
-            updated.droneLongitude = to.longitude
-        }
-        updated.binding = next
-        return updated
     }
 }
 

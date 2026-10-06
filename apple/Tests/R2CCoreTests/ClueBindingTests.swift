@@ -18,12 +18,10 @@ private func moving(_ offsets: [Int64]) -> [ClueBindingPoint] {
 }
 
 private func bind(_ points: [ClueBindingPoint], capture: Int64 = 0, receivedAt: Int64? = nil,
-                  frame: ClueBindingFramePosition? = nil, ended: Bool = false, now: Int64? = nil,
-                  flightID: String? = "flight-1") -> ClueBinding {
+                  frame: ClueBindingFramePosition? = nil, flightID: String? = "flight-1") -> ClueBinding {
     ClueBinder.bind(aircraftID: "RID-1", flightID: flightID, captureTimeMs: t0 + capture,
                     captureTimeSource: "stream-pts", captureReceivedAtMs: receivedAt ?? (t0 + capture + 200),
-                    points: points, framePosition: frame, originIsWaypoint: frame == nil,
-                    flightEnded: ended, nowReceivedAtMs: now ?? (t0 + capture + 1_000))
+                    points: points, framePosition: frame, originIsWaypoint: frame == nil)
 }
 
 private func record(capture: Date = Date(timeIntervalSince1970: 1_790_553_873), binding: ClueBinding? = nil,
@@ -81,7 +79,7 @@ private func record(capture: Date = Date(timeIntervalSince1970: 1_790_553_873), 
 
 @Test func bindingUsesCaptureTimeNeverSubmissionOrReceiveTime() {
     // The app received the frame (and the operator submitted) 20 s later; binding still uses the capture.
-    let binding = bind(moving([-300, 19_800]), capture: 0, receivedAt: t0 + 20_000, now: t0 + 21_000)
+    let binding = bind(moving([-300, 19_800]), capture: 0, receivedAt: t0 + 20_000)
     #expect(binding.offsetMs == -300)
     #expect(binding.captureTimeMs == t0)
     #expect(binding.captureReceivedAtMs == t0 + 20_000)
@@ -108,7 +106,7 @@ private func record(capture: Date = Date(timeIntervalSince1970: 1_790_553_873), 
 }
 
 @Test func noBindingBeyondThirtySeconds() {
-    let binding = bind(moving([-45_000, -40_000]), ended: true)
+    let binding = bind(moving([-45_000, -40_000]))
     #expect(binding.quality == .unbound)
     #expect(binding.waypoint == nil)
     #expect(binding.offsetMs == nil)
@@ -118,27 +116,37 @@ private func record(capture: Date = Date(timeIntervalSince1970: 1_790_553_873), 
     #expect(Dictionary(uniqueKeysWithValues: ClueBindingText.extendedData(binding))["r2c_binding_offset_s"] == nil)
 }
 
-@Test func bindingStaysOpenUntilNoNearerWaypointCanArrive() {
-    // Nearest so far is 1.5 s before; a waypoint up to 1.5 s after could still be nearer.
-    let open = bind(moving([-1_500]), now: t0 + 1_000)
-    #expect(!open.final)
-    #expect(ClueBindingText.formSummary(open).hasSuffix(" · waiting for next fix"))
-    #expect(ClueBindingText.descriptionLines(open).contains("  Binding: provisional"))
-    // A nearer fix arrives 0.4 s after the capture: rebinds and finalizes (latest ≥ capture + 0.4 s).
-    let refreshed = ClueBinder.refresh(open, points: moving([-1_500, 400]), flightEnded: false, nowReceivedAtMs: t0 + 1_500)
+@Test func bindingUsesWaypointsAvailableNowWithoutWaitingForLaterFixes() {
+    // Nearest so far is 1.5 s before; nothing waits for a later fix and nothing is provisional.
+    let first = bind(moving([-1_500]))
+    #expect(first.offsetMs == -1_500)
+    #expect(ClueBindingText.formSummary(first) == "-1.500 s · exact")
+    #expect(!ClueBindingText.descriptionLines(first).contains { $0.contains("provisional") })
+    #expect(Dictionary(uniqueKeysWithValues: ClueBindingText.extendedData(first))["r2c_binding_final"] == nil)
+    // While the form is open (and once more on Submit) a nearer fix re-binds.
+    let refreshed = ClueBinder.refresh(first, points: moving([-1_500, 400]))
     #expect(refreshed.offsetMs == 400)
-    #expect(refreshed.final)
-    // A final binding never changes.
-    #expect(ClueBinder.refresh(refreshed, points: moving([-1_500, 0]), flightEnded: false, nowReceivedAtMs: t0 + 2_000) == refreshed)
-    // Flight end finalizes.
-    #expect(ClueBinder.refresh(open, points: moving([-1_500]), flightEnded: true, nowReceivedAtMs: t0 + 1_100).final)
-    // So does waiting 35 s on the app clock.
-    #expect(!ClueBinder.refresh(open, points: moving([-1_500]), flightEnded: false, nowReceivedAtMs: t0 + 200 + 34_999).final)
-    #expect(ClueBinder.refresh(open, points: moving([-1_500]), flightEnded: false, nowReceivedAtMs: t0 + 200 + 35_000).final)
-    // Unavailable points keep the stored binding.
-    let kept = ClueBinder.refresh(open, points: [], flightEnded: true, nowReceivedAtMs: t0 + 1_100)
-    #expect(kept.offsetMs == -1_500)
-    #expect(kept.final)
+    #expect(refreshed.flightStartMs == first.flightStartMs)
+    // Without points (flight over) the stored binding is kept.
+    #expect(ClueBinder.refresh(first, points: []) == first)
+}
+
+@Test func submitOriginShiftOnlyMovesWaypointProjectedClues() throws {
+    let shown = bind([point(-1_000, 39.0, -121.0)])
+    let submitted = ClueBinder.refresh(shown, points: [point(-1_000, 39.0, -121.0), point(300, 39.0001, -121.0002)])
+    let shift = try #require(ClueBinder.originShift(shown: shown, submitted: submitted))
+    #expect(shift.from.timeMs == t0 - 1_000)
+    #expect(shift.to.timeMs == t0 + 300)
+    let moved = ClueBinder.translated(latitude: 39.0005, longitude: -121.0005, from: shift.from, to: shift.to)
+    #expect(abs(moved.latitude - 39.0006) < 1e-9)
+    #expect(abs(moved.longitude - (-121.0007)) < 1e-7)
+    // Same waypoint: no shift.
+    #expect(ClueBinder.originShift(shown: submitted, submitted: submitted) == nil)
+    // A frame-positioned (SEI) clue keeps its projection.
+    let sei = bind([point(-1_000)], frame: ClueBindingFramePosition(latitude: 39.2, longitude: -121.2))
+    let seiSubmitted = ClueBinder.refresh(sei, points: [point(-1_000), point(300, 39.0001, -121.0002)])
+    #expect(seiSubmitted.offsetMs == 300)
+    #expect(ClueBinder.originShift(shown: sei, submitted: seiSubmitted) == nil)
 }
 
 @Test func streamDroneClockAnchorsPTSAndResetsOnJump() {
@@ -184,12 +192,20 @@ private func record(capture: Date = Date(timeIntervalSince1970: 1_790_553_873), 
     #expect(owner(231) == nil)
 }
 
-@Test func uploadWaitsForFinalBinding() {
-    let open = bind(moving([-1_500]))
-    #expect(!record(binding: open).canAutomaticallyPublish(mapID: "MAP", teamID: "TEAM"))
-    var closed = open; closed.final = true
-    #expect(record(binding: closed).canAutomaticallyPublish(mapID: "MAP", teamID: "TEAM"))
+@Test func uploadStartsWithoutWaitingForALaterFix() throws {
+    // Bound to the only waypoint so far (1.5 s before): publishable immediately.
+    #expect(record(binding: bind(moving([-1_500]))).canAutomaticallyPublish(mapID: "MAP", teamID: "TEAM"))
     #expect(record().canAutomaticallyPublish(mapID: "MAP", teamID: "TEAM")) // pre-binding clues
+    // Bindings saved by the previous build still decode (their "final"/"movedFrom" keys are ignored).
+    let bound = record(binding: bind(moving([-1_500])))
+    var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(bound)) as? [String: Any])
+    var binding = try #require(json["binding"] as? [String: Any])
+    binding["final"] = false
+    binding["movedFrom"] = ["latitude": 39.1, "longitude": -121.1]
+    json["binding"] = binding
+    let decoded = try JSONDecoder().decode(OperationalClueRecord.self, from: JSONSerialization.data(withJSONObject: json))
+    #expect(decoded.binding == bound.binding)
+    #expect(decoded.canAutomaticallyPublish(mapID: "MAP", teamID: "TEAM"))
 }
 
 @Test func clueRecordsWithoutBindingStillDecode() throws {
@@ -198,15 +214,14 @@ private func record(capture: Date = Date(timeIntervalSince1970: 1_790_553_873), 
     json.removeValue(forKey: "binding")
     let decoded = try JSONDecoder().decode(OperationalClueRecord.self, from: JSONSerialization.data(withJSONObject: json))
     #expect(decoded.binding == nil)
-    #expect(decoded.bindingFinal)
     #expect(decoded.publishedDescription == legacy.clueDescription)
-    let bound = record(binding: bind(moving([-1_234, 4_000]), ended: true))
+    let bound = record(binding: bind(moving([-1_234, 4_000])))
     let roundTrip = try JSONDecoder().decode(OperationalClueRecord.self, from: JSONEncoder().encode(bound))
     #expect(roundTrip.binding == bound.binding)
 }
 
 @Test func publishedDescriptionCarriesTheBinding() {
-    let binding = bind(moving([1_234, 4_000]), ended: true)
+    let binding = bind(moving([1_234, 4_000]))
     let text = record(binding: binding).publishedDescription
     #expect(text.hasPrefix("time: 08:00:00\n\nWaypoint binding:\n"))
     #expect(text.contains("  Offset: +1.234 s (waypoint minus capture, drone clock)"))
@@ -215,29 +230,6 @@ private func record(capture: Date = Date(timeIntervalSince1970: 1_790_553_873), 
     #expect(text.contains("(stream-pts)"))
     #expect(text.contains("App receive times (diagnostic): capture "))
     #expect(!text.contains("provisional"))
-}
-
-@Test func nearerWaypointMovesAWaypointProjectedClue() throws {
-    let open = bind([point(-1_000, 39.0, -121.0)], now: t0 + 500)
-    #expect(open.originIsWaypoint)
-    let saved = record(binding: open)
-    let updated = ClueBindingUpdate.apply(saved, points: [point(-1_000, 39.0, -121.0), point(300, 39.0001, -121.0002)],
-                                          flightEnded: false, nowReceivedAtMs: t0 + 800)
-    let binding = try #require(updated.binding)
-    #expect(binding.offsetMs == 300)
-    #expect(binding.final)
-    #expect(abs(updated.clueLatitude - (saved.clueLatitude + 0.0001)) < 1e-9)
-    #expect(abs(updated.clueLongitude - (saved.clueLongitude - 0.0002)) < 1e-7)
-    #expect(updated.droneLatitude == 39.0001)
-    #expect(binding.movedFrom == ClueBindingFramePosition(latitude: saved.clueLatitude, longitude: saved.clueLongitude))
-    #expect(ClueBindingText.descriptionLines(binding).contains { $0.hasPrefix("  Position: moved after submit") })
-    // A frame-positioned (SEI) clue keeps its projection; only the binding updates.
-    let seiOpen = bind([point(-1_000)], frame: ClueBindingFramePosition(latitude: 39.2, longitude: -121.2), now: t0 + 500)
-    let seiUpdated = ClueBindingUpdate.apply(record(binding: seiOpen), points: [point(-1_000), point(300, 39.0001, -121.0002)],
-                                             flightEnded: false, nowReceivedAtMs: t0 + 800)
-    #expect(seiUpdated.binding?.offsetMs == 300)
-    #expect(seiUpdated.clueLatitude == saved.clueLatitude)
-    #expect(seiUpdated.binding?.movedFrom == nil)
 }
 
 @Test func flightKMZIsWrittenWithoutClues() throws {
@@ -259,7 +251,7 @@ private func record(capture: Date = Date(timeIntervalSince1970: 1_790_553_873), 
 }
 
 @Test func flightKMZIncludesLocalMarkersAndBindingData() throws {
-    let binding = bind(moving([-1_234, 4_000]), ended: true)
+    let binding = bind(moving([-1_234, 4_000]))
     let published = OperationalFlightKMZClue(record: record(binding: binding, state: .published), jpegData: Data([0xFF, 0xD8, 0xFF]))
     let local = OperationalFlightKMZClue(record: record(state: .localOnly), jpegData: nil)
     #expect(local.localOnly)
@@ -287,10 +279,53 @@ private func record(capture: Date = Date(timeIntervalSince1970: 1_790_553_873), 
     #expect(OperationalFlightKMZ.ownedClues(archiveID: "d/a.json", archives: archives, clues: [late, other, early]).map(\.id) == [early.id])
     #expect(OperationalFlightKMZ.ownedClues(archiveID: "d/b.json", archives: archives, clues: [late, early]).map(\.id) == [late.id])
     // A clue saved without a binding binds to the archived flight's nearest stored point.
-    let filled = OperationalFlightKMZ.bindingFallback(early, contents: try #require(archives["d/a.json"]), nowReceivedAtMs: t0 + 999_000)
+    let filled = OperationalFlightKMZ.bindingFallback(early, contents: try #require(archives["d/a.json"]))
     #expect(filled.binding?.offsetMs == 0)
-    #expect(filled.binding?.final == true)
     #expect(filled.binding?.captureTimeSource == "app-receive")
+}
+
+@Test func lateCluesMatchArchivesByFlightIDThenTime() {
+    func archive(_ start: Int64, _ count: Int, flightID: String? = nil) -> RidTrackGeoJSON.ArchiveContents {
+        RidTrackGeoJSON.ArchiveContents(title: "T", remoteID: "RID-1",
+            points: (0..<count).map { point(start + Int64($0) * 10_000, 39 + Double($0) * 0.001, -121) }, flightID: flightID)
+    }
+    // Archives are keyed by r2c_flight_id; files written before it existed by "day/file".
+    let archives = ["flight-a": archive(0, 7, flightID: "flight-a"), "d/b.json": archive(100_000, 5)]
+    func clue(boundTo flightID: String?) -> OperationalClueRecord {
+        // 35 s after flight a, 5 s before flight b: the time rule alone picks b.
+        record(capture: Date(timeIntervalSince1970: Double(t0 + 95_000) / 1_000),
+               binding: bind(moving([60_000]), capture: 95_000, flightID: flightID))
+    }
+    let bound = clue(boundTo: "flight-a")
+    let unbound = clue(boundTo: nil)
+    let unknown = clue(boundTo: "deleted-flight")
+    #expect(OperationalFlightKMZ.ownedClues(archiveID: "flight-a", archives: archives, clues: [bound, unbound, unknown])
+        .map(\.id) == [bound.id])
+    // Without a matching flight id the time rule decides.
+    #expect(Set(OperationalFlightKMZ.ownedClues(archiveID: "d/b.json", archives: archives, clues: [bound, unbound, unknown])
+        .map(\.id)) == [unbound.id, unknown.id])
+}
+
+@Test func flightIDIsStableAndWrittenToArchives() async throws {
+    let start = Date(timeIntervalSince1970: 1_790_553_873.25)
+    let id = RidFlightID.make(aircraftID: "RID01", startedAt: start)
+    #expect(id == RidFlightID.make(aircraftID: "RID01", startedAt: start))
+    #expect(id != RidFlightID.make(aircraftID: "RID01", startedAt: start.addingTimeInterval(0.001)))
+    #expect(id != RidFlightID.make(aircraftID: "RID02", startedAt: start))
+    #expect(UUID(uuidString: id) != nil)
+    #expect(id == id.lowercased())
+    let store = RidTrackStore()
+    _ = await store.ingest(RidObservation(source: .bluetoothLegacy, aircraftId: "RID01", receivedAt: start,
+        latitude: 39, longitude: -121, altitudeMeters: 100, horizontalAccuracyCode: 11))
+    let track = try #require(await store.snapshot().first)
+    #expect(RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt) == id)
+    let encoded = try RidTrackGeoJSON.encode(track: track, metadata: RidTrackArchiveMetadata(flightID: id))
+    let root = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    let feature = try #require((root["features"] as? [[String: Any]])?.first)
+    #expect((feature["properties"] as? [String: Any])?["r2c_flight_id"] as? String == id)
+    #expect(RidTrackGeoJSON.decodeArchive(encoded)?.flightID == id)
+    // Files without the key (older iOS builds) decode with no flight id.
+    #expect(RidTrackGeoJSON.decodeArchive(try RidTrackGeoJSON.encode(track: track))?.flightID == nil)
 }
 
 @Test func archiveDecodeReadsAndroidStringsAndAppleNumbers() throws {
@@ -367,4 +402,14 @@ private func record(capture: Date = Date(timeIntervalSince1970: 1_790_553_873), 
     #expect(failed.lastError == "disk full")
     try queue.complete(job.id)
     #expect(FlightArchiveRewriteQueue(fileURL: url).jobs().isEmpty)
+}
+
+@Test func ignoredFlightCluesAskThenStayLocalAfterNo() {
+    #expect(IgnoredFlightClue.title == "Current flight ignored")
+    #expect(IgnoredFlightClue.message == "Do you want to publish it?")
+    #expect(IgnoredFlightClue.submitAction(flightIgnored: false, keptIgnored: false) == .upload)
+    // Published since (via the Drone Confirmation Panel): uploads even after an earlier No.
+    #expect(IgnoredFlightClue.submitAction(flightIgnored: false, keptIgnored: true) == .upload)
+    #expect(IgnoredFlightClue.submitAction(flightIgnored: true, keptIgnored: false) == .ask)
+    #expect(IgnoredFlightClue.submitAction(flightIgnored: true, keptIgnored: true) == .localOnly)
 }
