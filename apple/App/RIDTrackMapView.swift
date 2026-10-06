@@ -841,7 +841,13 @@ struct RIDTrackMapView: View {
                         clueError = "Clue could not be saved locally: \(error.localizedDescription)"
                     }
                 },
-                onCancel: { pendingSnapshot = nil }
+                onCancel: { pendingSnapshot = nil },
+                // Same actions as the Main Screen Drone Confirmation Panel.
+                onConfirmDrone: onConfirmPairedDrone,
+                onIgnoreDrone: { remoteID in
+                    identityStore.ignore(remoteID)
+                    model.suppressCaltopoPublication(remoteID: remoteID)
+                }
             )
         }
         .sheet(item: Binding(
@@ -1548,7 +1554,8 @@ struct RIDTrackMapView: View {
                         .buttonStyle(.borderedProminent)
                         .buttonBorderShape(.circle)
                         .controlSize(.large)
-                        .disabled(capturingSnapshot || model.tracks.isEmpty)
+                        // Greyed and not tappable while a clue is pending (until it is submitted or canceled).
+                        .disabled(capturingSnapshot || model.tracks.isEmpty || pendingSnapshot != nil)
                         .accessibilityLabel("Capture clue snapshot")
                         // Keep the camera control clear of the enlarged divider grab area,
                         // which is hidden in full screen.
@@ -1801,9 +1808,10 @@ struct RIDTrackMapView: View {
         zoomScale: Double = 1,
         normalizedPan: CGPoint = .zero
     ) {
-        // One snapshot at a time: a second capture would orphan the clue being written up.
+        // One snapshot at a time: the camera control is disabled while a clue is pending; a
+        // double tap meanwhile is ignored.
         guard !capturingSnapshot, pendingSnapshot == nil else {
-            clueError = "Submit or cancel the current clue first."
+            AppleLog.info("Clue", "Snapshot ignored: a clue is pending")
             return
         }
         let session = requestedStreamID.flatMap { requested in
@@ -1867,9 +1875,7 @@ struct RIDTrackMapView: View {
                     points: model.bindingPoints(aircraftID: defaultAircraftID, captureTimeMs: captureTimeMs)
                         ?? captureTrack.points.map(ClueBindingPoint.init(trackPoint:)),
                     framePosition: framePosition,
-                    originIsWaypoint: framePosition == nil,
-                    flightEnded: false,
-                    nowReceivedAtMs: ClueBindingPoint.milliseconds(Date())
+                    originIsWaypoint: framePosition == nil
                 )
                 // The frame's own drone position is the projection origin; without it, the bound waypoint.
                 let waypointOrigin = framePosition == nil ? binding.nearest : nil
@@ -2549,6 +2555,11 @@ private struct PendingClueSnapshot: Identifiable {
     }
 }
 
+/// Drone Confirmation Panel opened from the clue form ("Current flight ignored" → Yes).
+private struct ClueDroneConfirmationRequest: Identifiable {
+    let id: String
+}
+
 private struct ClueSubmissionView: View {
     private enum FocusedField: Hashable {
         case title
@@ -2563,6 +2574,8 @@ private struct ClueSubmissionView: View {
     let coordinateDisplayFormat: OperationalCoordinateDisplayFormat
     let onSubmit: (AppleClueDraft, Data, Bool) -> Void
     let onCancel: () -> Void
+    let onConfirmDrone: (RidAircraftIdentity) -> Void
+    let onIgnoreDrone: (String) -> Void
 
     @State private var selectedAircraftID: String
     @State private var title: String
@@ -2574,8 +2587,14 @@ private struct ClueSubmissionView: View {
     @State private var terrainProjection: OperationalClueProjection?
     @State private var terrainProjectionPending = false
     @State private var submissionFeedback: String?
-    /// Waypoint binding of the selected aircraft; refreshed until final as waypoints arrive.
+    /// Waypoint binding of the selected aircraft; re-bound while the form is open as waypoints
+    /// arrive, once more on Submit, and never after.
     @State private var binding: ClueBinding?
+    /// "Current flight ignored" panel over this form.
+    @State private var showIgnoredFlightPrompt = false
+    /// Aircraft whose ignored flight the operator chose to keep ignored (No): Submit stays local.
+    @State private var keptIgnoredAircraftIDs: Set<String> = []
+    @State private var droneConfirmation: ClueDroneConfirmationRequest?
     @FocusState private var focusedField: FocusedField?
 
     init(
@@ -2586,7 +2605,9 @@ private struct ClueSubmissionView: View {
         identityStore: AppleDroneConfirmationStore,
         coordinateDisplayFormat: OperationalCoordinateDisplayFormat,
         onSubmit: @escaping (AppleClueDraft, Data, Bool) -> Void,
-        onCancel: @escaping () -> Void
+        onCancel: @escaping () -> Void,
+        onConfirmDrone: @escaping (RidAircraftIdentity) -> Void,
+        onIgnoreDrone: @escaping (String) -> Void
     ) {
         self.pending = pending
         self.model = model
@@ -2596,6 +2617,8 @@ private struct ClueSubmissionView: View {
         self.coordinateDisplayFormat = coordinateDisplayFormat
         self.onSubmit = onSubmit
         self.onCancel = onCancel
+        self.onConfirmDrone = onConfirmDrone
+        self.onIgnoreDrone = onIgnoreDrone
         _selectedAircraftID = State(initialValue: pending.defaultAircraftID)
         _gimbalAngle = State(initialValue: pending.gimbalAngleDegrees)
         _gimbalAngleConfirmed = State(initialValue: pending.gimbalAngleConfirmed)
@@ -2624,17 +2647,14 @@ private struct ClueSubmissionView: View {
             ?? ClueBindingPoint.milliseconds(pending.snapshot.capturedAt)
     }
 
-    /// Binds the selected aircraft, or refreshes its open binding, from its flight's waypoints.
-    private func refreshBinding() {
-        let now = ClueBindingPoint.milliseconds(Date())
+    /// Binding of the selected aircraft against the waypoints available right now.
+    private func currentBinding() -> ClueBinding {
         let live = model.bindingPoints(aircraftID: selectedAircraftID, captureTimeMs: captureTimeMs)
         if let current = binding, current.aircraftID == selectedAircraftID {
-            let next = ClueBinder.refresh(current, points: live ?? [], flightEnded: live == nil, nowReceivedAtMs: now)
-            if next != current { binding = next }
-            return
+            return ClueBinder.refresh(current, points: live ?? [])
         }
         let seiFrame = usesCaptureTelemetry ? pending.binding?.framePosition : nil
-        binding = ClueBinder.bind(
+        return ClueBinder.bind(
             aircraftID: selectedAircraftID,
             flightID: model.liveFlightID(aircraftID: selectedAircraftID),
             captureTimeMs: captureTimeMs,
@@ -2642,10 +2662,14 @@ private struct ClueSubmissionView: View {
             captureReceivedAtMs: ClueBindingPoint.milliseconds(pending.snapshot.capturedAt),
             points: live ?? track?.points.map(ClueBindingPoint.init(trackPoint:)) ?? [],
             framePosition: seiFrame,
-            originIsWaypoint: seiFrame == nil,
-            flightEnded: live == nil,
-            nowReceivedAtMs: now
+            originIsWaypoint: seiFrame == nil
         )
+    }
+
+    /// Re-binds while the form is open so the form shows the nearest waypoint so far.
+    private func refreshBinding() {
+        let next = currentBinding()
+        if next != binding { binding = next }
     }
 
     private var bindingColor: Color {
@@ -2815,6 +2839,12 @@ private struct ClueSubmissionView: View {
                     }
                 }
                 Section {
+                    if keptIgnoredAircraftIDs.contains(selectedAircraftID) && identityStore.isIgnored(selectedAircraftID) {
+                        Label(IgnoredFlightClue.localOnlyNote, systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .accessibilityIdentifier("ignored-flight-local-only")
+                    }
                     if !gimbalAngleConfirmed {
                         Label("No current camera angle telemetry. Assuming −90° (straight down). Adjust the gimbal angle if needed.", systemImage: "exclamationmark.triangle")
                             .font(.caption)
@@ -2846,9 +2876,39 @@ private struct ClueSubmissionView: View {
                 DispatchQueue.main.async {
                     focusedField = .title
                 }
+                if identityStore.isIgnored(selectedAircraftID) {
+                    AppleLog.info("Clue", "Clue captured on an ignored flight remoteId=\(selectedAircraftID); asking to publish it")
+                    showIgnoredFlightPrompt = true
+                }
+            }
+            .alert(IgnoredFlightClue.title, isPresented: $showIgnoredFlightPrompt) {
+                // Yes opens the Drone Confirmation Panel over this form; the form is back in
+                // front, with the same clue, when the panel closes. No returns to the form.
+                Button(IgnoredFlightClue.yes) {
+                    AppleLog.info("Clue", "Ignored flight prompt answered publish=true remoteId=\(selectedAircraftID)")
+                    let remoteID = selectedAircraftID
+                    // Present after the alert has gone.
+                    DispatchQueue.main.async { droneConfirmation = ClueDroneConfirmationRequest(id: remoteID) }
+                }
+                Button(IgnoredFlightClue.no, role: .cancel) {
+                    AppleLog.info("Clue", "Ignored flight prompt answered publish=false remoteId=\(selectedAircraftID)")
+                    keptIgnoredAircraftIDs.insert(selectedAircraftID)
+                }
+            } message: {
+                Text(IgnoredFlightClue.message)
+            }
+            .sheet(item: $droneConfirmation) { request in
+                DroneConfirmationView(
+                    remoteID: request.id,
+                    existing: identityStore.identity(for: request.id),
+                    identityStore: identityStore,
+                    onConfirm: onConfirmDrone,
+                    onIgnore: { onIgnoreDrone(request.id) }
+                )
+                .interactiveDismissDisabled()
             }
             .task {
-                // Waypoints keep arriving after the capture: follow them until the binding is final.
+                // Waypoints keep arriving after the capture: follow them while the form is open.
                 while !Task.isCancelled {
                     refreshBinding()
                     try? await Task.sleep(for: .milliseconds(500))
@@ -2917,6 +2977,22 @@ private struct ClueSubmissionView: View {
             AppleLog.warning("Clue", "Clue form submission needs a title")
             return
         }
+        // Submit (not Local Marker Only) on an ignored flight asks first; after No it stays local.
+        var upload = publish
+        if publish {
+            switch IgnoredFlightClue.submitAction(flightIgnored: identityStore.isIgnored(selectedAircraftID),
+                                                  keptIgnored: keptIgnoredAircraftIDs.contains(selectedAircraftID)) {
+            case .ask:
+                AppleLog.info("Clue", "Clue submit on an ignored flight remoteId=\(selectedAircraftID); asking to publish it")
+                showIgnoredFlightPrompt = true
+                return
+            case .localOnly:
+                AppleLog.info("Clue", "Clue on ignored flight kept local only remoteId=\(selectedAircraftID)")
+                upload = false
+            case .upload:
+                break
+            }
+        }
         guard let projectionHeight else {
             submissionFeedback = "Clue projection needs fresh AGL or a valid relative altitude. Wait for altitude telemetry and try again."
             AppleLog.warning(
@@ -2925,7 +3001,7 @@ private struct ClueSubmissionView: View {
             )
             return
         }
-        guard let observation, let projection else {
+        guard let shownObservation = observation, let shownProjection = projection else {
             submissionFeedback = "Aircraft telemetry is unavailable. Select an active aircraft and try again."
             AppleLog.error(
                 "Clue",
@@ -2934,6 +3010,23 @@ private struct ClueSubmissionView: View {
             return
         }
         submissionFeedback = nil
+        // Bind once more to the nearest waypoint available now; this binding is final and the
+        // upload starts immediately. A waypoint-origin clue follows a nearer origin by translation.
+        let submittedBinding = currentBinding()
+        var observation = shownObservation
+        var projection = shownProjection
+        if let shift = ClueBinder.originShift(shown: binding, submitted: submittedBinding) {
+            let moved = ClueBinder.translated(latitude: projection.latitude, longitude: projection.longitude,
+                                              from: shift.from, to: shift.to)
+            projection = OperationalClueProjection(
+                latitude: moved.latitude, longitude: moved.longitude, altitudeMeters: projection.altitudeMeters,
+                terrainProjectionApplied: projection.terrainProjectionApplied, demSource: projection.demSource,
+                demResolutionMeters: projection.demResolutionMeters, demSampleStale: projection.demSampleStale)
+            observation = observation.relocated(latitude: shift.to.latitude, longitude: shift.to.longitude,
+                                                altitudeMeters: shift.to.altitudeMeters ?? observation.altitudeMeters)
+            AppleLog.info("Clue", "Submit re-bound to a nearer waypoint \(ClueBindingText.formSummary(submittedBinding))")
+        }
+        binding = submittedBinding
         let reportTelemetry = usesCaptureTelemetry ? pending.reportTelemetry : OperationalClueReportTelemetry(
             observation: observation, aglMeters: aglMeters, atoMeters: atoMeters
         )
@@ -2964,8 +3057,8 @@ private struct ClueSubmissionView: View {
             gimbalAngleDegrees: gimbalAngle,
             title: trimmedTitle,
             description: finalDescription,
-            binding: binding
-        ), pending.snapshot.jpegData, publish)
+            binding: submittedBinding
+        ), pending.snapshot.jpegData, upload)
     }
 
     private func coordinate(_ latitude: Double, _ longitude: Double) -> String {

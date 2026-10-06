@@ -35,7 +35,8 @@ final class RIDTrackViewModel: ObservableObject {
             droneTimestamp: $0.droneTime) }
         do {
             try awaitingMapJournal.record(remoteID: track.aircraftID, label: identityProvider?(track.aircraftID)?.displayLabel ?? track.aircraftID,
-                observations: samples, mapID: publicationMapID, teamID: publicationTeamID, finished: finished)
+                observations: samples, mapID: publicationMapID, teamID: publicationTeamID, finished: finished,
+                flightID: RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt))
             lastDeferredSnapshot[track.aircraftID] = now
             awaitingMapFlights = awaitingMapJournal.entries.filter { $0.decision == "review" }
         } catch { archiveStatus = "Could not save pending publication: \(error.localizedDescription)" }
@@ -429,12 +430,10 @@ final class RIDTrackViewModel: ObservableObject {
         AppleApplicationCleanupCenter.shared.noteRIDMessage(receivedAt: receivedAt)
     }
 
-    /// Connects the clue store: waypoint binding reads this model's live tracks, and clues that
-    /// change after their flight ended rebuild that flight's KMZ. Also runs the launch-time
+    /// Connects the clue store: clues that change after their flight ended rebuild that flight's KMZ. Also runs the launch-time
     /// archive sweep and retries queued KMZ rebuilds.
     func attachClueStore(_ store: AppleClueStore) {
         clueStore = store
-        store.bindingPointsProvider = { [weak self] record in self?.bindingPoints(for: record) }
         store.clueChanged = { [weak self] record in self?.clueChangedAfterFlight(record) }
         Task { [archiveStore] in
             await archiveStore.launchSweep()
@@ -461,12 +460,15 @@ final class RIDTrackViewModel: ObservableObject {
         return points
     }
 
-    /// Ids of the live flight a clue would bind to: the open journal entry when there is one.
+    /// Id of the live flight a clue would bind to: the open journal entry's id when there is one
+    /// (RidFlightID for entries created by this build), else the live track's RidFlightID.
     func liveFlightID(aircraftID: String) -> String? {
         let canonical = RidTrackStore.canonicalAircraftID(aircraftID)
-        return awaitingMapJournal.entries.last {
+        if let entry = awaitingMapJournal.entries.last(where: {
             RidTrackStore.canonicalAircraftID($0.remoteID) == canonical && !$0.finished
-        }?.id
+        }) { return entry.id }
+        return tracks.first { RidTrackStore.canonicalAircraftID($0.aircraftID) == canonical }
+            .map { RidFlightID.make(aircraftID: $0.aircraftID, startedAt: $0.flightStartedAt) }
     }
 
     private func clueChangedAfterFlight(_ record: OperationalClueRecord) {
@@ -1081,9 +1083,7 @@ final class RIDTrackViewModel: ObservableObject {
             return
         }
         let flightID = liveFlightID(aircraftID: track.aircraftID)
-            ?? "live-\(track.aircraftID)-\(ClueBindingPoint.milliseconds(track.points.first?.receivedAt ?? track.lastAircraftMessageAt))"
-        // The complete track is known now: finish any clue still waiting for a nearer waypoint.
-        clueStore?.finalizeBindings(aircraftID: track.aircraftID, points: track.points.map(ClueBindingPoint.init(trackPoint:)))
+            ?? RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
         recordAwaitingFlight(track, finished: true)
         await queueCompletedDeferredFlights()
         let identity = identityProvider?(track.aircraftID)
@@ -1099,7 +1099,8 @@ final class RIDTrackViewModel: ObservableObject {
             deviceName: AppleDeviceIdentity.displayName,
             buildVersion: AppleBuildMetadata.version,
             buildTime: AppleBuildMetadata.buildTime,
-            flightReadiness: identity?.flightReadiness
+            flightReadiness: identity?.flightReadiness,
+            flightID: flightID
         )
         let start = track.points.first?.receivedAt ?? track.lastAircraftMessageAt
         let otherFlights = await archiveStore.archivedFlights(aircraftID: track.aircraftID, around: start)

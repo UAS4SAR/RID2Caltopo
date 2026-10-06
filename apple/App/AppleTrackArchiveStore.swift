@@ -144,11 +144,25 @@ actor AppleTrackArchiveStore {
         }
     }
 
-    /// Track archives of `aircraftID` in the day folders around `date`, keyed "day/filename".
+    /// One archived track file.
+    struct ArchivedFlight {
+        /// The file's flight id (r2c_flight_id), or "day/filename" for files written before it existed.
+        let id: String
+        let dayDirectory: String
+        let fileName: String
+        let contents: RidTrackGeoJSON.ArchiveContents
+    }
+
+    /// Track archives of `aircraftID` in the day folders around `date`, keyed by flight id (or "day/filename").
     func archivedFlights(aircraftID: String, around date: Date) -> [String: RidTrackGeoJSON.ArchiveContents] {
-        guard let rootURL else { return [:] }
+        Dictionary(archivedFlightFiles(aircraftID: aircraftID, around: date).map { ($0.id, $0.contents) },
+                   uniquingKeysWith: { first, _ in first })
+    }
+
+    func archivedFlightFiles(aircraftID: String, around date: Date) -> [ArchivedFlight] {
+        guard let rootURL else { return [] }
         let canonical = RidTrackStore.canonicalAircraftID(aircraftID)
-        var result: [String: RidTrackGeoJSON.ArchiveContents] = [:]
+        var result: [ArchivedFlight] = []
         let days = Set([-86_400.0, 0, 86_400].map { dayDirectoryName(for: date.addingTimeInterval($0)) })
         for day in days {
             let directory = rootURL.appendingPathComponent(day, isDirectory: true)
@@ -160,24 +174,27 @@ actor AppleTrackArchiveStore {
                       RidTrackStore.canonicalAircraftID(contents.remoteID) == canonical,
                       !contents.points.isEmpty
                 else { continue }
-                result["\(day)/\(file.lastPathComponent)"] = contents
+                result.append(ArchivedFlight(id: contents.flightID ?? "\(day)/\(file.lastPathComponent)",
+                                             dayDirectory: day, fileName: file.lastPathComponent, contents: contents))
             }
         }
-        return result
+        return result.sorted { ($0.dayDirectory, $0.fileName) < ($1.dayDirectory, $1.fileName) }
     }
 
-    /// Queues a KMZ rebuild for the archived flight that owns `record`. Returns false when no archive owns it.
+    /// Queues a KMZ rebuild for the archived flight that owns `record`: the flight whose
+    /// r2c_flight_id equals the clue's bound flight, else (older files) the time rule. Returns false
+    /// when no archive owns it.
     @discardableResult
     func enqueueRewrite(for record: OperationalClueRecord) -> Bool {
-        let archives = archivedFlights(aircraftID: record.aircraftID, around: record.ownershipTime)
-        let candidates = archives.map { OperationalFlightKMZ.candidate(id: $0.key, contents: $0.value) }
+        let files = archivedFlightFiles(aircraftID: record.aircraftID, around: record.ownershipTime)
+        let candidates = files.map { OperationalFlightKMZ.candidate(id: $0.id, contents: $0.contents) }
         guard let owner = AwaitingMapClueMatch.ownerID(clueAircraftID: record.aircraftID,
                                                        capturedAt: record.ownershipTime,
-                                                       boundFlightID: nil, candidates: candidates),
-              let slash = owner.firstIndex(of: "/")
+                                                       boundFlightID: record.binding?.flightID, candidates: candidates),
+              let file = files.first(where: { $0.id == owner })
         else { return false }
-        let day = String(owner[..<slash])
-        let geoJSON = String(owner[owner.index(after: slash)...])
+        let day = file.dayDirectory
+        let geoJSON = file.fileName
         let kmz = URL(fileURLWithPath: geoJSON).deletingPathExtension().appendingPathExtension("kmz").lastPathComponent
         do {
             try rewriteQueue?.enqueue(FlightArchiveRewriteJob(aircraftID: record.aircraftID, dayDirectory: day,
@@ -205,11 +222,12 @@ actor AppleTrackArchiveStore {
                 return []
             }
             let firstTime = contents.points.map(\.timeMs).min().map { Date(timeIntervalSince1970: Double($0) / 1_000) } ?? Date()
+            // The rebuilt file is identified like every archive: by its flight id, else "day/file".
+            let selfID = contents.flightID ?? job.id
             var archives = archivedFlights(aircraftID: job.aircraftID, around: firstTime)
-            archives[job.id] = contents
-            let nowMs = ClueBindingPoint.milliseconds(Date())
-            let owned = OperationalFlightKMZ.ownedClues(archiveID: job.id, archives: archives, clues: clues)
-                .map { OperationalFlightKMZ.bindingFallback($0, contents: contents, nowReceivedAtMs: nowMs) }
+            archives[selfID] = contents
+            let owned = OperationalFlightKMZ.ownedClues(archiveID: selfID, archives: archives, clues: clues)
+                .map { OperationalFlightKMZ.bindingFallback($0, contents: contents) }
             try writeKMZ(
                 title: contents.title.isEmpty ? job.aircraftID : contents.title,
                 points: OperationalFlightKMZ.points(contents),
