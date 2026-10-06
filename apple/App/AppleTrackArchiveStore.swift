@@ -92,21 +92,138 @@ actor AppleTrackArchiveStore {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let destination = directory.appendingPathComponent(RidTrackGeoJSON.suggestedFilename(for: track))
         let data = try RidTrackGeoJSON.encode(track: track, metadata: metadata)
-        AppleFlightStorage.prepareWrite(Int64(data.count))
-        try data.write(to: destination, options: .atomic)
-        AppleFlightStorage.fileChanged(destination)
-        if !clues.isEmpty {
+        try safeWrite(data, to: destination)
+        // Local backup KMZ for every recorded flight, with or without clues.
+        do {
             try writeKMZ(
-                track: track,
                 title: RidTrackGeoJSON.archiveTitle(for: track, metadata: metadata),
-                clues: clues,
-                destination: directory.appendingPathComponent(
-                    RidTrackGeoJSON.suggestedClueReportFilename(for: track)
-                )
+                points: track.points.map {
+                    OperationalFlightKMZPoint(latitude: $0.latitude, longitude: $0.longitude, altitudeMeters: $0.altitudeMeters)
+                },
+                clues: clues.map { OperationalFlightKMZClue(record: $0.record, jpegData: $0.jpegData) },
+                destination: directory.appendingPathComponent(RidTrackGeoJSON.suggestedClueReportFilename(for: track))
             )
+        } catch {
+            // The GeoJSON is saved; queue the KMZ so a launch retry rebuilds it from the archive.
+            AppleLog.warning("Archive", "Flight KMZ write failed file=\(destination.lastPathComponent): \(error.localizedDescription)")
+            try? rewriteQueue?.enqueue(FlightArchiveRewriteJob(
+                aircraftID: track.aircraftID, dayDirectory: directory.lastPathComponent,
+                geoJSONFilename: destination.lastPathComponent,
+                kmzFilename: RidTrackGeoJSON.suggestedClueReportFilename(for: track)))
         }
         let result = await process(data: data, file: destination)
         return AppleTrackArchiveOutcome(url: destination, trackerResult: result)
+    }
+
+    // MARK: Crash-safe writes and KMZ rewrites
+
+    private lazy var rewriteQueue: FlightArchiveRewriteQueue? = {
+        guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        else { return nil }
+        return FlightArchiveRewriteQueue(fileURL: support.appendingPathComponent("flight-kmz-rewrites.json"))
+    }()
+    private var didLaunchSweep = false
+
+    private func safeWrite(_ data: Data, to destination: URL) throws {
+        AppleFlightStorage.prepareWrite(Int64(data.count))
+        try OperationalSafeFileWriter.replace(destination, with: data)
+        AppleFlightStorage.fileChanged(destination)
+    }
+
+    /// Once per launch: finish or roll back interrupted archive writes.
+    func launchSweep() {
+        guard !didLaunchSweep else { return }
+        didLaunchSweep = true
+        var actions: [OperationalSafeFileWriter.SweepAction] = []
+        if let rootURL { actions += OperationalSafeFileWriter.sweep(directory: rootURL) }
+        if let queueDirectory = rewriteQueue?.fileURL.deletingLastPathComponent() {
+            actions += OperationalSafeFileWriter.sweep(directory: queueDirectory)
+        }
+        for action in actions {
+            AppleLog.info("Archive", "Launch sweep \(action)")
+        }
+    }
+
+    /// Track archives of `aircraftID` in the day folders around `date`, keyed "day/filename".
+    func archivedFlights(aircraftID: String, around date: Date) -> [String: RidTrackGeoJSON.ArchiveContents] {
+        guard let rootURL else { return [:] }
+        let canonical = RidTrackStore.canonicalAircraftID(aircraftID)
+        var result: [String: RidTrackGeoJSON.ArchiveContents] = [:]
+        let days = Set([-86_400.0, 0, 86_400].map { dayDirectoryName(for: date.addingTimeInterval($0)) })
+        for day in days {
+            let directory = rootURL.appendingPathComponent(day, isDirectory: true)
+            let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+            for file in files where file.pathExtension.lowercased() == "json"
+                && file.lastPathComponent != "clues.json" && !file.lastPathComponent.hasSuffix(".review.json") {
+                guard let data = try? Data(contentsOf: file),
+                      let contents = RidTrackGeoJSON.decodeArchive(data),
+                      RidTrackStore.canonicalAircraftID(contents.remoteID) == canonical,
+                      !contents.points.isEmpty
+                else { continue }
+                result["\(day)/\(file.lastPathComponent)"] = contents
+            }
+        }
+        return result
+    }
+
+    /// Queues a KMZ rebuild for the archived flight that owns `record`. Returns false when no archive owns it.
+    @discardableResult
+    func enqueueRewrite(for record: OperationalClueRecord) -> Bool {
+        let archives = archivedFlights(aircraftID: record.aircraftID, around: record.ownershipTime)
+        let candidates = archives.map { OperationalFlightKMZ.candidate(id: $0.key, contents: $0.value) }
+        guard let owner = AwaitingMapClueMatch.ownerID(clueAircraftID: record.aircraftID,
+                                                       capturedAt: record.ownershipTime,
+                                                       boundFlightID: nil, candidates: candidates),
+              let slash = owner.firstIndex(of: "/")
+        else { return false }
+        let day = String(owner[..<slash])
+        let geoJSON = String(owner[owner.index(after: slash)...])
+        let kmz = URL(fileURLWithPath: geoJSON).deletingPathExtension().appendingPathExtension("kmz").lastPathComponent
+        do {
+            try rewriteQueue?.enqueue(FlightArchiveRewriteJob(aircraftID: record.aircraftID, dayDirectory: day,
+                                                              geoJSONFilename: geoJSON, kmzFilename: kmz))
+            AppleLog.info("Archive", "Queued flight KMZ rewrite file=\(day)/\(kmz) clue=\(record.id)")
+            return true
+        } catch {
+            AppleLog.warning("Archive", "Could not queue flight KMZ rewrite: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    func pendingRewrites() -> [FlightArchiveRewriteJob] { rewriteQueue?.jobs() ?? [] }
+
+    /// Rebuilds one queued KMZ from the archived track and every clue (from `clues`) it owns.
+    /// Returns clues whose binding was filled in from the archive so the caller can persist them.
+    func performRewrite(_ job: FlightArchiveRewriteJob, clues: [OperationalClueRecord]) -> [OperationalClueRecord] {
+        guard let rootURL else { return [] }
+        let directory = rootURL.appendingPathComponent(job.dayDirectory, isDirectory: true)
+        let geoJSONURL = directory.appendingPathComponent(job.geoJSONFilename)
+        do {
+            guard let data = try? Data(contentsOf: geoJSONURL), let contents = RidTrackGeoJSON.decodeArchive(data) else {
+                // The flight was deleted (Discard or retention); nothing left to rebuild.
+                try rewriteQueue?.complete(job.id)
+                return []
+            }
+            let firstTime = contents.points.map(\.timeMs).min().map { Date(timeIntervalSince1970: Double($0) / 1_000) } ?? Date()
+            var archives = archivedFlights(aircraftID: job.aircraftID, around: firstTime)
+            archives[job.id] = contents
+            let nowMs = ClueBindingPoint.milliseconds(Date())
+            let owned = OperationalFlightKMZ.ownedClues(archiveID: job.id, archives: archives, clues: clues)
+                .map { OperationalFlightKMZ.bindingFallback($0, contents: contents, nowReceivedAtMs: nowMs) }
+            try writeKMZ(
+                title: contents.title.isEmpty ? job.aircraftID : contents.title,
+                points: OperationalFlightKMZ.points(contents),
+                clues: owned.map { OperationalFlightKMZClue(record: $0, jpegData: try? Data(contentsOf: rootURL.appendingPathComponent($0.imageFilename))) },
+                destination: directory.appendingPathComponent(job.kmzFilename)
+            )
+            try rewriteQueue?.complete(job.id)
+            let original = Dictionary(uniqueKeysWithValues: clues.map { ($0.id, $0) })
+            return owned.filter { original[$0.id] != $0 }
+        } catch {
+            AppleLog.warning("Archive", "Flight KMZ rewrite failed file=\(job.kmzFilename): \(error.localizedDescription)")
+            try? rewriteQueue?.recordFailure(job.id, error: error.localizedDescription)
+            return []
+        }
     }
 
     func replayUnreported() async -> AppleTrackReplaySummary {
@@ -420,77 +537,16 @@ actor AppleTrackArchiveStore {
     }
 
     private func writeKMZ(
-        track: RidAircraftTrack,
         title: String,
-        clues: [AppleTrackArchiveClue],
+        points: [OperationalFlightKMZPoint],
+        clues: [OperationalFlightKMZClue],
         destination: URL
     ) throws {
-        var kml = """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <kml xmlns="http://www.opengis.net/kml/2.2">
-          <Document>
-            <name>\(Self.escapeXML(title))</name>
-            <Style id="trackStyle"><LineStyle><color>ffff0000</color><width>3</width></LineStyle></Style>
-            <Placemark>
-              <name>\(Self.escapeXML(title))</name>
-              <styleUrl>#trackStyle</styleUrl>
-              <LineString><tessellate>1</tessellate><coordinates>
-
-        """
-        for point in track.points {
-            kml += String(
-                format: "        %.6f,%.6f,%.1f\n",
-                point.longitude,
-                point.latitude,
-                point.altitudeMeters ?? 0
-            )
-        }
-        kml += "      </coordinates></LineString>\n    </Placemark>\n"
-        let iso = ISO8601DateFormatter()
-        for (index, clue) in clues.enumerated() {
-            let record = clue.record
-            kml += "    <Placemark>\n"
-            kml += "      <name>\(Self.escapeXML(record.title))</name>\n"
-            kml += "      <TimeStamp><when>\(iso.string(from: record.capturedAt))</when></TimeStamp>\n"
-            if clue.jpegData != nil {
-                let description = record.clueDescription.replacingOccurrences(of: "]]>", with: "]]&gt;")
-                kml += "      <description><![CDATA[\(description)<br/><img src=\"files/clue_\(index).jpg\"/>]]></description>\n"
-            } else if !record.clueDescription.isEmpty {
-                kml += "      <description>\(Self.escapeXML(record.clueDescription))</description>\n"
-            }
-            kml += String(
-                format: "      <Point><coordinates>%.6f,%.6f,%.1f</coordinates></Point>\n",
-                record.clueLongitude,
-                record.clueLatitude,
-                record.clueAltitudeMeters ?? 0
-            )
-            kml += "    </Placemark>\n"
-        }
-        kml += "  </Document>\n</kml>\n"
-        var entries = [
-            OperationalZipArchive.Entry(path: "doc.kml", data: Data(kml.utf8)),
-        ]
-        for (index, clue) in clues.enumerated() {
-            if let jpegData = clue.jpegData {
-                entries.append(.init(path: "files/clue_\(index).jpg", data: jpegData))
-            }
-        }
-        let archive = try OperationalZipArchive.encode(entries, compress: true)
-        AppleFlightStorage.prepareWrite(Int64(archive.count))
-        try archive.write(to: destination, options: .atomic)
-        AppleFlightStorage.fileChanged(destination)
+        let archive = try OperationalFlightKMZ.archive(title: title, points: points, clues: clues)
+        try safeWrite(archive, to: destination)
         AppleLog.info(
             "Archive",
-            "Wrote clue KMZ file=\(destination.lastPathComponent) clues=\(clues.count)"
+            "Wrote flight KMZ file=\(destination.lastPathComponent) points=\(points.count) clues=\(clues.count)"
         )
-    }
-
-    private static func escapeXML(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;")
-            .replacingOccurrences(of: "\"", with: "&quot;")
-            .replacingOccurrences(of: "'", with: "&apos;")
     }
 }

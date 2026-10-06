@@ -686,7 +686,7 @@ struct ContentView: View {
                     to: bluetoothScanner.ridMessageTimes,
                     sourceID: "bluetooth"
                 )
-                ridTracks.configureClueArchiveProvider(clueStore.archiveClues)
+                ridTracks.attachClueStore(clueStore)
                 _ = orgConfigImporter.restoreActiveProfile(
                     caltopoSettings: caltopoSettings,
                     orgSettings: orgConfigSettings

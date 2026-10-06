@@ -27,6 +27,8 @@ struct AppleVideoSnapshot: Sendable, Equatable {
     let frameSequence: Int
     let sourceTimestampMicroseconds: Int64?
     let djiCameraTelemetry: AppleDJICameraTelemetry?
+    /// Frame time on the drone's stream clock (PTS anchored by StreamDroneClock); nil when unknown.
+    var droneCapturedAtMs: Int64? = nil
 }
 
 protocol AppleDecodedVideoFrameConsumer: AnyObject {
@@ -308,6 +310,8 @@ struct AppleDJICameraTelemetry: Sendable, Equatable {
     let magneticDeclinationDegrees: Double?
     let sourceTimestampMicroseconds: Int64?
     let receivedAt: Date
+    /// SEI sample time on the drone's stream clock; nil when the PTS clock is not established.
+    var droneTime: Date? = nil
 
     func replacingRelativeUpMeters(_ value: Double?) -> AppleDJICameraTelemetry {
         AppleDJICameraTelemetry(
@@ -331,7 +335,8 @@ struct AppleDJICameraTelemetry: Sendable, Equatable {
             downMillimeters: downMillimeters,
             magneticDeclinationDegrees: magneticDeclinationDegrees,
             sourceTimestampMicroseconds: sourceTimestampMicroseconds,
-            receivedAt: receivedAt
+            receivedAt: receivedAt,
+            droneTime: droneTime
         )
     }
 }
@@ -419,6 +424,8 @@ final class AppleVideoFrameSource: ObservableObject {
     private var latestPixelBuffer: CVPixelBuffer?
     private var latestFrameCapturedAt: Date?
     private var latestFrameSourceTimestampMicroseconds: Int64?
+    private var latestFrameDroneTimeMs: Int64?
+    private var droneClock = StreamDroneClock()
     private var latestFrameDJICameraTelemetry: AppleDJICameraTelemetry?
     private weak var managedVideoFrameConsumer: AppleDecodedVideoFrameConsumer?
     private var frameRateWindowStartedAt: CFTimeInterval?
@@ -747,6 +754,8 @@ final class AppleVideoFrameSource: ObservableObject {
         latestPixelBuffer = nil
         latestFrameCapturedAt = nil
         latestFrameSourceTimestampMicroseconds = nil
+        latestFrameDroneTimeMs = nil
+        droneClock = StreamDroneClock()
         latestFrameDJICameraTelemetry = nil
         usesNativeVideoSurface = false
         decoderBackend = "None"
@@ -791,6 +800,7 @@ final class AppleVideoFrameSource: ObservableObject {
             latestPixelBuffer = nil
             latestFrameCapturedAt = nil
             latestFrameSourceTimestampMicroseconds = nil
+            latestFrameDroneTimeMs = nil
             latestFrameDJICameraTelemetry = nil
             flushDisplayLayers(removeImage: true)
         }
@@ -993,7 +1003,9 @@ final class AppleVideoFrameSource: ObservableObject {
                     sourceTimestampMicroseconds: djiSourceTimestampMicroseconds > 0
                         ? djiSourceTimestampMicroseconds
                         : nil,
-                    receivedAt: Date()
+                    receivedAt: Date(),
+                    droneTime: observeDroneClock(ptsMicroseconds: djiSourceTimestampMicroseconds)
+                        .map { Date(timeIntervalSince1970: Double($0) / 1_000) }
                 )
             }
             var gimbalPitchDegrees = 0.0
@@ -1048,6 +1060,13 @@ final class AppleVideoFrameSource: ObservableObject {
         )
     }
 
+    /// Feeds the stream clock and returns the drone-clock time of `ptsMicroseconds`.
+    private func observeDroneClock(ptsMicroseconds: Int64?) -> Int64? {
+        droneClock.observe(ptsMicroseconds: ptsMicroseconds,
+                           receivedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded()))
+        return droneClock.droneTimeMs(ptsMicroseconds: ptsMicroseconds)
+    }
+
     private func consumeDecodedFrame(
         _ pixelBuffer: CVPixelBuffer,
         itemTime: CMTime,
@@ -1077,6 +1096,8 @@ final class AppleVideoFrameSource: ObservableObject {
         latestPixelBuffer = pixelBuffer
         latestFrameCapturedAt = Date()
         latestFrameSourceTimestampMicroseconds = sourceTimestampMicroseconds
+        // Only the native decoder's PTS comes from the drone encoder; AVPlayer item time does not.
+        latestFrameDroneTimeMs = renderNatively ? observeDroneClock(ptsMicroseconds: sourceTimestampMicroseconds) : nil
         latestFrameDJICameraTelemetry = latestDJICameraTelemetry.flatMap { sample in
             guard renderNatively, let framePTS = sourceTimestampMicroseconds,
                   let cameraPTS = sample.sourceTimestampMicroseconds,
@@ -1309,6 +1330,7 @@ final class AppleVideoFrameSource: ObservableObject {
         let frameSequence = consumedFrameCount
         let frameTimestampMicroseconds = latestFrameSourceTimestampMicroseconds
         let frameTelemetry = latestFrameDJICameraTelemetry
+        let frameDroneTimeMs = latestFrameDroneTimeMs
         let viewport = OperationalVideoViewport(
             scale: zoomScale,
             normalizedPanX: normalizedPan.x,
@@ -1350,7 +1372,8 @@ final class AppleVideoFrameSource: ObservableObject {
             height: height,
             frameSequence: frameSequence,
             sourceTimestampMicroseconds: frameTimestampMicroseconds,
-            djiCameraTelemetry: frameTelemetry
+            djiCameraTelemetry: frameTelemetry,
+            droneCapturedAtMs: frameDroneTimeMs
         )
     }
 

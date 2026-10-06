@@ -19,6 +19,8 @@ struct AppleClueDraft: Sendable {
     let gimbalAngleDegrees: Double
     let title: String
     let description: String
+    /// Waypoint binding computed by the clue form (nil only for demo clues).
+    var binding: ClueBinding? = nil
 }
 
 @MainActor
@@ -36,16 +38,23 @@ final class AppleClueStore: ObservableObject {
     private var trackFolderID: String?
     private var folderResolver = CaltopoTrackFolderResolver()
     private var uploadTasks: [UUID: Task<Void, Never>] = [:]
+    private var bindingTask: Task<Void, Never>?
+    /// Waypoints of the live flight that owns a clue; nil once that flight is over.
+    var bindingPointsProvider: ((OperationalClueRecord) -> [ClueBindingPoint]?)?
+    /// Called after a clue is saved, re-bound or deleted, so a finished flight's KMZ can be rebuilt.
+    var clueChanged: ((OperationalClueRecord) -> Void)?
 
     init(fileManager: FileManager = .default) {
         let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? fileManager.temporaryDirectory
         root = documents.appendingPathComponent("RID2Caltopo/FlightStorage", isDirectory: true)
         loadIndex()
+        startBindingRefreshIfNeeded()
     }
 
     deinit {
         uploadTasks.values.forEach { $0.cancel() }
+        bindingTask?.cancel()
     }
 
     func configure(
@@ -119,26 +128,104 @@ final class AppleClueStore: ObservableObject {
             thumbnailFilename: thumbnailFilename,
             uploadState: publishToCaltopo ? .pending : .localOnly,
             destinationMapID: publishToCaltopo ? flightDestination.map : nil,
-            destinationTeamID: publishToCaltopo ? flightDestination.team : nil
+            destinationTeamID: publishToCaltopo ? flightDestination.team : nil,
+            binding: draft.binding
         )
         records.insert(record, at: 0)
         try persistIndex()
         AppleLog.info(
             "Clue",
-            "Local clue saved id=\(id) designator=\(draft.designator) bytes=\(jpegData.count) publish=\(publishToCaltopo)"
+            "Local clue saved id=\(id) designator=\(draft.designator) bytes=\(jpegData.count) publish=\(publishToCaltopo) " +
+                "binding=\(draft.binding.map { ClueBindingText.formSummary($0) } ?? "none")"
         )
         updateStatus()
         if publishToCaltopo { enqueueUpload(id) }
+        startBindingRefreshIfNeeded()
+        clueChanged?(record)
         return record
     }
 
+    // MARK: Waypoint binding
+
+    private func startBindingRefreshIfNeeded() {
+        guard bindingTask == nil, records.contains(where: { !$0.bindingFinal }) else { return }
+        bindingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                self.refreshBindings()
+                guard self.records.contains(where: { !$0.bindingFinal }) else { break }
+                try? await Task.sleep(for: .seconds(1))
+            }
+            self?.bindingTask = nil
+        }
+    }
+
+    /// Re-binds open clues to their flight's newest waypoints; finalizes them once no nearer
+    /// waypoint can arrive, the flight ended, or the wait expired. Uploads start only then.
+    func refreshBindings(now: Date = Date()) {
+        let nowMs = ClueBindingPoint.milliseconds(now)
+        var changed: [OperationalClueRecord] = []
+        for index in records.indices where !records[index].bindingFinal {
+            let points = bindingPointsProvider?(records[index])
+            let updated = ClueBindingUpdate.apply(records[index], points: points ?? [], flightEnded: points == nil,
+                                                  nowReceivedAtMs: nowMs)
+            guard updated != records[index] else { continue }
+            records[index] = updated
+            changed.append(updated)
+        }
+        commitBindingChanges(changed)
+    }
+
+    /// Finalizes every open clue of a flight that just ended, against its complete track.
+    func finalizeBindings(aircraftID: String, points: [ClueBindingPoint], now: Date = Date()) {
+        let canonical = RidTrackStore.canonicalAircraftID(aircraftID)
+        let nowMs = ClueBindingPoint.milliseconds(now)
+        var changed: [OperationalClueRecord] = []
+        for index in records.indices where !records[index].bindingFinal
+            && RidTrackStore.canonicalAircraftID(records[index].aircraftID) == canonical {
+            let updated = ClueBindingUpdate.apply(records[index], points: points, flightEnded: true, nowReceivedAtMs: nowMs)
+            guard updated != records[index] else { continue }
+            records[index] = updated
+            changed.append(updated)
+        }
+        commitBindingChanges(changed)
+    }
+
+    /// Stores bindings filled in from an archived flight (late clues saved without one).
+    func applyArchivedBindings(_ updated: [OperationalClueRecord]) {
+        var changed: [OperationalClueRecord] = []
+        for record in updated {
+            guard let index = records.firstIndex(where: { $0.id == record.id }), records[index].binding != record.binding
+            else { continue }
+            records[index].binding = record.binding
+            changed.append(records[index])
+        }
+        guard !changed.isEmpty else { return }
+        try? persistIndex()
+        for record in changed where record.bindingFinal && record.uploadState == .pending { enqueueUpload(record.id) }
+    }
+
+    private func commitBindingChanges(_ changed: [OperationalClueRecord]) {
+        guard !changed.isEmpty else { return }
+        do { try persistIndex() } catch { status = "Clue binding could not be saved" }
+        for record in changed {
+            if let binding = record.binding, binding.final {
+                AppleLog.info("Clue", "Clue binding final id=\(record.id) \(ClueBindingText.formSummary(binding))")
+                if record.uploadState == .pending || record.uploadState == .failed { enqueueUpload(record.id) }
+            }
+            clueChanged?(record)
+        }
+    }
+
+    /// The map of the flight the clue is bound to; falls back to the ownership rule, then the current map.
     private func publicationDestination(for draft: AppleClueDraft) -> (map: String?, team: String?) {
         if personalLogin { return (mapID.isEmpty ? nil : mapID, teamID) }
         let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("awaiting-map-flights.json")
-        if let data = try? Data(contentsOf: url), let flights = try? JSONDecoder().decode([AwaitingMapFlight].self, from: data),
-           let flight = flights.last(where: { !$0.finished && $0.decision != "local" &&
-               AwaitingMapClueMatch.matches(clueAircraftID: draft.aircraftID, capturedAt: draft.capturedAt,
-                   flightRemoteID: $0.remoteID, firstTime: $0.firstTime, lastTime: $0.lastTime) }) {
+        let flights = (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode([AwaitingMapFlight].self, from: $0) } ?? []
+        let captured = draft.binding.map { Date(timeIntervalSince1970: Double($0.captureTimeMs) / 1_000) } ?? draft.capturedAt
+        let owner = AwaitingMapClueMatch.owner(clueAircraftID: draft.aircraftID, capturedAt: captured,
+                                               boundFlightID: draft.binding?.flightID, flights: flights)
+        if let flight = owner, !flight.finished || flight.id == draft.binding?.flightID, flight.decision != "local" {
             return (flight.mapID.isEmpty ? nil : flight.mapID, flight.teamID.isEmpty ? nil : flight.teamID)
         }
         return (mapID.isEmpty ? nil : mapID, teamID.isEmpty ? nil : teamID)
@@ -178,6 +265,7 @@ final class AppleClueStore: ObservableObject {
         try? persistIndex()
         updateStatus()
         AppleLog.info("Clue", "Local clue deleted id=\(id)")
+        clueChanged?(record)
         return !FileManager.default.fileExists(atPath: imageURL(for: record).path)
     }
 
@@ -194,18 +282,14 @@ final class AppleClueStore: ObservableObject {
         root.appendingPathComponent(record.thumbnailFilename)
     }
 
+    /// Clues and local markers owned by `flight` (shared ownership rule), oldest first, with photos.
     func archiveClues(
-        aircraftID: String,
-        from start: Date,
-        through end: Date
+        flight: AwaitingMapClueMatch.Candidate,
+        otherFlights: [AwaitingMapClueMatch.Candidate]
     ) -> [AppleTrackArchiveClue] {
-        let canonicalID = RidTrackStore.canonicalAircraftID(aircraftID)
+        let candidates = [flight] + otherFlights.filter { $0.id != flight.id }
         return records
-            .filter {
-                RidTrackStore.canonicalAircraftID($0.aircraftID) == canonicalID
-                    && $0.capturedAt >= start
-                    && $0.capturedAt <= end
-            }
+            .filter { AwaitingMapClueMatch.ownerID($0, candidates: candidates) == flight.id }
             .sorted { $0.capturedAt < $1.capturedAt }
             .map {
                 AppleTrackArchiveClue(
@@ -215,8 +299,21 @@ final class AppleClueStore: ObservableObject {
             }
     }
 
+    /// Every clue of an aircraft, for KMZ rebuilds.
+    func clues(aircraftID: String) -> [OperationalClueRecord] {
+        let canonical = RidTrackStore.canonicalAircraftID(aircraftID)
+        return records.filter { RidTrackStore.canonicalAircraftID($0.aircraftID) == canonical }
+    }
+
     private func enqueueUpload(_ id: UUID) {
         guard uploadTasks[id] == nil else { return }
+        if let record = records.first(where: { $0.id == id }), !record.bindingFinal {
+            // Held until the waypoint binding is final; refreshBindings enqueues it then.
+            mutate(id) { $0.lastUploadError = "Waiting for the next waypoint to finish binding." }
+            try? persistIndex()
+            updateStatus()
+            return
+        }
         guard let record = records.first(where: { $0.id == id }),
               record.canAutomaticallyPublish(mapID: mapID, teamID: teamID) else {
             mutate(id) { $0.lastUploadError = "Waiting for the original map, or review to choose a destination." }
@@ -260,7 +357,7 @@ final class AppleClueStore: ObservableObject {
                         latitude: record.clueLatitude,
                         longitude: record.clueLongitude,
                         title: record.title,
-                        description: record.clueDescription,
+                        description: record.publishedDescription,
                         createdMilliseconds: Int64(record.capturedAt.timeIntervalSince1970 * 1_000),
                         jpegData: jpeg,
                         teamID: destinationTeamID,

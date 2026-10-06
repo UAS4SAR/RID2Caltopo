@@ -829,8 +829,8 @@ struct RIDTrackMapView: View {
             ClueSubmissionView(
                 pending: pending,
                 model: model,
-                tracks: model.tracks,
-                altitudeDisplay: model.altitudeDisplayByAircraftID,
+                tracks: pending.tracksAtCapture,
+                altitudeDisplay: pending.altitudeDisplaysAtCapture,
                 identityStore: identityStore,
                 coordinateDisplayFormat: coordinateDisplayFormat,
                 onSubmit: { draft, jpeg, publish in
@@ -906,7 +906,9 @@ struct RIDTrackMapView: View {
                         cameraYawDegrees: nil,
                         streamHeadingDegrees: nil,
                         ridHeadingDegrees: track.lastObservation.headingDegrees
-                    )
+                    ),
+                    tracksAtCapture: model.tracks,
+                    altitudeDisplaysAtCapture: model.altitudeDisplayByAircraftID
                 )
             }
             if arguments.contains("--demo-local-clue"),
@@ -1799,7 +1801,11 @@ struct RIDTrackMapView: View {
         zoomScale: Double = 1,
         normalizedPan: CGPoint = .zero
     ) {
-        guard !capturingSnapshot else { return }
+        // One snapshot at a time: a second capture would orphan the clue being written up.
+        guard !capturingSnapshot, pendingSnapshot == nil else {
+            clueError = "Submit or cancel the current clue first."
+            return
+        }
         let session = requestedStreamID.flatMap { requested in
             streamRegistry.sessions.first(where: { $0.id == requested })
         } ?? streamRegistry.focusedSession
@@ -1818,6 +1824,9 @@ struct RIDTrackMapView: View {
         }
         let ridCaptureObservation = captureTrack.lastObservation
         let captureAltitudeDisplay = model.altitudeDisplayByAircraftID[defaultAircraftID]
+        // Telemetry as of the capture; the form never reads live aircraft state.
+        let tracksAtCapture = model.tracks
+        let altitudeDisplaysAtCapture = model.altitudeDisplayByAircraftID
         capturingSnapshot = true
         Task {
             defer { capturingSnapshot = false }
@@ -1842,13 +1851,35 @@ struct RIDTrackMapView: View {
                 let seiRelativeAltitude = completeSEITelemetry.map {
                     ($0.referenceAltitudeMeters ?? 0) + ($0.relativeUpMeters ?? 0)
                 }
+                // Bind to the waypoint nearest in time to the frame (drone clock), before or after.
+                let captureReceivedMs = ClueBindingPoint.milliseconds(snapshot.capturedAt)
+                let captureTimeMs = snapshot.droneCapturedAtMs ?? captureReceivedMs
+                let framePosition = completeSEITelemetry.flatMap { telemetry -> ClueBindingFramePosition? in
+                    guard let latitude = telemetry.latitudeDegrees, let longitude = telemetry.longitudeDegrees else { return nil }
+                    return ClueBindingFramePosition(latitude: latitude, longitude: longitude)
+                }
+                let binding = ClueBinder.bind(
+                    aircraftID: defaultAircraftID,
+                    flightID: model.liveFlightID(aircraftID: defaultAircraftID),
+                    captureTimeMs: captureTimeMs,
+                    captureTimeSource: snapshot.droneCapturedAtMs == nil ? "app-receive" : "stream-pts",
+                    captureReceivedAtMs: captureReceivedMs,
+                    points: model.bindingPoints(aircraftID: defaultAircraftID, captureTimeMs: captureTimeMs)
+                        ?? captureTrack.points.map(ClueBindingPoint.init(trackPoint:)),
+                    framePosition: framePosition,
+                    originIsWaypoint: framePosition == nil,
+                    flightEnded: false,
+                    nowReceivedAtMs: ClueBindingPoint.milliseconds(Date())
+                )
+                // The frame's own drone position is the projection origin; without it, the bound waypoint.
+                let waypointOrigin = framePosition == nil ? binding.nearest : nil
                 let captureObservation = RidObservation(
                     source: ridCaptureObservation.source,
                     aircraftId: ridCaptureObservation.aircraftId,
                     receivedAt: ridCaptureObservation.receivedAt,
-                    latitude: completeSEITelemetry?.latitudeDegrees ?? ridCaptureObservation.latitude,
-                    longitude: completeSEITelemetry?.longitudeDegrees ?? ridCaptureObservation.longitude,
-                    altitudeMeters: seiRelativeAltitude ?? ridCaptureObservation.altitudeMeters,
+                    latitude: completeSEITelemetry?.latitudeDegrees ?? waypointOrigin?.latitude ?? ridCaptureObservation.latitude,
+                    longitude: completeSEITelemetry?.longitudeDegrees ?? waypointOrigin?.longitude ?? ridCaptureObservation.longitude,
+                    altitudeMeters: seiRelativeAltitude ?? waypointOrigin?.altitudeMeters ?? ridCaptureObservation.altitudeMeters,
                     heightMeters: ridCaptureObservation.heightMeters,
                     heightReference: ridCaptureObservation.heightReference,
                     horizontalAccuracyCode: ridCaptureObservation.horizontalAccuracyCode,
@@ -1908,8 +1939,13 @@ struct RIDTrackMapView: View {
                     altitudeDisplay: captureAltitudeDisplay,
                     heading: captureHeading,
                     djiCameraTelemetry: completeSEITelemetry,
-                    reportTelemetry: reportTelemetry
+                    reportTelemetry: reportTelemetry,
+                    binding: binding,
+                    tracksAtCapture: tracksAtCapture,
+                    altitudeDisplaysAtCapture: altitudeDisplaysAtCapture
                 )
+                AppleLog.info("Clue", "Snapshot bound aircraft=\(defaultAircraftID) \(ClueBindingText.formSummary(binding)) " +
+                    "captureSource=\(binding.captureTimeSource) origin=\(framePosition == nil ? "waypoint" : "frame")")
             } catch {
                 clueError = error.localizedDescription
             }
@@ -2476,6 +2512,10 @@ private struct PendingClueSnapshot: Identifiable {
     let heading: OperationalClueHeadingSelection
     let djiCameraTelemetry: AppleDJICameraTelemetry?
     let reportTelemetry: OperationalClueReportTelemetry
+    /// Binding of the default aircraft computed at capture.
+    let binding: ClueBinding?
+    let tracksAtCapture: [RidAircraftTrack]
+    let altitudeDisplaysAtCapture: [String: OperationalAircraftAltitudeDisplay]
 
     init(
         snapshot: AppleVideoSnapshot,
@@ -2486,8 +2526,14 @@ private struct PendingClueSnapshot: Identifiable {
         altitudeDisplay: OperationalAircraftAltitudeDisplay?,
         heading: OperationalClueHeadingSelection,
         djiCameraTelemetry: AppleDJICameraTelemetry? = nil,
-        reportTelemetry: OperationalClueReportTelemetry? = nil
+        reportTelemetry: OperationalClueReportTelemetry? = nil,
+        binding: ClueBinding? = nil,
+        tracksAtCapture: [RidAircraftTrack],
+        altitudeDisplaysAtCapture: [String: OperationalAircraftAltitudeDisplay]
     ) {
+        self.binding = binding
+        self.tracksAtCapture = tracksAtCapture
+        self.altitudeDisplaysAtCapture = altitudeDisplaysAtCapture
         self.snapshot = snapshot
         self.defaultAircraftID = defaultAircraftID
         self.gimbalAngleDegrees = gimbalAngleDegrees
@@ -2529,6 +2575,8 @@ private struct ClueSubmissionView: View {
     @State private var terrainProjection: OperationalClueProjection?
     @State private var terrainProjectionPending = false
     @State private var submissionFeedback: String?
+    /// Waypoint binding of the selected aircraft; refreshed until final as waypoints arrive.
+    @State private var binding: ClueBinding?
     @FocusState private var focusedField: FocusedField?
 
     init(
@@ -2559,12 +2607,54 @@ private struct ClueSubmissionView: View {
         // generated value.
         _title = State(initialValue: "")
         _description = State(initialValue: Self.clueDescriptionTemplate(pending.snapshot.capturedAt))
+        _binding = State(initialValue: pending.binding)
     }
 
+    /// The selected aircraft's track as captured (never live telemetry).
     private var track: RidAircraftTrack? { tracks.first { $0.aircraftID == selectedAircraftID } }
     private var usesCaptureTelemetry: Bool { selectedAircraftID == pending.defaultAircraftID }
+    /// Projection origin: the frame's own drone position (DJI SEI) when present, else the bound waypoint.
     private var observation: RidObservation? {
-        usesCaptureTelemetry ? pending.observation : track?.lastObservation
+        if usesCaptureTelemetry, pending.djiCameraTelemetry != nil { return pending.observation }
+        guard let base = usesCaptureTelemetry ? pending.observation : track?.lastObservation else { return nil }
+        guard let origin = binding?.nearest else { return base }
+        return base.relocated(latitude: origin.latitude, longitude: origin.longitude, altitudeMeters: origin.altitudeMeters)
+    }
+    private var captureTimeMs: Int64 {
+        pending.binding?.captureTimeMs ?? pending.snapshot.droneCapturedAtMs
+            ?? ClueBindingPoint.milliseconds(pending.snapshot.capturedAt)
+    }
+
+    /// Binds the selected aircraft, or refreshes its open binding, from its flight's waypoints.
+    private func refreshBinding() {
+        let now = ClueBindingPoint.milliseconds(Date())
+        let live = model.bindingPoints(aircraftID: selectedAircraftID, captureTimeMs: captureTimeMs)
+        if let current = binding, current.aircraftID == selectedAircraftID {
+            let next = ClueBinder.refresh(current, points: live ?? [], flightEnded: live == nil, nowReceivedAtMs: now)
+            if next != current { binding = next }
+            return
+        }
+        let seiFrame = usesCaptureTelemetry ? pending.binding?.framePosition : nil
+        binding = ClueBinder.bind(
+            aircraftID: selectedAircraftID,
+            flightID: model.liveFlightID(aircraftID: selectedAircraftID),
+            captureTimeMs: captureTimeMs,
+            captureTimeSource: pending.binding?.captureTimeSource ?? "app-receive",
+            captureReceivedAtMs: ClueBindingPoint.milliseconds(pending.snapshot.capturedAt),
+            points: live ?? track?.points.map(ClueBindingPoint.init(trackPoint:)) ?? [],
+            framePosition: seiFrame,
+            originIsWaypoint: seiFrame == nil,
+            flightEnded: live == nil,
+            nowReceivedAtMs: now
+        )
+    }
+
+    private var bindingColor: Color {
+        switch binding?.quality {
+        case .exact?: return .primary
+        case .approximate?: return .orange
+        case .approximateWarning?, .unbound?, nil: return .red
+        }
     }
     private var display: OperationalAircraftAltitudeDisplay? {
         usesCaptureTelemetry ? pending.altitudeDisplay : altitudeDisplay[selectedAircraftID]
@@ -2649,6 +2739,14 @@ private struct ClueSubmissionView: View {
                             Text(identityStore.identity(for: track.aircraftID)?.mappedID ?? track.aircraftID)
                                 .tag(track.aircraftID)
                         }
+                    }
+                    if let binding {
+                        LabeledContent("Waypoint offset") {
+                            Text(ClueBindingText.formSummary(binding))
+                                .foregroundStyle(bindingColor)
+                                .multilineTextAlignment(.trailing)
+                        }
+                        .accessibilityIdentifier("clue-binding-offset")
                     }
                     if let observation, let projection {
                         LabeledContent("Drone", value: coordinate(observation.latitude, observation.longitude))
@@ -2750,7 +2848,16 @@ private struct ClueSubmissionView: View {
                     focusedField = .title
                 }
             }
+            .task {
+                // Waypoints keep arriving after the capture: follow them until the binding is final.
+                while !Task.isCancelled {
+                    refreshBinding()
+                    try? await Task.sleep(for: .milliseconds(500))
+                }
+            }
             .onChange(of: selectedAircraftID) {
+                if usesCaptureTelemetry { binding = pending.binding }
+                refreshBinding()
                 let selection = usesCaptureTelemetry
                     ? pending.heading
                     : OperationalClueGeometry.selectedHeading(
@@ -2857,7 +2964,8 @@ private struct ClueSubmissionView: View {
             atoMeters: atoMeters,
             gimbalAngleDegrees: gimbalAngle,
             title: trimmedTitle,
-            description: finalDescription
+            description: finalDescription,
+            binding: binding
         ), pending.snapshot.jpegData, publish)
     }
 
@@ -2954,9 +3062,12 @@ private struct ClueDetailView: View {
                             as: coordinateDisplayFormat
                         ).replacingOccurrences(of: "loc:", with: "") + " (\(coordinateDisplayFormat.label))"
                     )
+                    if let binding = clue.binding {
+                        LabeledContent("Waypoint offset", value: ClueBindingText.formSummary(binding))
+                    }
                     LabeledContent("CalTopo", value: clue.uploadState.rawValue)
                     if let error = clue.lastUploadError { Text(error).foregroundStyle(.red) }
-                    Text(clue.clueDescription)
+                    Text(clue.publishedDescription)
                 }
                 if clue.uploadState == .failed || clue.uploadState == .pending {
                     Section { Button("Retry CalTopo Upload") { store.retry(clue.id) } }

@@ -30,8 +30,9 @@ final class RIDTrackViewModel: ObservableObject {
               publicationSuppressionProvider?(track.aircraftID) != true else { return }
         let now = Date()
         if !finished, now.timeIntervalSince(lastDeferredSnapshot[track.aircraftID] ?? .distantPast) < 5 { return }
-        let samples = track.points.map { RidObservation(source: track.lastObservation.source, aircraftId: track.aircraftID,
-            receivedAt: $0.receivedAt, latitude: $0.latitude, longitude: $0.longitude, altitudeMeters: $0.altitudeMeters) }
+        let samples = track.points.map { RidObservation(source: $0.source ?? track.lastObservation.source, aircraftId: track.aircraftID,
+            receivedAt: $0.receivedAt, latitude: $0.latitude, longitude: $0.longitude, altitudeMeters: $0.altitudeMeters,
+            droneTimestamp: $0.droneTime) }
         do {
             try awaitingMapJournal.record(remoteID: track.aircraftID, label: identityProvider?(track.aircraftID)?.displayLabel ?? track.aircraftID,
                 observations: samples, mapID: publicationMapID, teamID: publicationTeamID, finished: finished)
@@ -161,8 +162,11 @@ final class RIDTrackViewModel: ObservableObject {
     private var archiveConfiguration: AppleTrackArchiveConfiguration?
     private var localDeviceMarker: CaltopoDeviceMarker?
     private var localDeviceMarkerPublishingEnabled = true
-    private var clueArchiveProvider:
-        ((String, Date, Date) -> [AppleTrackArchiveClue])?
+    private weak var clueStore: AppleClueStore?
+    /// Clues saved, changed or deleted after their flight ended whose KMZ rebuild is not queued yet.
+    private var lateClues: [UUID: OperationalClueRecord] = [:]
+    private var rewriteTask: Task<Void, Never>?
+    private var rewriteAgain = false
 
     func bind(to observations: AsyncStream<RidObservation>, sourceID: String) {
         guard observationTasks[sourceID] == nil else { return }
@@ -425,10 +429,71 @@ final class RIDTrackViewModel: ObservableObject {
         AppleApplicationCleanupCenter.shared.noteRIDMessage(receivedAt: receivedAt)
     }
 
-    func configureClueArchiveProvider(
-        _ provider: @escaping (String, Date, Date) -> [AppleTrackArchiveClue]
-    ) {
-        clueArchiveProvider = provider
+    /// Connects the clue store: waypoint binding reads this model's live tracks, and clues that
+    /// change after their flight ended rebuild that flight's KMZ. Also runs the launch-time
+    /// archive sweep and retries queued KMZ rebuilds.
+    func attachClueStore(_ store: AppleClueStore) {
+        clueStore = store
+        store.bindingPointsProvider = { [weak self] record in self?.bindingPoints(for: record) }
+        store.clueChanged = { [weak self] record in self?.clueChangedAfterFlight(record) }
+        Task { [archiveStore] in
+            await archiveStore.launchSweep()
+            self.scheduleArchiveRewrites()
+        }
+    }
+
+    /// Waypoints of the live flight that owns `record`, or nil when that flight has ended.
+    func bindingPoints(for record: OperationalClueRecord) -> [ClueBindingPoint]? {
+        bindingPoints(aircraftID: record.aircraftID,
+                      captureTimeMs: record.binding?.captureTimeMs ?? ClueBindingPoint.milliseconds(record.capturedAt))
+    }
+
+    /// Waypoints (drone clock) of the aircraft's live flight around `captureTimeMs`, or nil when
+    /// that flight has ended.
+    func bindingPoints(aircraftID: String, captureTimeMs captureMs: Int64) -> [ClueBindingPoint]? {
+        let canonical = RidTrackStore.canonicalAircraftID(aircraftID)
+        guard let track = tracks.first(where: { RidTrackStore.canonicalAircraftID($0.aircraftID) == canonical })
+        else { return nil }
+        let points = track.points.map(ClueBindingPoint.init(trackPoint:))
+        // A track that started well after the capture is a later flight.
+        if let first = points.map(\.timeMs).min(),
+           captureMs < first - Int64(AwaitingMapClueMatch.leadingSeconds * 1_000) { return nil }
+        return points
+    }
+
+    /// Ids of the live flight a clue would bind to: the open journal entry when there is one.
+    func liveFlightID(aircraftID: String) -> String? {
+        let canonical = RidTrackStore.canonicalAircraftID(aircraftID)
+        return awaitingMapJournal.entries.last {
+            RidTrackStore.canonicalAircraftID($0.remoteID) == canonical && !$0.finished
+        }?.id
+    }
+
+    private func clueChangedAfterFlight(_ record: OperationalClueRecord) {
+        // A live flight writes its KMZ when it ends.
+        guard bindingPoints(for: record) == nil else { return }
+        lateClues[record.id] = record
+        scheduleArchiveRewrites()
+    }
+
+    /// Queues KMZ rebuilds for late clues and processes every queued rebuild (also after launch).
+    private func scheduleArchiveRewrites() {
+        guard rewriteTask == nil else { rewriteAgain = true; return }
+        rewriteAgain = false
+        rewriteTask = Task { [weak self, archiveStore] in
+            guard let self else { return }
+            for (id, record) in self.lateClues {
+                // A clue not yet archivable stays queued; the next archive retries it.
+                if await archiveStore.enqueueRewrite(for: record) { self.lateClues.removeValue(forKey: id) }
+            }
+            for job in await archiveStore.pendingRewrites() {
+                let clues = self.clueStore?.clues(aircraftID: job.aircraftID) ?? []
+                let updated = await archiveStore.performRewrite(job, clues: clues)
+                self.clueStore?.applyArchivedBindings(updated)
+            }
+            self.rewriteTask = nil
+            if self.rewriteAgain { self.scheduleArchiveRewrites() }
+        }
     }
 
     func configureFlightRecording(_ provider: @escaping (String) -> Bool) {
@@ -1015,6 +1080,10 @@ final class RIDTrackViewModel: ObservableObject {
             AppleLog.info("DroneConfirmation", "Ignored unanswered/unconfirmed flight remoteId=\(track.aircraftID); archive and upload skipped")
             return
         }
+        let flightID = liveFlightID(aircraftID: track.aircraftID)
+            ?? "live-\(track.aircraftID)-\(ClueBindingPoint.milliseconds(track.points.first?.receivedAt ?? track.lastAircraftMessageAt))"
+        // The complete track is known now: finish any clue still waiting for a nearer waypoint.
+        clueStore?.finalizeBindings(aircraftID: track.aircraftID, points: track.points.map(ClueBindingPoint.init(trackPoint:)))
         recordAwaitingFlight(track, finished: true)
         await queueCompletedDeferredFlights()
         let identity = identityProvider?(track.aircraftID)
@@ -1033,7 +1102,11 @@ final class RIDTrackViewModel: ObservableObject {
             flightReadiness: identity?.flightReadiness
         )
         let start = track.points.first?.receivedAt ?? track.lastAircraftMessageAt
-        let clues = clueArchiveProvider?(track.aircraftID, start, Date()) ?? []
+        let otherFlights = await archiveStore.archivedFlights(aircraftID: track.aircraftID, around: start)
+            .map { OperationalFlightKMZ.candidate(id: $0.key, contents: $0.value) }
+        let flightCandidate = AwaitingMapClueMatch.Candidate(
+            id: flightID, remoteID: track.aircraftID, times: track.points.map(\.bindingTime))
+        let clues = clueStore?.archiveClues(flight: flightCandidate, otherFlights: otherFlights) ?? []
         if publishFlightEnd {
             // Capture the completed flight's identity/readiness above before observers
             // clear its confirmation. Network archive retries must not delay that reset.
@@ -1065,6 +1138,8 @@ final class RIDTrackViewModel: ObservableObject {
             )
             archivedTrackCount += 1
             latestArchiveURL = outcome.url
+            // Clues saved while this flight was being archived now have a KMZ to rebuild.
+            scheduleArchiveRewrites()
             switch outcome.trackerResult {
             case .alreadyReported:
                 archiveStatus = "Saved locally • tracker upload already processed"
@@ -1120,7 +1195,8 @@ final class RIDTrackViewModel: ObservableObject {
                 altitudeMeters: reference + height, heightMeters: height, heightReference: .takeoff,
                 headingDegrees: sample.courseDegrees,
                 videoReferenceLatitude: sample.referenceLatitudeDegrees,
-                videoReferenceLongitude: sample.referenceLongitudeDegrees))
+                videoReferenceLongitude: sample.referenceLongitudeDegrees,
+                droneTimestamp: sample.droneTime))
         }
     }
 
