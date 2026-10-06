@@ -76,7 +76,7 @@ class R2CApplication : Application() {
         Thread({
             runCatching { CaltopoClient.InitArchiveDir() }
                 .onSuccess {
-                    CaltopoClient.CTInfo(
+                    CaltopoClient.CTDebug(
                         TAG,
                         "Process started pid=${android.os.Process.myPid()}; session log opened at process start"
                     )

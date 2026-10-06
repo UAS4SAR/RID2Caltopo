@@ -212,7 +212,7 @@ object AlertSpeechCoordinator {
         nowMs: Long,
     ): Boolean {
         if (AlertBellCenter.isMuted(AlertBellKind.Proximity)) {
-            CaltopoClient.CTInfo("ProximityAlert", "Speech skipped (session-muted) pair=$pairKey instance=$alertInstanceId")
+            CaltopoClient.CTDebug("ProximityAlert", "Speech skipped (session-muted) pair=$pairKey instance=$alertInstanceId")
             return false
         }
         SpokenWarningCenter.requestWarning(
@@ -222,7 +222,7 @@ object AlertSpeechCoordinator {
             cooldownMs = 0L
         )
         announcedProximityInstanceId = alertInstanceId
-        CaltopoClient.CTInfo("ProximityAlert", "${if (announcement == ProximitySpeechSchedule.Announcement.NewInstance) "Alert" else "Repeat"} spoken pair=$pairKey instance=$alertInstanceId")
+        CaltopoClient.CTDebug("ProximityAlert", "${if (announcement == ProximitySpeechSchedule.Announcement.NewInstance) "Alert" else "Repeat"} spoken pair=$pairKey instance=$alertInstanceId")
         return true
     }
 

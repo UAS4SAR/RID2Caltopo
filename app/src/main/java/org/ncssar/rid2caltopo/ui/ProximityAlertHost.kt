@@ -493,7 +493,7 @@ object ProximityAlertCenter {
                 val vert = if (pair.verticalSeparationKnown) pair.verticalSeparationFt.toInt().toString() else "unk"
                 "${pair.firstMappedId}/${pair.secondMappedId} H=${pair.horizontalSeparationFt.toInt()} V=$vert alert=${pair.alerting}"
             }
-            CaltopoClient.CTInfo(
+            CaltopoClient.CTDebug(
                 "ProximityAlert",
                 "Pairs fresh=${activeDrones.size} $pairSummary"
             )
