@@ -1,6 +1,6 @@
 package org.ncssar.rid2caltopo.ui
 
-/** Remind once per eligible flight during this app session; Later never changes consent. */
+/** Remind once per eligible flight during this app session; Dismiss never changes consent. */
 internal class AwaitingMapReminder {
     private val reminded = mutableSetOf<String>()
     fun shouldPresent(eligibleFlightIds: Set<String>, hasMap: Boolean): Boolean {

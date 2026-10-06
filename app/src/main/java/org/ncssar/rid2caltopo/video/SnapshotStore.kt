@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import org.json.JSONArray
 import org.json.JSONObject
+import org.ncssar.rid2caltopo.data.AwaitingMapClueMatch
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.file.Files
@@ -139,11 +140,17 @@ class AndroidClueStore private constructor(
     @Synchronized
     fun bindAwaitingFlight(designator: String, from: Long, through: Long, mapId: String, teamId: String) {
         records.values.toList().filter { it.mapKey == "unassigned" && it.publishToCaltopo &&
-            it.sourceDesignator.equals(designator, true) && it.createdAtMs in from..through }.forEach {
+            AwaitingMapClueMatch.matches(it.sourceDesignator, it.createdAtMs, designator, from, through) }.forEach {
             records[it.id] = it.copy(mapKey = "map:$mapId", destinationTeamId = teamId, uploadState = "pending")
         }
         persistIndex()
     }
+
+    /** Clue photos that belong to an awaiting-map flight (shared rule in AwaitingMapClueMatch). */
+    @Synchronized
+    fun awaitingFlightClues(flight: JSONObject, otherFlights: List<JSONObject>): List<AndroidClueRecord> =
+        AwaitingMapClueMatch.ownedClues(records.values.filter { imageFile(it).isFile }, flight, otherFlights,
+            { it.sourceDesignator }, { it.createdAtMs })
 
     @Synchronized
     fun pendingForMap(mapId: String, teamId: String): List<AndroidClueRecord> {

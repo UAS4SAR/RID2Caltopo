@@ -125,11 +125,18 @@ object AwaitingMapFlights {
         all().filter { it.optString("decision") == "publish" && it.optString("map") == map && it.optString("team") == team && it.optBoolean("finished") }
             .forEach { queueCompleted(it) }
     }
-    @JvmStatic @Synchronized fun discard(id: String) {
+    /** Removes exactly one undecided or local entry. Returns false when nothing matched. */
+    @JvmStatic @Synchronized fun discard(id: String): Boolean {
         load()
-        entries = JSONArray(all().filterNot { it.optString("id") == id && it.optString("decision") in listOf("review", "bound", "local") })
-        save()
+        val remaining = all().filterNot { it.optString("id") == id && it.optString("decision") in listOf("review", "bound", "local") }
+        if (remaining.size == entries.length()) return false
+        val prior = entries
+        entries = JSONArray(remaining)
+        try { save() } catch (error: Exception) { entries = prior; throw error }
+        return true
     }
+    /** Copies of every journal entry, including decided ones, for clue ownership checks. */
+    @Synchronized fun allEntries(): List<JSONObject> { load(); return all().map { JSONObject(it.toString()) } }
     @JvmStatic @Synchronized fun published(id: String) {
         load(); all().firstOrNull { it.optString("id") == id }?.let { it.put("decision", "published")
             val points = it.optJSONArray("points")

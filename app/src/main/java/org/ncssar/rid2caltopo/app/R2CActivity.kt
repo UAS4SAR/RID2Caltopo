@@ -1774,7 +1774,10 @@ class R2CActivity :
                     // One persistent host follows every page without covering video controls.
                     // Keep the review dialog mounted while navigating between pages.
                     if (!waitingForSystemUnlock) {
-                        org.ncssar.rid2caltopo.ui.AwaitingMapPublicationPanel()
+                        // Choose Map opens the same incident-map selection as the Live View Incident Map chip.
+                        org.ncssar.rid2caltopo.ui.AwaitingMapPublicationPanel(
+                            onChooseMap = { localViewModel.openConnectionOverlayFromCurrentScreen() },
+                        )
                     }
                 }
                 // Defer new operational dialogs until the system unlock is accepted.
