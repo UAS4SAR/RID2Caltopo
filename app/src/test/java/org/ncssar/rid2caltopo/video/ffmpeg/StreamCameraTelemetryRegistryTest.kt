@@ -404,6 +404,72 @@ class StreamCameraTelemetryRegistryTest {
         StreamCameraTelemetryRegistry.clear("REVALIDATE")
     }
 
+    /**
+     * Real tag-10 bodies from the 2026-10-06 M4TD ground zoom sweep. Tag 10 is
+     * 0x01 | u32 sensor width um | u32 sensor height um | u32 focal length um, and the
+     * shared native decoder (native/R2CDJICameraTelemetry.h) turns it into pinhole FOVs.
+     * This mirrors that math so the Kotlin side pins the same per-frame values the wedge
+     * receives, and checks that the wedge spans exactly the decoded HFOV.
+     */
+    private data class RealOptics(val label: String, val hex: String, val hfov: Double, val vfov: Double)
+
+    private val realOptics = listOf(
+        RealOptics("wide 1x", "01b425000035150000401a0000", 71.368395, 43.991846),
+        RealOptics("IR", "01001e000000180000e02e0000", 35.489343, 28.718673),
+        RealOptics("medium 3x", "018020000047120000964b0000", 24.266345, 13.787700),
+        RealOptics("tele 7x", "01771f0000b2110000409c0000", 11.499183, 6.481825),
+        RealOptics("tele 112x", "010402000022010000409c0000", 0.739105, 0.415393),
+    )
+
+    private fun tag10FieldOfView(hex: String): Pair<Double, Double>? {
+        val bytes = hex.chunked(2).map { it.toInt(16) }
+        if (bytes.size != 13 || bytes[0] != 0x01) return null
+        fun u32(offset: Int) = (0 until 4).fold(0L) { acc, i -> acc or (bytes[offset + i].toLong() shl (8 * i)) }
+        val (width, height, focal) = Triple(u32(1), u32(5), u32(9))
+        if (width == 0L || height == 0L || focal == 0L) return null
+        fun fov(extent: Long) = Math.toDegrees(2.0 * kotlin.math.atan(extent / (2.0 * focal)))
+        return fov(width) to fov(height)
+    }
+
+    @Test
+    fun realTag10VectorsGivePinholeFovAndTheWedgeSpansIt() {
+        for ((index, optics) in realOptics.withIndex()) {
+            val (hfov, vfov) = tag10FieldOfView(optics.hex)!!
+            assertEquals(optics.label, optics.hfov, hfov, 1e-6)
+            assertEquals(optics.label, optics.vfov, vfov, 1e-6)
+            val key = "OPTICS-$index"
+            StreamCameraTelemetryRegistry.update(
+                designator = key,
+                telemetry = FfmpegTelemetry(
+                    sourceTag = "dji-sei-245",
+                    sourceTimestampUs = 3_000_000L + index,
+                    gimbalPitchDeg = -37.0,
+                    cameraYawDeg = 160.06,
+                    horizontalFovDeg = hfov,
+                    verticalFovDeg = vfov,
+                    latitude = 39.153028,
+                    longitude = -121.132806,
+                    altitudeMeters = 556.223,
+                    djiAttitudeAnglesDeg = (0..8).map(Int::toDouble),
+                    djiNorthMm = 38,
+                    djiEastMm = -161,
+                    djiDownMm = -556_223,
+                ),
+                nowMs = 20_000,
+            )
+            val sample = StreamCameraTelemetryRegistry.fresh(key, nowMs = 20_100)!!
+            assertEquals(optics.label, optics.hfov, sample.horizontalFovDeg, 1e-6)
+            assertEquals(optics.label, optics.vfov, sample.verticalFovDeg, 1e-6)
+            val wedge = org.ncssar.rid2caltopo.video.cameraFovBoundaryBearings(sample.fovAzimuthDeg, sample.horizontalFovDeg)!!
+            assertEquals(70.06 - optics.hfov / 2.0, wedge.leftBearingDeg, 1e-6)
+            assertEquals(70.06 + optics.hfov / 2.0, wedge.rightBearingDeg, 1e-6)
+            StreamCameraTelemetryRegistry.clear(key)
+        }
+        // Zero focal length or an unknown header is not a field of view.
+        assertNull(tag10FieldOfView("01b42500003515000000000000"))
+        assertNull(tag10FieldOfView("00b425000035150000401a0000"))
+    }
+
     @Test
     fun seiAzimuthIsTrueNorthWithNoMagneticDeclinationAdded() {
         // 2026-10-06 circular flights: the type-245 SEI azimuth already references true north.

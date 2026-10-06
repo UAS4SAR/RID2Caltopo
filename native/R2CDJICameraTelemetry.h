@@ -12,8 +12,15 @@ typedef struct R2CDJICameraTelemetry {
     bool positionValid;
     double azimuthDegrees;
     double tiltDegrees;
+    // Pinhole field of view computed per frame from tag 10 (see
+    // R2CDJIDecodeOptics): 2 * atan(sensor extent / (2 * focal length)).
     double horizontalFovDegrees;
     double verticalFovDegrees;
+    // Raw tag-10 optics, all micrometres: active sensor readout width and
+    // height (after any crop or digital zoom) and lens focal length.
+    uint32_t sensorWidthMicrometers;
+    uint32_t sensorHeightMicrometers;
+    uint32_t focalLengthMicrometers;
     double latitudeDegrees;
     double longitudeDegrees;
     double altitudeMeters;
@@ -97,6 +104,49 @@ static inline int32_t R2CDJIReadSplitSigned32LE(
     return (int32_t) signedValue;
 }
 
+// Tag 10 (13 bytes) = 0x01 | u32 width | u32 height | u32 focal, little-endian
+// micrometres. Established by the 2026-10-06 M4TD zoom sweep: e.g. wide
+// 9652/5429/6720 -> 71.37 x 43.99 deg, IR 7680/6144/12000 -> 35.49 x 28.72 deg,
+// tele 112x 516/290/40000 -> 0.74 x 0.42 deg. It is not degrees * 256.
+// Bounds are generic plausibility limits, not per-camera constants.
+#define R2C_DJI_OPTICS_MAX_SENSOR_MICROMETERS 100000u
+#define R2C_DJI_OPTICS_MIN_FOCAL_MICROMETERS 100u
+#define R2C_DJI_OPTICS_MAX_FOCAL_MICROMETERS 2000000u
+
+static inline bool R2CDJIDecodeOptics(
+    const uint8_t *optics,
+    size_t size,
+    uint32_t *widthMicrometers,
+    uint32_t *heightMicrometers,
+    uint32_t *focalMicrometers,
+    double *horizontalFovDegrees,
+    double *verticalFovDegrees
+) {
+    if (optics == NULL || size != 13 || optics[0] != 0x01) return false;
+    uint32_t width = R2CDJIReadUInt32LE(optics + 1);
+    uint32_t height = R2CDJIReadUInt32LE(optics + 5);
+    uint32_t focal = R2CDJIReadUInt32LE(optics + 9);
+    if (width == 0 || height == 0 ||
+        width > R2C_DJI_OPTICS_MAX_SENSOR_MICROMETERS ||
+        height > R2C_DJI_OPTICS_MAX_SENSOR_MICROMETERS ||
+        focal < R2C_DJI_OPTICS_MIN_FOCAL_MICROMETERS ||
+        focal > R2C_DJI_OPTICS_MAX_FOCAL_MICROMETERS) {
+        return false;
+    }
+    const double degreesPerRadian = 180.0 / 3.14159265358979323846;
+    double horizontal = 2.0 * atan((double) width / (2.0 * (double) focal)) * degreesPerRadian;
+    double vertical = 2.0 * atan((double) height / (2.0 * (double) focal)) * degreesPerRadian;
+    if (!(horizontal > 0.0 && horizontal < 180.0) || !(vertical > 0.0 && vertical < 180.0)) {
+        return false;
+    }
+    if (widthMicrometers) *widthMicrometers = width;
+    if (heightMicrometers) *heightMicrometers = height;
+    if (focalMicrometers) *focalMicrometers = focal;
+    if (horizontalFovDegrees) *horizontalFovDegrees = horizontal;
+    if (verticalFovDegrees) *verticalFovDegrees = vertical;
+    return true;
+}
+
 static inline bool R2CDJIDecodeType245Payload(
     const uint8_t *payload,
     size_t payloadSize,
@@ -142,16 +192,28 @@ static inline bool R2CDJIDecodeType245Payload(
     double azimuth = fmod(signedAzimuth + 360.0, 360.0);
     double tiltEncoder = (double) R2CDJIReadUInt32LE(attitude + 11) * 360.0 / fullTurn;
     double tilt = fmod(tiltEncoder - 90.0 + 540.0, 360.0) - 180.0;
-    double horizontalFov = (double) R2CDJIReadUInt32LE(optics + 1) / 256.0;
-    double verticalFov = (double) R2CDJIReadUInt32LE(optics + 5) / 256.0;
-    // The final tag-4 triple is the geodetic reference for the local N/E/Down
-    // coordinates (normally DJI's recorded home/reference point).
+    uint32_t sensorWidth = 0;
+    uint32_t sensorHeight = 0;
+    uint32_t focalLength = 0;
+    double horizontalFov = NAN;
+    double verticalFov = NAN;
+    // Implausible optics (wrong header, zero focal length, out-of-range
+    // extents) reject the frame, as the previous FOV range check did.
+    if (!R2CDJIDecodeOptics(optics, 13, &sensorWidth, &sensorHeight, &focalLength,
+                            &horizontalFov, &verticalFov)) {
+        return false;
+    }
+    // The final tag-4 triple is the geodetic reference (home/takeoff point) for
+    // the local N/E/Down coordinates; it is NOT the live aircraft position.
+    // Aircraft position = reference + N/E. Evidence: 2026-10-05/06 flights moved
+    // 50-94 m in N/E while this reference wandered <= 1.4 m (GNSS refinement);
+    // reference altitude stays at takeoff while -Down tracks absolute altitude.
+    // It reads 0,0 until DJI records home (16 s after power-on in the 10-06
+    // ground zoom sweep); positionValid stays false until then.
     double latitude = (double) R2CDJIReadSigned32LE(attitude + 27) * 180.0 / fullTurn;
     double longitude = (double) R2CDJIReadSigned32LE(attitude + 31) * 360.0 / fullTurn;
     double altitude = -(double) R2CDJIReadSigned32LE(attitude + 35) / 1000.0;
-    if (!isfinite(azimuth) || !isfinite(tilt) ||
-        !(horizontalFov > 0.0 && horizontalFov <= 180.0) ||
-        !(verticalFov > 0.0 && verticalFov <= 180.0)) {
+    if (!isfinite(azimuth) || !isfinite(tilt)) {
         return false;
     }
     telemetry->valid = true;
@@ -159,6 +221,9 @@ static inline bool R2CDJIDecodeType245Payload(
     telemetry->tiltDegrees = tilt;
     telemetry->horizontalFovDegrees = horizontalFov;
     telemetry->verticalFovDegrees = verticalFov;
+    telemetry->sensorWidthMicrometers = sensorWidth;
+    telemetry->sensorHeightMicrometers = sensorHeight;
+    telemetry->focalLengthMicrometers = focalLength;
     telemetry->positionValid = isfinite(latitude) && isfinite(longitude) && isfinite(altitude) &&
         latitude >= -90.0 && latitude <= 90.0 &&
         longitude >= -180.0 && longitude <= 180.0 &&

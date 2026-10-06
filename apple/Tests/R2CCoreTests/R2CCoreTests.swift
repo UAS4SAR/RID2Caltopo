@@ -6349,6 +6349,50 @@ func aolHighlightRequiresNegativeNumberAndExcludesAdjacentFields() {
     #expect(abs(rays[1].rightDegrees - rays[0].rightDegrees - 0.6696217) < 1e-7)
 }
 
+/// Real tag-10 bodies from the 2026-10-06 M4TD ground zoom sweep: 0x01 | u32 sensor width µm |
+/// u32 sensor height µm | u32 focal length µm. The shared native decoder
+/// (native/R2CDJICameraTelemetry.h) converts them to pinhole FOVs; this mirrors that math and
+/// checks the map wedge spans exactly the decoded HFOV around the true-north SEI azimuth.
+private func tag10FieldOfView(_ hex: String) -> (horizontal: Double, vertical: Double)? {
+    var bytes: [UInt8] = []
+    var index = hex.startIndex
+    while index < hex.endIndex {
+        let next = hex.index(index, offsetBy: 2)
+        guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
+        bytes.append(byte)
+        index = next
+    }
+    guard bytes.count == 13, bytes[0] == 0x01 else { return nil }
+    func u32(_ offset: Int) -> Double {
+        Double((0..<4).reduce(UInt32(0)) { $0 | UInt32(bytes[offset + $1]) << (8 * UInt32($1)) })
+    }
+    let width = u32(1), height = u32(5), focal = u32(9)
+    guard width > 0, height > 0, focal > 0 else { return nil }
+    return (2 * atan(width / (2 * focal)) * 180 / .pi, 2 * atan(height / (2 * focal)) * 180 / .pi)
+}
+
+@Test func djiTag10RealVectorsGivePinholeFovAndTheWedgeSpansIt() throws {
+    let vectors: [(String, String, Double, Double)] = [
+        ("wide 1x", "01b425000035150000401a0000", 71.368395, 43.991846),
+        ("IR", "01001e000000180000e02e0000", 35.489343, 28.718673),
+        ("medium 3x", "018020000047120000964b0000", 24.266345, 13.787700),
+        ("tele 7x", "01771f0000b2110000409c0000", 11.499183, 6.481825),
+        ("tele 112x", "010402000022010000409c0000", 0.739105, 0.415393),
+    ]
+    let azimuth = try #require(OperationalClueGeometry.djiControllerCameraAzimuthDegrees(seiCameraAzimuthDegrees: 160.06))
+    for (label, hex, horizontal, vertical) in vectors {
+        let fov = try #require(tag10FieldOfView(hex), "\(label)")
+        #expect(abs(fov.horizontal - horizontal) < 1e-6, "\(label)")
+        #expect(abs(fov.vertical - vertical) < 1e-6, "\(label)")
+        let wedge = try #require(OperationalMapGeometry.cameraFovBoundaryBearings(
+            cameraAzimuthDegrees: azimuth, horizontalFovDegrees: fov.horizontal))
+        #expect(abs(wedge.leftDegrees - (70.06 - horizontal / 2)) < 1e-6, "\(label)")
+        #expect(abs(wedge.rightDegrees - (70.06 + horizontal / 2)) < 1e-6, "\(label)")
+    }
+    #expect(tag10FieldOfView("01b42500003515000000000000") == nil)
+    #expect(tag10FieldOfView("00b425000035150000401a0000") == nil)
+}
+
 /// 2026-10-06 circular flights: the DJI type-245 SEI azimuth already references true
 /// north. Nevada County declination is about +13°; adding it skewed bearings ~12.9°.
 @Test func djiSeiCameraAzimuthIsTrueNorthWithNoDeclinationAdded() {
