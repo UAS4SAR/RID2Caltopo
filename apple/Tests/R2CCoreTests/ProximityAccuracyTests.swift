@@ -3,11 +3,14 @@ import Testing
 @testable import R2CCore
 
 private let proximityNow = Date(timeIntervalSince1970: 10_000)
+// Airborne team aircraft: explicit RID airborne status keeps vertical gating
+// even though height is not supplied.
 private func aircraft(_ id: String, feet: Double = 0, displayAltitude: Double? = 100,
-                      quality: RidProximityTelemetry = .init(), age: Double = 0) -> RidProximityDrone {
+                      quality: RidProximityTelemetry = .init(), age: Double = 0,
+                      grounded: Bool? = false) -> RidProximityDrone {
     RidProximityDrone(remoteID: id, mappedID: id, latitude: 39 + feet * 0.3048 / 6_371_000 * 180 / .pi,
         longitude: -121, altitudeMeters: displayAltitude, sampleDate: proximityNow.addingTimeInterval(-age),
-        teamDrone: true, localAlertEligible: id == "A", telemetry: quality)
+        teamDrone: true, localAlertEligible: id == "A", telemetry: quality, grounded: grounded)
 }
 private func alert(_ first: RidProximityDrone, _ second: RidProximityDrone, threshold: Double = 100) -> RidProximityAlertState? {
     var engine = RidProximityAlertEngine()
@@ -226,4 +229,29 @@ private func geo(_ altitude: Double, error: Double = 1, horizontal: Double = 1) 
     #expect(!cleared)
     #expect(reentry)
     #expect(repeatAt30)
+}
+
+@Test func proximityUnknownHeightUndeclaredModuleSkipsVerticalGate() {
+    // DB150-style beacon: GPS altitude present, ODID height invalid (nil) and
+    // status Undeclared (grounded nil). Mini 40 ft away horizontally but ~164 ft
+    // higher must still alert; 9c80ae2 only skipped the gate for height <= 3 m.
+    let mini = aircraft("A", feet: 40, displayAltitude: 150, quality: geo(150))
+    let module = RidProximityDrone(
+        remoteID: "B", mappedID: "B", latitude: 39, longitude: -121,
+        altitudeMeters: 100, sampleDate: proximityNow, teamDrone: true, localAlertEligible: true,
+        telemetry: geo(100), grounded: nil, heightMeters: nil
+    )
+    let output = alert(mini, module)
+    #expect(output != nil)
+    #expect(output?.verticalSeparationKnown == false)
+    #expect(RidProximityVerticalParticipation.participatesInVerticalGate(grounded: nil, heightMeters: nil) == false)
+    // Explicit airborne with unknown height still gates; a known flying height gates.
+    #expect(RidProximityVerticalParticipation.participatesInVerticalGate(grounded: false, heightMeters: nil))
+    #expect(RidProximityVerticalParticipation.participatesInVerticalGate(grounded: nil, heightMeters: 45))
+    let airborneModule = RidProximityDrone(
+        remoteID: "B", mappedID: "B", latitude: 39, longitude: -121,
+        altitudeMeters: 100, sampleDate: proximityNow, teamDrone: true, localAlertEligible: true,
+        telemetry: geo(100), grounded: false, heightMeters: nil
+    )
+    #expect(alert(mini, airborneModule) == nil)
 }

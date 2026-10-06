@@ -151,6 +151,8 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
     private transient boolean impliedTakeoffSealed      = false;
     @Nullable private transient Boolean aolReportedAirborne = null;
     private transient long aolGroundStatusAtMsec = 0L;
+    /** Latest raw RID airborne flag from a non-video transport; null when Undeclared/never sent. */
+    @Nullable public Boolean getAolReportedAirborne() { return aolReportedAirborne; }
     public boolean hasFreshAolGroundStatus(long now) {
         return Boolean.FALSE.equals(aolReportedAirborne) && now >= aolGroundStatusAtMsec && now - aolGroundStatusAtMsec < 5000L;
     }

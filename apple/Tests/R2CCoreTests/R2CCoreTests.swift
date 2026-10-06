@@ -2259,7 +2259,8 @@ private func proximityDrone(
     altitude: Double? = 100,
     sampleDate: Date = Date(),
     team: Bool,
-    eligible: Bool
+    eligible: Bool,
+    grounded: Bool? = false // airborne by RID status; height not supplied
 ) -> RidProximityDrone {
     RidProximityDrone(
         remoteID: id,
@@ -2271,7 +2272,8 @@ private func proximityDrone(
         teamDrone: team,
         localAlertEligible: eligible,
         telemetry: .init(horizontalAccuracyMeters: 1, absoluteAltitudeMeters: altitude,
-                         altitudeReference: .geodetic, verticalAccuracyMeters: 1)
+                         altitudeReference: .geodetic, verticalAccuracyMeters: 1),
+        grounded: grounded
     )
 }
 

@@ -6,10 +6,15 @@ import Foundation
 public enum RidProximityVerticalParticipation: Sendable {
     public static let nearSurfaceHeightMeters: Double = 3.0
 
+    /// Unknown height (ODID raw 0 → -1000 m → nil) with an Undeclared status is
+    /// treated like a ground module: many standalone RID beacons (e.g. DB150)
+    /// broadcast GPS altitude but no height and no airborne flag, and gating
+    /// them vertically against a teammate flying overhead silenced the alert.
+    /// Only an explicit airborne status keeps the gate when height is unknown.
     public static func participatesInVerticalGate(grounded: Bool?, heightMeters: Double?) -> Bool {
         if grounded == true { return false }
-        if let height = heightMeters, height.isFinite, height <= nearSurfaceHeightMeters { return false }
-        return true
+        if let height = heightMeters, height.isFinite { return height > nearSurfaceHeightMeters }
+        return grounded == false
     }
 }
 

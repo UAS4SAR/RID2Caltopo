@@ -532,6 +532,8 @@ class ProximityAlertHostThresholdTest {
             setMappedId(mappedId)
             // Model an active flight without involving waypoint ingestion side effects.
             javaClass.getDeclaredField("trackLabel").apply { isAccessible = true }.set(this, "test-flight")
+            // Flying aircraft: explicit RID airborne flag keeps vertical gating without a height.
+            javaClass.getDeclaredField("aolReportedAirborne").apply { isAccessible = true }.set(this, true)
             setCurrentFlightConfirmed(true)
             setLocalArchiveOnly(localArchiveOnly)
             lastLat = lat
@@ -553,5 +555,38 @@ class ProximityAlertHostThresholdTest {
         fun runNext() {
             queued.removeFirst().run()
         }
+    }
+
+    @Test
+    fun undeclaredModuleWithoutHeightAlertsAgainstTeammateOverhead() {
+        CaltopoClient.SetProximityAlertSpacingFeet(100)
+        CaltopoClient.SetPredictiveHeadEnabled(false)
+        val fixture = TestR2cRuntimeFactory.create("proximity-unknown-height")
+        fixture.setAsDefaultRuntime()
+        (fixture.peerCoordinator as FakePeerCoordinator).setLocalOwnership("A", true)
+        (fixture.peerCoordinator as FakePeerCoordinator).setLocalOwnership("B", true)
+        val now = System.currentTimeMillis()
+        val mini = proximityDrone("A", "A", 39.0 + 40.0 * 0.3048 / 6371000 * 180 / Math.PI, -121.0, 150.0, false)
+        val module = proximityDrone("B", "B", 39.0, -121.0, 100.0, false)
+        // DB150-style: no RID height, status Undeclared.
+        module.javaClass.getDeclaredField("aolReportedAirborne").apply { isAccessible = true }.set(module, null)
+        mini.proximityPosition = ProximityPosition(mini.lastLat, mini.lastLng, now, geodetic(150.0))
+        module.proximityPosition = ProximityPosition(module.lastLat, module.lastLng, now, geodetic(100.0))
+        ProximityAlertCenter.resetForTests()
+        ProximityAlertCenter.updateDrones(listOf(mini, module))
+        val alert = ProximityAlertCenter.uiState.value
+        assertNotNull(alert)
+        assertFalse(alert!!.verticalSeparationKnown)
+    }
+
+    @Test
+    fun unknownRidHeightSkipsVerticalGate() {
+        // DB150-style beacon with no RID height: treated like a ground module.
+        assertFalse(ProximityAlertCenter.participatesInVerticalGate(null, null))
+        assertFalse(ProximityAlertCenter.participatesInVerticalGate(null, Double.NaN))
+        assertFalse(ProximityAlertCenter.participatesInVerticalGate(null, 2.0))
+        assertFalse(ProximityAlertCenter.participatesInVerticalGate(true, 45.0))
+        assertTrue(ProximityAlertCenter.participatesInVerticalGate(null, 45.0))
+        assertTrue(ProximityAlertCenter.participatesInVerticalGate(false, null))
     }
 }

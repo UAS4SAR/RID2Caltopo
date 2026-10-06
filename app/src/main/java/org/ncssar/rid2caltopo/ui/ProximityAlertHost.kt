@@ -363,7 +363,10 @@ object ProximityAlertCenter {
                     telemetry = position?.telemetry ?: ProximityTelemetry(),
                     locallyConfirmed = spec.isCurrentFlightConfirmed,
                     heightMeters = ridHeight,
+                    // Height decides when known; otherwise only an explicit RID airborne
+                    // flag marks the aircraft as flying (keeps vertical gating), matching iOS.
                     grounded = ridHeight?.let { it <= NEAR_SURFACE_HEIGHT_METERS }
+                        ?: if (spec.aolReportedAirborne == true) false else null
                 )
             },
             submittedAtMs = System.currentTimeMillis()
@@ -728,11 +731,18 @@ object ProximityAlertCenter {
         )
     }
 
-    private fun participatesInVerticalGate(drone: EvaluatedDrone): Boolean {
-        if (drone.grounded == true) return false
-        val height = drone.heightMeters
-        if (height != null && height.isFinite() && height <= NEAR_SURFACE_HEIGHT_METERS) return false
-        return true
+    /**
+     * Unknown RID height with no explicit airborne flag is treated like a ground module
+     * (standalone beacons such as a DB150 often send GPS altitude but no height), so a
+     * teammate flying overhead is not vertically gated out of the alert.
+     */
+    private fun participatesInVerticalGate(drone: EvaluatedDrone): Boolean =
+        participatesInVerticalGate(drone.grounded, drone.heightMeters)
+
+    internal fun participatesInVerticalGate(grounded: Boolean?, heightMeters: Double?): Boolean {
+        if (grounded == true) return false
+        if (heightMeters != null && heightMeters.isFinite()) return heightMeters > NEAR_SURFACE_HEIGHT_METERS
+        return grounded == false
     }
 
     private fun shouldAlertForPair(first: EvaluatedDrone, second: EvaluatedDrone): Boolean =
