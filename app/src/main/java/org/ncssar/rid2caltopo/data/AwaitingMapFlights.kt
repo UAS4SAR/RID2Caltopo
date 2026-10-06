@@ -87,6 +87,14 @@ object AwaitingMapFlights {
         if (entry.optString("decision") == "local") return null
         return entry.optString("map") to entry.optString("team")
     }
+    /** Destination for a clue bound to journal entry [id] (null when the flight is local-only or unknown). */
+    @Synchronized fun clueDestinationForFlight(id: String): Pair<String, String>? {
+        load()
+        val entry = all().lastOrNull { it.optString("id") == id } ?: return null
+        if (entry.optString("decision") == "local") return null
+        return entry.optString("map") to entry.optString("team")
+    }
+    @Synchronized fun hasEntry(id: String): Boolean { load(); return all().any { it.optString("id") == id } }
     @Synchronized fun pending(): List<JSONObject> { load(); return all().filter { it.optString("decision") == "review" }.map { JSONObject(it.toString()) } }
     @Synchronized fun decide(id: String, map: String?, team: String) {
         load()
@@ -98,7 +106,7 @@ object AwaitingMapFlights {
         if (map != null) {
             val ctxt = R2CApplication.getAppCtxt()
             if (ctxt != null) org.ncssar.rid2caltopo.video.AndroidClueStore.shared(ctxt).bindAwaitingFlight(
-                item.optString("label").substringBefore('_'), firstTime(item), lastTime(item), map, team)
+                JSONObject(item.toString()), all().map { JSONObject(it.toString()) }, map, team)
             if (item.optBoolean("finished")) queueCompleted(item)
         }
     }
@@ -120,7 +128,7 @@ object AwaitingMapFlights {
         val ctxt = R2CApplication.getAppCtxt()
         if (ctxt != null) all().filter { it.optString("decision") in listOf("publish", "published") && it.optString("map") == map && it.optString("team") == team }.forEach {
             org.ncssar.rid2caltopo.video.AndroidClueStore.shared(ctxt).bindAwaitingFlight(
-                it.optString("label").substringBefore('_'), firstTime(it), lastTime(it), map, team)
+                JSONObject(it.toString()), all().map { other -> JSONObject(other.toString()) }, map, team)
         }
         all().filter { it.optString("decision") == "publish" && it.optString("map") == map && it.optString("team") == team && it.optBoolean("finished") }
             .forEach { queueCompleted(it) }

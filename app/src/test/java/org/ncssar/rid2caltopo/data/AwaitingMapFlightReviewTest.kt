@@ -105,7 +105,7 @@ class AwaitingMapFlightReviewTest {
         assertEquals("Distances from your current location · 7:03 AM", AwaitingMapFlightText.locationSummary(null, "7:03 AM"))
     }
 
-    @Test fun clueWindowSpansFirstPointThroughThirtySecondsAfterLastPoint() {
+    @Test fun clueWindowSpansThirtySecondsBeforeFirstPointThroughThirtySecondsAfterLastPoint() {
         val f = flight()
         val first = AwaitingMapFlights.firstTime(f)
         val last = AwaitingMapFlights.lastTime(f)
@@ -114,7 +114,10 @@ class AwaitingMapFlightReviewTest {
         assertTrue(AwaitingMapClueMatch.matches("1sar7db150brdg", last, f))
         assertTrue(AwaitingMapClueMatch.matches("1SAR7Db150Brdg", last + 30_000, f))
         assertFalse(AwaitingMapClueMatch.matches("1SAR7Db150Brdg", last + 30_001, f))
-        assertFalse(AwaitingMapClueMatch.matches("1SAR7Db150Brdg", first - 1, f))
+        // Leading window: clues up to 30 s before the first recorded waypoint belong to the flight.
+        assertTrue(AwaitingMapClueMatch.matches("1SAR7Db150Brdg", first - 1, f))
+        assertTrue(AwaitingMapClueMatch.matches("1SAR7Db150Brdg", first - 30_000, f))
+        assertFalse(AwaitingMapClueMatch.matches("1SAR7Db150Brdg", first - 30_001, f))
         assertFalse(AwaitingMapClueMatch.matches("1sar7DjMn4Pr", first + 10, f))
         val next = flight(id = "next", start = last + 10_000)
         data class C(val d: String, val t: Long)
@@ -123,6 +126,30 @@ class AwaitingMapFlightReviewTest {
         val lateTail = C("1SAR7Db150Brdg", last + 5_000)
         assertEquals(listOf(own, lateTail), AwaitingMapClueMatch.ownedClues(listOf(tail, own, lateTail), f, listOf(next), { it.d }, { it.t }))
         assertEquals(listOf(tail, own), AwaitingMapClueMatch.ownedClues(listOf(tail, own), f, emptyList(), { it.d }, { it.t }))
+    }
+
+    @Test fun ownershipUsesLeadingWindowNearestPointAndBoundFlight() {
+        val earlier = flight(id = "earlier")
+        val last = AwaitingMapFlights.lastTime(earlier)
+        val later = flight(id = "later", start = last + 40_000)
+        val candidates = listOf(earlier, later).map { AwaitingMapClueMatch.Candidate.of(it) }
+        // 12 s after the earlier flight, 28 s before the later one: both windows match, nearest point wins.
+        assertEquals("earlier", AwaitingMapClueMatch.ownerId("1SAR7Db150Brdg", last + 12_000, null, candidates))
+        // 25 s after the earlier flight, 15 s before the later one.
+        assertEquals("later", AwaitingMapClueMatch.ownerId("1SAR7Db150Brdg", last + 25_000, null, candidates))
+        // Equidistant: the earlier flight wins.
+        assertEquals("earlier", AwaitingMapClueMatch.ownerId("1SAR7Db150Brdg", last + 20_000, null, candidates))
+        // A clue bound to a flight id stays with it, even outside the time windows.
+        assertEquals("later", AwaitingMapClueMatch.ownerId("1SAR7Db150Brdg", start - 5_000, "later", candidates))
+        // An unknown bound id falls back to the time rule; other drones never match.
+        assertEquals("earlier", AwaitingMapClueMatch.ownerId("1SAR7Db150Brdg", start - 5_000, "gone", candidates))
+        assertEquals(null, AwaitingMapClueMatch.ownerId("1sar7DjMn4Pr", start, null, candidates))
+        assertEquals(null, AwaitingMapClueMatch.ownerId("1SAR7Db150Brdg", start - 31_000, null, candidates))
+        // The same rule drives the awaiting-map photo count and Discard.
+        data class C(val d: String, val t: Long, val bound: String? = null)
+        val clues = listOf(C("1SAR7Db150Brdg", last + 25_000), C("1SAR7Db150Brdg", last + 12_000), C("1SAR7Db150Brdg", last + 25_000, "earlier"))
+        assertEquals(listOf(clues[1], clues[2]),
+            AwaitingMapClueMatch.ownedClues(clues, earlier, listOf(later), { it.d }, { it.t }, { it.bound }))
     }
 
     @Test fun archiveNamesMatchWaypointTrackArchiveWriter() {

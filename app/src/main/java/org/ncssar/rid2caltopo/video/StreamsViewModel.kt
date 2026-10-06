@@ -156,6 +156,8 @@ data class PendingClue(
     val demSource: String? = null,
     val demResolutionMeters: Double? = null,
     val demSampleStale: Boolean = false,
+    /** Waypoint nearest in time to the frame capture (drone clock); refreshed until final. */
+    val binding: org.ncssar.rid2caltopo.data.ClueBinding? = null,
 )
 
 internal data class ClueProjectionHeightSelection(
@@ -437,6 +439,8 @@ internal fun capturedVideoPlaybackPlan(
 
 private val clueTimeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 private const val DEFAULT_CLUE_GIMBAL_ANGLE_DEG = -90.0
+/** Shown when a second snapshot is requested while a clue form is open (same wording as Apple). */
+const val CLUE_ALREADY_OPEN_MESSAGE = "Submit or cancel the current clue first."
 private const val METERS_TO_FEET = 3.28084
 private const val RID_INVALID_ALTITUDE_METERS = -1000.0
 
@@ -1990,8 +1994,11 @@ class StreamsViewModel(
         StreamFlightActivityRegistry.noteAcceptedPosition(remoteId, position.receivedAtMs)
         spec.updateAltitudeContext(altitude, CtDroneSpec.AltSourceEnum.DJI_STREAM, height, true, position.receivedAtMs)
         spec.setLastPositionTelemetry(CtDroneSpec.PositionTelemetry(null, null, position.courseDeg))
+        // The waypoint is timed on the drone clock (frame PTS via the stream drone clock); the
+        // receive time remains only the freshness gate above and a diagnostic in the track.
+        val droneTimeMs = position.droneTimeMs
         client.newWaypoint(lat, lng, altitude,
-            position.receivedAtMs, CtDroneSpec.TransportTypeEnum.DJI_STREAM, null)
+            droneTimeMs ?: position.receivedAtMs, CtDroneSpec.TransportTypeEnum.DJI_STREAM, null, droneTimeMs != null)
     }
 
     fun designatorStateFor(designator: String): DesignatorState {
@@ -2299,8 +2306,26 @@ class StreamsViewModel(
 
     fun captureClueFrame(designator: String) = ffmpegProbeService?.captureClueFrame(designator)
 
-    fun onSnapshotCaptured(designator: String, bitmap: Bitmap, capturedCamera: StreamCameraTelemetrySample? = null) {
+    /** True (after telling the operator) when a clue form is already open; one snapshot at a time. */
+    fun refuseClueCaptureWhileFormOpen(): Boolean {
+        if (_pendingClue.value == null) return false
+        CaltopoClient.ShowToast(CLUE_ALREADY_OPEN_MESSAGE)
+        return true
+    }
+
+    fun onSnapshotCaptured(
+        designator: String,
+        bitmap: Bitmap,
+        capturedCamera: StreamCameraTelemetrySample? = null,
+        captureDroneTimeMs: Long? = null,
+    ) {
         val startedAtMs = System.currentTimeMillis()
+        if (_pendingClue.value != null) {
+            // One snapshot at a time: the open form owns its binding and projection.
+            CaltopoClient.ShowToast(CLUE_ALREADY_OPEN_MESSAGE)
+            CTDebug(tag, "onSnapshotCaptured(${designator}): refused, a clue form is already open.")
+            return
+        }
         fun logSnapshotIfSlow(step: String, elapsedMs: Long) {
             if (elapsedMs < 250L) return
             CaltopoClient.CTWarn(
@@ -2345,19 +2370,42 @@ class StreamsViewModel(
                 it.referenceLatitudeDeg != null && it.referenceLongitudeDeg != null
         }
         val nonDjiTelemetry = telemetry?.takeUnless { it.sourceTag == "dji-sei-245" }
-        val clueLat = freshDjiCamera?.latitudeDeg ?: nonDjiTelemetry?.latitude ?: droneSpec.lastLat
-        val clueLng = freshDjiCamera?.longitudeDeg ?: nonDjiTelemetry?.longitude ?: droneSpec.lastLng
+        // Bind to the waypoint nearest in time to the frame capture, on the drone clock (frame PTS
+        // via the stream drone clock; the app receive time only when the stream has no anchored clock).
+        val captureTimeMs = captureDroneTimeMs ?: startedAtMs
+        val framePosition = freshDjiCamera?.let { camera ->
+            val lat = camera.latitudeDeg
+            val lng = camera.longitudeDeg
+            if (lat != null && lng != null) org.ncssar.rid2caltopo.data.ClueBindingFramePosition(lat, lng) else null
+        }
+        val initialBinding = org.ncssar.rid2caltopo.data.ClueBinder.bind(
+            aircraftId = droneSpec.remoteId,
+            flightId = org.ncssar.rid2caltopo.data.WaypointTrack.GetLiveFlightId(droneSpec),
+            captureTimeMs = captureTimeMs,
+            captureTimeSource = if (captureDroneTimeMs != null) "stream-pts" else "app-receive",
+            captureReceivedAtMs = startedAtMs,
+            points = org.ncssar.rid2caltopo.data.WaypointTrack.GetBindingPointsSnapshot(droneSpec),
+            framePosition = framePosition,
+            originIsWaypoint = false,
+            flightEnded = false,
+            nowReceivedAtMs = startedAtMs,
+        )
+        // Projection origin: the frame's own drone position (SEI) when present, else the waypoint
+        // nearest the capture, else the latest RID fix.
+        val waypointOrigin = initialBinding.nearest.takeIf { freshDjiCamera?.latitudeDeg == null && nonDjiTelemetry?.latitude == null }
+        val binding = initialBinding.copy(originIsWaypoint = waypointOrigin != null)
+        val clueLat = freshDjiCamera?.latitudeDeg ?: nonDjiTelemetry?.latitude ?: waypointOrigin?.latitude ?: droneSpec.lastLat
+        val clueLng = freshDjiCamera?.longitudeDeg ?: nonDjiTelemetry?.longitude ?: waypointOrigin?.longitude ?: droneSpec.lastLng
         // The SEI altitude datum is opaque. The DEM refinement anchors relative-up at
         // the SEI home coordinate; this provisional altitude is only a flat fallback.
         val seiRelativeAltitude = freshDjiCamera?.let {
             (it.referenceAltitudeMeters ?: 0.0) + checkNotNull(it.relativeUpMeters)
         }
-        val clueAlt = seiRelativeAltitude ?: nonDjiTelemetry?.altitudeMeters ?: droneSpec.lastAlt
-        val clueTimestamp = freshDjiCamera
-            ?.takeIf { it.latitudeDeg != null && it.longitudeDeg != null }
-            ?.receivedAtMs
-            ?: nonDjiTelemetry?.sourceTimestampUs?.div(1000L)
-            ?: droneSpec.mostRecentMsecTimestamp
+        val clueAlt = seiRelativeAltitude ?: nonDjiTelemetry?.altitudeMeters ?: waypointOrigin?.altitudeMeters ?: droneSpec.lastAlt
+        // Capture time (drone clock); never the submission time.
+        val clueTimestamp = captureTimeMs
+        CTDebug(tag, "Snapshot bound designator=$designator capture=${binding.captureTimeSource} " +
+            org.ncssar.rid2caltopo.data.ClueBindingText.formSummary(binding))
         val displayState = streamTelemetryDisplayState(
             streamDesignator = designator,
             pairedMappedId = droneSpec.mappedId,
@@ -2449,9 +2497,12 @@ class StreamsViewModel(
             aircraftPositionSourceLabel = when {
                 freshDjiCamera?.latitudeDeg != null -> "DJI SEI local displacement"
                 nonDjiTelemetry?.latitude != null -> "stream"
+                waypointOrigin != null -> "bound waypoint"
                 else -> "RID"
             },
+            binding = binding,
         )
+        startPendingBindingRefresh()
 
         requestDemClueProjectionRefresh(designator)
 
@@ -2535,8 +2586,12 @@ class StreamsViewModel(
         }
         return try {
             val personal = org.ncssar.rid2caltopo.data.CaltopoPersonalSession.capture("")
+            // The map comes from the flight the clue is bound to, never from live telemetry.
+            val boundFlightId = clue.binding?.flightId
             val destination = if (publish && personal != null) personal.mapID to personal.credentialKey
-                else if (publish) org.ncssar.rid2caltopo.data.AwaitingMapFlights.clueDestination(clue.droneSpec.remoteId) else null
+                else if (publish) (boundFlightId?.takeIf { org.ncssar.rid2caltopo.data.AwaitingMapFlights.hasEntry(it) }
+                    ?.let { org.ncssar.rid2caltopo.data.AwaitingMapFlights.clueDestinationForFlight(it) }
+                    ?: org.ncssar.rid2caltopo.data.AwaitingMapFlights.clueDestination(clue.droneSpec.remoteId)) else null
             val destinationMapKey = destination?.first?.let { if (it.isBlank()) "unassigned" else "map:$it" } ?: currentLocalClueMapKey()
             val record = localClueStore.save(
                 mapKey = destinationMapKey,
@@ -2550,8 +2605,13 @@ class StreamsViewModel(
                 bitmap = bitmap,
                 publishToCaltopo = publish,
                 destinationTeamId = destination?.second ?: CaltopoClient.GetCaltopoCredentials().teamId.orEmpty(),
+                binding = clue.binding,
             )
+            CTDebug(tag, "Clue saved id=${record.id} " +
+                (record.binding?.let { org.ncssar.rid2caltopo.data.ClueBindingText.formSummary(it) } ?: "no binding"))
             localMapMarkers.add(record.toLocalMapMarker())
+            scheduleArchiveRewrite(record)
+            startSavedBindingRefresh()
             registerClueSnapshot(
                 title = record.title,
                 fullImage = bitmap,
@@ -2653,7 +2713,7 @@ class StreamsViewModel(
             try {
                 val jpeg = localClueStore.imageFile(record).readBytes()
                 org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
-                    mapId, teamId, record.id, record.lat, record.lng, record.title, record.description,
+                    mapId, teamId, record.id, record.lat, record.lng, record.title, record.publishedDescription,
                     folder, record.createdAtMs, jpeg) { result ->
                     try {
                         val permanent = result.responseCode in listOf(400, 401, 403, 404, 413, 422)
@@ -2695,11 +2755,12 @@ class StreamsViewModel(
             buildClueCaptureSummary(clue, coordinateDisplayFormat),
         )
         val finalDescription = appendTelemetrySummary(withCaptureSummary, clue.streamTelemetrySummary)
-        if (persistClueLocally(clue, clue.title, finalDescription, publish = true) == null) return
-        org.ncssar.rid2caltopo.data.WaypointTrack.AddClueForTrack(
-            clue.droneSpec, clue.lat, clue.lng, clue.alt, clue.timestamp, clue.title, finalDescription, clue.bitmap)
+        val saved = persistClueLocally(clue, clue.title, finalDescription, publish = true) ?: return
         retryPendingClues()
-        CaltopoClient.ShowToast("Clue saved locally; publication will finish when its map is available.")
+        CaltopoClient.ShowToast(
+            if (saved.bindingFinal) "Clue saved locally; publication will finish when its map is available."
+            else "Clue saved locally; it will publish once its waypoint binding is final."
+        )
 
         clearPendingClue()
     }
@@ -2732,6 +2793,7 @@ class StreamsViewModel(
 
     fun deleteLocalMapMarker(markerId: String): Boolean {
         val marker = localMapMarkers.firstOrNull { it.id == markerId } ?: return false
+        val deletedRecord = localClueStore.record(markerId)
         val removed = try {
             localClueStore.delete(markerId)
         } catch (error: Exception) {
@@ -2756,6 +2818,7 @@ class StreamsViewModel(
                         )
                     }
             }
+            deletedRecord?.let { scheduleArchiveRewrite(it) }
             CaltopoClient.ShowToast("Local clue copy deleted; its CalTopo marker remains.")
             CTDebug(tag, "deleteLocalMapMarker: deleted local copy id=$markerId")
         }
@@ -2765,7 +2828,134 @@ class StreamsViewModel(
     fun clearPendingClue() {
         clueProjectionJob?.cancel()
         clueProjectionJob = null
+        pendingBindingJob?.cancel()
+        pendingBindingJob = null
         _pendingClue.value = null
+    }
+
+    private var pendingBindingJob: Job? = null
+    private var savedBindingJob: Job? = null
+    private var archiveRewriteJob: Job? = null
+    @Volatile private var archiveRewriteAgain = false
+
+    private fun bindingPointsFor(binding: org.ncssar.rid2caltopo.data.ClueBinding, droneSpec: CtDroneSpec?):
+        Pair<List<org.ncssar.rid2caltopo.data.ClueBindingPoint>, Boolean> {
+        val flightId = binding.flightId
+        if (flightId != null) {
+            val live = org.ncssar.rid2caltopo.data.WaypointTrack.GetBindingPointsForFlight(flightId)
+            return (live ?: emptyList()) to (live == null)
+        }
+        // No track existed at capture: a track that started since may still bind it.
+        val points = droneSpec?.let { org.ncssar.rid2caltopo.data.WaypointTrack.GetBindingPointsSnapshot(it) }.orEmpty()
+        return points to false
+    }
+
+    /** While the form is open, refreshes the binding and re-projects from a nearer waypoint origin. */
+    private fun startPendingBindingRefresh() {
+        pendingBindingJob?.cancel()
+        pendingBindingJob = viewModelScope.launch {
+            while (true) {
+                val clue = _pendingClue.value ?: break
+                val binding = clue.binding ?: break
+                if (binding.final) break
+                val (points, ended) = bindingPointsFor(binding, clue.droneSpec)
+                val withFlight = if (binding.flightId == null && points.isNotEmpty())
+                    binding.copy(flightId = org.ncssar.rid2caltopo.data.WaypointTrack.GetLiveFlightId(clue.droneSpec)) else binding
+                val next = org.ncssar.rid2caltopo.data.ClueBinder.refresh(withFlight, points, ended, System.currentTimeMillis())
+                if (next != binding) {
+                    val origin = next.nearest
+                    val moveOrigin = binding.originIsWaypoint && origin != null && origin != binding.nearest
+                    _pendingClue.value = if (moveOrigin && origin != null) {
+                        val projection = projectClueLocation(
+                            droneLat = origin.latitude,
+                            droneLng = origin.longitude,
+                            droneAlt = origin.altitudeMeters ?: clue.droneAlt,
+                            headingDeg = clue.headingDeg,
+                            aglMeters = clue.projectionHeightMeters,
+                            gimbalAngleDeg = clue.gimbalAngleDeg,
+                        )
+                        CTDebug(tag, "Pending clue origin moved to nearer waypoint " +
+                            org.ncssar.rid2caltopo.data.ClueBindingText.formSummary(next))
+                        clue.copy(binding = next, droneLat = origin.latitude, droneLng = origin.longitude,
+                            droneAlt = origin.altitudeMeters ?: clue.droneAlt,
+                            lat = projection.lat, lng = projection.lng, alt = projection.alt,
+                            terrainProjectionApplied = false, demSource = null, demResolutionMeters = null, demSampleStale = false)
+                    } else {
+                        clue.copy(binding = next)
+                    }
+                    if (moveOrigin) requestDemClueProjectionRefresh(clue.designator)
+                }
+                kotlinx.coroutines.delay(500L)
+            }
+        }
+    }
+
+    /**
+     * Finalizes saved clues whose binding is still open. A clue projected from its waypoint moves with
+     * a nearer one; once final, a held upload is released and an archived flight's KMZ is rewritten.
+     */
+    private fun startSavedBindingRefresh() {
+        if (savedBindingJob?.isActive == true) return
+        savedBindingJob = viewModelScope.launch {
+            while (true) {
+                val open = localClueStore.openBindings()
+                if (open.isEmpty()) break
+                val now = System.currentTimeMillis()
+                val updated = open.map { record ->
+                    val binding = checkNotNull(record.binding)
+                    val (points, ended) = bindingPointsFor(binding, null)
+                    val result = org.ncssar.rid2caltopo.data.ClueBindingUpdate.apply(
+                        binding, record.lat, record.lng, points, ended || binding.flightId == null, now)
+                    record.copy(binding = result.binding, lat = result.latitude, lng = result.longitude)
+                }
+                val changed = runCatching { localClueStore.update(updated) }.getOrElse {
+                    CTError(tag, "Unable to save clue binding refresh", it as? Exception ?: Exception(it)); emptyList()
+                }
+                changed.forEach { record ->
+                    val index = localMapMarkers.indexOfFirst { it.id == record.id }
+                    if (index >= 0) localMapMarkers[index] = record.toLocalMapMarker()
+                    if (record.bindingFinal) {
+                        CTDebug(tag, "Clue binding final id=${record.id} " +
+                            (record.binding?.let { org.ncssar.rid2caltopo.data.ClueBindingText.formSummary(it) } ?: ""))
+                        scheduleArchiveRewrite(record)
+                    }
+                }
+                if (changed.any { it.bindingFinal && it.publishToCaltopo }) retryPendingClues()
+                kotlinx.coroutines.delay(1_000L)
+            }
+        }
+    }
+
+    /** Queues a durable KMZ rewrite when [record]'s flight has already been archived, then runs the queue. */
+    private fun scheduleArchiveRewrite(record: AndroidClueRecord?) {
+        if (record != null) {
+            val flightId = record.binding?.flightId
+            if (flightId != null && org.ncssar.rid2caltopo.data.WaypointTrack.IsLiveFlight(flightId)) return
+            if (!record.bindingFinal) return
+        }
+        if (archiveRewriteJob?.isActive == true) {
+            archiveRewriteAgain = true
+            if (record == null) return
+        }
+        val previous = archiveRewriteJob
+        archiveRewriteJob = viewModelScope.launch(Dispatchers.IO) {
+            previous?.join()
+            try {
+                if (record != null) org.ncssar.rid2caltopo.data.FlightArchiveStore.enqueueRewrite(record)
+                do {
+                    archiveRewriteAgain = false
+                    val changed = org.ncssar.rid2caltopo.data.FlightArchiveStore.processRewrites()
+                    if (changed.isNotEmpty()) withContext(Dispatchers.Main) {
+                        changed.forEach { changedRecord ->
+                            val index = localMapMarkers.indexOfFirst { it.id == changedRecord.id }
+                            if (index >= 0) localMapMarkers[index] = changedRecord.toLocalMapMarker()
+                        }
+                    }
+                } while (archiveRewriteAgain)
+            } catch (error: Exception) {
+                CTError(tag, "Flight KMZ rewrite failed; it stays queued", error)
+            }
+        }
     }
 
     private fun requestDemClueProjectionRefresh(designator: String) {
@@ -2790,6 +2980,8 @@ class StreamsViewModel(
                 val current = _pendingClue.value ?: return@withContext
                 if (current.designator != clue.designator ||
                     current.timestamp != clue.timestamp ||
+                    current.droneLat != clue.droneLat ||
+                    current.droneLng != clue.droneLng ||
                     current.headingDeg != clue.headingDeg ||
                     current.gimbalAngleDeg != clue.gimbalAngleDeg) {
                     return@withContext
@@ -3968,6 +4160,20 @@ class StreamsViewModel(
     }
 
     init {
+        // Finish or roll back interrupted archive writes, retry queued KMZ rewrites, and resume
+        // binding clues saved before the app stopped.
+        viewModelScope.launch(Dispatchers.IO) {
+            val changed = runCatching { org.ncssar.rid2caltopo.data.FlightArchiveStore.launchSweep() }.getOrElse {
+                CTError(tag, "Archive launch sweep failed", it as? Exception ?: Exception(it)); emptyList()
+            }
+            withContext(Dispatchers.Main) {
+                changed.forEach { record ->
+                    val index = localMapMarkers.indexOfFirst { it.id == record.id }
+                    if (index >= 0) localMapMarkers[index] = record.toLocalMapMarker()
+                }
+                startSavedBindingRefresh()
+            }
+        }
         viewModelScope.launch {
             while (true) {
                 retryPendingClues()

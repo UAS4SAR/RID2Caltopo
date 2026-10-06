@@ -1233,8 +1233,10 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         if (!droneSpec.shouldRecordWaypoint(sample.getLatitudeDeg(), sample.getLongitudeDeg(),
                 sample.getReceivedAtMs(), CaltopoClient.GetMinDistanceInFeet(),
                 CtDroneSpec.TransportTypeEnum.DJI_STREAM)) return;
+        Long seiDroneTimeMs = sample.getDroneTimeMs();
         WaypointTrack.AddWaypointForTrack(droneSpec, sample.getLatitudeDeg(), sample.getLongitudeDeg(),
-                Math.round(altitude), sample.getReceivedAtMs());
+                Math.round(altitude), seiDroneTimeMs != null ? seiDroneTimeMs : sample.getReceivedAtMs(),
+                sample.getReceivedAtMs(), "dji-stream", seiDroneTimeMs != null);
         CtDroneSpec.PositionTelemetry prior = droneSpec.getLastPositionTelemetry();
         CtDroneSpec.PositionTelemetry telemetry = new CtDroneSpec.PositionTelemetry(
                 prior == null ? null : prior.aircraftAltitudeRateFpm,

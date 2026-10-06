@@ -36,6 +36,22 @@ class StreamCameraTelemetryRegistryTest {
     }
 
     @Test
+    fun framePtsMapsToTheDroneClockPerStream() {
+        val key = "drone-clock-test"
+        StreamCameraTelemetryRegistry.clear(key)
+        val packet = FfmpegTelemetry(sourceTag = "dji-sei-245", sourceTimestampUs = 10_000_000,
+            gimbalPitchDeg = -45.0, cameraYawDeg = 10.0, horizontalFovDeg = 30.0, verticalFovDeg = 20.0)
+        StreamCameraTelemetryRegistry.update(key, packet, 1_790_553_873_300)
+        StreamCameraTelemetryRegistry.update(key, packet.copy(sourceTimestampUs = 11_000_000), 1_790_553_874_150)
+        // Anchor = least-delayed frame: 1_790_553_874_150 - 11_000 ms.
+        assertEquals(1_790_553_865_150L, StreamCameraTelemetryRegistry.droneTimeMs(key, 2_000_000))
+        assertEquals(1_790_553_874_150L, StreamCameraTelemetryRegistry.fresh(key, 1_790_553_874_200)!!.droneTimeMs)
+        assertNull(StreamCameraTelemetryRegistry.droneTimeMs("other-stream", 2_000_000))
+        StreamCameraTelemetryRegistry.clear(key)
+        assertNull(StreamCameraTelemetryRegistry.droneTimeMs(key, 2_000_000))
+    }
+
+    @Test
     fun wiredMatricePositionIsUsableWithoutAnyRidAndExpiresWithTheStream() {
         val name = "wired-matrice-no-rid"
         StreamCameraTelemetryRegistry.clear(name)

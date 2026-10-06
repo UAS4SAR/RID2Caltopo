@@ -51,6 +51,9 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.platform.testTag
+import org.ncssar.rid2caltopo.data.ClueBindingQuality
+import org.ncssar.rid2caltopo.data.ClueBindingText
 import org.ncssar.rid2caltopo.video.CoordinateDisplayFormat
 import org.ncssar.rid2caltopo.video.CoordinateFormatter
 import java.util.Locale
@@ -248,6 +251,20 @@ fun ClueSheetContent (
                 ),
                 style = MaterialTheme.typography.bodySmall
             )
+
+            // Bound waypoint: signed offset (waypoint minus capture, drone clock) and quality.
+            clue.binding?.let { binding ->
+                Text(
+                    text = "Waypoint offset: " + ClueBindingText.formSummary(binding),
+                    color = when (binding.quality) {
+                        ClueBindingQuality.EXACT -> Color.Unspecified
+                        ClueBindingQuality.APPROXIMATE -> Color(0xFFB26A00)
+                        ClueBindingQuality.APPROXIMATE_WARNING, ClueBindingQuality.UNBOUND -> MaterialTheme.colorScheme.error
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.testTag("clue-binding-offset"),
+                )
+            }
 
             Text(
                 text = buildString {

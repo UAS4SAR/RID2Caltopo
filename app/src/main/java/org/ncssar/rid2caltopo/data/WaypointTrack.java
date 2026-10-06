@@ -18,9 +18,7 @@ import org.ncssar.rid2caltopo.BuildConfig;
 import org.ncssar.rid2caltopo.app.R2CActivity;
 import org.ncssar.rid2caltopo.app.R2CApplication;
 
-import android.graphics.Bitmap;
 import java.io.BufferedReader;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -38,13 +36,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.net.Uri;
@@ -112,27 +107,6 @@ public class WaypointTrack {
         }
     }
 
-    /** Holds one locally-archived clue for a track. */
-    public static class ArchivedClue {
-        public final double lat, lng, alt;
-        public final long timestampMs;
-        @NonNull public final String title;
-        @NonNull public final String description;
-        @Nullable public final Bitmap bitmap;
-
-        public ArchivedClue(double lat, double lng, double alt, long timestampMs,
-                            @NonNull String title, @NonNull String description,
-                            @Nullable Bitmap bitmap) {
-            this.lat = lat;
-            this.lng = lng;
-            this.alt = alt;
-            this.timestampMs = timestampMs;
-            this.title = title;
-            this.description = description;
-            this.bitmap = bitmap;
-        }
-    }
-
 	public static int WaypointCount = 0;
 	private static final String TAG = "WaypointTrack";
     private static final String ReportedFilenames = "r2c_reported.txt";
@@ -162,7 +136,10 @@ public class WaypointTrack {
 	private String startTimeStr;
     private DocumentFile dataFilepath;
     private String fileName;
-    private final List<ArchivedClue> clues = new ArrayList<>();
+    // Aligned with coordinates: app receive time (diagnostic only), drone-clock flag and source.
+    private final List<Long> pointReceivedAtMs = new ArrayList<>();
+    private final List<Boolean> pointDroneClock = new ArrayList<>();
+    private final List<String> pointSources = new ArrayList<>();
     private final String deferredPublicationId = java.util.UUID.randomUUID().toString();
     private boolean archivePrepared = false;
     private String archivedOwner = "";
@@ -192,14 +169,53 @@ public class WaypointTrack {
 
 	public static void AddWaypointForTrack(@NonNull CtDroneSpec droneSpec, double lat, double lng,
 										   long altitude, long timestampInMillisec) {
+		AddWaypointForTrack(droneSpec, lat, lng, altitude, timestampInMillisec,
+				System.currentTimeMillis(), "rid", true);
+	}
+
+	/**
+	 * timestampInMillisec is the drone's clock (RID timestamp or SEI frame PTS mapped by the stream
+	 * drone clock); receivedAtMs is the app's receive time, recorded only as a diagnostic.
+	 */
+	public static void AddWaypointForTrack(@NonNull CtDroneSpec droneSpec, double lat, double lng,
+										   long altitude, long timestampInMillisec, long receivedAtMs,
+										   @NonNull String source, boolean droneClock) {
 		String trackLabel = droneSpec.trackLabel();
 		WaypointTrack track = TrackMap.get(trackLabel);
 		if (null == track) {
 			track = new WaypointTrack(trackLabel, droneSpec);
 			TrackMap.put(trackLabel, track);
 		}
-		track.addWaypoint(lat, lng, altitude, timestampInMillisec);
+		track.addWaypoint(lat, lng, altitude, timestampInMillisec, receivedAtMs, source, droneClock);
 	}
+
+    /** Track points with drone-clock times for clue binding; empty when the drone has no live track. */
+    @NonNull
+    public static List<ClueBindingPoint> GetBindingPointsSnapshot(@NonNull CtDroneSpec droneSpec) {
+        WaypointTrack track = TrackMap.get(droneSpec.trackLabel());
+        if (track == null) return new ArrayList<>();
+        return track.getBindingPointsSnapshot();
+    }
+
+    /** Id of the drone's live track (its awaiting-map journal id), or null when none is recording. */
+    @Nullable
+    public static String GetLiveFlightId(@NonNull CtDroneSpec droneSpec) {
+        WaypointTrack track = TrackMap.get(droneSpec.trackLabel());
+        return track == null ? null : track.deferredPublicationId;
+    }
+
+    /** Binding points of the live track with this id, or null once it has been archived. */
+    @Nullable
+    public static List<ClueBindingPoint> GetBindingPointsForFlight(@NonNull String flightId) {
+        for (WaypointTrack track : new ArrayList<>(TrackMap.values())) {
+            if (track.deferredPublicationId.equals(flightId)) return track.getBindingPointsSnapshot();
+        }
+        return null;
+    }
+
+    public static boolean IsLiveFlight(@NonNull String flightId) {
+        return GetBindingPointsForFlight(flightId) != null;
+    }
 
     public static void CapturePublicationIntent(CtDroneSpec drone) {
         for (WaypointTrack track : new ArrayList<>(TrackMap.values())) {
@@ -311,9 +327,35 @@ public class WaypointTrack {
             Object point = other.coordinates.opt(i);
             if (point != null) {
                 this.coordinates.put(point);
+                this.pointReceivedAtMs.add(i < other.pointReceivedAtMs.size() ? other.pointReceivedAtMs.get(i) : null);
+                this.pointDroneClock.add(i < other.pointDroneClock.size() ? other.pointDroneClock.get(i) : Boolean.TRUE);
+                this.pointSources.add(i < other.pointSources.size() ? other.pointSources.get(i) : "rid");
             }
         }
-        this.clues.addAll(other.clues);
+    }
+
+    @NonNull
+    private synchronized List<ClueBindingPoint> getBindingPointsSnapshot() {
+        ArrayList<ClueBindingPoint> snapshot = new ArrayList<>(coordinates.length());
+        for (int i = 0; i < coordinates.length(); i++) {
+            JSONArray point = coordinates.optJSONArray(i);
+            if (point == null || point.length() < 4) continue;
+            try {
+                double lng = point.getDouble(0);
+                double lat = point.getDouble(1);
+                double ele = point.getDouble(2);
+                long timestampMsec = point.getLong(3);
+                Long received = i < pointReceivedAtMs.size() ? pointReceivedAtMs.get(i) : null;
+                boolean droneClock = i >= pointDroneClock.size() || pointDroneClock.get(i);
+                String source = i < pointSources.size() ? pointSources.get(i) : "rid";
+                snapshot.add(new ClueBindingPoint(timestampMsec, received, lat, lng,
+                        ele > -999.0 ? Double.valueOf(ele) : null, source, droneClock));
+            } catch (JSONException e) {
+                CTWarn(TAG, String.format(Locale.US,
+                        "getBindingPointsSnapshot(%s): skipping malformed point at index %d", trackLabel, i), e);
+            }
+        }
+        return snapshot;
     }
 
     @NonNull
@@ -336,27 +378,6 @@ public class WaypointTrack {
         }
         return snapshot;
     }
-
-	private boolean prepareArchiveFile() {
-        if (dataFilepath != null && fileName != null) return true;
-		Context ctxt = R2CApplication.getAppCtxt();
-		DocumentFile todaysArchiveDir = GetTodaysTrackDir();
-		if (null == ctxt || null == todaysArchiveDir) return false;
-		try {
-			fileName = OperatorArchiveFilename.track(archiveAircraftID(), archiveTimestampMsec());
-			dataFilepath = DocumentFileCompat.createFileWithExactName(
-                    todaysArchiveDir, GEOJSON_MIME_TYPE, fileName);
-			if (dataFilepath == null) {
-                CTError(TAG, "prepareArchiveFile(): not able to create " + fileName);
-                return false;
-            }
-			CTDebug(TAG, "prepareArchiveFile(): created " + dataFilepath.getUri());
-            return true;
-		} catch (Exception e) {
-			CTError(TAG, "prepareArchiveFile() raised.", e);
-            return false;
-		}
-	}
 
     @Nullable
     public JSONObject getGeoJson() {
@@ -395,6 +416,17 @@ public class WaypointTrack {
             joProp.put("title", trackLabel);
             joProp.put("start_time", startTimeStr);
             joProp.put("r2c_prop", r2cProp);
+            // Optional per-point fields aligned with coordinates (older files omit them).
+            JSONArray received = new JSONArray();
+            JSONArray droneClock = new JSONArray();
+            for (int i = 0; i < coordinates.length(); i++) {
+                Long value = i < pointReceivedAtMs.size() ? pointReceivedAtMs.get(i) : null;
+                received.put(value == null ? JSONObject.NULL : value);
+                droneClock.put(i >= pointDroneClock.size() || pointDroneClock.get(i));
+            }
+            joProp.put("r2c_point_received_ms", received);
+            joProp.put("r2c_point_drone_clock", droneClock);
+            joProp.put("r2c_flight_id", deferredPublicationId);
             jo.put("properties", joProp);
 
             JSONObject joGeometry = new JSONObject();
@@ -989,31 +1021,25 @@ public class WaypointTrack {
         }
         long numCoords = coordinates.length();
         JSONObject joTop = getGeoJson();
-        String geoJsonString = null;
-        if (null != joTop) try {
-            if (!prepareArchiveFile()) {
-                CTError(TAG, "archive(): unable to prepare archive file.");
-                return;
-            }
-            geoJsonString = joTop.toString();
+        if (null == joTop) return;
+        try {
             Context ctxt = R2CApplication.getAppCtxt();
-            if (ctxt == null || dataFilepath == null) {
-                CTError(TAG, "archive(): missing context or archive path.");
+            DocumentFile todaysArchiveDir = GetTodaysTrackDir();
+            if (ctxt == null || todaysArchiveDir == null) {
+                CTError(TAG, "archive(): missing context or archive folder.");
                 return;
             }
-            ContentResolver resolver = ctxt.getContentResolver();
-            org.ncssar.rid2caltopo.app.FlightStorage.prepareWrite(ctxt, geoJsonString.getBytes().length);
-            try (OutputStream outputStream = resolver.openOutputStream(dataFilepath.getUri(), "wt")) {
-                if (outputStream == null) {
-                    CTError(TAG, "archive(): unable to open output stream for " + dataFilepath.getUri());
-                    return;
-                }
-                outputStream.write(geoJsonString.getBytes());
-                outputStream.flush();
+            if (fileName == null) fileName = OperatorArchiveFilename.track(archiveAircraftID(), archiveTimestampMsec());
+            String geoJsonString = joTop.toString();
+            // GeoJSON then the flight's backup KMZ (track plus every clue and local marker it owns),
+            // each written crash-safely; the KMZ is written with or without clues.
+            if (!FlightArchiveStore.writeFlight(todaysArchiveDir, fileName, geoJsonString, trackLabel,
+                    archiveAircraftID(), deferredPublicationId, getBindingPointsSnapshot())) {
+                CTError(TAG, "archive(): unable to write " + fileName);
+                return;
             }
-            org.ncssar.rid2caltopo.app.FlightStorage.documentChanged(ctxt, dataFilepath);
-            CTDebug(TAG, String.format(Locale.US, "archive(): wrote %d coordinates to %s",
-                    numCoords, dataFilepath.getUri()));
+            dataFilepath = todaysArchiveDir.findFile(fileName);
+            CTDebug(TAG, String.format(Locale.US, "archive(): wrote %d coordinates to %s", numCoords, fileName));
             if (archivedOkToLog && !archivedLocalOnly) {
                 CTDebug(TAG, String.format(Locale.US,
                         "archive(%s): Publishing...", fileName));
@@ -1022,16 +1048,19 @@ public class WaypointTrack {
                         String.format(Locale.US, "archive(%s)", fileName),
                         this::statsReported);
             }
-            if (!clues.isEmpty()) archiveKmz();
-            // don't report finished for some kind of timeout:
         } catch (Exception e) {
-			CTError(TAG, String.format("archive(%s): raised.", dataFilepath.getUri()), e);
+			CTError(TAG, String.format("archive(%s): raised.", fileName), e);
 		}
 	}
 
     // returns true if waypoint added
 	public void addWaypoint(double lat, double lng,
 							long altInMeters, long timestampInMillisec) {
+		addWaypoint(lat, lng, altInMeters, timestampInMillisec, System.currentTimeMillis(), "rid", true);
+	}
+
+	public synchronized void addWaypoint(double lat, double lng, long altInMeters, long timestampInMillisec,
+							long receivedAtMs, @NonNull String source, boolean droneClock) {
 
 		JSONArray ja = new JSONArray();
 		ja.put(String.format(Locale.US, "%.6f", lng));
@@ -1039,158 +1068,14 @@ public class WaypointTrack {
 		ja.put(String.format(Locale.US, "%d", altInMeters));
 		ja.put(String.format(Locale.US, "%d", timestampInMillisec));
 		coordinates.put(ja);
+		pointReceivedAtMs.add(receivedAtMs);
+		pointDroneClock.add(droneClock);
+		pointSources.add(source);
 		WaypointCount++;
         if (droneSpec.isCurrentFlightConfirmed() && !droneSpec.isLocalArchiveOnly()) {
             recordPublicationIntent(false);
         }
 	}
-
-    /** Associates a clue with this track for inclusion in the KMZ archive. */
-    public void addClue(@NonNull ArchivedClue clue) {
-        clues.add(clue);
-        CTDebug(TAG, String.format(Locale.US, "addClue(%s): '%s' at %.6f,%.6f",
-                trackLabel, clue.title, clue.lat, clue.lng));
-    }
-
-    /**
-     * Associates a clue with the active WaypointTrack for the given drone.
-     * Mirrors {@link #AddWaypointForTrack}.  If no track is active for the
-     * drone, the clue is logged as a warning and dropped — consistent with
-     * existing offline behaviour.
-     */
-    public static void AddClueForTrack(@NonNull CtDroneSpec droneSpec,
-            double lat, double lng, double alt, long timestampMs,
-            @NonNull String title, @NonNull String description,
-            @Nullable Bitmap bitmap) {
-        String trackLabel = droneSpec.trackLabel();
-        WaypointTrack track = TrackMap.get(trackLabel);
-        if (null != track) {
-            track.addClue(new ArchivedClue(lat, lng, alt, timestampMs,
-                    title, description, bitmap));
-        } else {
-            CTWarn(TAG, String.format(Locale.US,
-                    "AddClueForTrack(): no active track for '%s', clue '%s' not archived.",
-                    trackLabel, title));
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // KMZ archival
-    // -----------------------------------------------------------------------
-
-    /**
-     * Writes a .kmz file (KML + embedded JPEG images) to today's track
-     * directory.  Called from {@link #archive()} when at least one clue is
-     * present.
-     */
-    private void archiveKmz() {
-        Context ctxt = R2CApplication.getAppCtxt();
-        DocumentFile todaysArchiveDir = GetTodaysTrackDir();
-        if (null == ctxt || null == todaysArchiveDir) {
-            CTError(TAG, "archiveKmz(): missing context or archive dir.");
-            return;
-        }
-        String kmzFileName = OperatorArchiveFilename.clueReport(
-                archiveAircraftID(), archiveTimestampMsec());
-        try {
-            DocumentFile kmzFile = DocumentFileCompat.createFileWithExactName(
-                    todaysArchiveDir, "application/vnd.google-earth.kmz", kmzFileName);
-            if (null == kmzFile) {
-                CTError(TAG, "archiveKmz(): could not create KMZ file.");
-                return;
-            }
-            ContentResolver resolver = ctxt.getContentResolver();
-            OutputStream os = resolver.openOutputStream(kmzFile.getUri());
-            if (null == os) {
-                CTError(TAG, "archiveKmz(): could not open output stream.");
-                return;
-            }
-            ZipOutputStream zos = new ZipOutputStream(os);
-
-            // --- build KML ---------------------------------------------------
-            StringBuilder kml = new StringBuilder();
-            kml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-            kml.append("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n");
-            kml.append("  <Document>\n");
-            kml.append("    <name>").append(escapeXml(trackLabel)).append("</name>\n");
-
-            // Track style (blue line)
-            kml.append("    <Style id=\"trackStyle\">\n");
-            kml.append("      <LineStyle><color>ffff0000</color><width>3</width></LineStyle>\n");
-            kml.append("    </Style>\n");
-
-            // Track LineString placemark
-            kml.append("    <Placemark>\n");
-            kml.append("      <name>").append(escapeXml(trackLabel)).append("</name>\n");
-            kml.append("      <styleUrl>#trackStyle</styleUrl>\n");
-            kml.append("      <LineString>\n");
-            kml.append("        <tessellate>1</tessellate>\n");
-            kml.append("        <coordinates>\n");
-            for (int i = 0; i < coordinates.length(); i++) {
-                JSONArray pt = coordinates.getJSONArray(i);
-                // GeoJSON stores [lng, lat, alt, timestamp]
-                kml.append(String.format(Locale.US, "          %.6f,%.6f,%.0f\n",
-                        Double.parseDouble(pt.getString(0)),
-                        Double.parseDouble(pt.getString(1)),
-                        Double.parseDouble(pt.getString(2))));
-            }
-            kml.append("        </coordinates>\n");
-            kml.append("      </LineString>\n");
-            kml.append("    </Placemark>\n");
-
-            // Clue placemarks
-            for (int i = 0; i < clues.size(); i++) {
-                ArchivedClue clue = clues.get(i);
-                String isoTime = Instant.ofEpochMilli(clue.timestampMs).toString();
-                kml.append("    <Placemark>\n");
-                kml.append("      <name>").append(escapeXml(clue.title)).append("</name>\n");
-                kml.append("      <TimeStamp><when>").append(isoTime).append("</when></TimeStamp>\n");
-                if (clue.bitmap != null) {
-                    kml.append("      <description><![CDATA[")
-                       .append(clue.description)
-                       .append("<br/><img src=\"files/clue_").append(i).append(".jpg\"/>")
-                       .append("]]></description>\n");
-                } else if (!clue.description.isEmpty()) {
-                    kml.append("      <description>")
-                       .append(escapeXml(clue.description))
-                       .append("</description>\n");
-                }
-                kml.append("      <Point>\n");
-                kml.append(String.format(Locale.US,
-                        "        <coordinates>%.6f,%.6f,%.1f</coordinates>\n",
-                        clue.lng, clue.lat, clue.alt));
-                kml.append("      </Point>\n");
-                kml.append("    </Placemark>\n");
-            }
-            kml.append("  </Document>\n");
-            kml.append("</kml>\n");
-
-            // Write doc.kml entry
-            zos.putNextEntry(new ZipEntry("doc.kml"));
-            zos.write(kml.toString().getBytes("UTF-8"));
-            zos.closeEntry();
-
-            // Write image files
-            for (int i = 0; i < clues.size(); i++) {
-                ArchivedClue clue = clues.get(i);
-                if (clue.bitmap != null) {
-                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                    clue.bitmap.compress(Bitmap.CompressFormat.JPEG, 85, baos);
-                    byte[] jpegBytes = baos.toByteArray();
-                    zos.putNextEntry(new ZipEntry("files/clue_" + i + ".jpg"));
-                    zos.write(jpegBytes);
-                    zos.closeEntry();
-                }
-            }
-            zos.finish();
-            zos.close();
-            org.ncssar.rid2caltopo.app.FlightStorage.documentChanged(ctxt, kmzFile);
-            CTDebug(TAG, String.format(Locale.US,
-                    "archiveKmz(): wrote %s with %d clue(s).", kmzFileName, clues.size()));
-        } catch (Exception e) {
-            CTError(TAG, "archiveKmz(): raised.", e);
-        }
-    }
 
     @NonNull
     private String archiveAircraftID() {
@@ -1205,13 +1090,4 @@ public class WaypointTrack {
         return timestamp > 0 ? timestamp : System.currentTimeMillis();
     }
 
-    /** Escapes special XML characters in a string value. */
-    @NonNull
-    private static String escapeXml(@NonNull String s) {
-        return s.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace("\"", "&quot;")
-                .replace("'", "&apos;");
-    }
 }

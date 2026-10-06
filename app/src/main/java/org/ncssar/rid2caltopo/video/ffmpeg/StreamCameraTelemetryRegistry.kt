@@ -1,6 +1,7 @@
 package org.ncssar.rid2caltopo.video.ffmpeg
 
 import android.hardware.GeomagneticField
+import org.ncssar.rid2caltopo.data.StreamDroneClock
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -34,6 +35,8 @@ data class StreamCameraTelemetrySample(
     val fovAzimuthDeg: Double? = null,
     /** Magnetic-to-true correction applied to the raw DJI camera azimuth. */
     val magneticDeclinationDeg: Double = 0.0,
+    /** Frame PTS mapped to epoch ms by the stream's drone clock; null until the clock is anchored. */
+    val droneTimeMs: Long? = null,
 )
 
 internal fun shouldBlockRidClueFallback(
@@ -58,6 +61,19 @@ object StreamCameraTelemetryRegistry {
     private val courseStates = mutableMapOf<String, CourseState>()
     private val positionValidated = mutableSetOf<String>()
     private val relativeUpValidated = mutableSetOf<String>()
+    private val droneClocks = mutableMapOf<String, StreamDroneClock>()
+
+    /** Feeds a frame PTS seen at [receivedAtMs] into the stream's drone clock. */
+    fun observeFramePts(key: String, sourceTimestampUs: Long?, receivedAtMs: Long) {
+        val normalized = key.trim().uppercase()
+        if (normalized.isEmpty()) return
+        synchronized(lock) { droneClocks.getOrPut(normalized) { StreamDroneClock() }.observe(sourceTimestampUs, receivedAtMs) }
+    }
+
+    /** Drone-clock time (epoch ms) of a frame PTS on stream [key], or null when the clock is not anchored. */
+    fun droneTimeMs(key: String, sourceTimestampUs: Long?): Long? = synchronized(lock) {
+        droneClocks[key.trim().uppercase()]?.droneTimeMs(sourceTimestampUs)
+    }
 
     private data class CourseState(
         var anchorNorthMm: Int,
@@ -78,6 +94,7 @@ object StreamCameraTelemetryRegistry {
 
     fun update(designator: String, telemetry: FfmpegTelemetry, nowMs: Long = System.currentTimeMillis()) {
         if (telemetry.sourceTag != "dji-sei-245") return
+        observeFramePts(designator, telemetry.sourceTimestampUs, nowMs)
         val rawTilt = telemetry.gimbalPitchDeg?.takeIf { it.isFinite() } ?: return
         val tilt = DjiCameraOrientation.calibratedTiltDeg(rawTilt) ?: return
         synchronized(lock) { tiltSamples[designator.trim().uppercase()] = tilt to nowMs }
@@ -159,6 +176,7 @@ object StreamCameraTelemetryRegistry {
                 attitudeAnglesDeg = telemetry.djiAttitudeAnglesDeg.takeIf { it.size == 9 }
                     ?: List(9) { Double.NaN },
                 fovAzimuthDeg = controllerAzimuth,
+                droneTimeMs = droneClocks[key]?.droneTimeMs(telemetry.sourceTimestampUs),
             )
             samples[key] = sample
             sample.sourceTimestampUs?.let { timestampUs ->
@@ -283,6 +301,7 @@ object StreamCameraTelemetryRegistry {
             courseStates.remove(key)
             positionValidated.remove(key)
             relativeUpValidated.remove(key)
+            droneClocks.remove(key)
         }
     }
 }

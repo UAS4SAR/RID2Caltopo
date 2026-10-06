@@ -85,6 +85,34 @@ class WaypointTrackTest {
     }
 
     @Test
+    fun geoJsonStoresDroneTimeAndDiagnosticReceiveTimeAndFlightId() {
+        val drone = activeDrone("RID-BIND", "RID-BIND")
+        WaypointTrack.AddWaypointForTrack(drone, 39.153, -121.132, 100L, 1_790_553_873_000L, 1_790_553_873_400L, "rid", true)
+        WaypointTrack.AddWaypointForTrack(drone, 39.154, -121.132, -1000L, 1_790_553_874_000L, 1_790_553_874_350L, "dji-stream", false)
+        val points = WaypointTrack.GetBindingPointsSnapshot(drone)
+        assertEquals(listOf(1_790_553_873_000L, 1_790_553_874_000L), points.map { it.timeMs })
+        assertEquals(listOf(1_790_553_873_400L, 1_790_553_874_350L), points.map { it.receivedAtMs })
+        assertEquals(listOf("rid", "dji-stream"), points.map { it.source })
+        assertEquals(listOf(true, false), points.map { it.droneClock })
+        assertEquals(null, points[1].altitudeMeters)
+        val flightId = WaypointTrack.GetLiveFlightId(drone)!!
+        assertTrue(WaypointTrack.IsLiveFlight(flightId))
+        assertEquals(points, WaypointTrack.GetBindingPointsForFlight(flightId))
+        @Suppress("UNCHECKED_CAST")
+        val track = (trackMapField.get(null) as Map<String, WaypointTrack>).getValue(drone.trackLabel())
+        val geoJson = track.getGeoJson()!!.toString().toByteArray()
+        val properties = JSONObject(String(geoJson)).getJSONArray("features").getJSONObject(0).getJSONObject("properties")
+        assertEquals(flightId, properties.getString("r2c_flight_id"))
+        assertEquals(1_790_553_873_400L, properties.getJSONArray("r2c_point_received_ms").getLong(0))
+        // Coordinates keep the existing [lng, lat, alt, droneTimeMs] format; the archive decoder reads both.
+        val decoded = FlightArchiveRebuild.decode(geoJson)!!
+        assertEquals(points.map { it.timeMs }, decoded.points.map { it.timeMs })
+        assertEquals(points.map { it.receivedAtMs }, decoded.points.map { it.receivedAtMs })
+        assertEquals(listOf(true, false), decoded.points.map { it.droneClock })
+        assertFalse(WaypointTrack.IsLiveFlight("not-a-flight"))
+    }
+
+    @Test
     fun standaloneArchiveUsesDesignatorAndFirstWaypointLikeCalTopo() {
         val drone = activeDrone("RID-MATRICE", "1sar7DjMtrc4td", "1SAR7")
         val expected = "1sar7DjMtrc4td_" + CaltopoClient.TimeDatestampString(1_000L)

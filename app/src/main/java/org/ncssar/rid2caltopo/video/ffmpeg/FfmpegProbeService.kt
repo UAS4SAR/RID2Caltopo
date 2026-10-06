@@ -1160,6 +1160,8 @@ class FfmpegProbeService(
         val bitmap: android.graphics.Bitmap,
         val sourceTimestampUs: Long,
         val camera: StreamCameraTelemetrySample?,
+        /** Frame capture time on the drone clock (PTS via the stream drone clock), when anchored. */
+        val droneTimeMs: Long? = null,
     )
 
     fun captureClueFrame(designator: String): ClueFrameCapture? {
@@ -1168,7 +1170,8 @@ class FfmpegProbeService(
         val frame = FfmpegBridge.captureRenderedFrame(sessionId) ?: return null
         val camera = StreamCameraTelemetryRegistry.freshForFrame("capture:$sessionId", frame.sourceTimestampUs, maxFrameDeltaUs = 0)
         CTDebug(tag, "Clue frame capture designator=$designator sessionId=$sessionId framePtsUs=${frame.sourceTimestampUs} cameraPtsUs=${camera?.sourceTimestampUs} cameraMatched=${camera != null}")
-        return ClueFrameCapture(frame.bitmap, frame.sourceTimestampUs, camera)
+        val droneTimeMs = StreamCameraTelemetryRegistry.droneTimeMs("capture:$sessionId", frame.sourceTimestampUs)
+        return ClueFrameCapture(frame.bitmap, frame.sourceTimestampUs, camera, droneTimeMs)
     }
 
     fun renderedFrameSourceTimestampUs(designator: String): Long? = synchronized(stateLock) {

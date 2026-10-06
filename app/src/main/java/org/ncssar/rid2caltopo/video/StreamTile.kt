@@ -533,7 +533,7 @@ fun StreamTile(
             clueBitmap
         )
         val viewModelStartedAtMs = System.currentTimeMillis()
-        viewModel.onSnapshotCaptured(streamDesignator, clueBitmap, capturedFrame.camera)
+        viewModel.onSnapshotCaptured(streamDesignator, clueBitmap, capturedFrame.camera, capturedFrame.droneTimeMs)
         logClueTapIfSlow(
             "StreamsViewModel.onSnapshotCaptured",
             System.currentTimeMillis() - viewModelStartedAtMs,
@@ -556,6 +556,10 @@ fun StreamTile(
         )
         if (!currentIsFocused) {
             viewModel.ensureFocus(streamDesignator)
+        }
+        if (viewModel.refuseClueCaptureWhileFormOpen()) {
+            CTDebug(tag, "Clue capture refused for $streamDesignator: a clue form is already open.")
+            return
         }
         if (!viewModel.hasPairedTelemetry(streamDesignator)) {
             CTDebug(tag, "Clue capture unavailable for $streamDesignator: no active paired telemetry.")

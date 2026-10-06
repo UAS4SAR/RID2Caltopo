@@ -6,10 +6,11 @@ import android.graphics.BitmapFactory
 import org.json.JSONArray
 import org.json.JSONObject
 import org.ncssar.rid2caltopo.data.AwaitingMapClueMatch
+import org.ncssar.rid2caltopo.data.ClueBinding
+import org.ncssar.rid2caltopo.data.ClueBindingText
+import org.ncssar.rid2caltopo.data.PlainFileSafeWriter
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 import java.util.UUID
 import kotlin.math.roundToInt
 
@@ -30,7 +31,18 @@ data class AndroidClueRecord(
     val destinationTeamId: String = "",
     val uploadState: String = "legacy",
     val lastUploadError: String = "",
-)
+    /** Waypoint binding (optional; records saved before binding existed have none). */
+    val binding: ClueBinding? = null,
+) {
+    /** Capture time used for flight ownership: the bound capture time on the drone clock. */
+    val ownershipTimeMs: Long get() = binding?.captureTimeMs ?: createdAtMs
+
+    /** Uploads wait until no nearer waypoint can arrive. Records without a binding are final. */
+    val bindingFinal: Boolean get() = binding?.final ?: true
+
+    /** Text for CalTopo and the KMZ: the stored description plus the binding block. */
+    val publishedDescription: String get() = ClueBindingText.publishedDescription(description, binding)
+}
 
 /**
  * Durable local-first clue storage, matching the Apple clue-store contract.
@@ -70,6 +82,7 @@ class AndroidClueStore private constructor(
         bitmap: Bitmap,
         publishToCaltopo: Boolean,
         destinationTeamId: String = "",
+        binding: ClueBinding? = null,
     ): AndroidClueRecord {
         val id = UUID.randomUUID().toString().lowercase()
         val imageFilename = "$id.jpg"
@@ -89,7 +102,7 @@ class AndroidClueStore private constructor(
             publishToCaltopo = publishToCaltopo,
             destinationTeamId = destinationTeamId,
             uploadState = if (publishToCaltopo) "pending" else "local",
-
+            binding = binding,
         )
         val imageBytes = encodeJpeg(bitmap, 90)
         val thumbnailBytes = encodeJpeg(clueThumbnail(bitmap), 78)
@@ -137,10 +150,14 @@ class AndroidClueStore private constructor(
         }
     }
 
+    /**
+     * Assigns the unassigned publishable clues owned by [flight] (shared rule in AwaitingMapClueMatch,
+     * with [otherFlights] competing for them) to the chosen map.
+     */
     @Synchronized
-    fun bindAwaitingFlight(designator: String, from: Long, through: Long, mapId: String, teamId: String) {
-        records.values.toList().filter { it.mapKey == "unassigned" && it.publishToCaltopo &&
-            AwaitingMapClueMatch.matches(it.sourceDesignator, it.createdAtMs, designator, from, through) }.forEach {
+    fun bindAwaitingFlight(flight: JSONObject, otherFlights: List<JSONObject>, mapId: String, teamId: String) {
+        val owned = awaitingFlightClues(flight, otherFlights).map { it.id }.toSet()
+        records.values.toList().filter { it.id in owned && it.mapKey == "unassigned" && it.publishToCaltopo }.forEach {
             records[it.id] = it.copy(mapKey = "map:$mapId", destinationTeamId = teamId, uploadState = "pending")
         }
         persistIndex()
@@ -150,12 +167,39 @@ class AndroidClueStore private constructor(
     @Synchronized
     fun awaitingFlightClues(flight: JSONObject, otherFlights: List<JSONObject>): List<AndroidClueRecord> =
         AwaitingMapClueMatch.ownedClues(records.values.filter { imageFile(it).isFile }, flight, otherFlights,
-            { it.sourceDesignator }, { it.createdAtMs })
+            { it.sourceDesignator }, { it.ownershipTimeMs }, { it.binding?.flightId })
+
+    /** Every stored clue and local marker whose image is present. */
+    @Synchronized
+    fun allRecords(): List<AndroidClueRecord> = records.values.filter { imageFile(it).isFile }
+
+    @Synchronized
+    fun record(id: String): AndroidClueRecord? = records[id]
+
+    /** Replaces stored records (binding refresh); returns the ones that changed. */
+    @Synchronized
+    fun update(changed: List<AndroidClueRecord>): List<AndroidClueRecord> {
+        val applied = changed.filter { records.containsKey(it.id) && records[it.id] != it }
+        if (applied.isEmpty()) return emptyList()
+        val prior = applied.associate { it.id to records.getValue(it.id) }
+        applied.forEach { records[it.id] = it }
+        try {
+            persistIndex()
+        } catch (error: Exception) {
+            prior.forEach { (id, record) -> records[id] = record }
+            throw error
+        }
+        return applied
+    }
+
+    /** Records whose binding is still open (waiting for a nearer waypoint). */
+    @Synchronized
+    fun openBindings(): List<AndroidClueRecord> = records.values.filter { !it.bindingFinal }
 
     @Synchronized
     fun pendingForMap(mapId: String, teamId: String): List<AndroidClueRecord> {
         loadIndex()
-        return records.values.filter { it.publishToCaltopo && it.uploadState == "pending" &&
+        return records.values.filter { it.publishToCaltopo && it.uploadState == "pending" && it.bindingFinal &&
             mapId.isNotBlank() && teamId.isNotBlank() && it.mapKey == "map:$mapId" && it.destinationTeamId == teamId }
     }
 
@@ -213,25 +257,8 @@ class AndroidClueStore private constructor(
     }
 
     private fun replaceFileAtomically(target: File, bytes: ByteArray) {
-        val temporary = File(target.parentFile, ".${target.name}.tmp")
-        temporary.outputStream().use { output ->
-            output.write(bytes)
-            output.flush()
-        }
-        moveReplacing(temporary, target)
-    }
-
-    private fun moveReplacing(source: File, target: File) {
-        runCatching {
-            Files.move(
-                source.toPath(),
-                target.toPath(),
-                StandardCopyOption.ATOMIC_MOVE,
-                StandardCopyOption.REPLACE_EXISTING,
-            )
-        }.getOrElse {
-            Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        }
+        // .partial + fsync + verify + atomic move (FlightArchiveWriter.kt).
+        PlainFileSafeWriter.replace(target, bytes) { it.isNotEmpty() }
     }
 
     companion object {
@@ -282,6 +309,7 @@ private fun AndroidClueRecord.toJson(): JSONObject = JSONObject()
     .put("destinationTeamId", destinationTeamId)
     .put("uploadState", uploadState)
     .put("lastUploadError", lastUploadError)
+    .also { json -> binding?.let { json.put("binding", it.toJson()) } }
 
 private fun JSONObject.toAndroidClueRecord(): AndroidClueRecord? {
     val id = optString("id").takeIf { it.isNotBlank() } ?: return null
@@ -303,5 +331,6 @@ private fun JSONObject.toAndroidClueRecord(): AndroidClueRecord? {
         destinationTeamId = optString("destinationTeamId"),
         uploadState = optString("uploadState", "legacy"),
         lastUploadError = optString("lastUploadError"),
+        binding = ClueBinding.fromJson(optJSONObject("binding")),
     ).takeIf { it.lat.isFinite() && it.lng.isFinite() }
 }

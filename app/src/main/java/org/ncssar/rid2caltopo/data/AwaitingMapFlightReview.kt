@@ -120,48 +120,87 @@ object AwaitingMapFlightText {
 }
 
 /**
- * The single rule that associates clue photos with an awaiting-map flight. Used when a
- * publication choice binds clues, for the panel's photo count, and for Discard.
+ * The single rule that associates clue photos with a flight. Used when a publication choice binds
+ * clues, for the panel's photo count, for Discard, and for the flight KMZ. Apple mirrors it in
+ * AwaitingMapClueMatch (AwaitingMapFlightReview.swift).
+ *
+ * A clue bound to a flight id belongs to that flight. Otherwise every flight of the same drone whose
+ * window [first - 30 s, last + 30 s] contains the capture is a candidate, and the one with the
+ * waypoint nearest in time wins (ties go to the earlier flight).
  */
 object AwaitingMapClueMatch {
-    /** Clues captured shortly after the last RID point still belong to the flight. */
+    /** Clues captured shortly after the last waypoint still belong to the flight. */
     const val TRAILING_MILLISECONDS = 30_000L
+    /** Clues captured shortly before the first recorded waypoint belong to the flight. */
+    const val LEADING_MILLISECONDS = 30_000L
 
     /** Clue records carry the drone designator, which is the track label before any '_'. */
-    fun designator(flight: JSONObject): String = flight.optString("label").substringBefore('_')
+    fun designator(flight: JSONObject): String = designatorOfLabel(flight.optString("label"))
+
+    fun designatorOfLabel(label: String): String = label.substringBefore('_')
 
     @JvmStatic
     fun matches(clueDesignator: String, createdAtMs: Long, flightDesignator: String, firstTime: Long, lastTime: Long): Boolean =
         clueDesignator.equals(flightDesignator, ignoreCase = true) &&
-            createdAtMs >= firstTime && createdAtMs - lastTime <= TRAILING_MILLISECONDS
+            createdAtMs - firstTime >= -LEADING_MILLISECONDS && createdAtMs - lastTime <= TRAILING_MILLISECONDS
 
     fun matches(clueDesignator: String, createdAtMs: Long, flight: JSONObject): Boolean =
         matches(clueDesignator, createdAtMs, designator(flight),
             AwaitingMapFlights.firstTime(flight), AwaitingMapFlights.lastTime(flight))
 
-    /**
-     * Clues that belong to [flight] and to no other known flight. A clue in this flight's trailing
-     * window that falls inside another flight with the same designator stays with that flight.
-     */
+    /** A flight as seen by the ownership rule: a journal entry, a live track, or an archived track file. */
+    data class Candidate(val id: String, val designator: String, val times: List<Long>) {
+        val first: Long get() = times.minOrNull() ?: Long.MIN_VALUE
+        val last: Long get() = times.maxOrNull() ?: Long.MIN_VALUE
+
+        companion object {
+            /** Journal points are [lon, lat, alt, timeMs]; values may be numbers or strings. */
+            fun of(flight: JSONObject): Candidate {
+                val points = flight.optJSONArray("points")
+                val times = if (points == null) emptyList() else (0 until points.length()).mapNotNull { index ->
+                    points.optJSONArray(index)?.optLong(3)?.takeIf { it > 0 }
+                }
+                return Candidate(flight.optString("id"), designator(flight), times)
+            }
+        }
+    }
+
+    /** Milliseconds from the capture to the candidate's nearest waypoint. */
+    fun nearestPointDistance(createdAtMs: Long, candidate: Candidate): Long =
+        candidate.times.minOfOrNull { kotlin.math.abs(it - createdAtMs) } ?: Long.MAX_VALUE
+
+    /** Id of the candidate that owns a clue, or null when none does. */
+    fun ownerId(clueDesignator: String, createdAtMs: Long, boundFlightId: String?, candidates: List<Candidate>): String? {
+        val sameAircraft = candidates.filter { it.designator.equals(clueDesignator, ignoreCase = true) }
+        if (boundFlightId != null && sameAircraft.any { it.id == boundFlightId }) return boundFlightId
+        return sameAircraft
+            .filter { it.times.isNotEmpty() && matches(clueDesignator, createdAtMs, it.designator, it.first, it.last) }
+            .minWithOrNull(compareBy<Candidate>({ nearestPointDistance(createdAtMs, it) }, { it.first }))
+            ?.id
+    }
+
+    /** Clues owned by [flight] when [otherFlights] are also known. */
     fun <C> ownedClues(
         clues: List<C>,
         flight: JSONObject,
         otherFlights: List<JSONObject>,
         designatorOf: (C) -> String,
         createdAtOf: (C) -> Long,
+        boundFlightIdOf: (C) -> String? = { null },
     ): List<C> {
         val id = flight.optString("id")
-        val lastTime = AwaitingMapFlights.lastTime(flight)
-        val others = otherFlights.filter {
-            it.optString("id") != id && designator(it).equals(designator(flight), ignoreCase = true)
-        }
-        return clues.filter { clue ->
-            val created = createdAtOf(clue)
-            matches(designatorOf(clue), created, flight) && !(created > lastTime && others.any {
-                created >= AwaitingMapFlights.firstTime(it) && created <= AwaitingMapFlights.lastTime(it)
-            })
-        }
+        val candidates = listOf(Candidate.of(flight)) + otherFlights.filter { it.optString("id") != id }.map { Candidate.of(it) }
+        return ownedClues(clues, id, candidates, designatorOf, createdAtOf, boundFlightIdOf)
     }
+
+    fun <C> ownedClues(
+        clues: List<C>,
+        flightId: String,
+        candidates: List<Candidate>,
+        designatorOf: (C) -> String,
+        createdAtOf: (C) -> Long,
+        boundFlightIdOf: (C) -> String? = { null },
+    ): List<C> = clues.filter { ownerId(designatorOf(it), createdAtOf(it), boundFlightIdOf(it), candidates) == flightId }
 }
 
 /** Result of deleting one archive file. */

@@ -1098,8 +1098,6 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
                 "SubmitClue() received for %s(%s):%s lat=%.6f lng=%.6f alt=%.1f",
                 droneSpec.getMappedId(), droneSpec.getRemoteId(), clueTitle,
                 clueLat, clueLng, clueAlt));
-        WaypointTrack.AddClueForTrack(droneSpec, clueLat, clueLng, clueAlt,
-                clueTimestamp, clueTitle, clueDescription, clueImage);
         CaltopoMap.SubmitClueWithPhoto(droneSpec, clueLat, clueLng, clueAlt, clueTitle, clueDescription, clueTimestamp, clueImage);
     }
 
@@ -4586,7 +4584,15 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
      */
     public boolean newWaypoint(double lat, double lng, double altitudeInMeters, long droneTimestampInMilliseconds,
                                CtDroneSpec.TransportTypeEnum transportType, @Nullable Boolean airborne) {
+        return newWaypoint(lat, lng, altitudeInMeters, droneTimestampInMilliseconds, transportType, airborne, true);
+    }
+
+    /** droneClock is false when droneTimestampInMilliseconds fell back to the app receive time. */
+    public boolean newWaypoint(double lat, double lng, double altitudeInMeters, long droneTimestampInMilliseconds,
+                               CtDroneSpec.TransportTypeEnum transportType, @Nullable Boolean airborne,
+                               boolean droneClock) {
         long totalStartedAtMs = System.currentTimeMillis();
+        String waypointSource = transportType == CtDroneSpec.TransportTypeEnum.DJI_STREAM ? "dji-stream" : "rid";
         long longAltitudeInMeters = Math.round(altitudeInMeters);
         ArrayList<CtDroneSpec> proximityDrones = new ArrayList<>(GetState().droneSpecTable.values());
         if (SessionUnknownDroneRemoteIds.contains(remoteId)) {
@@ -4603,7 +4609,8 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         if (shouldSuppressMapTracking(droneSpec)) {
             droneSpec.setLocalArchiveOnly(true);
             long archiveStartedAtMs = System.currentTimeMillis();
-            WaypointTrack.AddWaypointForTrack(droneSpec, lat, lng, longAltitudeInMeters, droneTimestampInMilliseconds);
+            WaypointTrack.AddWaypointForTrack(droneSpec, lat, lng, longAltitudeInMeters, droneTimestampInMilliseconds,
+                    totalStartedAtMs, waypointSource, droneClock);
             logWaypointSideEffectIfSlow("WaypointTrack.AddWaypointForTrack.suppressed", droneSpec,
                     System.currentTimeMillis() - archiveStartedAtMs);
             long localTrackNotifyStartedAtMs = System.currentTimeMillis();
@@ -4625,7 +4632,8 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         }
 
         long archiveStartedAtMs = System.currentTimeMillis();
-        WaypointTrack.AddWaypointForTrack(droneSpec, lat, lng, longAltitudeInMeters, droneTimestampInMilliseconds);
+        WaypointTrack.AddWaypointForTrack(droneSpec, lat, lng, longAltitudeInMeters, droneTimestampInMilliseconds,
+                    totalStartedAtMs, waypointSource, droneClock);
         logWaypointSideEffectIfSlow("WaypointTrack.AddWaypointForTrack", droneSpec,
                 System.currentTimeMillis() - archiveStartedAtMs);
 
