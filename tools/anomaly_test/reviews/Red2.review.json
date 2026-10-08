@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "source_display_name": "Red2.mp4",
+  "original_source_uri": "content://com.android.providers.downloads.documents/document/raw%3A%2Fstorage%2Femulated%2F0%2FDownload%2FRed2.mp4",
+  "playback_uri": null,
+  "annotation_sidecar_path": null,
+  "updated_at_ms": 1782267200000,
+  "frames": [
+    {
+      "source_timestamp_us": 3343000,
+      "annotations": [
+        {
+          "x_norm": 0.5285,
+          "y_norm": 0.4478,
+          "verdict": "good",
+          "review_kind": "missed_target",
+          "object_type": "artifact",
+          "scenario": "red2_patio_target",
+          "note": "Small red patio target, visually checked from extracted frame.",
+          "created_at_ms": 1782267200000,
+          "anomaly_debug_summary": null
+        }
+      ]
+    },
+    {
+      "source_timestamp_us": 4401000,
+      "annotations": [
+        {
+          "x_norm": 0.5293,
+          "y_norm": 0.4492,
+          "verdict": "good",
+          "review_kind": "missed_target",
+          "object_type": "artifact",
+          "scenario": "red2_patio_target",
+          "note": "Small red patio target, visually checked from extracted frame.",
+          "created_at_ms": 1782267200000,
+          "anomaly_debug_summary": null
+        }
+      ]
+    },
+    {
+      "source_timestamp_us": 5083000,
+      "annotations": [
+        {
+          "x_norm": 0.5334,
+          "y_norm": 0.4492,
+          "verdict": "good",
+          "review_kind": "missed_target",
+          "object_type": "artifact",
+          "scenario": "red2_patio_target",
+          "note": "Small red patio target, visually checked from extracted frame.",
+          "created_at_ms": 1782267200000,
+          "anomaly_debug_summary": null
+        }
+      ]
+    },
+    {
+      "source_timestamp_us": 6413000,
+      "annotations": [
+        {
+          "x_norm": 0.5563,
+          "y_norm": 0.4492,
+          "verdict": "good",
+          "review_kind": "missed_target",
+          "object_type": "artifact",
+          "scenario": "red2_patio_target",
+          "note": "Small red patio target, visually checked from extracted frame.",
+          "created_at_ms": 1782267200000,
+          "anomaly_debug_summary": null
+        }
+      ]
+    },
+    {
+      "source_timestamp_us": 7300000,
+      "annotations": [
+        {
+          "x_norm": 0.5668,
+          "y_norm": 0.4506,
+          "verdict": "good",
+          "review_kind": "missed_target",
+          "object_type": "artifact",
+          "scenario": "red2_patio_target",
+          "note": "Small red patio target, visually checked from extracted frame.",
+          "created_at_ms": 1782267200000,
+          "anomaly_debug_summary": null
+        }
+      ]
+    }
+  ]
+}
