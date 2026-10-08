@@ -110,6 +110,7 @@ final class AppleMapViewportMemory: ObservableObject {
     var streamFocusArrival = OperationalStreamFocusArrival()
     // Owned by ContentView so navigation cannot discard the operator's view.
     @Published var operatorAdjustedViewport = false
+    @Published var inspectionRemoteID: String?
     var hasCenteredOnLocation = false
     var region = unresolvedAppleMapRegion
     var visibleMapRect: MKMapRect?
@@ -584,6 +585,10 @@ struct RIDTrackMapView: View {
     @StateObject private var pilotDisplay = ApplePilotDisplayStore()
     @ObservedObject private var offlineMaps = AppleMapOfflineManager.shared
     @ObservedObject var viewportMemory: AppleMapViewportMemory
+    var workspaceMenu: AnyView = AnyView(EmptyView())
+    var onAbout: () -> Void = {}
+    var onDroneAction: (String) -> Void = { _ in }
+    @ObservedObject var operationalAlerts: AppleOperationalAlertCenter
     @AppStorage("map.baseLayer") private var storedBaseLayer = OperationalMapBaseLayer.openStreetMap.rawValue
     // Match Android's session-scoped StreamsLayoutMode: every app process starts
     // in Split, while changes remain local to the current Live View session.
@@ -657,9 +662,8 @@ struct RIDTrackMapView: View {
             .onChange(of: geometry.size.width) { _, width in headerWidth = width }
         }
         .safeAreaInset(edge: .top) {
-            if streamsFullScreen {
-                fullScreenControlBar
-            } else {
+            VStack(spacing: 0) {
+                if streamsFullScreen { fullScreenControlBar } else { workspaceTopBar }
                 androidLiveViewStatusBar
             }
         }
@@ -668,10 +672,21 @@ struct RIDTrackMapView: View {
                 remoteVideoStatusBar
             }
         }
-        .navigationTitle(headerWidth >= 600 ? "Live View" : "")
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar(streamsFullScreen ? .hidden : .visible, for: .navigationBar)
-        .toolbar { mapToolbar }
+        .toolbar(.hidden, for: .navigationBar)
+        .onReceive(viewportMemory.$inspectionRemoteID) { request in
+            guard let remoteID = request else { return }
+            viewportMemory.inspectionRemoteID = nil
+            focusedAircraftID = remoteID
+            let identity = identityStore.identity(for: remoteID)
+            selectedPilotSettings = PilotDisplaySelection(id: remoteID, remoteID: remoteID,
+                displayName: identity?.displayLabel ?? remoteID,
+                pilotCallsign: identity?.pilotCallsign.isEmpty == false ? identity!.pilotCallsign : remoteID)
+        }
+        .sheet(isPresented: $alertBell.showPanel) {
+            AppleAlertStatusPanel(center: alertBell)
+        }
         .sheet(isPresented: $showRegisteredDesignators) {
             RegisteredDroneDesignatorsView(
                 values: identityStore.importedMappings.map(\.mappedID),
@@ -1330,24 +1345,19 @@ struct RIDTrackMapView: View {
                     selectedArtifactInspection = ArtifactInspection(title: title, description: description, notice: notice)
                 },
                 onSelectAircraft: { remoteID in
-                    let inspect = OperationalMapFocusPolicy.shouldInspectAircraft(
-                        focusedAircraftID: focusedAircraftID,
-                        tappedAircraftID: remoteID
-                    )
-                    focusedAircraftID = remoteID
-                    if !inspect { operatorAdjustedViewport = false }
-                    guard inspect, !inset else { return }
-                    if model.altitudeDisplayByAircraftID[remoteID]?.aolLabel == "CAL" {
-                        calibrationRemoteID = remoteID
-                        showTakeoffCalibration = true
+                    if OperationalWorkspacePolicy.droneAction(known: !identityStore.isUnassociated(remoteID), publishing: identityStore.isCurrentFlightConfirmed(remoteID)) != .inspect, !inset {
+                        focusedAircraftID = remoteID
+                        onDroneAction(remoteID)
                         return
                     }
+                    focusedAircraftID = remoteID
+                    guard !inset else { return }
                     let identity = identityStore.identity(for: remoteID)
                     selectedPilotSettings = PilotDisplaySelection(
                         id: remoteID,
                         remoteID: remoteID,
                         displayName: identity?.displayLabel ?? remoteID,
-                        pilotCallsign: identity?.pilotCallsign ?? ""
+                        pilotCallsign: identity?.pilotCallsign.isEmpty == false ? identity!.pilotCallsign : remoteID
                     )
                 },
                 onOperatorViewportGesture: {
@@ -1447,14 +1457,17 @@ struct RIDTrackMapView: View {
         _ = pilotDisplay.revision
         return Dictionary(uniqueKeysWithValues: mapTracks.map { track in
             let identity = identityStore.identity(for: track.aircraftID)
+            let pairs = proximityAlerts.pairs.filter { $0.firstRemoteID == track.aircraftID || $0.secondRemoteID == track.aircraftID }
+            let tone = OperationalWorkspacePolicy.alertTone(hasPlayed: true, active: pairs.contains { $0.alerting }, caution: pairs.contains { OperationalWorkspacePolicy.separationCaution(horizontal: $0.horizontalFeet, vertical: $0.verticalFeet, threshold: Double(orgSettings.proximityAlertSpacingFeet)) })
             return (
                 track.aircraftID,
                 AircraftMapDisplay(
                     title: identity?.displayLabel
                         ?? model.peerTrafficMappedIDByAircraftID[track.aircraftID]
                         ?? track.aircraftID,
-                    preference: pilotDisplay.preference(for: identity?.pilotCallsign),
-                    showFullFlightTrack: identityStore.isCurrentFlightConfirmed(track.aircraftID)
+                    preference: pilotDisplay.preference(for: identity?.pilotCallsign.isEmpty == false ? identity!.pilotCallsign : track.aircraftID),
+                    showFullFlightTrack: identityStore.isCurrentFlightConfirmed(track.aircraftID),
+                    unknown: identityStore.isUnassociated(track.aircraftID), proximityTone: tone
                 )
             )
         })
@@ -1493,7 +1506,7 @@ struct RIDTrackMapView: View {
             Color.black
             AppleStreamsGridView(
                 registry: streamRegistry,
-                incidentMapTitle: caltopoConfiguration.mapID.isEmpty ? "Standalone" : liveViewMapTitle,
+                incidentMapTitle: liveViewMapTitle,
                 onIncidentMapTap: openLiveViewMapActions,
                 showsSetupHeader: false,
                 showsNavigationTitle: false,
@@ -2049,20 +2062,11 @@ struct RIDTrackMapView: View {
     }
 
     private var androidLiveViewStatusBar: some View {
-        Group {
-            if horizontalSizeClass == .compact {
-                // Compact widths keep a single row so the video keeps its height, with a
-                // visible scroll indicator so the clipped items remain discoverable.
-                ScrollView(.horizontal) {
-                    HStack(spacing: 10) { liveViewStatusItems }
-                }
-                .scrollIndicators(.visible)
-                .scrollIndicatorsFlash(onAppear: true)
-            } else {
-                AppleWrappingRow(spacing: 10) { liveViewStatusItems }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+        ScrollView(.horizontal) {
+            HStack(spacing: 10) { liveViewStatusItems }
         }
+        .scrollIndicators(.visible)
+        .scrollIndicatorsFlash(onAppear: true)
         .font(.caption.monospacedDigit())
         .padding(.horizontal)
         .padding(.vertical, 6)
@@ -2071,26 +2075,13 @@ struct RIDTrackMapView: View {
 
     @ViewBuilder
     private var liveViewStatusItems: some View {
+        AppleAlertStatusBell(center: alertBell)
         AppleProximityStatusChip(center: proximityAlerts, onSettings: onProximitySettings)
-        if airspace.enabled || notams.state.visible {
-            operationalStatusChip(
-                conciseAirspaceOrNotamChipLabel,
-                tone: usesAirspaceRestrictionStatus ? airspaceTone : notamTone
-            ) {
-                if usesAirspaceRestrictionStatus { showAirspace = true }
-                else { showNotams = true }
-            }
+        operationalStatusChip(conciseAirspaceOrNotamChipLabel, tone: usesAirspaceRestrictionStatus ? airspaceTone : notamTone) {
+            if usesAirspaceRestrictionStatus { showAirspace = true } else { showNotams = true }
         }
-        if landRestrictions.state.visible {
-            operationalStatusChip(
-                OperationalStatusChipText.land(
-                    severity: landRestrictions.state.severity,
-                    detailedLabel: landRestrictions.state.chipLabel
-                ),
-                tone: landRestrictionTone
-            ) {
-                showLandRestrictions = true
-            }
+        operationalStatusChip(OperationalStatusChipText.land(severity: landRestrictions.state.severity, detailedLabel: landRestrictions.state.chipLabel), tone: landRestrictionTone) {
+            showLandRestrictions = true
         }
         Button(action: openLiveViewMapActions) {
             AppleOperationalStatusChipLabel(
@@ -2102,9 +2093,7 @@ struct RIDTrackMapView: View {
         .contentShape(Rectangle())
         .accessibilityLabel("Incident map")
         .accessibilityValue(liveViewMapTitle)
-        AppleLiveViewNetworkStatus(onDesignatorsTapped: { showRegisteredDesignators = true })
-        Label("\(model.tracks.count) active", systemImage: "airplane.circle")
-        Text("\(model.acceptedObservationCount) points")
+
     }
 
     private var usesAirspaceRestrictionStatus: Bool {
@@ -2112,21 +2101,12 @@ struct RIDTrackMapView: View {
     }
 
     private var liveViewMapTitle: String {
-        caltopoConfiguration.mapTitle.isEmpty
-            ? (caltopoConfiguration.mapID.isEmpty ? "Standalone" : caltopoConfiguration.mapID)
-            : caltopoConfiguration.mapTitle
+        let name = OperationalIncidentSelection.name(mapID: caltopoConfiguration.mapID,
+            mapTitle: caltopoConfiguration.mapTitle, standaloneName: orgSettings.standaloneIncidentName)
+        return caltopoConfiguration.mapID.isEmpty ? "\(name) · No map" : name
     }
 
-    private func openLiveViewMapActions() {
-        let hasCredentials = !caltopoConfiguration.teamID.isEmpty
-            && !caltopoConfiguration.credentialID.isEmpty
-            && !caltopoConfiguration.credentialSecret.isEmpty
-        guard hasCredentials, !caltopoConfiguration.mapID.isEmpty else {
-            onMapStatusTap()
-            return
-        }
-        showMapOptions = true
-    }
+    private func openLiveViewMapActions() { onMapStatusTap() }
 
     private var conciseAirspaceOrNotamChipLabel: String {
         if usesAirspaceRestrictionStatus {
@@ -2179,24 +2159,50 @@ struct RIDTrackMapView: View {
         }
     }
 
-    @ToolbarContentBuilder
-    private var mapToolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .topBarTrailing) {
-            if !streamsFullScreen {
-                fullScreenButton(entering: true)
-                pipToggleButton
-                    .tint(videoPipEnabled ? Color.accentColor : Color.secondary)
-                bridgeNavigationButton
-                    .fixedSize(horizontal: true, vertical: false)
+    private var workspaceAboutChip: some View {
+        Button(action: onAbout) {
+            Text("RID2Caltopo").font(.subheadline).lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .overlay(Capsule().stroke(.secondary, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .frame(minHeight: 44)
+        .accessibilityLabel("About RID2Caltopo")
+    }
+
+    private var workspaceTopBarActions: some View {
+        HStack(spacing: 4) {
+            fullScreenButton(entering: true)
+            pipToggleButton.tint(videoPipEnabled ? Color.accentColor : Color.secondary)
+            bridgeNavigationButton
+            workspaceMenu
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var workspaceTopBar: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                workspaceAboutChip
+                Spacer(minLength: 8)
+                workspaceTopBarActions
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                workspaceAboutChip
+                ScrollView(.horizontal) { workspaceTopBarActions }
             }
         }
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
     }
 
     /// Full-screen controls occupy their own strip above the video instead of floating
     /// over it, so they can never cover the observation-only safety notice at the top
     /// of each stream tile, at any width, orientation, or multitasking size.
     private var fullScreenControlBar: some View {
-        fullScreenControlRow
+        ScrollView(.horizontal) { fullScreenControlRow }
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
             .frame(maxWidth: .infinity)
@@ -2257,17 +2263,16 @@ struct RIDTrackMapView: View {
     }
 
     private var bridgeNavigationButton: some View {
-        HStack(spacing: 6) {
-            AppleAlertStatusBell(center: alertBell)
-            Button {
-                dismissLiveView()
-                onReturnToMain()
-            } label: {
-                BridgeSignalIndicator(rssi: bridgeSignalStrengthDbm)
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Show Main Screen")
-            .accessibilityIdentifier("bridge-show-main-screen")
+        HStack(spacing: 0) {
+        Button {
+            onReturnToMain()
+        } label: {
+            BridgeSignalIndicator(rssi: bridgeSignalStrengthDbm)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Aircraft and Reception; bridge \(bridgeSignalStrengthDbm.map(String.init) ?? "unavailable")")
+        .accessibilityIdentifier("bridge-bluetooth-stats")
         }
     }
 
@@ -2283,8 +2288,12 @@ struct BridgeSignalIndicator: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            Text("Bridge \(rssi.map(String.init) ?? "—")")
-                .font(.caption2)
+            ZStack {
+                Text("Bridge -100").hidden().accessibilityHidden(true)
+                Text("Bridge \(rssi.map(String.init) ?? "—")")
+            }
+            .font(.caption2.monospacedDigit())
+            .fixedSize(horizontal: true, vertical: false)
             HStack(alignment: .bottom, spacing: 2) {
                 ForEach(0 ..< 4, id: \.self) { index in
                     RoundedRectangle(cornerRadius: 1)
@@ -3366,6 +3375,8 @@ private struct AircraftMapDisplay: Equatable {
     let title: String
     let preference: PilotDisplayPreference
     let showFullFlightTrack: Bool
+    var unknown: Bool = false
+    var proximityTone: OperationalWorkspacePolicy.AlertTone = .quiet
 }
 
 private struct AppleSEIMapPoint: Equatable {
@@ -3547,7 +3558,7 @@ private struct PilotDisplaySettingsView: View {
                     Toggle("Follow focused drone", isOn: $followFocusedDrone)
                 }
                 if !selection.pilotCallsign.isEmpty {
-                    Section("Pilot Display: \(selection.pilotCallsign)") {
+                    Section(selection.pilotCallsign == selection.remoteID ? "Drone display" : "Pilot Display: \(selection.pilotCallsign)") {
                         colorRow("Active", selected: preference.activeTrackColor) { color in
                             var updated = preference
                             updated.activeTrackColor = color
@@ -3570,7 +3581,7 @@ private struct PilotDisplaySettingsView: View {
                     }
                 }
             }
-            .navigationTitle("Pilot Display")
+            .navigationTitle("Drone Inspector")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
@@ -4198,10 +4209,12 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 let activeColor = UIColor(hex: display.preference.activeTrackColor) ?? .systemBlue
                 let archiveColor = UIColor(hex: display.preference.archiveTrackColor) ?? .systemPink
                 let iconColor: UIColor = {
-                    guard let aglFeet = altitudeDisplay[track.aircraftID]?.aglFeet else { return activeColor }
+                    if display.proximityTone == .active { return .systemRed }
+                    if display.proximityTone == .caution { return .systemOrange }
+                    guard let aglFeet = altitudeDisplay[track.aircraftID]?.aglFeet else { return display.unknown ? .gray : .white }
                     if aglFeet >= 200 { return UIColor(hex: "#D32F2F") ?? .systemRed }
-                    if aglFeet >= 180 { return UIColor(hex: "#FBC02D") ?? .systemYellow }
-                    return activeColor
+                    if aglFeet >= 180 { return .systemOrange }
+                    return display.unknown ? .gray : .white
                 }()
                 let renderedPoints = renderInputByAircraftID[track.aircraftID]?.points ?? []
                 let coordinates = renderedPoints.map {
@@ -5044,11 +5057,13 @@ private enum AircraftMarkerRenderer {
                 )
             }
 
-            context.setFillColor(UIColor.white.withAlphaComponent(0.92).cgColor)
+            context.setFillColor(color.withAlphaComponent(0.92).cgColor)
             context.setStrokeColor(UIColor.black.withAlphaComponent(0.65).cgColor)
             context.setLineWidth(1.5 * scale)
+            if positionIconAlpha < 1 { context.setLineDash(phase: 0, lengths: [3 * scale, 2 * scale]) }
             context.addArc(center: center, radius: circleRadius, startAngle: 0, endAngle: 2 * .pi, clockwise: false)
             context.drawPath(using: .fillStroke)
+            context.setLineDash(phase: 0, lengths: [])
 
             if focused {
                 context.setStrokeColor(UIColor.systemYellow.cgColor)

@@ -8,12 +8,13 @@ import org.ncssar.rid2caltopo.ui.ActiveScreen
 
 class R2CActivityShutdownPolicyTest {
     @Test
-    fun systemBackOnlyRequestsExitFromMainScreen() {
+    fun systemBackRequestsExitFromUnifiedWorkspace() {
         assertEquals(
             AppBackAction.REQUEST_EXIT_CONFIRMATION,
             appBackAction(ActiveScreen.MAIN),
         )
-        listOf(ActiveScreen.STREAMS, ActiveScreen.SETTINGS, ActiveScreen.SCANNER).forEach {
+        assertEquals(AppBackAction.REQUEST_EXIT_CONFIRMATION, appBackAction(ActiveScreen.STREAMS))
+        listOf(ActiveScreen.SETTINGS, ActiveScreen.SCANNER).forEach {
             assertEquals(AppBackAction.RETURN_TO_MAIN, appBackAction(it))
         }
     }

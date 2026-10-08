@@ -82,6 +82,7 @@ fun RidMappingAdminDialog(
     onDismiss: () -> Unit,
     initialRemoteId: String? = null,
     startWithAddAircraft: Boolean = false,
+    onInspect: (() -> Unit)? = null,
     onSaved: (String) -> Unit = {}
 ) {
     var canEdit by remember { mutableStateOf(AircraftOrganizationAccess.canEdit()) }
@@ -252,7 +253,7 @@ fun RidMappingAdminDialog(
                 tonalElevation = 6.dp
             ) {
                 Column(modifier = Modifier.padding(20.dp)) {
-                    Text(if (selectedKey == null) "RID Map Entries" else "Aircraft details", style = MaterialTheme.typography.headlineSmall)
+                    Text(if (initialRemoteId != null && CaltopoClient.GetPersistedDroneSpecs().none { it.remoteId == initialRemoteId }) "Add New Drone" else if (selectedKey == null) "RID Map Entries" else "Aircraft details", style = MaterialTheme.typography.headlineSmall)
                     if (AircraftOrganizationAccess.belongsToOrganization()) {
                         Text("Organization account: " + (AircraftOrganizationAccess.organizationUser() ?: "Not verified"),
                             style = MaterialTheme.typography.titleMedium)
@@ -261,6 +262,7 @@ fun RidMappingAdminDialog(
                             Text(if (refreshingAccess) "Checking access…" else "Refresh access")
                         }
                     }
+                    onInspect?.let { inspect -> TextButton(onClick = inspect) { Text("Inspect") } }
                     Spacer(Modifier.height(12.dp))
                     Column(
                         modifier = Modifier

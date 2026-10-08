@@ -2032,7 +2032,7 @@ final class AppleTrackerCoordinator: ObservableObject {
             if AppleAlertBellCenter.shared.allowSpeech(for: .videoRequest) {
                 AppleSpokenWarningCenter.shared.speak(
                     "Video Stream Request from, "
-                        + Self.spokenEmailAddress(request.requesterEmail)
+                        + Self.spokenEmailAddress(request.requesterEmail), alertKind: .videoRequest
                 )
             }
             AppleLog.info(

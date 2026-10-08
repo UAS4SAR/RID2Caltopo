@@ -725,12 +725,12 @@ class CaltopoMapTest {
     }
 
     @Test
-    fun getIncident_defaultsToTrainingWhenNotConnectedToMap() {
+    fun getIncident_usesSavedNameWhenNotConnectedToMap() {
         mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.down)
         mapNodeField.set(null, null)
         CaltopoClient.SetIncident("Old Incident")
 
-        assertEquals("Training", CaltopoClient.GetIncident())
+        assertEquals("Old Incident", CaltopoClient.GetIncident())
     }
 
     @Test
@@ -774,7 +774,7 @@ class CaltopoMapTest {
         mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.down)
         mapNodeField.set(null, null)
 
-        assertEquals("Training", CaltopoClient.GetIncident())
+        assertEquals("Old Incident", CaltopoClient.GetIncident())
     }
 
     private fun activateDrone(remoteId: String): CtDroneSpec {

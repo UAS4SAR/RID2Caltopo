@@ -28,10 +28,12 @@ struct AppleReleaseNotesView: View {
 }
 
 struct AboutPrivacyView: View {
+    var header: AnyView? = nil
     var body: some View {
         List {
+            if let header { Section { header } }
             Section("RID2Caltopo") {
-                LabeledContent("Version", value: appVersion)
+                if case nil = header { LabeledContent("Version", value: appVersion) }
                 Text("Incident-support software for receiving Remote ID observations, mapping aircraft, publishing operator-authorized tracks, and analyzing live drone video.")
                     .foregroundStyle(.secondary)
             }

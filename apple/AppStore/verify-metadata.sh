@@ -60,6 +60,9 @@ fi
 store_notes_args=()
 [[ -n "$marketing_version" ]] && store_notes_args=(--version "$marketing_version")
 python3 "$repo_root/tools/store_notes/check_store_notes.py" "${store_notes_args[@]}"
+# In-app UI is a separate scope from store metadata.
+python3 -m unittest discover -s "$repo_root/tools/ui_copy" -p 'test_*.py'
+python3 "$repo_root/tools/ui_copy/check_apple_ui_copy.py"
 
 if [[ -n "$marketing_version" ]]; then
     print -r -- "$marketing_version" | grep -Eq '^[0-9]+(\.[0-9]+){1,2}$' || {

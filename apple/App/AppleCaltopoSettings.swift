@@ -132,6 +132,39 @@ final class AppleCaltopoSettings: ObservableObject {
         )
     }
 
+    var teamsCredentialDraft: OperationalTeamsCredentialDraft {
+        .init(teamID: teamID, credentialID: credentialID, secret: credentialSecret,
+              connectKey: connectKey, domain: domainAndPort)
+    }
+
+    /// Explicit local credential save. Does not select a map or switch credential sources.
+    func saveTeamsCredentials(_ draft: OperationalTeamsCredentialDraft) throws {
+        if let message = draft.validationMessage {
+            throw NSError(domain: "CalTopoSettings", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+        }
+        let value = draft.normalized
+        // Store the secret first; a Keychain failure must not apply a partial credential edit.
+        try Self.storeSecret(value.secret)
+        defaults.set(value.teamID, forKey: "caltopo.teamID")
+        defaults.set(value.credentialID, forKey: "caltopo.credentialID")
+        defaults.set(value.connectKey, forKey: "caltopo.connectKey")
+        defaults.set(value.domain, forKey: "caltopo.domain")
+        defaults.set(Self.originIndependent, forKey: Self.credentialOriginKey)
+        teamID = value.teamID
+        credentialID = value.credentialID
+        credentialSecret = value.secret
+        connectKey = value.connectKey
+        domainAndPort = value.domain
+        credentialOrigin = Self.originIndependent
+    }
+
+    /// Publishing preference applies immediately without saving unrelated credential drafts.
+    func setPublishingEnabled(_ value: Bool) -> AppleCaltopoConfiguration {
+        enabled = value
+        defaults.set(value, forKey: "caltopo.enabled")
+        return configuration
+    }
+
     @discardableResult
     func save(markCredentialsIndependent: Bool = true) -> AppleCaltopoConfiguration {
         let value = configuration
@@ -179,7 +212,7 @@ final class AppleCaltopoSettings: ObservableObject {
         credentialOrigin = Self.originIndependent
         defaults.set(credentialOrigin, forKey: Self.credentialOriginKey)
         _ = save(markCredentialsIndependent: false)
-        status = "Android QR credentials loaded; select the incident Map ID to publish"
+        status = "QR credentials loaded; select the incident Map ID to publish"
     }
 
     func applyManagedCredentials(_ object: [String: Any]) throws {
@@ -211,7 +244,7 @@ final class AppleCaltopoSettings: ObservableObject {
         credentialOrigin = Self.originIndependent
         defaults.set(credentialOrigin, forKey: Self.credentialOriginKey)
         _ = save(markCredentialsIndependent: false)
-        status = "Android mutual-aid QR loaded for \(profile.displayName)"
+        status = "Mutual-aid QR loaded for \(profile.displayName)"
     }
 
     func apply(storedProfile profile: AppleStoredOperationalProfile, connectMap: Bool) throws {

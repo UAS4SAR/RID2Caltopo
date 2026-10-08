@@ -47,10 +47,13 @@ import org.ncssar.rid2caltopo.data.RidLocationAccuracyPrefs
 fun CaltopoSettingsScreen(
     onDismiss: () -> Unit,
     onShowDeveloperTools: () -> Unit,
+    onSelectIncident: () -> Unit,
     settingsViewModel: CaltopoSettingsViewModel = viewModel(),
     startAtProximity: Boolean = false
 ) {
-    val bridgeWarningsMuted by DroneScoutBridgeMonitor.audioMuted.collectAsState()
+    val savedBridgeWarningsMuted by DroneScoutBridgeMonitor.audioMuted.collectAsState()
+    var bridgeWarningsMuted by remember { mutableStateOf(savedBridgeWarningsMuted) }
+    val initialBridgeMuted = remember { savedBridgeWarningsMuted }
     var showRidMappingAdmin by remember { mutableStateOf(false) }
     val ridMappingCount = CaltopoClient.GetPersistedDroneSpecs().size
     val organizationName by settingsViewModel.organizationName.collectAsState()
@@ -78,9 +81,16 @@ fun CaltopoSettingsScreen(
     val remoteVideoControlEnabled by settingsViewModel.remoteVideoControlEnabled.collectAsState()
     val thumbnailRefreshSeconds by settingsViewModel.thumbnailRefreshSeconds.collectAsState()
     val proximityAlertSpacingFeet by settingsViewModel.proximityAlertSpacingFeet.collectAsState()
-    val proximityConsent by ProximityAlertConsent.state.collectAsState()
-    val alertAllAircraft by ProximityAlertConsent.alertAllAircraft.collectAsState()
-    DisposableEffect(Unit) { onDispose { ProximityAlertConsent.cancel() } }
+    val savedProximityConsent by ProximityAlertConsent.state.collectAsState()
+    var proximityConsent by remember { mutableStateOf(savedProximityConsent) }
+    val initialProximityEnabled = remember { savedProximityConsent.enabled }
+    val savedAlertAllAircraft by ProximityAlertConsent.alertAllAircraft.collectAsState()
+    var alertAllAircraft by remember { mutableStateOf(savedAlertAllAircraft) }
+    val initialAlertAll = remember { savedAlertAllAircraft }
+    DisposableEffect(Unit) {
+        settingsViewModel.beginEditing()
+        onDispose { settingsViewModel.discardEdits() }
+    }
     val suspendedProximity by ProximityAlertCenter.isSuspended.collectAsState()
     val caltopoUrl by settingsViewModel.caltopoUrl.collectAsState()
     val notamEnabled by settingsViewModel.notamEnabled.collectAsState()
@@ -98,12 +108,32 @@ fun CaltopoSettingsScreen(
     val externalDisplayReturnToPhoneOnly by settingsViewModel.externalDisplayReturnToPhoneOnly.collectAsState()
     val externalDisplayAllowInteraction by settingsViewModel.externalDisplayAllowInteraction.collectAsState()
     val externalDisplayAlertRouting by settingsViewModel.externalDisplayAlertRouting.collectAsState()
-    val dismissAndSave = {
-        if (settingsViewModel.saveSettings()) onDismiss()
+    var pendingExit by remember { mutableStateOf<(() -> Unit)?>(null) }
+    fun dirty() = settingsViewModel.hasUnsavedChanges() || bridgeWarningsMuted != initialBridgeMuted ||
+        proximityConsent.enabled != initialProximityEnabled || alertAllAircraft != initialAlertAll
+    fun saveAndContinue(action: () -> Unit) {
+        pendingExit = null
+        if (!settingsViewModel.saveSettings()) return
+        if (bridgeWarningsMuted != initialBridgeMuted) DroneScoutBridgeMonitor.setAudioMuted(bridgeWarningsMuted)
+        if (alertAllAircraft != initialAlertAll) ProximityAlertCenter.setAlertAllAircraft(alertAllAircraft)
+        if (proximityConsent.enabled != initialProximityEnabled) {
+            if (!proximityConsent.enabled) ProximityAlertCenter.disableAlerts()
+            else {
+                // Local draft confirmation already required every paragraph; persist only on Save.
+                ProximityAlertConsent.requestEnable()
+                ProximityAlertConsent.noticeParagraphs.indices.forEach { ProximityAlertConsent.toggleAcknowledgment(it) }
+                ProximityAlertConsent.confirmEnable()
+            }
+        }
+        pendingExit = null
+        action()
     }
-    val showDeveloperTools = {
-        if (settingsViewModel.saveSettings()) onShowDeveloperTools()
+    val dismissAndSave = { saveAndContinue(onDismiss) }
+    val discardAndClose = { settingsViewModel.discardEdits(); onDismiss() }
+    fun requestExit(action: () -> Unit) {
+        if (dirty()) pendingExit = action else action()
     }
+    val showDeveloperTools = { requestExit(onShowDeveloperTools) }
 
     val settingsScroll = rememberScrollState()
     var proximityOffset by remember { mutableStateOf<Int?>(null) }
@@ -115,13 +145,15 @@ fun CaltopoSettingsScreen(
             initialScrollDone = true
         }
     }
-    Dialog(onDismissRequest = dismissAndSave) {
+    Dialog(onDismissRequest = { requestExit(onDismiss) }) {
         Card (modifier = Modifier.verticalScroll(settingsScroll)) {
             Column(
                 modifier = Modifier.padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text("Settings", style = MaterialTheme.typography.headlineSmall)
+                caltopoCredentialError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                Text("Changes apply only when you Save. Cancel discards edits. Map connection, sign-in, file deletion, and test actions are separate workflows.", style = MaterialTheme.typography.bodySmall)
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(
                     "Administration",
@@ -166,13 +198,7 @@ fun CaltopoSettingsScreen(
                     modifier = Modifier.fillMaxWidth().semantics { contentDescription = "CalTopo track folder" }
                 )
                 SettingsHelpLabel("Incident")
-                OutlinedTextField(
-                    value = incident,
-                    onValueChange = settingsViewModel::onIncidentChanged,
-
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Incident" }
-                )
+                StorageActionButton(onClick = onSelectIncident) { Text(incident) }
                 SettingsHelpLabel("Operational period")
                 OutlinedTextField(
                     value = opPeriod,
@@ -287,7 +313,7 @@ fun CaltopoSettingsScreen(
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     SettingsHelpLabel("Bridge audio warnings", modifier = Modifier.weight(1f))
                     Switch(checked = !bridgeWarningsMuted,
-                        onCheckedChange = { DroneScoutBridgeMonitor.setAudioMuted(!it) })
+                        onCheckedChange = { bridgeWarningsMuted = !it })
                 }
                 Text("Enabled when the app starts. Turning this off silences bridge warnings for this app session only.",
                     style = MaterialTheme.typography.bodySmall,
@@ -363,7 +389,7 @@ fun CaltopoSettingsScreen(
                         onClick = { SpokenWarningCenter.requestAudioAlarmTest() },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Audio Alarm Test")
+                        Text("Audio Alarm Test (saved volume)")
                     }
                 }
                 SettingsHelpLabel("Max Idle Time (minutes)")
@@ -389,14 +415,14 @@ fun CaltopoSettingsScreen(
                     label = "Proximity alerts: ${if (!proximityConsent.enabled) "Off" else if (suspendedProximity) "Suspended" else "On"}",
                     checked = proximityConsent.enabled,
                     onCheckedChange = { enabled ->
-                        if (enabled) ProximityAlertConsent.requestEnable() else ProximityAlertCenter.disableAlerts()
+                        proximityConsent = if (enabled) proximityConsent.requestEnable() else proximityConsent.disable()
                     }
                 )
                 Text("Optional alerts based on received telemetry. No alert does not mean the airspace is clear.")
                 LabeledSwitch(
                     label = "Alert scope: ${if (alertAllAircraft) "All aircraft" else "Published only"}",
                     checked = alertAllAircraft,
-                    onCheckedChange = ProximityAlertCenter::setAlertAllAircraft
+                    onCheckedChange = { alertAllAircraft = it }
                 )
                 Text("Published only: pairs involving an aircraft claimed by this tablet. All aircraft: any received pair, including ignored or unconfirmed flights. This does not change recording or publishing.")
                 SettingsHelpLabel("Proximity Alert Spacing (ft, minimum 50; default 100)")
@@ -641,8 +667,8 @@ fun CaltopoSettingsScreen(
                         Text("Save")
                     }
                     Spacer(modifier = Modifier.width(8.dp))
-                    Button(onClick = dismissAndSave) {
-                        Text("Close")
+                    Button(onClick = discardAndClose) {
+                        Text("Cancel")
                     }
                 }
                 Spacer(modifier = Modifier.height(16.dp))
@@ -657,12 +683,21 @@ fun CaltopoSettingsScreen(
             }
         }
     }
+    pendingExit?.let { action ->
+        AlertDialog(onDismissRequest = { pendingExit = null }, title = { Text("Unsaved Settings") },
+            text = { Text("Save your changes, discard them, or keep editing?") },
+            confirmButton = { TextButton(onClick = { saveAndContinue(action) }) { Text("Save Changes") } },
+            dismissButton = {
+                TextButton(onClick = { settingsViewModel.discardEdits(); pendingExit = null; action() }) { Text("Discard Changes") }
+                TextButton(onClick = { pendingExit = null }) { Text("Keep Editing") }
+            })
+    }
     if (showRidMappingAdmin) {
         RidMappingAdminDialog(onDismiss = { showRidMappingAdmin = false })
     }
     if (proximityConsent.noticePending) {
         AlertDialog(
-            onDismissRequest = { ProximityAlertConsent.cancel() },
+            onDismissRequest = { proximityConsent = proximityConsent.cancel() },
             title = { Text(ProximityAlertConsent.TITLE) },
             text = {
                 val consentScroll = rememberScrollState()
@@ -683,7 +718,7 @@ fun CaltopoSettingsScreen(
                                 .toggleable(
                                     value = checked,
                                     role = Role.Checkbox,
-                                    onValueChange = { ProximityAlertConsent.toggleAcknowledgment(index) }
+                                    onValueChange = { proximityConsent = proximityConsent.toggleAcknowledgment(index) }
                                 )
                                 .padding(vertical = 6.dp),
                             verticalAlignment = Alignment.Top
@@ -697,12 +732,12 @@ fun CaltopoSettingsScreen(
             },
             confirmButton = {
                 TextButton(
-                    onClick = { ProximityAlertConsent.confirmEnable() },
+                    onClick = { proximityConsent = proximityConsent.confirmEnable() },
                     enabled = proximityConsent.canConfirm
                 ) { Text(proximityConsent.confirmLabel) }
             },
             dismissButton = {
-                TextButton(onClick = { ProximityAlertConsent.cancel() }) { Text("Keep disabled") }
+                TextButton(onClick = { proximityConsent = proximityConsent.cancel() }) { Text("Keep disabled") }
             }
         )
     }

@@ -140,11 +140,11 @@ struct AnomalyLiveView: View {
         case .off:
             "Video remains connected while anomaly analysis is disabled."
         case .colorUniqueness:
-            "Color Uniqueness uses the shared Android fresh-RGBA detector; boxes are yellow."
+            "Color Uniqueness uses the color uniqueness detector; boxes are yellow."
         case .targetColors:
             "Target Colors limits the shared color detector to the selected color families."
         case .infrared:
-            "Infrared uses the shared Android thermal detector; boxes are red."
+            "Infrared uses the thermal detector; boxes are red."
         }
     }
 

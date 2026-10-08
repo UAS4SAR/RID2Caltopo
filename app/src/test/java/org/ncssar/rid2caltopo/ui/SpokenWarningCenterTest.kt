@@ -187,4 +187,22 @@ class SpokenWarningCenterTest {
         assertEquals(newer, SpokenWarningCenter.consume(newer.requestId))
         assertNull(SpokenWarningCenter.requests.value)
     }
+    @Test fun queuedCancelledAndMutedRequestsDoNotRevealBell() {
+        AlertBellCenter.resetForTests()
+        SpokenWarningCenter.requestWarning(SpokenWarningKind.Proximity, "pending", nowMs = 1000L)
+        assertTrue(!AlertBellCenter.uiState.value.showBell)
+        SpokenWarningCenter.cancelProximityWarning()
+        AlertBellCenter.reflectExternalMute(AlertBellKind.Altitude, true)
+        SpokenWarningCenter.requestWarning(SpokenWarningKind.Altitude, "muted", nowMs = 2000L)
+        assertNull(SpokenWarningCenter.requests.value)
+        assertTrue(!AlertBellCenter.uiState.value.showBell)
+        assertTrue(AlertBellCenter.uiState.value.playedCounts.isEmpty())
+    }
+
+    @Test fun combinedQueueRetainsEachPhrasesAlertCategory() {
+        SpokenWarningCenter.requestWarning(SpokenWarningKind.Proximity, "p", nowMs = 1000L)
+        SpokenWarningCenter.requestWarning(SpokenWarningKind.Altitude, "a", nowMs = 1000L)
+        assertEquals(listOf(AlertBellKind.Proximity, AlertBellKind.Altitude), SpokenWarningCenter.requests.value?.playbackKinds)
+    }
+
 }

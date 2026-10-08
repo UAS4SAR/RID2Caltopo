@@ -196,7 +196,8 @@ final class AppleOperationalAlertCenter: ObservableObject {
             speak(
                 alert.bridgeRecentlySeen
                     ? "Drone location stale, \(alert.mappedID)"
-                    : "Drone signal lost, \(alert.mappedID)"
+                    : "Drone signal lost, \(alert.mappedID)",
+                kind: .droneSignalLoss
             )
             AppleLog.warning(
                 "SignalLossAlert",
@@ -230,7 +231,7 @@ final class AppleOperationalAlertCenter: ObservableObject {
             interval: OperationalAltitudeAlertNotifier.spokenCooldown,
             now: now
         ) else { return }
-        speak(OperationalAltitudeAlertNotifier.spokenPhrase)
+        speak(OperationalAltitudeAlertNotifier.spokenPhrase, kind: .altitude)
     }
 
     private func shouldSpeak(key: String, interval: TimeInterval = 30, now: Date) -> Bool {
@@ -239,9 +240,9 @@ final class AppleOperationalAlertCenter: ObservableObject {
         return true
     }
 
-    private func speak(_ text: String) {
+    private func speak(_ text: String, kind: AlertBellKind) {
         UINotificationFeedbackGenerator().notificationOccurred(.warning)
-        AppleSpokenWarningCenter.shared.speak(text)
+        AppleSpokenWarningCenter.shared.speak(text, alertKind: kind)
     }
 
     private static func distanceFeet(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) -> Double? {
@@ -269,7 +270,7 @@ final class AppleDroneScoutBridgeAlertCenter: ObservableObject {
         ) else { return }
         guard AppleAlertBellCenter.shared.allowSpeech(for: .bridgeSignalLoss) else { return }
 
-        AppleSpokenWarningCenter.shared.speak("Bridge Not Detected")
+        AppleSpokenWarningCenter.shared.speak("Bridge Not Detected", alertKind: .bridgeSignalLoss)
         AppleLog.warning(
             "DroneScoutBridge",
             "Relay ping not detected for more than 32 seconds"

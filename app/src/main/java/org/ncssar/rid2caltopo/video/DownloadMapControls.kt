@@ -29,3 +29,13 @@ internal fun DownloadMapChoice(selected: String, choices: List<String>, enabled:
         }
     }
 }
+
+/** Stacks at large text sizes or narrow widths instead of squeezing the value. */
+@Composable
+internal fun DownloadMapSummaryRow(label: String, value: String) {
+    FlowRow(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+        verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(label, modifier = Modifier.padding(end = 16.dp), style = MaterialTheme.typography.bodyMedium)
+        Text(value, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}

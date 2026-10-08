@@ -90,6 +90,8 @@ class WaypointTrackTest {
         WaypointTrack.AddWaypointForTrack(drone, 39.153, -121.132, 100L, 1_790_553_873_000L, 1_790_553_873_400L, "rid", true)
         WaypointTrack.AddWaypointForTrack(drone, 39.154, -121.132, -1000L, 1_790_553_874_000L, 1_790_553_874_350L, "dji-stream", false)
         val points = WaypointTrack.GetBindingPointsSnapshot(drone)
+        assertEquals(listOf(1_790_553_873_400L, 1_790_553_874_350L),
+            WaypointTrack.GetTrackPointsSnapshot(drone).map { it.receivedAtMsec })
         assertEquals(listOf(1_790_553_873_000L, 1_790_553_874_000L), points.map { it.timeMs })
         assertEquals(listOf(1_790_553_873_400L, 1_790_553_874_350L), points.map { it.receivedAtMs })
         assertEquals(listOf("rid", "dji-stream"), points.map { it.source })

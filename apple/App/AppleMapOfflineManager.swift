@@ -1738,6 +1738,12 @@ struct AppleOfflineMapPreparationView: View {
                     }
                 }.disabled(manager.isRunning)
                 Section("Estimated download") {
+                    let area = OperationalDownloadAreaSummary(bounds: bounds)
+                    LabeledContent("Width × height", value: String(format: "%.2f × %.2f mi", area.widthMiles, area.heightMiles))
+                    LabeledContent("Area", value: String(format: "%.2f sq mi", area.squareMiles))
+                    LabeledContent("Centroid", value: String(format: "%.5f°, %.5f°", area.latitude, area.longitude))
+                    Text("Measurements describe the download bounding rectangle; centroid is latitude, longitude.")
+                        .font(.footnote).foregroundStyle(.secondary)
                     LabeledContent("Map tiles", value: estimate.tiles.formatted())
                     LabeledContent("DEM tiles", value: estimate.dem.formatted())
                     LabeledContent("Map-tile download", value: AppleMapOfflineManager.formatBytes(estimate.tileBytes))

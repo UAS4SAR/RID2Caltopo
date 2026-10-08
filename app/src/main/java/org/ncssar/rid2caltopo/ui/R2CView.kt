@@ -439,6 +439,7 @@ fun DroneSpecConfirmationDialog(
     onFieldChange: (organization: String?, pilotCallsign: String?, droneDescription: String?) -> Unit,
     onSave: () -> Unit,
     onUnknown: () -> Unit,
+    onInspect: (() -> Unit)? = null,
 ) {
     var readiness by remember(state.remoteId) { mutableStateOf(org.ncssar.rid2caltopo.data.FlightReadiness(
         aircraft = CaltopoClient.GetPersistedDroneSpecs().firstOrNull { it.remoteId == state.remoteId }?.readiness ?: org.ncssar.rid2caltopo.data.AircraftReadiness(),
@@ -454,7 +455,7 @@ fun DroneSpecConfirmationDialog(
         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
         title = {
             Text(
-                if (state.mappedIdIsRemoteId) "Add to RID Map" else "Update Saved Drone"
+                if (state.mappedIdIsRemoteId) "Add New Drone" else "Publish?"
             )
         },
         text = {
@@ -464,6 +465,7 @@ fun DroneSpecConfirmationDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                onInspect?.let { inspect -> TextButton(onClick = inspect) { Text("Inspect") } }
                 state.bootstrapDesignator?.let { designator ->
                     Text("Remote ID: ${state.remoteId}\nStream designator: $designator")
                     Text("Save a local RID-map entry and confirm this flight for publishing to the selected map. Check the suggested model and enter the pilot callsign. Without a selected map, publication waits for map selection.")
@@ -545,6 +547,13 @@ fun MapStateView(viewModel: R2CViewModel) {
 // Shared host keeps the active page mounted throughout the connection workflow.
 @Composable
 fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
+    if (viewModel.showIncidentSelection) {
+        IncidentSelectionDialog(
+            onDismiss = viewModel::dismissIncidentSelection,
+            onConnectMap = viewModel::connectIncidentMap,
+            onUseName = viewModel::useNamedIncident
+        )
+    }
     val connection = viewModel.connectionState
     val overlay = viewModel.overlay
     val pendingProfileSwitch = viewModel.pendingProfileSwitch

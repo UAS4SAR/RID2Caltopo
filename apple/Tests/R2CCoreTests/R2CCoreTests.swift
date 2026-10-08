@@ -1580,7 +1580,7 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
     #expect(detailedAirspace.contains("Gowen Field"))
 }
 
-@Test func operationalMainScreenUsesIncidentMapContractAndHidesEmptyTrackHeader() {
+@Test func operationalMainScreenUsesIncidentMapContractAndKeepsEmptyReceptionHeader() {
     #expect(OperationalMainScreenPresentation.incidentMapLabel == "Incident map")
     #expect(OperationalMainScreenPresentation.incidentMapValue(
         mapID: "",
@@ -1594,7 +1594,8 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
         mapID: "map-42",
         mapTitle: " "
     ) == "map-42")
-    #expect(!OperationalMainScreenPresentation.showsAircraftHeader(activeTrackCount: 0))
+    #expect(OperationalMainScreenPresentation.showsAircraftHeader(activeTrackCount: 0))
+    #expect(OperationalMainScreenPresentation.receptionTransportHeaders == ["BT4:", "BT5:", "WiFi:", "NaN:"])
     #expect(OperationalMainScreenPresentation.showsAircraftHeader(activeTrackCount: 1))
     #expect(OperationalMainScreenPresentation.droneToBridgeRSSIText(-74) == "D→Bridge -74 dBm")
     #expect(OperationalMainScreenPresentation.droneToBridgeRSSIText(nil) == nil)
@@ -6533,7 +6534,13 @@ private func tag10FieldOfView(_ hex: String) -> (horizontal: Double, vertical: D
         .deletingLastPathComponent().deletingLastPathComponent()
     let map = try String(contentsOf: root.appendingPathComponent("App/RIDTrackMapView.swift"), encoding: .utf8)
     let network = try String(contentsOf: root.appendingPathComponent("App/AppleNetworkAddress.swift"), encoding: .utf8)
-    #expect(map.contains("AppleLiveViewNetworkStatus("))
+    let streams = try String(contentsOf: root.appendingPathComponent("App/AppleStreamRegistry.swift"), encoding: .utf8)
+    // Network status moved into the stream placeholder and server panel. Both
+    // must keep observing live network identity rather than a captured string.
+    let tile = String(streams.split(separator: "private struct AppleStreamTile: View").last ?? "")
+    #expect(tile.contains("@ObservedObject private var network = AppleNetworkDiagnosticCenter.shared"))
+    #expect(tile.contains("network.currentControllerConnectionLabel"))
+    #expect(!tile.contains("let networkSSID: String"))
     #expect(!map.contains("let networkSSID: String"))
     #expect(!map.contains("let ingestAddress: String"))
     let header = String(network.split(separator: "struct AppleLiveViewNetworkStatus: View")[1]

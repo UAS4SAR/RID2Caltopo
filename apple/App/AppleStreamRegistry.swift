@@ -1,3 +1,4 @@
+import Darwin
 import AVKit
 import Combine
 import MapKit
@@ -660,6 +661,7 @@ private struct StreamGridNavigationTitle: ViewModifier {
 private struct AppleStreamTile: View {
     @ObservedObject var session: AppleLiveStreamSession
     @ObservedObject private var model: AppleVideoFrameSource
+    @ObservedObject private var network = AppleNetworkDiagnosticCenter.shared
     @State private var zoom: CGFloat = 1
     @State private var zoomAtGestureStart: CGFloat = 1
     @State private var pan: CGSize = .zero
@@ -836,7 +838,8 @@ private struct AppleStreamTile: View {
                         model: model,
                         anomalyModeLabel: model.anomalyMode.label,
                         onClose: onClose,
-                        onRestartStreams: onRestartStreams
+                        onRestartStreams: onRestartStreams,
+                        onDesignatorsTapped: onDesignatorsTapped
                     )
                 }
             }
@@ -962,6 +965,7 @@ private struct AppleStreamTile: View {
         VStack(spacing: 10) {
             Image(systemName: "video.slash")
                 .font(.largeTitle)
+            Text("Network: \(network.currentControllerConnectionLabel)")
             Text("Waiting for controller to connect")
                 .font(.headline)
             if session.id == "demo" {
@@ -1137,12 +1141,14 @@ private struct AppleStreamSettingsControl: View {
     let anomalyModeLabel: String
     let onClose: (() -> Void)?
     let onRestartStreams: (() -> Void)?
+    let onDesignatorsTapped: (() -> Void)?
+    @State private var openDesignatorsAfterDismiss = false
     @State private var panel: Panel?
     @State private var menuOpen = false
     @State private var pendingAction: (() -> Void)?
 
     private enum Panel: String, Identifiable {
-        case settings, help, performance
+        case settings, help, server
         var id: String { rawValue }
     }
 
@@ -1161,12 +1167,7 @@ private struct AppleStreamSettingsControl: View {
             VStack(alignment: .leading, spacing: 18) {
                 Button("AD Mode: \(anomalyModeLabel)") { select { panel = .settings } }
                 Button("AD Help") { select { panel = .help } }
-                Button("Performance…", systemImage: "gauge.with.dots.needle.67percent") {
-                    select { panel = .performance }
-                }
-                if let onRestartStreams {
-                    Button("Restart Streams Server", systemImage: "arrow.clockwise", action: { select(onRestartStreams) })
-                }
+                Button("Streams Server", systemImage: "network") { select { panel = .server } }
                 if let onClose {
                     Button("Close Stream", systemImage: "xmark.rectangle", role: .destructive, action: { select(onClose) })
                 }
@@ -1180,7 +1181,12 @@ private struct AppleStreamSettingsControl: View {
                 action?()
             }
         }
-        .sheet(item: $panel) { selected in
+        .sheet(item: $panel, onDismiss: {
+            if openDesignatorsAfterDismiss {
+                openDesignatorsAfterDismiss = false
+                onDesignatorsTapped?()
+            }
+        }) { selected in
             NavigationStack {
                 Group {
                     switch selected {
@@ -1190,8 +1196,14 @@ private struct AppleStreamSettingsControl: View {
                             .navigationBarTitleDisplayMode(.inline)
                     case .help:
                         AppleAnomalyHelpView()
-                    case .performance:
-                        StreamPerformanceView(session: session, model: model)
+                    case .server:
+                        AppleStreamsServerPanel(session: session, model: model, onRestart: onRestartStreams,
+                            onDesignatorsTapped: onDesignatorsTapped.map { _ in
+                                {
+                                    openDesignatorsAfterDismiss = true
+                                    panel = nil
+                                }
+                            })
                     }
                 }
                 .toolbar {
@@ -1209,12 +1221,12 @@ private struct AppleStreamSettingsControl: View {
 
 }
 
-private struct StreamPerformanceView: View {
+private struct StreamPerformanceSections: View {
     @ObservedObject var session: AppleLiveStreamSession
     @ObservedObject var model: AppleVideoFrameSource
 
     var body: some View {
-        Form {
+        Group {
             Section("Stream") {
                 LabeledContent("Designator", value: session.id)
                 LabeledContent("Profile", value: session.controllerProfile)
@@ -1239,8 +1251,6 @@ private struct StreamPerformanceView: View {
                 LabeledContent("Thermal suspension", value: model.anomalyThermallySuspended ? "Active" : "No")
             }
         }
-        .navigationTitle("Performance")
-        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -1503,6 +1513,102 @@ private struct AppleStreamGestureSurface: UIViewRepresentable {
                                shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
             (gestureRecognizer is UIPinchGestureRecognizer && otherGestureRecognizer is UIPanGestureRecognizer) ||
             (gestureRecognizer is UIPanGestureRecognizer && otherGestureRecognizer is UIPinchGestureRecognizer)
+        }
+    }
+}
+
+
+struct AppleStreamsServerPanel: View {
+    let session: AppleLiveStreamSession
+    let model: AppleVideoFrameSource
+    let onRestart: (() -> Void)?
+    let onDesignatorsTapped: (() -> Void)?
+    @ObservedObject private var status = AppleStreamsServerStatus.shared
+    @ObservedObject private var network = AppleNetworkDiagnosticCenter.shared
+    @State private var confirmReset = false
+    var body: some View {
+        Form {
+            Text("Network: \(network.currentControllerConnectionLabel)")
+            AppleControllerConnectionURLs(onDesignatorsTapped: onDesignatorsTapped)
+            LabeledContent("MediaMTX", value: status.version)
+            if let started = status.startedAt {
+                HStack { Text("Runtime"); Spacer(); Text(started, style: .timer) }
+            } else { Text("Stopped") }
+            if onRestart != nil { Button("Reset Streams Server") { confirmReset = true } }
+            AppleStreamDeviceLoadSection()
+            StreamPerformanceSections(session: session, model: model)
+        }.navigationTitle("Streams Server")
+            .confirmationDialog("Reset Streams Server? Active streams and recordings will be interrupted.", isPresented: $confirmReset, titleVisibility: .visible) {
+                Button("Reset", role: .destructive) { onRestart?() }
+                Button("Cancel", role: .cancel) {}
+            }
+    }
+}
+
+/// MediaMTX is embedded on iOS, so process measurements include the server.
+private struct AppleStreamDeviceLoadSection: View {
+    @State private var cpuPercent: Double?
+    @State private var peakMemoryBytes: Int64?
+    @State private var thermal = "Unknown"
+    @State private var headroom = "unknown"
+    @State private var liveStreams = 0
+    @State private var anomalyStreams = 0
+
+    var body: some View {
+        Section("Device load") {
+            LabeledContent("Estimated anomaly headroom", value: headroom)
+            Text(headroom == "ok" ? "Device appears to have room for anomaly work."
+                : headroom == "limit" ? "Additional streams or anomaly load may cause lag."
+                : headroom == "hot" ? "Thermal or CPU pressure is high. Reduce load; anomaly detection may pause."
+                : "Waiting for a live stream and CPU samples before estimating anomaly capacity.")
+                .font(.footnote).foregroundStyle(.secondary)
+            LabeledContent("Live streams", value: String(liveStreams))
+            LabeledContent("Anomaly-enabled streams", value: String(anomalyStreams))
+            LabeledContent("App CPU load", value: cpuPercent.map { String(format: "%.0f%% of available core capacity", $0) } ?? "Sampling…")
+            LabeledContent("App peak memory", value: peakMemoryBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .memory) } ?? "Unavailable")
+            LabeledContent("Thermal status", value: thermal)
+            LabeledContent("Low power mode", value: ProcessInfo.processInfo.isLowPowerModeEnabled ? "On" : "Off")
+            Text("MediaMTX runs inside the app on iOS. CPU and memory include the server, video decoding, maps, and other app work.")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        .task {
+            var previous: (time: Double, cpu: Double)?
+            while !Task.isCancelled {
+                var usage = rusage()
+                let now = ProcessInfo.processInfo.systemUptime
+                if getrusage(RUSAGE_SELF, &usage) == 0 {
+                    let cpu = Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec)
+                        + Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1_000_000
+                    if let last = previous, now > last.time {
+                        cpuPercent = max(0, (cpu - last.cpu) / (now - last.time)
+                            / Double(max(1, ProcessInfo.processInfo.activeProcessorCount)) * 100)
+                    }
+                    previous = (now, cpu)
+                    peakMemoryBytes = Int64(usage.ru_maxrss)
+                }
+                switch ProcessInfo.processInfo.thermalState {
+                case .nominal: thermal = "Nominal"
+                case .fair: thermal = "Fair"
+                case .serious: thermal = "Serious"
+                case .critical: thermal = "Critical"
+                @unknown default: thermal = "Unknown"
+                }
+                let sessions = AppleStreamRegistry.shared.sessions.filter { $0.id != "demo" && $0.state == .live }
+                liveStreams = sessions.count
+                anomalyStreams = sessions.filter { $0.model.anomalyMode != .off }.count
+                let pressure: Int
+                switch ProcessInfo.processInfo.thermalState {
+                case .nominal: pressure = 0
+                case .fair: pressure = 1
+                case .serious, .critical: pressure = 2
+                @unknown default: pressure = 1
+                }
+                headroom = OperationalAnomalyHeadroom.assess(cpuFraction: cpuPercent.map { $0 / 100 },
+                    thermalPressure: pressure, liveStreams: liveStreams,
+                    softwareDecodedStreams: sessions.filter { $0.model.decoderBackend.lowercased().contains("ffmpeg") }.count,
+                    anomalyEnabledStreams: anomalyStreams)
+                do { try await Task.sleep(for: .seconds(2)) } catch { break }
+            }
         }
     }
 }

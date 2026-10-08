@@ -1144,6 +1144,10 @@ class StreamsViewModel(
         )
 
     // Map selection belongs to the aircraft, independently of video availability/focus.
+    val inspectionRemoteId = MutableStateFlow<String?>(null)
+    val droneActionRemoteId = MutableStateFlow<String?>(null)
+    fun inspectDrone(remoteId: String) { inspectionRemoteId.value = remoteId; setLayoutMode(StreamsLayoutMode.Both) }
+
     private val _mapFocusedDesignator = MutableStateFlow<String?>(null)
     val mapFocusedDesignator: StateFlow<String?> = _mapFocusedDesignator.asStateFlow()
 
@@ -3858,6 +3862,7 @@ class StreamsViewModel(
         } else {
             val ageMs = System.currentTimeMillis() - snapshot.observedAtMs
             lines += "Device load"
+            lines += "  Estimated anomaly headroom: ${snapshot.anomalyHeadroomLabel}"
             lines += String.format(Locale.US, "  App CPU load: %d%% of available core capacity", (snapshot.processCpuFraction * 100.0).toInt())
             lines += if (snapshot.mediaMtxPid > 0) {
                 String.format(
@@ -3876,7 +3881,6 @@ class StreamsViewModel(
             lines += String.format(Locale.US, "  FFmpeg streams: %d", snapshot.ffmpegStreamCount)
             lines += String.format(Locale.US, "  Anomaly-enabled streams: %d", snapshot.anomalyEnabledCount)
             lines += "  Thermal status: ${snapshot.thermalStatusLabel}"
-            lines += "  Estimated anomaly headroom: ${snapshot.anomalyHeadroomLabel}"
             lines += String.format(Locale.US, "  Sample age: %d ms over a %d ms window", ageMs, snapshot.sampleWindowMs)
         }
 

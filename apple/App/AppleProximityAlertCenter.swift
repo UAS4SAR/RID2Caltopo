@@ -295,7 +295,7 @@ final class AppleProximityAlertCenter: ObservableObject {
         announcedAlertInstanceID = alert.alertInstanceID
         let repeated = alert.alertInstanceID == previousID
         if !repeated { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
-        AppleSpokenWarningCenter.shared.speak(OperationalSpokenWarningKind.proximity.phrase)
+        AppleSpokenWarningCenter.shared.speak(OperationalSpokenWarningKind.proximity.phrase, alertKind: .proximity)
         AppleLog.info(
             "ProximityAlert",
             "\(repeated ? "Repeat" : "Alert") pair=\(alert.pairKey) horizontalFt=\(Int(alert.horizontalSeparationFeet.rounded())) verticalFt=\(Int(alert.verticalSeparationFeet.rounded())) currentHorizontalFt=\(Int(alert.currentHorizontalSeparationFeet.rounded())) currentVerticalFt=\(Int(alert.currentVerticalSeparationFeet.rounded())) projected=\(alert.usesProjection) thresholdFt=\(Int(alert.thresholdFeet.rounded()))"

@@ -305,7 +305,7 @@ private enum TransferError: LocalizedError {
         switch self {
         case .shortPassphrase: "Use a backup passphrase of at least eight characters."
         case .invalidBackup: "The selected file is not a RID2Caltopo encrypted configuration backup, or the passphrase is incorrect."
-        case .invalidPackage: "The selected archive is not an Android-compatible mutual-aid package."
+        case .invalidPackage: "The selected archive is not a compatible mutual-aid package."
         case .expiredPackage: "The mutual-aid package has expired."
         case .packageTooLarge: "The selected region exceeds the 250,000-tile package safety limit."
         case .packageBytesTooLarge: "The cached data for this package exceeds the 512 MB in-memory export safety limit. Select a smaller region."

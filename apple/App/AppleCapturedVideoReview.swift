@@ -480,7 +480,7 @@ struct AppleCapturedVideoReviewView: View {
                     }
                 }
                 Section {
-                    Text("Pause on the frame to review, then tap the subject or false positive. Review sidecars use Android's schema version 2 field names.")
+                    Text("Pause on the frame to review, then tap the subject or false positive.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }

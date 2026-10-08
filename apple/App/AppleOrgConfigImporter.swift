@@ -480,6 +480,7 @@ final class AppleOrgConfigSettings: ObservableObject {
         trackerURLPrefix: String,
         trackerAPIKey: String
     ) throws {
+        try Self.storeTrackerAPIKey(trackerAPIKey.trimmingCharacters(in: .whitespacesAndNewlines))
         self.trackerURLPrefix = trackerURLPrefix.trimmingCharacters(in: .whitespacesAndNewlines)
         faaProxyURL = ""
         trackerEnrollmentURL = ""
@@ -488,7 +489,6 @@ final class AppleOrgConfigSettings: ObservableObject {
         defaults.removeObject(forKey: "org.faaProxyURL")
         defaults.removeObject(forKey: "org.trackerEnrollmentURL")
         defaults.set(sourceDescription, forKey: "org.sourceDescription")
-        try Self.storeTrackerAPIKey(trackerAPIKey.trimmingCharacters(in: .whitespacesAndNewlines))
         objectWillChange.send()
     }
 
@@ -618,7 +618,7 @@ final class AppleOrgConfigSettings: ObservableObject {
         trackerURLPrefix = profile.trackerURLPrefix
         usePeers = true
         predictiveHeadEnabled = false // Retired compatibility field.
-        sourceDescription = "Android MA QR • \(profile.displayName)"
+        sourceDescription = "Mutual-aid QR • \(profile.displayName)"
         defaults.set(organizationName, forKey: "org.name")
         defaults.set(incident, forKey: "org.incident")
         defaults.set(operationalPeriod, forKey: "org.operationalPeriod")
@@ -749,8 +749,13 @@ final class AppleOrgConfigSettings: ObservableObject {
         defaults.set(value, forKey: "org.incident")
     }
 
+    var standaloneIncidentName: String {
+        OperationalIncidentSelection.name(mapID: "", mapTitle: "", standaloneName: defaults.string(forKey: "incident.standaloneName") ?? incident)
+    }
+
     func setIncident(_ value: String) {
-        incident = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        incident = OperationalIncidentSelection.name(mapID: "", mapTitle: "", standaloneName: value)
+        defaults.set(incident, forKey: "incident.standaloneName")
         defaults.set(incident, forKey: "org.incident")
     }
 

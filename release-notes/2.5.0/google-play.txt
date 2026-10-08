@@ -1,0 +1,8 @@
+Latest changes:
+- Unified stream/map workspace with clearer controls and bridge signal meters.
+- Alert counts and aircraft inspection without publishing.
+- Consistent Settings Save/Cancel and named incidents without maps.
+- Clearer download area and capacity estimates.
+- Streams Server performance and headroom information.
+- Improved storage controls and dark-mode links.
+- Fixed crossing lines when merging flight history with live video positions.

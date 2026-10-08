@@ -1199,7 +1199,7 @@ internal fun AnomalySettingsMenuContent(
         }
     )
     DropdownMenuItem(
-        text = { Text("Performance…") },
+        text = { Text("Streams Server…") },
         onClick = {
             onDismissMenu()
             onShowPerformance()
@@ -1211,15 +1211,6 @@ internal fun AnomalySettingsMenuContent(
             onClick = {
                 onDismissMenu()
                 viewModel.setPauseLocalPlaybackOnOpen(!pauseLocalPlaybackOnOpen)
-            }
-        )
-    }
-    onRestartServer?.let { restartServer ->
-        DropdownMenuItem(
-            text = { Text("Restart Streams Server") },
-            onClick = {
-                onDismissMenu()
-                restartServer()
             }
         )
     }

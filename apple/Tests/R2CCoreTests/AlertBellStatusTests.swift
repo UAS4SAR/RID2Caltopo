@@ -124,7 +124,7 @@ final class AlertBellStatusTests: XCTestCase {
         XCTAssertEqual(state.aggregateColor, .red)
 
         // A real alarm latch (speech path / noteAlarmFired) shows the bell.
-        state.hasEverAlarmed = true
+        state.recordPlayback(.altitude, at: Date(timeIntervalSince1970: 1))
         XCTAssertTrue(state.showBell)
 
         state.updateColors([.altitude: .white, .proximity: .white])
@@ -154,4 +154,35 @@ final class AlertBellStatusTests: XCTestCase {
         XCTAssertEqual(colors[.wifiStrength], .orange)
         XCTAssertEqual(colors[.videoRequest], .red)
     }
+    func testPlaybackHistoryCountsRepeatsAndResetsPerSession() {
+        var state = AlertBellSessionState()
+        state.recordPlayback(.altitude, at: Date(timeIntervalSince1970: 1))
+        state.recordPlayback(.proximity, at: Date(timeIntervalSince1970: 2))
+        state.recordPlayback(.altitude, at: Date(timeIntervalSince1970: 3))
+        XCTAssertEqual(state.playedCounts[.altitude], 2)
+        XCTAssertEqual(state.playedCounts[.proximity], 1)
+        XCTAssertEqual(state.lastPlayedAt[.altitude], Date(timeIntervalSince1970: 3))
+        state = AlertBellSessionState()
+        XCTAssertFalse(state.showBell)
+        XCTAssertTrue(state.playedCounts.isEmpty)
+    }
+
+    func testSilentAndMutedPlaybackDoesNotRevealBellOrCount() {
+        var state = AlertBellSessionState()
+        state.recordPlayback(.altitude, at: Date(), audible: false)
+        state.setMuted(.proximity, muted: true)
+        state.recordPlayback(.proximity, at: Date())
+        XCTAssertFalse(state.showBell)
+        XCTAssertTrue(state.playedCounts.isEmpty)
+    }
+
+    func testStartupSpeechEligibilityChecksDoNotRevealBell() {
+        var state = AlertBellSessionState()
+        for _ in 0..<10 { XCTAssertTrue(state.allowsSpeech(.droneSignalLoss)) }
+        state.setMuted(.droneSignalLoss, muted: true)
+        XCTAssertFalse(state.allowsSpeech(.droneSignalLoss))
+        XCTAssertFalse(state.showBell)
+        XCTAssertTrue(state.playedCounts.isEmpty)
+    }
+
 }

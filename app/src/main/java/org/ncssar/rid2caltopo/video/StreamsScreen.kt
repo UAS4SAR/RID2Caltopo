@@ -37,6 +37,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.mandatorySystemGestures
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.PictureInPicture
+import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Notifications
@@ -76,6 +79,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
@@ -243,7 +247,7 @@ private fun restartMediaMtxServer(context: android.content.Context) {
     CTDebug("StreamsPane", "User requested MediaMTXService restart from streams settings.")
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun StreamsScreen(
     viewModel: StreamsViewModel = viewModel(),
@@ -262,6 +266,9 @@ fun StreamsScreen(
     remoteVideoMicrophoneError: String? = null,
     onToggleRemoteVideoMicrophone: () -> Unit = {},
     onTerminateRemoteVideo: () -> Unit = {},
+    workspaceMenu: (@Composable () -> Unit)? = null,
+    onAbout: () -> Unit = {},
+    onBluetoothStats: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val currentOnBack = rememberUpdatedState(onBack)
@@ -342,7 +349,7 @@ fun StreamsScreen(
     var showAlertPanel by remember { mutableStateOf(false) }
     var showSignalLossPanel by remember { mutableStateOf(false) }
     var streamsFullScreen by remember { mutableStateOf(false) }
-    BackHandler(enabled = showNavigation) {
+    BackHandler(enabled = showNavigation && (streamsFullScreen || workspaceMenu == null)) {
         if (streamsFullScreen) {
             streamsFullScreen = false
         } else {
@@ -365,79 +372,57 @@ fun StreamsScreen(
     ) {
         Column {
             if (fullScreenChrome.showTopBar) {
-                androidx.compose.material3.CenterAlignedTopAppBar(
-                    title = { if (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 600 * androidx.compose.ui.platform.LocalDensity.current.fontScale) Text("Live View", maxLines = 1) },
-                    navigationIcon = if (showNavigation) {
-                        {
-                            IconButton(onClick = handleBack) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = "Back"
-                                )
-                            }
-                        }
-                    } else {
-                        {}
-                    },
-                    actions = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (
-                                shouldShowEnterFullScreenChip(
-                                    fullScreen = streamsFullScreen,
-                                    externalContentActive = externalContentMode != null
-                                )
-                            ) {
-                                LayoutToggleChip(
-                                    label = "Enter FS",
-                                    selected = false,
-                                    onClick = { streamsFullScreen = true }
-                                )
-                                Spacer(Modifier.width(6.dp))
-                            }
-                            if (externalContentMode == null) {
-                                LayoutToggleChip(
-                                    label = if (streamPipUiState.enabled) "PiP:On" else "PiP:Off",
-                                    selected = streamPipUiState.enabled,
-                                    onClick = { viewModel.setStreamPipEnabled(!streamPipUiState.enabled) }
-                                )
-                                Spacer(Modifier.width(6.dp))
-                            }
-                            AlertStatusBell(onClick = { showAlertPanel = true })
-                            BridgeSignalIndicator(rssi = bridgeRssi, onClick = handleBack, enabled = showNavigation)
+                androidx.compose.foundation.layout.FlowRow(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    if (workspaceMenu != null) {
+                        androidx.compose.material3.OutlinedButton(onClick = onAbout) {
+                            Text("RID2Caltopo", maxLines = 1)
                         }
                     }
-                )
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp)
-                        .horizontalScroll(headerScrollState),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    ResumeProximityAlertButton(onSettings = onProximitySettingsTap)
-                    Spacer(Modifier.width(8.dp))
-                    NotamStatusChip(state = notamUiState, airspaceState = airspaceUiState, onClick = { showNotamPanel = true }, outerPadding = PaddingValues(0.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Spacer(Modifier.width(8.dp))
-                    LandRestrictionStatusChip(state = landRestrictionUiState, onClick = { showLandRestrictionPanel = true }, outerPadding = PaddingValues(0.dp))
-                    Spacer(Modifier.width(8.dp))
-                    StreamsMapStatusButton(mapName = mapName, onClick = onMapStatusTap, compact = true)
-                    Spacer(Modifier.width(8.dp))
-                    Text(text = "Network: " + controllerNetwork.ssid, modifier = Modifier.padding(end = 8.dp), fontSize = 14.sp)
-                    if (isServerRunning) {
-                        Box(Modifier.clickable { showPerformancePanel = true }.padding(end = 8.dp)) {
-                            androidx.compose.material3.ProvideTextStyle(MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp)) {
-                                ControllerEndpointInstructions(
-                                    endpoints = controllerEndpoints,
-                                    onDesignatorsClick = { showRegisteredDesignators = true }
-                                )
-                            }
+                    Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { streamsFullScreen = true }) {
+                            Icon(Icons.Default.Fullscreen, "Full screen")
                         }
-                    } else {
-                        Text(text = serverStatus, modifier = Modifier.clickable { showPerformancePanel = true }.padding(end = 8.dp), fontSize = 14.sp)
+                        IconButton(onClick = { viewModel.setStreamPipEnabled(!streamPipUiState.enabled) }) {
+                            Icon(Icons.Default.PictureInPicture, "Toggle picture in picture", tint = if (streamPipUiState.enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                        }
+                        BridgeSignalIndicator(rssi = bridgeRssi, onClick = onBluetoothStats, enabled = showNavigation)
+                        workspaceMenu?.invoke()
                     }
                 }
             }
+                if (fullScreenChrome.showExitChip) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color.Black)
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FullScreenExitChip(onClick = { streamsFullScreen = false })
+                        FullScreenPipChip(
+                            enabled = streamPipUiState.enabled,
+                            onClick = {
+                                viewModel.setStreamPipEnabled(!streamPipUiState.enabled)
+                            },
+                        )
+                        BridgeSignalIndicator(rssi = bridgeRssi, onClick = onBluetoothStats, enabled = showNavigation, overlay = true)
+                    }
+                }
+
+            Row(Modifier.fillMaxWidth().horizontalScroll(headerScrollState).padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                AlertStatusBell(onClick = { showAlertPanel = true })
+                ResumeProximityAlertButton(onSettings = { onProximitySettingsTap?.invoke() })
+                NotamStatusChip(state = notamUiState, airspaceState = airspaceUiState, onClick = { showNotamPanel = true }, outerPadding = PaddingValues(0.dp))
+                LandRestrictionStatusChip(state = landRestrictionUiState, onClick = { showLandRestrictionPanel = true }, outerPadding = PaddingValues(0.dp))
+                StreamsMapStatusButton(mapName = mapName, onClick = onMapStatusTap, compact = true)
+            }
+
             if (!remoteVideoStatus.isNullOrBlank()) {
                 Surface(
                     color = if (remoteVideoActive) Color(0xFFE8F5E9) else Color(0xFFFFF3E0),
@@ -644,28 +629,6 @@ fun StreamsScreen(
                     }
                 }
 
-                if (fullScreenChrome.showExitChip) {
-                    val exitLayout = fullScreenExitChipLayout()
-                    Row(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(top = 8.dp, end = exitLayout.endPaddingDp.dp)
-                            .zIndex(10f),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        FullScreenExitChip(onClick = { streamsFullScreen = false })
-                        FullScreenPipChip(
-                            enabled = streamPipUiState.enabled,
-                            onClick = {
-                                viewModel.setStreamPipEnabled(!streamPipUiState.enabled)
-                            },
-                        )
-                        AlertStatusBell(onClick = { showAlertPanel = true })
-                        BridgeSignalIndicator(rssi = bridgeRssi, onClick = handleBack, enabled = showNavigation, overlay = true)
-                    }
-                }
-
                 if (allowModalDialogs) viewModel.pendingClue?.let {
                     ClueSubmissionSheet(
                         pendingClue = it,
@@ -763,7 +726,7 @@ private fun BridgeSignalIndicator(
         onClick = onClick,
         enabled = enabled,
         modifier = modifier.heightIn(min = 48.dp).semantics {
-            contentDescription = "Bridge ${rssi ?: "not detected"}; show Main Screen"
+            contentDescription = "Bridge ${rssi ?: "not detected"}; show Aircraft and Reception"
         },
         shape = RoundedCornerShape(10.dp),
         color = if (overlay) Color.Black.copy(alpha = 0.68f)
@@ -775,11 +738,16 @@ private fun BridgeSignalIndicator(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(5.dp),
         ) {
-            Text(
-                text = "Bridge ${rssi ?: "—"}",
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 1,
-            )
+            Box(contentAlignment = Alignment.CenterStart) {
+                // Reserve the same width for live RSSI and the missing-signal dash.
+                Text("Bridge -100", color = Color.Transparent,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    modifier = Modifier.clearAndSetSemantics {}, maxLines = 1)
+                Text("Bridge ${rssi ?: "—"}",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, maxLines = 1)
+            }
             SignalStrengthBars(
                 rssi = rssi ?: 0,
                 modifier = Modifier.width(26.dp).height(22.dp),
@@ -1749,6 +1717,7 @@ private fun EmptyStreamsView(
                 style = MaterialTheme.typography.titleMedium
             )
             Spacer(modifier = Modifier.height(10.dp))
+            Text("Network: ${rememberControllerNetwork().ssid}")
             val endpoints = rememberControllerEndpoints()
             ControllerEndpointInstructions(
                 endpoints = endpoints,
@@ -1869,21 +1838,25 @@ private fun RegisteredDroneDesignatorsDialogs(showDesignators: Boolean, onDismis
 
 @Composable
 internal fun StreamPerformanceDialog(viewModel: StreamsViewModel, streamDesignator: String?, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = { onDismiss() },
-        title = { Text("Performance") },
-        text = {
-            Box(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                Text(
-                    text = viewModel.performancePanelText(streamDesignator),
-                    fontSize = 14.sp,
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { onDismiss() }) {
-                Text("Close")
-            }
+    val context = LocalContext.current
+    val network = rememberControllerNetwork()
+    var reset by remember { mutableStateOf(false) }
+    var showDesignators by remember { mutableStateOf(false) }
+    RegisteredDroneDesignatorsDialogs(showDesignators, onDismiss = { showDesignators = false })
+    var now by remember { mutableLongStateOf(android.os.SystemClock.elapsedRealtime()) }
+    LaunchedEffect(Unit) { while (true) { delay(1000); now = android.os.SystemClock.elapsedRealtime() } }
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("Streams Server") }, text = {
+        Column(Modifier.verticalScroll(rememberScrollState())) {
+            Text("Network: ${network.ssid}")
+            ControllerEndpointInstructions(endpoints = network.endpoints, onDesignatorsClick = { showDesignators = true })
+            Text("MediaMTX: ${MediaMTXStatus.version}")
+            Text(if (MediaMTXStatus.isServerRunning) "Running · ${(now - MediaMTXStatus.startedAtMs).coerceAtLeast(0) / 1000}s" else "Stopped: ${MediaMTXStatus.serverExitReason}")
+            TextButton(onClick = { reset = true }) { Text("Reset Streams Server") }
+            Text(viewModel.performancePanelText(streamDesignator), fontSize = 14.sp)
         }
-    )
+    }, confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } })
+    if (reset) AlertDialog(onDismissRequest = { reset = false }, title = { Text("Reset Streams Server?") },
+        text = { Text("Active streams and recordings will be interrupted.") },
+        confirmButton = { TextButton(onClick = { reset = false; restartMediaMtxServer(context) }) { Text("Reset") } },
+        dismissButton = { TextButton(onClick = { reset = false }) { Text("Cancel") } })
 }

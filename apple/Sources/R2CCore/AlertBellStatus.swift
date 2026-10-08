@@ -151,8 +151,10 @@ public enum AlertBellThresholdPolicy {
 /// Session mute + latched “bell visible” state. Pure data; hosts own persistence
 /// policy (in-memory only — mutes do not survive process restart).
 public struct AlertBellSessionState: Sendable, Equatable {
+    public private(set) var playedCounts: [AlertBellKind: Int] = [:]
+    public private(set) var lastPlayedAt: [AlertBellKind: Date] = [:]
     public var muted: Set<AlertBellKind>
-    /// Latched true after a real alarm fires (speech requested via noteAlarmFired).
+    /// Latched true only when the audio engine starts audible alarm playback.
     /// Ambient red/orange metrics alone must not show the bell at app start.
     public var hasEverAlarmed: Bool
     public var colors: [AlertBellKind: AlertBellColor]
@@ -169,10 +171,18 @@ public struct AlertBellSessionState: Sendable, Equatable {
         self.colors = colors
     }
 
+    public mutating func recordPlayback(_ kind: AlertBellKind, at date: Date, audible: Bool = true) {
+        guard audible, !isMuted(kind) else { return }
+        hasEverAlarmed = true
+        playedCounts[kind, default: 0] += 1
+        lastPlayedAt[kind] = date
+    }
+
     public var showBell: Bool { hasEverAlarmed }
     public var aggregateColor: AlertBellColor { AlertBellThresholdPolicy.aggregate(colors) }
 
     public func isMuted(_ kind: AlertBellKind) -> Bool { muted.contains(kind) }
+    public func allowsSpeech(_ kind: AlertBellKind) -> Bool { !isMuted(kind) }
 
     public mutating func setMuted(_ kind: AlertBellKind, muted: Bool) {
         if muted { self.muted.insert(kind) } else { self.muted.remove(kind) }

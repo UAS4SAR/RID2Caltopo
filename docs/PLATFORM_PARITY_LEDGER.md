@@ -12,6 +12,14 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### 2.5.0rc1
+
+- Shared workflow: unified live workspace, stable bridge RSSI, session alert counts, aircraft inspection, About & Privacy, named incidents, download summaries, storage controls, and staged Settings Save/Cancel are implemented on both platforms.
+- Apple Streams Server now includes designator access and performance/headroom information. Embedded MediaMTX uses combined app process metrics; Android runs the server separately. Headroom is indicative, not anomaly-detection qualification.
+- Aircraft and Reception preserves comparable empty-table headings. Native Wi-Fi/NAN reception remains unavailable through the Apple implementation.
+- Android local flight-history backfill now orders by receipt time before trimming to avoid crossing lines with live video positions. This addresses the Android merge path; the fixture-based regression does not reconstruct missing SEI data.
+- Automated and installation evidence is in `release-notes/2.5.0/validation.md` and `docs/validation/2026-10-07-settings-save-cancel.md`. Physical UI, radio, streaming, and field parity are separate validation requirements; no store publication is established by this source tag.
+
 ### 2.4.3
 
 Platform-specific changes:

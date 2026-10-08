@@ -101,7 +101,7 @@ struct RIDAircraftDetailView: View {
                     )
                     .font(.headline)
                 }
-                Text("Saving enables the archive-colored flight tail and, when configured, local ownership, alerts, and CalTopo publishing—matching Android's Save contract.")
+                Text("Saving enables the archive-colored flight tail and, when configured, local ownership, alerts, and CalTopo publishing.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -545,6 +545,12 @@ struct DroneConfirmationView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Button("Inspect") {
+                        dismiss()
+                        NotificationCenter.default.post(name: Notification.Name("workspaceInspectDrone"), object: remoteID)
+                    }
+                }
                 if let pairingSaveError { Text(pairingSaveError).foregroundStyle(.red) }
                 if let bootstrapDesignator {
                     Section("Add and confirm this drone") {
@@ -612,7 +618,7 @@ struct DroneConfirmationView: View {
                 applyReadinessState()
             }
             .onChange(of: pilotCallsign) { _, _ in matchReportedPilot() }
-            .navigationTitle(existingIdentity == nil ? "Add to RID Map" : "Update Saved Drone")
+            .navigationTitle(existingIdentity == nil ? "Add New Drone" : "Publish?")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -651,6 +657,7 @@ struct DroneConfirmationView: View {
                             return
                         }
                         identityStore.confirm(identity, recordUnresolvedPilot: true)
+                        identityStore.setPreferredPilotCallsign(pilotCallsign)
                         onConfirm(identity)
                         dismiss()
                     }

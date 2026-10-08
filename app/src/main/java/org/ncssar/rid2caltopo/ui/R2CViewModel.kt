@@ -202,7 +202,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
     val hostname = _hostname.asStateFlow()
     private val _pendingDroneConfirmation = MutableStateFlow<DroneSpecConfirmationUiState?>(null)
     val pendingDroneConfirmation = _pendingDroneConfirmation.asStateFlow()
-    private val _activeScreen = MutableStateFlow(ActiveScreen.MAIN)
+    private val _activeScreen = MutableStateFlow(ActiveScreen.STREAMS)
     val activeScreen : StateFlow<ActiveScreen> = _activeScreen.asStateFlow()
     private val promptedCurrentFlightRemoteIds = linkedSetOf<String>()
     private val confirmedCurrentFlightRemoteIds = linkedSetOf<String>()
@@ -317,8 +317,18 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         pendingProfileSwitch = null
     }
 
-    fun openConnectionOverlayFromCurrentScreen() {
+    var showIncidentSelection by mutableStateOf(false)
+        private set
+    fun openConnectionOverlayFromCurrentScreen() { showIncidentSelection = true }
+    fun dismissIncidentSelection() { showIncidentSelection = false }
+    fun connectIncidentMap() {
+        showIncidentSelection = false
         onUIEvent(UIEvent.HeaderClicked)
+    }
+    fun useNamedIncident(name: String) {
+        onUIEvent(UIEvent.DisconnectRequested)
+        CaltopoClient.SetIncident(name)
+        showIncidentSelection = false
     }
 
     fun onUIEvent(uiEvent: UIEvent) {
@@ -480,8 +490,8 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         _activeScreen.value = ActiveScreen.STREAMS
     }
     fun showMain() {
-        CTDebug(tag, "showMain(): ${_activeScreen.value} -> ${ActiveScreen.MAIN}")
-        _activeScreen.value = ActiveScreen.MAIN
+        CTDebug(tag, "showMain(): returning to unified workspace")
+        _activeScreen.value = ActiveScreen.STREAMS
     }
     var proximitySettingsOpen by mutableStateOf(false)
         private set
@@ -607,6 +617,8 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
      * The active remoteId was already added to [promptedCurrentFlightRemoteIds] when the
      * dialog was first shown, so the panel will not reappear until this active lifecycle ends.
      */
+    fun dismissConfirmationForInspection() { _pendingDroneConfirmation.value = null }
+
     fun markPendingDroneConfirmationUnknown() {
         val current = _pendingDroneConfirmation.value ?: return
         val remoteId = current.remoteId.trim()
@@ -668,6 +680,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             CaltopoClient.ShowToast("This RID or stream designator already has an entry. Reopen pairing to review it.")
             return
         }
+        R2CApplication.getAppCtxt()?.let { TabletPilotCallsignPrefs.save(it, callsign) }
         confirmedCurrentFlightRemoteIds.add(remoteId)
         CTDebug(tag, "savePendingDroneConfirmation(): saving local confirmation remoteId=$remoteId mappedId='$mappedId'")
         CaltopoClient.SaveDroneSpecConfirmation(

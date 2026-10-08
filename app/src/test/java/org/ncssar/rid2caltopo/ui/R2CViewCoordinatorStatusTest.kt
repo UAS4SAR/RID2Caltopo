@@ -33,7 +33,7 @@ class R2CViewCoordinatorStatusTest {
 
     @Test
     fun incidentMapDisplayValue_usesMapNameOrStandaloneDefault() {
-        assertEquals("Standalone", incidentMapDisplayValue(CaltopoConnectionState.StandAlone))
+        assertEquals(org.ncssar.rid2caltopo.data.CaltopoClient.GetStandaloneIncident() + " · No map", incidentMapDisplayValue(CaltopoConnectionState.StandAlone))
         assertEquals(
             "Washoe Search",
             incidentMapDisplayValue(

@@ -3541,19 +3541,27 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         }
     }
 
+    public static String GetStandaloneIncident() {
+        Context context = R2CApplication.getAppCtxt();
+        String saved = context == null ? null : context.getSharedPreferences("incident_selection", Context.MODE_PRIVATE)
+                .getString("standalone_name", null);
+        return IncidentSelection.name(false, null, saved != null ? saved : GetState().incident);
+    }
+
     public static String GetIncident() {
-        if (CaltopoMap.GetMapStatus() == CaltopoMap.MapStatusListener.mapStatus.up) {
-            String mapName = CaltopoMap.GetMapName().trim();
-            if (!mapName.isEmpty()) return mapName;
-        }
-        return "Training";
+        return IncidentSelection.name(CaltopoMap.GetMapStatus() == CaltopoMap.MapStatusListener.mapStatus.up,
+                CaltopoMap.GetMapName(), GetStandaloneIncident());
     }
 
     public static void SetIncident(@NonNull String incident) {
+        String name = IncidentSelection.name(false, null, incident);
         ClientClassState ccs = GetState();
-        if (!incident.equals(ccs.incident)) {
-            ccs.incident = incident;
-        }
+        ccs.incident = name;
+        Context context = R2CApplication.getAppCtxt();
+        if (context != null) context.getSharedPreferences("incident_selection", Context.MODE_PRIVATE)
+                .edit().putString("standalone_name", name).apply();
+        ArchiveState("incident changed");
+        NotifySettingsChanged();
     }
 
     public static String GetOpPeriod() {

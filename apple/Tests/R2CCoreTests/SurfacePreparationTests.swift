@@ -147,3 +147,12 @@ private actor CatalogResponses {
     empty["entries"]=[] as [String]
     #expect(throws:(any Error).self) { try OperationalPreparedSurfaceSet.validate(JSONSerialization.data(withJSONObject:empty), allowPartial:true) { _ in Data() } }
 }
+
+@Test func surfacePreparationExplainsOversizedAndPolarRegions() {
+    for bounds in [preparationBounds(width: 5000), OperationalMapBounds(north: 80, south: 20, west: -150, east: -80)] {
+        do { _ = try OperationalSurfacePreparation.grid(bounds); Issue.record("Expected size rejection") }
+        catch { #expect(error.localizedDescription.contains("4 km across")) }
+    }
+    do { _ = try OperationalSurfacePreparation.grid(.init(north: 75.001, south: 75, west: 0, east: 0.001)); Issue.record("Expected latitude rejection") }
+    catch { #expect(error.localizedDescription.contains("70°S and 70°N")) }
+}

@@ -168,7 +168,7 @@ internal fun pilotDisplayPreferencesByMappedId(
 ): Map<String, PilotDisplayPreference> {
     val byMappedId = LinkedHashMap<String, PilotDisplayPreference>()
     dronePoints.forEach { point ->
-        val pilotKey = normalizePilotCallsign(point.droneSpec?.owner)
+        val pilotKey = normalizePilotCallsign(point.droneSpec?.owner?.takeIf { it.isNotBlank() } ?: point.remoteId)
         val preference = preferenceForPilotKey(pilotKey)
         val currentMappedId = localTrackDesignator(point.designator)
         byMappedId[currentMappedId] = preference
@@ -699,13 +699,14 @@ internal fun buildDroneMarkerDrawable(
     val headingPointerLen = 3.8f * scaledDensity
 
     val haloFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = AndroidColor.parseColor("#CCFFFFFF")
+        color = tint ?: AndroidColor.parseColor("#CCFFFFFF")
         style = Paint.Style.FILL
     }
     val haloStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = AndroidColor.parseColor("#99000000")
         style = Paint.Style.STROKE
         strokeWidth = 1.5f * scaledDensity
+        if (positionIconAlpha < 255) pathEffect = android.graphics.DashPathEffect(floatArrayOf(3f * scaledDensity, 2f * scaledDensity), 0f)
     }
     val overlayHalo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = AndroidColor.parseColor("#B3000000")

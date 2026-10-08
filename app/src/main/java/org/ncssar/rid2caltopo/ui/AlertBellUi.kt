@@ -40,7 +40,7 @@ fun AlertStatusBell(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // Top-bar control beside the Bridge RSSI gauge (never inside the scrolling chip row).
+    // Session bell precedes Proximity Alerts in the scrolling status row.
     val state by AlertBellCenter.uiState.collectAsStateWithLifecycle()
     if (!state.showBell) return
     val tone = state.aggregateColor.name.lowercase()
@@ -85,7 +85,7 @@ fun AlertStatusPanel(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text(
-                    text = "Tap a bell to mute or unmute speech for that alert. Dismissing this panel only hides it.",
+                    text = "Tap a bell to mute or unmute speech for that alert. Played counts are for this app session.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -99,7 +99,11 @@ fun AlertStatusPanel(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
-                        Text(kind.displayName, modifier = Modifier.weight(1f))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(kind.displayName)
+                            val last = state.lastPlayedAtMs[kind]
+                            Text(if (last == null) "Last played: Never" else "Last played: " + java.text.DateFormat.getTimeInstance().format(java.util.Date(last)), style = MaterialTheme.typography.bodySmall)
+                        }
                         IconButton(onClick = { AlertBellCenter.toggleMuted(kind) }) {
                             Icon(
                                 imageVector = if (muted) {
@@ -119,6 +123,7 @@ fun AlertStatusPanel(
                                 },
                             )
                         }
+                        Text("Played: ${state.playedCounts[kind] ?: 0}", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }

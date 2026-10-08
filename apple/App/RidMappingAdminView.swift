@@ -416,6 +416,7 @@ enum AppleTrackerEnrollmentClient {
 }
 
 struct RidMappingAdminView: View {
+    private var inspectionRemoteID: String?
     @State private var canEdit = AppleAircraftOrganizationAccess.canEdit
     @State private var refreshingAccess = false
     @State private var accountName = AppleAircraftOrganizationAccess.organizationUser
@@ -448,6 +449,7 @@ struct RidMappingAdminView: View {
         self.onSaved = onSaved
         _organizationName = State(initialValue: organization.organizationName)
         var initialMappings = identities.importedMappings.map { AppleRidMappingDraft(identity: $0) }
+        self.inspectionRemoteID = initialRemoteID
         let normalizedRemoteID = initialRemoteID?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() ?? ""
         var selected: UUID?
         if !normalizedRemoteID.isEmpty {
@@ -485,6 +487,11 @@ struct RidMappingAdminView: View {
 
     var body: some View {
         Form {
+            if let remoteID = inspectionRemoteID {
+                Section { Button("Inspect") {
+                    NotificationCenter.default.post(name: Notification.Name("workspaceInspectDrone"), object: remoteID)
+                } }
+            }
             if AppleAircraftOrganizationAccess.belongsToOrganization {
                 Section("Organization account") {
                     Text(accountName ?? "Not verified").font(.headline)
@@ -610,7 +617,7 @@ struct RidMappingAdminView: View {
         } message: {
             Text(errors.joined(separator: "\n"))
         }
-        .navigationTitle(selectedID == nil ? "RID Map Entries" : "Aircraft details")
+        .navigationTitle(inspectionRemoteID != nil && !identities.importedMappings.contains(where: { $0.remoteID == inspectionRemoteID }) ? "Add New Drone" : selectedID == nil ? "RID Map Entries" : "Aircraft details")
         .navigationBarBackButtonHidden(selectedID != nil)
         .toolbar {
             if selectedID != nil {

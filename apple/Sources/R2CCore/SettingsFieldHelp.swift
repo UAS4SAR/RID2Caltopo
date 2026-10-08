@@ -36,7 +36,7 @@ public enum SettingsFieldHelp {
         "FAA proxy": "Shows whether organization-provided access for NOTAM/TFR lookup is configured. Import your organization enrollment QR code to configure it. This is independent of personal CalTopo sign-in.",
         "Organization designator": "Short organization label used in aircraft mappings and operational metadata. Enter your organization’s chosen text. This does not sign you in or grant organization access.",
         "CalTopo track folder": "Name of the CalTopo folder used to organize published drone tracks. Enter a folder name; the app creates or reuses it on the selected map.",
-        "Incident": "Incident name or identifier included in operational defaults. Free text; it does not select a CalTopo map.",
+        "Incident": "Select an incident map using personal or organization credentials, or use an incident name without a map.",
         "Operational period": "Label for the current operational period, such as a date or shift. Free text; this does not schedule recording.",
         "Team ID": "CalTopo Teams account identifier. Only needed for Teams API access. Enter Team ID, Credential ID, and Credential secret together, or leave them all blank for personal sign-in.",
         "Credential ID": "Identifier for a CalTopo Teams API credential. Copy it exactly from the Teams configuration. It is not your personal CalTopo username. Leave blank when using personal sign-in.",

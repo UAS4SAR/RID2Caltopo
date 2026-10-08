@@ -464,7 +464,7 @@ internal enum class AppBackAction {
 }
 
 internal fun appBackAction(activeScreen: ActiveScreen): AppBackAction =
-    if (activeScreen == ActiveScreen.MAIN) {
+    if (activeScreen == ActiveScreen.MAIN || activeScreen == ActiveScreen.STREAMS) {
         AppBackAction.REQUEST_EXIT_CONFIRMATION
     } else {
         AppBackAction.RETURN_TO_MAIN
@@ -1669,6 +1669,7 @@ class R2CActivity :
                 org.ncssar.rid2caltopo.ui.PrimaryPageTransition(activeScreen) {
                 if (localViewModel.proximitySettingsOpen) {
                     CaltopoSettingsScreen(
+                        onSelectIncident = localViewModel::openConnectionOverlayFromCurrentScreen,
                         startAtProximity = true,
                         onDismiss = {
                             reloadExternalDisplayConfig(forceRecreate = true)
@@ -1683,7 +1684,7 @@ class R2CActivity :
                     )
                 }
                 when (activeScreen) {
-                    ActiveScreen.MAIN -> {
+                    ActiveScreen.MAIN, ActiveScreen.STREAMS -> {
                         MainScreen(
                             localViewModel = localViewModel,
                             streamsViewModel = streamsViewModel,
@@ -1717,28 +1718,13 @@ class R2CActivity :
                             onRequestExit = {
                                 requestAppExit(AppExitRequestSource.QUIT_MENU)
                             },
-                        )
-                    }
-                    ActiveScreen.SETTINGS -> {
-                        CaltopoSettingsScreen(
-                            onDismiss = {
-                                reloadExternalDisplayConfig(forceRecreate = true)
-                                localViewModel.showMain()
-                            },
-                            onShowDeveloperTools = {
-                                reloadExternalDisplayConfig(forceRecreate = true)
-                                openDeveloperToolsWhenMainOpens = true
-                                localViewModel.showMain()
-                            },
-                        )
-                    }
-                    ActiveScreen.SCANNER -> {
-                        ScannerScreen(onDismiss = { localViewModel.showMain() })
-                    }
-                    ActiveScreen.STREAMS -> {
+                            workspace = { workspaceMenu, onAbout, onBluetoothStats ->
                         StreamsScreen(
                             onPlayCapturedVideo = playCapturedVideo,
-                            onBack = { localViewModel.showMain() },
+                            onBack = {},
+                            workspaceMenu = workspaceMenu,
+                            onAbout = onAbout,
+                            onBluetoothStats = onBluetoothStats,
                             onMapStatusTap = { localViewModel.openConnectionOverlayFromCurrentScreen() },
                             onProximitySettingsTap = { localViewModel.showProximitySettings() },
                             viewModel = streamsViewModel,
@@ -1771,6 +1757,25 @@ class R2CActivity :
                             onToggleRemoteVideoMicrophone = { toggleManagedVideoMicrophone() },
                             onTerminateRemoteVideo = { terminateManagedVideo() },
                         )
+                            },
+                        )
+                    }
+                    ActiveScreen.SETTINGS -> {
+                        CaltopoSettingsScreen(
+                            onSelectIncident = localViewModel::openConnectionOverlayFromCurrentScreen,
+                            onDismiss = {
+                                reloadExternalDisplayConfig(forceRecreate = true)
+                                localViewModel.showMain()
+                            },
+                            onShowDeveloperTools = {
+                                reloadExternalDisplayConfig(forceRecreate = true)
+                                openDeveloperToolsWhenMainOpens = true
+                                localViewModel.showMain()
+                            },
+                        )
+                    }
+                    ActiveScreen.SCANNER -> {
+                        ScannerScreen(onDismiss = { localViewModel.showMain() })
                     }
                 }
                 }
@@ -1803,6 +1808,10 @@ class R2CActivity :
                             streamsViewModel.requestAutomaticStreamPairingAfterConfirmation(
                                 confirmationState.remoteId
                             )
+                        },
+                        onInspect = {
+                            localViewModel.dismissConfirmationForInspection()
+                            streamsViewModel.inspectDrone(confirmationState.remoteId)
                         },
                         onUnknown = {
                             CTDebug("R2CActivity", "Drone confirmation Ignore clicked: remoteId=${confirmationState.remoteId}")

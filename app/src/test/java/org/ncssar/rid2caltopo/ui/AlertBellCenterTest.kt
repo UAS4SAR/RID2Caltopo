@@ -120,7 +120,7 @@ class AlertBellCenterTest {
         assertFalse(AlertBellCenter.uiState.value.showBell)
         assertEquals(AlertBellColor.Red, AlertBellCenter.uiState.value.aggregateColor)
 
-        AlertBellCenter.noteAlarmFired()
+        AlertBellCenter.recordPlayback(AlertBellKind.Altitude, 1000L)
         assertTrue(AlertBellCenter.uiState.value.showBell)
 
         AlertBellCenter.updateMetrics(AlertBellMetrics())
@@ -161,4 +161,24 @@ class AlertBellCenterTest {
         AlertBellCenter.setMuted(AlertBellKind.Altitude, false)
         assertTrue(cleared)
     }
+    @Test fun playbackHistoryCountsRepeatsSeparatelyAndResetsWithSession() {
+        AlertBellCenter.recordPlayback(AlertBellKind.Altitude, 1000L)
+        AlertBellCenter.recordPlayback(AlertBellKind.Proximity, 2000L)
+        AlertBellCenter.recordPlayback(AlertBellKind.Altitude, 3000L)
+        assertEquals(2, AlertBellCenter.uiState.value.playedCounts[AlertBellKind.Altitude])
+        assertEquals(1, AlertBellCenter.uiState.value.playedCounts[AlertBellKind.Proximity])
+        assertEquals(3000L, AlertBellCenter.uiState.value.lastPlayedAtMs[AlertBellKind.Altitude])
+        AlertBellCenter.resetForTests()
+        assertFalse(AlertBellCenter.uiState.value.showBell)
+        assertTrue(AlertBellCenter.uiState.value.playedCounts.isEmpty())
+    }
+
+    @Test fun silentAndMutedPlaybackDoesNotRevealBellOrCount() {
+        AlertBellCenter.recordPlayback(AlertBellKind.Altitude, 1000L, audible = false)
+        AlertBellCenter.reflectExternalMute(AlertBellKind.Proximity, true)
+        AlertBellCenter.recordPlayback(AlertBellKind.Proximity, 2000L)
+        assertFalse(AlertBellCenter.uiState.value.showBell)
+        assertTrue(AlertBellCenter.uiState.value.playedCounts.isEmpty())
+    }
+
 }

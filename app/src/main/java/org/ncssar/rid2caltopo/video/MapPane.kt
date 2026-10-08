@@ -245,7 +245,7 @@ internal fun seedLocalTrackPointsFromSnapshot(
             lng = point.lng,
             altitudeM = point.ele,
             timestampMsec = point.timestampMsec,
-            receivedAtMsec = receivedAtMsec
+            receivedAtMsec = point.receivedAtMsec
         )
     }
     if (snapshotPoints.isEmpty()) return false
@@ -262,13 +262,16 @@ internal fun seedLocalTrackPointsFromSnapshot(
             changed = true
         }
     }
+    // Snapshots backfill history behind the live RID/video head. Their original
+    // receipt times share the video clock; drone timestamps need not do so.
+    if (changed) flightPoints.sortBy { it.receivedAtMsec }
     while (flightPoints.size > LOCAL_TRACK_FLIGHT_POINT_LIMIT) {
         flightPoints.removeAt(0)
         changed = true
     }
 
     if (recentPoints.isEmpty()) {
-        recentPoints.add(snapshotPoints.last())
+        recentPoints.add(snapshotPoints.maxBy { it.receivedAtMsec }.copy(receivedAtMsec = receivedAtMsec))
         changed = true
     }
     while (recentPoints.size > LOCAL_TRACK_RECENT_POINT_LIMIT) {
@@ -858,6 +861,7 @@ internal fun SplitMapPane(
     val airspaceUiState by AirspaceCenter.uiState.collectAsStateWithLifecycle()
     val landRestrictionUiState by LandRestrictionCenter.uiState.collectAsStateWithLifecycle()
     val notamMapFocusRequest by viewModel.notamMapFocusRequest.collectAsStateWithLifecycle()
+    val workspaceProximityPairs by org.ncssar.rid2caltopo.ui.ProximityAlertCenter.debugPairs.collectAsStateWithLifecycle()
     val proximityMapFocusTarget by viewModel.proximityMapFocusTarget.collectAsStateWithLifecycle()
     val peerTrafficMapPoints by PeerTrafficMapRegistry.points.collectAsStateWithLifecycle()
     val staleTrackCutoffMs = System.currentTimeMillis() - (CaltopoClient.GetNewTrackDelayInSeconds() * 1000L)
@@ -2588,6 +2592,27 @@ internal fun SplitMapPane(
             else CaltopoClient.ShowToast("Fresh aircraft position and altitude are required")
         }, { calibrationDesignator = null })
     }
+    var unavailableInspection by remember { mutableStateOf<String?>(null) }
+    val requestedInspection by viewModel.inspectionRemoteId.collectAsState()
+    LaunchedEffect(requestedInspection, dronePoints) {
+        if (isInsetMode) return@LaunchedEffect
+        requestedInspection?.let { remoteId ->
+            val point = dronePoints.firstOrNull { it.remoteId == remoteId }
+            if (point != null) {
+                viewModel.focusMapDrone(point.designator)
+                openBubbleDesignator = point.designator
+                viewModel.inspectionRemoteId.value = null
+            } else {
+                unavailableInspection = remoteId
+                viewModel.inspectionRemoteId.value = null
+            }
+        }
+    }
+    unavailableInspection?.let { remoteId ->
+        AlertDialog(onDismissRequest = { unavailableInspection = null }, title = { Text("Drone Inspector") },
+            text = { Column { Text(remoteId); Text("Position unavailable. A bearing line needs a valid position and direction of travel.") } },
+            confirmButton = { TextButton(onClick = { unavailableInspection = null }) { Text("Close") } })
+    }
     openBubbleDesignator?.takeIf { colorPickerTarget == null }?.let { designator ->
         val point = dronePoints.firstOrNull { it.designator == designator }
         if (point != null) {
@@ -2617,7 +2642,7 @@ internal fun SplitMapPane(
                 speedKnots = point.speedKnots ?: telemetry?.aircraftGsKnots,
                 climbFpm = telemetry?.aircraftAltitudeRateFpm
             )
-            val pilotKey = normalizePilotCallsign(point.droneSpec?.owner)
+            val pilotKey = normalizePilotCallsign(point.droneSpec?.owner?.takeIf { it.isNotBlank() } ?: point.remoteId)
             val pilotSettings = pilotKey?.let {
                 PilotDisplaySettingsState(
                     pilotKey = it,
@@ -3821,7 +3846,7 @@ internal fun SplitMapPane(
                     val labelAglStale = displayState?.aglStale ?: false
                     val labelAtoFeet = displayState?.atoFt
                     val labelRangeFeet = distanceFeetFromTakeoff(point, renderLat, renderLng)
-                    val pilotKey = normalizePilotCallsign(point.droneSpec?.owner)
+                    val pilotKey = normalizePilotCallsign(point.droneSpec?.owner?.takeIf { it.isNotBlank() } ?: point.remoteId)
                     val pilotPreference = pilotDisplayPreferenceFor(pilotKey)
                     // Always compute the short marker arrow from recent visible movement.
                     // The optional long bearing line uses this exact same value.
@@ -3873,9 +3898,13 @@ internal fun SplitMapPane(
                         position = GeoPoint(renderLat, renderLng)
                         val effectiveAglM = labelAglFeet?.let { it / METERS_TO_FEET }
                             ?: Double.NEGATIVE_INFINITY
+                        val matchingPairs = workspaceProximityPairs.filter { it.firstMappedId == point.designator || it.secondMappedId == point.designator }
                         val markerTint = when {
+                            matchingPairs.any { it.alerting } -> AndroidColor.RED
+                            matchingPairs.any { org.ncssar.rid2caltopo.ui.workspaceSeparationCaution(it.horizontalSeparationFt, it.verticalSeparationFt.takeIf { _ -> it.verticalSeparationKnown }, CaltopoClient.GetProximityAlertSpacingFeet().toDouble()) } -> AndroidColor.parseColor("#FF9800")
                             effectiveAglM >= iconLimitAglM -> AndroidColor.parseColor("#D32F2F")
-                            effectiveAglM >= nearIconAglM -> AndroidColor.parseColor("#FBC02D")
+                            effectiveAglM >= nearIconAglM -> AndroidColor.parseColor("#FF9800")
+                            point.droneSpec?.mappedId == point.remoteId -> AndroidColor.GRAY
                             else -> null
                         }
                         icon = buildDroneMarkerDrawable(
@@ -3890,15 +3919,11 @@ internal fun SplitMapPane(
                         setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
                         if (!isInsetMode) {
                             setOnMarkerClickListener { _, _ ->
-                                if (sameMapDrone(latestFocusedPath, point.designator)) {
-                                    if (viewModel.droneDisplayStateFor(point.designator)?.let { !it.positionStale && it.aol.status == org.ncssar.rid2caltopo.video.surface.MeasurementStatus.CalibrationRequired } == true) calibrationDesignator = point.designator
-                                    else openBubbleDesignator = point.designator
+                                viewModel.focusMapDrone(point.designator)
+                                if (org.ncssar.rid2caltopo.ui.workspaceDroneAction(point.droneSpec?.mappedId != point.remoteId, CaltopoClient.IsCurrentPeerDroneConfirmed(point.remoteId)) != org.ncssar.rid2caltopo.ui.WorkspaceDroneAction.Inspect) {
+                                    viewModel.droneActionRemoteId.value = point.remoteId
                                 } else {
-                                    openBubbleDesignator = null
-                                    operatorAdjustedViewport = false
-                                    lastInsetFollowDesignator = null
-                                    lastInsetFollowPoint = null
-                                    viewModel.focusMapDrone(point.designator)
+                                    openBubbleDesignator = point.designator
                                 }
                                 true
                             }
@@ -4764,23 +4789,17 @@ internal fun SplitMapPane(
                             if(offlinePrepAolReport.isNotBlank()) Text(offlinePrepAolReport,fontSize=12.sp)
                         }
                         HorizontalDivider()
-                        Text("Estimated download and storage", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            if (offlinePrepEstimateRunning || !offlinePrepEstimate.ready) {
-                                "Estimate: calculating..."
-                            } else {
-                                "Estimate: " +
-                                    "tiles=${offlinePrepEstimate.tileEstimate}" +
-                                    (if (offlinePrepIncludeContours) " incl. contours" else "") +
-                                    " (~${"%.1f".format(Locale.US, offlinePrepEstimate.estimatedTileCacheMb)} MB), " +
-                                    "dem=${offlinePrepEstimate.demEstimate} tile(s) (~${"%.0f".format(Locale.US, offlinePrepEstimate.estimatedDemCacheMb)} MB)"
-                            },
-                            fontSize = 12.sp
-                        )
-                        Text(
-                            "Note: GeoTIFF tiles provide instant local DEM lookups with no network queries for covered areas.",
-                            fontSize = 11.sp
-                        )
+                        Text("Estimated download", style = MaterialTheme.typography.titleSmall)
+                        bounds?.let {
+                            val area = DownloadAreaSummary(it.latNorth, it.latSouth, it.lonWest, it.lonEast)
+                            DownloadMapSummaryRow("Width × height", String.format(Locale.US, "%.2f × %.2f mi", area.widthMiles, area.heightMiles))
+                            DownloadMapSummaryRow("Area", String.format(Locale.US, "%.2f sq mi", area.squareMiles))
+                            DownloadMapSummaryRow("Centroid", String.format(Locale.US, "%.5f°, %.5f°", area.latitude, area.longitude))
+                            Text("Measurements describe the download bounding rectangle; centroid is latitude, longitude.", style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (offlinePrepEstimateRunning || !offlinePrepEstimate.ready) {
+                            Text("Calculating estimate…", style = MaterialTheme.typography.bodyMedium)
+                        }
                         if (offlinePrepEstimate.ready) {
                             val estimatedTileBytes = (offlinePrepEstimate.estimatedTileCacheMb * 1024.0 * 1024.0).toLong()
                             val estimatedDemBytes = (offlinePrepEstimate.estimatedDemCacheMb * 1024.0 * 1024.0).toLong()
@@ -4791,16 +4810,21 @@ internal fun SplitMapPane(
                                 maximumTileCacheBytes = offlinePrepTileCacheCapBytes,
                                 availableVolumeBytes = offlinePrepAvailableBytes
                             )
-                            Text(
-                                "Currently cached: ${formatStorageBytes(capacity.currentTileCacheBytes)}",
-                                fontSize = 11.sp
-                            )
-                            Text(
-                                "Configured cache limit: ${formatStorageBytes(capacity.maximumTileCacheBytes)}",
-                                fontSize = 11.sp
-                            )
-                            Text("Estimated after download: ${formatStorageBytes(capacity.projectedTileCacheBytes)} (before cleanup; includes temporary AOL space).", fontSize = 11.sp)
-                            Text("The estimate assumes selected files are not already cached. Older entries may be removed to stay within the configured limit or when they exceed the maximum tile age.", fontSize = 11.sp)
+                            if (!offlinePrepEstimateRunning) {
+                                DownloadMapSummaryRow("Map tiles", String.format(Locale.US, "%,d", offlinePrepEstimate.tileEstimate))
+                                DownloadMapSummaryRow("DEM tiles", String.format(Locale.US, "%,d", offlinePrepEstimate.demEstimate))
+                                DownloadMapSummaryRow("Map-tile download", formatStorageBytes(estimatedTileBytes))
+                                if (offlinePrepIncludeDem) DownloadMapSummaryRow("DEM download", formatStorageBytes(estimatedDemBytes))
+                                DownloadMapSummaryRow("Conservative total", formatStorageBytes(estimatedTileBytes + estimatedDemBytes + offlinePrepAolWorkingBytes))
+                                Text("The estimate is conservative. One-metre availability is resolved from the USGS catalog when preparation starts.", style = MaterialTheme.typography.bodySmall)
+                            }
+                            HorizontalDivider()
+                            Text("Capacity", style = MaterialTheme.typography.titleSmall)
+                            DownloadMapSummaryRow("Current map cache", formatStorageBytes(capacity.currentTileCacheBytes))
+                            DownloadMapSummaryRow("Estimated after download", formatStorageBytes(capacity.projectedTileCacheBytes))
+                            DownloadMapSummaryRow("Configured cache limit", formatStorageBytes(capacity.maximumTileCacheBytes))
+                            capacity.availableVolumeBytes?.let { DownloadMapSummaryRow("Available on volume", formatStorageBytes(it)) }
+                            Text("Map layers and elevation data share the configured limit. Estimated usage assumes selected files are not already cached and includes temporary AOL space, before cleanup. Older entries may be removed to stay within the limit or when they exceed the maximum tile age.", style = MaterialTheme.typography.bodySmall)
                             if (capacity.exceedsCacheLimit) {
                                 Text(
                                     "This download is expected to exceed the map-cache limit. Increase the limit or reduce the selection before starting.",
@@ -4863,10 +4887,6 @@ internal fun SplitMapPane(
                                 ) { Text("Apply") }
                             }
                             if (capacity.availableVolumeBytes != null) {
-                                Text(
-                                    "Available on cache volume: ${formatStorageBytes(capacity.availableVolumeBytes)}",
-                                    fontSize = 11.sp
-                                )
                                 if (capacity.exceedsAvailableVolume) {
                                     Text(
                                         "Warning: estimated download may exceed available storage.",

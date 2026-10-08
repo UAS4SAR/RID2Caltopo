@@ -1,11 +1,64 @@
 package org.ncssar.rid2caltopo.video
 
+import com.google.gson.JsonParser
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.ncssar.rid2caltopo.data.WaypointTrack
 
 class MapPaneLocalTrackSeedTest {
+    @Test
+    fun october7RecordedFlightBackfillKeepsCappedVideoHistoryChronological() {
+        // Coordinates only from the supplied 11:44:32 flight. Video samples are
+        // interpolated for buffer-pressure coverage, not recovered SEI telemetry.
+        val json = checkNotNull(javaClass.getResource("/tracks/oct07-114432-coordinates.json")).readText()
+        val snapshot = JsonParser.parseString(json).asJsonArray.map { element ->
+            val c = element.asJsonArray
+            WaypointTrack.TrackPoint(c[1].asDouble, c[0].asDouble, c[2].asDouble, c[3].asLong)
+        }
+        val video = snapshot.zipWithNext().flatMap { (a, b) ->
+            (0..6).map { step ->
+                val f = step / 7.0
+                val time = a.timestampMsec + ((b.timestampMsec - a.timestampMsec) * f).toLong()
+                LocalTrackPoint("A", a.lat + (b.lat - a.lat) * f,
+                    a.lng + (b.lng - a.lng) * f, a.ele + (b.ele - a.ele) * f, time, time)
+            }
+        }
+        val recent = mutableListOf<LocalTrackPoint>()
+        val flight = video.takeLast(10_000).toMutableList()
+        val last = snapshot.last()
+        flight.add(LocalTrackPoint("A", last.lat, last.lng, last.ele, last.timestampMsec, last.timestampMsec))
+        flight.removeAt(0)
+        repeat(3) {
+            seedLocalTrackPointsFromSnapshot("A", snapshot, last.timestampMsec + 1000, recent, flight)
+            assertEquals(10_000, flight.size)
+            assertEquals(last.timestampMsec, flight.last().timestampMsec)
+            assertTrue("Backfill must not return from the live head to older flight history",
+                flight.zipWithNext().all { (a, b) -> a.receivedAtMsec <= b.receivedAtMsec })
+        }
+    }
+
+    @Test
+    fun snapshotBackfillMergesBehindVideoHeadUsingReceiptTime() {
+        val recent = mutableListOf<LocalTrackPoint>()
+        val flight = mutableListOf(
+            LocalTrackPoint("A", 39.003, -121.0, 100.0, 3000L, 3000L)
+        )
+        // The drone clock is ahead of the tablet. Ordering by drone time would
+        // still join the current video head back to the start of the flight.
+        val snapshot = listOf(
+            WaypointTrack.TrackPoint(39.001, -121.0, 100.0, 61000L, 1000L),
+            WaypointTrack.TrackPoint(39.002, -121.0, 100.0, 62000L, 2000L)
+        )
+        seedLocalTrackPointsFromSnapshot("A", snapshot, 4000L, recent, flight)
+        assertEquals(listOf(1000L, 2000L, 3000L), flight.map { it.receivedAtMsec })
+        flight.add(LocalTrackPoint("A", 39.005, -121.0, 100.0, 5000L, 5000L))
+        val extended = snapshot + WaypointTrack.TrackPoint(39.004, -121.0, 100.0, 64000L, 4000L)
+        seedLocalTrackPointsFromSnapshot("A", extended, 6000L, recent, flight)
+        assertEquals(listOf(1000L, 2000L, 3000L, 4000L, 5000L), flight.map { it.receivedAtMsec })
+        assertTrue(!seedLocalTrackPointsFromSnapshot("A", extended, 7000L, recent, flight))
+    }
+
     @Test
     fun seedLocalTrackPointsFromSnapshot_backfillsFullFlightAndLatestRecentPoint() {
         val recent = mutableListOf<LocalTrackPoint>()

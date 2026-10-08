@@ -16,7 +16,13 @@ object MediaMTXStatus {
     var serverExitReason by mutableStateOf("")
         private set
 
+    var version by mutableStateOf("Unavailable")
+        private set
+    var startedAtMs by mutableStateOf(0L)
+        private set
     fun onServerStarted(version: String) {
+        this.version = version
+        startedAtMs = android.os.SystemClock.elapsedRealtime()
         isServerRunning = true
         serverExitReason = ""
     }

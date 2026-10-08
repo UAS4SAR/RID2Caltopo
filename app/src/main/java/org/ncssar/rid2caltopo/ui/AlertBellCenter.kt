@@ -156,7 +156,9 @@ data class AlertBellMetrics(
 
 data class AlertBellUiState(
     val muted: Set<AlertBellKind> = emptySet(),
-    /** Latched after any kind first reaches Red this process/session. */
+    val playedCounts: Map<AlertBellKind, Int> = emptyMap(),
+    val lastPlayedAtMs: Map<AlertBellKind, Long> = emptyMap(),
+    /** Latched only by audible playback starting this process/session. */
     val hasEverAlarmed: Boolean = false,
     val colors: Map<AlertBellKind, AlertBellColor> =
         AlertBellKind.entries.associateWith { AlertBellColor.White },
@@ -241,15 +243,20 @@ object AlertBellCenter {
     fun updateMetrics(metrics: AlertBellMetrics) {
         val colors = metrics.colors()
         // Do not latch hasEverAlarmed from ambient red metrics (bridge never
-        // seen, weak WiFi, etc.). Visibility latches only via noteAlarmFired().
+        // seen, weak WiFi, etc.). Visibility latches only via recordPlayback().
         _uiState.update { state ->
             state.copy(colors = colors)
         }
     }
 
-    /** Mark that an alarm spoke or became active even if metrics lag a frame. */
-    fun noteAlarmFired() {
-        _uiState.update { it.copy(hasEverAlarmed = true) }
+    /** Called only from the audio engine's start callback, once per utterance. */
+    fun recordPlayback(kind: AlertBellKind, atMs: Long = System.currentTimeMillis(), audible: Boolean = true) {
+        if (!audible || isMuted(kind)) return
+        _uiState.update { state ->
+            state.copy(hasEverAlarmed = true,
+                playedCounts = state.playedCounts + (kind to ((state.playedCounts[kind] ?: 0) + 1)),
+                lastPlayedAtMs = state.lastPlayedAtMs + (kind to atMs))
+        }
     }
 
     @Volatile

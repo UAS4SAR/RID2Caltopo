@@ -98,12 +98,18 @@ public class WaypointTrack {
         public final double lng;
         public final double ele;
         public final long timestampMsec;
+        public final long receivedAtMsec;
 
         public TrackPoint(double lat, double lng, double ele, long timestampMsec) {
+            this(lat, lng, ele, timestampMsec, timestampMsec);
+        }
+
+        public TrackPoint(double lat, double lng, double ele, long timestampMsec, long receivedAtMsec) {
             this.lat = lat;
             this.lng = lng;
             this.ele = ele;
             this.timestampMsec = timestampMsec;
+            this.receivedAtMsec = receivedAtMsec;
         }
     }
 
@@ -376,7 +382,9 @@ public class WaypointTrack {
                 double lat = point.getDouble(1);
                 double ele = point.getDouble(2);
                 long timestampMsec = point.getLong(3);
-                snapshot.add(new TrackPoint(lat, lng, ele, timestampMsec));
+                Long received = i < pointReceivedAtMs.size() ? pointReceivedAtMs.get(i) : null;
+                snapshot.add(new TrackPoint(lat, lng, ele, timestampMsec,
+                        received != null ? received : timestampMsec));
             } catch (JSONException e) {
                 CTWarn(TAG, String.format(Locale.US,
                         "getTrackPointsSnapshot(%s): skipping malformed point at index %d",

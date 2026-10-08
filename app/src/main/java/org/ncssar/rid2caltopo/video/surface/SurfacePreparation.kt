@@ -26,11 +26,12 @@ internal object SurfacePreparation {
         Thread({ android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND); work.run() }, "AOL preparation").apply { isDaemon = true }
     }.asCoroutineDispatcher()
     fun grid(bounds: SurfaceBounds): SurfacePreparationPlan {
-        require(listOf(bounds.west,bounds.south,bounds.east,bounds.north).all { it.isFinite() } && bounds.west <= bounds.east && bounds.south <= bounds.north && abs(bounds.south)<70 && abs(bounds.north)<70 && abs(bounds.west)<=180 && abs(bounds.east)<=180) { "Invalid AOL region" }
+        require(listOf(bounds.west,bounds.south,bounds.east,bounds.north).all { it.isFinite() } && bounds.west <= bounds.east && bounds.south <= bounds.north && abs(bounds.west)<=180 && abs(bounds.east)<=180) { "AOL region has invalid coordinates; select a different map area or assignment" }
         val lat=(bounds.south+bounds.north)/2;val lon=(bounds.west+bounds.east)/2
         val w=ceil(Math.toRadians(bounds.east-bounds.west)*R*cos(Math.toRadians(lat))+124).toInt()
         val h=ceil(Math.toRadians(bounds.north-bounds.south)*R+124).toInt()
         require(w in 1..4000 && h in 1..4000) { "AOL preparation supports regions up to about 4 km across; select a smaller map or assignment" }
+        require(abs(bounds.south)<70 && abs(bounds.north)<70) { "AOL preparation supports latitudes between 70°S and 70°N; select a region within that range" }
         return SurfacePreparationPlan(bounds,lat,lon,w,h,emptyList())
     }
     fun sources(pages: List<JSONObject>): List<SurfaceSource> {

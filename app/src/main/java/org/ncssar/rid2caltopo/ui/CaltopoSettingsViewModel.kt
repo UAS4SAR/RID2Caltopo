@@ -48,6 +48,76 @@ internal fun caltopoCredentialFieldState(teamId: String, credentialId: String, s
 class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListener {
     private var isSaving = false
 
+    private var editing = false
+    private var originalDraft: List<Any?> = emptyList()
+    fun beginEditing() {
+        editing = false
+        settingsChanged()
+        originalDraft = draftValues()
+        editing = true
+    }
+    fun discardEdits() {
+        editing = false
+        trackerManuallyEdited = false
+        settingsChanged()
+        originalDraft = draftValues()
+    }
+    fun hasUnsavedChanges(): Boolean = draftValues() != originalDraft
+    private fun draftFields(): List<MutableStateFlow<*>> = listOf(
+        _organizationName,
+        _trackFolder,
+        _minDistance,
+        _newTrackDelay,
+        _minimumLocationAccuracyCode,
+        _maxFlatlineToneDuration,
+        _bridgeCheckDistanceFeet,
+        _alarmVolumePercent,
+        _usePeers,
+        _standaloneR2cCoordinationEnabled,
+        _captureIncomingVideo,
+        _mediaServerRestricted,
+        _wifiRidScanningEnabled,
+        _remoteVideoControlEnabled,
+        _thumbnailRefreshSeconds,
+        _predictiveHeadEnabled,
+        _proximityAlertSpacingFeet,
+        _maxIdleTimeInMinutes,
+        _opPeriod,
+        _caltopoDomainAndPort,
+        _caltopoTeamId,
+        _caltopoCredentialId,
+        _caltopoCredentialSecret,
+        _caltopoConnectKey,
+        _trackerUrl,
+        _trackerApiKey,
+        _mutualAidTeamId,
+        _mutualAidCredentialId,
+        _mutualAidCredentialSecret,
+        _mutualAidDomain,
+        _mutualAidSourceLabel,
+        _mutualAidTargetFolder,
+        _mutualAidConnectKey,
+        _notamEnabled,
+        _notamRadiusNm,
+        _notamRefreshIntervalSeconds,
+        _notamAutoRefresh,
+        _landRestrictionsEnabled,
+        _landRestrictionsShowOnMap,
+        _landRestrictionsAutoRefresh,
+        _landRestrictionsRadiusNm,
+        _externalDisplayMode,
+        _externalDisplayAutoOpen,
+        _externalDisplayReturnToPhoneOnly,
+        _externalDisplayAllowInteraction,
+        _externalDisplayContentMode,
+        _externalDisplayAlertRouting
+    )
+    private fun draftValues(): List<Any?> = draftFields().map { it.value }
+    @Suppress("UNCHECKED_CAST")
+    private fun restoreDraftField(index: Int, value: Any?) {
+        (draftFields()[index] as MutableStateFlow<Any?>).value = value
+    }
+
     // --- Live Data for UI --- //
 
     private val _organizationName = MutableStateFlow(CaltopoClient.GetHomeOrgName())
@@ -196,6 +266,9 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
 
     override fun settingsChanged() {
         if (isSaving) return
+        val pending = if (editing) draftValues().mapIndexedNotNull { index, value ->
+            if (value != originalDraft.getOrNull(index)) index to value else null
+        } else emptyList()
         _organizationName.value = CaltopoClient.GetHomeOrgName()
         _trackFolder.value = CaltopoClient.GetTrackFolderName()
         _incident.value = CaltopoClient.GetIncident()
@@ -250,6 +323,10 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
         _externalDisplayAllowInteraction.value = externalConfig.allowInteraction
         _externalDisplayContentMode.value = externalConfig.contentMode
         _externalDisplayAlertRouting.value = externalConfig.alertRouting
+        if (editing) {
+            originalDraft = draftValues()
+            pending.forEach { (index, value) -> restoreDraftField(index, value) }
+        }
     }
 
     // --- UI Event Handlers --- //
@@ -308,7 +385,7 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
     }
 
     fun onAlarmVolumePercentChanged(percent: Int) {
-        _alarmVolumePercent.value = CaltopoClient.SetAlarmVolumePercent(percent)
+        _alarmVolumePercent.value = percent.coerceIn(0, 100)
     }
 
     fun onMaxIdleTimeInMinutesChanged(newVal: String) {
@@ -405,6 +482,14 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
     }
 
     fun saveSettings(): Boolean {
+        val numbers = listOf(_minDistance.value, _newTrackDelay.value, _bridgeCheckDistanceFeet.value,
+            _maxIdleTimeInMinutes.value, _proximityAlertSpacingFeet.value, _notamRadiusNm.value,
+            _notamRefreshIntervalSeconds.value, _landRestrictionsRadiusNm.value)
+        if (numbers.any { it.toLongOrNull() == null || it.toLong() < 0 } ||
+            _thumbnailRefreshSeconds.value.toDoubleOrNull()?.let { it.isFinite() && it > 0 } != true) {
+            _caltopoCredentialError.value = "Enter valid nonnegative whole numbers for distances and times, and a positive thumbnail interval."
+            return false
+        }
         val trimmedCaltopoTeamId = _caltopoTeamId.value.trim()
         val trimmedCaltopoCredentialId = _caltopoCredentialId.value.trim()
         val trimmedCaltopoCredentialSecret = _caltopoCredentialSecret.value.trim()
@@ -426,7 +511,6 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
         CaltopoClient.SetHomeOrgName(_organizationName.value.trim())
         CaltopoClient.SetConnectKey(_caltopoConnectKey.value.trim())
         CaltopoClient.SetTrackFolderName(_trackFolder.value.trim())
-        CaltopoClient.SetIncident(_incident.value.trim())
         CaltopoClient.SetOpPeriod(_opPeriod.value.trim())
         if (credentialFieldState == CaltopoCredentialFieldState.COMPLETE) {
             CaltopoClient.SetCaltopoCredentials(
@@ -437,7 +521,8 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
                 )
             )
         }
-        if (trackerManuallyEdited) {
+        if (_trackerUrl.value.trim() != CaltopoClient.GetHomeTrackerUrlPfx().trim() ||
+            _trackerApiKey.value.trim() != CaltopoClient.GetHomeTrackerApiKey().trim()) {
             CaltopoClient.SetHomeTrackerCredentials(
                 _trackerUrl.value.trim(),
                 _trackerApiKey.value.trim()
@@ -462,7 +547,7 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
             CaltopoClient.SetMaxFlatlineToneDurationInSeconds(it)
         }
         _bridgeCheckDistanceFeet.value.toLongOrNull()?.let { CaltopoClient.SetBridgeCheckDistanceFeet(it) }
-        if (CaltopoClient.GetAlarmVolumeConfigured()) {
+        if (_alarmVolumePercent.value != CaltopoClient.GetAlarmVolumePercent()) {
             CaltopoClient.SetAlarmVolumePercent(_alarmVolumePercent.value)
         }
         _maxIdleTimeInMinutes.value.toLongOrNull()?.let { CaltopoClient.SetMaxIdleTimeInMinutes(it) }
@@ -517,7 +602,9 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
         }
         } finally {
             isSaving = false
+            editing = false
             settingsChanged()
+            originalDraft = draftValues()
         }
         return true
     }

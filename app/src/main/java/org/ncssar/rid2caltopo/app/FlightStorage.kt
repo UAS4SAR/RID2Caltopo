@@ -185,9 +185,13 @@ object FlightStorage {
     private fun prefs(context: Context) = context.getSharedPreferences("flight_storage", Context.MODE_PRIVATE)
     fun maximumBytes(context: Context) = prefs(context).getLong("maximum_bytes", DEFAULT_MAX_BYTES).coerceIn(100_000_000L, 1_000_000_000_000L)
     fun maximumDays(context: Context) = prefs(context).getLong("maximum_days", DEFAULT_MAX_DAYS).coerceIn(1L, 3650L)
-    fun save(context: Context, bytes: Long, days: Long) {
-        prefs(context).edit().putLong("maximum_bytes", bytes).putLong("maximum_days", days).apply()
+    /** Called off the UI thread; acknowledge only after preferences reach disk. */
+    fun save(context: Context, bytes: Long, days: Long): Boolean {
+        require(bytes in 100_000_000L..1_000_000_000_000L && days in 1L..3650L)
+        val stored = prefs(context).edit().putLong("maximum_bytes", bytes).putLong("maximum_days", days).commit()
+        if (!stored || maximumBytes(context) != bytes || maximumDays(context) != days) return false
         requestCheck(context)
+        return true
     }
     @JvmStatic @JvmOverloads fun protect(name: String, owner: String = name) = synchronized(lock) { protectedDays[owner] = name; Unit }
     @JvmStatic fun release(owner: String) = synchronized(lock) {

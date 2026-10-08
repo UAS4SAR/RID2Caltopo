@@ -32,7 +32,53 @@ struct CaltopoSettingsView: View {
     @AppStorage(AppleDeviceIdentity.storedNameKey) private var deviceName = AppleDeviceIdentity.displayName
     @AppStorage(AppleDeviceIdentity.managedNameKey) private var managedDeviceName = ""
     @AppStorage("rid.minimumHorizontalAccuracyCode") private var minimumHorizontalAccuracyCode = 9
+    @State private var teamsDraft = OperationalTeamsCredentialDraft()
+    @State private var initialTeamsDraft = OperationalTeamsCredentialDraft()
+    @State private var initialTrackerURL = ""
+    @State private var initialTrackerKey = ""
+    @State private var draftInitialized = false
+    @State private var teamsSaveMessage = ""
+    @StateObject private var draft = AppleSettingsDraft()
+    @Environment(\.dismiss) private var dismissSettings
+    @State private var showUnsavedSettings = false
+    @State private var trackerURLDraft = ""
+    @State private var trackerKeyDraft = ""
+    @State private var localConsent = RidProximityConsent()
+    @State private var consentAtOpen = false
+    @State private var publishingMessage = ""
+    @Environment(\.colorScheme) private var colorScheme
     @State private var showingTeamMaps = false
+    @State private var showingIncidentSelection = false
+    @State private var connectMapAfterIncidentSelection = false
+
+    private var hasChanges: Bool {
+        draft.edits.hasChanges || teamsDraft.normalized != initialTeamsDraft.normalized ||
+            trackerURLDraft != initialTrackerURL || trackerKeyDraft != initialTrackerKey ||
+            localConsent.enabled != consentAtOpen
+    }
+    private func requestLeave() {
+        if hasChanges { showUnsavedSettings = true } else { dismissSettings() }
+    }
+    private func saveAndClose() {
+        if let error = teamsDraft.validationMessage { teamsSaveMessage = error; return }
+        do {
+            if teamsDraft.normalized != initialTeamsDraft.normalized { try settings.saveTeamsCredentials(teamsDraft) }
+            if trackerURLDraft != initialTrackerURL || trackerKeyDraft != initialTrackerKey {
+                try orgSettings.applyManualTrackerConfiguration(trackerURLPrefix: trackerURLDraft, trackerAPIKey: trackerKeyDraft)
+            }
+            draft.edits.commit()
+            if localConsent.enabled != consentAtOpen {
+                if localConsent.enabled {
+                    // Every paragraph was acknowledged in the local draft before this Save.
+                    proximityAlerts.requestEnable()
+                    RidProximityConsent.noticeParagraphs.indices.forEach { proximityAlerts.toggleAcknowledgment($0) }
+                    proximityAlerts.confirmEnable()
+                } else { proximityAlerts.disable() }
+            }
+            onSave(settings.configuration)
+            dismissSettings()
+        } catch { teamsSaveMessage = "Unable to save Settings: \(error.localizedDescription)" }
+    }
 
     var body: some View {
         ScrollViewReader { scroll in
@@ -55,33 +101,30 @@ struct CaltopoSettingsView: View {
             Section("Organization and operational defaults") {
                 SettingsTextField(
                     "Organization designator",
-                    text: Binding(
+                    text: draft.binding("orgSettings.organizationName", Binding(
                         get: { orgSettings.organizationName },
                         set: { orgSettings.setOrganizationNameForRidMappings($0) }
-                    )
+                    ))
                 )
                 .textInputAutocapitalization(.characters)
                 .autocorrectionDisabled()
                 SettingsTextField(
                     "CalTopo track folder",
-                    text: Binding(
+                    text: draft.binding("orgSettings.trackFolder", Binding(
                         get: { orgSettings.trackFolder },
                         set: { orgSettings.setTrackFolder($0) }
-                    )
+                    ))
                 )
-                SettingsTextField(
-                    "Incident",
-                    text: Binding(
-                        get: { orgSettings.incident },
-                        set: { orgSettings.setIncident($0) }
-                    )
-                )
+                Button { showingIncidentSelection = true } label: {
+                    LabeledContent("Incident", value: OperationalIncidentSelection.name(mapID: settings.mapID,
+                        mapTitle: settings.mapTitle, standaloneName: orgSettings.standaloneIncidentName))
+                }
                 SettingsTextField(
                     "Operational period",
-                    text: Binding(
+                    text: draft.binding("orgSettings.operationalPeriod", Binding(
                         get: { orgSettings.operationalPeriod },
                         set: { orgSettings.setOperationalPeriod($0) }
-                    )
+                    ))
                 )
                 Text("Defaults used for this organization and operation. Tap a field title for help.")
                     .font(.footnote)
@@ -90,30 +133,43 @@ struct CaltopoSettingsView: View {
             Section("CalTopo Teams account") {
                 SettingsScannableTextField(
                     title: "Team ID",
-                    text: $settings.teamID,
+                    text: $teamsDraft.teamID,
                     mode: .credential
                 )
                 SettingsScannableTextField(
                     title: "Credential ID",
-                    text: $settings.credentialID,
+                    text: $teamsDraft.credentialID,
                     mode: .credential
                 )
                 SettingsScannableTextField(
                     title: "Credential secret",
-                    text: $settings.credentialSecret,
+                    text: $teamsDraft.secret,
                     mode: .credential,
                     secure: true
                 )
                 SettingsScannableTextField(
                     title: "Connect Key",
-                    text: $settings.connectKey,
+                    text: $teamsDraft.connectKey,
                     mode: .credential
                 )
-                Text("Optional: enter these three values together for CalTopo Teams API access. Personal sign-in does not need them. The credential secret is stored securely in Keychain.")
+                SettingsTextField("Domain", text: $teamsDraft.domain)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                if settings.usesPersonalCredentials {
+                    Text("Personal sign-in is active. These optional Teams credentials are separate; they do not change your personal sign-in or selected map.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Text("Save applies these settings locally on this device; the credential secret is stored in Keychain. File export and cloud backups are managed separately. Personal sign-in does not need Teams credentials.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            AppleTrackerConfigurationSection(settings: orgSettings)
+            Section("Tracker coordination") {
+                SettingsTextField("Tracker URL", text: $trackerURLDraft)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                SettingsScannableTextField(title: "Tracker API key", text: $trackerKeyDraft, mode: .credential, secure: true)
+                Text("Changing tracker credentials on Save clears the managed FAA-proxy association. Import the organization QR again to restore FAA proxy access.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
             Section("Incident map") {
                 if settings.mapID.isEmpty {
                     Label("No CalTopo map selected", systemImage: "map")
@@ -122,15 +178,8 @@ struct CaltopoSettingsView: View {
                     SettingsValue("Connected Map", value: settings.mapTitle.isEmpty ? settings.mapID : settings.mapTitle)
                     SettingsValue("Map ID", value: settings.mapID)
                 }
-                Button {
-                    if settings.teamID.isEmpty || settings.credentialID.isEmpty || settings.credentialSecret.isEmpty {
-                        settings.usesPersonalCredentials = true
-                    }
-                    onSave(settings.save())
-                    showingTeamMaps = true
-                } label: {
-                    Label(settings.mapID.isEmpty ? "Connect to CalTopo Map" : "Switch CalTopo Map", systemImage: "map.fill")
-                        .font(.headline)
+                Button { showingIncidentSelection = true } label: {
+                    Label("Select Incident…", systemImage: "map.fill").font(.headline)
                 }
                 if settings.teamID.isEmpty || settings.credentialID.isEmpty || settings.credentialSecret.isEmpty {
                     Text("Personal sign-in lets you browse and publish to maps you can access. Teams credentials are optional.")
@@ -146,17 +195,18 @@ struct CaltopoSettingsView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section("Publishing") {
-                SettingsToggle("Enable live CalTopo publishing", isOn: $settings.enabled)
-                SettingsTextField("Domain", text: $settings.domainAndPort)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                SettingsTextField("Map ID", text: $settings.mapID)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
+                SettingsToggle("Enable live CalTopo publishing", isOn: draft.binding("settings.enabled", Binding(
+                    get: { settings.enabled },
+                    set: { value in
+                        _ = settings.setPublishingEnabled(value)
+                    }
+                )))
+                Text("Changes apply when you Save. Select a map and personal or organization access through Select Incident.")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
             Section("This device") {
                 if managedDeviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    SettingsTextField("Device Name", text: $deviceName)
+                    SettingsTextField("Device Name", text: draft.binding("deviceName", $deviceName))
                         .textInputAutocapitalization(.words)
                         .autocorrectionDisabled()
                 } else {
@@ -169,30 +219,30 @@ struct CaltopoSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("Video Streams") {
-                SettingsToggle("Restrict media server access", isOn: $restrictMediaServerAccess)
+                SettingsToggle("Restrict media server access", isOn: draft.binding("restrictMediaServerAccess", $restrictMediaServerAccess))
                 Text("Accept controller RTMP streams while blocking direct media-server viewing from other devices. Playback and recording on this tablet and authorized R2C sharing remain available. Turn off only for trusted local viewers. Changing this setting restarts video.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                SettingsToggle("Capture Streams", isOn: $captureStreams)
+                SettingsToggle("Capture Streams", isOn: draft.binding("captureStreams", $captureStreams))
                 Text("When enabled, incoming streams are recorded as fMP4 under Files > RID2Caltopo > FlightStorage. Changing this setting restarts the local media server.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                SettingsToggle("Remote Video Control", isOn: $remoteVideoControlEnabled)
+                SettingsToggle("Remote Video Control", isOn: draft.binding("remoteVideoControlEnabled", $remoteVideoControlEnabled))
                 Text("When enabled, an authenticated requester chooses video quality after the link test without a per-request approval prompt. Only one viewer can use this iPad at a time.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Stepper {
                     SettingsValue(
                         "Thumbnail & LiveTrack update interval",
-                        value: "\(OperationalThumbnailRefreshInterval.formatted(thumbnailRefreshSeconds)) seconds"
+                        value: "\(OperationalThumbnailRefreshInterval.formatted(draft.value("thumbnailRefreshSeconds", thumbnailRefreshSeconds))) seconds"
                     )
                 } onIncrement: {
-                    thumbnailRefreshSeconds = OperationalThumbnailRefreshInterval.incremented(
-                        thumbnailRefreshSeconds
+                    draft.binding("thumbnailRefreshSeconds", $thumbnailRefreshSeconds).wrappedValue = OperationalThumbnailRefreshInterval.incremented(
+                        draft.value("thumbnailRefreshSeconds", thumbnailRefreshSeconds)
                     )
                 } onDecrement: {
-                    thumbnailRefreshSeconds = OperationalThumbnailRefreshInterval.decremented(
-                        thumbnailRefreshSeconds
+                    draft.binding("thumbnailRefreshSeconds", $thumbnailRefreshSeconds).wrappedValue = OperationalThumbnailRefreshInterval.decremented(
+                        draft.value("thumbnailRefreshSeconds", thumbnailRefreshSeconds)
                     )
                 }
                 Text("Minimum time between thumbnail refreshes and LiveTrack updates. Default 5.0 seconds; lower values update more often and use more battery and data.")
@@ -200,10 +250,10 @@ struct CaltopoSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("Bridge warnings") {
-                SettingsToggle("Bridge audio warnings", isOn: Binding(
+                SettingsToggle("Bridge audio warnings", isOn: draft.binding("binding4", Binding(
                     get: { !bridgeAlerts.audioMuted },
                     set: { bridgeAlerts.setAudioMuted(!$0) }
-                ))
+                )))
                 Text("Enabled when the app starts. Turning this off silences bridge warnings for this app session only.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -211,10 +261,10 @@ struct CaltopoSettingsView: View {
             Section("Traffic safety") {
                 SettingsToggle(
                     "Use tracker peers",
-                    isOn: Binding(
+                    isOn: draft.binding("orgSettings.usePeers", Binding(
                         get: { orgSettings.usePeers },
                         set: { orgSettings.setUsePeers($0) }
-                    )
+                    ))
                 )
                 Text("Standalone flights stay independent. Live aircraft coordination requires an incident map. Organization access and archive uploads remain available.")
                     .font(.footnote)
@@ -222,45 +272,46 @@ struct CaltopoSettingsView: View {
             }
             Section("Proximity Alerts") {
                 SettingsToggle(
-                    "Proximity alerts: \(proximityAlerts.status)",
-                    isOn: Binding(get: { proximityAlerts.consent.enabled }, set: { enabled in
-                        if enabled { proximityAlerts.requestEnable() } else { proximityAlerts.disable() }
+                    "Proximity alerts: \(localConsent.enabled ? "On" : "Off")",
+                    isOn: Binding(get: { localConsent.enabled }, set: { enabled in
+                        if enabled { localConsent.requestEnable() } else { localConsent.disable() }
                     })
                 )
+
                 Text("Optional alerts based on received telemetry. No alert does not mean the airspace is clear.")
                     .font(.footnote).foregroundStyle(.secondary)
-                SettingsToggle("Alert scope: \(proximityAlerts.alertAllAircraft ? "All aircraft" : "Published only")",
-                    isOn: Binding(get: { proximityAlerts.alertAllAircraft }, set: { proximityAlerts.setAlertAllAircraft($0) }))
+                SettingsToggle("Alert scope: \(draft.value("proximityAlerts.alertAllAircraft", proximityAlerts.alertAllAircraft) ? "All aircraft" : "Published only")",
+                    isOn: draft.binding("proximityAlerts.alertAllAircraft", Binding(get: { proximityAlerts.alertAllAircraft }, set: { proximityAlerts.setAlertAllAircraft($0) })))
                 Text("Published only: pairs involving an aircraft claimed by this tablet. All aircraft: any received pair, including ignored or unconfirmed flights. This does not change recording or publishing.")
                     .font(.footnote).foregroundStyle(.secondary)
                 SettingsStepper(
-                    "Proximity spacing: \(orgSettings.proximityAlertSpacingFeet) ft",
-                    value: Binding(
+                    "Proximity spacing: \(draft.value("orgSettings.proximityAlertSpacingFeet", orgSettings.proximityAlertSpacingFeet)) ft",
+                    value: draft.binding("orgSettings.proximityAlertSpacingFeet", Binding(
                         get: { orgSettings.proximityAlertSpacingFeet },
                         set: { orgSettings.setProximityAlertSpacingFeet($0) }
-                    ),
+                    )),
                     in: 50 ... 1_000
                 )
             }
             .id("proximity-settings")
             Section("Tracking and device") {
                 SettingsStepper(
-                    "Min Dist: \(orgSettings.minimumTrackDistanceFeet) ft",
-                    value: Binding(
+                    "Min Dist: \(draft.value("orgSettings.minimumTrackDistanceFeet", orgSettings.minimumTrackDistanceFeet)) ft",
+                    value: draft.binding("orgSettings.minimumTrackDistanceFeet", Binding(
                         get: { orgSettings.minimumTrackDistanceFeet },
                         set: { orgSettings.setMinimumTrackDistanceFeet($0) }
-                    ),
+                    )),
                     in: 2 ... 1_000
                 )
                 SettingsStepper(
-                    "New Track Delay: \(orgSettings.newTrackDelaySeconds) s",
-                    value: Binding(
+                    "New Track Delay: \(draft.value("orgSettings.newTrackDelaySeconds", orgSettings.newTrackDelaySeconds)) s",
+                    value: draft.binding("orgSettings.newTrackDelaySeconds", Binding(
                         get: { orgSettings.newTrackDelaySeconds },
                         set: { orgSettings.setNewTrackDelaySeconds($0) }
-                    ),
+                    )),
                     in: 1 ... 600
                 )
-                SettingsPicker("Minimum Location Accuracy", selection: $minimumHorizontalAccuracyCode) {
+                SettingsPicker("Minimum Location Accuracy", selection: draft.binding("minimumHorizontalAccuracyCode", $minimumHorizontalAccuracyCode)) {
                     Text("30 m").tag(9)
                     Text("10 m").tag(10)
                     Text("3 m").tag(11)
@@ -271,57 +322,57 @@ struct CaltopoSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 SettingsStepper(
-                    "Bridge Check Distance: \(orgSettings.bridgeCheckDistanceFeet) ft",
-                    value: Binding(
+                    "Bridge Check Distance: \(draft.value("orgSettings.bridgeCheckDistanceFeet", orgSettings.bridgeCheckDistanceFeet)) ft",
+                    value: draft.binding("orgSettings.bridgeCheckDistanceFeet", Binding(
                         get: { orgSettings.bridgeCheckDistanceFeet },
                         set: { orgSettings.setBridgeCheckDistanceFeet($0) }
-                    ),
+                    )),
                     in: 1 ... 1_000
                 )
                 SettingsStepper(
-                    "Max Idle Time: \(orgSettings.maximumIdleMinutes) min",
-                    value: Binding(
+                    "Max Idle Time: \(draft.value("orgSettings.maximumIdleMinutes", orgSettings.maximumIdleMinutes)) min",
+                    value: draft.binding("orgSettings.maximumIdleMinutes", Binding(
                         get: { orgSettings.maximumIdleMinutes },
                         set: { orgSettings.setMaximumIdleMinutes($0) }
-                    ),
+                    )),
                     in: 0 ... 1_440
                 )
-                Text("Track filtering, loss timing, bridge distance, proximity spacing, and maximum idle time use the same operator-adjustable controls as Android. RID messages and user interaction reset the idle timer. Set Max Idle Time to 0 to disable automatic closing.")
+                Text("RID messages and user interaction reset the idle timer. Set Max Idle Time to 0 to disable automatic closing.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 VStack(alignment: .leading) {
-                    SettingsHelpLabel("Audio Alarm Volume: \(spokenWarnings.volumePercent)%")
+                    SettingsHelpLabel("Audio Alarm Volume: \(Int(draft.value("spokenWarnings.volumePercent", Double(spokenWarnings.volumePercent))))%")
                     Slider(
-                        value: Binding(
+                        value: draft.binding("spokenWarnings.volumePercent", Binding(
                             get: { Double(spokenWarnings.volumePercent) },
                             set: { spokenWarnings.setVolumePercent(Int($0.rounded())) }
-                        ),
+                        )),
                         in: 0 ... 100,
                         step: 5
                     )
-                    Button("Audio Alarm Test") {
+                    Button("Audio Alarm Test (saved volume)") {
                         spokenWarnings.requestAudioAlarmTest()
                     }
                     .frame(maxWidth: .infinity)
                 }
             }
             Section("NOTAM / TFR") {
-                SettingsToggle("Enable FAA Facility Map / LAANC lookup", isOn: $airspace.enabled)
-                SettingsToggle("Refresh controlled airspace automatically", isOn: $airspace.autoRefresh)
+                SettingsToggle("Enable FAA Facility Map / LAANC lookup", isOn: draft.binding("airspace.enabled", $airspace.enabled))
+                SettingsToggle("Refresh controlled airspace automatically", isOn: draft.binding("airspace.autoRefresh", $airspace.autoRefresh))
                     .disabled(!airspace.enabled)
-                SettingsToggle("Enable nearby NOTAM / TFR monitoring", isOn: $notams.enabled)
-                SettingsToggle("Show NOTAMs on map", isOn: $notams.showOnMap)
-                    .disabled(!notams.enabled)
-                SettingsToggle("Refresh automatically", isOn: $notams.autoRefresh)
-                    .disabled(!notams.enabled)
+                SettingsToggle("Enable nearby NOTAM / TFR monitoring", isOn: draft.binding("notams.enabled", $notams.enabled))
+                SettingsToggle("Show NOTAMs on map", isOn: draft.binding("notams.showOnMap", $notams.showOnMap))
+                    .disabled(!draft.value("notams.enabled", notams.enabled))
+                SettingsToggle("Refresh automatically", isOn: draft.binding("notams.autoRefresh", $notams.autoRefresh))
+                    .disabled(!draft.value("notams.enabled", notams.enabled))
                 SettingsStepper(
-                    "NOTAM radius: \(notams.radiusStatuteMiles) statute " +
+                    "NOTAM radius: \(draft.value("notams.radiusStatuteMiles", notams.radiusStatuteMiles)) statute " +
                         (notams.radiusStatuteMiles == 1 ? "mile" : "miles"),
-                    value: $notams.radiusStatuteMiles,
+                    value: draft.binding("notams.radiusStatuteMiles", $notams.radiusStatuteMiles),
                     in: 1 ... 100
                 )
-                    .disabled(!notams.enabled)
-                SettingsPicker("Refresh interval", selection: $notams.refreshIntervalSeconds) {
+                    .disabled(!draft.value("notams.enabled", notams.enabled))
+                SettingsPicker("Refresh interval", selection: draft.binding("notams.refreshIntervalSeconds", $notams.refreshIntervalSeconds)) {
                     Text("30 minutes").tag(1_800)
                     Text("60 minutes").tag(3_600)
                 }
@@ -337,36 +388,36 @@ struct CaltopoSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("Land / agency restrictions") {
-                SettingsToggle("Enable protected-land checks", isOn: $landRestrictions.enabled)
-                SettingsToggle("Show protected lands on map", isOn: $landRestrictions.showOnMap)
-                    .disabled(!landRestrictions.enabled)
-                SettingsToggle("Refresh protected lands automatically", isOn: $landRestrictions.autoRefresh)
-                    .disabled(!landRestrictions.enabled)
+                SettingsToggle("Enable protected-land checks", isOn: draft.binding("landRestrictions.enabled", $landRestrictions.enabled))
+                SettingsToggle("Show protected lands on map", isOn: draft.binding("landRestrictions.showOnMap", $landRestrictions.showOnMap))
+                    .disabled(!draft.value("landRestrictions.enabled", landRestrictions.enabled))
+                SettingsToggle("Refresh protected lands automatically", isOn: draft.binding("landRestrictions.autoRefresh", $landRestrictions.autoRefresh))
+                    .disabled(!draft.value("landRestrictions.enabled", landRestrictions.enabled))
                 SettingsStepper(
-                    "Boundary query radius: \(landRestrictions.radiusStatuteMiles) statute " +
+                    "Boundary query radius: \(draft.value("landRestrictions.radiusStatuteMiles", landRestrictions.radiusStatuteMiles)) statute " +
                         (landRestrictions.radiusStatuteMiles == 1 ? "mile" : "miles"),
-                    value: $landRestrictions.radiusStatuteMiles,
+                    value: draft.binding("landRestrictions.radiusStatuteMiles", $landRestrictions.radiusStatuteMiles),
                     in: 1 ... 50
                 )
-                .disabled(!landRestrictions.enabled)
+                .disabled(!draft.value("landRestrictions.enabled", landRestrictions.enabled))
                 Text("Checks National Park Service, National Wildlife Refuge, U.S. Forest Service wilderness, and Colorado Parks and Wildlife boundaries. Results distinguish land-use rules from FAA airspace restrictions and include agency follow-up links.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             Section("External display") {
-                SettingsPicker("Mode", selection: $externalDisplay.mode) {
+                SettingsPicker("Mode", selection: draft.binding("externalDisplay.mode", $externalDisplay.mode)) {
                     ForEach(AppleExternalDisplayMode.allCases) { mode in Text(mode.label).tag(mode.rawValue) }
                 }
-                SettingsPicker("Content", selection: $externalDisplay.content) {
+                SettingsPicker("Content", selection: draft.binding("externalDisplay.content", $externalDisplay.content)) {
                     ForEach(AppleExternalDisplayContent.allCases) { content in Text(content.label).tag(content.rawValue) }
                 }
-                .disabled(externalDisplay.mode != AppleExternalDisplayMode.appManaged.rawValue)
-                SettingsPicker("Alert routing", selection: $externalDisplay.alertRouting) {
+                .disabled(draft.value("externalDisplay.mode", externalDisplay.mode) != AppleExternalDisplayMode.appManaged.rawValue)
+                SettingsPicker("Alert routing", selection: draft.binding("externalDisplay.alertRouting", $externalDisplay.alertRouting)) {
                     ForEach(AppleExternalAlertRouting.allCases) { routing in Text(routing.label).tag(routing.rawValue) }
                 }
-                SettingsToggle("Open automatically when connected", isOn: $externalDisplay.autoOpen)
-                SettingsToggle("Allow interaction", isOn: $externalDisplay.allowInteraction)
-                    .disabled(externalDisplay.mode != AppleExternalDisplayMode.appManaged.rawValue)
+                SettingsToggle("Open automatically when connected", isOn: draft.binding("externalDisplay.autoOpen", $externalDisplay.autoOpen))
+                SettingsToggle("Allow interaction", isOn: draft.binding("externalDisplay.allowInteraction", $externalDisplay.allowInteraction))
+                    .disabled(draft.value("externalDisplay.mode", externalDisplay.mode) != AppleExternalDisplayMode.appManaged.rawValue)
                 Text("OS mirroring uses the system display controls. App-managed mode presents the selected streams/map layout independently on an attached display.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
@@ -396,14 +447,19 @@ struct CaltopoSettingsView: View {
                     Label("Developer Tools", systemImage: "hammer")
                 }
             }
-            Section {
-                Button("Save CalTopo Configuration") {
-                    onSave(settings.save())
-                }
-                Text(settings.status)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
+
+        }
+        .onAppear {
+            guard !draftInitialized else { return }
+            draftInitialized = true
+            teamsDraft = settings.teamsCredentialDraft
+            initialTeamsDraft = teamsDraft
+            initialTrackerURL = orgSettings.trackerURLPrefix
+            initialTrackerKey = orgSettings.trackerAPIKey
+            trackerURLDraft = orgSettings.trackerURLPrefix
+            trackerKeyDraft = orgSettings.trackerAPIKey
+            localConsent = proximityAlerts.consent
+            consentAtOpen = localConsent.enabled
         }
         .task {
             guard startAtProximity else { return }
@@ -414,13 +470,44 @@ struct CaltopoSettingsView: View {
         }
         }
         .navigationTitle("Settings")
-        .sheet(isPresented: Binding(
-            get: { proximityAlerts.consent.noticePending },
-            set: { if !$0 { proximityAlerts.cancelEnable() } }
-        )) {
-            ProximityConsentSheet(proximityAlerts: proximityAlerts)
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) { Button("Back", action: requestLeave) }
         }
-        .onDisappear { proximityAlerts.cancelEnable() }
+        .safeAreaInset(edge: .bottom) {
+            VStack(spacing: 8) {
+                Text("Save applies changes. Cancel discards edits. Map connection, sign-in, file deletion, and tests are separate actions.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                if !teamsSaveMessage.isEmpty { Text(teamsSaveMessage).foregroundStyle(.red).font(.footnote) }
+                HStack {
+                    Button("Cancel") { draft.edits.discard(); dismissSettings() }.buttonStyle(.bordered)
+                    Spacer()
+                    Button("Save", action: saveAndClose).buttonStyle(.borderedProminent)
+                }
+            }.padding().background(.bar)
+        }
+        .background(SettingsDismissGuard(hasChanges: hasChanges, onAttempt: requestLeave))
+        .confirmationDialog("Unsaved Settings", isPresented: $showUnsavedSettings, titleVisibility: .visible) {
+            Button("Save Changes", action: saveAndClose)
+            Button("Discard Changes", role: .destructive) { draft.edits.discard(); dismissSettings() }
+            Button("Keep Editing", role: .cancel) {}
+        } message: { Text("Save your changes, discard them, or keep editing?") }
+        .sheet(isPresented: Binding(get: { localConsent.noticePending }, set: { if !$0 { localConsent.cancel() } })) {
+            SettingsDraftProximityConsent(consent: $localConsent)
+        }
+        .sheet(isPresented: $showingIncidentSelection, onDismiss: {
+            if connectMapAfterIncidentSelection { connectMapAfterIncidentSelection = false; showingTeamMaps = true }
+        }) {
+            IncidentSelectionPanel(currentName: OperationalIncidentSelection.name(mapID: settings.mapID,
+                mapTitle: settings.mapTitle, standaloneName: orgSettings.standaloneIncidentName),
+                initialName: orgSettings.standaloneIncidentName,
+                onConnectMap: { connectMapAfterIncidentSelection = true; showingIncidentSelection = false },
+                onUseName: { name in
+                    orgSettings.setIncident(name)
+                    onSave(settings.disconnectMap())
+                    showingIncidentSelection = false
+                })
+        }
         .sheet(isPresented: $showingTeamMaps) {
             CaltopoTeamMapBrowser(settings: settings, onCredentialSelect: { profileID in
                 onSave(settings.disconnectMap())
@@ -1122,6 +1209,13 @@ struct AppleFlightStorageLimits: View {
     @State private var size = ""
     @State private var days = ""
     @State private var message = ""
+    @Environment(\.colorScheme) private var colorScheme
+    private var valid: Bool {
+        guard let gb = Double(size), gb.isFinite, (0.1...1000).contains(gb),
+              let age = Int(days), (1...3650).contains(age) else { return false }
+        return true
+    }
+    private var changed: Bool { Double(size) != maximumGB || Int(days) != maximumDays }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             SettingsTextField("Max Size (GB)", text: $size).keyboardType(.decimalPad)
@@ -1133,11 +1227,19 @@ struct AppleFlightStorageLimits: View {
                 }
                 maximumGB = gb; maximumDays = age
                 AppleFlightStorage.requestCheck()
-                message = "Saved. Automatic cleanup applies these limits."
+                message = String(format: "Saved: %.1f GB, %d days.", maximumGB, maximumDays)
             }
-            Text(message.isEmpty ? "Default allowance: 10 GB. At 90% usage, cleanup removes older eligible folders to restore 10% free. If that is not possible, increase the allowance." : message)
+            .buttonStyle(.borderedProminent)
+            .tint(colorScheme == .dark ? Color(white: 0.14) : Color(white: 0.94))
+            .foregroundStyle(!valid || !changed ? Color.gray : (colorScheme == .dark ? Color.white : Color.black))
+            .disabled(!valid || !changed)
+            Text(message.isEmpty ? String(format: "Saved limits: %.1f GB, %d days.", maximumGB, maximumDays) : message)
+            if !valid { Text("Enter 0.1–1,000 GB and 1–3,650 days.").font(.footnote) }
+            Text("At 90% usage, cleanup removes older eligible folders to restore 10% free. Today and active files stay protected. If that is not possible, increase the allowance.")
                 .font(.footnote).foregroundStyle(.secondary)
         }
+        .onChange(of: size) { _, _ in message = "" }
+        .onChange(of: days) { _, _ in message = "" }
         .onAppear { size = String(format: "%.1f", maximumGB); days = String(maximumDays) }
     }
 }
@@ -1408,5 +1510,88 @@ private struct ProximityConsentRow: View {
         .accessibilityLabel(text)
         .accessibilityValue(isChecked ? "Checked" : "Not checked")
         .accessibilityAddTraits(.isToggle)
+    }
+}
+
+struct IncidentSelectionPanel: View {
+    let currentName: String
+    let initialName: String
+    let onConnectMap: () -> Void
+    let onUseName: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section { Text("Current incident: \(currentName)") }
+                Section("Incident map") {
+                    Button("Connect to a map…", action: onConnectMap)
+                    Text("Choose personal or organization credentials, then an incident map.")
+                }
+                Section("Incident without a map") {
+                    TextField("Incident name", text: $name)
+                    Text("Using this name disconnects the current incident map. Existing archived flights keep their original incident.")
+                    Button("Use without a map") { onUseName(name.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                        .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .navigationTitle("Select Incident")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+        }
+        .onAppear { name = initialName }
+    }
+}
+
+@MainActor
+private final class AppleSettingsDraft: ObservableObject {
+    let edits = OperationalSettingsEdits()
+    func value<T>(_ key: String, _ live: T) -> T { edits.value(for: key, fallback: live) }
+    func binding<T: Equatable>(_ key: String, _ live: Binding<T>) -> Binding<T> {
+        Binding(get: { self.value(key, live.wrappedValue) }, set: { value in
+            self.objectWillChange.send()
+            self.edits.stage(key, value: value, original: live.wrappedValue) { live.wrappedValue = $0 }
+        })
+    }
+}
+
+private struct SettingsDraftProximityConsent: View {
+    @Binding var consent: RidProximityConsent
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(RidProximityConsent.title).font(.title2)
+                ForEach(Array(RidProximityConsent.noticeParagraphs.enumerated()), id: \.offset) { index, text in
+                    ProximityConsentRow(text: text, isChecked: consent.acknowledged.contains(index)) { consent.toggleAcknowledgment(index) }
+                }
+                Text("Alerts will change only after you Save Settings.").font(.footnote)
+                Button(consent.confirmLabel) { consent.confirmEnable() }.disabled(!consent.canConfirm).buttonStyle(.borderedProminent)
+                Button("Keep disabled") { consent.cancel() }
+            }.padding()
+        }
+    }
+}
+
+private struct SettingsDismissGuard: UIViewControllerRepresentable {
+    var hasChanges: Bool
+    var onAttempt: () -> Void
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.hasChanges = hasChanges
+        controller.onAttempt = onAttempt
+        DispatchQueue.main.async { controller.install() }
+    }
+    final class Controller: UIViewController, UIAdaptivePresentationControllerDelegate {
+        var hasChanges = false
+        var onAttempt: (() -> Void)?
+        override func viewDidAppear(_ animated: Bool) { super.viewDidAppear(animated); install() }
+        func install() {
+            var ancestor: UIViewController? = parent
+            while let current = ancestor {
+                if let presentation = current.presentationController { presentation.delegate = self }
+                ancestor = current.parent
+            }
+        }
+        func presentationControllerShouldDismiss(_ presentationController: UIPresentationController) -> Bool { !hasChanges }
+        func presentationControllerDidAttemptToDismiss(_ presentationController: UIPresentationController) { onAttempt?() }
     }
 }

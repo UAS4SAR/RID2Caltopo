@@ -22,10 +22,11 @@ public enum OperationalSurfacePreparationError: Error, LocalizedError {
 public enum OperationalSurfacePreparation {
     public static func grid(_ bounds: OperationalMapBounds) throws -> OperationalSurfacePreparationPlan {
         let lat=(bounds.south+bounds.north)/2,lon=(bounds.west+bounds.east)/2
-        guard [bounds.south,bounds.north,bounds.west,bounds.east].allSatisfy(\.isFinite),bounds.south<=bounds.north,bounds.west<=bounds.east,abs(bounds.south)<70,abs(bounds.north)<70,abs(bounds.west)<=180,abs(bounds.east)<=180 else { throw OperationalSurfacePreparationError.invalid("Invalid AOL region") }
+        guard [bounds.south,bounds.north,bounds.west,bounds.east].allSatisfy(\.isFinite),bounds.south<=bounds.north,bounds.west<=bounds.east,abs(bounds.west)<=180,abs(bounds.east)<=180 else { throw OperationalSurfacePreparationError.invalid("AOL region has invalid coordinates; select a different map area or assignment") }
         let w=ceil((bounds.east-bounds.west)*Double.pi/180*6371008.8*cos(lat*Double.pi/180)+124)
         let h=ceil((bounds.north-bounds.south)*Double.pi/180*6371008.8+124)
         guard w<=4000,h<=4000 else { throw OperationalSurfacePreparationError.invalid("AOL preparation supports regions up to about 4 km across; select a smaller map or assignment") }
+        guard abs(bounds.south)<70,abs(bounds.north)<70 else { throw OperationalSurfacePreparationError.invalid("AOL preparation supports latitudes between 70°S and 70°N; select a region within that range") }
         return .init(bounds:bounds,latitude:lat,longitude:lon,width:Int(w),height:Int(h),sources:[])
     }
     public static func sources(pages: [Data]) throws -> [OperationalSurfaceSource] {

@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.ncssar.rid2caltopo.app.FlightStorage
@@ -34,10 +35,10 @@ internal fun StorageManagementDialog(onDismiss: () -> Unit, onFlight: () -> Unit
     }
     AlertDialog(onDismissRequest = onDismiss, title = { Text("Manage Storage") }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Text("Map & Terrain Cache: ${mapBytes?.let(MapCacheSettings::formatDecimalGb) ?: "Scanning…"}, Max Size: ${MapCacheSettings.formatDecimalGb(MapCacheSettings.maxCacheBytes(context))}, Max Age: ${MapCacheSettings.maxTileAgeDays(context)} days",
-                modifier = Modifier.clickable { showCache = true }, color = MaterialTheme.colorScheme.primary)
-            Text("Flight Storage: ${flight?.let { if (it.archiveReady) MapCacheSettings.formatDecimalGb(it.used) else "Archive usage unavailable" } ?: "Scanning…"}, Max Size: ${MapCacheSettings.formatDecimalGb(FlightStorage.maximumBytes(context))}, Max Age: ${FlightStorage.maximumDays(context)} days",
-                modifier = Modifier.clickable(onClick = onFlight), color = MaterialTheme.colorScheme.primary)
+            StorageActionButton(onClick = { showCache = true }) { Text("Map & Terrain Cache: ${mapBytes?.let(MapCacheSettings::formatDecimalGb) ?: "Scanning…"}, Max Size: ${MapCacheSettings.formatDecimalGb(MapCacheSettings.maxCacheBytes(context))}, Max Age: ${MapCacheSettings.maxTileAgeDays(context)} days",
+                ) }
+            StorageActionButton(onClick = onFlight) { Text("Flight Storage: ${flight?.let { if (it.archiveReady) MapCacheSettings.formatDecimalGb(it.used) else "Archive usage unavailable" } ?: "Scanning…"}, Max Size: ${MapCacheSettings.formatDecimalGb(FlightStorage.maximumBytes(context))}, Max Age: ${FlightStorage.maximumDays(context)} days",
+                ) }
             Text("These limits are app allowances, not the device’s total capacity.", style = MaterialTheme.typography.bodySmall)
             flight?.let {
                 Text("Device free space: ${MapCacheSettings.formatDecimalGb(it.deviceAvailable)}")
@@ -46,7 +47,7 @@ internal fun StorageManagementDialog(onDismiss: () -> Unit, onFlight: () -> Unit
                 if (it.blocked) Text(it.message)
             }
         }
-    }, confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } })
+    }, confirmButton = { StorageActionButton(onClick = onDismiss) { Text("Close") } })
     if (showCache) StorageCacheDialog { showCache = false }
 }
 
@@ -61,7 +62,7 @@ private fun StorageCacheDialog(onDismiss: () -> Unit) {
             OutlinedTextField(days, { days = it }, label = { Text("Max Age (days)") })
             Text("Includes maps, terrain, AOL and supporting caches. AOL and active terrain are protected from ordinary trimming.")
         }
-    }, confirmButton = { TextButton(onClick = {
+    }, confirmButton = { StorageActionButton(onClick = {
         val gb = size.toDoubleOrNull(); val age = days.toLongOrNull()
         if (gb == null || !gb.isFinite() || gb !in 0.1..1000.0 || age == null || age !in 1..3650) {
             CaltopoClient.ShowToast("Enter 0.1–1,000 GB and 1–3,650 days.")
@@ -71,27 +72,40 @@ private fun StorageCacheDialog(onDismiss: () -> Unit) {
             MapCacheMaintenanceScheduler.request(context.applicationContext)
             onDismiss()
         }
-    }) { Text("Save") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
+    }) { Text("Save") } }, dismissButton = { StorageActionButton(onClick = onDismiss) { Text("Cancel") } })
 }
 
 @Composable
 internal fun FlightStorageLimits() {
     val context = LocalContext.current
-    var size by remember { mutableStateOf((FlightStorage.maximumBytes(context) / 1e9).toString()) }
-    var days by remember { mutableStateOf(FlightStorage.maximumDays(context).toString()) }
-    Column {
-        OutlinedTextField(size, { size = it }, label = { Text("Max Size (GB)") })
-        OutlinedTextField(days, { days = it }, label = { Text("Max Age (days)") })
-        TextButton(onClick = {
-            val gb = size.toDoubleOrNull(); val age = days.toLongOrNull()
-            if (gb == null || !gb.isFinite() || gb !in 0.1..1000.0 || age == null || age !in 1..3650) {
-                CaltopoClient.ShowToast("Enter 0.1–1,000 GB and 1–3,650 days.")
-            } else {
-                FlightStorage.save(context, (gb * 1e9).toLong(), age)
-                CaltopoClient.ShowToast("Saved. Automatic cleanup applies these limits.")
+    var savedBytes by remember { mutableLongStateOf(FlightStorage.maximumBytes(context)) }
+    var savedDays by remember { mutableLongStateOf(FlightStorage.maximumDays(context)) }
+    var size by remember { mutableStateOf((savedBytes / 1e9).toString()) }
+    var days by remember { mutableStateOf(savedDays.toString()) }
+    var saving by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    val parsed = parseStorageLimits(size, days)
+    val changed = parsed?.let { it.bytes != savedBytes || it.days != savedDays } ?: true
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(size, { size = it; message = "" }, enabled = !saving, label = { Text("Max Size (GB)") })
+        OutlinedTextField(days, { days = it; message = "" }, enabled = !saving, label = { Text("Max Age (days)") })
+        StorageActionButton(enabled = changed && parsed != null && !saving, onClick = {
+            val limits = parsed ?: return@StorageActionButton
+            saving = true
+            scope.launch {
+                val success = withContext(Dispatchers.IO) { FlightStorage.save(context, limits.bytes, limits.days) }
+                saving = false
+                if (success) {
+                    savedBytes = FlightStorage.maximumBytes(context)
+                    savedDays = FlightStorage.maximumDays(context)
+                    message = "Saved: ${MapCacheSettings.formatDecimalGb(savedBytes)}, $savedDays days."
+                } else message = "Limits could not be saved. Please try again."
             }
-        }) { Text("Save Limits") }
-        Text("Default allowance: 10 GB. Cleanup runs at startup and on demand near 90% usage, restoring 10% free. Today and active files stay protected. If cleanup cannot restore that space, increase the allowance.", style = MaterialTheme.typography.bodySmall)
+        }) { Text(if (saving) "Saving…" else "Save Limits") }
+        if (parsed == null) Text("Enter 0.1–1,000 GB and 1–3,650 days.", color = MaterialTheme.colorScheme.error)
+        Text(if (message.isNotEmpty()) message else "Saved limits: ${MapCacheSettings.formatDecimalGb(savedBytes)}, $savedDays days.")
+        Text("Cleanup runs at startup and on demand near 90% usage, restoring 10% free. Today and active files stay protected. If cleanup cannot restore that space, increase the allowance.", style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -113,7 +127,7 @@ internal fun FlightDirectoryBrowser(day: String, onDismiss: () -> Unit) {
             if (loading) Text("Loading…")
             else if (entries.isEmpty()) Text("Empty folder")
             entries.forEach { file ->
-                TextButton(onClick = {
+                StorageActionButton(onClick = {
                     if (file.isDirectory) stack = stack + file
                     else try {
                         val uri = if (file.uri.scheme == "file") androidx.core.content.FileProvider.getUriForFile(
@@ -124,7 +138,18 @@ internal fun FlightDirectoryBrowser(day: String, onDismiss: () -> Unit) {
                 }) { Text(file.name ?: "File") }
             }
         }
-    }, confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } }, dismissButton = {
-        if (stack.isNotEmpty()) TextButton(onClick = { stack = stack.dropLast(1) }) { Text("Back") }
+    }, confirmButton = { StorageActionButton(onClick = onDismiss) { Text("Close") } }, dismissButton = {
+        if (stack.isNotEmpty()) StorageActionButton(onClick = { stack = stack.dropLast(1) }) { Text("Back") }
     })
+}
+
+@Composable
+internal fun StorageActionButton(onClick: () -> Unit, enabled: Boolean = true, content: @Composable RowScope.() -> Unit) {
+    val dark = androidx.compose.foundation.isSystemInDarkTheme()
+    Button(onClick = onClick, enabled = enabled, colors = ButtonDefaults.buttonColors(
+        containerColor = if (dark) androidx.compose.ui.graphics.Color(0xFF242424) else androidx.compose.ui.graphics.Color(0xFFF0F0F0),
+        contentColor = if (dark) androidx.compose.ui.graphics.Color.White else androidx.compose.ui.graphics.Color.Black,
+        disabledContainerColor = if (dark) androidx.compose.ui.graphics.Color(0xFF303030) else androidx.compose.ui.graphics.Color(0xFFE0E0E0),
+        disabledContentColor = if (dark) androidx.compose.ui.graphics.Color(0xFF888888) else androidx.compose.ui.graphics.Color(0xFF777777)
+    ), content = content)
 }

@@ -7,6 +7,15 @@ import java.io.File
 import kotlin.math.*
 
 class SurfacePreparationTest {
+    @Test fun oversizedAndPolarRegionsHaveActionableMessages() {
+        for (area in listOf(bounds(5000.0), SurfaceBounds(-150.0, 20.0, -80.0, 80.0))) {
+            val error = assertThrows(IllegalArgumentException::class.java) { SurfacePreparation.grid(area) }
+            assertTrue(error.message!!.contains("4 km across"))
+        }
+        val error = assertThrows(IllegalArgumentException::class.java) { SurfacePreparation.grid(SurfaceBounds(0.0, 75.0, 0.001, 75.001)) }
+        assertTrue(error.message!!.contains("70°S and 70°N"))
+    }
+
     private fun bounds(width:Double): SurfaceBounds {
         val dy=width/2/6371008.8*180/PI;val dx=dy/cos(39.0*PI/180)
         return SurfaceBounds(-121-dx,39-dy,-121+dx,39+dy)

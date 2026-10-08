@@ -15,6 +15,7 @@ final class AppleSpokenWarningCenter: NSObject, ObservableObject, AVSpeechSynthe
     private let speech = AVSpeechSynthesizer()
     private var speakingProximity = false
     private var pendingUtterances: Set<ObjectIdentifier> = []
+    private var pendingPlayback: [ObjectIdentifier: AlertBellKind] = [:]
     /// True while speech is using the WebRTC managed-video session instead of
     /// its own short-lived playback session.
     private var usingSharedWebRTCSession = false
@@ -42,6 +43,7 @@ final class AppleSpokenWarningCenter: NSObject, ObservableObject, AVSpeechSynthe
     func cancelProximityWarning() {
         guard speakingProximity else { return }
         speakingProximity = false
+        pendingPlayback.removeAll()
         speech.stopSpeaking(at: .immediate)
     }
 
@@ -49,12 +51,13 @@ final class AppleSpokenWarningCenter: NSObject, ObservableObject, AVSpeechSynthe
         speak(OperationalAlarmAudioPolicy.testKinds.map(\.phrase))
     }
 
-    func speak(_ phrase: String, volumeFraction: Float = 1) {
-        speak([phrase], volumeFraction: volumeFraction)
+    func speak(_ phrase: String, volumeFraction: Float = 1, alertKind: AlertBellKind? = nil) {
+        speak([phrase], volumeFraction: volumeFraction, alertKind: alertKind)
     }
 
-    func speak(_ phrases: [String], volumeFraction: Float = 1) {
+    func speak(_ phrases: [String], volumeFraction: Float = 1, alertKind: AlertBellKind? = nil) {
         guard !phrases.isEmpty else { return }
+        if let alertKind, !AppleAlertBellCenter.shared.allowSpeech(for: alertKind) { return }
         if Self.webRTCOwnsAudioSession(audioSession) {
             // Managed video (WebRTC) holds an active .playAndRecord/.voiceChat
             // session. Changing the category or deactivating it would stop the
@@ -78,6 +81,7 @@ final class AppleSpokenWarningCenter: NSObject, ObservableObject, AVSpeechSynthe
             }
         }
 
+        pendingPlayback.removeAll()
         speech.stopSpeaking(at: .immediate)
         speakingProximity = phrases == [OperationalSpokenWarningKind.proximity.phrase]
         let configuredVolume = OperationalAlarmAudioPolicy.volumeMultiplier(forPercent: volumePercent)
@@ -90,6 +94,7 @@ final class AppleSpokenWarningCenter: NSObject, ObservableObject, AVSpeechSynthe
             utterance.pitchMultiplier = 0.82
             utterance.volume = utteranceVolume
             pendingUtterances.insert(ObjectIdentifier(utterance))
+            if let alertKind, utteranceVolume > 0 { pendingPlayback[ObjectIdentifier(utterance)] = alertKind }
             speech.speak(utterance)
         }
     }
@@ -99,7 +104,12 @@ final class AppleSpokenWarningCenter: NSObject, ObservableObject, AVSpeechSynthe
         didStart utterance: AVSpeechUtterance
     ) {
         let phrase = utterance.speechString
+        let identifier = ObjectIdentifier(utterance)
         Task { @MainActor in
+            if let kind = pendingPlayback.removeValue(forKey: identifier),
+               audioSession.outputVolume > 0, !AppleAlertBellCenter.shared.isMuted(kind) {
+                AppleAlertBellCenter.shared.recordPlayback(kind)
+            }
             AppleLog.info("SpokenWarning", "Speech started phrase=\(phrase) appState=\(Self.applicationStateDescription)")
         }
     }
@@ -155,6 +165,7 @@ final class AppleSpokenWarningCenter: NSObject, ObservableObject, AVSpeechSynthe
 
     private func finish(_ identifier: ObjectIdentifier) {
         pendingUtterances.remove(identifier)
+        pendingPlayback.removeValue(forKey: identifier)
         guard pendingUtterances.isEmpty else { return }
         guard !usingSharedWebRTCSession else {
             usingSharedWebRTCSession = false

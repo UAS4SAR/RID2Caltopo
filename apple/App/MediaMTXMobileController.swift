@@ -143,6 +143,8 @@ final class MediaMTXViewModel: ObservableObject {
                     eventHandler?(deliveredEvent)
                     switch deliveredEvent {
                     case let .serverStarted(version):
+                        AppleStreamsServerStatus.shared.version = version
+                        AppleStreamsServerStatus.shared.startedAt = Date()
                         status = "Running \(version)"
                     case let .streamStarted(path, _):
                         activePublisherPaths.insert(path)
@@ -324,6 +326,7 @@ final class MediaMTXViewModel: ObservableObject {
             }
             activePublisherPaths.removeAll()
             isRunning = false
+        AppleStreamsServerStatus.shared.startedAt = nil
             status = "Stopped"
         }
     }
@@ -366,6 +369,7 @@ final class MediaMTXViewModel: ObservableObject {
         }
         activePublisherPaths.removeAll()
         isRunning = false
+        AppleStreamsServerStatus.shared.startedAt = nil
         status = "Stopped"
     }
 
@@ -384,6 +388,7 @@ final class MediaMTXViewModel: ObservableObject {
             }
             activePublisherPaths.removeAll()
             isRunning = false
+        AppleStreamsServerStatus.shared.startedAt = nil
             status = "Stopped"
             start(captureStreams: captureStreams)
         }
@@ -446,4 +451,12 @@ final class MediaMTXViewModel: ObservableObject {
         )
         return directory
     }
+}
+
+
+@MainActor
+final class AppleStreamsServerStatus: ObservableObject {
+    static let shared = AppleStreamsServerStatus()
+    @Published var version = "Unavailable"
+    @Published var startedAt: Date?
 }

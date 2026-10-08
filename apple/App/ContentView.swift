@@ -135,7 +135,9 @@ struct ContentView: View {
     @StateObject private var streamRegistry = AppleStreamRegistry.shared
     @ObservedObject private var networkDiagnostics = AppleNetworkDiagnosticCenter.shared
     private let iCloudBackup = AppleICloudBackupCenter.shared
-    @State private var showTrackMap = ProcessInfo.processInfo.arguments.contains("--show-map")
+    @State private var showTrackMap = true
+    @State private var showWorkspaceAbout = false
+    @State private var showWorkspaceStats = false
     @State private var showCaltopoSettings = false
     @State private var showProximitySettings = false
     @State private var showDiagnosticLogs = false
@@ -151,6 +153,8 @@ struct ContentView: View {
     @State private var showPersonalAccountEditor = false
     @State private var showPersonalCredentialLogin = false
     @State private var openMapsAfterPersonalLogin = false
+    @State private var showIncidentSelection = false
+    @State private var connectMapAfterIncidentSelection = false
     @State private var showTeamMaps = false
     @State private var showMapOptions = false
     @State private var showConfirmExit = false
@@ -158,6 +162,21 @@ struct ContentView: View {
     @State private var selectedAircraftID: String?
     @State private var addRidMapRemoteID: String?
     @State private var confirmationPresentation = PendingFlightConfirmation()
+    private var workspaceAboutHeader: some View {
+        VStack(spacing: 14) {
+            Text("About RID2Caltopo").font(.title2)
+            Text(AppleDeviceIdentity.displayName)
+            Text(deviceVersionText.components(separatedBy: "\n").last ?? "")
+            Text("Release date: " + (Bundle.main.object(forInfoDictionaryKey: "R2CVersionReleaseDate") as? String ?? "Unavailable"))
+            WorkspaceAboutContactLink(title: "Support: help@uas4sar.com", url: URL(string: "mailto:help@uas4sar.com")!)
+            WorkspaceAboutContactLink(title: "Website: uas4sar.com", url: URL(string: "https://uas4sar.com")!)
+            Divider()
+            Text("Up Time: \(appUptimeText)")
+            Text("Tracker: \(androidCoordinatorStatus)")
+            Text("TeamDrones: \(droneConfirmations.importedMappingCount)")
+        }.multilineTextAlignment(.center).frame(maxWidth: .infinity).padding()
+    }
+
     private var pendingDroneConfirmation: DroneConfirmationRequest? {
         get { confirmationPresentation.remoteID.map { DroneConfirmationRequest(id: $0) } }
         nonmutating set { confirmationPresentation.present(remoteID: newValue?.id) }
@@ -218,7 +237,7 @@ struct ContentView: View {
             }
         } label: {
             VStack(alignment: centered ? .center : .leading, spacing: 1) {
-                Text("RID-2-Caltopo")
+                Text("RID2Caltopo")
                     .font(.headline)
                 HStack(spacing: 2) {
                     Text("Credentials: \(caltopoSettings.usesPersonalCredentials ? "Personal: " + caltopoSettings.personalUsername : profileLifecycle.activeCredentialLabel)")
@@ -242,59 +261,32 @@ struct ContentView: View {
 
 
     private var navigationRoot: some View {
-        AnyView(rootScreen)
-            .toolbar(showTrackMap || showCaltopoSettings || showConfigurationTransfer || showStorageManagement || showDiagnosticLogs || showStatus || showReleaseNotes || showTerms || showAboutPrivacy || selectedAircraftID != nil || addRidMapRemoteID != nil ? .visible : .hidden, for: .navigationBar)
-            .safeAreaInset(edge: .top, spacing: 0) {
-                AdaptiveOperatorHeader { centered in
-                    mainHeaderTitle(centered: centered)
-                } actions: {
-                    // Unified session alert bell lives beside the Bridge RSSI gauge so it
-                    // never overlays the horizontally scrolling chip / URL row.
-                    AppleAlertStatusBell(center: alertBell)
-                        .padding(.trailing, 6)
-                    Button {
-                        if showTrackMap { closeLiveView() }
-                        else { openLiveViewFromBridgeChip() }
-                    } label: {
-                        BridgeSignalIndicator(rssi: bluetoothScanner.bridgeSignalStrengthDbm)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityHint(showTrackMap ? "Show Main Screen" : "Show Live View")
-                    .padding(.trailing, 16)
-                    MainScreenMenu(
-                        showTrackMap: $showTrackMap,
-                        showDiagnosticLogs: $showDiagnosticLogs,
-                        showStatus: $showStatus,
-                        showReleaseNotes: $showReleaseNotes,
-                        showImportConfig: $showImportConfig,
-                        showConfigurationTransfer: $showConfigurationTransfer,
-                        showStorageManagement: $showStorageManagement,
-                        showCaltopoSettings: $showCaltopoSettings,
-                        showAboutPrivacy: $showAboutPrivacy,
-                        showTerms: $showTerms,
-                        showConfirmExit: $showConfirmExit
-                    ).equatable()
+        AnyView(operationalMapView)
+            .navigationBarBackButtonHidden(true)
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("workspaceInspectDrone"))) { event in
+                guard let remoteID = event.object as? String else { return }
+                addRidMapRemoteID = nil
+                pendingDroneConfirmation = nil
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(300))
+                    mapViewportMemory.inspectionRemoteID = remoteID
                 }
             }
-            .navigationDestination(isPresented: $showTrackMap) {
-                operationalMapView
-                    .navigationBarBackButtonHidden(true)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarLeading) {
-                            LiveViewBackButton(onDismiss: closeLiveView)
+            .sheet(isPresented: $showWorkspaceAbout) {
+                NavigationStack {
+                    AboutPrivacyView(header: AnyView(workspaceAboutHeader))
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Close") { showWorkspaceAbout = false } } }
+                }.presentationDetents([.medium, .large])
+            }
+            .overlay {
+                if showWorkspaceStats {
+                    WorkspaceResizablePane(title: "Aircraft and Reception", onClose: { showWorkspaceStats = false }) {
+                        VStack(alignment: .leading) {
+                            Text("InvalidRID Msgs: \(ridTracks.invalidObservationCount)")
+                            ScrollView([.horizontal, .vertical]) { androidAircraftTable.padding(4) }
                         }
                     }
-                    .onDisappear {
-                        guard showTrackMap else { return }
-                        AppleLog.warning(
-                            "Navigation",
-                            "Live View disappeared while its presentation flag remained set; clearing stale navigation state"
-                        )
-                        showTrackMap = false
-                    }
-            }
-            .sheet(isPresented: $alertBell.showPanel) {
-                AppleAlertStatusPanel(center: alertBell)
+                }
             }
             .sheet(isPresented: $showProximitySettings) {
                 NavigationStack {
@@ -308,12 +300,10 @@ struct ContentView: View {
                         ridTracks.configureCaltopo(configuration, trackFolderName: orgConfigSettings.trackFolder)
                         clueStore.configure(configuration, trackFolderName: orgConfigSettings.trackFolder)
                     }
-                    .toolbar { ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { showProximitySettings = false }
-                    } }
                 }
             }
             .navigationDestination(isPresented: $showCaltopoSettings) {
+                Group {
                 CaltopoSettingsView(
                     settings: caltopoSettings,
                     orgSettings: orgConfigSettings,
@@ -328,36 +318,76 @@ struct ContentView: View {
                     ridTracks.configureCaltopo(configuration, trackFolderName: orgConfigSettings.trackFolder)
                     clueStore.configure(configuration, trackFolderName: orgConfigSettings.trackFolder)
                 }
+                }
+                .toolbar(.visible, for: .navigationBar)
+                .navigationBarBackButtonHidden(true)
             }
             .navigationDestination(isPresented: $showConfigurationTransfer) {
+                Group {
                 AppleConfigurationTransferView(
                     caltopo: caltopoSettings,
                     organization: orgConfigSettings,
                     identities: droneConfirmations
                 )
+                }
+                .toolbar(.visible, for: .navigationBar)
+                .navigationBarBackButtonHidden(false)
             }
             .navigationDestination(isPresented: $showStorageManagement) {
+                Group {
                 AppleStorageManagementView(trackModel: ridTracks)
+                }
+                .toolbar(.visible, for: .navigationBar)
+                .navigationBarBackButtonHidden(false)
             }
             .navigationDestination(isPresented: $showDiagnosticLogs) {
+                Group {
                 DiagnosticLogView(diagnostics: diagnostics)
+                }
+                .toolbar(.visible, for: .navigationBar)
+                .navigationBarBackButtonHidden(false)
             }
             .navigationDestination(isPresented: $showStatus) {
-                AppleStatusView(snapshot: statusSnapshot)
+                Group {
+                VStack {
+                    Text("Up Time: \(appUptimeText)")
+                    Text("CalTopo msg RTT: \(caltopoRTTText)")
+                    AppleStatusView(snapshot: statusSnapshot)
+                }
+                }
+                .toolbar(.visible, for: .navigationBar)
+                .navigationBarBackButtonHidden(false)
             }
             .navigationDestination(isPresented: $showReleaseNotes) {
+                Group {
                 AppleReleaseNotesView()
+                }
+                .toolbar(.visible, for: .navigationBar)
+                .navigationBarBackButtonHidden(false)
             }
             .navigationDestination(isPresented: $showTerms) {
+                Group {
                 ApplicationTermsReadOnlyView()
+                }
+                .toolbar(.visible, for: .navigationBar)
+                .navigationBarBackButtonHidden(false)
             }
             .navigationDestination(isPresented: $showAboutPrivacy) {
-                AboutPrivacyView()
+                Group {
+                AboutPrivacyView(header: AnyView(workspaceAboutHeader))
+                }
+                .toolbar(.visible, for: .navigationBar)
+                .navigationBarBackButtonHidden(false)
             }
             .navigationDestination(item: $selectedAircraftID) { aircraftID in
+                Group {
                 aircraftDestination(aircraftID)
+                }
+                .toolbar(.visible, for: .navigationBar)
+                .navigationBarBackButtonHidden(false)
             }
             .navigationDestination(item: $addRidMapRemoteID) { remoteID in
+                Group {
                 RidMappingAdminView(
                     organization: orgConfigSettings,
                     identities: droneConfirmations,
@@ -367,6 +397,9 @@ struct ContentView: View {
                         pendingDroneConfirmation = DroneConfirmationRequest(id: savedRemoteID)
                     }
                 )
+                }
+                .toolbar(.visible, for: .navigationBar)
+                .navigationBarBackButtonHidden(false)
             }
     }
 
@@ -395,6 +428,20 @@ struct ContentView: View {
                 // A 440pt detent hides the Import action below the fold on compact iPhones.
                 .presentationDetents(horizontalSizeClass == .compact ? [.large] : [.height(440), .large])
                 .presentationDragIndicator(.visible)
+            }
+            .sheet(isPresented: $showIncidentSelection, onDismiss: {
+                if connectMapAfterIncidentSelection {
+                    connectMapAfterIncidentSelection = false
+                    openIncidentMapActions()
+                }
+            }) {
+                IncidentSelectionPanel(currentName: currentIncidentName, initialName: orgConfigSettings.standaloneIncidentName,
+                    onConnectMap: { connectMapAfterIncidentSelection = true; showIncidentSelection = false },
+                    onUseName: { name in
+                        orgConfigSettings.setIncident(name)
+                        applyCaltopoConfiguration(caltopoSettings.disconnectMap())
+                        showIncidentSelection = false
+                    })
             }
             .sheet(isPresented: $showTeamMaps) {
                 CaltopoTeamMapBrowser(settings: caltopoSettings, onCredentialSelect: requestCredentialProfileSwitch) { map in
@@ -1279,7 +1326,7 @@ struct ContentView: View {
                         .privacySensitive()
                 }
             }
-            .navigationTitle("RID-2-Caltopo")
+            .navigationTitle("RID2Caltopo")
             .navigationBarTitleDisplayMode(.inline)
         }
             // Bound from body, not monitoredRoot: the access gate replaces
@@ -1715,7 +1762,7 @@ struct ContentView: View {
     }
 
     private var rootScreen: some View {
-        androidParityDashboard
+        operationalMapView
     }
 
     private var idleTimeoutFingerprint: String {
@@ -1748,7 +1795,7 @@ struct ContentView: View {
     private var incidentSection: some View {
         Section("Incident") {
             LabeledContent("Organization", value: orgConfigSettings.organizationName.isEmpty ? "Not configured" : orgConfigSettings.organizationName)
-            LabeledContent("Incident", value: orgConfigSettings.incident.isEmpty ? "Not selected" : orgConfigSettings.incident)
+            LabeledContent("Incident", value: currentIncidentName)
             if !orgConfigSettings.operationalPeriod.isEmpty {
                 LabeledContent("Operational period", value: orgConfigSettings.operationalPeriod)
             }
@@ -1808,10 +1855,7 @@ struct ContentView: View {
             VStack(spacing: 2) {
                 Text(OperationalMainScreenPresentation.incidentMapLabel)
                     .font(.caption)
-                Text(OperationalMainScreenPresentation.incidentMapValue(
-                    mapID: caltopoSettings.mapID,
-                    mapTitle: caltopoSettings.mapTitle
-                ))
+                Text((caltopoSettings.mapID.isEmpty ? currentIncidentName + " · No map" : currentIncidentName))
                     .font(.subheadline.bold())
                     .lineLimit(2)
                     .minimumScaleFactor(0.7)
@@ -1823,10 +1867,7 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(OperationalMainScreenPresentation.incidentMapLabel)
-        .accessibilityValue(OperationalMainScreenPresentation.incidentMapValue(
-            mapID: caltopoSettings.mapID,
-            mapTitle: caltopoSettings.mapTitle
-        ))
+        .accessibilityValue((caltopoSettings.mapID.isEmpty ? currentIncidentName + " · No map" : currentIncidentName))
     }
 
     private var androidOpPeriodCell: some View {
@@ -1984,10 +2025,10 @@ struct ContentView: View {
             VStack(spacing: 1) {
                 Text("Waypoints Received")
                     .font(.caption.bold())
-                    .frame(width: cell(120) * 2 + cell(80) * 3 + 4, height: cell(24))
+                    .frame(width: cell(120) * 4 + cell(80) * 3 + 6, height: cell(24))
                     .background(Color.accentColor.opacity(0.16))
                 HStack(spacing: 1) {
-                    ForEach(["BT4:", "BT5:"], id: \.self) { label in
+                    ForEach(OperationalMainScreenPresentation.receptionTransportHeaders, id: \.self) { label in
                         androidTableHeader(label, width: 120)
                     }
                     androidTableHeader("R2C:", width: 80)
@@ -2016,6 +2057,7 @@ struct ContentView: View {
                 identity?.displayLabel
                     ?? (droneConfirmations.isUnassociated(track.aircraftID) ? "Add to RID Map" : "Confirm Drone")
             ) {
+                showWorkspaceStats = false
                 if droneConfirmations.isUnassociated(track.aircraftID) {
                     addRidMapRemoteID = track.aircraftID
                 } else {
@@ -2046,6 +2088,8 @@ struct ContentView: View {
             .background(Color(uiColor: .secondarySystemBackground))
             androidTransportCell(track, source: .bluetoothLegacy)
             androidTransportCell(track, source: .bluetoothExtended)
+            androidTransportCell(track, source: .wifiBeacon)
+            androidTransportCell(track, source: .wifiNan)
             androidTableValue("\(sourceCount(track, .trackerRelay))", width: 80)
             androidTableValue("\(sourceCount(track, .djiVideo))", width: 80)
             androidTableValue("\(track.points.count)", width: 80)
@@ -2426,10 +2470,8 @@ struct ContentView: View {
     }
 
     private var currentIncidentName: String {
-        if !caltopoSettings.mapID.isEmpty, !caltopoSettings.mapTitle.isEmpty {
-            return caltopoSettings.mapTitle
-        }
-        return orgConfigSettings.incident.isEmpty ? "Not selected" : orgConfigSettings.incident
+        OperationalIncidentSelection.name(mapID: caltopoSettings.mapID, mapTitle: caltopoSettings.mapTitle,
+            standaloneName: orgConfigSettings.standaloneIncidentName)
     }
 
     private var currentIncidentKey: String {
@@ -2458,7 +2500,7 @@ struct ContentView: View {
             streamURL: streamRegistry.focusedPlaybackURL,
             bridgeSignalStrengthDbm: bluetoothScanner.bridgeSignalStrengthDbm,
             automaticStreamPairingAircraftID: $automaticStreamPairingAircraftID,
-            onReturnToMain: closeLiveView,
+            onReturnToMain: { showWorkspaceStats = true },
             onConfirmPairedDrone: confirmDrone,
             onMapStatusTap: openCaltopoMapActions,
             onProximitySettings: { showProximitySettings = true },
@@ -2471,13 +2513,27 @@ struct ContentView: View {
                 streamRegistry.shutdown()
                 mediaMTX.restart(captureStreams: captureStreams)
             },
-            viewportMemory: mapViewportMemory
+            viewportMemory: mapViewportMemory,
+            workspaceMenu: AnyView(Menu {
+                MainScreenMenuItems(
+                    showDiagnosticLogs: $showDiagnosticLogs,
+                    showReleaseNotes: $showReleaseNotes, showImportConfig: $showImportConfig,
+                    showConfigurationTransfer: $showConfigurationTransfer, showStorageManagement: $showStorageManagement,
+                    showCaltopoSettings: $showCaltopoSettings, showAboutPrivacy: $showAboutPrivacy,
+                    showTerms: $showTerms, showConfirmExit: $showConfirmExit)
+            } label: { Image(systemName: "ellipsis").frame(minWidth: 44, minHeight: 44) }.accessibilityLabel("Main menu")),
+            onAbout: { showWorkspaceAbout = true },
+            onDroneAction: { remoteID in
+                if droneConfirmations.isUnassociated(remoteID) { addRidMapRemoteID = remoteID }
+                else { pendingDroneConfirmation = DroneConfirmationRequest(id: remoteID) }
+            },
+            operationalAlerts: operationalAlerts
         )
     }
 
     private func closeLiveView() {
         AppleLog.info("Navigation", "Live View back selected; returning to Main Screen")
-        showTrackMap = false
+        showWorkspaceStats = true
     }
 
     private func openLiveViewFromBridgeChip() {
@@ -2573,7 +2629,9 @@ struct ContentView: View {
         }
     }
 
-    private func openCaltopoMapActions() {
+    private func openCaltopoMapActions() { showIncidentSelection = true }
+
+    private func openIncidentMapActions() {
         if caltopoSettings.mapID.isEmpty {
             openMapBrowser()
         } else {
@@ -2699,7 +2757,7 @@ struct ContentView: View {
             organization: orgConfigSettings.organizationName,
             hasManagedTrackerEnrollment: orgConfigSettings.hasManagedTrackerEnrollment,
             notamProxyStatus: notams.state.errorMessage ?? notams.state.statusLine,
-            incident: orgConfigSettings.incident,
+            incident: currentIncidentName,
             operationalPeriod: orgConfigSettings.operationalPeriod,
             trackerStatus: peerCoordinator.status.rawValue,
             trackerDetail: peerCoordinator.statusDetail,
@@ -2729,6 +2787,7 @@ struct ContentView: View {
             orgConfigSettings.trackerURLPrefix,
             orgConfigSettings.trackerAPIKey.isEmpty ? "0" : "1",
             caltopoSettings.mapID,
+            currentIncidentName,
             orgConfigSettings.trackFolder,
         ].joined(separator: "|")
     }
@@ -3317,27 +3376,8 @@ private struct ShortFlightRecordingPanel: View {
 
 // The menu has static contents and stable presentation bindings. Telemetry and
 // one-second status updates must not rebuild an already presented native menu.
-private struct LiveViewBackButton: View {
-    @Environment(\.dismiss) private var dismiss
-    let onDismiss: () -> Void
-
-    var body: some View {
-        Button {
-            // Explicitly pop the destination on iPad, then synchronize the
-            // source presentation flag for programmatic navigation.
-            dismiss()
-            onDismiss()
-        } label: {
-            Label("Main Screen", systemImage: "chevron.left")
-        }
-        .accessibilityIdentifier("live-view-back")
-    }
-}
-
-private struct MainScreenMenu: View, Equatable {
-    @Binding var showTrackMap: Bool
+private struct MainScreenMenuItems: View {
     @Binding var showDiagnosticLogs: Bool
-    @Binding var showStatus: Bool
     @Binding var showReleaseNotes: Bool
     @Binding var showImportConfig: Bool
     @Binding var showConfigurationTransfer: Bool
@@ -3347,21 +3387,18 @@ private struct MainScreenMenu: View, Equatable {
     @Binding var showTerms: Bool
     @Binding var showConfirmExit: Bool
 
-    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { true }
 
     var body: some View {
-        Menu {
-            Button("Live View", systemImage: "video") { showTrackMap = true }
-            Button("Send diagnostics to developer…", systemImage: "square.and.arrow.up") {
-                showDiagnosticLogs = true
-            }
-            Button("Status", systemImage: "info.circle") { showStatus = true }
+        Group {
+            Button("Settings", systemImage: "gearshape") { showCaltopoSettings = true }
             Button("Release Notes", systemImage: "doc.text") { showReleaseNotes = true }
             Divider()
             Button("Import Config", systemImage: "qrcode.viewfinder") { showImportConfig = true }
             Button("Backup & Transfer", systemImage: "shippingbox") { showConfigurationTransfer = true }
             Button("Manage Storage...", systemImage: "externaldrive") { showStorageManagement = true }
-            Button("Settings", systemImage: "gearshape") { showCaltopoSettings = true }
+            Button("Send diagnostics to developer…", systemImage: "square.and.arrow.up") {
+                showDiagnosticLogs = true
+            }
             Button("Terms of Use", systemImage: "doc.text") { showTerms = true }
             Button("About & Privacy", systemImage: "hand.raised") {
                 showAboutPrivacy = true
@@ -3371,12 +3408,9 @@ private struct MainScreenMenu: View, Equatable {
                 AppleLog.info("Lifecycle", "Quit menu selected")
                 showConfirmExit = true
             }
-        } label: {
-            Image(systemName: "ellipsis.circle")
         }
     }
 }
-
 
 private struct AwaitingMapPublicationPanel: View {
     @ObservedObject var tracks: RIDTrackViewModel
@@ -3833,5 +3867,69 @@ struct AppleProximityStatusChip: View {
             AppleOperationalStatusChipLabel(title: "Proximity Alerts: \(center.status)", tone: .neutral)
         }
         .buttonStyle(.plain)
+    }
+}
+
+
+private struct WorkspaceResizablePane<Content: View>: View {
+    let title: String
+    let onClose: () -> Void
+    @ViewBuilder var content: () -> Content
+    @State private var size = CGSize(width: 850, height: 420)
+    @State private var dragStart: CGSize?
+    var body: some View {
+        GeometryReader { geometry in
+            let width = min(size.width, max(240, geometry.size.width - 24))
+            let height = min(size.height, max(240, geometry.size.height - 24))
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text(title).font(.headline)
+                    Spacer()
+                    Button("Close", action: onClose).frame(minHeight: 44)
+                }
+                content().frame(maxWidth: .infinity, maxHeight: .infinity)
+                HStack {
+                    Spacer()
+                    Image(systemName: "arrow.down.right.and.arrow.up.left")
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                        .gesture(DragGesture().onChanged { value in
+                            if dragStart == nil { dragStart = CGSize(width: width, height: height) }
+                            guard let start = dragStart else { return }
+                            size = CGSize(width: min(max(240, start.width + value.translation.width), max(240, geometry.size.width - 24)),
+                                          height: min(max(240, start.height + value.translation.height), max(240, geometry.size.height - 24)))
+                        }.onEnded { _ in dragStart = nil })
+                        .accessibilityLabel("Resize Aircraft and Reception")
+                        .accessibilityAdjustableAction { direction in
+                            let delta: CGFloat = direction == .increment ? 40 : -40
+                            size = CGSize(width: max(240, width + delta), height: max(240, height + delta))
+                        }
+                }
+            }.padding(12).frame(width: width, height: height)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                .overlay(RoundedRectangle(cornerRadius: 16).stroke(.secondary))
+                .shadow(radius: 8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+private struct WorkspaceAboutContactLink: View {
+    let title: String
+    let url: URL
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var ink: Color { colorScheme == .dark ? .white : .black }
+    private var surface: Color { Color(white: colorScheme == .dark ? 36.0 / 255.0 : 240.0 / 255.0) }
+
+    var body: some View {
+        Link(destination: url) {
+            Text(title).font(.body).underline().foregroundStyle(ink)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .frame(minHeight: 44)
+                .background(surface, in: RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .tint(ink)
     }
 }

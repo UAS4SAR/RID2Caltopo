@@ -578,3 +578,23 @@ public enum OperationalOfflineRetry {
         return .started
     }
 }
+
+/// Measurements of the download bounding rectangle, not the enclosed boundary polygon.
+public struct OperationalDownloadAreaSummary: Sendable {
+    public let latitude: Double
+    public let longitude: Double
+    public let widthMiles: Double
+    public let heightMiles: Double
+    public let squareMiles: Double
+
+    public init(bounds: OperationalMapBounds) {
+        let radiusMiles = 3958.7613
+        let radians = Double.pi / 180
+        let longitudeSpan = (bounds.east - bounds.west) * radians
+        latitude = (bounds.north + bounds.south) / 2
+        longitude = (bounds.west + bounds.east) / 2
+        widthMiles = radiusMiles * longitudeSpan * cos(latitude * radians)
+        heightMiles = radiusMiles * (bounds.north - bounds.south) * radians
+        squareMiles = radiusMiles * radiusMiles * longitudeSpan * abs(sin(bounds.north * radians) - sin(bounds.south * radians))
+    }
+}

@@ -71,20 +71,13 @@ final class AppleAlertBellCenter: ObservableObject {
         }
     }
 
-    func noteAlarmFired() {
-        guard !state.hasEverAlarmed else { return }
-        var next = state
-        next.hasEverAlarmed = true
-        state = next
+    func recordPlayback(_ kind: AlertBellKind, at date: Date = Date()) {
+        state.recordPlayback(kind, at: date)
     }
 
-    /// Returns false when the kind is session-muted (caller should skip speech).
+    /// Checking eligibility never changes visibility or playback history.
     @discardableResult
-    func allowSpeech(for kind: AlertBellKind) -> Bool {
-        // Latch visibility whenever an alarm would speak, even if this kind is muted.
-        noteAlarmFired()
-        return !isMuted(kind)
-    }
+    func allowSpeech(for kind: AlertBellKind) -> Bool { state.allowsSpeech(kind) }
 
     func resetForTests() {
         state = AlertBellSessionState()
@@ -140,13 +133,18 @@ struct AppleAlertStatusPanel: View {
     var body: some View {
         NavigationStack {
             List {
-                Text("Tap a bell to mute or unmute speech for that alert. Dismissing this panel only hides it.")
+                Text("Tap a bell to mute or unmute speech for that alert. Played counts are for this app session.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .listRowBackground(Color.clear)
                 ForEach(AlertBellKind.allCases) { kind in
                     HStack {
-                        Text(kind.displayName)
+                        VStack(alignment: .leading) {
+                            Text(kind.displayName)
+                            if let date = center.state.lastPlayedAt[kind] {
+                                Text("Last played: \(date.formatted(date: .omitted, time: .standard))").font(.caption)
+                            } else { Text("Last played: Never").font(.caption) }
+                        }
                         Spacer()
                         Button {
                             center.toggleMuted(kind)
@@ -161,6 +159,7 @@ struct AppleAlertStatusPanel: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(center.isMuted(kind) ? "Unmute \(kind.displayName)" : "Mute \(kind.displayName)")
+                        Text("Played: \(center.state.playedCounts[kind, default: 0])").font(.caption)
                     }
                     .contentShape(Rectangle())
                     .onTapGesture { center.toggleMuted(kind) }
