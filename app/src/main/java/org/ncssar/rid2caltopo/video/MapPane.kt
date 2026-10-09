@@ -770,6 +770,7 @@ internal fun SplitMapPane(
     val localTrackPointsByMappedId = remember { mutableStateMapOf<String, SnapshotStateList<LocalTrackPoint>>() }
     val currentFlightTrackPointsByMappedId = remember { mutableStateMapOf<String, SnapshotStateList<LocalTrackPoint>>() }
     val seiTelemetryByMappedId = remember { mutableStateMapOf<String, StreamCameraTelemetrySample>() }
+    val footprintTelemetryByMappedId = remember { mutableStateMapOf<String, StreamCameraTelemetrySample>() }
     val localTrackMappedIdsByRemoteId = remember { mutableStateMapOf<String, MutableSet<String>>() }
     val localTrackLastSeededTimestampByMappedId = remember { mutableMapOf<String, Long>() }
     var trackOverlayRefreshToken by remember { mutableIntStateOf(0) }
@@ -912,9 +913,16 @@ internal fun SplitMapPane(
                     }
                 if (seiSample == null) {
                     seiTelemetryByMappedId.remove(designator)
+                    footprintTelemetryByMappedId.remove(designator)
                     return@forEach
                 }
                 seiTelemetryByMappedId[designator] = seiSample
+                val footprintSample = if (viewModel.cameraFootprintEnabled(state.remoteId))
+                    viewModel.cameraTelemetryDesignatorsFor(state.remoteId, state.mappedId)
+                        .firstNotNullOfOrNull { viewModel.cameraFootprintTelemetryFor(it) }
+                    else null
+                if (footprintSample == null) footprintTelemetryByMappedId.remove(designator)
+                else footprintTelemetryByMappedId[designator] = footprintSample
 
                 val seiLat = seiSample.latitudeDeg
                 val seiLng = seiSample.longitudeDeg
@@ -963,7 +971,7 @@ internal fun SplitMapPane(
             }
             seiTelemetryByMappedId.keys
                 .filter { it !in activeMappedIds }
-                .forEach { seiTelemetryByMappedId.remove(it) }
+                .forEach { seiTelemetryByMappedId.remove(it); footprintTelemetryByMappedId.remove(it) }
             delay(250L)
         }
     }
@@ -1015,6 +1023,20 @@ internal fun SplitMapPane(
                     headingDeg = headingDeg,
                     cameraAzimuthDeg = cameraAzimuthDeg,
                     horizontalCameraFovDeg = horizontalCameraFovDeg,
+                    cameraFootprintInput = footprintTelemetryByMappedId[designator]
+                        ?.takeIf { viewModel.cameraFootprintEnabled(state.remoteId) }?.let { camera ->
+                        val reference = viewModel.altitudeCoordinator.cameraFootprintReference(designator)
+                        val azimuth = camera.fovAzimuthDeg
+                        val cameraLat = camera.latitudeDeg
+                        val cameraLng = camera.longitudeDeg
+                        val frameHeight = camera.relativeUpMeters
+                        val currentHeight = cameraTelemetry?.relativeUpMeters
+                        if (reference == null || azimuth == null || cameraLat == null || cameraLng == null ||
+                            frameHeight == null || currentHeight == null) null else CameraFootprintInput(
+                            cameraLat, cameraLng, reference.first, reference.second,
+                            reference.third + frameHeight - currentHeight,
+                            azimuth, camera.tiltDeg, camera.horizontalFovDeg, camera.verticalFovDeg)
+                    },
                     droneSpec = state.source
                 ),
                 usingLocalTail
@@ -1095,6 +1117,33 @@ internal fun SplitMapPane(
         )
     }
     val dronePoints = dronePointEntries.map { it.first }
+    val footprintDEM = remember(context) { org.ncssar.rid2caltopo.video.mapcache.GeoTiffDemSource(context) }
+    val footprintInputs = dronePoints.mapNotNull { point -> point.cameraFootprintInput?.let { point.designator to it } }.toMap()
+    var terrainFootprints by remember { mutableStateOf<Map<String, Pair<CameraFootprintInput, List<CameraFootprintVertex>>>>(emptyMap()) }
+    val latestFootprintInputs by rememberUpdatedState(footprintInputs)
+    // One worker reads the newest pose every half second. It is not restarted on
+    // every telemetry packet, and never owns the immediate corner display.
+    LaunchedEffect(footprintDEM, footprintInputs.isNotEmpty()) {
+        if (footprintInputs.isEmpty()) { terrainFootprints = emptyMap(); return@LaunchedEffect }
+        while (isActive) {
+            val snapshot = latestFootprintInputs
+            val results = withContext(Dispatchers.IO) {
+                val workerContext = coroutineContext
+                footprintDEM.withS1mSamplingSession { sample ->
+                    snapshot.mapValues { (designator, input) ->
+                        val deadline = android.os.SystemClock.elapsedRealtime() + 100L
+                        input to CameraFootprintGeometry.project(input, elevation = sample,
+                            cancelled = { !workerContext.isActive || !latestFootprintInputs.containsKey(designator) ||
+                                android.os.SystemClock.elapsedRealtime() >= deadline },
+                            edgeSubdivisions = 1)
+                    }
+                }
+            }
+            ensureActive()
+            terrainFootprints = results
+            delay(500L)
+        }
+    }
     val mapStreams by viewModel.streams.collectAsStateWithLifecycle()
     val streamFocusArrival = viewModel.mapStreamFocusArrival
     val droneDesignatorByMappedId = mapStreams.values
@@ -2740,6 +2789,13 @@ internal fun SplitMapPane(
                             )
                             Text("Follow focused drone")
                         }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = viewModel.cameraFootprintEnabled(point.remoteId),
+                                onCheckedChange = { viewModel.setCameraFootprintEnabled(point.remoteId, it) }
+                            )
+                            Text("Camera footprint")
+                        }
                         pilotSettings?.let { settings ->
                             Spacer(Modifier.height(12.dp))
                             PilotDisplaySettingsContent(
@@ -4019,6 +4075,17 @@ internal fun SplitMapPane(
                     val cameraFovOverlay = CameraFovOverlay(cameraFovSpecs, context.resources)
                     mapView.overlays.add(cameraFovOverlay)
                     managedOverlays.add(cameraFovOverlay)
+                }
+                val footprints = dronePoints.mapNotNull { point ->
+                    point.cameraFootprintInput?.let { input ->
+                        val terrain = terrainFootprints[point.designator]?.takeIf { it.first == input }?.second
+                        cameraFootprintDrawing(input, terrain).takeIf { it.corners.isNotEmpty() }
+                    }
+                }
+                if (footprints.isNotEmpty()) {
+                    val overlay = CameraFootprintOverlay(footprints, context.resources)
+                    mapView.overlays.add(overlay)
+                    managedOverlays.add(overlay)
                 }
                 if (droneLabelSpecs.isNotEmpty()) {
                     val labelOverlay = DroneLabelOverlay(droneLabelSpecs)

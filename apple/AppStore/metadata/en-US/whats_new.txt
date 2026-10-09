@@ -20,3 +20,4 @@ Latest changes:
 - Corrected startup altitude calibration, duplicate aircraft entries, and saved clue visibility.
 - Improved login keyboard behavior and recognition of recent device authentication.
 - Improved video pacing when the stream changes frame rate.
+- Added an optional camera ground footprint with responsive corner guides and terrain-aware boundaries; enable it per aircraft in the Drone Inspector.

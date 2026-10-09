@@ -205,6 +205,12 @@ object StreamCameraTelemetryRegistry {
             }
     }
 
+    /** Camera packets may be less frequent than video frames. Keep the live map pose
+     * available when there is no nearby frame sample; clue capture remains exact. */
+    fun freshForFootprint(designator: String, frameTimestampUs: Long?,
+                          nowMs: Long = System.currentTimeMillis()): StreamCameraTelemetrySample? =
+        freshForFrame(designator, frameTimestampUs, nowMs) ?: freshOperationalPosition(designator, nowMs)
+
     fun lastReceivedAtMs(designator: String): Long = synchronized(lock) {
         samples[designator.trim().uppercase()]?.receivedAtMs ?: 0L
     }

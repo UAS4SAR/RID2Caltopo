@@ -518,6 +518,14 @@ final class RIDTrackViewModel: ObservableObject {
         }
     }
 
+    func cameraFootprintReference(remoteID: String) -> OperationalAltitudeCoordinator.AOLInput? {
+        guard let coordinator = altitudeCoordinatorByAircraftID[remoteID],
+              coordinator.hasFreshAOLTelemetry, coordinator.display.atoStatus == .available,
+              let height = coordinator.aolInput.height, height.isFinite, height > 0,
+              coordinator.aolInput.takeoff != nil else { return nil }
+        return coordinator.aolInput
+    }
+
     func canCalibrateAltitude(remoteID: String) -> Bool {
         altitudeCoordinatorByAircraftID[remoteID]?.canManualCalibrate == true
     }

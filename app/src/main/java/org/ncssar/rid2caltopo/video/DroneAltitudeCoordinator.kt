@@ -360,6 +360,16 @@ internal class DroneAltitudeCoordinator(
         return result.takeIf { droneStates[entry.key]?.flightStartMsec == flight && aolAnchors[remoteId] == anchor && System.currentTimeMillis() - entry.value.source.mostRecentMsecTimestamp in 0..4999 }
     }
 
+    /** Same launch anchor and calibrated ATO used by the altitude/surface display. */
+    fun cameraFootprintReference(designator: String): Triple<Double, Double, Double>? {
+        val state = droneStates[designator] ?: return null
+        val display = displayStateByDesignator[designator] ?: return null
+        if (display.positionStale || display.atoStatus != MeasurementStatus.Available) return null
+        val anchor = aolAnchors[state.remoteId] ?: return null
+        val height = display.atoFt?.times(FT_TO_METERS)?.takeIf { it.isFinite() && it > 0 } ?: return null
+        return Triple(anchor.first, anchor.second, height)
+    }
+
     fun canCalibrateOverLaunch(designator: String): Boolean {
         val state = droneStates[designator] ?: return false
         val point = latestLocalPointByDesignator[designator] ?: return false

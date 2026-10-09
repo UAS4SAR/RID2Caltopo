@@ -1581,6 +1581,26 @@ class StreamsViewModel(
         }
     }
 
+    private val cameraFootprintPrefs by lazy {
+        getApplication<Application>().getSharedPreferences("camera_footprint_drone_prefs", android.content.Context.MODE_PRIVATE)
+    }
+    private var cameraFootprintPreferenceRevision by mutableStateOf(0)
+
+    internal fun cameraFootprintEnabled(remoteId: String): Boolean {
+        cameraFootprintPreferenceRevision // Observe changes across full map and inset consumers.
+        return cameraFootprintPrefs.getBoolean(remoteId.trim().uppercase(Locale.US), false)
+    }
+    internal fun setCameraFootprintEnabled(remoteId: String, enabled: Boolean) {
+        cameraFootprintPrefs.edit().putBoolean(remoteId.trim().uppercase(Locale.US), enabled).apply()
+        cameraFootprintPreferenceRevision++
+    }
+
+    /** Match footprint pose to native video when a rendered PTS is available. */
+    internal fun cameraFootprintTelemetryFor(designator: String): org.ncssar.rid2caltopo.video.ffmpeg.StreamCameraTelemetrySample? {
+        val pts = ffmpegProbeService?.renderedFrameSourceTimestampUs(designator)
+        return StreamCameraTelemetryRegistry.freshForFootprint(designator, pts)
+    }
+
     fun runtimeSnapshotFor(designator: String): StreamRuntimeSnapshot? {
         if (renderRouteByDesignator[designator] != true) return null
         return ffmpegProbeService?.runtimeSnapshot(designator)

@@ -395,6 +395,17 @@ final class AppleVideoFrameSource: ObservableObject {
         }
     }
 
+    /// Prefer frame-associated pose; missing frame metadata must not erase live map corners.
+    func freshCameraFootprintTelemetry(now: Date = Date()) -> AppleDJICameraTelemetry? {
+        if usesNativeVideoSurface, let capturedAt = latestFrameCapturedAt,
+           now.timeIntervalSince(capturedAt) >= 0, now.timeIntervalSince(capturedAt) <= 3,
+           let sample = latestFrameDJICameraTelemetry,
+           now.timeIntervalSince(sample.receivedAt) >= 0, now.timeIntervalSince(sample.receivedAt) <= 3 {
+            return sample
+        }
+        return freshDJICameraTelemetry(now: now)
+    }
+
     private var videoOutput: AVPlayerItemVideoOutput?
     private var ffmpegSession: OpaquePointer?
     private var ffmpegFrameSequence: UInt64 = 0

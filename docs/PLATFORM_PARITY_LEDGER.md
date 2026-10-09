@@ -629,3 +629,16 @@ Fixed the A5 Pro’s null track-folder error and stale shutdown flag when person
 - Track resolved aircraft for the map session across pane recreation, telemetry loss, and reconnect, so repeat updates do not override a subsequent manual pan. Simultaneous new matches do not choose an arbitrary drone.
 - Android follow centering no longer applies a minimum zoom. Existing ordinary viewport restoration remains in place.
 - Validation: 26 focused Android tests and Debug build passed; 8 focused Apple core tests and unsigned generic iOS Debug build passed. No device installation or physical RTMP/telemetry arrival test was performed.
+
+### 2026-10-09 — Optional camera ground footprint (2.5.0rc3, build 341)
+
+Both platforms show two short edge-directed strokes at each projected camera
+corner, with a separate bounded four-ray local S1M terrain pass and dashed
+coverage/range clipping. Camera footprint is saved per aircraft in the Drone
+Inspector, defaults off, and disabling it stops its terrain work. The A5 Pro
+recording exposed the initial terrain/corner coupling and repeated heavy jobs;
+these were corrected before the release candidate. Focused geometry/pose tests,
+both device builds and installs passed. The user reported improvement after the
+corner-first correction. Full release gate and store evidence is tracked in the
+rc3 release record; live-flight accuracy and terrain-boundary qualification are
+separate evidence. See [validation](validation/2026-10-09-camera-footprint.md).

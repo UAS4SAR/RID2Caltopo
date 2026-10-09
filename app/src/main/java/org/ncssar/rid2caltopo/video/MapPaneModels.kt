@@ -192,6 +192,7 @@ internal data class DroneMapPoint(
     val speedKnots: Double? = null,
     val cameraAzimuthDeg: Double? = null,
     val horizontalCameraFovDeg: Double? = null,
+    val cameraFootprintInput: CameraFootprintInput? = null,
     val droneSpec: CtDroneSpec? = null
 )
 

@@ -122,6 +122,15 @@ private final class ApplePilotDisplayStore: ObservableObject {
     @Published private(set) var revision = 0
     private let defaults = UserDefaults.standard
 
+    func cameraFootprintEnabled(for remoteID: String) -> Bool {
+        _ = revision
+        return defaults.bool(forKey: "camera-footprint.drone." + remoteID.trimmingCharacters(in:.whitespacesAndNewlines).uppercased())
+    }
+    func setCameraFootprintEnabled(_ enabled: Bool, for remoteID: String) {
+        defaults.set(enabled,forKey:"camera-footprint.drone." + remoteID.trimmingCharacters(in:.whitespacesAndNewlines).uppercased())
+        revision += 1
+    }
+
     func preference(for pilotCallsign: String?) -> PilotDisplayPreference {
         guard let pilotKey = PilotDisplayPreference.normalizePilotCallsign(pilotCallsign) else {
             return PilotDisplayPreference()
@@ -1332,6 +1341,7 @@ struct RIDTrackMapView: View {
                 aircraftDisplay: aircraftDisplay,
                 altitudeDisplay: model.altitudeDisplayByAircraftID,
                 cameraFovByAircraftID: cameraFovByAircraftID,
+                cameraFootprintInputs: cameraFootprintInputs,
                 clues: clueStore.records,
                 artifacts: renderedArtifacts,
                 airspaceState: airspace.enabled ? airspace.state : OperationalAirspaceState(),
@@ -1726,6 +1736,32 @@ struct RIDTrackMapView: View {
                   )
             else { continue }
             result[aircraftID] = boundaries
+        }
+        return result
+    }
+
+    private var cameraFootprintInputs: [String: CameraFootprintInput] {
+        _ = cameraTelemetryRefreshToken
+        var result: [String: CameraFootprintInput] = [:]
+        for session in streamRegistry.sessions {
+            guard let id = aircraftID(for: session.id),
+                  pilotDisplay.cameraFootprintEnabled(for: id),
+                  let current = session.model.freshDJICameraTelemetry(),
+                  let telemetry = session.model.freshCameraFootprintTelemetry(),
+                  let azimuth = telemetry.cameraAzimuthDegrees,
+                  let reference = model.cameraFootprintReference(remoteID: id),
+                  let launch = reference.takeoff, let height = reference.height,
+                  let position = activeSEITrackPointsByAircraftID[id]?.last,
+                  Date().timeIntervalSince(position.receivedAt) < 3,
+                  let latitude = telemetry.latitudeDegrees, let longitude = telemetry.longitudeDegrees,
+                  let frameHeight = telemetry.relativeUpMeters, let currentHeight = current.relativeUpMeters
+            else { continue }
+            result[id] = CameraFootprintInput(
+                latitude: latitude, longitude: longitude,
+                launchLatitude: launch.latitude, launchLongitude: launch.longitude,
+                height: height + frameHeight - currentHeight,
+                azimuth: azimuth, tilt: telemetry.tiltDegrees,
+                horizontalFov: telemetry.horizontalFovDegrees, verticalFov: telemetry.verticalFovDegrees)
         }
         return result
     }
@@ -3430,6 +3466,108 @@ private struct AircraftMapDisplay: Equatable {
     var proximityTone: OperationalWorkspacePolicy.AlertTone = .quiet
 }
 
+/// Screen-space renderer keeps a thin outline and corner glyphs constant while the map zooms.
+private final class CameraFootprintMapView: UIView {
+    private weak var map: MKMapView?
+    private var inputs: [String: CameraFootprintInput] = [:]
+    private var terrain: [String: (CameraFootprintInput, [CameraFootprintVertex])] = [:]
+    private var worker: Task<Void, Never>?
+    private var cacheGeneration = -1
+    private let dem: GeoTiffElevationSource = {
+        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return GeoTiffElevationSource(directory: root.appendingPathComponent("RID2Caltopo/DEM", isDirectory: true))
+    }()
+
+    init() {
+        super.init(frame: .zero)
+        isOpaque = false; backgroundColor = .clear; isUserInteractionEnabled = false
+        autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func stop() {
+        worker?.cancel(); worker=nil
+        inputs=[:]; terrain=[:]; removeFromSuperview()
+    }
+    func update(_ next: [String: CameraFootprintInput], on map: MKMapView) {
+        self.map=map
+        if superview !== map { frame=map.bounds; map.addSubview(self) }
+        if cacheGeneration != AppleUnifiedMapCache.generation {
+            cacheGeneration=AppleUnifiedMapCache.generation
+            terrain=[:]
+        }
+        if Set(inputs.keys) != Set(next.keys) { worker?.cancel(); worker=nil }
+        inputs=next
+        setNeedsDisplay()
+        if next.isEmpty { worker?.cancel(); worker=nil; terrain=[:]; return }
+        guard worker == nil else { return }
+        // One background worker; new poses update the corners without restarting it.
+        worker=Task { [weak self] in
+            var sampledGeneration = -1
+            while !Task.isCancelled {
+                guard let self else { return }
+                let snapshot=self.inputs, generation=self.cacheGeneration, dem=self.dem
+                let invalidate = sampledGeneration != generation
+                sampledGeneration=generation
+                let task=Task.detached(priority:.utility) {
+                    if invalidate { dem.invalidateCatalog() }
+                    return snapshot.mapValues { input in
+                        let deadline=ProcessInfo.processInfo.systemUptime+0.1
+                        return CameraFootprintGeometry.project(input,elevation:{ latitude,longitude in
+                            guard let sample=dem.sample(latitude:latitude,longitude:longitude),
+                                  sample.horizontalResolutionMeters <= 1.5 else { return nil }
+                            return sample.elevationMeters
+                        },cancelled:{ Task.isCancelled || ProcessInfo.processInfo.systemUptime >= deadline },
+                        edgeSubdivisions:1)
+                    }
+                }
+                let result=await withTaskCancellationHandler(operation:{ await task.value },onCancel:{ task.cancel() })
+                guard !Task.isCancelled else { return }
+                self.terrain=result.mapValues { $0 }.reduce(into:[:]) { values, entry in
+                    if let input=snapshot[entry.key] { values[entry.key]=(input,entry.value) }
+                }
+                self.setNeedsDisplay()
+                do { try await Task.sleep(for:.milliseconds(500)) } catch { return }
+            }
+        }
+    }
+    override func draw(_ rect: CGRect) {
+        guard let map, let context=UIGraphicsGetCurrentContext() else { return }
+        let stubLength=min(min(bounds.width,bounds.height)*0.02,12)
+        for (id,input) in inputs {
+            let sampled=terrain[id].flatMap { $0.0 == input ? $0.1 : nil }
+            let drawing=CameraFootprintDrawing(input:input,terrain:sampled)
+            let boundary=drawing.boundary
+            let points=boundary.map { map.convert(CLLocationCoordinate2D(latitude:$0.latitude,longitude:$0.longitude),toPointTo:self) }
+            for index in boundary.indices {
+                let next=(index+1)%boundary.count
+                let path=UIBezierPath(); path.move(to:points[index]); path.addLine(to:points[next])
+                stroke(path,dashed:boundary[index].clipped || boundary[next].clipped,context:context)
+            }
+            let corners=drawing.corners.map { corner in
+                let p=map.convert(CLLocationCoordinate2D(latitude:corner.latitude,longitude:corner.longitude),toPointTo:self)
+                return MapScreenPoint(x:p.x,y:p.y)
+            }
+            for arm in CameraFootprintGeometry.cornerStrokes(points:corners,length:stubLength) {
+                let path=UIBezierPath()
+                path.move(to:CGPoint(x:arm.start.x,y:arm.start.y))
+                path.addLine(to:CGPoint(x:arm.end.x,y:arm.end.y))
+                stroke(path,dashed:false,context:context)
+            }
+        }
+    }
+    private func stroke(_ path: UIBezierPath, dashed: Bool, context: CGContext) {
+        context.saveGState()
+        context.setLineDash(phase:0,lengths:dashed ? [5,4] : [])
+        context.setLineWidth(3); context.setStrokeColor(UIColor.black.withAlphaComponent(0.7).cgColor)
+        context.addPath(path.cgPath); context.strokePath()
+        context.setLineWidth(1.25)
+        context.setStrokeColor(UIColor(red:0.5,green:0.87,blue:0.92,alpha:1).cgColor)
+        context.addPath(path.cgPath); context.strokePath(); context.restoreGState()
+    }
+}
+
 private struct AppleSEIMapPoint: Equatable {
     let latitude: Double
     let longitude: Double
@@ -3607,6 +3745,10 @@ private struct PilotDisplaySettingsView: View {
                 }
                 Section("Map") {
                     Toggle("Follow focused drone", isOn: $followFocusedDrone)
+                    Toggle("Camera footprint", isOn: Binding(
+                        get: { store.cameraFootprintEnabled(for: selection.remoteID) },
+                        set: { store.setCameraFootprintEnabled($0,for:selection.remoteID) }
+                    ))
                 }
                 if !selection.pilotCallsign.isEmpty {
                     Section(selection.pilotCallsign == selection.remoteID ? "Drone display" : "Pilot Display: \(selection.pilotCallsign)") {
@@ -3699,6 +3841,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
     let aircraftDisplay: [String: AircraftMapDisplay]
     let altitudeDisplay: [String: OperationalAircraftAltitudeDisplay]
     let cameraFovByAircraftID: [String: CameraFovBoundaryBearings]
+    let cameraFootprintInputs: [String: CameraFootprintInput]
     let clues: [OperationalClueRecord]
     let artifacts: CaltopoArtifactSnapshot
     let airspaceState: OperationalAirspaceState
@@ -3778,6 +3921,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ map: MKMapView, coordinator: Coordinator) {
+        coordinator.footprintView.stop()
         // Capture synchronously into reference storage so a full/PiP replacement
         // cannot outrun SwiftUI binding delivery. Do not write a Binding here:
         // doing so re-enters StoredLocation teardown and can trigger an
@@ -3849,6 +3993,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
             contours: showContours,
             revision: tileCacheRevision
         )
+        context.coordinator.footprintView.update(cameraFootprintInputs, on: map)
         context.coordinator.updateOperationalOverlays(
             on: map,
             tracks: tracks,
@@ -3880,6 +4025,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
         @Binding private var viewport: MKCoordinateRegion
         private let viewportMemory: AppleMapViewportMemory
         @Binding private var operatorAdjustedViewport: Bool
+        let footprintView = CameraFootprintMapView()
         private var tileFingerprint = ""
         private var staticRenderState: StaticMapRenderState?
         private var aircraftRenderState: AircraftMapRenderState?
@@ -4540,12 +4686,14 @@ private struct OperationalMKMapView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
+            footprintView.setNeedsDisplay()
             guard !updating else { return }
             persistViewport(from: mapView)
             regionChangeWasUserGesture = false
         }
 
         func mapViewDidChangeVisibleRegion(_ mapView: MKMapView) {
+            footprintView.setNeedsDisplay()
             guard !updating, hasActiveViewportGesture(in: mapView) else { return }
             if !currentInset {
                 releaseFocusedAircraftForOperatorGesture()

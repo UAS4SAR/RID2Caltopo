@@ -7,6 +7,21 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StreamCameraTelemetryRegistryTest {
+    @Test fun footprintUsesNearbyFrameOrFreshMapPoseWithoutRequiringExactPacketPts() {
+        val key="footprint-pose"
+        StreamCameraTelemetryRegistry.clear(key)
+        val packet=FfmpegTelemetry(sourceTag="dji-sei-245",sourceTimestampUs=1_000_000,
+            latitude=39.153,longitude=-121.132,altitudeMeters=600.0,
+            gimbalPitchDeg=-45.0,cameraYawDeg=90.0,horizontalFovDeg=40.0,verticalFovDeg=25.0,
+            djiNorthMm=1000,djiEastMm=1000,djiDownMm=-620000)
+        StreamCameraTelemetryRegistry.update(key,packet,1000)
+        assertEquals(1_000_000L,StreamCameraTelemetryRegistry.freshForFootprint(key,1_050_000,1100)?.sourceTimestampUs)
+        // There is no exact/nearby frame sample, but live map corners stay available.
+        assertNull(StreamCameraTelemetryRegistry.freshForFrame(key,2_000_000,1100))
+        assertEquals(1_000_000L,StreamCameraTelemetryRegistry.freshForFootprint(key,2_000_000,1100)?.sourceTimestampUs)
+        assertNull(StreamCameraTelemetryRegistry.freshForFootprint(key,2_000_000,4001))
+        StreamCameraTelemetryRegistry.clear(key)
+    }
     @Test fun partialCameraTiltIsRetainedWithoutHeadingOrFov() {
         val key = "partial-camera"
         StreamCameraTelemetryRegistry.update(key,FfmpegTelemetry(sourceTag="dji-sei-245",gimbalPitchDeg=-45.0),1000)

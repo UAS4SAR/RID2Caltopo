@@ -66,7 +66,21 @@ internal class GeoTiffDemSource(context: Context) {
         return sample(lat, lng)?.elevationMeters
     }
 
-    fun sample(lat: Double, lng: Double): Sample? {
+    fun sample(lat: Double, lng: Double): Sample? = sample(lat, lng, null, true, Double.POSITIVE_INFINITY)
+
+    /** A batch borrows one descriptor per tile and avoids per-ray diagnostic logs.
+     * Only downloaded S1M is eligible; all descriptors close even on cancellation. */
+    fun <T> withS1mSamplingSession(block: ((Double, Double) -> Double?) -> T): T {
+        val sources = mutableMapOf<String, RandomAccessDataSource?>()
+        try {
+            return block { lat, lng -> sample(lat, lng, sources, false, 1.5)?.elevationMeters }
+        } finally {
+            sources.values.forEach { source -> runCatching { source?.close() } }
+        }
+    }
+
+    private fun sample(lat: Double, lng: Double, sources: MutableMap<String, RandomAccessDataSource?>?,
+                       logSamples: Boolean, maximumResolution: Double): Sample? {
         if (!lat.isFinite() || !lng.isFinite()) return null
         val candidates = synchronized(lock) {
             refreshCatalogLocked()
@@ -77,7 +91,8 @@ internal class GeoTiffDemSource(context: Context) {
         var best: Sample? = null
         for (tile in candidates) {
             val metadata = getOrLoadMetadata(tile) ?: continue
-            val value = trySampleFromTile(tile, metadata, lat, lng)
+            if (metadata.horizontalResolutionMeters(lat) > maximumResolution) continue
+            val value = trySampleFromTile(tile, metadata, lat, lng, sources, logSamples)
             if (value != null && value.isFinite()) {
                 val candidate = Sample(value, metadata.horizontalResolutionMeters(lat))
                 if (best == null || candidate.horizontalResolutionMeters < best.horizontalResolutionMeters) {
@@ -174,7 +189,8 @@ internal class GeoTiffDemSource(context: Context) {
         }
     }
 
-    private fun trySampleFromTile(tile: DemTile, metadata: GeoTiffMetadata, lat: Double, lng: Double): Double? {
+    private fun trySampleFromTile(tile: DemTile, metadata: GeoTiffMetadata, lat: Double, lng: Double,
+                                  sources: MutableMap<String, RandomAccessDataSource?>?, logSamples: Boolean): Double? {
         if (metadata.scaleX == 0.0 || metadata.scaleY == 0.0) return null
         val model = metadata.modelCoordinate(lat, lng) ?: return null
         val colF = metadata.tieI + (model.first - metadata.tieX) / metadata.scaleX
@@ -185,42 +201,45 @@ internal class GeoTiffDemSource(context: Context) {
         }
         if (metadata.planarConfiguration != 1) return null
 
-        return openDataSource(tile.uri)?.use { source ->
+        fun readSample(source: RandomAccessDataSource): Double? {
             val c0 = floor(colF).toInt().coerceIn(0, metadata.width - 1)
             val r0 = floor(rowF).toInt().coerceIn(0, metadata.height - 1)
             val c1 = (c0 + 1).coerceAtMost(metadata.width - 1)
             val r1 = (r0 + 1).coerceAtMost(metadata.height - 1)
 
-            val s00 = sampleAtPixel(source, metadata, tile.displayName, c0, r0) ?: return@use null
-            if (isNoData(s00, metadata.noDataValue)) return@use null
+            val s00 = sampleAtPixel(source, metadata, tile.displayName, c0, r0) ?: return null
+            if (isNoData(s00, metadata.noDataValue)) return null
             if (c0 == c1 && r0 == r1) {
-                MapCacheDebug.warn(MapCacheDebug.TAG_DEM,
+                if (logSamples) MapCacheDebug.warn(MapCacheDebug.TAG_DEM,
                     "dem sample lat=${"%.5f".format(Locale.US, lat)} lng=${"%.5f".format(Locale.US, lng)} " +
                         "colF=${"%.2f".format(Locale.US, colF)} rowF=${"%.2f".format(Locale.US, rowF)} " +
                         "c0=$c0 r0=$r0 s00=${"%.2f".format(Locale.US, s00)} -> exact")
-                return@use s00
+                return s00
             }
 
-            val s10 = sampleAtPixel(source, metadata, tile.displayName, c1, r0) ?: return@use null
-            val s01 = sampleAtPixel(source, metadata, tile.displayName, c0, r1) ?: return@use null
-            val s11 = sampleAtPixel(source, metadata, tile.displayName, c1, r1) ?: return@use null
+            val s10 = sampleAtPixel(source, metadata, tile.displayName, c1, r0) ?: return null
+            val s01 = sampleAtPixel(source, metadata, tile.displayName, c0, r1) ?: return null
+            val s11 = sampleAtPixel(source, metadata, tile.displayName, c1, r1) ?: return null
             if (isNoData(s10, metadata.noDataValue) ||
                 isNoData(s01, metadata.noDataValue) ||
                 isNoData(s11, metadata.noDataValue)
             ) {
-                return@use null
+                return null
             }
 
             val dx = (colF - c0.toDouble()).coerceIn(0.0, 1.0)
             val dy = (rowF - r0.toDouble()).coerceIn(0.0, 1.0)
             val result = bilinearInterpolate(s00, s10, s01, s11, dx, dy)
-            MapCacheDebug.warn(MapCacheDebug.TAG_DEM,
+            if (logSamples) MapCacheDebug.warn(MapCacheDebug.TAG_DEM,
                 "dem sample lat=${"%.5f".format(Locale.US, lat)} lng=${"%.5f".format(Locale.US, lng)} " +
                     "colF=${"%.2f".format(Locale.US, colF)} rowF=${"%.2f".format(Locale.US, rowF)} " +
                     "c0=$c0 r0=$r0 s00=${"%.2f".format(Locale.US, s00)} s10=${"%.2f".format(Locale.US, s10)} " +
                     "s01=${"%.2f".format(Locale.US, s01)} s11=${"%.2f".format(Locale.US, s11)} -> ${"%.2f".format(Locale.US, result)}")
-            result
+            return result
         }
+        if (sources == null) return openDataSource(tile.uri)?.use { readSample(it) }
+        if (!sources.containsKey(tile.id)) sources[tile.id] = openDataSource(tile.uri)
+        return sources[tile.id]?.let { readSample(it) }
     }
 
     private fun sampleAtPixel(
