@@ -348,3 +348,23 @@ fun configuredStreamTelemetryBindingMaps(
         remoteIdToStreamDesignator = remoteIdToStreamDesignator
     )
 }
+
+/** Re-evaluated for both RID updates and publisher updates; never binds without acceptance. */
+internal class NewDronePairingOffers {
+    private val offeredStreams = mutableSetOf<String>()
+
+    fun reconcile(
+        liveStreams: Collection<String>,
+        unpairedStreams: Collection<String>,
+        freshTelemetry: Collection<StreamTelemetryState>,
+        unknownRemoteIds: Set<String>,
+        present: (remoteId: String, streamDesignator: String) -> Boolean,
+    ) {
+        offeredStreams.retainAll(liveStreams.toSet())
+        val candidate = freshTelemetry.singleOrNull() ?: return
+        if (candidate.remoteId !in unknownRemoteIds) return
+        val stream = automaticStreamTelemetryPairingTarget(candidate.remoteId, freshTelemetry, unpairedStreams) ?: return
+        if (stream in offeredStreams) return
+        if (present(candidate.remoteId, stream)) offeredStreams.add(stream)
+    }
+}

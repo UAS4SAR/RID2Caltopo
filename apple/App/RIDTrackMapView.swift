@@ -130,7 +130,8 @@ private final class ApplePilotDisplayStore: ObservableObject {
         return PilotDisplayPreference(
             activeTrackColor: defaults.string(forKey: key + ".active") ?? defaultActiveTrackColor,
             archiveTrackColor: defaults.string(forKey: key + ".archive") ?? defaultArchiveTrackColor,
-            bearingEnabled: defaults.bool(forKey: key + ".bearing")
+            bearingEnabled: defaults.bool(forKey: key + ".bearing"),
+            bearingColor: defaults.string(forKey: key + ".bearingColor")
         )
     }
 
@@ -139,12 +140,14 @@ private final class ApplePilotDisplayStore: ObservableObject {
         let sanitized = PilotDisplayPreference(
             activeTrackColor: preference.activeTrackColor,
             archiveTrackColor: preference.archiveTrackColor,
-            bearingEnabled: preference.bearingEnabled
+            bearingEnabled: preference.bearingEnabled,
+            bearingColor: preference.bearingColor
         )
         let key = storageKey(pilotKey)
         defaults.set(sanitized.activeTrackColor, forKey: key + ".active")
         defaults.set(sanitized.archiveTrackColor, forKey: key + ".archive")
         defaults.set(sanitized.bearingEnabled, forKey: key + ".bearing")
+        defaults.set(sanitized.bearingColor, forKey: key + ".bearingColor")
         revision += 1
     }
 
@@ -154,6 +157,7 @@ private final class ApplePilotDisplayStore: ObservableObject {
         defaults.removeObject(forKey: key + ".active")
         defaults.removeObject(forKey: key + ".archive")
         defaults.removeObject(forKey: key + ".bearing")
+        defaults.removeObject(forKey: key + ".bearingColor")
         revision += 1
     }
 
@@ -554,6 +558,7 @@ struct RIDTrackMapView: View {
         caltopoSettings.configuration
     }
     @ObservedObject var streamRegistry: AppleStreamRegistry
+    @ObservedObject var mediaServer: MediaMTXViewModel
     @ObservedObject var videoModel: AppleVideoFrameSource
     @ObservedObject var clueStore: AppleClueStore
     @ObservedObject var identityStore: AppleDroneConfirmationStore
@@ -628,10 +633,12 @@ struct RIDTrackMapView: View {
     @State private var splitFraction: CGFloat = 0.5
     @State private var splitDragStartFraction: CGFloat?
     @State private var streamsFullScreen = false
+    @State private var fullScreenDividerAdjusted = false
     @State private var automaticallyExpandedStreamID: String?
     @State private var pipEditorMode = false
     @State private var pipResizeDragStartFraction: Double?
     @State private var expandedStreamID: String?
+    @State private var automaticSetupAircraftID: String?
     @State private var pairingStreamID: String?
     @State private var cameraTelemetryRefreshToken = 0
     @State private var seiTrackPointsByAircraftID: [String: [AppleSEIMapPoint]] = [:]
@@ -648,14 +655,17 @@ struct RIDTrackMapView: View {
 
     @State private var headerWidth: CGFloat = 0
 
+    private var presentedLayout: OperationalMapVideoLayout {
+        streamsFullScreen && !fullScreenDividerAdjusted
+            ? layout.fullScreenPresentation(pictureInPictureEnabled: videoPipEnabled) : layout
+    }
+
     private var mapContentWithSheets: some View {
         GeometryReader { geometry in
             ZStack(alignment: .top) {
                 layoutContent(
                     size: geometry.size,
-                    presentation: streamsFullScreen
-                        ? layout.fullScreenPresentation(pictureInPictureEnabled: videoPipEnabled)
-                        : layout
+                    presentation: presentedLayout
                 )
             }
             .onAppear { headerWidth = geometry.size.width }
@@ -664,7 +674,7 @@ struct RIDTrackMapView: View {
         .safeAreaInset(edge: .top) {
             VStack(spacing: 0) {
                 if streamsFullScreen { fullScreenControlBar } else { workspaceTopBar }
-                androidLiveViewStatusBar
+                if !streamsFullScreen { androidLiveViewStatusBar }
             }
         }
         .safeAreaInset(edge: .bottom) {
@@ -672,6 +682,7 @@ struct RIDTrackMapView: View {
                 remoteVideoStatusBar
             }
         }
+        .statusBarHidden(streamsFullScreen)
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .navigationBar)
@@ -777,8 +788,18 @@ struct RIDTrackMapView: View {
             clues: clueStore.records,
             onSelect: { selectedClueID = $0 }
         ))
-        .sheet(isPresented: pairingSheetPresented) {
+        .sheet(isPresented: pairingSheetPresented, onDismiss: { automaticSetupAircraftID = nil }) {
             if let pairingStreamID {
+                if let remoteID = automaticSetupAircraftID {
+                    DroneConfirmationView(remoteID: remoteID, existing: nil, identityStore: identityStore,
+                        onConfirm: { _ in
+                            streamRegistry.pair(streamID: pairingStreamID, aircraftID: remoteID)
+                            self.pairingStreamID = nil
+                        }, onIgnore: {
+                            streamRegistry.pair(streamID: pairingStreamID, aircraftID: remoteID)
+                            self.pairingStreamID = nil
+                        }, bootstrapDesignator: pairingStreamID, pairingOnly: true)
+                } else {
                 StreamAircraftPairingView(
                     streamID: pairingStreamID,
                     tracks: model.tracks,
@@ -794,6 +815,7 @@ struct RIDTrackMapView: View {
                         self.pairingStreamID = nil
                     }
                 )
+                }
             }
         }
         .onChange(of: automaticStreamPairingAircraftID, initial: true) { _, aircraftID in
@@ -899,7 +921,7 @@ struct RIDTrackMapView: View {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(250))
                 guard !Task.isCancelled else { break }
-                streamRegistry.reconcileStaleSessions()
+                streamRegistry.reconcileStaleSessions(activePublisherPaths: mediaServer.activePublisherPaths)
                 refreshSEIMapTails()
                 cameraTelemetryRefreshToken &+= 1
             }
@@ -998,7 +1020,7 @@ struct RIDTrackMapView: View {
         }
         let target = OperationalStreamDesignatorMatch.automaticPairingStreamID(
             confirmedCandidateID: aircraftID,
-            activeCandidateIDs: model.tracks.map(\.aircraftID),
+            activeCandidateIDs: model.tracks.filter { Date().timeIntervalSince($0.lastObservation.receivedAt) < 15 }.map(\.aircraftID),
             liveUnpairedStreamIDs: liveUnpairedStreamIDs
         )
         automaticStreamPairingAircraftID = nil
@@ -1007,6 +1029,7 @@ struct RIDTrackMapView: View {
                 "Streams",
                 "Presenting automatic telemetry pairing prompt stream=\(target) remoteID=\(aircraftID)"
             )
+            automaticSetupAircraftID = identityStore.isUnassociated(aircraftID) ? aircraftID : nil
             pairingStreamID = target
         } else {
             AppleLog.info(
@@ -1133,7 +1156,7 @@ struct RIDTrackMapView: View {
                     insetFrame(size: size, onTap: { layout = .mapPrimary }) { mapPane(inset: true) }
                 }
             }
-            if !streamsFullScreen {
+            do {
                 let vertical = size.width > size.height
                 let fraction = effectiveSplitFraction(for: activeLayout)
                 splitDivider(vertical: vertical, available: vertical ? size.width : size.height)
@@ -1201,6 +1224,7 @@ struct RIDTrackMapView: View {
     }
 
     private func applySplitFraction(_ fraction: CGFloat) {
+        if streamsFullScreen { fullScreenDividerAdjusted = true }
         splitFraction = fraction
         if fraction <= CGFloat(OperationalSplitSizing.minimumFraction) {
             layout = OperationalMapVideoLayout.map.withPictureInPicture(videoPipEnabled)
@@ -1255,7 +1279,7 @@ struct RIDTrackMapView: View {
                 DragGesture(coordinateSpace: .global)
                     .onChanged { value in
                         guard available > 0 else { return }
-                        let start = splitDragStartFraction ?? effectiveSplitFraction(for: layout)
+                        let start = splitDragStartFraction ?? effectiveSplitFraction(for: presentedLayout)
                         if splitDragStartFraction == nil { splitDragStartFraction = start }
                         let delta = vertical ? value.translation.width : value.translation.height
                         let adjusted = OperationalSplitSizing.adjustedFraction(
@@ -1272,11 +1296,11 @@ struct RIDTrackMapView: View {
                     .onEnded { _ in splitDragStartFraction = nil }
             )
             .accessibilityLabel("Resize video and map panes")
-            .accessibilityValue("\(Int((effectiveSplitFraction(for: layout) * 100).rounded())) percent video")
+            .accessibilityValue("\(Int((effectiveSplitFraction(for: presentedLayout) * 100).rounded())) percent video")
             .accessibilityAdjustableAction { direction in
                 let delta: Double = direction == .increment ? 0.05 : -0.05
                 applySplitFraction(CGFloat(OperationalSplitSizing.adjustedFraction(
-                    current: Double(effectiveSplitFraction(for: layout)),
+                    current: Double(effectiveSplitFraction(for: presentedLayout)),
                     dragDelta: delta,
                     available: 1
                 )))
@@ -1345,6 +1369,7 @@ struct RIDTrackMapView: View {
                     selectedArtifactInspection = ArtifactInspection(title: title, description: description, notice: notice)
                 },
                 onSelectAircraft: { remoteID in
+                    if !inset && followFocusedDrone { operatorAdjustedViewport = false }
                     if OperationalWorkspacePolicy.droneAction(known: !identityStore.isUnassociated(remoteID), publishing: identityStore.isCurrentFlightConfirmed(remoteID)) != .inspect, !inset {
                         focusedAircraftID = remoteID
                         onDroneAction(remoteID)
@@ -1548,7 +1573,8 @@ struct RIDTrackMapView: View {
                         identities: identityStore,
                         startWithAddAircraft: true
                     ))
-                }
+                },
+                operationalAlertOverlay: AnyView(OperationalAlertPopup(center: operationalAlerts, onMap: { layout = .map }))
             )
             // Without video the control is always disabled; hiding it then keeps it off the
             // "Waiting for controller" placeholder on narrow screens.
@@ -1570,9 +1596,8 @@ struct RIDTrackMapView: View {
                         // Greyed and not tappable while a clue is pending (until it is submitted or canceled).
                         .disabled(capturingSnapshot || model.tracks.isEmpty || pendingSnapshot != nil)
                         .accessibilityLabel("Capture clue snapshot")
-                        // Keep the camera control clear of the enlarged divider grab area,
-                        // which is hidden in full screen.
-                        .padding(.trailing, streamsFullScreen ? 0 : Self.splitDividerTouchThickness + 12)
+                        // Keep the camera control clear of the divider in both display modes.
+                        .padding(.trailing, Self.splitDividerTouchThickness + 12)
                     }
                     Spacer()
                 }
@@ -1960,7 +1985,8 @@ struct RIDTrackMapView: View {
                     reportTelemetry: reportTelemetry,
                     binding: binding,
                     tracksAtCapture: tracksAtCapture,
-                    altitudeDisplaysAtCapture: altitudeDisplaysAtCapture
+                    altitudeDisplaysAtCapture: altitudeDisplaysAtCapture,
+                    showCrosshairCoordinates: session.model.crosshairReadoutActive && frameTelemetry != nil
                 )
                 AppleLog.info("Clue", "Snapshot bound aircraft=\(defaultAircraftID) \(ClueBindingText.formSummary(binding)) " +
                     "captureSource=\(binding.captureTimeSource) origin=\(framePosition == nil ? "waypoint" : "frame")")
@@ -2075,7 +2101,6 @@ struct RIDTrackMapView: View {
 
     @ViewBuilder
     private var liveViewStatusItems: some View {
-        AppleAlertStatusBell(center: alertBell)
         AppleProximityStatusChip(center: proximityAlerts, onSettings: onProximitySettings)
         operationalStatusChip(conciseAirspaceOrNotamChipLabel, tone: usesAirspaceRestrictionStatus ? airspaceTone : notamTone) {
             if usesAirspaceRestrictionStatus { showAirspace = true } else { showNotams = true }
@@ -2175,6 +2200,7 @@ struct RIDTrackMapView: View {
         HStack(spacing: 4) {
             fullScreenButton(entering: true)
             pipToggleButton.tint(videoPipEnabled ? Color.accentColor : Color.secondary)
+            AppleAlertStatusBell(center: alertBell)
             bridgeNavigationButton
             workspaceMenu
         }
@@ -2202,30 +2228,27 @@ struct RIDTrackMapView: View {
     /// over it, so they can never cover the observation-only safety notice at the top
     /// of each stream tile, at any width, orientation, or multitasking size.
     private var fullScreenControlBar: some View {
-        ScrollView(.horizontal) { fullScreenControlRow }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .frame(maxWidth: .infinity)
-            .background(.black)
-    }
-
-    private var fullScreenControlRow: some View {
-        HStack(spacing: 10) {
-            fullScreenButton(entering: false)
-            pipToggleButton
-                .tint(videoPipEnabled ? Color.accentColor : Color(white: 0.4))
-            bridgeNavigationButton
+        HStack(spacing: 8) {
+            workspaceAboutChip
+            Spacer(minLength: 8)
+            HStack(spacing: 4) {
+                fullScreenButton(entering: false)
+                pipToggleButton.tint(videoPipEnabled ? Color.accentColor : Color.secondary)
+                AppleAlertStatusBell(center: alertBell)
+                bridgeNavigationButton
+            }
+            .fixedSize(horizontal: true, vertical: false)
         }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.large)
-        .fixedSize()
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity)
+        .background(.regularMaterial)
     }
 
     // Icon toggles shared by the toolbar and the full-screen strip. Android shows the text
     // chips "Enter FS"/"Exit FS" and "PiP:On"/"PiP:Off" (StreamsScreen.kt) with no icons.
     private func fullScreenButton(entering: Bool) -> some View {
         let title = entering ? "Enter full screen" : "Exit full screen"
-        return Button { streamsFullScreen = entering } label: {
+        return Button { fullScreenDividerAdjusted = false; streamsFullScreen = entering } label: {
             Label(
                 title,
                 systemImage: entering
@@ -2432,6 +2455,7 @@ private struct StreamAircraftPairingView: View {
                         Button("Unpair Stream", role: .destructive, action: onUnpair)
                     }
                 }
+                CrosshairConfigurationSection()
                 Section {
                     Text("Pairing lasts for the current app session. Use the stream designator configured in the aircraft profile whenever possible so RID2Caltopo can match it automatically.")
                         .font(.footnote)
@@ -2518,6 +2542,7 @@ private struct StreamAircraftPairingView: View {
 private struct PendingClueSnapshot: Identifiable {
     let id = UUID()
     let snapshot: AppleVideoSnapshot
+    let showCrosshairCoordinates: Bool
     let defaultAircraftID: String
     let gimbalAngleDegrees: Double
     let gimbalAngleConfirmed: Bool
@@ -2543,12 +2568,14 @@ private struct PendingClueSnapshot: Identifiable {
         reportTelemetry: OperationalClueReportTelemetry? = nil,
         binding: ClueBinding? = nil,
         tracksAtCapture: [RidAircraftTrack],
-        altitudeDisplaysAtCapture: [String: OperationalAircraftAltitudeDisplay]
+        altitudeDisplaysAtCapture: [String: OperationalAircraftAltitudeDisplay],
+        showCrosshairCoordinates: Bool = false
     ) {
         self.binding = binding
         self.tracksAtCapture = tracksAtCapture
         self.altitudeDisplaysAtCapture = altitudeDisplaysAtCapture
         self.snapshot = snapshot
+        self.showCrosshairCoordinates = showCrosshairCoordinates
         self.defaultAircraftID = defaultAircraftID
         self.gimbalAngleDegrees = gimbalAngleDegrees
         self.gimbalAngleConfirmed = gimbalAngleConfirmed
@@ -2637,7 +2664,7 @@ private struct ClueSubmissionView: View {
         // operator can immediately type the clue name without clearing a
         // generated value.
         _title = State(initialValue: "")
-        _description = State(initialValue: Self.clueDescriptionTemplate(pending.snapshot.capturedAt))
+        _description = State(initialValue: Self.clueDescriptionTemplate(pending.snapshot.capturedAt, pilot: identityStore.identity(for: pending.defaultAircraftID)?.pilotCallsign ?? ""))
         _binding = State(initialValue: pending.binding)
     }
 
@@ -2753,12 +2780,17 @@ private struct ClueSubmissionView: View {
         )) * 3.28084
     }
 
+    private var clueImageCoordinates: String? {
+        guard pending.showCrosshairCoordinates, let projection else { return nil }
+        return OperationalCoordinateFormatter.format(latitude: projection.latitude, longitude: projection.longitude, as: coordinateDisplayFormat)
+    }
+
     var body: some View {
         NavigationStack {
             Form {
                 Section {
                     if let image = UIImage(data: pending.snapshot.jpegData) {
-                        Image(uiImage: image)
+                        Image(uiImage: stampClueCrosshair(image, coordinates: clueImageCoordinates))
                             .resizable()
                             .scaledToFit()
                             .frame(maxHeight: 240)
@@ -2859,10 +2891,7 @@ private struct ClueSubmissionView: View {
                             .font(.caption)
                             .foregroundStyle(.orange)
                     }
-                    Button("Local Marker Only", systemImage: "mappin.and.ellipse") {
-                        submit(publish: false)
-                    }
-                    .disabled(projectionHeight == nil)
+                    Button("Close", action: onCancel)
                     Button {
                         submit(publish: true)
                     } label: {
@@ -2871,15 +2900,19 @@ private struct ClueSubmissionView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(projectionHeight == nil)
+                    Button("Mark Local Only", systemImage: "mappin.and.ellipse") {
+                        submit(publish: false)
+                    }
+                    .disabled(projectionHeight == nil)
                 } footer: {
-                    Text("Submit saves the clue locally before starting its CalTopo upload.")
+                    Text("Close discards this report. Submit sends it to the Incident Map. Mark Local Only saves it on this device without uploading it.")
                 }
             }
             .navigationTitle("Submit Clue")
             .navigationBarTitleDisplayMode(.inline)
             .interactiveDismissDisabled()
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: onCancel) }
+                ToolbarItem(placement: .cancellationAction) { Button("Close", action: onCancel) }
             }
             .onAppear {
                 DispatchQueue.main.async {
@@ -3067,7 +3100,9 @@ private struct ClueSubmissionView: View {
             title: trimmedTitle,
             description: finalDescription,
             binding: submittedBinding
-        ), pending.snapshot.jpegData, upload)
+        ), UIImage(data: pending.snapshot.jpegData).flatMap {
+            stampClueCrosshair($0, coordinates: pending.showCrosshairCoordinates ? OperationalCoordinateFormatter.format(latitude: projection.latitude, longitude: projection.longitude, as: coordinateDisplayFormat) : nil).jpegData(compressionQuality: 0.9)
+        } ?? pending.snapshot.jpegData, upload)
     }
 
     private func coordinate(_ latitude: Double, _ longitude: Double) -> String {
@@ -3113,8 +3148,8 @@ private struct ClueSubmissionView: View {
         return formatter
     }()
 
-    private static func clueDescriptionTemplate(_ date: Date) -> String {
-        "time: \(timestampFormatter.string(from: date))\nfound by: \nreported to IC: yes|no\n"
+    private static func clueDescriptionTemplate(_ date: Date, pilot: String = "") -> String {
+        "time: \(timestampFormatter.string(from: date))\nfound by: \(pilot.trimmingCharacters(in: .whitespacesAndNewlines))\nreported to IC: yes|no\n"
     }
 }
 
@@ -3136,6 +3171,8 @@ private struct ClueDetailView: View {
     @ObservedObject var store: AppleClueStore
     let coordinateDisplayFormat: OperationalCoordinateDisplayFormat
     let onClose: () -> Void
+    @State private var share: ClueShareBundle?
+    @State private var shareError: String?
 
     var body: some View {
         NavigationStack {
@@ -3148,8 +3185,16 @@ private struct ClueDetailView: View {
                             .frame(maxHeight: 360)
                             .frame(maxWidth: .infinity)
                     }
-                    ShareLink(item: store.imageURL(for: clue)) {
-                        Label("Share Snapshot", systemImage: "square.and.arrow.up")
+                    Button {
+                        do {
+                            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ClueShares/\(UUID().uuidString)", isDirectory: true)
+                            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                            let photo = directory.appendingPathComponent("clue-\(clue.id.uuidString).jpg")
+                            try FileManager.default.copyItem(at: store.imageURL(for: clue), to: photo)
+                            share = ClueShareBundle(title: clue.title, report: clue.shareReport(format: coordinateDisplayFormat), photo: photo)
+                        } catch { shareError = "The clue photo could not be prepared for sharing." }
+                    } label: {
+                        Label("Share Clue…", systemImage: "square.and.arrow.up")
                     }
                 }
                 Section(clue.title) {
@@ -3180,6 +3225,12 @@ private struct ClueDetailView: View {
                     }
                 }
             }
+            .sheet(item: $share) { item in
+                ClueShareSheet(bundle: item)
+            }
+            .alert("Unable to Share Clue", isPresented: Binding(get: { shareError != nil }, set: { if !$0 { shareError = nil } })) {
+                Button("OK") { shareError = nil }
+            } message: { Text(shareError ?? "") }
             .navigationTitle("Clue")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done", action: onClose) } }
@@ -3567,6 +3618,11 @@ private struct PilotDisplaySettingsView: View {
                         colorRow("Archive", selected: preference.archiveTrackColor) { color in
                             var updated = preference
                             updated.archiveTrackColor = color
+                            store.save(updated, for: selection.pilotCallsign)
+                        }
+                        colorRow("Bearing Line Color", selected: preference.resolvedBearingColor) { color in
+                            var updated = preference
+                            updated.bearingColor = color
                             store.save(updated, for: selection.pilotCallsign)
                         }
                         Toggle("Bearing", isOn: Binding(
@@ -3985,9 +4041,9 @@ private struct OperationalMKMapView: UIViewRepresentable {
             fallbackCoordinates: [CLLocationCoordinate2D],
             allowed: Bool
         ) {
-            guard allowed,
-                  map.bounds.width > 0,
-                  map.bounds.height > 0
+            guard allowed, !currentInset,
+                  map.bounds.width >= 32,
+                  map.bounds.height >= 32
             else { return }
 
             // The operator's current position is the authoritative Live View
@@ -4257,7 +4313,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
                             StyledPolyline(
                                 coordinates: [aircraftCoordinate, end],
                                 count: 2,
-                                color: activeColor,
+                                color: UIColor(hex: display.preference.resolvedBearingColor) ?? activeColor,
                                 width: inset ? 1 : 2,
                                 layer: .aircraft
                             ),
@@ -4504,6 +4560,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
             updating = true
             map.setCenter(coordinate, animated: false)
             updating = false
+            guard !currentInset, restoredViewportBounds, map.bounds.width >= 32, map.bounds.height >= 32 else { return }
             viewport.center = coordinate
             viewportMemory.region.center = coordinate
             viewportMemory.visibleMapRect = validVisibleMapRect(from: map)
@@ -4556,6 +4613,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 )
             }
             updating = false
+            guard !currentInset, restoredViewportBounds else { return }
             viewport = map.region
             viewportMemory.region = map.region
             viewportMemory.visibleMapRect = validVisibleMapRect(from: map)
@@ -4587,8 +4645,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
         }
 
         func captureViewportForTransition(from map: MKMapView) {
-            guard !currentInset, map.bounds.width >= 32,
-                  map.bounds.height >= 32
+            guard OperationalMapFocusPolicy.shouldCaptureViewport(inset: currentInset, restored: restoredViewportBounds, width: map.bounds.width, height: map.bounds.height)
             else { return }
             let region = map.region
             guard CLLocationCoordinate2DIsValid(region.center),
@@ -5889,4 +5946,21 @@ private extension View {
             Text("Take-off coordinates not established at launch. Please hover 50' above take-off and press:")
         }
     }
+}
+
+private struct ClueShareBundle: Identifiable {
+    let id = UUID()
+    let title: String
+    let report: String
+    let photo: URL
+}
+
+private struct ClueShareSheet: UIViewControllerRepresentable {
+    let bundle: ClueShareBundle
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let controller = UIActivityViewController(activityItems: [bundle.report, bundle.photo], applicationActivities: nil)
+        controller.setValue(bundle.title, forKey: "subject")
+        return controller
+    }
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }

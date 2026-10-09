@@ -111,4 +111,10 @@ class RidMappingRulesTest {
         assertTrue(errors.contains("Pilot callsign or name is required."))
         assertTrue(errors.contains("unique for this owner callsign"))
     }
+    @Test fun openingExistingAircraftDoesNotAppendAnotherDraft() {
+        assertEquals(false, RidMappingRules.shouldAddInitialAircraft(" rid123 ", listOf("RID123")))
+        assertEquals(true, RidMappingRules.shouldAddInitialAircraft("RID456", listOf("RID123")))
+        assertEquals(false, RidMappingRules.shouldAddInitialAircraft(" ", emptyList()))
+    }
+
 }

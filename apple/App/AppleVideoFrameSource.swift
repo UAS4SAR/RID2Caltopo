@@ -382,6 +382,7 @@ final class AppleVideoFrameSource: ObservableObject {
     @Published private(set) var latestGimbalPitchDegrees: Double?
     @Published private(set) var latestCameraYawDegrees: Double?
     @Published private(set) var latestStreamHeadingDegrees: Double?
+    var crosshairReadoutActive = false
     private(set) var latestDJICameraTelemetry: AppleDJICameraTelemetry?
 
     func freshDJICameraTelemetry(

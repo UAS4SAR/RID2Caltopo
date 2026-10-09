@@ -486,7 +486,7 @@ import Testing
     #expect(contentView.contains("Presenting telemetry pairing prompt for late stream="))
     #expect(contentView.contains("droneConfirmations.isCurrentFlightConfirmed(track.aircraftID)"))
     #expect(mapView.contains("Manual telemetry pairing requested stream="))
-    #expect(streamsView.contains("LongPressGesture(minimumDuration: 0.5)"))
+    #expect(streamsView.contains("UILongPressGestureRecognizer(target: coordinator"))
 }
 
 @Test func trackerReauthenticationChallengeDecodesFastAPIErrorResponse() throws {
@@ -3193,27 +3193,30 @@ private func proximityDrone(
     ) == "4800' MSL · USGS DEM")
 }
 
-@Test func centerpointReferenceLongPressRequiresActiveFocusedCenterpoint() {
-    #expect(OperationalCenterpointElevation.shouldSetReference(
-        focused: true,
-        elevationEnabled: true,
-        pressNearCenter: true
-    ))
-    #expect(!OperationalCenterpointElevation.shouldSetReference(
-        focused: false,
-        elevationEnabled: true,
-        pressNearCenter: true
-    ))
-    #expect(!OperationalCenterpointElevation.shouldSetReference(
-        focused: true,
-        elevationEnabled: false,
-        pressNearCenter: true
-    ))
-    #expect(!OperationalCenterpointElevation.shouldSetReference(
-        focused: true,
-        elevationEnabled: true,
-        pressNearCenter: false
-    ))
+@Test func centerpointThreeTapCycleAndCoordinatesRespectReadoutMode() {
+    let only = OperationalCenterpointElevation.DisplayMode.crosshairOnly
+    let msl = OperationalCenterpointElevation.nextMode(only)
+    let ref = OperationalCenterpointElevation.nextMode(msl)
+    #expect(msl == .msl)
+    #expect(ref == .reference)
+    #expect(OperationalCenterpointElevation.nextMode(ref) == only)
+    let sample = OperationalCenterpointElevation.Sample(elevationFeet: 4812, demResolutionMeters: 1, latitude: 39, longitude: -121)
+    for format in [OperationalCoordinateDisplayFormat.decimal, .utm, .usng] {
+        let coordinate = OperationalCoordinateFormatter.format(latitude: 39, longitude: -121, as: format)
+        #expect(OperationalCenterpointElevation.readout(sample, mode: msl, coordinateFormat: format, showCoordinates: true)?.hasSuffix(coordinate) == true)
+        let relative = OperationalCenterpointElevation.readout(sample, referenceElevationFeet: 4800, mode: ref, coordinateFormat: format, showCoordinates: true)
+        #expect(relative?.hasPrefix("+12' REF") == true)
+        #expect(relative?.hasSuffix(coordinate) == true)
+        #expect(OperationalCenterpointElevation.readout(sample, mode: only, coordinateFormat: format, showCoordinates: true) == nil)
+        #expect(OperationalCenterpointElevation.readout(sample, mode: msl, coordinateFormat: format, showCoordinates: false)?.contains("loc:") == false)
+    }
+    #expect(OperationalCenterpointElevation.readout(nil, mode: msl, coordinateFormat: .decimal, showCoordinates: true) == nil)
+    let assumed = OperationalCenterpointElevation.Sample(elevationFeet: 4812, demResolutionMeters: 1, assumedNadir: true, latitude: 39, longitude: -121)
+    let assumedReadout = OperationalCenterpointElevation.readout(assumed, mode: msl, coordinateFormat: .decimal, showCoordinates: true)
+    #expect(assumedReadout?.hasPrefix("4812' MSL") == true)
+    #expect(assumedReadout?.contains("loc:") == false)
+    #expect(OperationalCenterpointElevation.displayText(nil, mode: ref) == "--' REF")
+    #expect(OperationalCenterpointElevation.displayText(sample, mode: ref) == "--' REF")
 }
 
 @Test func operationalClueGimbalSelectionMatchesAndroidTelemetryFallback() {
@@ -6579,4 +6582,51 @@ private func tag10FieldOfView(_ hex: String) -> (horizontal: Double, vertical: D
         }
     }
     #expect(OperationalOfflineMapPlanner.tileOperationCount(baseTileCount: Int.max, baseLayerCount: 2, includeContours: true) == Int.max)
+}
+
+@Test func decoderTimeoutNeverPrunesAnActivePublisher() {
+    #expect(!LiveStreamDecoderLifecyclePolicy.shouldPruneStaleSession(publisherPath: "/controller/", activePublisherPaths: ["controller"], decoderLost: true, frameAge: nil, sessionAge: 120))
+    #expect(!LiveStreamDecoderLifecyclePolicy.shouldPruneStaleSession(publisherPath: "controller", activePublisherPaths: [], decoderLost: false, frameAge: 30, sessionAge: 120))
+    #expect(!LiveStreamDecoderLifecyclePolicy.shouldPruneStaleSession(publisherPath: "controller", activePublisherPaths: [], decoderLost: true, frameAge: 2, sessionAge: 120))
+    #expect(LiveStreamDecoderLifecyclePolicy.shouldPruneStaleSession(publisherPath: "controller", activePublisherPaths: ["other"], decoderLost: true, frameAge: nil, sessionAge: 120))
+}
+
+@Test func bearingColorPreservesLegacyPreferencesAndPersistsIndependently() throws {
+    let data = Data(##"{"activeTrackColor":"#43A047","archiveTrackColor":"#FF00FF","bearingEnabled":true}"##.utf8)
+    let legacy = try JSONDecoder().decode(PilotDisplayPreference.self, from: data)
+    #expect(legacy.resolvedBearingColor == "#43A047")
+    var chosen = legacy
+    chosen.bearingColor = "#FFFFFF"
+    chosen.activeTrackColor = "#E53935"
+    let reloaded = try JSONDecoder().decode(PilotDisplayPreference.self, from: JSONEncoder().encode(chosen))
+    #expect(reloaded.resolvedBearingColor == "#FFFFFF")
+    #expect(reloaded.activeTrackColor == "#E53935")
+    #expect(PilotDisplayPreference(activeTrackColor: "#43A047", bearingColor: "invalid").resolvedBearingColor == "#43A047")
+}
+
+@Test func mapTransitionCannotSavePiPOrUnrestoredViewport() {
+    #expect(OperationalMapFocusPolicy.shouldCaptureViewport(inset: false, restored: true, width: 800, height: 600))
+    #expect(!OperationalMapFocusPolicy.shouldCaptureViewport(inset: true, restored: true, width: 320, height: 240))
+    #expect(!OperationalMapFocusPolicy.shouldCaptureViewport(inset: false, restored: false, width: 800, height: 600))
+    #expect(!OperationalMapFocusPolicy.shouldCaptureViewport(inset: false, restored: true, width: 0, height: 600))
+}
+
+@Test func localOnlyClueShareReportDoesNotPublishOrExposeCredentials() {
+    let clue = OperationalClueRecord(capturedAt: Date(timeIntervalSince1970: 1700000000), aircraftID: "RID01", designator: "ALPHA1",
+        droneLatitude: 39, droneLongitude: -105, droneAltitudeMeters: 500,
+        clueLatitude: 39.001, clueLongitude: -104.999, clueAltitudeMeters: 400,
+        headingDegrees: 45, aglMeters: 100, atoMeters: 105, gimbalAngleDegrees: -45,
+        title: "Sensitive clue", clueDescription: "found by: ALPHA1\nDetails entered at capture",
+        imageFilename: "a.jpg", thumbnailFilename: "a-thumb.jpg", uploadState: .localOnly,
+        destinationMapID: "map-a", destinationTeamID: "private-credential")
+    let before = clue
+    for format in OperationalCoordinateDisplayFormat.allCases {
+        let report = clue.shareReport(format: format)
+        #expect(report.contains("Sensitive clue"))
+        #expect(report.contains("found by: ALPHA1"))
+        #expect(report.contains(OperationalCoordinateFormatter.format(latitude: 39.001, longitude: -104.999, as: format)))
+        #expect(!report.contains("private-credential"))
+    }
+    #expect(clue == before)
+    #expect(!clue.canAutomaticallyPublish(mapID: "map-a", teamID: "private-credential"))
 }

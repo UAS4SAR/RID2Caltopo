@@ -6,16 +6,20 @@ public let defaultArchiveTrackColor = "#FF00FF"
 public struct PilotDisplayPreference: Codable, Sendable, Equatable {
     public var activeTrackColor: String
     public var archiveTrackColor: String
+    public var bearingColor: String?
+    public var resolvedBearingColor: String { Self.sanitizeTrackColor(bearingColor, fallback: activeTrackColor) }
     public var bearingEnabled: Bool
 
     public init(
         activeTrackColor: String = defaultActiveTrackColor,
         archiveTrackColor: String = defaultArchiveTrackColor,
-        bearingEnabled: Bool = false
+        bearingEnabled: Bool = false,
+        bearingColor: String? = nil
     ) {
         self.activeTrackColor = Self.sanitizeTrackColor(activeTrackColor, fallback: defaultActiveTrackColor)
         self.archiveTrackColor = Self.sanitizeTrackColor(archiveTrackColor, fallback: defaultArchiveTrackColor)
         self.bearingEnabled = bearingEnabled
+        self.bearingColor = bearingColor.map { Self.sanitizeTrackColor($0, fallback: Self.sanitizeTrackColor(activeTrackColor, fallback: defaultActiveTrackColor)) }
     }
 
     public static func normalizePilotCallsign(_ value: String?) -> String? {

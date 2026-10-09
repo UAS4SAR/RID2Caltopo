@@ -322,6 +322,22 @@ internal class OrganizationAccessSession {
         return true
     }
 
+    /** Accept a recent OS-verified credential, including a device unlock before app launch. */
+    @Synchronized
+    fun authenticateFromRecentSystemCredential(
+        authenticationElapsedRealtimeMs: Long,
+        nowElapsedRealtimeMs: Long,
+        deviceSecure: Boolean,
+        deviceLocked: Boolean,
+    ): Boolean {
+        if (!deviceSecure || deviceLocked ||
+            nowElapsedRealtimeMs - authenticationElapsedRealtimeMs !in 0L..60_000L
+        ) return false
+        authenticated = true
+        screenLockedAtElapsedRealtimeMs = null
+        return true
+    }
+
     /**
      * The in-app prompt ended without success. A prompt the screen-off handler cancelled keeps a pending
      * system-unlock handoff, so the device unlock that follows still counts.
@@ -1375,6 +1391,8 @@ class R2CActivity :
             ))[R2CViewModel::class.java]
         streamsViewModel = ViewModelProvider(this)[StreamsViewModel::class.java]
         streamsViewModel.onPairedDroneSetup = localViewModel::requestPairedDroneSetup
+        streamsViewModel.onNewDronePairingSetup = localViewModel::requestNewDronePairing
+        localViewModel.onAcceptStreamPairing = streamsViewModel::bindStreamTelemetry
         // "Current flight ignored" Yes: the same Drone Confirmation Panel as the Main Screen designator.
         streamsViewModel.onReviewIgnoredFlight = { remoteId ->
             CaltopoClient.GetDroneSpec(remoteId)?.let(localViewModel::requestDroneConfirmation)
@@ -1809,6 +1827,8 @@ class R2CActivity :
                                 confirmationState.remoteId
                             )
                         },
+                        onPairSession = localViewModel::pairPendingDroneForSession,
+                        onCancelPairing = localViewModel::dismissConfirmationForInspection,
                         onInspect = {
                             localViewModel.dismissConfirmationForInspection()
                             streamsViewModel.inspectDrone(confirmationState.remoteId)
@@ -2055,6 +2075,10 @@ class R2CActivity :
         }
 
         val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+        if (acceptSystemAuthenticationAfterScreenUnlock()) {
+            grantOrganizationAccess("Organization access accepted a recent device credential")
+            return
+        }
         when (
             organizationAccessRequestAction(
                 sessionAuthenticated = organizationAccessSession.isAuthenticated(),
@@ -2152,7 +2176,13 @@ class R2CActivity :
                 organizationAccessSession.authenticateFromSystemUnlock(
                     authenticationElapsedRealtimeMs = lastAuthenticationTime,
                     deviceLocked = keyguardManager.isDeviceLocked,
-                )
+                ) || (lastAuthenticationTime != BiometricManager.BIOMETRIC_NO_AUTHENTICATION &&
+                organizationAccessSession.authenticateFromRecentSystemCredential(
+                    authenticationElapsedRealtimeMs = lastAuthenticationTime,
+                    nowElapsedRealtimeMs = SystemClock.elapsedRealtime(),
+                    deviceSecure = keyguardManager.isDeviceSecure,
+                    deviceLocked = keyguardManager.isDeviceLocked,
+                ))
             if (accepted) {
                 organizationAccessError = null
                 CTDebug(TAG, "Organization access accepted recent system authentication")

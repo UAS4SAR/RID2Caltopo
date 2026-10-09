@@ -63,6 +63,14 @@ public enum LiveStreamSelectionPolicy {
 /// A terminal publisher removal must release that decoder before a different
 /// stream can inherit it, while a same-path republish can use normal recovery.
 public enum LiveStreamDecoderLifecyclePolicy {
+    public static func shouldPruneStaleSession(
+        publisherPath: String, activePublisherPaths: Set<String>,
+        decoderLost: Bool, frameAge: Double?, sessionAge: Double
+    ) -> Bool {
+        guard !activePublisherPaths.contains(where: { normalize($0) == normalize(publisherPath) }) else { return false }
+        return decoderLost && (frameAge ?? .infinity) > 8 && sessionAge > 8
+    }
+
     public static func shouldResetAfterPublisherStopped(
         sessionPath: String,
         decoderPath: String?

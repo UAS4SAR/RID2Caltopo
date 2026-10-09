@@ -18,6 +18,11 @@ data class RidMappingOwnerFields(
 )
 
 object RidMappingRules {
+    fun shouldAddInitialAircraft(remoteId: String, existingRemoteIds: Collection<String>): Boolean =
+        normalizeRemoteId(remoteId).isNotEmpty() && existingRemoteIds.none {
+            normalizeRemoteId(it) == normalizeRemoteId(remoteId)
+        }
+
     private val remoteIdPattern = Regex("^[A-Z0-9]+$")
     private val callsignPattern = Regex("^[0-9]+[A-Za-z]+[0-9]+(?:-[0-9]+)?$")
     private val ownerNamePlaceholders = setOf("owner name")

@@ -331,4 +331,23 @@ class OrganizationAccessPolicyTest {
         assertEquals(OrganizationAccessRequestAction.PROMPT, action(authenticated = false, awaiting = false, locked = false))
         assertEquals(OrganizationAccessRequestAction.PROMPT, action(authenticated = false, awaiting = true, secure = false, locked = false, user = true))
     }
+    @Test fun recentDeviceCredentialBeforeAppLaunchAuthenticates() {
+        val session = OrganizationAccessSession()
+        assertTrue(session.authenticateFromRecentSystemCredential(10_000L, 12_000L, true, false))
+        assertTrue(session.isAuthenticated())
+    }
+
+    @Test fun oldFutureLockedOrInsecureCredentialDoesNotAuthenticate() {
+        for ((credential, now, secure, locked) in listOf(
+            listOf(10_000L, 70_001L, true, false),
+            listOf(10_000L, 9_999L, true, false),
+            listOf(10_000L, 12_000L, true, true),
+            listOf(10_000L, 12_000L, false, false),
+        )) {
+            val session = OrganizationAccessSession()
+            assertFalse(session.authenticateFromRecentSystemCredential(credential as Long, now as Long, secure as Boolean, locked as Boolean))
+            assertFalse(session.isAuthenticated())
+        }
+    }
+
 }

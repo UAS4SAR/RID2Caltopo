@@ -291,9 +291,10 @@ final class AppleStreamRegistry: ObservableObject {
     }
 
     /// Remove a tile when MediaMTX missed the publisher-stop event but the
-    /// decoder has conclusively lost its publisher. This keeps a dead stream
+    /// server no longer reports its publisher. A decoder stall alone does not
+    /// establish publisher loss. This keeps a dead stream
     /// from remaining onscreen forever in its reconnect loop.
-    func reconcileStaleSessions(now: Date = Date()) {
+    func reconcileStaleSessions(activePublisherPaths: Set<String>, now: Date = Date()) {
         let stale = sessions.filter { session in
             guard session.id != Self.placeholderID else { return false }
             let decoderLost: Bool
@@ -304,8 +305,10 @@ final class AppleStreamRegistry: ObservableObject {
                 decoderLost = false
             }
             guard decoderLost else { return false }
-            return (session.model.decodedFrameAgeSeconds ?? .infinity) > 8
-                && now.timeIntervalSince(session.changedAt) > 8
+            return LiveStreamDecoderLifecyclePolicy.shouldPruneStaleSession(
+                publisherPath: session.sourcePath, activePublisherPaths: activePublisherPaths,
+                decoderLost: decoderLost, frameAge: session.model.decodedFrameAgeSeconds,
+                sessionAge: now.timeIntervalSince(session.changedAt))
         }
         for session in stale {
             AppleLog.warning(
@@ -504,6 +507,7 @@ struct AppleStreamsGridView: View {
     var centerpointElevationFeet: ((String) async -> OperationalCenterpointElevation.Sample?)? = nil
     var registeredDroneDesignators: [String] = []
     var aircraftDetailsView: (() -> AnyView)? = nil
+    var operationalAlertOverlay: AnyView? = nil
     @State private var showRegisteredDesignators = false
     @State private var showAircraftDetails = false
 
@@ -624,7 +628,8 @@ struct AppleStreamsGridView: View {
             onClose: onCloseSession.map { callback in
                 { callback(session.id) }
             },
-            onRestartStreams: onRestartStreams
+            onRestartStreams: onRestartStreams,
+            operationalAlertOverlay: operationalAlertOverlay
         )
     }
 }
@@ -678,19 +683,6 @@ private struct AppleStreamTile: View {
     let showFocusBorder: Bool
     let fillsAvailableSpace: Bool
     let primaryLabel: String?
-    private func coloredTelemetry(_ line: String) -> AttributedString {
-        var text = AttributedString(line)
-        text.foregroundColor = .white
-        if let range = OperationalAircraftDisplay.negativeAOLRange(in: line),
-           let attributedRange = Range(range, in: text) {
-            text[attributedRange].foregroundColor = .red
-        }
-        for match in (try? NSRegularExpression(pattern: "\\bCAL\\b"))?.matches(in: line, range: NSRange(line.startIndex..., in: line)) ?? [] {
-            if let range = Range(match.range, in: line), let attributedRange = Range(range, in: text) { text[attributedRange].foregroundColor = .orange }
-        }
-        return text
-    }
-
     let telemetryText: String?
     let onCalibrationRequested: (() -> Void)?
     let coordinateText: String?
@@ -704,6 +696,7 @@ private struct AppleStreamTile: View {
     let onDoubleTap: (Double, CGPoint) -> Void
     let onClose: (() -> Void)?
     let onRestartStreams: (() -> Void)?
+    let operationalAlertOverlay: AnyView?
 
     init(
         session: AppleLiveStreamSession,
@@ -726,7 +719,8 @@ private struct AppleStreamTile: View {
         onLongPress: @escaping () -> Void,
         onDoubleTap: @escaping (Double, CGPoint) -> Void,
         onClose: (() -> Void)?,
-        onRestartStreams: (() -> Void)?
+        onRestartStreams: (() -> Void)?,
+        operationalAlertOverlay: AnyView? = nil
     ) {
         self.session = session
         self.incidentMapTitle = incidentMapTitle
@@ -750,13 +744,66 @@ private struct AppleStreamTile: View {
         self.onDoubleTap = onDoubleTap
         self.onClose = onClose
         self.onRestartStreams = onRestartStreams
+        self.operationalAlertOverlay = operationalAlertOverlay
     }
 
     var body: some View {
         VStack(spacing: 0) {
             AppleVideoSafetyNotice()
+            telemetryStrip
             videoContent
         }
+    }
+
+    @Environment(\.colorScheme) private var colorScheme
+    @ScaledMetric(relativeTo: .caption2) private var telemetryFontSize = 10.0
+
+    private var telemetryStrip: some View {
+        HStack(spacing: 0) {
+            ScrollView(.horizontal) {
+                HStack(spacing: 12) {
+                    AppleLiveVideoIndicator(model: model, displayDesignator: primaryLabel, tint: telemetryPairingState.color)
+                    if let telemetryText {
+                        let metrics = telemetryText.range(of: "ATO:").map { String(telemetryText[$0.lowerBound...]) } ?? telemetryText
+                        let line = stableVideoTelemetryText(metrics) + (zoom > 1.01 ? "  \(zoomLabel)" : "")
+                        if line.contains("CAL") {
+                            Button { onCalibrationRequested?() } label: { Text(line) }
+                                .buttonStyle(.plain)
+                        } else { Text(line) }
+                    }
+                    if let coordinateText {
+                        if let onCoordinateDisplayFormatChange {
+                            Menu {
+                                ForEach(OperationalCoordinateDisplayFormat.allCases) { format in
+                                    Button(format.label) { onCoordinateDisplayFormatChange(format) }
+                                }
+                            } label: {
+                                Text("\(coordinateText) (\(coordinateDisplayFormat.label))").underline()
+                            }
+                            .accessibilityLabel("Coordinate format: \(coordinateDisplayFormat.label)")
+                        } else {
+                            Text("\(coordinateText) (\(coordinateDisplayFormat.label))")
+                        }
+                    }
+                }
+                .font(.system(size: telemetryFontSize, design: .monospaced))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+            }
+            .scrollIndicators(.visible)
+            .foregroundStyle(.white)
+            .tint(.white)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if focused || fillsAvailableSpace {
+                AppleStreamSettingsControl(
+                    session: session, model: model, anomalyModeLabel: model.anomalyMode.label,
+                    onClose: onClose, onRestartStreams: onRestartStreams, onDesignatorsTapped: onDesignatorsTapped)
+                    .padding(.trailing, 4)
+            }
+        }
+        .background(.black)
     }
 
     private var videoContent: some View {
@@ -825,67 +872,6 @@ private struct AppleStreamTile: View {
                 }
             )
             .allowsHitTesting(session.id != "demo")
-            HStack {
-                AppleLiveVideoIndicator(
-                    model: model,
-                    displayDesignator: primaryLabel,
-                    tint: telemetryPairingState.color
-                )
-                Spacer()
-                if focused || fillsAvailableSpace {
-                    AppleStreamSettingsControl(
-                        session: session,
-                        model: model,
-                        anomalyModeLabel: model.anomalyMode.label,
-                        onClose: onClose,
-                        onRestartStreams: onRestartStreams,
-                        onDesignatorsTapped: onDesignatorsTapped
-                    )
-                }
-            }
-            .padding(6)
-            if telemetryText != nil || coordinateText != nil {
-                VStack(alignment: .leading, spacing: 2) {
-                    if let telemetryText {
-                        let stableText = stableVideoTelemetryText(telemetryText)
-                        let line = zoom > 1.01 ? "\(stableText)  \(zoomLabel)" : stableText
-                        if line.contains("CAL") {
-                            Button { onCalibrationRequested?() } label: {
-                                Text(coloredTelemetry(line)).fixedSize(horizontal: false, vertical: true)
-                            }.buttonStyle(.plain)
-                        } else {
-                            Text(coloredTelemetry(line))
-                                .fixedSize(horizontal: false, vertical: true)
-                                .allowsHitTesting(false)
-                        }
-                    }
-                    if let coordinateText {
-                        if let onCoordinateDisplayFormatChange {
-                            Menu {
-                                ForEach(OperationalCoordinateDisplayFormat.allCases) { format in
-                                    Button(format.label) {
-                                        onCoordinateDisplayFormatChange(format)
-                                    }
-                                }
-                            } label: {
-                                Text("\(coordinateText) (\(coordinateDisplayFormat.label))")
-                                    .underline()
-                            }
-                            .accessibilityLabel("Coordinate format: \(coordinateDisplayFormat.label)")
-                        } else {
-                            Text("\(coordinateText) (\(coordinateDisplayFormat.label))")
-                        }
-                    }
-                }
-                .font(.caption2.monospaced())
-                .foregroundStyle(.white)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 4)
-                .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 5))
-                .padding(6)
-                .padding(.top, 32)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            }
             if remoteRequesterEmail != nil || model.anomalyThermallySuspended {
                 VStack(alignment: .leading, spacing: 4) {
                     if let remoteRequesterEmail {
@@ -910,23 +896,19 @@ private struct AppleStreamTile: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                 .padding(6)
             }
-            if centerpointElevationEnabled, focused {
+            if focused {
                 AppleCenterpointElevationOverlay(
                     sample: centerpointElevationSample,
+                    showLabel: centerpointElevationEnabled,
+                    coordinateFormat: coordinateDisplayFormat,
                     referenceElevationFeet: centerpointReferenceElevationFeet,
-                    displayMode: centerpointDisplayMode,
-                    onToggleDisplayMode: {
-                        guard centerpointReferenceElevationFeet != nil else { return }
-                        centerpointDisplayMode = centerpointDisplayMode == .msl ? .reference : .msl
-                    },
-                    onSetReference: {
-                        if let sample = centerpointElevationSample {
-                            centerpointReferenceElevationFeet = sample.elevationFeet
-                            centerpointDisplayMode = .reference
-                        }
-                    }
+                    displayMode: centerpointDisplayMode
+
                 )
             }
+        }
+        .overlay(alignment: .topLeading) {
+            if focused, let operationalAlertOverlay { operationalAlertOverlay }
         }
         .modifier(StreamTileSizing(
             fillsAvailableSpace: fillsAvailableSpace,
@@ -950,6 +932,9 @@ private struct AppleStreamTile: View {
                 centerpointElevationEnabled = false
                 centerpointElevationSample = nil
             }
+        }
+        .onChange(of: centerpointElevationEnabled && focused, initial: true) { _, enabled in
+            model.crosshairReadoutActive = enabled
         }
         .task(id: centerpointElevationEnabled && focused) {
             guard centerpointElevationEnabled, focused, let centerpointElevation else { return }
@@ -1006,24 +991,23 @@ private struct AppleStreamTile: View {
         let nearCenter = nearStreamCenter(location)
         AppleLog.info("StreamGesture", "Single tap stream=\(session.id) focused=\(focused) center=\(nearCenter) x=\(Int(location.x)) y=\(Int(location.y))")
         if focused && nearCenter {
-            centerpointElevationEnabled.toggle()
-            if centerpointElevationEnabled {
+            let nextMode = OperationalCenterpointElevation.nextMode(centerpointElevationEnabled ? centerpointDisplayMode : .crosshairOnly)
+            centerpointDisplayMode = nextMode
+            centerpointElevationEnabled = nextMode != .crosshairOnly
+            switch nextMode {
+            case .msl:
                 centerpointElevationSample = nil
                 zoom = 1; zoomAtGestureStart = 1; pan = .zero; panAtGestureStart = .zero
+            case .reference:
+                centerpointReferenceElevationFeet = centerpointElevationSample?.elevationFeet
+            case .crosshairOnly:
+                centerpointReferenceElevationFeet = nil
             }
         } else { onFocus() }
     }
 
     private func handleStreamLongPress(_ location: CGPoint) {
-        let setsReference = OperationalCenterpointElevation.shouldSetReference(
-            focused: focused, elevationEnabled: centerpointElevationEnabled, pressNearCenter: nearStreamCenter(location))
-        AppleLog.info("StreamGesture", "Long press stream=\(session.id) reference=\(setsReference) sampleAvailable=\(centerpointElevationSample != nil)")
-        if setsReference {
-            if let sample = centerpointElevationSample {
-                centerpointReferenceElevationFeet = sample.elevationFeet
-                centerpointDisplayMode = .reference
-            }
-        } else { onLongPress() }
+        onLongPress()
     }
 
     private func clampedPan(_ candidate: CGSize, scale: CGFloat, size: CGSize) -> CGSize {
@@ -1039,83 +1023,93 @@ private struct AppleStreamTile: View {
 
 private struct AppleCenterpointElevationOverlay: View {
     let sample: OperationalCenterpointElevation.Sample?
+    let showLabel: Bool
+    let coordinateFormat: OperationalCoordinateDisplayFormat
     let referenceElevationFeet: Int?
     let displayMode: OperationalCenterpointElevation.DisplayMode
-    let onToggleDisplayMode: () -> Void
-    let onSetReference: () -> Void
-    private let turquoise = Color(red: 64 / 255, green: 224 / 255, blue: 208 / 255)
+    @AppStorage("crosshair.style") private var style = "Simple"
+    @AppStorage("crosshair.widthPx") private var widthPx = 1.0
+    @AppStorage("crosshair.sizePercent") private var sizePercent = 5.0
+    @AppStorage("crosshair.mainColor") private var mainColor = "FFFFFF"
+    @AppStorage("crosshair.borderColor") private var borderColor = "000000"
+    @AppStorage("crosshair.showCoordinates") private var showCoordinates = true
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         GeometryReader { geometry in
             let center = CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
+            let arm = min(geometry.size.width, geometry.size.height) * min(25, max(2, sizePercent)) / 200
+            let width = max(0.1, widthPx) / displayScale
             Canvas { context, _ in
-                let arm: CGFloat = 18
-                let gap: CGFloat = 4
-                let segments = [
-                    (CGPoint(x: center.x - arm, y: center.y), CGPoint(x: center.x - gap, y: center.y)),
-                    (CGPoint(x: center.x + gap, y: center.y), CGPoint(x: center.x + arm, y: center.y)),
-                    (CGPoint(x: center.x, y: center.y - arm), CGPoint(x: center.x, y: center.y - gap)),
-                    (CGPoint(x: center.x, y: center.y + gap), CGPoint(x: center.x, y: center.y + arm)),
-                ]
-                for (start, end) in segments {
+                if style != "None" {
                     var path = Path()
-                    path.move(to: start)
-                    path.addLine(to: end)
-                    context.stroke(path, with: .color(.black), lineWidth: 4)
-                    context.stroke(path, with: .color(turquoise), lineWidth: 1.5)
+                    path.move(to: CGPoint(x: center.x - arm, y: center.y))
+                    path.addLine(to: CGPoint(x: center.x + arm, y: center.y))
+                    path.move(to: CGPoint(x: center.x, y: center.y - arm))
+                    path.addLine(to: CGPoint(x: center.x, y: center.y + arm))
+                    if style == "Bordered" {
+                        context.stroke(path, with: .color(crosshairColor(borderColor)), lineWidth: width + 2 / displayScale)
+                    }
+                    context.stroke(path, with: .color(crosshairColor(mainColor)), lineWidth: width)
                 }
-                let circle = Path(ellipseIn: CGRect(
-                    x: center.x - 3.5,
-                    y: center.y - 3.5,
-                    width: 7,
-                    height: 7
-                ))
-                context.stroke(circle, with: .color(.black), lineWidth: 2.5)
-                context.stroke(circle, with: .color(turquoise), lineWidth: 1)
             }
-            .allowsHitTesting(false)
-            Button(action: onToggleDisplayMode) {
-                OutlinedCenterpointText(
-                    text: OperationalCenterpointElevation.displayText(
-                        sample,
-                        referenceElevationFeet: referenceElevationFeet,
-                        mode: displayMode
-                    ),
-                    color: turquoise
-                )
-                .padding(.horizontal, 4)
-                .padding(.vertical, 2)
-                .contentShape(Rectangle())
+            if showLabel, let sample {
+                Text(OperationalCenterpointElevation.readout(sample, referenceElevationFeet: referenceElevationFeet,
+                    mode: displayMode, coordinateFormat: coordinateFormat, showCoordinates: showCoordinates) ?? "")
+                .font(.caption.bold())
+                .foregroundStyle(crosshairColor(mainColor))
+                .padding(4)
+                .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 4))
+                .position(x: center.x, y: center.y + arm + 32)
             }
-            .buttonStyle(.plain)
-            .simultaneousGesture(
-                LongPressGesture(minimumDuration: 0.5)
-                    .onEnded { _ in onSetReference() }
-            )
-            .position(x: center.x + 84, y: center.y + 30)
-            .accessibilityLabel(displayMode == .reference ? "Reference elevation" : "MSL elevation")
-            .accessibilityHint(referenceElevationFeet == nil ? "Long press the crosshair to set a reference" : "Toggles MSL and reference elevation")
         }
+        .allowsHitTesting(false)
     }
 }
 
-private struct OutlinedCenterpointText: View {
-    let text: String
-    let color: Color
-    private let offsets: [CGSize] = [
-        .init(width: -1, height: -1), .init(width: 0, height: -1), .init(width: 1, height: -1),
-        .init(width: -1, height: 0), .init(width: 1, height: 0),
-        .init(width: -1, height: 1), .init(width: 0, height: 1), .init(width: 1, height: 1),
-    ]
+private func crosshairColor(_ hex: String) -> Color {
+    let value = UInt32(hex, radix: 16) ?? 0xFFFFFF
+    return Color(red: Double((value >> 16) & 255) / 255, green: Double((value >> 8) & 255) / 255, blue: Double(value & 255) / 255)
+}
 
+struct CrosshairConfigurationSection: View {
+    @AppStorage("crosshair.style") private var style = "Simple"
+    @AppStorage("crosshair.widthPx") private var widthPx = 1.0
+    @AppStorage("crosshair.sizePercent") private var sizePercent = 5.0
+    @AppStorage("crosshair.mainColor") private var mainColor = "FFFFFF"
+    @AppStorage("crosshair.borderColor") private var borderColor = "000000"
+    @AppStorage("crosshair.showCoordinates") private var showCoordinates = true
+
+    private func colorBinding(_ storage: Binding<String>) -> Binding<Color> {
+        Binding(get: { crosshairColor(storage.wrappedValue) }, set: { color in
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            guard UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a) else { return }
+            storage.wrappedValue = String(format: "%02X%02X%02X", Int((r * 255).rounded()), Int((g * 255).rounded()), Int((b * 255).rounded()))
+        })
+    }
     var body: some View {
-        ZStack {
-            ForEach(Array(offsets.enumerated()), id: \.offset) { _, offset in
-                Text(text).offset(offset).foregroundStyle(.black)
+        Section("Crosshair Configuration:") {
+            Picker("Style", selection: $style) {
+                Text("None").tag("None")
+                Text("Simple").tag("Simple")
+                Text("Bordered").tag("Bordered")
             }
-            Text(text).foregroundStyle(color)
+            HStack {
+                Text("Width in px")
+                TextField("Width", value: $widthPx, format: .number)
+                    .keyboardType(.decimalPad)
+                    .onChange(of: widthPx) { _, value in
+                        if !value.isFinite || value <= 0 { widthPx = 1 }
+                    }
+            }
+            Text("Size: \(Int(min(25, max(2, sizePercent))))% of the narrower video dimension")
+            Slider(value: $sizePercent, in: 2...25, step: 1)
+            ColorPicker("Main color", selection: colorBinding($mainColor), supportsOpacity: false)
+            ColorPicker("Border color", selection: colorBinding($borderColor), supportsOpacity: false)
+            Toggle("Coordinates in MSL and REF", isOn: $showCoordinates)
+            Text("Center taps cycle MSL → REF → crosshair only. Settings apply to all streams.")
+                .font(.footnote)
         }
-        .font(.system(size: 17, weight: .bold, design: .rounded))
     }
 }
 
@@ -1609,6 +1603,39 @@ private struct AppleStreamDeviceLoadSection: View {
                     anomalyEnabledStreams: anomalyStreams)
                 do { try await Task.sleep(for: .seconds(2)) } catch { break }
             }
+        }
+    }
+}
+
+func stampClueCrosshair(_ image: UIImage, coordinates: String?) -> UIImage {
+    let prefs = UserDefaults.standard
+    let style = prefs.string(forKey: "crosshair.style") ?? "Simple"
+    guard style != "None" else { return image }
+    let width = max(0.1, prefs.object(forKey: "crosshair.widthPx") as? Double ?? 1)
+    let percent = min(25, max(2, prefs.object(forKey: "crosshair.sizePercent") as? Double ?? 5))
+    let size = CGSize(width: image.size.width * image.scale, height: image.size.height * image.scale)
+    let format = UIGraphicsImageRendererFormat(); format.scale = 1
+    return UIGraphicsImageRenderer(size: size, format: format).image { output in
+        image.draw(in: CGRect(origin: .zero, size: size))
+        let context = output.cgContext
+        let center = CGPoint(x: size.width / 2, y: size.height / 2)
+        let arm = min(size.width, size.height) * percent / 200
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: center.x-arm, y: center.y)); path.addLine(to: CGPoint(x: center.x+arm, y: center.y))
+        path.move(to: CGPoint(x: center.x, y: center.y-arm)); path.addLine(to: CGPoint(x: center.x, y: center.y+arm))
+        if style == "Bordered" {
+            context.addPath(path); context.setStrokeColor(UIColor(crosshairColor(prefs.string(forKey: "crosshair.borderColor") ?? "000000")).cgColor)
+            context.setLineWidth(width + 2); context.strokePath()
+        }
+        context.addPath(path); context.setStrokeColor(UIColor(crosshairColor(prefs.string(forKey: "crosshair.mainColor") ?? "FFFFFF")).cgColor)
+        context.setLineWidth(width); context.strokePath()
+        if let coordinates, prefs.object(forKey: "crosshair.showCoordinates") as? Bool ?? true {
+            let font = UIFont.monospacedSystemFont(ofSize: max(14, min(size.width,size.height)*0.018), weight: .semibold)
+            let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: UIColor.white]
+            let label = coordinates as NSString; let labelSize = label.size(withAttributes: attributes)
+            let rect = CGRect(x: center.x-labelSize.width/2, y: center.y+arm+8, width: labelSize.width, height: labelSize.height)
+            UIColor.black.withAlphaComponent(0.75).setFill(); UIBezierPath(rect: rect.insetBy(dx: -4, dy: -3)).fill()
+            label.draw(in: rect, withAttributes: attributes)
         }
     }
 }

@@ -76,6 +76,11 @@ internal fun PilotDisplaySettingsContent(
             colorHex = settings.preference.archiveTrackColor,
             onClick = { onPickColor(PilotDisplayColorSlot.Archive) }
         )
+        PilotDisplayColorRow(
+            label = "Bearing Line Color",
+            colorHex = settings.preference.resolvedBearingColor,
+            onClick = { onPickColor(PilotDisplayColorSlot.Bearing) }
+        )
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(
                 checked = settings.preference.bearingEnabled,
@@ -129,10 +134,12 @@ internal fun PilotTrackColorPickerDialog(
     val currentColor = when (target.slot) {
         PilotDisplayColorSlot.Active -> target.settings.preference.activeTrackColor
         PilotDisplayColorSlot.Archive -> target.settings.preference.archiveTrackColor
+        PilotDisplayColorSlot.Bearing -> target.settings.preference.resolvedBearingColor
     }
     val title = when (target.slot) {
         PilotDisplayColorSlot.Active -> "Active Track Color"
         PilotDisplayColorSlot.Archive -> "Archive Track Color"
+        PilotDisplayColorSlot.Bearing -> "Bearing Line Color"
     }
     AlertDialog(
         onDismissRequest = onDismiss,

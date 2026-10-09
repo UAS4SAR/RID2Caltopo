@@ -5,6 +5,15 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class PilotDisplayPrefsTest {
+    @Test fun bearingColorPreservesLegacyAppearanceAndCanBeIndependent() {
+        val legacy = PilotDisplayPreference(activeTrackColor = "#43A047")
+        assertEquals("#43A047", legacy.resolvedBearingColor)
+        val chosen = legacy.copy(bearingColor = "ffffff")
+        assertEquals("#FFFFFF", chosen.resolvedBearingColor)
+        assertEquals("#FFFFFF", chosen.copy(activeTrackColor = "#E53935").resolvedBearingColor)
+        assertEquals("#43A047", legacy.copy(bearingColor = "invalid").resolvedBearingColor)
+    }
+
     @Test
     fun normalizePilotCallsign_trimsUppercasesAndRejectsBlank() {
         assertEquals("HARRY1", normalizePilotCallsign(" harry1 "))

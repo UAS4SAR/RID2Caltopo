@@ -12,6 +12,39 @@ class AndroidClueStoreTest {
     @get:Rule
     val temporaryFolder = TemporaryFolder()
 
+    @Test
+    fun mapAssignmentRefreshesPhotoEvenWhenUploadAlreadyFinished() {
+        val root = temporaryFolder.newFolder("published-refresh")
+        val writer = AndroidClueStore.forDirectory(root)
+        val record = clueRecord("photo", "unassigned").copy(destinationTeamId = "team-a")
+        writer.saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
+        val viewer = AndroidClueStore.forDirectory(root)
+        assertTrue(viewer.recordsForMap("map:alpha").isEmpty())
+        val published = record.copy(mapKey = "map:alpha", uploadState = "published")
+        writer.saveEncoded(published, byteArrayOf(1), byteArrayOf(2))
+        assertTrue(viewer.pendingForMap("alpha", "team-a").isEmpty())
+        assertEquals(listOf(published), viewer.recordsForMap("map:alpha"))
+        assertTrue(viewer.imageFile(viewer.record(record.id)!!).isFile)
+    }
+
+    @Test fun localOnlyShareReportPreservesPrivacyAndUploadState() {
+        val store = AndroidClueStore.forDirectory(temporaryFolder.newFolder("sharing"))
+        val record = clueRecord("share", "map:alpha").copy(
+            title = "Sensitive clue", description = "found by: 1SAR7\nDetails entered at capture",
+            publishToCaltopo = false, uploadState = "local", destinationTeamId = "private-credential")
+        store.saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
+        val before = store.record(record.id)
+        for (format in CoordinateDisplayFormat.values()) {
+            val report = clueShareReport(record, format)
+            assertTrue(report.contains("Sensitive clue"))
+            assertTrue(report.contains("found by: 1SAR7"))
+            assertTrue(report.contains(CoordinateFormatter.format(record.lat, record.lng, format)))
+            assertFalse(report.contains("private-credential"))
+        }
+        assertEquals(before, store.record(record.id))
+        assertTrue(store.pendingForMap("alpha", "private-credential").isEmpty())
+    }
+
     @Test fun personalQueueSurvivesRelaunchButNeverSwitchesAccountOrMap() {
         val root = temporaryFolder.newFolder("personal")
         val record = clueRecord("personal", "map:ABC123").copy(destinationTeamId = "personal:USER01", uploadState = "pending")
@@ -25,6 +58,25 @@ class AndroidClueStoreTest {
         assertEquals(record.id, reopened.pendingForMap("ABC123", "personal:USER01").single().id)
         reopened.recordUploadResult(record.id, true)
         assertTrue(reopened.pendingForMap("ABC123", "personal:USER01").isEmpty())
+    }
+
+    @Test
+    fun localOnlyMarkerNeverEntersUploadQueueAcrossRelaunchAndRetry() {
+        val root = temporaryFolder.newFolder("local-only")
+        val local = clueRecord("local", "map:alpha").copy(
+            publishToCaltopo = false,
+            destinationTeamId = "team-a",
+            uploadState = "local",
+        )
+        AndroidClueStore.forDirectory(root).saveEncoded(local, byteArrayOf(1), byteArrayOf(2))
+        val reopened = AndroidClueStore.forDirectory(root)
+        assertEquals(listOf(local), reopened.recordsForMap("map:alpha"))
+        assertTrue(reopened.pendingForMap("alpha", "team-a").isEmpty())
+        // Even a stale retry callback must not turn a local-only marker into an upload.
+        reopened.recordUploadResult(local.id, false, "offline")
+        val reloaded = AndroidClueStore.forDirectory(root)
+        assertFalse(reloaded.record(local.id)!!.publishToCaltopo)
+        assertTrue(reloaded.pendingForMap("alpha", "team-a").isEmpty())
     }
 
     @Test

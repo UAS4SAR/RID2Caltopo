@@ -440,6 +440,8 @@ fun DroneSpecConfirmationDialog(
     onSave: () -> Unit,
     onUnknown: () -> Unit,
     onInspect: (() -> Unit)? = null,
+    onPairSession: (() -> Unit)? = null,
+    onCancelPairing: (() -> Unit)? = null,
 ) {
     var readiness by remember(state.remoteId) { mutableStateOf(org.ncssar.rid2caltopo.data.FlightReadiness(
         aircraft = CaltopoClient.GetPersistedDroneSpecs().firstOrNull { it.remoteId == state.remoteId }?.readiness ?: org.ncssar.rid2caltopo.data.AircraftReadiness(),
@@ -455,7 +457,7 @@ fun DroneSpecConfirmationDialog(
         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
         title = {
             Text(
-                if (state.mappedIdIsRemoteId) "Add New Drone" else "Publish?"
+                if (state.pairingOnly || state.mappedIdIsRemoteId) "Add New Drone" else "Publish?"
             )
         },
         text = {
@@ -468,7 +470,7 @@ fun DroneSpecConfirmationDialog(
                 onInspect?.let { inspect -> TextButton(onClick = inspect) { Text("Inspect") } }
                 state.bootstrapDesignator?.let { designator ->
                     Text("Remote ID: ${state.remoteId}\nStream designator: $designator")
-                    Text("Save a local RID-map entry and confirm this flight for publishing to the selected map. Check the suggested model and enter the pilot callsign. Without a selected map, publication waits for map selection.")
+                    Text(if (state.pairingOnly) "Save this mapping for future streams, or pair for this session only. Flight confirmation and publishing are separate." else "Save a local RID-map entry and confirm this flight for publishing to the selected map. Check the suggested model and enter the pilot callsign. Without a selected map, publication waits for map selection.")
                     Text("Pair video only leaves track publishing off.")
                 }
                 if (!state.warning.isNullOrBlank()) {
@@ -495,13 +497,14 @@ fun DroneSpecConfirmationDialog(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
-                FlightReadinessFields(state.remoteId, pilotCallsign, readiness, { readiness = it.copy(operatingProfileJson = it.operatingProfileJson ?: readiness.operatingProfileJson) }) { onFieldChange(null, it, null) }
+                if (!state.pairingOnly) FlightReadinessFields(state.remoteId, pilotCallsign, readiness, { readiness = it.copy(operatingProfileJson = it.operatingProfileJson ?: readiness.operatingProfileJson) }) { onFieldChange(null, it, null) }
             }
         },
         confirmButton = {
             TextButton(
                 enabled = state.bootstrapDesignator == null || pilotCallsign.isNotBlank(),
-                onClick = {
+                onClick = save@ {
+                    if (state.pairingOnly) { onSave(); return@save }
                     readiness.operatingProfileJson?.let { raw ->
                         val selected = org.json.JSONObject(raw)
                         org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.rememberProfile(selected.getJSONObject("profile"))
@@ -522,12 +525,19 @@ fun DroneSpecConfirmationDialog(
                     onSave()
                 }
             ) {
-                Text(if (state.bootstrapDesignator != null) "Save and publish track" else "Publish track")
+                Text(if (state.pairingOnly) "Save mapping" else if (state.bootstrapDesignator != null) "Save and publish track" else "Publish track")
             }
         },
         dismissButton = {
-            TextButton(onClick = onUnknown) {
-                Text(if (state.bootstrapDesignator != null) "Pair video only" else "Don’t publish")
+            if (state.pairingOnly) {
+                androidx.compose.foundation.layout.Row {
+                    TextButton(onClick = { onCancelPairing?.invoke() }) { Text("Cancel") }
+                    TextButton(onClick = { onPairSession?.invoke() }) { Text("Pair for this session") }
+                }
+            } else {
+                TextButton(onClick = onUnknown) {
+                    Text(if (state.bootstrapDesignator != null) "Pair video only" else "Don’t publish")
+                }
             }
         },
     )

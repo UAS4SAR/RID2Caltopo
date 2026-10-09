@@ -582,7 +582,7 @@ final class RIDTrackViewModel: ObservableObject {
         func fresh() -> Bool { let age = Date().timeIntervalSince(observation.receivedAt); return age >= 0 && age < 5 }
         guard fresh(), observation.latitude.isFinite, observation.longitude.isFinite,
               abs(observation.latitude)<=90, abs(observation.longitude)<=180 else { return nil }
-        let tilt = gimbalAngleDegrees ?? -90
+        let tilt = gimbalAngleDegrees ?? -90.0
         guard tilt.isFinite, tilt < -0.1 else { return nil }
         let latitude: Double, longitude: Double
         if tilt <= -89.9 {
@@ -609,7 +609,7 @@ final class RIDTrackViewModel: ObservableObject {
         guard fresh() else { return nil }
         return .init(elevationFeet: Int((terrain.elevationMeters * 3.28084).rounded()),
             demResolutionMeters: terrain.horizontalResolutionMeters.flatMap { $0.isFinite && $0>0 ? max(1,Int($0.rounded())) : nil },
-            assumedNadir: gimbalAngleDegrees == nil, pointAolFeet: pointAol)
+            assumedNadir: gimbalAngleDegrees == nil, pointAolFeet: pointAol, latitude: latitude, longitude: longitude)
     }
 
     func terrainDerivedAglMeters(

@@ -33,6 +33,10 @@ public struct OperationalInitialStreamFocusState: Equatable {
 }
 
 public enum OperationalMapFocusPolicy {
+    public static func shouldCaptureViewport(inset: Bool, restored: Bool, width: Double, height: Double) -> Bool {
+        !inset && restored && width.isFinite && height.isFinite && width >= 32 && height >= 32
+    }
+
     public static func presentationFocus(inset: Bool, mapAircraftID: String?,
                                          focusedVideoID: String?, videoAircraftID: String?) -> String? {
         inset && focusedVideoID != nil ? videoAircraftID : mapAircraftID

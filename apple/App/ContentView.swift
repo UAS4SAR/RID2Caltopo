@@ -1288,31 +1288,13 @@ struct ContentView: View {
                 configureTrackPolicy()
                 updateOperationalAlerts()
             }
-        // Reserve the measured status height so larger text and alert panels
-        // push the restriction chips down instead of drawing over them.
+        // Recording decisions reserve space; operational alerts float over the stream.
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 4) {
-                ForEach(ridTracks.tracks) { track in
-                    if let identity = droneConfirmations.identity(for: track.aircraftID),
-                       let profile = OperatingProfiles.active(identity.flightReadiness)["profile"] as? [String: Any] {
-                        Text(identity.mappedID + ": " + (profile["name"] as? String ?? "Other / details pending"))
-                            .font(.caption2).padding(2).background(.regularMaterial)
-                    }
-                }
                 ShortFlightRecordingPanel(gate: ridTracks.shortFlightDecisions)
-                if operationalAlerts.signalLossAlerts.first != nil || operationalAlerts.altitudeAlerts.first != nil {
-                    OperationalAlertBanner(
-                        signalLoss: operationalAlerts.signalLossAlerts.first,
-                        altitude: operationalAlerts.altitudeAlerts.first,
-                        onMap: { showTrackMap = true },
-                        onMuteSignal: operationalAlerts.muteSignal,
-                        onMuteAltitude: operationalAlerts.muteAltitude
-                    )
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                }
+
             }
-            .padding(.vertical, 4)
-            .background(Color(uiColor: .systemBackground))
+
         }
     }
 
@@ -2490,6 +2472,7 @@ struct ContentView: View {
             locationProvider: locationProvider,
             caltopoSettings: caltopoSettings,
             streamRegistry: streamRegistry,
+            mediaServer: mediaMTX,
             videoModel: streamRegistry.focusedSession.model,
             clueStore: clueStore,
             identityStore: droneConfirmations,
@@ -3086,15 +3069,16 @@ struct ContentView: View {
             streamRegistry.boundAircraftID(for: $0) == nil
                 && !automaticPairingOfferedStreamIDs.contains($0)
         }
-        let confirmedCandidateIDs = tracks.compactMap { track in
-            droneConfirmations.isCurrentFlightConfirmed(track.aircraftID)
+        let freshTracks = tracks.filter { Date().timeIntervalSince($0.lastObservation.receivedAt) < 15 }
+        let confirmedCandidateIDs = freshTracks.compactMap { track in
+            (droneConfirmations.isCurrentFlightConfirmed(track.aircraftID) || droneConfirmations.isUnassociated(track.aircraftID))
                 ? track.aircraftID
                 : nil
         }
         guard confirmedCandidateIDs.count == 1,
               let streamID = OperationalStreamDesignatorMatch.automaticPairingStreamID(
                 confirmedCandidateID: confirmedCandidateIDs[0],
-                activeCandidateIDs: tracks.map(\.aircraftID),
+                activeCandidateIDs: freshTracks.map(\.aircraftID),
                 liveUnpairedStreamIDs: Array(liveUnpairedStreamIDs)
               )
         else { return }

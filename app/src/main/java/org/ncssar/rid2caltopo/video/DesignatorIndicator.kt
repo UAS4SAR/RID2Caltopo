@@ -1,5 +1,13 @@
 package org.ncssar.rid2caltopo.video
 
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+
 import DroneSpecState
 import DroneDisplayState
 import StreamsViewModel
@@ -56,260 +64,62 @@ fun DesignatorIndicator(
     streamErrorDetail: String?,
     onLongPress: () -> Unit,
     onTelemetryChipClick: () -> Unit = onLongPress,
-    interactionEnabled: Boolean = true
+    interactionEnabled: Boolean = true,
+    onCalibrationRequested: () -> Unit = onTelemetryChipClick,
+    zoomText: String? = null,
 ) {
-    val focusedPath by viewModel.focusedPath.collectAsStateWithLifecycle()
-    val errorSummary = formatStreamErrorDetail(streamErrorDetail)
-    val renderDelayMs = viewModel.renderDelayMsFor(streamDesignator)
-    val playbackIndicatorState = viewModel.playbackIndicatorStateFor(streamDesignator)
-    val droneDisplayState = viewModel.droneDisplayStateForStream(streamDesignator)
-    val cameraAzimuthDeg = viewModel.cameraAzimuthForStream(streamDesignator)
-    val isLocalPlayback = viewModel.isLocalPlayback(streamDesignator)
-    val coordinateDisplayFormat = viewModel.coordinateDisplayFormat
+    val state = viewModel.designatorStateFor(streamDesignator)
+    val displayState = viewModel.droneDisplayStateForStream(streamDesignator)
+    val cameraAzimuth = viewModel.cameraAzimuthForStream(streamDesignator)
+    val format = viewModel.coordinateDisplayFormat
     var coordinateMenuExpanded by remember(streamDesignator) { mutableStateOf(false) }
-    val streamStateText = when (streamState) {
+    val localPlayback = viewModel.isLocalPlayback(streamDesignator)
+    val status = when (streamState) {
         StreamState.CONNECTING -> "Connecting..."
-        StreamState.LIVE -> formatLiveState(renderDelayMs, playbackIndicatorState)
+        StreamState.LIVE -> formatLiveState(viewModel.renderDelayMsFor(streamDesignator), viewModel.playbackIndicatorStateFor(streamDesignator))
         StreamState.STOPPED -> "Stopped"
-        StreamState.ERROR -> errorSummary?.let { "Error: $it" } ?: "Error"
+        StreamState.ERROR -> formatStreamErrorDetail(streamErrorDetail)?.let { "Error: $it" } ?: "Error"
     }
-    val mapName = viewModel.mapName
-    var mapStatus = "Standalone"
-    if (null != mapName) {
-        mapStatus = "Connected to $mapName"
-    }
-    if (isLocalPlayback) {
-        val palette = IndicatorPalette(
-            fillColor = Color.White,
-            outlineColor = Color.Black
-        )
-        val helperText = if (!interactionEnabled) {
-            "Captured video playback."
-        } else if (focusedPath == streamDesignator) {
-            "Captured video playback. Use the tile controls to review playback settings."
-        } else {
-            "Tap to focus. Use the tile controls to review playback settings."
-        }
-        Column {
-            OutlinedIndicatorText(
-                text = "$streamDesignator - Captured Video",
-                style = MaterialTheme.typography.titleLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                palette = palette,
-                modifier = Modifier
-                    .padding(10.dp)
-                    .background(Color.Transparent)
-            )
-            OutlinedIndicatorText(
-                text = helperText,
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                palette = palette,
-                modifier = Modifier
-                    .padding(horizontal = 10.dp)
-                    .background(Color.Transparent)
-            )
-        }
-        return
-    }
-    val designatorState = viewModel.designatorStateFor(streamDesignator)
-    val showTelemetryChip = interactionEnabled &&
-        focusedPath == streamDesignator &&
-        (designatorState is DesignatorState.Yellow || designatorState is DesignatorState.Green)
-    val showCompactTopTelemetry = designatorState is DesignatorState.Green && streamState == StreamState.LIVE
-
-    val (palette, locationText, detailText) = when (designatorState) {
-        is DesignatorState.Green -> {
-            val ds = designatorState.droneSpecState
-            val location: String
-            location = CoordinateFormatter.format(ds.lastLat, ds.lastLng, coordinateDisplayFormat)
-            Triple(
-                indicatorPaletteFor(designatorState),
-                "$location (${coordinateDisplayFormat.label})",
-                if (showCompactTopTelemetry) "" else formatCompactTelemetry(droneDisplayState, cameraAzimuthDeg)
-            )
-        }
-        else -> Triple(
-            indicatorPaletteFor(designatorState),
-            null,
-            if (showTelemetryChip) "" else designatorDetailText(designatorState, mapStatus, interactionEnabled)
-        )
-    }
-    Column {
-        if (showCompactTopTelemetry || showTelemetryChip) {
-            Row(
-                modifier = Modifier
-                    .padding(10.dp)
-                    .background(Color.Transparent),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedIndicatorText(
-                    text = "${viewModel.streamTilePrimaryLabel(streamDesignator)} -",
-                    style = MaterialTheme.typography.titleLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    palette = palette
-                )
-                OutlinedIndicatorText(
-                    text = streamStateText,
-                    style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
-                    maxLines = 1,
-                    overflow = TextOverflow.Clip,
-                    palette = palette,
-                    modifier = Modifier.requiredWidth(112.dp)
-                )
-                if (showTelemetryChip) {
-                    TelemetryIndicatorChip(
-                        text = telemetryChipTextFor(designatorState, droneDisplayState, cameraAzimuthDeg),
-                        palette = palette,
-                        onClick = onTelemetryChipClick
-                    )
-                } else {
-                    OutlinedIndicatorText(
-                        text = stableVideoTelemetryText(formatCompactTelemetry(droneDisplayState, cameraAzimuthDeg)),
-                        highlightNegativeAol = true,
-                        style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
-                        maxLines = 1,
-                        overflow = TextOverflow.Clip,
-                        palette = palette
-                    )
-                }
+    val foreground = Color.White
+    val background = Color.Black
+    Row(
+        modifier = Modifier.fillMaxWidth().background(background)
+            .horizontalScroll(rememberScrollState())
+            .pointerInput(streamDesignator, interactionEnabled) {
+                detectTapGestures(onLongPress = { if (interactionEnabled) onLongPress() })
             }
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+        Text("${viewModel.streamTilePrimaryLabel(streamDesignator)} — $status", color = indicatorPaletteFor(state).fillColor, style = style, maxLines = 1)
+        if (localPlayback) {
+            Text("Captured Video", color = foreground, style = style, maxLines = 1)
         } else {
-            OutlinedIndicatorText(
-                text = "${viewModel.streamTilePrimaryLabel(streamDesignator)} - $streamStateText",
-                style = MaterialTheme.typography.titleLarge,
-                maxLines = if (streamState == StreamState.ERROR) 2 else 1,
-                overflow = TextOverflow.Ellipsis,
-                palette = palette,
-                modifier = Modifier
-                    .padding(10.dp)
-                    .background(Color.Transparent)
-            )
-        }
-        if (locationText != null) {
-            OutlinedIndicatorText(
-                text = locationText,
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                palette = palette,
-                modifier = Modifier
-                    .padding(horizontal = 10.dp)
-                    .background(Color.Transparent)
-                    .then(
-                        if (interactionEnabled) {
-                            Modifier.clickable { coordinateMenuExpanded = true }
-                        } else {
-                            Modifier
-                        }
-                    )
-            )
-            if (interactionEnabled) {
-                DropdownMenu(
-                    expanded = coordinateMenuExpanded,
-                    onDismissRequest = { coordinateMenuExpanded = false }
-                ) {
-                    CoordinateDisplayFormat.values().forEach { format ->
-                        DropdownMenuItem(
-                            text = { Text(format.label) },
-                            onClick = {
+            val telemetry = stableVideoTelemetryText(telemetryChipTextFor(state, displayState, cameraAzimuth))
+            Text(telemetry, color = foreground, style = style, maxLines = 1,
+                modifier = Modifier.clickable(enabled = interactionEnabled) {
+                    if (telemetry.contains("CAL")) onCalibrationRequested() else onTelemetryChipClick()
+                })
+            zoomText?.let { Text(it, color = foreground, style = style, maxLines = 1) }
+            if (state is DesignatorState.Green) {
+                val drone = state.droneSpecState
+                Box {
+                    Text("${CoordinateFormatter.format(drone.lastLat, drone.lastLng, format)} (${format.label})",
+                        color = foreground, style = style, maxLines = 1,
+                        modifier = Modifier.clickable(enabled = interactionEnabled) { coordinateMenuExpanded = true })
+                    DropdownMenu(expanded = coordinateMenuExpanded, onDismissRequest = { coordinateMenuExpanded = false }) {
+                        CoordinateDisplayFormat.values().forEach { option ->
+                            DropdownMenuItem(text = { Text(option.label) }, onClick = {
                                 coordinateMenuExpanded = false
-                                viewModel.setCoordinateDisplayFormat(format)
-                            }
-                        )
+                                viewModel.setCoordinateDisplayFormat(option)
+                            })
+                        }
                     }
                 }
             }
         }
-        if (detailText.isNotBlank()) {
-            OutlinedIndicatorText(
-                text = detailText,
-                highlightNegativeAol = true,
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = if (streamState == StreamState.ERROR) 3 else 1,
-                overflow = TextOverflow.Ellipsis,
-                palette = palette,
-                modifier = Modifier
-                    .padding(horizontal = 10.dp)
-                    .background(Color.Transparent)
-            )
-        }
-        if (streamState == StreamState.ERROR && streamErrorDetail != null) {
-            OutlinedIndicatorText(
-                text = streamErrorDetail,
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-                palette = palette,
-                modifier = Modifier
-                    .padding(horizontal = 10.dp)
-                    .background(Color.Transparent)
-            )
-        }
-    }
-}
-
-@Composable
-private fun TelemetryIndicatorChip(
-    text: String,
-    palette: IndicatorPalette,
-    onClick: () -> Unit
-) {
-    Box(
-        modifier = Modifier
-            .border(1.dp, palette.fillColor, RoundedCornerShape(12.dp))
-            .clickable { onClick() }
-            .padding(horizontal = 8.dp, vertical = 3.dp)
-            .background(Color.Transparent)
-    ) {
-        OutlinedIndicatorText(
-            text = stableVideoTelemetryText(text),
-            highlightNegativeAol = true,
-            style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
-            maxLines = 1,
-            overflow = TextOverflow.Clip,
-            palette = palette
-        )
-    }
-}
-
-@Composable
-private fun OutlinedIndicatorText(
-    text: String,
-    palette: IndicatorPalette,
-    style: TextStyle,
-    modifier: Modifier = Modifier,
-    maxLines: Int = Int.MAX_VALUE,
-    overflow: TextOverflow = TextOverflow.Clip,
-    highlightNegativeAol: Boolean = false
-) {
-    val negativeRange = if (highlightNegativeAol) negativeAolRange(text) else null
-    fun styledText(negativeColor: Color) = buildAnnotatedString {
-        append(text)
-        negativeRange?.let { addStyle(SpanStyle(color = negativeColor), it.first, it.last + 1) }
-    }
-    val outlinedStyle = style.copy(fontWeight = FontWeight.Black)
-    Box(modifier = modifier) {
-        Text(
-            text = styledText(Color.Black),
-            color = palette.outlineColor,
-            style = outlinedStyle.copy(drawStyle = Stroke(width = 4f, miter = 2f)),
-            maxLines = maxLines,
-            overflow = overflow,
-            modifier = Modifier.align(Alignment.CenterStart)
-        )
-        Text(
-            text = styledText(Color.Red),
-            color = palette.fillColor,
-            style = outlinedStyle,
-            maxLines = maxLines,
-            overflow = overflow,
-            modifier = Modifier.align(Alignment.CenterStart)
-        )
     }
 }
 
@@ -363,7 +173,7 @@ internal fun formatCompactTelemetry(
     display: DroneDisplayState?,
     cameraAzimuthDeg: Double? = null,
 ): String {
-    // This is the header rendered over focused and split-screen live video. Reuse the map
+    // This is the header rendered above focused and split-screen live video. Reuse the map
     // formatter so every operator view has the same entries, order, units, and missing tokens.
     return streamTelemetryHeaderText(display, cameraAzimuthDeg)
 }
@@ -390,13 +200,16 @@ fun DroneSpecPickerDialog(
     droneSpecStates: Map<String, DroneSpecState>,
     closestMatchRemoteId: String?,
     onSelect: (Map.Entry<String, DroneSpecState>) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    configuration: @Composable () -> Unit = {},
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Select Drone Telemetry") },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text("Select the drone supplying this stream’s telemetry.")
+                if (droneSpecStates.isEmpty()) Text("Waiting for drone telemetry from the bridge.")
                 val orderedStates = droneSpecStates.entries.sortedWith(
                     compareByDescending<Map.Entry<String, DroneSpecState>> {
                         it.value.remoteId == closestMatchRemoteId
@@ -445,6 +258,7 @@ fun DroneSpecPickerDialog(
                         }
                     }
                 }
+                configuration()
             }
         },
         confirmButton = {},

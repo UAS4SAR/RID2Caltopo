@@ -62,3 +62,14 @@ Final October 8 validation:
 - Release-note metadata and UI-copy checks passed. Staged whitespace check passed.
 
 Requested publication: commit the reviewed changes on `main` and create annotated source tag `v2.5.0rc1`. Do not interpret this tag as proof of store acceptance or physical field qualification.
+
+
+## v2.5.0rc2 — October 9, 2026
+
+Marketing version remains 2.5.0; coordinated build advances to 340. The working build 339 was installed repeatedly in place on A5 Pro R52Y90C9XST and iPad 00008103-0010596E1AD3001E during the October 8–9 feedback cycle. No app data was cleared by these installations.
+
+Targeted verification included clue storage/sharing, pairing ambiguity and both arrival orders, duplicate RID drafts, recent OS authentication, map presentation/following, startup AGL calibration, pilot display preferences, centerpoint/crosshair policy, and Apple UI copy. Native Android live cadence regression checks and Apple burst/rate-transition/display-callback queue tests passed. Operator reported better streaming after the Android cadence correction. Full streaming platform/controller qualification remains open; successful builds and these reports are not store-publication approval.
+
+RC2 incorporates the recorded field feedback and keeps runtime stream pairing separate from current-flight confirmation/publication. Full fixture files previously restored as required for release process are included in the commit history.
+
+RC2 final verification: complete Android unit suite (1418 tests), complete Apple core suite (80 XCTest and 576 Swift Testing tests), Android debug build, signed iPad debug build, store-note check, Apple UI-copy check, and Git whitespace check passed. Native live-cadence and Apple adaptive queue regressions passed. Final metadata is 2.5.0 (340), release date October 9, 2026. The 340 artifacts were built for this source tag; this tagging request did not reinstall them or publish to app stores.

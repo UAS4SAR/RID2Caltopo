@@ -178,4 +178,27 @@ class DroneAltitudeCoordinatorTest {
             0.000001,
         )
     }
+    @Test fun startupAltitudeReferenceChangeDoesNotCreateFalseGroundedAgl() {
+        val ground = 547.8
+        for (takeoff in listOf(522.0, 550.0, 600.0, 625.1)) {
+            val correction = DroneAltitudeCoordinator.refinedCorrectionFromTakeoffDem(
+                takeoff, ground, 1.0, -25.8)!!
+            val agl = DroneAltitudeCoordinator.calculateDemBackedAglMeters(
+                altM = takeoff, ridHeightAtoM = 0.0,
+                calibration = DroneAltitudeCalibration(takeoff, AtoSeedSource.AUTO),
+                correctionM = correction, demGroundRaw = ground, demScaleToMeters = 1.0)
+            assertEquals(0.0, agl, 0.0001)
+        }
+    }
+
+    @Test fun refiningStartupCorrectionRetainsTerrainDifferenceDuringFlight() {
+        val takeoff = 625.1
+        val correction = DroneAltitudeCoordinator.refinedCorrectionFromTakeoffDem(takeoff, 547.8, 1.0, -25.8)!!
+        val agl = DroneAltitudeCoordinator.calculateDemBackedAglMeters(
+            altM = takeoff + 20.0, ridHeightAtoM = 20.0,
+            calibration = DroneAltitudeCalibration(takeoff, AtoSeedSource.AUTO),
+            correctionM = correction, demGroundRaw = 537.8, demScaleToMeters = 1.0)
+        assertEquals(30.0, agl, 0.0001)
+    }
+
 }

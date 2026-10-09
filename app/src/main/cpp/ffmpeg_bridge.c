@@ -3115,19 +3115,20 @@ static bool maybe_fast_relock_to_pts_locked(ffmpeg_session_t *session,
                                             int64_t target_latency_ms,
                                             int64_t now_ms) {
     if (session == NULL || session->render_queue_depth < 8) return false;
-    if (target_latency_ms <= 0) return false;
-    if (buffered_span_ms < target_latency_ms) return false;
-    if ((now_ms - session->last_source_pts_relock_at_ms) < 250) return false;
 
     int64_t current_interval_ms = session->source_render_interval_ms > 0
             ? session->source_render_interval_ms
             : RENDER_SOURCE_INTERVAL_DEFAULT_MS;
     int64_t pts_interval_ms = queue_pts_interval_ms_locked(session, 24);
-    if (pts_interval_ms <= 0) return false;
-    if (pts_interval_ms >= current_interval_ms - 3) return false;
+    if (!anomaly_detector_runtime_budget_should_relock_live_pts(
+            session->render_queue_depth, buffered_span_ms, target_latency_ms,
+            now_ms - session->last_source_pts_relock_at_ms, current_interval_ms, pts_interval_ms)) return false;
 
     int64_t previous_interval_ms = session->source_render_interval_ms;
     apply_pts_source_interval_locked(session, pts_interval_ms, true);
+    // Keeping the slow smoothed interval after correcting the source still overflows
+    // the queue. Start the renderer in the corrected timestamp cadence immediately.
+    session->render_interval_smoothed_ms = session->source_render_interval_ms;
     session->last_source_pts_relock_at_ms = now_ms;
     if (llabs(session->source_render_interval_ms - previous_interval_ms) >= 2) {
         ct_debug(TAG,

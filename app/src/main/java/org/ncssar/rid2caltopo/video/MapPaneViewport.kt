@@ -180,3 +180,7 @@ internal fun mapPaneFocusedDesignator(
     // An unresolved video must not silently follow a different aircraft.
     resolvedVideoAircraft
 } else mapFocusedDesignator
+
+/** An explicit drone selection resumes following; panning still pauses it until then. */
+internal fun viewportAdjustedAfterDroneSelection(followEnabled: Boolean, currentlyAdjusted: Boolean): Boolean =
+    if (followEnabled) false else currentlyAdjusted

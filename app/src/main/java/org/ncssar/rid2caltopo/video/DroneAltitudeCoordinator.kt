@@ -290,10 +290,11 @@ internal class DroneAltitudeCoordinator(
                 val newSource = if (isSealed) AtoSeedSource.AUTO_SEALED else AtoSeedSource.AUTO
                 calibrationByRemoteId[remoteId] = DroneAltitudeCalibration(ridTakeoff, newSource)
 
-                // When EMA seals, refine the correction with the converged takeoff altitude,
-                // but always retain the terrain sampled at takeoff. Using terrain under the
-                // aircraft at seal time moves the reference point and creates abrupt AGL jumps.
-                if (isSealed) {
+                // Keep terrain correction in the same altitude frame as every AUTO update,
+                // including startup/source changes before the EMA seals. Otherwise ATO uses
+                // the new takeoff altitude while AGL keeps the old one (a false height offset).
+                // Always retain takeoff terrain; current terrain would erase real terrain changes.
+                run {
                     val demGround = takeoffDemGroundByRemoteId[remoteId]
                     if (demGround != null) {
                         val demScaleToMeters = inferAndStoreDemScaleToMeters(remoteId, ridTakeoff, demGround)
@@ -306,7 +307,7 @@ internal class DroneAltitudeCoordinator(
                         demCorrectionByRemoteId[remoteId] = refinedCorrF
                         if (CTDebugEnabled(tag)) CTDebug(
                             tag,
-                            "AGL correctionF refined at seal for $designator: " +
+                            "AGL correctionF refined (${if (isSealed) "sealed" else "converging"}) for $designator: " +
                                 "takeoffAlt=${"%.1f".format(ridTakeoff)}m " +
                                 "demGroundRaw=${"%.1f".format(demGround)} " +
                                 "demScale=${"%.4f".format(demScaleToMeters)} " +

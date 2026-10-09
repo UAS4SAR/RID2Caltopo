@@ -290,6 +290,42 @@ final class AppleDroneScoutBridgeAlertCenter: ObservableObject {
     }
 }
 
+/// Keep alerts out of layout measurement. The bell retains active alerts after the popup fades.
+struct OperationalAlertPopup: View {
+    @ObservedObject var center: AppleOperationalAlertCenter
+    let onMap: () -> Void
+    @State private var visible = false
+
+    private var presentationKey: String? {
+        if let signal = center.signalLossAlerts.first {
+            return "signal:\(signal.remoteID):\(signal.bridgeRecentlySeen)"
+        }
+        if let altitude = center.altitudeAlerts.first {
+            return "altitude:\(altitude.remoteID):\(altitude.severity)"
+        }
+        return nil
+    }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            if visible, presentationKey != nil {
+                OperationalAlertBanner(
+                    signalLoss: center.signalLossAlerts.first, altitude: center.altitudeAlerts.first,
+                    onMap: onMap, onMuteSignal: center.muteSignal, onMuteAltitude: center.muteAltitude)
+                    .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: 360, alignment: .leading)
+        .task(id: presentationKey) {
+            visible = presentationKey != nil
+            guard visible else { return }
+            do { try await Task.sleep(for: .seconds(8)) } catch { return }
+            guard !Task.isCancelled else { return }
+            withAnimation { visible = false }
+        }
+    }
+}
+
 struct OperationalAlertBanner: View {
     let signalLoss: AppleSignalLossAlert?
     let altitude: AppleAltitudeComplianceAlert?

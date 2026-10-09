@@ -37,6 +37,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.mandatorySystemGestures
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.PictureInPicture
 import androidx.compose.material.icons.filled.Bluetooth
@@ -389,38 +390,35 @@ fun StreamsScreen(
                         IconButton(onClick = { viewModel.setStreamPipEnabled(!streamPipUiState.enabled) }) {
                             Icon(Icons.Default.PictureInPicture, "Toggle picture in picture", tint = if (streamPipUiState.enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
                         }
+                        AlertStatusBell(onClick = { showAlertPanel = true })
                         BridgeSignalIndicator(rssi = bridgeRssi, onClick = onBluetoothStats, enabled = showNavigation)
                         workspaceMenu?.invoke()
                     }
                 }
             }
                 if (fullScreenChrome.showExitChip) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(Color.Black)
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        FullScreenExitChip(onClick = { streamsFullScreen = false })
-                        FullScreenPipChip(
-                            enabled = streamPipUiState.enabled,
-                            onClick = {
-                                viewModel.setStreamPipEnabled(!streamPipUiState.enabled)
-                            },
-                        )
-                        BridgeSignalIndicator(rssi = bridgeRssi, onClick = onBluetoothStats, enabled = showNavigation, overlay = true)
+                    Row(Modifier.fillMaxWidth().background(Color.Black).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        androidx.compose.material3.OutlinedButton(onClick = onAbout) { Text("RID2Caltopo", color = Color.White, maxLines = 1) }
+                        Spacer(Modifier.weight(1f))
+                        Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { streamsFullScreen = false }) {
+                                Icon(Icons.Default.FullscreenExit, "Exit full screen", tint = Color.White)
+                            }
+                            IconButton(onClick = { viewModel.setStreamPipEnabled(!streamPipUiState.enabled) }) {
+                                Icon(Icons.Default.PictureInPicture, "Toggle picture in picture", tint = if (streamPipUiState.enabled) MaterialTheme.colorScheme.primary else Color.White)
+                            }
+                            AlertStatusBell(onClick = { showAlertPanel = true })
+                            BridgeSignalIndicator(rssi = bridgeRssi, onClick = onBluetoothStats, enabled = showNavigation, overlay = true)
+                        }
                     }
                 }
-
-            Row(Modifier.fillMaxWidth().horizontalScroll(headerScrollState).padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                AlertStatusBell(onClick = { showAlertPanel = true })
-                ResumeProximityAlertButton(onSettings = { onProximitySettingsTap?.invoke() })
-                NotamStatusChip(state = notamUiState, airspaceState = airspaceUiState, onClick = { showNotamPanel = true }, outerPadding = PaddingValues(0.dp))
-                LandRestrictionStatusChip(state = landRestrictionUiState, onClick = { showLandRestrictionPanel = true }, outerPadding = PaddingValues(0.dp))
-                StreamsMapStatusButton(mapName = mapName, onClick = onMapStatusTap, compact = true)
+            if (!fullScreenChrome.showExitChip) {
+                Row(Modifier.fillMaxWidth().horizontalScroll(headerScrollState).padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    ResumeProximityAlertButton(onSettings = { onProximitySettingsTap?.invoke() })
+                    NotamStatusChip(state = notamUiState, airspaceState = airspaceUiState, onClick = { showNotamPanel = true }, outerPadding = PaddingValues(0.dp))
+                    LandRestrictionStatusChip(state = landRestrictionUiState, onClick = { showLandRestrictionPanel = true }, outerPadding = PaddingValues(0.dp))
+                    StreamsMapStatusButton(mapName = mapName, onClick = onMapStatusTap, compact = true)
+                }
             }
 
             if (!remoteVideoStatus.isNullOrBlank()) {

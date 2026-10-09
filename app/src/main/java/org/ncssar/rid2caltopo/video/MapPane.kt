@@ -216,7 +216,8 @@ internal fun demSamplingSummary(stepMeters: Double): String {
 
 internal enum class PilotDisplayColorSlot {
     Active,
-    Archive
+    Archive,
+    Bearing,
 }
 
 internal data class PilotColorPickerTarget(
@@ -358,6 +359,7 @@ private data class LocalMarkerInfoContent(
     val onOpenSnapshot: (() -> Unit)?,
     val markerId: String?,
     val onDelete: ((String) -> Unit)?,
+    val onShare: (() -> Unit)? = null,
 )
 
 internal class MapOwnedReusable<T : Any> {
@@ -417,6 +419,10 @@ private class LocalMarkerInfoWindow(
                 setOnClickListener(null)
             }
         }
+        mView.findViewById<Button>(R.id.local_marker_share)?.apply {
+            visibility = if (content.onShare != null) View.VISIBLE else View.GONE
+            setOnClickListener { close(); content.onShare?.invoke() }
+        }
         mView.findViewById<Button>(R.id.local_marker_delete)?.apply {
             if (content.markerId != null && content.onDelete != null) {
                 visibility = View.VISIBLE
@@ -439,6 +445,7 @@ private class LocalMarkerInfoWindow(
         }
         mView.findViewById<ImageView>(R.id.local_marker_snapshot)?.setOnClickListener(null)
         mView.findViewById<Button>(R.id.local_marker_delete)?.setOnClickListener(null)
+        mView.findViewById<Button>(R.id.local_marker_share)?.setOnClickListener(null)
         content = null
     }
 
@@ -467,6 +474,30 @@ internal fun mapPaneAttributionText(contoursEnabled: Boolean): String =
         append("© OpenStreetMap contributors · DEM: USGS")
         if (contoursEnabled) append(" · Contours: USGS")
     }
+
+private fun shareClueSnapshot(context: Context, title: String, report: String, bitmap: Bitmap?, imagePath: String?) {
+    try {
+        val directory = File(context.cacheDir, "shared_clues/${java.util.UUID.randomUUID()}").apply { mkdirs() }
+        val photo = File(directory, sanitizeClueSnapshotFileName(title))
+        val source = imagePath?.let(::File)?.takeIf { it.isFile }
+        if (source != null) source.copyTo(photo)
+        else if (bitmap != null) FileOutputStream(photo).use { check(bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it)) }
+        else { CaltopoClient.ShowToast("No clue photo available to share."); return }
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photo)
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "image/jpeg"
+            putExtra(Intent.EXTRA_SUBJECT, title)
+            putExtra(Intent.EXTRA_TEXT, report)
+            putExtra(Intent.EXTRA_STREAM, uri)
+            clipData = android.content.ClipData.newRawUri("Clue photo", uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(send, "Share Clue…"))
+    } catch (error: Exception) {
+        CTError(MAP_PANE_TAG, "Unable to share clue", error)
+        CaltopoClient.ShowToast("Clue could not be shared.")
+    }
+}
 
 private fun openClueSnapshotInExternalViewer(
     context: Context,
@@ -2577,6 +2608,7 @@ internal fun SplitMapPane(
                 val updatedPreference = when (target.slot) {
                     PilotDisplayColorSlot.Active -> target.settings.preference.copy(activeTrackColor = selectedColor)
                     PilotDisplayColorSlot.Archive -> target.settings.preference.copy(archiveTrackColor = selectedColor)
+                    PilotDisplayColorSlot.Bearing -> target.settings.preference.copy(bearingColor = selectedColor)
                 }
                 updatePilotDisplayPreference(target.settings, updatedPreference)
                 colorPickerTarget = null
@@ -2599,6 +2631,12 @@ internal fun SplitMapPane(
         requestedInspection?.let { remoteId ->
             val point = dronePoints.firstOrNull { it.remoteId == remoteId }
             if (point != null) {
+                operatorAdjustedViewport = viewportAdjustedAfterDroneSelection(followFocusedDroneEnabled, operatorAdjustedViewport)
+                if (followFocusedDroneEnabled) {
+                    lastInsetFollowDesignator = null
+                    lastInsetFollowPoint = null
+                    lastInsetFollowAtMs = 0L
+                }
                 viewModel.focusMapDrone(point.designator)
                 openBubbleDesignator = point.designator
                 viewModel.inspectionRemoteId.value = null
@@ -3502,7 +3540,7 @@ internal fun SplitMapPane(
                 viewModel.localMapMarkers.forEach { point ->
                     val markerTitle = "Local: ${point.title}"
                     val markerSnippet = localClueDetailText(point)
-                    val snapshot = viewModel.clueSnapshotForTitle(point.title)
+                    val snapshot = viewModel.clueSnapshotForId(point.id) ?: viewModel.clueSnapshotForTitle(point.title)
                     val marker = Marker(mapView).apply {
                         position = GeoPoint(point.lat, point.lng)
                         icon = markerIconForArtifactSymbol(
@@ -3538,6 +3576,11 @@ internal fun SplitMapPane(
                                                             it.fullImagePath,
                                                         )
                                                     }
+                                                },
+                                                onShare = snapshot?.takeIf { it.fullImage != null || it.fullImagePath != null }?.let { captured ->
+                                                    { shareClueSnapshot(context, markerTitle,
+                                                        viewModel.clueShareText(point.id) ?: "$markerTitle\n\n$markerSnippet",
+                                                        captured.fullImage, viewModel.clueShareImagePath(point.id) ?: captured.fullImagePath) }
                                                 },
                                                 markerId = point.id,
                                                 onDelete = { markerId ->
@@ -3601,13 +3644,14 @@ internal fun SplitMapPane(
                         snippet = point.description
                     }
                     if (!isInsetMode && sharedMarkerInfoWindow != null) {
-                        val snapshot = viewModel.clueSnapshotForTitle(point.title)
                         val localCopy = localMapMarkerForArtifact(
                             markers = viewModel.localMapMarkers,
                             artifactTitle = point.title,
                             artifactLat = point.lat,
                             artifactLng = point.lng,
                         )
+                        val snapshot = localCopy?.let { viewModel.clueSnapshotForId(it.id) }
+                            ?: viewModel.clueSnapshotForTitle(point.title)
                         val viewableSnapshot = snapshot?.takeIf {
                             it.fullImage != null || it.fullImagePath != null
                         }
@@ -3631,6 +3675,11 @@ internal fun SplitMapPane(
                                                         captured.fullImagePath,
                                                     )
                                                 }
+                                            },
+                                            onShare = viewableSnapshot?.let { captured ->
+                                                { shareClueSnapshot(context, point.title,
+                                                    localCopy?.id?.let(viewModel::clueShareText) ?: "${point.title}\nLocation: ${CoordinateFormatter.format(point.lat, point.lng, viewModel.coordinateDisplayFormat)}\n\n${point.description}",
+                                                    captured.fullImage, localCopy?.id?.let(viewModel::clueShareImagePath) ?: captured.fullImagePath) }
                                             },
                                             markerId = localCopy?.id,
                                             onDelete = localCopy?.let {
@@ -3885,7 +3934,7 @@ internal fun SplitMapPane(
                                     title = "Bearing: ${point.designator}"
                                     applyPolylineStyle(
                                         this,
-                                        trackColorInt(pilotPreference.activeTrackColor, DEFAULT_ACTIVE_TRACK_COLOR),
+                                        trackColorInt(pilotPreference.resolvedBearingColor, DEFAULT_ACTIVE_TRACK_COLOR),
                                         2.0f * lineScale
                                     )
                                 }
@@ -3919,6 +3968,12 @@ internal fun SplitMapPane(
                         setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
                         if (!isInsetMode) {
                             setOnMarkerClickListener { _, _ ->
+                                operatorAdjustedViewport = viewportAdjustedAfterDroneSelection(followFocusedDroneEnabled, operatorAdjustedViewport)
+                                if (followFocusedDroneEnabled) {
+                                    lastInsetFollowDesignator = null
+                                    lastInsetFollowPoint = null
+                                    lastInsetFollowAtMs = 0L
+                                }
                                 viewModel.focusMapDrone(point.designator)
                                 if (org.ncssar.rid2caltopo.ui.workspaceDroneAction(point.droneSpec?.mappedId != point.remoteId, CaltopoClient.IsCurrentPeerDroneConfirmed(point.remoteId)) != org.ncssar.rid2caltopo.ui.WorkspaceDroneAction.Inspect) {
                                     viewModel.droneActionRemoteId.value = point.remoteId

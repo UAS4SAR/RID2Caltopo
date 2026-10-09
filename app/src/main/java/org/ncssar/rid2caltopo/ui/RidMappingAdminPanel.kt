@@ -74,6 +74,7 @@ private data class RidMappingDraft(
     var ownerName: String,
     var ownerCallsign: String,
     var model: String,
+    var streamDesignator: String = "",
     var readiness: AircraftReadiness = AircraftReadiness()
 )
 
@@ -122,12 +123,13 @@ fun RidMappingAdminDialog(
                     ownerName = ownerFields.ownerName,
                     ownerCallsign = ownerFields.ownerCallsign,
                     model = spec.model,
+                    streamDesignator = spec.mappedId,
                     readiness = spec.readiness
                 )
             }
             initialRemoteId?.trim()?.takeIf { it.isNotEmpty() }?.let { remoteId ->
                 val normalizedRemoteId = remoteId.uppercase()
-                drafts += RidMappingDraft(
+                if (RidMappingRules.shouldAddInitialAircraft(normalizedRemoteId, drafts.map { it.remoteId })) drafts += RidMappingDraft(
                     key = nextKey++,
                     remoteId = normalizedRemoteId,
                     ownerName = "",
@@ -280,7 +282,7 @@ fun RidMappingAdminDialog(
                             (if (AircraftOrganizationAccess.belongsToOrganization())
                                 "Entries imported from the organization QR code can be reviewed or edited here. Organization is stored once and applied to every aircraft. "
                             else "Organization is optional for local aircraft entries. No organization configuration is needed. ") +
-                                "droneDesig is generated from owner callsign and model.",
+                                "New drone designators are generated from pilot callsign and model. Existing stream designators are preserved.",
                             style = MaterialTheme.typography.bodySmall
                         )
                         OutlinedTextField(
@@ -299,7 +301,7 @@ fun RidMappingAdminDialog(
                                     Column(Modifier.padding(12.dp)) {
                                         Text("${index + 1}.  ${draft.remoteId}", style = MaterialTheme.typography.titleSmall)
                                         Text("Owner: ${draft.ownerName.ifBlank { "—" }} · Model: ${draft.model}")
-                                        Text("Designator: " + EditableRidMapping(draft.remoteId, draft.ownerName, draft.ownerCallsign, draft.model).mappedId(), style = MaterialTheme.typography.bodySmall)
+                                        Text("Designator: " + draft.streamDesignator.ifBlank { EditableRidMapping(draft.remoteId, draft.ownerName, draft.ownerCallsign, draft.model).mappedId() }, style = MaterialTheme.typography.bodySmall)
                                     }
                                 }
                             } else if (selectedKey == draft.key) {
@@ -362,12 +364,12 @@ fun RidMappingAdminDialog(
                                     )
                                     AircraftReadinessFields(draft.readiness, canEdit && !saving) { mappings[index] = draft.copy(readiness = it) }
                                     Text(
-                                        "Drone designator: " + EditableRidMapping(
+                                        "Drone designator: " + draft.streamDesignator.ifBlank { EditableRidMapping(
                                             draft.remoteId,
                                             draft.ownerName,
                                             draft.ownerCallsign,
                                             draft.model
-                                        ).mappedId(),
+                                        ).mappedId() },
                                         style = MaterialTheme.typography.bodySmall
                                     )
                                     TextButton(enabled = canEdit && !saving, onClick = {

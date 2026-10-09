@@ -1509,3 +1509,13 @@ const char *anomaly_detector_processing_mode_name(
             return "unknown";
     }
 }
+
+bool anomaly_detector_runtime_budget_should_relock_live_pts(
+        int queue_depth, int64_t buffered_span_ms, int64_t target_latency_ms,
+        int64_t since_last_relock_ms, int64_t current_interval_ms, int64_t pts_interval_ms) {
+    if (queue_depth < 8 || target_latency_ms <= 0 || since_last_relock_ms < 250) return false;
+    if (pts_interval_ms <= 0 || pts_interval_ms >= current_interval_ms - 3) return false;
+    // 24 frames provide the full median-PTS sampling window. A 60-fps queue can
+    // hit its frame cap below the latency target when decode arrival estimates are slow.
+    return buffered_span_ms >= target_latency_ms || queue_depth >= 24;
+}

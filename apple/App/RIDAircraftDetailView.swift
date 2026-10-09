@@ -499,6 +499,7 @@ struct DroneConfirmationView: View {
     @ObservedObject var identityStore: AppleDroneConfirmationStore
     let onConfirm: (RidAircraftIdentity) -> Void
     let onIgnore: (() -> Void)?
+    let pairingOnly: Bool
     private let mappedIDOverride: String?
     private let bootstrapDesignator: String?
     private let existingIdentity: RidAircraftIdentity?
@@ -515,8 +516,10 @@ struct DroneConfirmationView: View {
         identityStore: AppleDroneConfirmationStore,
         onConfirm: @escaping (RidAircraftIdentity) -> Void,
         onIgnore: (() -> Void)? = nil,
-        bootstrapDesignator: String? = nil
+        bootstrapDesignator: String? = nil,
+        pairingOnly: Bool = false
     ) {
+        self.pairingOnly = pairingOnly
         self.remoteID = remoteID
         self.identityStore = identityStore
         self.onConfirm = onConfirm
@@ -553,10 +556,10 @@ struct DroneConfirmationView: View {
                 }
                 if let pairingSaveError { Text(pairingSaveError).foregroundStyle(.red) }
                 if let bootstrapDesignator {
-                    Section("Add and confirm this drone") {
+                    Section(pairingOnly ? "Pair this drone" : "Add and confirm this drone") {
                         LabeledContent("Remote ID", value: remoteID)
                         LabeledContent("Stream designator", value: bootstrapDesignator)
-                        Text("Save a local RID-map entry and confirm this flight for publishing to the selected map. Check the suggested model and enter the pilot callsign. Without a selected map, publication waits for map selection. Pair video only leaves track publishing off.").font(.footnote)
+                        Text(pairingOnly ? "Save this mapping for future streams, or pair for this session only. Flight confirmation and publishing are separate." : "Save a local RID-map entry and confirm this flight for publishing to the selected map. Check the suggested model and enter the pilot callsign. Without a selected map, publication waits for map selection. Pair video only leaves track publishing off.").font(.footnote)
                     }
                 }
                 Section {
@@ -566,6 +569,7 @@ struct DroneConfirmationView: View {
                     LabeledContent("Drone model") {
                         TextField("Model", text: $droneDescription).multilineTextAlignment(.trailing)
                     }
+                    if !pairingOnly {
                     Button { showEquipment = true } label: {
                         LabeledContent("Equipment & payload", value: readiness.equipmentSummary)
                     }
@@ -577,6 +581,8 @@ struct DroneConfirmationView: View {
                         }
                     } label: { LabeledContent("Type of flight", value: OperatingProfiles.object(profileJSON)["name"] as? String ?? "Other") }
                 }
+                    }
+                if !pairingOnly {
                 if managedAircraft && !selectedPilotEligible { Text("RPIC qualifications not verified").font(.caption).foregroundStyle(.orange) }
                 if OperatingProfiles.object(profileJSON)["id"] as? String == "bvlos-pending" { Text("BVLOS authority details not configured").font(.caption).foregroundStyle(.orange) }
                 Section {
@@ -586,6 +592,7 @@ struct DroneConfirmationView: View {
                         LabeledContent("Remote ID", value: remoteID)
                         TextField("Organization", text: $organization)
                     }
+                }
                 }
                 if let conflict = pilotCallsignConflict {
                     Section {
@@ -622,7 +629,9 @@ struct DroneConfirmationView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    if let onIgnore {
+                    if pairingOnly {
+                        Button("Cancel") { dismiss() }
+                    } else if let onIgnore {
                         Button(bootstrapDesignator == nil ? "Don’t publish" : "Pair video only") {
                             onIgnore()
                             dismiss()
@@ -631,8 +640,23 @@ struct DroneConfirmationView: View {
                         Button("Cancel") { dismiss() }
                     }
                 }
+                if pairingOnly, let onIgnore {
+                    ToolbarItem(placement: .bottomBar) {
+                        Button("Pair for this session") { onIgnore(); dismiss() }
+                    }
+                }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(bootstrapDesignator == nil ? "Publish track" : "Save and publish track") {
+                    Button(pairingOnly ? "Save mapping" : (bootstrapDesignator == nil ? "Publish track" : "Save and publish track")) {
+                        if pairingOnly {
+                            guard identityStore.saveLocalPairing(identity) else {
+                                pairingSaveError = "This RID or stream designator already has an entry."
+                                return
+                            }
+                            identityStore.setPreferredPilotCallsign(pilotCallsign)
+                            onConfirm(identity)
+                            dismiss()
+                            return
+                        }
                         if organization.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             organization = UserDefaults.standard.string(forKey: "org.name") ?? ""
                         }

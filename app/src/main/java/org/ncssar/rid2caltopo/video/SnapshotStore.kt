@@ -327,3 +327,9 @@ private fun JSONObject.toAndroidClueRecord(): AndroidClueRecord? {
         binding = ClueBinding.fromJson(optJSONObject("binding")),
     ).takeIf { it.lat.isFinite() && it.lng.isFinite() }
 }
+
+internal fun clueShareReport(record: AndroidClueRecord, format: CoordinateDisplayFormat): String {
+    val captured = java.time.Instant.ofEpochMilli(record.createdAtMs).atZone(java.time.ZoneId.systemDefault())
+        .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z"))
+    return "${record.title}\nAircraft: ${record.sourceDesignator}\nCaptured: $captured\nLocation: ${CoordinateFormatter.format(record.lat, record.lng, format)} (${format.label})\n\n${record.publishedDescription}"
+}

@@ -12,6 +12,14 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### 2.5.0rc2
+
+- Both: configurable crosshair (default 5%, minimum 2%), centerpoint MSL/REF readouts, coordinates only with SEI, annotated clue photos, callsign prefill, clue sharing, bearing-line colors, compact stream status/settings row, pairing-only saved/session mapping offers, and tap-to-resume following.
+- Apple: fullscreen divider restored, altitude popup moved onto video without shifting page geometry, viewport persistence guarded against inset/teardown writes, and active stream recovery guarded against stale publisher lists.
+- Android: RID-arrival pairing trigger, visible telemetry pairing control, duplicate editor draft prevention, live pairing label refresh, no-map clue visibility and photo-link refresh, touch-requested login keyboard, recent OS credential acceptance, and startup AGL correction synchronized with automatic takeoff calibration.
+- Android native renderer: PTS relock can trigger from queue pressure below the latency target; reset the slow render interval immediately. Apple retains its separate PTS-led adaptive queue, using shared timing primitives.
+- Validation: targeted automated checks, builds and in-place device installs passed during iteration. Operator reported improved latest A5 Pro streaming. Broader streaming/controller qualification remains open; the Matrice log also contained a separate frame-delivery gap. This source candidate does not establish store readiness.
+
 ### 2.5.0rc1
 
 - Shared workflow: unified live workspace, stable bridge RSSI, session alert counts, aircraft inspection, About & Privacy, named incidents, download summaries, storage controls, and staged Settings Save/Cancel are implemented on both platforms.

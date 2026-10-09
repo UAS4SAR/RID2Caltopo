@@ -142,35 +142,28 @@ class StreamPipInsetFrameTest {
     }
 
     @Test
-    fun centerpointReferenceLongPress_requiresActiveExplicitlyFocusedCenterpoint() {
-        assertTrue(
-            shouldSetCenterpointElevationReference(
-                explicitlyFocused = true,
-                elevationEnabled = true,
-                pressNearCenter = true,
-            )
-        )
-        assertFalse(
-            shouldSetCenterpointElevationReference(
-                explicitlyFocused = false,
-                elevationEnabled = true,
-                pressNearCenter = true,
-            )
-        )
-        assertFalse(
-            shouldSetCenterpointElevationReference(
-                explicitlyFocused = true,
-                elevationEnabled = false,
-                pressNearCenter = true,
-            )
-        )
-        assertFalse(
-            shouldSetCenterpointElevationReference(
-                explicitlyFocused = true,
-                elevationEnabled = true,
-                pressNearCenter = false,
-            )
-        )
+    fun centerpointThreeTapCycleAndCoordinatesRespectReadoutMode() {
+        val only = CenterpointElevationDisplayMode.CROSSHAIR_ONLY
+        val msl = nextCenterpointDisplayMode(only)
+        val ref = nextCenterpointDisplayMode(msl)
+        assertEquals(CenterpointElevationDisplayMode.MSL, msl)
+        assertEquals(CenterpointElevationDisplayMode.REFERENCE, ref)
+        assertEquals(only, nextCenterpointDisplayMode(ref))
+        val sample = CenterpointElevationSample(39.0, -121.0, 4812, 1)
+        for (format in CoordinateDisplayFormat.values()) {
+            val coordinate = CoordinateFormatter.format(sample.latitude, sample.longitude, format)
+            assertTrue(centerpointReadout(sample, null, msl, format, true)!!.endsWith(coordinate))
+            assertTrue(centerpointReadout(sample, 4800, ref, format, true)!!.startsWith("+12' REF"))
+            assertTrue(centerpointReadout(sample, 4800, ref, format, true)!!.endsWith(coordinate))
+            assertEquals(null, centerpointReadout(sample, 4800, only, format, true))
+            assertFalse(centerpointReadout(sample, null, msl, format, false)!!.contains("loc:"))
+        }
+        assertEquals(null, centerpointReadout(null, null, msl, CoordinateDisplayFormat.DECIMAL, true))
+        val assumed = centerpointReadout(sample.copy(assumedNadir = true), null, msl, CoordinateDisplayFormat.DECIMAL, true)!!
+        assertTrue(assumed.startsWith("4812' MSL"))
+        assertFalse(assumed.contains("loc:"))
+        assertEquals("--' REF", centerpointElevationLabel(null, null, ref))
+        assertEquals("--' REF", centerpointElevationLabel(sample, null, ref))
     }
 
     @Test

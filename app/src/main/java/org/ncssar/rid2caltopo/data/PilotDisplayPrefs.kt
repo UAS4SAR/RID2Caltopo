@@ -9,8 +9,11 @@ const val DEFAULT_ARCHIVE_TRACK_COLOR = "#FF00FF"
 data class PilotDisplayPreference(
     val activeTrackColor: String = DEFAULT_ACTIVE_TRACK_COLOR,
     val archiveTrackColor: String = DEFAULT_ARCHIVE_TRACK_COLOR,
-    val bearingEnabled: Boolean = false
-)
+    val bearingEnabled: Boolean = false,
+    val bearingColor: String? = null,
+) {
+    val resolvedBearingColor: String get() = sanitizeTrackColor(bearingColor, activeTrackColor)
+}
 
 fun normalizePilotCallsign(raw: String?): String? {
     val normalized = raw?.trim()?.uppercase(Locale.US).orEmpty()
@@ -44,7 +47,8 @@ object PilotDisplayPrefs {
                 prefs.getString(key + KEY_ARCHIVE_SUFFIX, null),
                 DEFAULT_ARCHIVE_TRACK_COLOR
             ),
-            bearingEnabled = prefs.getBoolean(key + KEY_BEARING_SUFFIX, false)
+            bearingEnabled = prefs.getBoolean(key + KEY_BEARING_SUFFIX, false),
+            bearingColor = prefs.getString(key + ".bearingColor", null)
         )
     }
 
@@ -60,6 +64,7 @@ object PilotDisplayPrefs {
                 key + KEY_ARCHIVE_SUFFIX,
                 sanitizeTrackColor(preference.archiveTrackColor, DEFAULT_ARCHIVE_TRACK_COLOR)
             )
+            .putString(key + ".bearingColor", preference.bearingColor?.let { sanitizeTrackColor(it, preference.activeTrackColor) })
             .putBoolean(key + KEY_BEARING_SUFFIX, preference.bearingEnabled)
             .apply()
         return true
@@ -72,6 +77,7 @@ object PilotDisplayPrefs {
             .remove(key + KEY_ACTIVE_SUFFIX)
             .remove(key + KEY_ARCHIVE_SUFFIX)
             .remove(key + KEY_BEARING_SUFFIX)
+            .remove(key + ".bearingColor")
             .apply()
         return true
     }

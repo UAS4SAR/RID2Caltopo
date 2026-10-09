@@ -484,6 +484,11 @@ bool anomaly_detector_runtime_budget_decode_stall_active(
 const char *anomaly_detector_processing_mode_name(
         anomaly_detector_processing_mode_t mode);
 
+/** Faster valid PTS cadence must recover before a frame-count cap trims the queue. */
+bool anomaly_detector_runtime_budget_should_relock_live_pts(
+        int queue_depth, int64_t buffered_span_ms, int64_t target_latency_ms,
+        int64_t since_last_relock_ms, int64_t current_interval_ms, int64_t pts_interval_ms);
+
 #ifdef __cplusplus
 }
 #endif

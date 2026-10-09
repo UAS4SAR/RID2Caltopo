@@ -554,6 +554,25 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         clearFinishedFlightConfirmationState(remoteId, "local track finished: $reason")
     }
 
+    var onAcceptStreamPairing: ((String, String) -> Unit)? = null
+
+    fun requestNewDronePairing(remoteId: String, designator: String): Boolean {
+        val pending = _pendingDroneConfirmation.value
+        if (pending != null && (pending.remoteId != remoteId || pendingDroneConfirmationRequestedByOperator)) return false
+        val drone = CaltopoClient.GetDroneSpec(remoteId) ?: return false
+        requestDroneConfirmation(drone)
+        _pendingDroneConfirmation.value = _pendingDroneConfirmation.value?.copy(
+            bootstrapDesignator = designator, organization = "", pairingOnly = true, warning = null)
+        return true
+    }
+
+    fun pairPendingDroneForSession() {
+        val current = _pendingDroneConfirmation.value ?: return
+        val designator = current.bootstrapDesignator ?: return
+        onAcceptStreamPairing?.invoke(designator, current.remoteId)
+        dismissConfirmationForInspection()
+    }
+
     fun requestPairedDroneSetup(remoteId: String, designator: String) {
         val drone = CaltopoClient.GetDroneSpec(remoteId) ?: return
         requestDroneConfirmation(drone)
@@ -670,6 +689,15 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             existingMappedId
         } else {
             CtDroneSpec.BuildMappedId(callsign, droneDescription, remoteId)
+        }
+        if (current.pairingOnly) {
+            if (!CaltopoClient.SaveLocalPairedDrone(remoteId, mappedId, droneDescription, callsign)) {
+                CaltopoClient.ShowToast("This RID or stream designator already has an entry.")
+                return
+            }
+            onAcceptStreamPairing?.invoke(mappedId, remoteId)
+            dismissConfirmationForInspection()
+            return
         }
         val peerCoordinator = R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator
         CTDebug(

@@ -28,6 +28,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -208,12 +209,17 @@ fun ClueSheetContent (
                 val maxPreviewWidth = maxWidth * 0.5f
 
                 clue.preview?.let { bitmap ->
+                    val config by org.ncssar.rid2caltopo.video.CrosshairPreferences.configuration.collectAsState()
+                    val marked = remember(bitmap, clue.lat, clue.lng, clue.showCrosshairCoordinates, coordinateDisplayFormat, config) {
+                        org.ncssar.rid2caltopo.video.stampClueCrosshair(bitmap,
+                            if (clue.showCrosshairCoordinates) org.ncssar.rid2caltopo.video.CoordinateFormatter.format(clue.lat, clue.lng, coordinateDisplayFormat) else null)
+                    }
                     Box(
                         modifier = Modifier.fillMaxWidth(),
                         contentAlignment = Alignment.Center
                     ) {
                         Image(
-                            bitmap = bitmap.asImageBitmap(),
+                            bitmap = marked.asImageBitmap(),
                             contentDescription = "Clue preview",
                             modifier = Modifier
                                 .widthIn(max = maxPreviewWidth)
@@ -441,31 +447,28 @@ fun ClueSheetContent (
                 }
                 OutlinedButton(
                     modifier = Modifier.fillMaxWidth(),
+                    onClick = onCancel
+                ) {
+                    Text("Close")
+                }
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = clue.projectionHeightMeters != null,
+                    onClick = { submitWhenValid(onSubmit) }
+                ) {
+                    Text("Submit")
+                }
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
                     enabled = clue.projectionHeightMeters != null,
                     onClick = { submitWhenValid(onSubmitLocalMarkerOnly) }
                 ) {
-                    Text("Local Marker Only")
+                    Text("Mark Local Only")
                 }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    OutlinedButton(
-                        modifier = Modifier.weight(1f),
-                        onClick = onCancel
-                    ) {
-                        Text("Cancel")
-                    }
-
-                    Button(
-                        modifier = Modifier.weight(1f),
-                        enabled = clue.projectionHeightMeters != null,
-                        onClick = { submitWhenValid(onSubmit) }
-                    ) {
-                        Text("Submit")
-                    }
-                }
+                Text(
+                    text = "Close discards this report. Submit sends it to the Incident Map. Mark Local Only saves it on this device without uploading it.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         }
     }

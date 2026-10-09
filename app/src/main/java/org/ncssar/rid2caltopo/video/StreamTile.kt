@@ -149,18 +149,18 @@ internal fun shouldToggleCenterpointElevation(
     tapNearCenter: Boolean,
 ): Boolean = explicitlyFocused && tapNearCenter
 
-internal fun shouldSetCenterpointElevationReference(
-    explicitlyFocused: Boolean,
-    elevationEnabled: Boolean,
-    pressNearCenter: Boolean,
-): Boolean = explicitlyFocused && elevationEnabled && pressNearCenter
-
 internal enum class CenterpointElevationDisplayMode {
+    CROSSHAIR_ONLY,
     MSL,
     REFERENCE,
 }
 
-private val CenterpointTurquoise = Color(0xFF40E0D0)
+internal fun nextCenterpointDisplayMode(mode: CenterpointElevationDisplayMode): CenterpointElevationDisplayMode = when (mode) {
+    CenterpointElevationDisplayMode.CROSSHAIR_ONLY -> CenterpointElevationDisplayMode.MSL
+    CenterpointElevationDisplayMode.MSL -> CenterpointElevationDisplayMode.REFERENCE
+    CenterpointElevationDisplayMode.REFERENCE -> CenterpointElevationDisplayMode.CROSSHAIR_ONLY
+}
+
 
 internal fun centerpointElevationLabel(
     sample: CenterpointElevationSample?,
@@ -169,7 +169,8 @@ internal fun centerpointElevationLabel(
 ): String {
     val suffix = sample?.demResolutionMeters?.let { "${it}m DEM" }
         ?: "USGS DEM"
-    if (sample == null) return "--' MSL"
+    if (sample == null || (displayMode == CenterpointElevationDisplayMode.REFERENCE && referenceElevationFeet == null))
+        return if (displayMode == CenterpointElevationDisplayMode.REFERENCE) "--' REF" else "--' MSL"
     val extras = (sample.pointAolFeet?.let { " · AOL $it'" } ?: "") + if (sample.assumedNadir) " · Assumed ↓90°" else ""
     if (displayMode == CenterpointElevationDisplayMode.REFERENCE && referenceElevationFeet != null) {
         val delta = sample.elevationFeet - referenceElevationFeet
@@ -179,19 +180,31 @@ internal fun centerpointElevationLabel(
     return "${sample.elevationFeet}' MSL · $suffix$extras"
 }
 
+internal fun centerpointReadout(
+    sample: CenterpointElevationSample?, referenceElevationFeet: Int?,
+    displayMode: CenterpointElevationDisplayMode, coordinateFormat: CoordinateDisplayFormat,
+    showCoordinates: Boolean,
+): String? {
+    if (displayMode == CenterpointElevationDisplayMode.CROSSHAIR_ONLY || sample == null) return null
+    val coordinates = if (showCoordinates && !sample.assumedNadir) sample.let {
+        CoordinateFormatter.format(it.latitude, it.longitude, coordinateFormat)
+    } else null
+    return centerpointElevationLabel(sample, referenceElevationFeet, displayMode) + (coordinates?.let { "\n$it" } ?: "")
+}
+
 @Composable
 private fun CenterpointElevationOverlay(
     sample: CenterpointElevationSample?,
     referenceElevationFeet: Int?,
     displayMode: CenterpointElevationDisplayMode,
-    onToggleDisplayMode: () -> Unit,
-    onSetReference: () -> Unit,
+    showLabel: Boolean = true,
+    coordinateFormat: CoordinateDisplayFormat,
 ) {
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .semantics {
-                contentDescription = sample?.let {
+                contentDescription = if (!showLabel) "Crosshair" else sample?.let {
                     val resolution = it.demResolutionMeters?.let { meters -> ", $meters meter DEM" }
                         ?: ", USGS DEM"
                     "Centerpoint elevation ${it.elevationFeet} feet$resolution"
@@ -199,46 +212,43 @@ private fun CenterpointElevationOverlay(
                     ?: "Centerpoint elevation unavailable"
             },
     ) {
+        val context = LocalContext.current
+        CrosshairPreferences.load(context)
+        val config by CrosshairPreferences.configuration.collectAsState()
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val center = Offset(size.width / 2f, size.height / 2f)
-            val arm = 18.dp.toPx()
-            val gap = 4.dp.toPx()
-            val segments = listOf(
-                center.copy(x = center.x - arm) to center.copy(x = center.x - gap),
-                center.copy(x = center.x + gap) to center.copy(x = center.x + arm),
-                center.copy(y = center.y - arm) to center.copy(y = center.y - gap),
-                center.copy(y = center.y + gap) to center.copy(y = center.y + arm),
-            )
-            segments.forEach { (start, end) ->
-                drawLine(Color.Black, start, end, strokeWidth = 4.dp.toPx())
-                drawLine(CenterpointTurquoise, start, end, strokeWidth = 1.5.dp.toPx())
-            }
-            drawCircle(Color.Black, radius = 3.5.dp.toPx(), center = center, style = Stroke(2.5.dp.toPx()))
-            drawCircle(CenterpointTurquoise, radius = 3.5.dp.toPx(), center = center, style = Stroke(1.dp.toPx()))
-        }
-        val label = centerpointElevationLabel(sample, referenceElevationFeet, displayMode)
-        Box(
-            modifier = Modifier
-                .align(Alignment.Center)
-                .offset(x = 42.dp, y = 28.dp)
-                .clip(RoundedCornerShape(4.dp))
-                .background(Color.Black.copy(alpha = 0.72f))
-                .pointerInput(referenceElevationFeet, displayMode) {
-                    detectTapGestures(
-                        onTap = {
-                            if (referenceElevationFeet != null) onToggleDisplayMode()
-                        },
-                        onLongPress = { onSetReference() },
-                    )
+            if (config.style != "None") {
+                val center = Offset(size.width / 2f, size.height / 2f)
+                val arm = minOf(size.width, size.height) * config.sizePercent / 200f
+                val segments = listOf(
+                    center.copy(x = center.x - arm) to center.copy(x = center.x + arm),
+                    center.copy(y = center.y - arm) to center.copy(y = center.y + arm),
+                )
+                segments.forEach { (start, end) ->
+                    if (config.style == "Bordered") drawLine(Color(config.borderColor), start, end, strokeWidth = config.widthPx + 2f)
+                    drawLine(Color(config.mainColor), start, end, strokeWidth = config.widthPx)
                 }
-                .padding(horizontal = 4.dp, vertical = 2.dp),
-        ) {
-            Text(
-                text = label,
-                color = CenterpointTurquoise,
-                fontSize = 17.sp,
-                fontWeight = FontWeight.Bold,
-            )
+            }
+        }
+        val labelOffset = with(LocalDensity.current) {
+            (minOf(constraints.maxWidth, constraints.maxHeight) * config.sizePercent / 200f).toDp()
+        } + 32.dp
+        if (showLabel && sample != null) {
+            val label = centerpointReadout(sample, referenceElevationFeet, displayMode, coordinateFormat, config.showCoordinates).orEmpty()
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .offset(y = labelOffset)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color.Black.copy(alpha = 0.72f))
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+            ) {
+                Text(
+                    text = label,
+                    color = Color(config.mainColor),
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
         }
     }
 }
@@ -397,6 +407,12 @@ fun StreamTile(
         }
     }
 
+    LaunchedEffect(centerpointElevationEnabled, isFocused) {
+        viewModel.setStreamCrosshairReadoutActive(streamDesignator, centerpointElevationEnabled && isFocused)
+    }
+    DisposableEffect(streamDesignator) {
+        onDispose { viewModel.setStreamCrosshairReadoutActive(streamDesignator, false) }
+    }
     LaunchedEffect(centerpointElevationEnabled, isFocused, streamState) {
         if (!centerpointElevationEnabled || !isFocused || streamState != StreamState.LIVE) return@LaunchedEffect
         while (true) {
@@ -408,6 +424,7 @@ fun StreamTile(
 
     fun openTelemetryPairingControl() {
         if (!tileInteractionsEnabled || isLocalPlayback) return
+        if (!viewModel.hasPairedTelemetry(streamDesignator) && viewModel.offerDroneSetupForStream(streamDesignator)) return
         when (designatorState) {
             is DesignatorState.Yellow -> {
                 val decision = viewModel.streamPairingControlDecision(streamDesignator)
@@ -418,7 +435,7 @@ fun StreamTile(
                 }
             }
             is DesignatorState.Green -> showUnmatchDialog = true
-            else -> {}
+            else -> { showPicker = true }
         }
     }
 
@@ -442,17 +459,6 @@ fun StreamTile(
             )
             openTelemetryPairingControl()
             viewModel.consumeAutomaticStreamPairingRequest(request)
-        }
-    }
-
-    fun setCenterpointElevationReference() {
-        val sample = centerpointElevation
-        if (sample == null) {
-            CaltopoClient.ShowToast("Reference unavailable: waiting for centerpoint elevation.")
-        } else {
-            centerpointReferenceElevationFeet = sample.elevationFeet
-            centerpointDisplayMode = CenterpointElevationDisplayMode.REFERENCE
-            CaltopoClient.ShowToast("Elevation reference set at ${sample.elevationFeet} ft MSL.")
         }
     }
 
@@ -564,7 +570,8 @@ fun StreamTile(
         }
         if (!viewModel.hasPairedTelemetry(streamDesignator)) {
             CTDebug(tag, "Clue capture unavailable for $streamDesignator: no active paired telemetry.")
-            CaltopoClient.ShowToast("Clue unavailable: no current paired drone location.")
+            CaltopoClient.ShowToast("Pair drone telemetry to capture a clue.")
+            openTelemetryPairingControl()
             return
         }
         if (captureClueSnapshot(reason)) {
@@ -610,6 +617,62 @@ fun StreamTile(
             .clipToBounds()
     ) {
         VideoSafetyNotice()
+        Row(Modifier.fillMaxWidth().background(Color.Black), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) {
+        DesignatorIndicator(
+            streamDesignator = streamDesignator,
+            streamState = streamState,
+            streamErrorDetail = streamErrorDetail,
+            viewModel = viewModel,
+            onLongPress = {
+                openTelemetryPairingControl()
+            },
+            onTelemetryChipClick = {
+                CTDebug(tag, "StreamTile(${streamDesignator}) telemetryChipClick designatorState=${designatorState::class.simpleName}")
+                openTelemetryPairingControl()
+            },
+            interactionEnabled = tileInteractionsEnabled,
+            onCalibrationRequested = { showTakeoffCalibration = true },
+            zoomText = if (zoomScale > 1.01f) "${zoomScale.formatZoom()}x" else null,
+        )
+            }
+            if (showOverlayControls) {
+            Box(
+                modifier = Modifier
+                    .padding(6.dp)
+            ) {
+                IconButton(
+                    onClick = { anomalyMenuExpanded = true },
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.72f))
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Settings,
+                        contentDescription = "Anomaly detection settings"
+                    )
+                }
+                DropdownMenu(
+                    expanded = anomalyMenuExpanded,
+                    onDismissRequest = { anomalyMenuExpanded = false }
+                ) {
+                    AnomalySettingsMenuContent(
+                        viewModel = viewModel,
+                        streamDesignator = streamDesignator,
+                        anomalyMode = anomalyMode,
+                        isLocalPlayback = isLocalPlayback,
+                        pauseLocalPlaybackOnOpen = pauseLocalPlaybackOnOpen,
+                        onShowSettings = { showAnomalySettingsDialog = true },
+                        onShowHelp = { showAdHelpDialog = true },
+                        onShowPerformance = { showPerformance = true },
+                        onCloseStream = onCloseStream,
+                        onRestartServer = if (!isLocalPlayback) onRestartServer else null,
+                        onDismissMenu = { anomalyMenuExpanded = false },
+                    )
+                }
+            }
+            }
+        }
         Box(
             modifier = Modifier.weight(1f).fillMaxWidth()
                 .onSizeChanged { streamTileSize = it }
@@ -734,44 +797,6 @@ fun StreamTile(
                     }
             )
         }
-        // Keep aircraft heading distinct from the camera bearing supplied by DJI SEI.
-        if (streamState == StreamState.LIVE && !isLocalPlayback && showStandaloneTelemetryOverlay) {
-            val displayState = viewModel.droneDisplayStateForStream(streamDesignator)
-            val cameraAzimuthDeg = viewModel.cameraAzimuthForStream(streamDesignator)
-            Row(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(start = 6.dp, top = 6.dp)
-                    .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(4.dp))
-                    .padding(horizontal = 6.dp, vertical = 3.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Text(
-                    text = androidx.compose.ui.text.buildAnnotatedString {
-                        val line = stableVideoTelemetryText(streamTelemetryHeaderText(displayState, cameraAzimuthDeg))
-                        append(line)
-                        Regex("\\bCAL\\b").findAll(line).forEach { match ->
-                            addStyle(androidx.compose.ui.text.SpanStyle(color = Color(0xFFFF9800)), match.range.first, match.range.last + 1)
-                        }
-                        negativeAolRange(line)?.let { range ->
-                            addStyle(androidx.compose.ui.text.SpanStyle(color = Color.Red), range.first, range.last + 1)
-                        }
-                    },
-                    color = Color.White,
-                    modifier = Modifier.clickable(enabled = streamTelemetryHeaderText(displayState, cameraAzimuthDeg).contains("CAL")) { showTakeoffCalibration = true }.semantics { contentDescription = streamTelemetryHeaderText(displayState, cameraAzimuthDeg) + "; " + (displayState?.aol?.details ?: "Surface package not prepared") },
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace,
-                )
-                if (zoomScale > 1.01f) {
-                    Text(
-                        text = "${zoomScale.formatZoom()}x",
-                        color = Color.White,
-                        fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                }
-            }
-        }
         if (
             anomalyConfig.enabled &&
             anomalyConfig.showGuideBoxes &&
@@ -814,7 +839,7 @@ fun StreamTile(
                                                 .coerceIn(48.dp.toPx(), 96.dp.toPx())
                                         }
                                         if (shouldToggleCenterpointElevation(
-                                                explicitlyFocused = explicitlyFocused,
+                                                explicitlyFocused = currentIsFocused,
                                                 tapNearCenter = isNearStreamCenter(
                                                     tap = tapOffset,
                                                     widthPx = size.width.toFloat(),
@@ -823,11 +848,21 @@ fun StreamTile(
                                                 ),
                                             )
                                         ) {
-                                            centerpointElevationEnabled = !centerpointElevationEnabled
-                                            if (centerpointElevationEnabled) {
-                                                centerpointElevation = null
-                                                zoomScale = 1f
-                                                zoomOffset = Offset.Zero
+                                            val nextMode = nextCenterpointDisplayMode(
+                                                if (centerpointElevationEnabled) centerpointDisplayMode else CenterpointElevationDisplayMode.CROSSHAIR_ONLY)
+                                            centerpointDisplayMode = nextMode
+                                            centerpointElevationEnabled = nextMode != CenterpointElevationDisplayMode.CROSSHAIR_ONLY
+                                            when (nextMode) {
+                                                CenterpointElevationDisplayMode.MSL -> {
+                                                    centerpointElevation = null
+                                                    zoomScale = 1f
+                                                    zoomOffset = Offset.Zero
+                                                }
+                                                CenterpointElevationDisplayMode.REFERENCE -> {
+                                                    centerpointReferenceElevationFeet = centerpointElevation?.elevationFeet
+                                                    if (centerpointReferenceElevationFeet == null) CaltopoClient.ShowToast("Reference unavailable: waiting for centerpoint elevation.")
+                                                }
+                                                CenterpointElevationDisplayMode.CROSSHAIR_ONLY -> centerpointReferenceElevationFeet = null
                                             }
                                             return@detectTapGestures
                                         }
@@ -836,28 +871,9 @@ fun StreamTile(
                                         onToggleFocus()
                                     }
                                 },
-                                onLongPress = { pressOffset ->
+                                onLongPress = { _ ->
                                     if (isLocalPlayback) {
                                         showAnomalySettingsDialog = true
-                                        return@detectTapGestures
-                                    }
-                                    val minimumDimension = minOf(size.width, size.height).toFloat()
-                                    val radiusPx = with(density) {
-                                        (minimumDimension * 0.20f)
-                                            .coerceIn(48.dp.toPx(), 96.dp.toPx())
-                                    }
-                                    if (shouldSetCenterpointElevationReference(
-                                            explicitlyFocused = explicitlyFocused,
-                                            elevationEnabled = centerpointElevationEnabled,
-                                            pressNearCenter = isNearStreamCenter(
-                                                tap = pressOffset,
-                                                widthPx = size.width.toFloat(),
-                                                heightPx = size.height.toFloat(),
-                                                radiusPx = radiusPx,
-                                            ),
-                                        )
-                                    ) {
-                                        setCenterpointElevationReference()
                                         return@detectTapGestures
                                     }
                                     CTDebug(tag, "StreamTile(${streamDesignator}) onLongPress designatorState=${designatorState::class.simpleName}")
@@ -871,20 +887,13 @@ fun StreamTile(
                     }
                 )
         )
-        if (centerpointElevationEnabled && isFocused && streamState == StreamState.LIVE) {
+        if (isFocused && streamState == StreamState.LIVE) {
             CenterpointElevationOverlay(
                 sample = centerpointElevation,
                 referenceElevationFeet = centerpointReferenceElevationFeet,
                 displayMode = centerpointDisplayMode,
-                onToggleDisplayMode = {
-                    if (centerpointReferenceElevationFeet != null) {
-                        centerpointDisplayMode = when (centerpointDisplayMode) {
-                            CenterpointElevationDisplayMode.MSL -> CenterpointElevationDisplayMode.REFERENCE
-                            CenterpointElevationDisplayMode.REFERENCE -> CenterpointElevationDisplayMode.MSL
-                        }
-                    }
-                },
-                onSetReference = ::setCenterpointElevationReference,
+                showLabel = centerpointElevationEnabled,
+                coordinateFormat = viewModel.coordinateDisplayFormat,
             )
         }
         if (shouldShowStreamClueCaptureButton(showTileControls, isLocalPlayback, streamState)) {
@@ -912,41 +921,6 @@ fun StreamTile(
             }
         }
         if (showOverlayControls) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(6.dp)
-            ) {
-                IconButton(
-                    onClick = { anomalyMenuExpanded = true },
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.72f))
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Settings,
-                        contentDescription = "Anomaly detection settings"
-                    )
-                }
-                DropdownMenu(
-                    expanded = anomalyMenuExpanded,
-                    onDismissRequest = { anomalyMenuExpanded = false }
-                ) {
-                    AnomalySettingsMenuContent(
-                        viewModel = viewModel,
-                        streamDesignator = streamDesignator,
-                        anomalyMode = anomalyMode,
-                        isLocalPlayback = isLocalPlayback,
-                        pauseLocalPlaybackOnOpen = pauseLocalPlaybackOnOpen,
-                        onShowSettings = { showAnomalySettingsDialog = true },
-                        onShowHelp = { showAdHelpDialog = true },
-                        onShowPerformance = { showPerformance = true },
-                        onCloseStream = onCloseStream,
-                        onRestartServer = if (!isLocalPlayback) onRestartServer else null,
-                        onDismissMenu = { anomalyMenuExpanded = false },
-                    )
-                }
-            }
             if (showLegendControls) {
                 Row(
                     modifier = Modifier
@@ -1049,33 +1023,26 @@ fun StreamTile(
                 onDismissAnomalySettingsDialog = { showAnomalySettingsDialog = false },
                 showAdHelpDialog = showAdHelpDialog,
                 onDismissAdHelpDialog = { showAdHelpDialog = false },
+                onPairTelemetry = {
+                    showAnomalySettingsDialog = false
+                    openTelemetryPairingControl()
+                },
             )
         }
-        DesignatorIndicator(
-            streamDesignator = streamDesignator,
-            streamState = streamState,
-            streamErrorDetail = streamErrorDetail,
-            viewModel = viewModel,
-            onLongPress = {
-                openTelemetryPairingControl()
-            },
-            onTelemetryChipClick = {
-                CTDebug(tag, "StreamTile(${streamDesignator}) telemetryChipClick designatorState=${designatorState::class.simpleName}")
-                openTelemetryPairingControl()
-            },
-            interactionEnabled = tileInteractionsEnabled
-        )
         if (showUnmatchDialog && designatorState is DesignatorState.Green) {
             val greenState = designatorState as DesignatorState.Green
             AlertDialog(
                 onDismissRequest = { showUnmatchDialog = false },
                 title = { Text("Change Telemetry Pairing") },
                 text = {
-                    Text(
-                        "Stream \"$streamDesignator\" is paired with Remote ID:\n" +
-                            "${greenState.droneSpecState.remoteId}\n\n" +
-                            "Unmatch clears any current-run pairing. Remap lets you choose a different drone for this run."
-                    )
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
+                        Text(
+                            "Stream \"$streamDesignator\" is paired with Remote ID:\n" +
+                                "${greenState.droneSpecState.remoteId}\n\n" +
+                                "Unmatch clears any current-run pairing. Remap lets you choose a different drone for this run."
+                        )
+                        CrosshairConfigurationSection()
+                    }
                 },
                 confirmButton = {
                     TextButton(onClick = {
@@ -1116,7 +1083,8 @@ fun StreamTile(
                         showPicker = false
                     }
                 },
-                onDismiss = {showPicker = false}
+                onDismiss = {showPicker = false},
+                configuration = { CrosshairConfigurationSection() },
             )
         }
         pendingPairingWarning?.let { warning ->
@@ -1124,6 +1092,7 @@ fun StreamTile(
                 onDismissRequest = { pendingPairingWarning = null },
                 title = { Text("Controller Designator Mismatch") },
                 text = {
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
                     Text(
                         "The ${warning.droneLabel} drone with Remote ID \"${warning.remoteId}\" " +
                             "is currently configured for controller designator " +
@@ -1132,6 +1101,8 @@ fun StreamTile(
                             "\"${warning.configuredStreamDesignator}\" instead of " +
                             "\"${warning.streamDesignator}\" so other tablets can connect to it."
                     )
+                        CrosshairConfigurationSection()
+                    }
                 },
                 confirmButton = {
                     TextButton(onClick = {
@@ -1235,6 +1206,7 @@ internal fun AnomalySettingsDialogs(
     onDismissAnomalySettingsDialog: () -> Unit,
     showAdHelpDialog: Boolean,
     onDismissAdHelpDialog: () -> Unit,
+    onPairTelemetry: (() -> Unit)? = null,
 ) {
     if (showAnomalySettingsDialog) {
         var sensitivityValue by remember(streamDesignator, anomalyConfig.sensitivity) {
@@ -1298,7 +1270,7 @@ internal fun AnomalySettingsDialogs(
         }
         AlertDialog(
             onDismissRequest = onDismissAnomalySettingsDialog,
-            title = { Text("Anomaly Detector") },
+            title = { Text(if (isLocalPlayback) "Anomaly Detector" else "Stream Settings") },
             text = {
                 val settingsScroll = rememberScrollState()
                 Column(
@@ -1308,6 +1280,15 @@ internal fun AnomalySettingsDialogs(
                         .verticalScroll(settingsScroll),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
+                    if (!isLocalPlayback) {
+                        onPairTelemetry?.let { pair ->
+                            OutlinedButton(onClick = pair, modifier = Modifier.fillMaxWidth()) {
+                                Text(if (viewModel.hasPairedTelemetry(streamDesignator)) "Review / change telemetry pairing" else "Pair drone telemetry")
+                            }
+                        }
+                        Text("Long-press the video or tap the stream designator to pair telemetry.")
+                        CrosshairConfigurationSection()
+                    }
                     val selectedMode = anomalyConfig.detectorMode()
                     PanelSettingLabel("AD Mode")
                     Box(modifier = Modifier.fillMaxWidth()) {

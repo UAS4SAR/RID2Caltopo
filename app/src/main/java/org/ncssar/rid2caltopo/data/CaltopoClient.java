@@ -687,6 +687,13 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             if (existing.getRemoteId().equalsIgnoreCase(remoteId) || existing.getMappedId().equalsIgnoreCase(designator.trim())) return false;
         }
         GetState().cachedDroneSpecTable.put(remoteId, new CtDroneSpec(remoteId, designator.trim(), "", model.trim(), callsign.trim()));
+        CtDroneSpec active = GetState().droneSpecTable.get(remoteId);
+        if (active != null) {
+            active.setModel(model.trim());
+            active.setOwner(callsign.trim());
+            active.setMappedId(designator.trim());
+        }
+        UpdateDroneSpecs();
         ArchiveState("Local aircraft added from video pairing");
         return true;
     }
@@ -702,7 +709,10 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         List<String> errors = RidMappingRules.INSTANCE.validateEntry(organization, mapping, others, AircraftOrganizationAccess.belongsToOrganization());
         if (!errors.isEmpty()) throw new IllegalArgumentException(String.join("\n", errors));
         String remoteId = RidMappingRules.INSTANCE.normalizeRemoteId(mapping.getRemoteId());
-        CtDroneSpec spec = new CtDroneSpec(remoteId, CtDroneSpec.BuildMappedId(mapping.getOwnerCallsign().trim(), mapping.getModel().trim(), remoteId),
+        CtDroneSpec prior = originalRemoteId == null ? null : GetState().cachedDroneSpecTable.get(originalRemoteId);
+        String designator = prior != null && !prior.getMappedId().equalsIgnoreCase(prior.getRemoteId())
+                ? prior.getMappedId() : CtDroneSpec.BuildMappedId(mapping.getOwnerCallsign().trim(), mapping.getModel().trim(), remoteId);
+        CtDroneSpec spec = new CtDroneSpec(remoteId, designator,
                 organization.trim(), mapping.getModel().trim(), mapping.getOwnerName().trim(), mapping.getOwnerCallsign().trim());
         spec.setReadiness(mapping.getReadiness());
         if (originalRemoteId != null) GetState().cachedDroneSpecTable.remove(originalRemoteId);

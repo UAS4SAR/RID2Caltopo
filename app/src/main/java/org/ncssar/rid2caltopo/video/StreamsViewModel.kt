@@ -146,6 +146,7 @@ data class PendingClue(
     val gimbalAngleConfirmed: Boolean = true,
     val timestamp: Long,
     val bitmap: Bitmap?,
+    val showCrosshairCoordinates: Boolean = false,
     val preview: Bitmap?,
     val title: String,
     val description: String,
@@ -460,11 +461,12 @@ internal data class ClueProjection(
 internal fun buildClueDescriptionTemplate(
     timestampMs: Long,
     zoneId: ZoneId = ZoneId.systemDefault(),
+    pilot: String = "",
 ): String {
     val localTime = Instant.ofEpochMilli(timestampMs)
         .atZone(zoneId)
         .format(clueTimeFormatter)
-    return "time: $localTime\nfound by: \nreported to IC: yes|no\n"
+    return "time: $localTime\nfound by: ${pilot.trim()}\nreported to IC: yes|no\n"
 }
 
 internal fun buildClueCaptureSummary(
@@ -1237,6 +1239,11 @@ class StreamsViewModel(
             ?.azimuthDeg
             ?.takeIf { it.isFinite() }
 
+    private val crosshairReadoutStreams = mutableSetOf<String>()
+    fun setStreamCrosshairReadoutActive(designator: String, active: Boolean) {
+        if (active) crosshairReadoutStreams.add(designator) else crosshairReadoutStreams.remove(designator)
+    }
+
     internal suspend fun centerpointElevationForStream(
         streamDesignator: String,
         nowMs: Long = System.currentTimeMillis(),
@@ -1247,7 +1254,7 @@ class StreamsViewModel(
         val longitude = spec.lastLng.takeIf { it.isFinite() && it in -180.0..180.0 } ?: return null
         val camera = StreamCameraTelemetryRegistry.fresh(streamDesignator, nowMs)
         val reportedTilt = StreamCameraTelemetryRegistry.freshTilt(streamDesignator, nowMs)
-        val tilt = reportedTilt ?: -90.0
+        val tilt = reportedTilt?.takeIf { it.isFinite() } ?: -90.0
         if (tilt >= -0.1) return null
         val projected = if (tilt <= -89.9) {
             ClueProjection(latitude, longitude, 0.0)
@@ -1414,6 +1421,8 @@ class StreamsViewModel(
                 _droneStates.remove(key)
             }
         }
+        // RID often arrives after the publisher is already live. Re-check that arrival order.
+        offerNewDronePairing()
         val complianceNowMs = System.currentTimeMillis()
         var maxAglFt: Double? = null
         var maxRangeFt: Double? = null
@@ -2045,16 +2054,59 @@ class StreamsViewModel(
             ?: binding.primaryLabel
     }
 
+    var onNewDronePairingSetup: ((String, String) -> Boolean)? = null
+    private val newDronePairingOffers = org.ncssar.rid2caltopo.video.NewDronePairingOffers()
     var onPairedDroneSetup: ((String, String) -> Unit)? = null
 
+    private fun unknownFreshPairingCandidates(): List<StreamTelemetryState> {
+        val savedIds = CaltopoClient.GetPersistedDroneSpecs().map { it.remoteId.uppercase(Locale.US) }.toSet()
+        return _droneStates.values.filter {
+            System.currentTimeMillis() - it.source.mostRecentMsecTimestamp in 0..14999 &&
+                it.remoteId.uppercase(Locale.US) !in savedIds &&
+                (it.mappedId.isBlank() || it.mappedId.equals(it.remoteId, true))
+        }.map { StreamTelemetryState(it.remoteId, it.mappedId) }
+    }
+
+    /** Manual entry uses the same Add New Drone panel as the automatic offer. */
+    fun offerDroneSetupForStream(designator: String): Boolean {
+        val fresh = _droneStates.values.filter {
+            System.currentTimeMillis() - it.source.mostRecentMsecTimestamp in 0..14999
+        }
+        val candidate = fresh.singleOrNull() ?: return false
+        if (unknownFreshPairingCandidates().none { it.remoteId == candidate.remoteId }) return false
+        return onNewDronePairingSetup?.invoke(candidate.remoteId, designator) == true
+    }
+
+    private fun offerNewDronePairing() {
+        val live = streamInfoByDesignator.values.filter { it.state == StreamState.LIVE && !it.isLocalPlayback && isStreamVisible(it) }
+        val fresh = _droneStates.values.filter {
+            System.currentTimeMillis() - it.source.mostRecentMsecTimestamp in 0..14999
+        }.map { StreamTelemetryState(it.remoteId, it.mappedId) }
+        newDronePairingOffers.reconcile(
+            liveStreams = live.map { it.designator },
+            unpairedStreams = live.filter { !hasPairedTelemetry(it.designator) }.map { it.designator },
+            freshTelemetry = fresh,
+            unknownRemoteIds = unknownFreshPairingCandidates().map { it.remoteId }.toSet(),
+        ) { remoteId, designator ->
+            val presented = onNewDronePairingSetup?.invoke(remoteId, designator) == true
+            if (presented) CTInfo(tag, "Add New Drone pairing offer stream=$designator remoteId=$remoteId")
+            presented
+        }
+    }
+
     fun pairAndOfferSetup(streamDesignator: String, remoteId: String) {
-        bindStreamTelemetry(streamDesignator, remoteId)
         val live = CaltopoClient.GetDroneSpec(remoteId)
         val saved = CaltopoClient.GetPersistedDroneSpecs()
-        if (live != null && (live.mappedId.isBlank() || live.mappedId == remoteId) &&
+        if (live != null && (live.mappedId.isBlank() || live.mappedId.equals(remoteId, true)) &&
             saved.none { it.remoteId.equals(remoteId, true) || it.mappedId.equals(streamDesignator, true) }) {
-            onPairedDroneSetup?.invoke(remoteId, streamDesignator)
+            // Explicit selection of a new drone uses the same mapping-only form.
+            // Cancellation must leave the stream unpaired and must not publish a flight.
+            if (onNewDronePairingSetup?.invoke(remoteId, streamDesignator) != true) {
+                CaltopoClient.ShowToast("Finish the current drone dialog, then try pairing again.")
+            }
+            return
         }
+        bindStreamTelemetry(streamDesignator, remoteId)
     }
 
     fun bindStreamTelemetry(streamDesignator: String, remoteId: String) {
@@ -2489,7 +2541,8 @@ class StreamsViewModel(
             bitmap = bitmap,
             preview = null,
             title = "",
-            description = buildClueDescriptionTemplate(clueTimestamp),
+            description = buildClueDescriptionTemplate(clueTimestamp, pilot = droneSpec.owner),
+            showCrosshairCoordinates = designator in crosshairReadoutStreams && freshDjiCamera != null,
             streamTelemetrySummary = summary,
             aircraftPositionSourceLabel = when {
                 freshDjiCamera?.latitudeDeg != null -> "DJI SEI local displacement"
@@ -2533,6 +2586,20 @@ class StreamsViewModel(
         _pendingClue.value = _pendingClue.value?.copy(description = description)
     }
 
+    fun clueShareImagePath(id: String): String? = localClueStore.record(id)?.let {
+        localClueStore.imageFile(it).takeIf { file -> file.isFile }?.absolutePath
+    }
+
+    fun clueShareText(id: String): String? = localClueStore.record(id)?.let {
+        org.ncssar.rid2caltopo.video.clueShareReport(it, coordinateDisplayFormat)
+    }
+
+    fun clueSnapshotForId(id: String): ClueSnapshotRef? = localClueStore.record(id)?.let { record ->
+        val photo = localClueStore.imageFile(record)
+        if (!photo.isFile) return@let null
+        ClueSnapshotRef(record.title, localClueStore.loadThumbnail(record), null, photo.absolutePath)
+    }
+
     fun clueSnapshotForTitle(title: String): ClueSnapshotRef? =
         clueSnapshotForTitle(clueSnapshotRefsByTitle, title)
 
@@ -2556,8 +2623,8 @@ class StreamsViewModel(
     private fun currentLocalClueMapKey(): String {
         val mapId = CaltopoMap.GetMapId().trim()
         if (mapId.isNotEmpty()) return "map:$mapId"
-        val mapName = CaltopoMap.GetMapName().trim()
-        if (mapName.isNotEmpty()) return "name:$mapName"
+        // A display name such as Training is not a destination map. Pending clues
+        // saved as unassigned must survive hydration in this same local view.
         return "unassigned"
     }
 
@@ -2579,10 +2646,13 @@ class StreamsViewModel(
     }
 
     private fun persistClueLocally(clue: PendingClue, title: String, description: String, publish: Boolean): AndroidClueRecord? {
-        val bitmap = clue.bitmap ?: run {
+        val source = clue.bitmap ?: run {
             CaltopoClient.ShowToast("Clue image is not ready; local copy was not saved.")
             return null
         }
+        org.ncssar.rid2caltopo.video.CrosshairPreferences.load(getApplication())
+        val bitmap = org.ncssar.rid2caltopo.video.stampClueCrosshair(source,
+            if (clue.showCrosshairCoordinates) org.ncssar.rid2caltopo.video.CoordinateFormatter.format(clue.lat, clue.lng, coordinateDisplayFormat) else null)
         return try {
             val personal = org.ncssar.rid2caltopo.data.CaltopoPersonalSession.capture("")
             // The map comes from the flight the clue is bound to, never from live telemetry.
@@ -2613,7 +2683,7 @@ class StreamsViewModel(
             registerClueSnapshot(
                 title = record.title,
                 fullImage = bitmap,
-                preview = clue.preview,
+                preview = bitmap,
                 fullImagePath = localClueStore.imageFile(record).absolutePath,
             )
             record
@@ -2705,7 +2775,13 @@ class StreamsViewModel(
         val folder = CaltopoMap.GetFolderId() ?: return
         // One photo at a time; the next poll advances the remaining queue.
         if (clueUploadsInFlight.isNotEmpty()) return
-        val record = localClueStore.pendingForMap(mapId, teamId).firstOrNull() ?: return
+        val pending = localClueStore.pendingForMap(mapId, teamId)
+        // Map assignment can update the index outside this view model. pendingForMap
+        // reloads it; refresh photo markers even if every assigned clue is already published.
+        val mapKey = currentLocalClueMapKey()
+        val visibleIds = localClueStore.recordsForMap(mapKey).map { it.id }.toSet()
+        if (visibleIds != localMapMarkers.map { it.id }.toSet()) hydrateLocalClues(mapKey)
+        val record = pending.firstOrNull() ?: return
         if (!clueUploadsInFlight.add(record.id)) return
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -2716,6 +2792,7 @@ class StreamsViewModel(
                     try {
                         val permanent = result.responseCode in listOf(400, 401, 403, 404, 413, 422)
                         localClueStore.recordUploadResult(record.id, result.success(), result.responseString(), permanent)
+                        viewModelScope.launch(Dispatchers.Main) { hydrateLocalClues(currentLocalClueMapKey()) }
                     } finally { clueUploadsInFlight.remove(record.id) }
                 }
             } catch (error: Exception) {
@@ -3423,6 +3500,7 @@ class StreamsViewModel(
     private fun syncStreamSessions(streamsMap: Map<String, StreamInfo>) {
         streamInfoByDesignator.clear()
         streamInfoByDesignator.putAll(streamsMap)
+        offerNewDronePairing()
 
         val focused = _focusedPath.value
         if (focused != null && !streamsMap.containsKey(focused)) {

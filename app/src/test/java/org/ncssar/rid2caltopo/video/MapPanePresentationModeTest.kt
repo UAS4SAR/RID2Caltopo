@@ -371,4 +371,15 @@ class MapPanePresentationModeTest {
             )
         )
     }
+    @Test fun selectingDroneResumesFollowAfterPanning() {
+        val adjusted = viewportAdjustedAfterDroneSelection(followEnabled = true, currentlyAdjusted = true)
+        assertFalse(adjusted)
+        assertTrue(shouldFollowFocusedDrone(MapPanePresentationMode.Full, true, true, adjusted))
+    }
+
+    @Test fun selectingDronePreservesExplicitFollowOffPreference() {
+        assertTrue(viewportAdjustedAfterDroneSelection(followEnabled = false, currentlyAdjusted = true))
+        assertFalse(shouldFollowFocusedDrone(MapPanePresentationMode.Full, false, true, false))
+    }
+
 }

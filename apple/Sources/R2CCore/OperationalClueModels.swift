@@ -49,7 +49,7 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
     }
 
     public func canAutomaticallyPublish(mapID: String, teamID: String) -> Bool {
-        !mapID.isEmpty && !teamID.isEmpty && destinationMapID == mapID && destinationTeamID == teamID
+        uploadState != .localOnly && !mapID.isEmpty && !teamID.isEmpty && destinationMapID == mapID && destinationTeamID == teamID
     }
 
     public init(
@@ -626,17 +626,30 @@ public enum OperationalClueGeometry {
 
 public enum OperationalCenterpointElevation {
     public enum DisplayMode: Sendable, Equatable {
+        case crosshairOnly
         case msl
         case reference
     }
 
+    public static func nextMode(_ mode: DisplayMode) -> DisplayMode {
+        switch mode {
+        case .crosshairOnly: .msl
+        case .msl: .reference
+        case .reference: .crosshairOnly
+        }
+    }
+
     public struct Sample: Sendable, Equatable {
+        public let latitude: Double?
+        public let longitude: Double?
         public let elevationFeet: Int
         public let demResolutionMeters: Int?
 
         public let assumedNadir: Bool
         public let pointAolFeet: Int?
-        public init(elevationFeet: Int, demResolutionMeters: Int?, assumedNadir: Bool = false, pointAolFeet: Int? = nil) {
+        public init(elevationFeet: Int, demResolutionMeters: Int?, assumedNadir: Bool = false, pointAolFeet: Int? = nil, latitude: Double? = nil, longitude: Double? = nil) {
+            self.latitude = latitude
+            self.longitude = longitude
             self.assumedNadir = assumedNadir
             self.pointAolFeet = pointAolFeet
             self.elevationFeet = elevationFeet
@@ -649,7 +662,8 @@ public enum OperationalCenterpointElevation {
         referenceElevationFeet: Int? = nil,
         mode: DisplayMode = .msl
     ) -> String {
-        guard let sample else { return "--' MSL" }
+        guard let sample else { return mode == .reference ? "--' REF" : "--' MSL" }
+        if mode == .reference && referenceElevationFeet == nil { return "--' REF" }
         let extras = (sample.pointAolFeet.map { " · AOL \($0)'" } ?? "") + (sample.assumedNadir ? " · Assumed ↓90°" : "")
         let suffix = sample.demResolutionMeters.map { "\($0)m DEM" } ?? "USGS DEM"
         if mode == .reference, let referenceElevationFeet {
@@ -660,12 +674,17 @@ public enum OperationalCenterpointElevation {
         return "\(sample.elevationFeet)' MSL · \(suffix)\(extras)"
     }
 
-    public static func shouldSetReference(
-        focused: Bool,
-        elevationEnabled: Bool,
-        pressNearCenter: Bool
-    ) -> Bool {
-        focused && elevationEnabled && pressNearCenter
+    public static func readout(
+        _ sample: Sample?, referenceElevationFeet: Int? = nil,
+        mode: DisplayMode, coordinateFormat: OperationalCoordinateDisplayFormat,
+        showCoordinates: Bool
+    ) -> String? {
+        guard mode != .crosshairOnly, let sample else { return nil }
+        let elevation = displayText(sample, referenceElevationFeet: referenceElevationFeet, mode: mode)
+        if showCoordinates, !sample.assumedNadir, let latitude = sample.latitude, let longitude = sample.longitude {
+            return elevation + "\n" + OperationalCoordinateFormatter.format(latitude: latitude, longitude: longitude, as: coordinateFormat)
+        }
+        return elevation
     }
 
     public static func isNearCenter(
@@ -716,5 +735,12 @@ public struct CaltopoPhotoClue: Sendable, Equatable {
         self.jpegData = jpegData
         self.teamID = teamID
         self.folderID = folderID
+    }
+}
+
+public extension OperationalClueRecord {
+    func shareReport(format: OperationalCoordinateDisplayFormat) -> String {
+        let location = OperationalCoordinateFormatter.format(latitude: clueLatitude, longitude: clueLongitude, as: format)
+        return "\(title)\nAircraft: \(designator)\nCaptured: \(capturedAt.formatted(date: .abbreviated, time: .standard))\nLocation: \(location) (\(format.label))\n\n\(publishedDescription)"
     }
 }

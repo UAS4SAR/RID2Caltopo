@@ -12,3 +12,11 @@ Latest changes:
 - Consolidated Streams Server details, stream designator access, and device performance information for assessing anomaly-detection headroom.
 - Improved storage-limit controls, save feedback, and button readability in dark mode.
 - Fixed crossing lines when merging local flight history with live video positions.
+- Added configurable stream crosshairs, centerpoint elevation readouts, and photo annotations.
+- Simplified stream status rows and fullscreen controls, with clearer alert placement.
+- Offer pairing for a new stream and nearby RID, with saved or session-only mappings.
+- Capture clues locally, prefill the pilot callsign, and share saved clue details with their photos.
+- Added bearing-line color selection and resumed map following when selecting a focused drone.
+- Corrected startup altitude calibration, duplicate aircraft entries, and saved clue visibility.
+- Improved login keyboard behavior and recognition of recent device authentication.
+- Improved video pacing when the stream changes frame rate.

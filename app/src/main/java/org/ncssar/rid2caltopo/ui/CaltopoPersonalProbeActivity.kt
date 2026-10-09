@@ -32,6 +32,7 @@ class CaltopoPersonalProbeActivity : Activity() {
         val grants = org.ncssar.rid2caltopo.data.PersonalSessionGrants()
         val accountID: String? get() = grants.snapshot().accountID
         @Volatile var username: String? = null
+        var keyboardRequestedByTouch = false
         var web: WebView? = null
         var context: MutableContextWrapper? = null
         @Volatile var token: String? = null
@@ -89,9 +90,11 @@ class CaltopoPersonalProbeActivity : Activity() {
                     val wrapper = MutableContextWrapper(context.applicationContext)
                     Session.context = wrapper
                     object : WebView(wrapper) {
-                        override fun onCreateInputConnection(info: android.view.inputmethod.EditorInfo): android.view.inputmethod.InputConnection? =
-                            super.onCreateInputConnection(info)?.let { org.ncssar.rid2caltopo.app.UserInteractionTracker.inputConnection(it, context) }
-                    }.also { Session.web = it }
+                override fun onCreateInputConnection(info: android.view.inputmethod.EditorInfo): android.view.inputmethod.InputConnection? =
+                    if (Session.keyboardRequestedByTouch) super.onCreateInputConnection(info)?.let {
+                        org.ncssar.rid2caltopo.app.UserInteractionTracker.inputConnection(it, context)
+                    } else null
+            }.also { Session.web = it }
                 }
                 Session.ready = true
                 browser.settings.apply {
@@ -304,7 +307,19 @@ class CaltopoPersonalProbeActivity : Activity() {
                     }.also { Session.web = it }
         }).apply {
             setOnTouchListener { _, event ->
-                if (event.action == android.view.MotionEvent.ACTION_UP) selectionArmed = true
+                if (!publishing && !selecting && event.action == android.view.MotionEvent.ACTION_DOWN) {
+                    Session.keyboardRequestedByTouch = false
+                }
+                if (event.action == android.view.MotionEvent.ACTION_UP) {
+                    selectionArmed = true
+                    Session.keyboardRequestedByTouch = !publishing && !selecting &&
+                        hitTestResult?.type == WebView.HitTestResult.EDIT_TEXT_TYPE
+                    if (Session.keyboardRequestedByTouch) post {
+                        val keyboard = getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+                        keyboard.restartInput(this)
+                        keyboard.showSoftInput(this, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                    }
+                }
                 publishing || selecting
             }
             settings.javaScriptEnabled = true
@@ -314,6 +329,7 @@ class CaltopoPersonalProbeActivity : Activity() {
             settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
             webViewClient = object : WebViewClient() {
                 override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                    Session.keyboardRequestedByTouch = false
                     Session.grants.beginObservation()
                 }
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
@@ -333,6 +349,11 @@ class CaltopoPersonalProbeActivity : Activity() {
         Session.context?.baseContext = this
         (web.parent as? ViewGroup)?.removeView(web)
         root.addView(web, LinearLayout.LayoutParams(-1, 0, 1f))
+        root.isFocusableInTouchMode = true
+        root.requestFocus()
+        Session.keyboardRequestedByTouch = false
+        window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN or
+            android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         setContentView(root)
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, false)
