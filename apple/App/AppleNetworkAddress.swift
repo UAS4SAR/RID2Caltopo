@@ -342,6 +342,7 @@ enum AppleDeviceIdentity {
     }
 
     static var modelName: String {
+        if ProcessInfo.processInfo.isiOSAppOnMac { return "Mac" }
         var info = utsname()
         uname(&info)
         let machine = withUnsafeBytes(of: &info.machine) { bytes in

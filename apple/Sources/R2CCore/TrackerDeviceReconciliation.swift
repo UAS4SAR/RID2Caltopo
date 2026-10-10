@@ -29,13 +29,13 @@ public enum TrackerDeviceReconciliation {
         throw TrackerDeviceAuthorizationError.httpStatus(statusCode)
     }
 
-    public static func request(baseURL: String, token: String, replacementID: String? = nil) throws -> URLRequest {
+    public static func request(baseURL: String, token: String, replacementID: String? = nil, deviceName: String? = nil) throws -> URLRequest {
         guard var url = URLComponents(string: baseURL), url.scheme == "https",
               let host = url.host?.lowercased(),
               host == "r2c-tracker.com" || host.hasSuffix(".r2c-tracker.com"),
               url.user == nil, url.password == nil, !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { throw URLError(.badURL) }
-        url.path = "/api/v1/device-authorization/" + (replacementID == nil ? "replacement-candidates" : "replace")
+        url.path = "/api/v1/device-authorization/" + (deviceName != nil ? "name" : replacementID == nil ? "replacement-candidates" : "replace")
         url.query = nil
         url.fragment = nil
         guard let endpoint = url.url else { throw URLError(.badURL) }
@@ -43,6 +43,15 @@ public enum TrackerDeviceReconciliation {
         request.setValue(token, forHTTPHeaderField: "X-SAR-Token")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(String(TrackerCoordinationClient.trackerFunctionalityRelease), forHTTPHeaderField: "X-R2C-Functionality-Release")
+        if let deviceName {
+            let clean = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard replacementID == nil, !clean.isEmpty, clean.count <= 160,
+                  !clean.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+            else { throw URLError(.badURL) }
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["device_name": clean])
+        }
         if let replacementID {
             guard !replacementID.isEmpty else { throw URLError(.badURL) }
             request.httpMethod = "POST"

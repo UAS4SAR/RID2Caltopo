@@ -1837,7 +1837,7 @@ struct ContentView: View {
             VStack(spacing: 2) {
                 Text(OperationalMainScreenPresentation.incidentMapLabel)
                     .font(.caption)
-                Text((caltopoSettings.mapID.isEmpty ? currentIncidentName + " · No map" : currentIncidentName))
+                Text((caltopoSettings.mapID.isEmpty ? "No map" : currentIncidentName))
                     .font(.subheadline.bold())
                     .lineLimit(2)
                     .minimumScaleFactor(0.7)
@@ -1849,7 +1849,7 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(OperationalMainScreenPresentation.incidentMapLabel)
-        .accessibilityValue((caltopoSettings.mapID.isEmpty ? currentIncidentName + " · No map" : currentIncidentName))
+        .accessibilityValue((caltopoSettings.mapID.isEmpty ? "No map" : currentIncidentName))
     }
 
     private var androidOpPeriodCell: some View {
@@ -2612,7 +2612,7 @@ struct ContentView: View {
         }
     }
 
-    private func openCaltopoMapActions() { showIncidentSelection = true }
+    private func openCaltopoMapActions() { openIncidentMapActions() }
 
     private func openIncidentMapActions() {
         if caltopoSettings.mapID.isEmpty {

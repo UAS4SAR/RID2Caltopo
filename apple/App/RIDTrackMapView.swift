@@ -2164,7 +2164,7 @@ struct RIDTrackMapView: View {
     private var liveViewMapTitle: String {
         let name = OperationalIncidentSelection.name(mapID: caltopoConfiguration.mapID,
             mapTitle: caltopoConfiguration.mapTitle, standaloneName: orgSettings.standaloneIncidentName)
-        return caltopoConfiguration.mapID.isEmpty ? "\(name) · No map" : name
+        return caltopoConfiguration.mapID.isEmpty ? "No map" : name
     }
 
     private func openLiveViewMapActions() { onMapStatusTap() }

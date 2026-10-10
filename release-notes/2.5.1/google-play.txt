@@ -1,0 +1,1 @@
+Tapping a connected incident map now opens Disconnect / Switch Map directly. When disconnected, the map label shows No map and opens the map picker. Named incidents without a map remain available in Settings.

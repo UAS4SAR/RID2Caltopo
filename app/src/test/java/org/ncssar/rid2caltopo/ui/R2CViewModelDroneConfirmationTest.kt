@@ -41,6 +41,8 @@ class R2CViewModelDroneConfirmationTest {
             if (liveView) model.showStreams()
             val origin = model.activeScreen.value
             model.openConnectionOverlayFromCurrentScreen()
+            assertFalse(model.showIncidentSelection)
+            model.openIncidentSelectionFromSettings()
             assertTrue(model.showIncidentSelection)
             model.dismissIncidentSelection()
             assertFalse(model.showIncidentSelection)
@@ -54,7 +56,7 @@ class R2CViewModelDroneConfirmationTest {
             model.onUIEvent(UIEvent.ConnectionStatusChanged(CaltopoMap.MapStatusListener.mapStatus.credentialsVerified))
             assertEquals(OverlayState.None, model.overlay)
             model.openConnectionOverlayFromCurrentScreen()
-            assertTrue(model.showIncidentSelection)
+            assertFalse(model.showIncidentSelection)
             model.dismissIncidentSelection()
             assertFalse(model.showIncidentSelection)
             model.openConnectionOverlayFromCurrentScreen()
@@ -67,7 +69,7 @@ class R2CViewModelDroneConfirmationTest {
             assertEquals(OverlayState.None, model.overlay)
             assertEquals(origin, model.activeScreen.value)
             model.openConnectionOverlayFromCurrentScreen()
-            assertTrue(model.showIncidentSelection)
+            assertFalse(model.showIncidentSelection)
             model.dismissIncidentSelection()
             assertFalse(model.showIncidentSelection)
             model.openConnectionOverlayFromCurrentScreen()
@@ -91,6 +93,9 @@ class R2CViewModelDroneConfirmationTest {
             mapField.set(null, map)
             val model = R2CViewModel(SimpleTimer())
             model.onUIEvent(UIEvent.ConnectionStatusChanged(CaltopoMap.MapStatusListener.mapStatus.up))
+            model.openConnectionOverlayFromCurrentScreen()
+            assertFalse(model.showIncidentSelection)
+            assertEquals(OverlayState.Management, model.overlay)
             model.onUIEvent(UIEvent.SwitchMapRequested)
             assertEquals(OverlayState.MapBrowser, model.overlay)
             assertEquals("Taylor Site", incidentMapDisplayValue(model.connectionState))
@@ -101,7 +106,7 @@ class R2CViewModelDroneConfirmationTest {
             model.onUIEvent(UIEvent.HeaderClicked)
             assertEquals(OverlayState.Management, model.overlay)
             model.onUIEvent(UIEvent.ConnectionStatusChanged(CaltopoMap.MapStatusListener.mapStatus.down))
-            assertEquals(CaltopoClient.GetStandaloneIncident() + " · No map", incidentMapDisplayValue(model.connectionState))
+            assertEquals("No map", incidentMapDisplayValue(model.connectionState))
         } finally { mapField.set(null, previousMap) }
     }
 

@@ -20,7 +20,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 internal fun incidentMapDisplayValue(state: CaltopoConnectionState): String {
-    if (state !is CaltopoConnectionState.MapSelected) return org.ncssar.rid2caltopo.data.CaltopoClient.GetStandaloneIncident() + " · No map"
+    if (state !is CaltopoConnectionState.MapSelected) return "No map"
     return state.map.title.trim().ifEmpty {
         state.map.id.trim().ifEmpty { "Standalone" }
     }

@@ -319,7 +319,8 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
 
     var showIncidentSelection by mutableStateOf(false)
         private set
-    fun openConnectionOverlayFromCurrentScreen() { showIncidentSelection = true }
+    fun openConnectionOverlayFromCurrentScreen() { onUIEvent(UIEvent.HeaderClicked) }
+    fun openIncidentSelectionFromSettings() { showIncidentSelection = true }
     fun dismissIncidentSelection() { showIncidentSelection = false }
     fun connectIncidentMap() {
         showIncidentSelection = false

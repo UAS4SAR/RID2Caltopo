@@ -63,3 +63,18 @@ final class TrackerDeviceReconciliationTests: XCTestCase {
         XCTAssertThrowsError(try TrackerDeviceReconciliation.canonicalName(from: Data(#"{"canonical_device_name":" "}"#.utf8)))
     }
 }
+
+extension TrackerDeviceReconciliationTests {
+    func testNewDeviceNameUsesAuthenticatedNamingEndpoint() throws {
+        let request = try TrackerDeviceReconciliation.request(baseURL: "https://r2c-tracker.com", token: "current", deviceName: " Ken's MacBook Air ")
+        XCTAssertEqual(request.url?.path, "/api/v1/device-authorization/name")
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-SAR-Token"), "current")
+        let body = try JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: String]
+        XCTAssertEqual(body?["device_name"], "Ken's MacBook Air")
+        for invalid in [" ", String(repeating: "x", count: 161), "Bad\nName"] {
+            XCTAssertThrowsError(try TrackerDeviceReconciliation.request(baseURL: "https://r2c-tracker.com", token: "current", deviceName: invalid))
+        }
+        XCTAssertThrowsError(try TrackerDeviceReconciliation.request(baseURL: "https://r2c-tracker.com", token: "current", replacementID: "other", deviceName: "New"))
+    }
+}

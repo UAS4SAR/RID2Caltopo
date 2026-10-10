@@ -39,6 +39,7 @@ struct CaltopoSettingsView: View {
     @State private var draftInitialized = false
     @State private var teamsSaveMessage = ""
     @StateObject private var draft = AppleSettingsDraft()
+    @StateObject private var deviceNaming = AppleTrackerDeviceReconciliation()
     @Environment(\.dismiss) private var dismissSettings
     @State private var showUnsavedSettings = false
     @State private var trackerURLDraft = ""
@@ -211,10 +212,15 @@ struct CaltopoSettingsView: View {
                         .autocorrectionDisabled()
                 } else {
                     SettingsValue("Device Name", value: managedDeviceName)
+                    Button("Rename device") {
+                        deviceNaming.beginNaming(
+                            baseURL: UserDefaults.standard.string(forKey: "org.trackerURLPrefix") ?? "",
+                            token: AppleOrgConfigSettings.loadTrackerAPIKey() ?? "")
+                    }
                 }
                 Text(managedDeviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     ? "Used for this device's R2C map marker, Map Folders item, tracker identity, and local track metadata."
-                    : "Assigned from the authenticated organization member and this device model. It is used consistently by RID2Caltopo, CalTopo, and r2c-tracker.")
+                    : "Saved with this device’s Tracker authorization. It is used consistently by RID2Caltopo, CalTopo, and r2c-tracker.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -469,6 +475,9 @@ struct CaltopoSettingsView: View {
             scroll.scrollTo("proximity-settings", anchor: .top)
         }
         }
+        .modifier(TrackerDeviceReconciliationModifier(
+            model: deviceNaming, signInRequired: { _ in }, authorizationRejected: {},
+            restored: { onSave(settings.configuration) }))
         .navigationTitle("Settings")
         .navigationBarBackButtonHidden(true)
         .toolbar {

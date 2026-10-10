@@ -1687,7 +1687,7 @@ class R2CActivity :
                 org.ncssar.rid2caltopo.ui.PrimaryPageTransition(activeScreen) {
                 if (localViewModel.proximitySettingsOpen) {
                     CaltopoSettingsScreen(
-                        onSelectIncident = localViewModel::openConnectionOverlayFromCurrentScreen,
+                        onSelectIncident = localViewModel::openIncidentSelectionFromSettings,
                         startAtProximity = true,
                         onDismiss = {
                             reloadExternalDisplayConfig(forceRecreate = true)
@@ -1780,7 +1780,7 @@ class R2CActivity :
                     }
                     ActiveScreen.SETTINGS -> {
                         CaltopoSettingsScreen(
-                            onSelectIncident = localViewModel::openConnectionOverlayFromCurrentScreen,
+                            onSelectIncident = localViewModel::openIncidentSelectionFromSettings,
                             onDismiss = {
                                 reloadExternalDisplayConfig(forceRecreate = true)
                                 localViewModel.showMain()
