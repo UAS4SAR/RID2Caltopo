@@ -91,11 +91,70 @@ public enum CameraFootprintGeometry {
 
 public struct CameraFootprintDrawing: Sendable {
     public let corners, boundary: [CameraFootprintVertex]
-    public init(input: CameraFootprintInput, terrain: [CameraFootprintVertex]?) {
+    /// `liveCorners` keeps the flat preview on the current pose. Terrain vertices are the outline only.
+    public init(input: CameraFootprintInput, terrain: [CameraFootprintVertex]?, liveCorners: Bool = false) {
         boundary = terrain ?? []
-        let terrainCorners = boundary.filter { $0.corner }
-        corners = terrainCorners.count == 4 ? terrainCorners : CameraFootprintGeometry.project(input)
+        let terrainCorners = boundary.filter(\.corner)
+        if !liveCorners, terrainCorners.count == 4 {
+            corners = terrainCorners
+        } else {
+            let flat = CameraFootprintGeometry.project(input)
+            corners = flat.isEmpty && terrainCorners.count == 4 ? terrainCorners : flat
+        }
     }
+}
+
+public let cameraFootprintTerrainPositionMeters = 30.0
+public let cameraFootprintTerrainHeightMeters = 10.0
+public let cameraFootprintTerrainAzimuthDegrees = 12.0
+public let cameraFootprintTerrainTiltDegrees = 5.0
+public let cameraFootprintTerrainFovDegrees = 1.5
+public let cameraFootprintTerrainLaunchMeters = 1.0
+
+public func cameraFootprintDistanceMeters(_ lat1: Double, _ lon1: Double, _ lat2: Double, _ lon2: Double) -> Double {
+    guard [lat1, lon1, lat2, lon2].allSatisfy(\.isFinite) else { return .infinity }
+    let earth = 6_378_137.0
+    let meanLat = (lat1 + lat2) / 2 * .pi / 180
+    var dLon = (lon2 - lon1) * .pi / 180
+    if dLon > .pi { dLon -= 2 * .pi }
+    if dLon < -.pi { dLon += 2 * .pi }
+    return earth * hypot(dLon * cos(meanLat), (lat2 - lat1) * .pi / 180)
+}
+
+public func cameraFootprintAngleDeltaDegrees(_ a: Double, _ b: Double) -> Double {
+    guard a.isFinite, b.isFinite else { return .infinity }
+    let delta = abs(a - b).truncatingRemainder(dividingBy: 360)
+    return min(delta, 360 - delta)
+}
+
+/// Exact pose equality never matches a moving SEI stream. One 500 ms terrain pass stays usable through a slow orbit.
+public func cameraFootprintTerrainReusable(cached: CameraFootprintInput, current: CameraFootprintInput) -> Bool {
+    guard cameraFootprintDistanceMeters(cached.launchLatitude, cached.launchLongitude, current.launchLatitude, current.launchLongitude) <= cameraFootprintTerrainLaunchMeters,
+          cameraFootprintDistanceMeters(cached.latitude, cached.longitude, current.latitude, current.longitude) <= cameraFootprintTerrainPositionMeters,
+          abs(cached.height - current.height) <= cameraFootprintTerrainHeightMeters,
+          cameraFootprintAngleDeltaDegrees(cached.azimuth, current.azimuth) <= cameraFootprintTerrainAzimuthDegrees,
+          abs(cached.tilt - current.tilt) <= cameraFootprintTerrainTiltDegrees,
+          abs(cached.horizontalFov - current.horizontalFov) <= cameraFootprintTerrainFovDegrees,
+          abs(cached.verticalFov - current.verticalFov) <= cameraFootprintTerrainFovDegrees
+    else { return false }
+    return true
+}
+
+public func mergeCameraFootprintTerrain(
+    previous: [String: (CameraFootprintInput, [CameraFootprintVertex])],
+    computed: [String: (CameraFootprintInput, [CameraFootprintVertex])],
+    current: [String: CameraFootprintInput]
+) -> [String: (CameraFootprintInput, [CameraFootprintVertex])] {
+    guard !current.isEmpty else { return [:] }
+    var merged: [String: (CameraFootprintInput, [CameraFootprintVertex])] = [:]
+    for (id, input) in current {
+        if let fresh = computed[id], !fresh.1.isEmpty {
+            merged[id] = fresh
+        } else if let prior = previous[id], !prior.1.isEmpty, cameraFootprintTerrainReusable(cached: prior.0, current: input) {
+            merged[id] = prior
+        }
+    }
+    return merged
 }
 
 public struct CameraFootprintCornerStroke: Sendable {

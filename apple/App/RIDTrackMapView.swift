@@ -1341,7 +1341,7 @@ struct RIDTrackMapView: View {
                 aircraftDisplay: aircraftDisplay,
                 altitudeDisplay: model.altitudeDisplayByAircraftID,
                 cameraFovByAircraftID: cameraFovByAircraftID,
-                cameraFootprintInputs: cameraFootprintInputs,
+                cameraFootprintInputProvider: { currentCameraFootprintInputs() },
                 clues: clueStore.records,
                 artifacts: renderedArtifacts,
                 airspaceState: airspace.enabled ? airspace.state : OperationalAirspaceState(),
@@ -1740,8 +1740,7 @@ struct RIDTrackMapView: View {
         return result
     }
 
-    private var cameraFootprintInputs: [String: CameraFootprintInput] {
-        _ = cameraTelemetryRefreshToken
+    private func currentCameraFootprintInputs() -> [String: CameraFootprintInput] {
         var result: [String: CameraFootprintInput] = [:]
         for session in streamRegistry.sessions {
             guard let id = aircraftID(for: session.id),
@@ -3466,13 +3465,20 @@ private struct AircraftMapDisplay: Equatable {
     var proximityTone: OperationalWorkspacePolicy.AlertTone = .quiet
 }
 
-/// Screen-space renderer keeps a thin outline and corner glyphs constant while the map zooms.
+/// Screen-space footprint. Shape layers stay vector-sized; panning does not redraw a full-map bitmap.
 private final class CameraFootprintMapView: UIView {
     private weak var map: MKMapView?
     private var inputs: [String: CameraFootprintInput] = [:]
     private var terrain: [String: (CameraFootprintInput, [CameraFootprintVertex])] = [:]
+    private var inputProvider: () -> [String: CameraFootprintInput] = { [:] }
     private var worker: Task<Void, Never>?
+    private var displayTimer: Timer?
     private var cacheGeneration = -1
+    private var laidOutSize = CGSize.zero
+    private let solidHalo = CAShapeLayer()
+    private let dashedHalo = CAShapeLayer()
+    private let solidStroke = CAShapeLayer()
+    private let dashedStroke = CAShapeLayer()
     private let dem: GeoTiffElevationSource = {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -3481,90 +3487,177 @@ private final class CameraFootprintMapView: UIView {
 
     init() {
         super.init(frame: .zero)
-        isOpaque = false; backgroundColor = .clear; isUserInteractionEnabled = false
+        isOpaque = false
+        backgroundColor = .clear
+        isUserInteractionEnabled = false
         autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        let halo = UIColor.black.withAlphaComponent(0.7).cgColor
+        let stroke = UIColor(red: 0.5, green: 0.87, blue: 0.92, alpha: 1).cgColor
+        for shape in [solidHalo, dashedHalo] {
+            shape.fillColor = nil
+            shape.strokeColor = halo
+            shape.lineWidth = 3
+        }
+        for shape in [solidStroke, dashedStroke] {
+            shape.fillColor = nil
+            shape.strokeColor = stroke
+            shape.lineWidth = 1.25
+        }
+        dashedHalo.lineDashPattern = [NSNumber(value: 5), NSNumber(value: 4)]
+        dashedStroke.lineDashPattern = [NSNumber(value: 5), NSNumber(value: 4)]
+        for shape in [solidHalo, dashedHalo, solidStroke, dashedStroke] {
+            layer.addSublayer(shape)
+        }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool { false }
+
     func stop() {
-        worker?.cancel(); worker=nil
-        inputs=[:]; terrain=[:]; removeFromSuperview()
+        worker?.cancel(); worker = nil
+        displayTimer?.invalidate(); displayTimer = nil
+        inputs = [:]; terrain = [:]; inputProvider = { [:] }
+        clearPaths()
+        removeFromSuperview()
     }
-    func update(_ next: [String: CameraFootprintInput], on map: MKMapView) {
-        self.map=map
-        if superview !== map { frame=map.bounds; map.addSubview(self) }
-        if cacheGeneration != AppleUnifiedMapCache.generation {
-            cacheGeneration=AppleUnifiedMapCache.generation
-            terrain=[:]
+
+    func bind(on map: MKMapView, inputs provider: @escaping () -> [String: CameraFootprintInput]) {
+        self.map = map
+        inputProvider = provider
+        if superview !== map {
+            frame = map.bounds
+            map.addSubview(self)
         }
-        if Set(inputs.keys) != Set(next.keys) { worker?.cancel(); worker=nil }
-        inputs=next
-        setNeedsDisplay()
-        if next.isEmpty { worker?.cancel(); worker=nil; terrain=[:]; return }
+        ensureTimer()
+        refreshPose()
+    }
+
+    /// MapKit calls this on every pan/zoom frame. Updating a few shape-layer paths does not rasterize the map.
+    func refreshForMapMovement() {
+        rebuildPaths()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let scale = traitCollection.displayScale
+        for shape in [solidHalo, dashedHalo, solidStroke, dashedStroke] {
+            shape.frame = bounds
+            shape.contentsScale = scale
+        }
+        if bounds.size != laidOutSize {
+            laidOutSize = bounds.size
+            rebuildPaths()
+        }
+    }
+
+    private func ensureTimer() {
+        guard displayTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 12.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshPose() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        displayTimer = timer
+    }
+
+    private func refreshPose() {
+        if cacheGeneration != AppleUnifiedMapCache.generation {
+            cacheGeneration = AppleUnifiedMapCache.generation
+            terrain = [:]
+        }
+        let next = inputProvider()
+        if Set(inputs.keys) != Set(next.keys) {
+            worker?.cancel(); worker = nil
+        }
+        inputs = next
+        if next.isEmpty {
+            worker?.cancel(); worker = nil; terrain = [:]; clearPaths(); return
+        }
+        ensureWorker()
+        rebuildPaths()
+    }
+
+    private func ensureWorker() {
         guard worker == nil else { return }
-        // One background worker; new poses update the corners without restarting it.
-        worker=Task { [weak self] in
+        // One background worker. Live corners update from the timer without restarting it.
+        worker = Task { [weak self] in
             var sampledGeneration = -1
             while !Task.isCancelled {
                 guard let self else { return }
-                let snapshot=self.inputs, generation=self.cacheGeneration, dem=self.dem
+                let snapshot = self.inputs
+                if snapshot.isEmpty { return }
+                let generation = self.cacheGeneration
+                let dem = self.dem
                 let invalidate = sampledGeneration != generation
-                sampledGeneration=generation
-                let task=Task.detached(priority:.utility) {
+                sampledGeneration = generation
+                let task = Task.detached(priority: .utility) {
                     if invalidate { dem.invalidateCatalog() }
                     return snapshot.mapValues { input in
-                        let deadline=ProcessInfo.processInfo.systemUptime+0.1
-                        return CameraFootprintGeometry.project(input,elevation:{ latitude,longitude in
-                            guard let sample=dem.sample(latitude:latitude,longitude:longitude),
-                                  sample.horizontalResolutionMeters <= 1.5 else { return nil }
-                            return sample.elevationMeters
-                        },cancelled:{ Task.isCancelled || ProcessInfo.processInfo.systemUptime >= deadline },
-                        edgeSubdivisions:1)
+                        let deadline = ProcessInfo.processInfo.systemUptime + 0.1
+                        return CameraFootprintGeometry.project(input, elevation: { latitude, longitude in
+                            dem.sample(
+                                latitude: latitude,
+                                longitude: longitude,
+                                maximumHorizontalResolutionMeters: 1.5
+                            )?.elevationMeters
+                        }, cancelled: { Task.isCancelled || ProcessInfo.processInfo.systemUptime >= deadline },
+                        edgeSubdivisions: 1)
                     }
                 }
-                let result=await withTaskCancellationHandler(operation:{ await task.value },onCancel:{ task.cancel() })
+                let result = await withTaskCancellationHandler(operation: { await task.value }, onCancel: { task.cancel() })
                 guard !Task.isCancelled else { return }
-                self.terrain=result.mapValues { $0 }.reduce(into:[:]) { values, entry in
-                    if let input=snapshot[entry.key] { values[entry.key]=(input,entry.value) }
+                let computed = result.reduce(into: [String: (CameraFootprintInput, [CameraFootprintVertex])]()) { values, entry in
+                    if let input = snapshot[entry.key] { values[entry.key] = (input, entry.value) }
                 }
-                self.setNeedsDisplay()
-                do { try await Task.sleep(for:.milliseconds(500)) } catch { return }
+                self.terrain = mergeCameraFootprintTerrain(previous: self.terrain, computed: computed, current: snapshot)
+                self.rebuildPaths()
+                do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
             }
         }
     }
-    override func draw(_ rect: CGRect) {
-        guard let map, let context=UIGraphicsGetCurrentContext() else { return }
-        let stubLength=min(min(bounds.width,bounds.height)*0.02,12)
-        for (id,input) in inputs {
-            let sampled=terrain[id].flatMap { $0.0 == input ? $0.1 : nil }
-            let drawing=CameraFootprintDrawing(input:input,terrain:sampled)
-            let boundary=drawing.boundary
-            let points=boundary.map { map.convert(CLLocationCoordinate2D(latitude:$0.latitude,longitude:$0.longitude),toPointTo:self) }
-            for index in boundary.indices {
-                let next=(index+1)%boundary.count
-                let path=UIBezierPath(); path.move(to:points[index]); path.addLine(to:points[next])
-                stroke(path,dashed:boundary[index].clipped || boundary[next].clipped,context:context)
+
+    private func rebuildPaths() {
+        guard let map, bounds.width > 0, bounds.height > 0 else { clearPaths(); return }
+        let solid = UIBezierPath()
+        let dashed = UIBezierPath()
+        let stubLength = min(min(bounds.width, bounds.height) * 0.02, 12)
+        for (id, input) in inputs {
+            let sampled = terrain[id].flatMap { entry -> [CameraFootprintVertex]? in
+                guard !entry.1.isEmpty, cameraFootprintTerrainReusable(cached: entry.0, current: input) else { return nil }
+                return entry.1
             }
-            let corners=drawing.corners.map { corner in
-                let p=map.convert(CLLocationCoordinate2D(latitude:corner.latitude,longitude:corner.longitude),toPointTo:self)
-                return MapScreenPoint(x:p.x,y:p.y)
+            let drawing = CameraFootprintDrawing(input: input, terrain: sampled, liveCorners: true)
+            let boundary = drawing.boundary
+            if !boundary.isEmpty {
+                let points = boundary.map {
+                    map.convert(CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude), toPointTo: self)
+                }
+                for index in boundary.indices {
+                    let next = (index + 1) % boundary.count
+                    let path = boundary[index].clipped || boundary[next].clipped ? dashed : solid
+                    path.move(to: points[index])
+                    path.addLine(to: points[next])
+                }
             }
-            for arm in CameraFootprintGeometry.cornerStrokes(points:corners,length:stubLength) {
-                let path=UIBezierPath()
-                path.move(to:CGPoint(x:arm.start.x,y:arm.start.y))
-                path.addLine(to:CGPoint(x:arm.end.x,y:arm.end.y))
-                stroke(path,dashed:false,context:context)
+            let corners = drawing.corners.map { corner -> MapScreenPoint in
+                let p = map.convert(CLLocationCoordinate2D(latitude: corner.latitude, longitude: corner.longitude), toPointTo: self)
+                return MapScreenPoint(x: p.x, y: p.y)
+            }
+            for arm in CameraFootprintGeometry.cornerStrokes(points: corners, length: stubLength) {
+                solid.move(to: CGPoint(x: arm.start.x, y: arm.start.y))
+                solid.addLine(to: CGPoint(x: arm.end.x, y: arm.end.y))
             }
         }
+        solidHalo.path = solid.cgPath
+        solidStroke.path = solid.cgPath
+        dashedHalo.path = dashed.cgPath
+        dashedStroke.path = dashed.cgPath
     }
-    private func stroke(_ path: UIBezierPath, dashed: Bool, context: CGContext) {
-        context.saveGState()
-        context.setLineDash(phase:0,lengths:dashed ? [5,4] : [])
-        context.setLineWidth(3); context.setStrokeColor(UIColor.black.withAlphaComponent(0.7).cgColor)
-        context.addPath(path.cgPath); context.strokePath()
-        context.setLineWidth(1.25)
-        context.setStrokeColor(UIColor(red:0.5,green:0.87,blue:0.92,alpha:1).cgColor)
-        context.addPath(path.cgPath); context.strokePath(); context.restoreGState()
+
+    private func clearPaths() {
+        solidHalo.path = nil
+        dashedHalo.path = nil
+        solidStroke.path = nil
+        dashedStroke.path = nil
     }
 }
 
@@ -3841,7 +3934,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
     let aircraftDisplay: [String: AircraftMapDisplay]
     let altitudeDisplay: [String: OperationalAircraftAltitudeDisplay]
     let cameraFovByAircraftID: [String: CameraFovBoundaryBearings]
-    let cameraFootprintInputs: [String: CameraFootprintInput]
+    let cameraFootprintInputProvider: () -> [String: CameraFootprintInput]
     let clues: [OperationalClueRecord]
     let artifacts: CaltopoArtifactSnapshot
     let airspaceState: OperationalAirspaceState
@@ -3993,7 +4086,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
             contours: showContours,
             revision: tileCacheRevision
         )
-        context.coordinator.footprintView.update(cameraFootprintInputs, on: map)
+        context.coordinator.footprintView.bind(on: map, inputs: cameraFootprintInputProvider)
         context.coordinator.updateOperationalOverlays(
             on: map,
             tracks: tracks,
@@ -4686,14 +4779,14 @@ private struct OperationalMKMapView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
-            footprintView.setNeedsDisplay()
+            footprintView.refreshForMapMovement()
             guard !updating else { return }
             persistViewport(from: mapView)
             regionChangeWasUserGesture = false
         }
 
         func mapViewDidChangeVisibleRegion(_ mapView: MKMapView) {
-            footprintView.setNeedsDisplay()
+            footprintView.refreshForMapMovement()
             guard !updating, hasActiveViewportGesture(in: mapView) else { return }
             if !currentInset {
                 releaseFocusedAircraftForOperatorGesture()

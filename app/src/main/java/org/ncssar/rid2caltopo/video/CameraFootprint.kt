@@ -100,6 +100,85 @@ internal fun cameraFootprintDrawing(input: CameraFootprintInput, terrain: List<C
 internal data class CameraFootprintScreenPoint(val x: Double, val y: Double)
 internal data class CameraFootprintCornerStroke(val start: CameraFootprintScreenPoint, val end: CameraFootprintScreenPoint)
 
+/**
+ * A terrain pass is keyed by the pose it sampled. Exact [CameraFootprintInput] equality
+ * never holds while SEI is moving, so the outline stayed hidden. These limits cover one
+ * 500 ms pass during a slow orbit and reject a pose that has clearly moved on.
+ */
+internal const val CAMERA_FOOTPRINT_TERRAIN_POSITION_METERS = 30.0
+internal const val CAMERA_FOOTPRINT_TERRAIN_HEIGHT_METERS = 10.0
+internal const val CAMERA_FOOTPRINT_TERRAIN_AZIMUTH_DEGREES = 12.0
+internal const val CAMERA_FOOTPRINT_TERRAIN_TILT_DEGREES = 5.0
+internal const val CAMERA_FOOTPRINT_TERRAIN_FOV_DEGREES = 1.5
+internal const val CAMERA_FOOTPRINT_TERRAIN_LAUNCH_METERS = 1.0
+
+internal fun cameraFootprintDistanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+    if (!listOf(lat1, lon1, lat2, lon2).all { it.isFinite() }) return Double.POSITIVE_INFINITY
+    val earth = 6378137.0
+    val meanLat = Math.toRadians((lat1 + lat2) / 2.0)
+    var dLon = Math.toRadians(lon2 - lon1)
+    if (dLon > PI) dLon -= 2.0 * PI
+    if (dLon < -PI) dLon += 2.0 * PI
+    return earth * hypot(dLon * cos(meanLat), Math.toRadians(lat2 - lat1))
+}
+
+internal fun cameraFootprintAngleDeltaDegrees(a: Double, b: Double): Double {
+    if (!a.isFinite() || !b.isFinite()) return Double.POSITIVE_INFINITY
+    val delta = abs(a - b) % 360.0
+    return min(delta, 360.0 - delta)
+}
+
+internal fun cameraFootprintTerrainReusable(cached: CameraFootprintInput, current: CameraFootprintInput): Boolean {
+    if (cameraFootprintDistanceMeters(cached.launchLatitude, cached.launchLongitude, current.launchLatitude, current.launchLongitude) > CAMERA_FOOTPRINT_TERRAIN_LAUNCH_METERS) return false
+    if (cameraFootprintDistanceMeters(cached.latitude, cached.longitude, current.latitude, current.longitude) > CAMERA_FOOTPRINT_TERRAIN_POSITION_METERS) return false
+    if (abs(cached.height - current.height) > CAMERA_FOOTPRINT_TERRAIN_HEIGHT_METERS) return false
+    if (cameraFootprintAngleDeltaDegrees(cached.azimuth, current.azimuth) > CAMERA_FOOTPRINT_TERRAIN_AZIMUTH_DEGREES) return false
+    if (abs(cached.tilt - current.tilt) > CAMERA_FOOTPRINT_TERRAIN_TILT_DEGREES) return false
+    if (abs(cached.horizontalFov - current.horizontalFov) > CAMERA_FOOTPRINT_TERRAIN_FOV_DEGREES) return false
+    if (abs(cached.verticalFov - current.verticalFov) > CAMERA_FOOTPRINT_TERRAIN_FOV_DEGREES) return false
+    return true
+}
+
+internal fun cameraFootprintTerrainForDisplay(
+    cached: Pair<CameraFootprintInput, List<CameraFootprintVertex>>?,
+    current: CameraFootprintInput,
+): List<CameraFootprintVertex>? {
+    val (pose, vertices) = cached ?: return null
+    if (vertices.isEmpty() || !cameraFootprintTerrainReusable(pose, current)) return null
+    return vertices
+}
+
+/** Keep the last finished outline when a pass is cancelled or still in budget. */
+internal fun mergeCameraFootprintTerrain(
+    previous: Map<String, Pair<CameraFootprintInput, List<CameraFootprintVertex>>>,
+    computed: Map<String, Pair<CameraFootprintInput, List<CameraFootprintVertex>>>,
+    current: Map<String, CameraFootprintInput>,
+): Map<String, Pair<CameraFootprintInput, List<CameraFootprintVertex>>> {
+    if (current.isEmpty()) return emptyMap()
+    val merged = LinkedHashMap<String, Pair<CameraFootprintInput, List<CameraFootprintVertex>>>()
+    for ((id, input) in current) {
+        val fresh = computed[id]
+        if (fresh != null && fresh.second.isNotEmpty()) {
+            merged[id] = fresh
+        } else {
+            val prior = previous[id]
+            if (prior != null && prior.second.isNotEmpty() && cameraFootprintTerrainReusable(prior.first, input)) {
+                merged[id] = prior
+            }
+        }
+    }
+    return merged
+}
+
+/** Corner stubs follow [input]. [terrain] only adds the outline, so a slightly older pass cannot freeze the preview. */
+internal fun cameraFootprintLiveDrawing(input: CameraFootprintInput, terrain: List<CameraFootprintVertex>?): CameraFootprintDrawing {
+    val boundary = terrain.orEmpty()
+    val corners = CameraFootprintGeometry.project(input).ifEmpty {
+        boundary.filter { it.corner }.takeIf { it.size == 4 }.orEmpty()
+    }
+    return CameraFootprintDrawing(corners, boundary)
+}
+
 /** Two short arms point along the actual adjacent edges, including oblique views. */
 internal fun cameraFootprintCornerStrokes(points: List<CameraFootprintScreenPoint>, length: Double): List<CameraFootprintCornerStroke> {
     if (points.size != 4 || !length.isFinite() || length <= 0) return emptyList()

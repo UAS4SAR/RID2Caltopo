@@ -21,42 +21,54 @@ import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Overlay
 
-/** Geographic footprint with screen-sized strokes and bounded corner glyphs. */
-internal class CameraFootprintOverlay(
-    private val footprints: List<CameraFootprintDrawing>, resources: Resources
-) : Overlay() {
-    private val density = resources.displayMetrics.density
-    private val halo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+/** Screen-sized footprint strokes. Shared by the Compose HUD so the map overlay list is not rebuilt to move them. */
+internal class CameraFootprintStrokePaints(density: Float) {
+    val halo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = AndroidColor.parseColor("#B3000000"); style = Paint.Style.STROKE
         strokeWidth = 3f * density
     }
-    private val border = Paint(halo).apply {
+    val border = Paint(halo).apply {
         color = AndroidColor.parseColor("#FF80DEEA"); strokeWidth = 1.25f * density
     }
-    override fun draw(canvas: Canvas, mapView: MapView, shadow: Boolean) {
-        if (shadow) return
-        val stubLength = (minOf(mapView.width, mapView.height) * 0.02f).coerceAtMost(12f * density)
-        footprints.forEach { footprint ->
-            val vertices = footprint.boundary
-            val points = vertices.map { mapView.projection.toPixels(GeoPoint(it.latitude, it.longitude), null) }
-            vertices.indices.forEach { index ->
-                val next = (index + 1) % vertices.size
-                val dashed = vertices[index].clipped || vertices[next].clipped
-                val effect = if (dashed) android.graphics.DashPathEffect(floatArrayOf(5f*density, 4f*density), 0f) else null
-                halo.pathEffect = effect; border.pathEffect = effect
-                val a = points[index]; val b = points[next]
-                canvas.drawLine(a.x.toFloat(), a.y.toFloat(), b.x.toFloat(), b.y.toFloat(), halo)
-                canvas.drawLine(a.x.toFloat(), a.y.toFloat(), b.x.toFloat(), b.y.toFloat(), border)
-            }
-            halo.pathEffect = null; border.pathEffect = null
-            val corners = footprint.corners.map { vertex ->
-                val p = mapView.projection.toPixels(GeoPoint(vertex.latitude, vertex.longitude), null)
-                CameraFootprintScreenPoint(p.x.toDouble(), p.y.toDouble())
-            }
-            cameraFootprintCornerStrokes(corners, stubLength.toDouble()).forEach { stroke ->
-                canvas.drawLine(stroke.start.x.toFloat(), stroke.start.y.toFloat(), stroke.end.x.toFloat(), stroke.end.y.toFloat(), halo)
-                canvas.drawLine(stroke.start.x.toFloat(), stroke.start.y.toFloat(), stroke.end.x.toFloat(), stroke.end.y.toFloat(), border)
-            }
+}
+
+internal fun drawCameraFootprints(
+    canvas: Canvas,
+    mapView: MapView,
+    footprints: List<CameraFootprintDrawing>,
+    paints: CameraFootprintStrokePaints,
+    density: Float,
+) {
+    if (footprints.isEmpty() || mapView.width <= 0 || mapView.height <= 0) return
+    val stubLength = (minOf(mapView.width, mapView.height) * 0.02f).coerceAtMost(12f * density)
+    val projection = mapView.projection
+    val pixel = android.graphics.Point()
+    footprints.forEach { footprint ->
+        val vertices = footprint.boundary
+        val points = vertices.map { vertex ->
+            projection.toPixels(GeoPoint(vertex.latitude, vertex.longitude), pixel)
+            pixel.x to pixel.y
+        }
+        vertices.indices.forEach { index ->
+            val next = (index + 1) % vertices.size
+            val dashed = vertices[index].clipped || vertices[next].clipped
+            val effect = if (dashed) android.graphics.DashPathEffect(floatArrayOf(5f * density, 4f * density), 0f) else null
+            paints.halo.pathEffect = effect
+            paints.border.pathEffect = effect
+            val a = points[index]
+            val b = points[next]
+            canvas.drawLine(a.first.toFloat(), a.second.toFloat(), b.first.toFloat(), b.second.toFloat(), paints.halo)
+            canvas.drawLine(a.first.toFloat(), a.second.toFloat(), b.first.toFloat(), b.second.toFloat(), paints.border)
+        }
+        paints.halo.pathEffect = null
+        paints.border.pathEffect = null
+        val corners = footprint.corners.map { vertex ->
+            projection.toPixels(GeoPoint(vertex.latitude, vertex.longitude), pixel)
+            CameraFootprintScreenPoint(pixel.x.toDouble(), pixel.y.toDouble())
+        }
+        cameraFootprintCornerStrokes(corners, stubLength.toDouble()).forEach { stroke ->
+            canvas.drawLine(stroke.start.x.toFloat(), stroke.start.y.toFloat(), stroke.end.x.toFloat(), stroke.end.y.toFloat(), paints.halo)
+            canvas.drawLine(stroke.start.x.toFloat(), stroke.start.y.toFloat(), stroke.end.x.toFloat(), stroke.end.y.toFloat(), paints.border)
         }
     }
 }
