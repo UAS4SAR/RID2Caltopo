@@ -40,11 +40,10 @@ internal fun drawCameraFootprints(
     density: Float,
 ) {
     if (footprints.isEmpty() || mapView.width <= 0 || mapView.height <= 0) return
-    val stubLength = (minOf(mapView.width, mapView.height) * 0.02f).coerceAtMost(12f * density)
     val projection = mapView.projection
     val pixel = android.graphics.Point()
-    footprints.forEach { footprint ->
-        val vertices = footprint.boundary
+    fun closedOutline(vertices: List<CameraFootprintVertex>) {
+        if (vertices.size < 3) return
         val points = vertices.map { vertex ->
             projection.toPixels(GeoPoint(vertex.latitude, vertex.longitude), pixel)
             pixel.x to pixel.y
@@ -62,14 +61,10 @@ internal fun drawCameraFootprints(
         }
         paints.halo.pathEffect = null
         paints.border.pathEffect = null
-        val corners = footprint.corners.map { vertex ->
-            projection.toPixels(GeoPoint(vertex.latitude, vertex.longitude), pixel)
-            CameraFootprintScreenPoint(pixel.x.toDouble(), pixel.y.toDouble())
-        }
-        cameraFootprintCornerStrokes(corners, stubLength.toDouble()).forEach { stroke ->
-            canvas.drawLine(stroke.start.x.toFloat(), stroke.start.y.toFloat(), stroke.end.x.toFloat(), stroke.end.y.toFloat(), paints.halo)
-            canvas.drawLine(stroke.start.x.toFloat(), stroke.start.y.toFloat(), stroke.end.x.toFloat(), stroke.end.y.toFloat(), paints.border)
-        }
+    }
+    footprints.forEach { footprint ->
+        closedOutline(footprint.corners)
+        closedOutline(footprint.boundary)
     }
 }
 

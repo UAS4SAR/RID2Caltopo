@@ -124,10 +124,12 @@ private final class ApplePilotDisplayStore: ObservableObject {
 
     func cameraFootprintEnabled(for remoteID: String) -> Bool {
         _ = revision
-        return defaults.bool(forKey: "camera-footprint.drone." + remoteID.trimmingCharacters(in:.whitespacesAndNewlines).uppercased())
+        guard let key = cameraFootprintPreferenceKey(remoteID) else { return false }
+        return defaults.bool(forKey: "camera-footprint.drone." + key)
     }
     func setCameraFootprintEnabled(_ enabled: Bool, for remoteID: String) {
-        defaults.set(enabled,forKey:"camera-footprint.drone." + remoteID.trimmingCharacters(in:.whitespacesAndNewlines).uppercased())
+        guard let key = cameraFootprintPreferenceKey(remoteID) else { return }
+        defaults.set(enabled, forKey: "camera-footprint.drone." + key)
         revision += 1
     }
 
@@ -1755,12 +1757,14 @@ struct RIDTrackMapView: View {
                   let latitude = telemetry.latitudeDegrees, let longitude = telemetry.longitudeDegrees,
                   let frameHeight = telemetry.relativeUpMeters, let currentHeight = current.relativeUpMeters
             else { continue }
-            result[id] = CameraFootprintInput(
+            let scanZone = session.model.anomalyMode == .off ? nil : session.model.anomalyConfiguration.scanZone
+            result[id] = cameraFootprintApplyingAdScanZone(CameraFootprintInput(
                 latitude: latitude, longitude: longitude,
                 launchLatitude: launch.latitude, launchLongitude: launch.longitude,
                 height: height + frameHeight - currentHeight,
                 azimuth: azimuth, tilt: telemetry.tiltDegrees,
-                horizontalFov: telemetry.horizontalFovDegrees, verticalFov: telemetry.verticalFovDegrees)
+                horizontalFov: telemetry.horizontalFovDegrees, verticalFov: telemetry.verticalFovDegrees),
+                scanZoneFraction: scanZone)
         }
         return result
     }
@@ -3619,33 +3623,26 @@ private final class CameraFootprintMapView: UIView {
         guard let map, bounds.width > 0, bounds.height > 0 else { clearPaths(); return }
         let solid = UIBezierPath()
         let dashed = UIBezierPath()
-        let stubLength = min(min(bounds.width, bounds.height) * 0.02, 12)
+        func closedOutline(_ vertices: [CameraFootprintVertex]) {
+            guard vertices.count >= 3 else { return }
+            let points = vertices.map {
+                map.convert(CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude), toPointTo: self)
+            }
+            for index in vertices.indices {
+                let next = (index + 1) % vertices.count
+                let path = vertices[index].clipped || vertices[next].clipped ? dashed : solid
+                path.move(to: points[index])
+                path.addLine(to: points[next])
+            }
+        }
         for (id, input) in inputs {
             let sampled = terrain[id].flatMap { entry -> [CameraFootprintVertex]? in
                 guard !entry.1.isEmpty, cameraFootprintTerrainReusable(cached: entry.0, current: input) else { return nil }
                 return entry.1
             }
             let drawing = CameraFootprintDrawing(input: input, terrain: sampled, liveCorners: true)
-            let boundary = drawing.boundary
-            if !boundary.isEmpty {
-                let points = boundary.map {
-                    map.convert(CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude), toPointTo: self)
-                }
-                for index in boundary.indices {
-                    let next = (index + 1) % boundary.count
-                    let path = boundary[index].clipped || boundary[next].clipped ? dashed : solid
-                    path.move(to: points[index])
-                    path.addLine(to: points[next])
-                }
-            }
-            let corners = drawing.corners.map { corner -> MapScreenPoint in
-                let p = map.convert(CLLocationCoordinate2D(latitude: corner.latitude, longitude: corner.longitude), toPointTo: self)
-                return MapScreenPoint(x: p.x, y: p.y)
-            }
-            for arm in CameraFootprintGeometry.cornerStrokes(points: corners, length: stubLength) {
-                solid.move(to: CGPoint(x: arm.start.x, y: arm.start.y))
-                solid.addLine(to: CGPoint(x: arm.end.x, y: arm.end.y))
-            }
+            closedOutline(drawing.corners)
+            closedOutline(drawing.boundary)
         }
         solidHalo.path = solid.cgPath
         solidStroke.path = solid.cgPath

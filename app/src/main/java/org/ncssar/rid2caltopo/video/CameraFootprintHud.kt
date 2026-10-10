@@ -57,10 +57,16 @@ internal fun currentCameraFootprintInputs(
         if (azimuth == null || cameraLat == null || cameraLng == null || frameHeight == null || currentHeight == null) {
             return@forEach
         }
-        result[designator] = CameraFootprintInput(
-            cameraLat, cameraLng, reference.first, reference.second,
-            reference.third + frameHeight - currentHeight,
-            azimuth, camera.tiltDeg, camera.horizontalFovDeg, camera.verticalFovDeg,
+        val scanZone = designators.firstNotNullOfOrNull { id ->
+            viewModel.anomalyConfigFor(id).takeIf { it.enabled }?.scanZone?.toDouble()
+        }
+        result[designator] = cameraFootprintApplyingAdScanZone(
+            CameraFootprintInput(
+                cameraLat, cameraLng, reference.first, reference.second,
+                reference.third + frameHeight - currentHeight,
+                azimuth, camera.tiltDeg, camera.horizontalFovDeg, camera.verticalFovDeg,
+            ),
+            scanZone,
         )
     }
     return result
