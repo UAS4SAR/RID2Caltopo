@@ -108,4 +108,84 @@ final class CameraFootprintTests: XCTestCase {
         XCTAssertEqual(CameraFootprintGeometry.cornerStrokes(points:collapsed,length:12).count,6)
         XCTAssertTrue(CameraFootprintGeometry.cornerStrokes(points:points,length:.nan).isEmpty)
     }
+    func testIdenticalPoseReusesTerrainAndASlowOrbitStaysInsideTolerance() {
+        let origin = input()
+        XCTAssertTrue(cameraFootprintTerrainReusable(cached: origin, current: origin))
+        let moved = CameraFootprintInput(
+            latitude: 39.00005, longitude: -121, launchLatitude: 39, launchLongitude: -121,
+            height: 104, azimuth: 6, tilt: -88, horizontalFov: 90, verticalFov: 60)
+        XCTAssertLessThan(cameraFootprintDistanceMeters(39, -121, 39.00005, -121), cameraFootprintTerrainPositionMeters)
+        XCTAssertTrue(cameraFootprintTerrainReusable(cached: origin, current: moved))
+        XCTAssertEqual(cameraFootprintAngleDeltaDegrees(359, 5), 6, accuracy: 1e-9)
+        XCTAssertTrue(cameraFootprintTerrainReusable(cached: input(azimuth: 359), current: input(azimuth: 5)))
+    }
+    func testLargePoseChangeDropsTheTerrainOutline() {
+        let origin = input()
+        XCTAssertFalse(cameraFootprintTerrainReusable(cached: origin, current: input().latitudeShifted(39.01)))
+        XCTAssertFalse(cameraFootprintTerrainReusable(cached: input(azimuth: 359), current: input(azimuth: 20)))
+        XCTAssertFalse(cameraFootprintTerrainReusable(cached: origin, current: origin.fov(horizontal: 94)))
+        XCTAssertFalse(cameraFootprintTerrainReusable(cached: origin, current: origin.fov(vertical: 64)))
+        XCTAssertFalse(cameraFootprintTerrainReusable(cached: origin, current: origin.height(120)))
+        XCTAssertFalse(cameraFootprintTerrainReusable(cached: origin, current: origin.tilt(-80)))
+        XCTAssertFalse(cameraFootprintTerrainReusable(cached: origin, current: origin.launch(39.01)))
+        XCTAssertLessThan(cameraFootprintDistanceMeters(0, 179.9, 0, -179.9), 30_000)
+    }
+    func testCancelledPassKeepsPreviousOutlineUntilThePoseLeavesTolerance() {
+        let origin = input()
+        let near = origin.longitudeShifted(-121.0001)
+        let far = origin.latitudeShifted(40)
+        let terrain = [CameraFootprintVertex(latitude: 1, longitude: 2, clipped: false, corner: true)]
+        let previous = ["a": (origin, terrain)]
+        let kept = mergeCameraFootprintTerrain(previous: previous, computed: ["a": (near, [])], current: ["a": near])
+        XCTAssertEqual(kept["a"]?.1, terrain)
+        XCTAssertTrue(mergeCameraFootprintTerrain(previous: previous, computed: [:], current: ["a": far]).isEmpty)
+        let fresh = [CameraFootprintVertex(latitude: 3, longitude: 4, clipped: false, corner: true)]
+        XCTAssertEqual(mergeCameraFootprintTerrain(previous: previous, computed: ["a": (near, fresh)], current: ["a": near])["a"]?.1, fresh)
+        XCTAssertTrue(mergeCameraFootprintTerrain(previous: previous, computed: previous, current: [:]).isEmpty)
+    }
+    func testLiveCornersTrackTheNewPoseWhileAReusableOutlineStays() {
+        let origin = input()
+        let moved = origin.latitudeShifted(39.00005)
+        let terrain = CameraFootprintGeometry.project(origin, elevation: { _, _ in 900 }, edgeSubdivisions: 1)
+        let drawing = CameraFootprintDrawing(input: moved, terrain: terrain, liveCorners: true)
+        XCTAssertEqual(drawing.boundary, terrain)
+        XCTAssertEqual(drawing.corners, CameraFootprintGeometry.project(moved))
+        XCTAssertFalse(cameraFootprintTerrainReusable(cached: origin, current: origin.latitudeShifted(39.01)))
+        let hidden = CameraFootprintDrawing(input: origin.latitudeShifted(39.01), terrain: nil, liveCorners: true)
+        XCTAssertTrue(hidden.boundary.isEmpty)
+        XCTAssertEqual(hidden.corners, CameraFootprintGeometry.project(origin.latitudeShifted(39.01)))
+    }
+}
+
+private extension CameraFootprintInput {
+    func latitudeShifted(_ latitude: Double) -> CameraFootprintInput {
+        CameraFootprintInput(latitude: latitude, longitude: longitude, launchLatitude: launchLatitude,
+                             launchLongitude: launchLongitude, height: height, azimuth: azimuth, tilt: tilt,
+                             horizontalFov: horizontalFov, verticalFov: verticalFov)
+    }
+    func longitudeShifted(_ longitude: Double) -> CameraFootprintInput {
+        CameraFootprintInput(latitude: latitude, longitude: longitude, launchLatitude: launchLatitude,
+                             launchLongitude: launchLongitude, height: height, azimuth: azimuth, tilt: tilt,
+                             horizontalFov: horizontalFov, verticalFov: verticalFov)
+    }
+    func fov(horizontal: Double? = nil, vertical: Double? = nil) -> CameraFootprintInput {
+        CameraFootprintInput(latitude: latitude, longitude: longitude, launchLatitude: launchLatitude,
+                             launchLongitude: launchLongitude, height: height, azimuth: azimuth, tilt: tilt,
+                             horizontalFov: horizontal ?? horizontalFov, verticalFov: vertical ?? verticalFov)
+    }
+    func height(_ height: Double) -> CameraFootprintInput {
+        CameraFootprintInput(latitude: latitude, longitude: longitude, launchLatitude: launchLatitude,
+                             launchLongitude: launchLongitude, height: height, azimuth: azimuth, tilt: tilt,
+                             horizontalFov: horizontalFov, verticalFov: verticalFov)
+    }
+    func tilt(_ tilt: Double) -> CameraFootprintInput {
+        CameraFootprintInput(latitude: latitude, longitude: longitude, launchLatitude: launchLatitude,
+                             launchLongitude: launchLongitude, height: height, azimuth: azimuth, tilt: tilt,
+                             horizontalFov: horizontalFov, verticalFov: verticalFov)
+    }
+    func launch(_ launchLatitude: Double) -> CameraFootprintInput {
+        CameraFootprintInput(latitude: latitude, longitude: longitude, launchLatitude: launchLatitude,
+                             launchLongitude: launchLongitude, height: height, azimuth: azimuth, tilt: tilt,
+                             horizontalFov: horizontalFov, verticalFov: verticalFov)
+    }
 }

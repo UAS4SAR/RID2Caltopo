@@ -61,31 +61,48 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
     private var fileCache: [URL: Data] = [:]
     private var blockCache: [String: Data] = [:]
     private var blockOrder: [String] = []
+    /// Tiles already known to be coarser than a footprint's S1M limit. Avoids remapping them on every ray step.
+    private var coarseTileURLs: Set<URL> = []
 
     public init(directory: URL) { self.directory = directory }
 
     public func invalidateCatalog() {
-        lock.r2cWithLock { catalogDate = .distantPast }
+        lock.r2cWithLock {
+            catalogDate = .distantPast
+            coarseTileURLs.removeAll()
+        }
     }
 
     public func sampleElevationMeters(latitude: Double, longitude: Double) -> Double? {
         sample(latitude: latitude, longitude: longitude)?.elevationMeters
     }
 
-    public func sample(latitude: Double, longitude: Double) -> Sample? {
+    /// `maximumHorizontalResolutionMeters` drops coarser rasters before any block is decoded.
+    /// The footprint asks for S1M (1.5 m) and must not spend the pass inflating 10 m / 30 m tiles.
+    public func sample(
+        latitude: Double,
+        longitude: Double,
+        maximumHorizontalResolutionMeters: Double = .infinity
+    ) -> Sample? {
         guard latitude.isFinite, longitude.isFinite else { return nil }
         return lock.r2cWithLock {
             refreshCatalog()
             var best: Sample?
             for tile in tiles where tile.bounds?.contains(latitude: latitude, longitude: longitude) != false {
-                guard let data = loadFile(tile.url), let metadata = loadMetadata(tile.url, data: data),
-                      let value = sample(tile: tile, data: data, metadata: metadata, latitude: latitude, longitude: longitude),
+                if maximumHorizontalResolutionMeters.isFinite, coarseTileURLs.contains(tile.url) { continue }
+                guard let data = loadFile(tile.url), let metadata = loadMetadata(tile.url, data: data) else { continue }
+                let resolution = metadata.horizontalResolutionMeters(latitude: latitude)
+                if resolution > maximumHorizontalResolutionMeters {
+                    if maximumHorizontalResolutionMeters.isFinite {
+                        coarseTileURLs.insert(tile.url)
+                        fileCache.removeValue(forKey: tile.url)
+                    }
+                    continue
+                }
+                guard let value = sample(tile: tile, data: data, metadata: metadata, latitude: latitude, longitude: longitude),
                       value.isFinite, (-500 ... 10_000).contains(value)
                 else { continue }
-                let candidate = Sample(
-                    elevationMeters: value,
-                    horizontalResolutionMeters: metadata.horizontalResolutionMeters(latitude: latitude)
-                )
+                let candidate = Sample(elevationMeters: value, horizontalResolutionMeters: resolution)
                 if best == nil || candidate.horizontalResolutionMeters < best!.horizontalResolutionMeters {
                     best = candidate
                 }

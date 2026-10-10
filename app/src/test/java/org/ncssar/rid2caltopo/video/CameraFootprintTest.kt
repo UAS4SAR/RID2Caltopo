@@ -106,4 +106,50 @@ class CameraFootprintTest {
         assertEquals(6,cameraFootprintCornerStrokes(collapsed,12.0).size)
         assertTrue(cameraFootprintCornerStrokes(points,Double.NaN).isEmpty())
     }
+    @Test fun identicalPoseReusesTerrainAndASlowOrbitStaysInsideTolerance() {
+        val origin = input()
+        assertTrue(cameraFootprintTerrainReusable(origin, origin))
+        val moved = origin.copy(latitude = 39.00005, azimuth = 6.0, tilt = -88.0, height = 104.0)
+        assertTrue(cameraFootprintDistanceMeters(39.0, -121.0, 39.00005, -121.0) < CAMERA_FOOTPRINT_TERRAIN_POSITION_METERS)
+        assertTrue(cameraFootprintTerrainReusable(origin, moved))
+        assertEquals(6.0, cameraFootprintAngleDeltaDegrees(359.0, 5.0), 1e-9)
+        assertTrue(cameraFootprintTerrainReusable(input(azimuth = 359.0), input(azimuth = 5.0)))
+    }
+    @Test fun largePoseChangeDropsTheTerrainOutline() {
+        val origin = input()
+        assertFalse(cameraFootprintTerrainReusable(origin, origin.copy(latitude = 39.01)))
+        assertFalse(cameraFootprintTerrainReusable(input(azimuth = 359.0), input(azimuth = 20.0)))
+        assertFalse(cameraFootprintTerrainReusable(origin, origin.copy(horizontalFov = 94.0)))
+        assertFalse(cameraFootprintTerrainReusable(origin, origin.copy(verticalFov = 64.0)))
+        assertFalse(cameraFootprintTerrainReusable(origin, origin.copy(height = 120.0)))
+        assertFalse(cameraFootprintTerrainReusable(origin, origin.copy(tilt = -80.0)))
+        assertFalse(cameraFootprintTerrainReusable(origin, origin.copy(launchLatitude = 39.01)))
+        assertTrue(cameraFootprintDistanceMeters(0.0, 179.9, 0.0, -179.9) < 30_000.0)
+    }
+    @Test fun cancelledPassKeepsPreviousOutlineUntilThePoseLeavesTolerance() {
+        val origin = input()
+        val near = origin.copy(longitude = -121.0001)
+        val far = origin.copy(latitude = 40.0)
+        val terrain = listOf(CameraFootprintVertex(1.0, 2.0, false, true))
+        val previous = mapOf("a" to (origin to terrain))
+        val kept = mergeCameraFootprintTerrain(previous, mapOf("a" to (near to emptyList())), mapOf("a" to near))
+        assertEquals(terrain, kept["a"]?.second)
+        assertTrue(mergeCameraFootprintTerrain(previous, emptyMap(), mapOf("a" to far)).isEmpty())
+        val fresh = listOf(CameraFootprintVertex(3.0, 4.0, false, true))
+        assertEquals(fresh, mergeCameraFootprintTerrain(previous, mapOf("a" to (near to fresh)), mapOf("a" to near))["a"]?.second)
+        assertTrue(mergeCameraFootprintTerrain(previous, previous, emptyMap()).isEmpty())
+        assertNull(cameraFootprintTerrainForDisplay(origin to emptyList(), origin))
+    }
+    @Test fun liveCornersTrackTheNewPoseWhileAReusableOutlineStays() {
+        val origin = input()
+        val moved = origin.copy(latitude = 39.00005)
+        val terrain = CameraFootprintGeometry.project(origin, elevation = { _, _ -> 900.0 }, edgeSubdivisions = 1)
+        val drawing = cameraFootprintLiveDrawing(moved, cameraFootprintTerrainForDisplay(origin to terrain, moved))
+        assertEquals(terrain, drawing.boundary)
+        assertEquals(CameraFootprintGeometry.project(moved), drawing.corners)
+        assertNull(cameraFootprintTerrainForDisplay(origin to terrain, origin.copy(latitude = 39.01)))
+        val hidden = cameraFootprintLiveDrawing(origin.copy(latitude = 39.01), null)
+        assertTrue(hidden.boundary.isEmpty())
+        assertEquals(CameraFootprintGeometry.project(origin.copy(latitude = 39.01)), hidden.corners)
+    }
 }

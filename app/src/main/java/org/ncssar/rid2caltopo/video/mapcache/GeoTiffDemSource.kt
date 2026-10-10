@@ -56,6 +56,8 @@ internal class GeoTiffDemSource(context: Context) {
     private val blockMemCache = object : LinkedHashMap<String, ByteArray>(16, 0.75f, true) {
         override fun removeEldestEntry(e: MutableMap.MutableEntry<String, ByteArray>?) = size > 8
     }
+    /** Eviction only cares that a tile was used in the last minute, so once per half-minute is enough. */
+    private val terrainTouchAtMs = HashMap<String, Long>()
 
     /** Force the next call to [sampleElevationMeters] to rebuild the tile catalog from disk. */
     fun invalidateCatalog() {
@@ -293,7 +295,7 @@ internal class GeoTiffDemSource(context: Context) {
             blockHeight = minOf(rowsPerStrip, metadata.height - (strip * rowsPerStrip))
         }
 
-        UnifiedMapCache.touchTerrain(tileName)
+        noteTerrainUse(tileName)
         val memKey = "$tileName|$blockIndex"
 
         // 1. Memory cache — no I/O
@@ -305,7 +307,9 @@ internal class GeoTiffDemSource(context: Context) {
             try {
                 val bytes = bf.readBytes()
                 synchronized(lock) { blockMemCache[memKey] = bytes }
-                MapCacheDebug.log("dem block-file-hit $tileName #$blockIndex (${bf.length()}B)")
+                if (MapCacheDebug.isDebugEnabled()) {
+                    MapCacheDebug.log("dem block-file-hit $tileName #$blockIndex (${bf.length()}B)")
+                }
                 return bytes
             } catch (e: Exception) {
                 MapCacheDebug.warn(MapCacheDebug.TAG_DEM, "dem block-file-read-fail $bf: ${e.message}")
@@ -336,6 +340,25 @@ internal class GeoTiffDemSource(context: Context) {
 
         synchronized(lock) { blockMemCache[memKey] = decoded }
         return decoded
+    }
+
+    /**
+     * [UnifiedMapCache.touchTerrain] takes the same lock as tile-cache writes. A footprint ray
+     * samples the same tile thousands of times; touching once per 30 s still beats the 60 s
+     * eviction grace and does not stall map tiles on every pixel.
+     */
+    private fun noteTerrainUse(tileName: String) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val shouldTouch = synchronized(lock) {
+            val last = terrainTouchAtMs[tileName]
+            if (last != null && now - last < 30_000L) {
+                false
+            } else {
+                terrainTouchAtMs[tileName] = now
+                true
+            }
+        }
+        if (shouldTouch) UnifiedMapCache.touchTerrain(tileName)
     }
 
     /** Returns the File path for a pre-decoded block binary. */
