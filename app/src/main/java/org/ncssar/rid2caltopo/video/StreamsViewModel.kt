@@ -1588,10 +1588,13 @@ class StreamsViewModel(
 
     internal fun cameraFootprintEnabled(remoteId: String): Boolean {
         cameraFootprintPreferenceRevision // Observe changes across full map and inset consumers.
-        return cameraFootprintPrefs.getBoolean(remoteId.trim().uppercase(Locale.US), false)
+        val key = org.ncssar.rid2caltopo.video.cameraFootprintPreferenceKey(remoteId) ?: return false
+        return cameraFootprintPrefs.getBoolean(key, false)
     }
     internal fun setCameraFootprintEnabled(remoteId: String, enabled: Boolean) {
-        cameraFootprintPrefs.edit().putBoolean(remoteId.trim().uppercase(Locale.US), enabled).apply()
+        val key = org.ncssar.rid2caltopo.video.cameraFootprintPreferenceKey(remoteId) ?: return
+        // commit() lands the value before the inspector closes, including across a process restart.
+        cameraFootprintPrefs.edit().putBoolean(key, enabled).commit()
         cameraFootprintPreferenceRevision++
     }
 

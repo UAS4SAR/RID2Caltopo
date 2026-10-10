@@ -155,6 +155,57 @@ final class CameraFootprintTests: XCTestCase {
         XCTAssertTrue(hidden.boundary.isEmpty)
         XCTAssertEqual(hidden.corners, CameraFootprintGeometry.project(origin.latitudeShifted(39.01)))
     }
+    func testAdSubframeRaysScaleTheTangentAndPreserveAspect() {
+        XCTAssertNil(cameraFootprintAdScanRect(.nan))
+        let rect = try XCTUnwrap(cameraFootprintAdScanRect(0.5))
+        XCTAssertEqual(rect.left, 0.25, accuracy: 1e-12)
+        XCTAssertEqual(rect.bottom, 0.75, accuracy: 1e-12)
+        let h = tan(45 * Double.pi / 180)
+        let v = tan(30 * Double.pi / 180)
+        let offsets = try XCTUnwrap(cameraFootprintSubframeRayOffsets(horizontalFovDeg: 90, verticalFovDeg: 60, rect: rect))
+        XCTAssertEqual(offsets[0].0, -0.5 * h, accuracy: 1e-9)
+        XCTAssertEqual(offsets[0].1, 0.5 * v, accuracy: 1e-9)
+        XCTAssertEqual(offsets[1].0, 0.5 * h, accuracy: 1e-9)
+        XCTAssertEqual(offsets[2].1, -0.5 * v, accuracy: 1e-9)
+        XCTAssertEqual(offsets[3].0, -0.5 * h, accuracy: 1e-9)
+        let shifted = try XCTUnwrap(cameraFootprintSubframeRayOffsets(
+            horizontalFovDeg: 90, verticalFovDeg: 60,
+            rect: CameraFootprintFrameRect(left: 0, top: 0, right: 0.5, bottom: 0.5)
+        ))
+        XCTAssertEqual(shifted[0].0, -h, accuracy: 1e-9)
+        XCTAssertEqual(shifted[1].0, 0, accuracy: 1e-9)
+        XCTAssertEqual(shifted[0].1, v, accuracy: 1e-9)
+        XCTAssertNil(cameraFootprintSubframeRayOffsets(
+            horizontalFovDeg: 90, verticalFovDeg: 60,
+            rect: CameraFootprintFrameRect(left: -0.1, top: 0, right: 0.5, bottom: 1)
+        ))
+        let full = input()
+        XCTAssertEqual(cameraFootprintApplyingAdScanZone(full, scanZoneFraction: nil).horizontalFov, 90)
+        XCTAssertEqual(cameraFootprintApplyingAdScanZone(full, scanZoneFraction: 1).horizontalFov, 90, accuracy: 1e-9)
+        let half = cameraFootprintApplyingAdScanZone(full, scanZoneFraction: 0.5)
+        XCTAssertEqual(half.horizontalFov, cameraFootprintApplyingAdScanZone(full, scanZoneFraction: 0.1).horizontalFov, accuracy: 1e-9)
+        XCTAssertEqual(half.horizontalFov, atan(0.5 * h) * 360 / Double.pi, accuracy: 1e-6)
+        XCTAssertEqual(half.verticalFov, atan(0.5 * v) * 360 / Double.pi, accuracy: 1e-6)
+        XCTAssertEqual(
+            tan(half.horizontalFov * Double.pi / 360) / tan(half.verticalFov * Double.pi / 360),
+            h / v,
+            accuracy: 1e-9
+        )
+        let points = CameraFootprintGeometry.project(half)
+        let north = (points[0].latitude - 39) * Double.pi / 180 * 6_378_137
+        let east = (points[0].longitude + 121) * Double.pi / 180 * 6_378_137 * cos(39 * Double.pi / 180)
+        XCTAssertEqual(north, 50 * v, accuracy: 0.05)
+        XCTAssertEqual(east, -50, accuracy: 0.05)
+        let halfAngle = CameraFootprintGeometry.project(full.fov(horizontal: 45, vertical: 30))
+        let halfAngleEast = (halfAngle[0].longitude + 121) * Double.pi / 180 * 6_378_137 * cos(39 * Double.pi / 180)
+        XCTAssertGreaterThan(abs(halfAngleEast - east), 5)
+    }
+    func testFootprintPreferenceKeyIsStableAndBlankStaysUnset() {
+        XCTAssertEqual(cameraFootprintPreferenceKey(" abc-1 "), "ABC-1")
+        XCTAssertEqual(cameraFootprintPreferenceKey("abc-1"), "ABC-1")
+        XCTAssertNil(cameraFootprintPreferenceKey("  "))
+        XCTAssertNil(cameraFootprintPreferenceKey(""))
+    }
 }
 
 private extension CameraFootprintInput {
