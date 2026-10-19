@@ -19,6 +19,13 @@ local.properties
 /keystore.properties
 
 # Local signing and service credentials
+/.venv-mapping/
+/tools/mapping/__pycache__/
+/tools/mapping/tests/__pycache__/
+/tools/mapping/dist/
+# Runtime-only DJI credentials, including atomic-write temporary files.
+**/.dji-cloud-credentials.json*
+**/.dji-cloud-sealed.json*
 /upload-key.jks
 /ct_credentials.json
 /app/src/main/res/raw/keystore.p12

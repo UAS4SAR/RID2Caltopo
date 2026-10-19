@@ -79,6 +79,8 @@ import com.google.android.gms.location.Priority
 import com.google.android.material.snackbar.Snackbar
 import org.ncssar.rid2caltopo.BuildConfig
 import org.ncssar.rid2caltopo.data.CaltopoClient
+import org.ncssar.rid2caltopo.data.CaltopoPersonalSession
+import org.ncssar.rid2caltopo.mapping.MappingWorkRuntime
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTError
 import org.ncssar.rid2caltopo.data.MutualAidProfileManager
@@ -207,9 +209,10 @@ internal fun organizationAccessAuthenticationRequired(
     organizationName: String?,
     trackerOrganizationConfigured: Boolean,
     caltopoTeamsAccountConfigured: Boolean,
+    personalCaltopoLoginConfigured: Boolean = false,
 ): Boolean = !organizationName.isNullOrBlank() ||
     trackerOrganizationConfigured ||
-    caltopoTeamsAccountConfigured
+    caltopoTeamsAccountConfigured || personalCaltopoLoginConfigured
 
 internal enum class OrganizationExternalFlow {
     ARCHIVE_DIRECTORY_PICKER,
@@ -389,6 +392,7 @@ private fun configuredAccessAuthenticationRequired(): Boolean =
             !credentials.teamId.isNullOrBlank() &&
                 !credentials.credentialId.isNullOrBlank() &&
                 !credentials.credentialSecret.isNullOrBlank(),
+            CaltopoPersonalSession.loginProtectionRequired,
         )
     }
 
@@ -1265,6 +1269,7 @@ class R2CActivity :
 
     override fun onResume() {
         super.onResume()
+        CaltopoPersonalSession.refreshLoginProtection(this)
         org.ncssar.rid2caltopo.data.PlayAppUpdateCheck.check(this)
         val returnedFromTrackerReauthentication = trackerReauthenticationBrowserOpen
         if (returnedFromTrackerReauthentication) {
@@ -1352,6 +1357,7 @@ class R2CActivity :
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        CaltopoPersonalSession.refreshLoginProtection(this)
         // A new task starts with bridge warnings enabled even if Android retained
         // the process after Quit. Rotation/restoration preserves the current session.
         if (savedInstanceState == null) {
@@ -1381,6 +1387,9 @@ class R2CActivity :
         // device left overnight on the safety screen has no alarm, then exits immediately
         // when the user taps Agree because the stale session baseline has already expired.
         CaltopoClient.CheckIdle()
+        lifecycleScope.launch {
+            MappingWorkRuntime.state.collect { work -> window.decorView.keepScreenOn = work.active }
+        }
         R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator.setPeerListChangedListener(this)
         R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator
             .setVideoStreamRequestListener(this)
@@ -1498,15 +1507,25 @@ class R2CActivity :
                     }
                     return@content
                 }
+                val personalLoginProtected = CaltopoPersonalSession.loginProtectionRequired
+                LaunchedEffect(personalLoginProtected) {
+                    if (personalLoginProtected && !organizationAccessSession.isAuthenticated() &&
+                        organizationAccessState != OrganizationAccessState.AUTHENTICATING
+                    ) {
+                        organizationAccessState = OrganizationAccessState.LOCKED
+                        requestOrganizationAccessAuthentication()
+                    }
+                }
                 val organizationName = CaltopoClient.GetHomeOrgName().trim()
                 val waitingForSystemUnlock = configuredAccessAuthenticationRequired() &&
                     organizationAccessState == OrganizationAccessState.WAITING_FOR_SYSTEM_UNLOCK
                 if (configuredAccessAuthenticationRequired() &&
-                    organizationAccessState != OrganizationAccessState.UNLOCKED &&
+                    (organizationAccessState != OrganizationAccessState.UNLOCKED ||
+                        (personalLoginProtected && !organizationAccessSession.isAuthenticated())) &&
                     !waitingForSystemUnlock
                 ) {
                     OrganizationAccessGate(
-                        protectedAccountName = organizationName.ifEmpty { "CalTopo Teams" },
+                        protectedAccountName = organizationName.ifEmpty { "CalTopo" },
                         state = organizationAccessState,
                         errorMessage = organizationAccessError,
                         onUnlock = { requestOrganizationAccessAuthentication(userRequested = true) },
@@ -1538,10 +1557,11 @@ class R2CActivity :
                     }
                 }
                 val localContext = LocalContext.current
+                val mappingJob by org.ncssar.rid2caltopo.mapping.MappingProcessingManager.state.collectAsState()
                 val activeScreen by localViewModel
                     .activeScreen
                     .collectAsState()
-                BackHandler(enabled = pendingAppExitSource == null && !waitingForSystemUnlock) {
+                BackHandler(enabled = pendingAppExitSource == null && !waitingForSystemUnlock && mappingJob?.active != true) {
                     when (appBackAction(activeScreen)) {
                         AppBackAction.REQUEST_EXIT_CONFIRMATION ->
                             requestAppExit(AppExitRequestSource.SYSTEM_BACK)
@@ -1684,6 +1704,7 @@ class R2CActivity :
                         org.ncssar.rid2caltopo.ui.ShortFlightRecordingPanel()
                     }
                     androidx.compose.foundation.layout.Box(Modifier.weight(1f)) {
+                if (mappingJob?.active != true) {
                 org.ncssar.rid2caltopo.ui.PrimaryPageTransition(activeScreen) {
                 if (localViewModel.proximitySettingsOpen) {
                     CaltopoSettingsScreen(
@@ -1797,18 +1818,19 @@ class R2CActivity :
                     }
                 }
                 }
+                }
                     }
                     // One persistent host follows every page without covering video controls.
                     // Keep the review dialog mounted while navigating between pages.
-                    if (!waitingForSystemUnlock) {
+                    if (!waitingForSystemUnlock && mappingJob?.active != true) {
                         // Choose Map opens the same incident-map selection as the Live View Incident Map chip.
                         org.ncssar.rid2caltopo.ui.AwaitingMapPublicationPanel(
                             onChooseMap = { localViewModel.openConnectionOverlayFromCurrentScreen() },
                         )
                     }
                 }
-                // Defer new operational dialogs until the system unlock is accepted.
-                if (!waitingForSystemUnlock) {
+                // Defer ordinary dialogs while reconstruction owns the workspace; preserve access gates.
+                if (!waitingForSystemUnlock && mappingJob?.active != true) {
                 org.ncssar.rid2caltopo.ui.MapConnectionOverlayHost(localViewModel)
                 pendingDroneConfirmation?.let { confirmationState ->
                     DroneSpecConfirmationDialog(
@@ -1981,9 +2003,14 @@ class R2CActivity :
                     )
                 }
                 }
+                // Outside adaptive map/video composition, after all ordinary dialogs, behind the access gate.
+                if (!waitingForSystemUnlock) org.ncssar.rid2caltopo.mapping.MappingWorkspaceHost(onViewRequested={
+                    streamsViewModel.showMapOnly()
+                    localViewModel.showStreams()
+                })
                 if (waitingForSystemUnlock) {
                     OrganizationAccessGate(
-                        protectedAccountName = organizationName.ifEmpty { "CalTopo Teams" },
+                        protectedAccountName = organizationName.ifEmpty { "CalTopo" },
                         state = organizationAccessState,
                         errorMessage = null,
                         onUnlock = { requestOrganizationAccessAuthentication(userRequested = true) },
@@ -2922,6 +2949,7 @@ class R2CActivity :
 
         if (shouldShutdown) {
             organizationAccessSession.invalidate()
+            MappingWorkRuntime.onActivityFinished(explicitExit=exitRequested)
             try {
                 stopLocationUpdates()
                 R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator.setPeerListChangedListener(null)

@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.ui
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -55,6 +58,6 @@ fun FlightReadinessFields(remoteId: String, callsign: String, value: FlightReadi
         }
         OutlinedTextField(value = value.payloadDescription, onValueChange = { onChange(value.copy(payloadDescription = it)) }, label = { Text("Takeoff payload") })
         WeightField("Payload weight (grams)", value.payloadWeightGrams) { onChange(value.copy(payloadWeightGrams = it)) }
-        Text("Takeoff weight: " + (value.aircraft.totalWeight(value.selectedAccessories, value.payloadDescription, value.payloadWeightGrams)?.let { "$it grams" } ?: "incomplete — weight unknown"))
+        Text("Takeoff weight: " + (value.aircraft.totalWeight(value.selectedAccessories, value.payloadDescription, value.payloadWeightGrams)?.let { "${Units.current.number(Units.current.gramsValue(it))} ${Units.current.weightUnit}" } ?: "incomplete — weight unknown"))
     }
 }

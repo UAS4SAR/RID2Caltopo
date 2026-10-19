@@ -124,6 +124,7 @@ enum AppleAircraftOrganizationAccess {
 }
 
 struct AppleOrganizationUserLabel: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     var compactHeader = false
     @Environment(\.scenePhase) private var scenePhase
     @State private var username: String?
@@ -158,6 +159,7 @@ struct AppleOrganizationUserLabel: View {
 }
 
 private struct AppleAircraftReadinessFields: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @Binding var value: AircraftReadiness
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -169,8 +171,8 @@ private struct AppleAircraftReadinessFields: View {
             TextField("FAA registration number", text: $value.registrationNumber)
         }
         VStack(alignment: .leading, spacing: 4) {
-            Text("Base weight (grams)").font(.caption).foregroundStyle(.secondary)
-            TextField("Base weight (grams)", value: $value.baseWeightGrams, format: .number)
+            Text("Base weight (\(DisplayUnits.current.weightUnit))").font(.caption).foregroundStyle(.secondary)
+            TextField("Base weight (\(DisplayUnits.current.weightUnit))", value: Binding<Double?>(get: { value.baseWeightGrams.map(DisplayUnits.current.gramsValue) }, set: { value.baseWeightGrams = $0.map(DisplayUnits.current.grams) }), format: .number)
         }
         VStack(alignment: .leading, spacing: 4) {
             Text("Included in base weight").font(.caption).foregroundStyle(.secondary)
@@ -192,8 +194,8 @@ private struct AppleAircraftReadinessFields: View {
                 TextField("Accessory / battery name", text: $accessory.name)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text("Accessory weight (grams)").font(.caption).foregroundStyle(.secondary)
-                TextField("Accessory weight (grams)", value: $accessory.weightGrams, format: .number)
+                Text("Accessory weight (\(DisplayUnits.current.weightUnit))").font(.caption).foregroundStyle(.secondary)
+                TextField("Accessory weight (\(DisplayUnits.current.weightUnit))", value: Binding<Double?>(get: { accessory.weightGrams.map(DisplayUnits.current.gramsValue) }, set: { accessory.weightGrams = $0.map(DisplayUnits.current.grams) }), format: .number)
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text("Choose-one group (for example battery)").font(.caption).foregroundStyle(.secondary)
@@ -416,6 +418,7 @@ enum AppleTrackerEnrollmentClient {
 }
 
 struct RidMappingAdminView: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     private var inspectionRemoteID: String?
     @State private var canEdit = AppleAircraftOrganizationAccess.canEdit
     @State private var refreshingAccess = false
@@ -704,6 +707,7 @@ enum AppleScannedFieldMode {
 }
 
 struct AppleScannableTextField: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let title: String
     @Binding var text: String
     let mode: AppleScannedFieldMode
@@ -741,6 +745,7 @@ struct AppleScannableTextField: View {
 }
 
 private struct AppleAlphanumericScannerSheet: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let title: String
     let mode: AppleScannedFieldMode
     let onSelected: (String) -> Void
@@ -958,6 +963,7 @@ private struct RIDEntryImmediateTouches: UIViewRepresentable {
 }
 
 private struct RIDRequiredFieldLabel: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let title: String
     let required: Bool
     init(_ title: String, required: Bool = true) {

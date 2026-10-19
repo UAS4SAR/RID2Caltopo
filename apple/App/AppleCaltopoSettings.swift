@@ -41,15 +41,19 @@ struct AppleCaltopoConfiguration: Sendable, Equatable {
 
 @MainActor
 final class AppleCaltopoSettings: ObservableObject {
-    @Published var usesPersonalCredentials = false
+    @Published var usesPersonalCredentials: Bool {
+        didSet { defaults.set(usesPersonalCredentials, forKey: "caltopo.usesPersonalCredentials") }
+    }
     @Published private(set) var personalUsername = ""
     @Published private(set) var personalMaps: [CaltopoTeamMapNode] = []
     @Published private(set) var personalMapsStatus = "Sign in to load personal maps"
     func acceptPersonalCatalog(_ username: String, maps: [CaltopoTeamMapNode]) {
+        personalLoginRequired = false
         personalUsername = username
         personalMaps = maps
         personalMapsStatus = maps.isEmpty ? "No maps available for this account" : "Personal maps loaded"
     }
+    @Published private(set) var personalLoginRequired = false
     @Published private(set) var isLoadingPersonalMaps = false
     private var personalResetGeneration = 0
     func loadPersonalMaps() async -> Bool {
@@ -63,11 +67,13 @@ final class AppleCaltopoSettings: ObservableObject {
             return true
         } catch {
             guard generation == personalResetGeneration else { return false }
-            if case CaltopoLiveClientError.httpStatus(let code, _) = error, code == 401 || code == 403 {
-                personalUsername = ""
-            }
+            personalLoginRequired = CaltopoPersonalCatalog.requiresInteractiveLogin(after: error)
+            if personalLoginRequired { personalUsername = "" }
             personalMaps = []
-            personalMapsStatus = "Open CalTopo to sign in and load your personal maps."
+            personalMapsStatus = personalLoginRequired
+                ? "Sign in to CalTopo to load your personal maps."
+                : "Personal maps could not load. Check your connection and tap Retry."
+            AppleLog.info("CalTopo", "Personal catalog load failed; signInRequired=\(personalLoginRequired), errorType=\(String(describing: type(of: error)))")
             return false
         }
     }
@@ -97,6 +103,7 @@ final class AppleCaltopoSettings: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        usesPersonalCredentials = defaults.bool(forKey: "caltopo.usesPersonalCredentials")
         enabled = defaults.bool(forKey: "caltopo.enabled")
         domainAndPort = defaults.string(forKey: "caltopo.domain") ?? "caltopo.com"
         // Match Android's session lifecycle: credentials and profiles persist,
@@ -359,6 +366,7 @@ final class AppleCaltopoSettings: ObservableObject {
 
     func resetPersistedState() {
         personalResetGeneration += 1
+        personalLoginRequired = false
         personalMaps = []
         personalMapsStatus = "Sign in to load personal maps"
         isLoadingPersonalMaps = false

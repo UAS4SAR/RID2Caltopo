@@ -3,6 +3,9 @@ set -euo pipefail
 
 script_dir="${0:A:h}"
 repo_root="${script_dir:h}"
+if ! command -v cmake >/dev/null && [[ -x "$HOME/Library/Android/sdk/cmake/3.22.1/bin/cmake" ]]; then
+    export PATH="$HOME/Library/Android/sdk/cmake/3.22.1/bin:$PATH"
+fi
 rebuild_native=true
 archive_path=""
 bundle_id="org.ncssar.RID2CaltopoApple"
@@ -27,7 +30,7 @@ Options:
                          Ignore the weekly protected-land catalog check cache
   --help                  Show this help
 
-The default gate rebuilds all three native XCFrameworks from current sources, runs
+The default gate rebuilds all native XCFrameworks from current sources, runs
 shared/native tests and anomaly qualifications, performs a clean Simulator
 link, and verifies a fresh unsigned arm64 iPhone/iPad archive.
 USAGE
@@ -80,6 +83,7 @@ if $rebuild_native; then
     "$script_dir/Native/MediaMTX/build-xcframework.sh"
     "$script_dir/Native/AnomalyCore/build-xcframework.sh"
     "$script_dir/Native/FFmpeg/build-xcframework.sh"
+    "$script_dir/Native/Mapping/build-xcframework.sh"
 fi
 
 media_root="$script_dir/Build/MediaMTX"
@@ -88,14 +92,17 @@ ffmpeg_root="$script_dir/Build/FFmpeg"
 plutil -lint \
     "$media_root/MediaMTXMobile.xcframework/Info.plist" \
     "$anomaly_root/R2CAnomalyApple.xcframework/Info.plist" \
-    "$ffmpeg_root/R2CFFmpegMobile.xcframework/Info.plist"
+    "$ffmpeg_root/R2CFFmpegMobile.xcframework/Info.plist" \
+    "$script_dir/Build/Mapping/R2CMappingNative.xcframework/Info.plist"
 for library in \
     "$media_root/device/libmediamtx_mobile.a" \
     "$media_root/simulator/libmediamtx_mobile.a" \
     "$anomaly_root/device/libR2CAnomalyApple.a" \
     "$anomaly_root/simulator/libR2CAnomalyApple.a" \
     "$ffmpeg_root/device/libR2CFFmpegMobile.a" \
-    "$ffmpeg_root/simulator/libR2CFFmpegMobile.a"; do
+    "$ffmpeg_root/simulator/libR2CFFmpegMobile.a" \
+    "$script_dir/Build/Mapping/device/libr2c_mapping_runtime.a" \
+    "$script_dir/Build/Mapping/simulator/libr2c_mapping_runtime.a"; do
     lipo -info "$library" | grep -q 'architecture: arm64'
 done
 for symbol in R2CFFmpegSetSEIDiscovery R2CFFmpegSessionCopyRenderDiagnostics R2CFFmpegSessionRenderAgeMilliseconds R2CFFmpegSessionCopyFrameWithCamera R2CFFmpegSessionCreate R2CFFmpegSessionCreatePlayback R2CFFmpegSessionDestroy R2CFFmpegSessionCopyLatestFrame R2CFFmpegSessionGetStatus R2CFFmpegSessionCopyLatestDJICameraTelemetry R2CFFmpegSessionCopyLatestDJISEIPayload; do
@@ -142,7 +149,17 @@ echo "[5/10] Color and person-relevance qualifications"
     ./gradlew :app:colorRealtimeQualification :app:personRelevanceQualification
 )
 
-echo "[6/10] Shared Swift tests"
+echo "[6/10] Shared Swift and mapping parity tests"
+cmake_binary="${CMAKE:-$HOME/Library/Android/sdk/cmake/3.22.1/bin/cmake}"
+"$cmake_binary" --build "$script_dir/Build/Mapping/macos" --target R2CMappingNativeTests R2CMappingPipelineTests R2CSurfaceRefinementTests -j4
+"$script_dir/Build/Mapping/macos/bin/R2CMappingNativeTests"
+"$script_dir/Build/Mapping/macos/bin/R2CSurfaceRefinementTests"
+"$script_dir/Build/Mapping/macos/bin/R2CMappingPipelineTests" "$script_dir/Build/Mapping/Fixture"
+(cd "$repo_root" && ./gradlew :app:testDebugUnitTest --tests '*mapping.*')
+python3 "$repo_root/tools/mapping/native/test_jni_host.py" --fixture "$script_dir/Build/Mapping/Fixture"
+"${NODE:-node}" "$repo_root/tools/mapping/tests/test_surface_collection.cjs"
+"${NODE:-node}" "$repo_root/tools/mapping/tests/test_surface_boundary.cjs"
+"${NODE:-node}" "$repo_root/tools/mapping/tests/test_surface_scale.cjs"
 swift test --package-path "$script_dir"
 
 echo "[7/10] Clean universal Simulator link"
@@ -160,6 +177,8 @@ xcodebuild -quiet \
     CODE_SIGNING_ALLOWED=NO \
     -jobs 1 \
     build
+
+"$script_dir/Tests/mapping-simulator-check.sh" "$work_dir/DerivedData/Build/Products/Debug-iphonesimulator/RID2CaltopoApple.app"
 
 echo "[8/10] Clean arm64 device archive"
 xcodebuild -quiet \

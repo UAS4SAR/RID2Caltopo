@@ -73,10 +73,16 @@ public actor CaltopoInterruptedPublicationJournal {
     }
 
     private let fileURL: URL
-    private var payload: Payload
+    private var payload = Payload()
+    private var loaded = false
 
     public init(fileURL: URL) {
         self.fileURL = fileURL
+    }
+
+    private func load() {
+        guard !loaded else { return }
+        loaded = true
         if let data = try? Data(contentsOf: fileURL),
            let decoded = try? JSONDecoder().decode(Payload.self, from: data) {
             payload = decoded
@@ -86,6 +92,7 @@ public actor CaltopoInterruptedPublicationJournal {
     }
 
     public func upsert(_ entry: CaltopoInterruptedPublication) throws {
+        load()
         if let index = payload.entries.firstIndex(where: { $0.liveTrackID == entry.liveTrackID }) {
             payload.entries[index] = entry
         } else {
@@ -95,10 +102,12 @@ public actor CaltopoInterruptedPublicationJournal {
     }
 
     public func entries(mapID: String) -> [CaltopoInterruptedPublication] {
-        payload.entries.filter { $0.mapID == mapID }
+        load()
+        return payload.entries.filter { $0.mapID == mapID }
     }
 
     public func remove(liveTrackID: String) throws {
+        load()
         payload.entries.removeAll { $0.liveTrackID == liveTrackID }
         try save()
     }

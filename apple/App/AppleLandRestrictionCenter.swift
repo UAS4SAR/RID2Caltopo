@@ -52,8 +52,19 @@ final class AppleLandRestrictionCenter: ObservableObject {
         } else {
             radiusStatuteMiles = 1
         }
-        restoreCache()
         rebuild(loading: false, errors: [], waitingForLocation: true)
+        let cacheURL = self.cacheURL
+        Task {
+            let cache = await Task.detached(priority: .utility) { Self.loadCache(at: cacheURL) }.value
+            // A network refresh may have completed while the disk was being read.
+            guard lastUpdated == nil, let cache else { return }
+            lastUpdated = cache.updated
+            areas = cache.areas
+            if let latitude = cache.latitude, let longitude = cache.longitude {
+                lastCoordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+            }
+            rebuild(loading: state.loading, errors: state.sourceErrors, waitingForLocation: lastCoordinate == nil)
+        }
     }
 
     func update(location: CLLocation?, force: Bool = false) {
@@ -108,21 +119,19 @@ final class AppleLandRestrictionCenter: ObservableObject {
                     guard let http = response as? HTTPURLResponse, (200 ..< 300).contains(http.statusCode) else {
                         throw AppleLandRestrictionError.service("HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
                     }
-                    fetched += try OperationalLandRestriction.parse(
-                        data,
-                        source: source,
-                        center: coordinate,
-                        operatingRadiusNM: 1
-                    )
+                    fetched += try await Task.detached(priority: .utility) {
+                        try OperationalLandRestriction.parse(data, source: source, center: coordinate, operatingRadiusNM: 1)
+                    }.value
                 } catch {
                     errors.append("\(source.agency.name): \(error.localizedDescription)")
                 }
             }
             if !fetched.isEmpty || errors.count < OperationalLandRestriction.sources.count {
-                areas = Self.deduplicated(fetched)
+                let values = fetched
+                areas = await Task.detached(priority: .utility) { Self.deduplicated(values) }.value
                 lastCoordinate = location.coordinate
                 lastUpdated = Date()
-                saveCache()
+                await saveCache()
             }
             rebuild(loading: false, errors: errors)
             AppleLog.info(
@@ -184,30 +193,23 @@ final class AppleLandRestrictionCenter: ObservableObject {
     private func statusLine(nearby: [OperationalLandArea], loading: Bool, errors: [String]) -> String {
         if loading { return "Checking federal and Colorado protected lands…" }
         if nearby.isEmpty, !errors.isEmpty { return "Some protected-land sources could not be checked." }
-        if nearby.isEmpty { return "No protected-land boundaries intersect the one-mile operating area." }
+        if nearby.isEmpty { return "No protected-land boundaries intersect the \(DisplayUnits.current.miles(1)) operating area." }
         return "\(nearby.count) protected-land area(s) intersect or border the operating area."
     }
 
-    private struct Cache: Codable {
+    private struct Cache: Codable, Sendable {
         let updated: Date
         let latitude: Double?
         let longitude: Double?
         let areas: [OperationalLandArea]
     }
 
-    private func restoreCache() {
-        guard let cacheURL,
-              let data = try? Data(contentsOf: cacheURL),
-              let cache = try? JSONDecoder().decode(Cache.self, from: data)
-        else { return }
-        lastUpdated = cache.updated
-        areas = cache.areas
-        if let latitude = cache.latitude, let longitude = cache.longitude {
-            lastCoordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
-        }
+    private nonisolated static func loadCache(at url: URL?) -> Cache? {
+        guard let url, let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(Cache.self, from: data)
     }
 
-    private func saveCache() {
+    private func saveCache() async {
         let cache = Cache(
             updated: lastUpdated ?? Date(),
             latitude: lastCoordinate?.latitude,
@@ -216,7 +218,10 @@ final class AppleLandRestrictionCenter: ObservableObject {
         )
         guard let cacheURL else { return }
         do {
-            try JSONEncoder().encode(cache).write(to: cacheURL, options: .atomic)
+            try await Task.detached(priority: .utility) {
+                try FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try JSONEncoder().encode(cache).write(to: cacheURL, options: .atomic)
+            }.value
         } catch {
             AppleLog.warning("LandRules", "Could not save protected-land cache: \(error.localizedDescription)")
         }
@@ -227,16 +232,10 @@ final class AppleLandRestrictionCenter: ObservableObject {
             return nil
         }
         let directory = root.appending(path: "RID2Caltopo", directoryHint: .isDirectory)
-        do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            return directory.appending(path: "LandRestrictions.json")
-        } catch {
-            AppleLog.warning("LandRules", "Could not create protected-land cache directory: \(error.localizedDescription)")
-            return nil
-        }
+        return directory.appending(path: "LandRestrictions.json")
     }
 
-    private static func deduplicated(_ values: [OperationalLandArea]) -> [OperationalLandArea] {
+    private nonisolated static func deduplicated(_ values: [OperationalLandArea]) -> [OperationalLandArea] {
         var seen = Set<String>()
         return values.filter { seen.insert($0.id).inserted }.sorted {
             if $0.containsOperator != $1.containsOperator { return $0.containsOperator }
@@ -286,7 +285,7 @@ struct AppleLandRestrictionPanel: View {
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(area.name).fontWeight(.semibold)
                                     Text(area.rule.label).font(.caption).foregroundStyle(.orange)
-                                    Text(area.containsOperator ? "Operator is inside this mapped boundary." : String(format: "Boundary %.1f NM away.", area.distanceNM))
+                                    Text(area.containsOperator ? "Operator is inside this mapped boundary." : "Boundary \(DisplayUnits.current.distance(area.distanceNM * 1852)) away.")
                                         .font(.caption).foregroundStyle(.secondary)
                                     if let detailsURL = area.detailsURL {
                                         Link("Open property details", destination: detailsURL)

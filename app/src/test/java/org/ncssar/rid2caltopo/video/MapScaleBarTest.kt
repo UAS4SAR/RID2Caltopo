@@ -22,4 +22,13 @@ class MapScaleBarTest {
         assertNull(mapScaleBarState(Double.NaN, 120.0))
         assertNull(mapScaleBarState(1.0, 0.0))
     }
+    @Test fun metricScaleUsesExactDistanceInMetersAndKilometers() {
+        val units = org.ncssar.rid2caltopo.data.DisplayUnits.METRIC
+        val small = mapScaleBarState(1.0, 120.0, units)!!
+        assertEquals("100 m", small.label)
+        assertEquals(100.0, small.widthPx, 1e-8)
+        val large = mapScaleBarState(10.0, 120.0, units)!!
+        assertEquals("1 km", large.label)
+        assertEquals(100.0, large.widthPx, 1e-8)
+    }
 }

@@ -10,7 +10,22 @@ import android.os.Bundle
 class CaltopoPersonalSessionProvider : ContentProvider() {
     override fun onCreate() = true
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle = Bundle().apply {
-        if (method == "reset") putBoolean("cleared", CaltopoPersonalProbeActivity.clearPersistedLogin())
+        if (method == "loginProtectionRequired") {
+            // No network or map loading: persisted browser cookies also cover upgrades
+            // from versions that did not record a personal login marker.
+            val prefs = requireNotNull(context).getSharedPreferences("personal-caltopo-protection", 0)
+            val required = prefs.getBoolean("required", false) ||
+                android.webkit.CookieManager.getInstance().hasCookies()
+            if (required) check(prefs.edit().putBoolean("required", true).commit())
+            putBoolean("required", required)
+        }
+        if (method == "reset") {
+            val cleared = CaltopoPersonalProbeActivity.clearPersistedLogin()
+            val markerCleared = cleared && requireNotNull(context)
+                .getSharedPreferences("personal-caltopo-protection", 0)
+                .edit().putBoolean("required", false).commit()
+            putBoolean("cleared", markerCleared)
+        }
         if (method == "catalog") runCatching { CaltopoPersonalProbeActivity.prepareCatalog(requireNotNull(context)); CaltopoPersonalProbeActivity.catalog() }.onSuccess { putString("catalog", it) }.onFailure { putBoolean("loginRequired", it is org.ncssar.rid2caltopo.data.PersonalCaltopoLoginRequired); putString("error", "Personal maps could not load.") }
         if (method == "authorizeMedia") putBoolean("authorized", CaltopoPersonalProbeActivity.authorizeMedia(arg, extras?.getString("mediaID")))
         if (method == "valid") putBoolean("valid", CaltopoPersonalProbeActivity.validSession(arg, extras?.getString("url")))

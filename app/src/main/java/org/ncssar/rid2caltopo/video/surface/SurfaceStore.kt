@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.video.surface
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import android.content.Context
 import org.ncssar.rid2caltopo.video.mapcache.UnifiedMapCache
 import java.io.File
@@ -203,12 +206,12 @@ internal object SurfaceBriefings {
         cache[key]?.let{return it}
         val a=prepared?.second ?: p.briefing(points,60.96,polygon);val peak=a.peak
         val text=buildString {
-            append("${if(polygon) "Assignment" else "Route"} with 200 ft ${if(polygon) "boundary buffer" else "corridor radius"}.\n")
+            append("${if(polygon) "Assignment" else "Route"} with ${Units.current.feet(200.0)} ${if(polygon) "boundary buffer" else "corridor radius"}.\n")
             append("Extent: ${points.minOf{it.first}}, ${points.minOf{it.second}} to ${points.maxOf{it.first}}, ${points.maxOf{it.second}}; ${points.size} vertices.\n")
             append(if(a.complete) "Coverage complete.\n" else "INCOMPLETE: ${a.missing} of ${a.checked} cells missing. Maximum below is only the covered portion.\n")
             if(peak!=null) {
-                append("Highest mapped surface: ${"%.0f".format(peak.elevation/0.3048)} ft at ${peak.latitude}, ${peak.longitude}.\n")
-                append("Ground at high point: ${peak.ground?.let{"%.0f ft".format(it/0.3048)} ?: "unavailable"}; height above local ground: ${peak.ground?.let{"%.0f ft".format((peak.elevation-it)/0.3048)} ?: "unavailable"}. This is highest absolute elevation, not the tallest object.\n")
+                append("Highest mapped surface: ${Units.current.feet(peak.elevation/0.3048)} at ${peak.latitude}, ${peak.longitude}.\n")
+                append("Ground at high point: ${peak.ground?.let{Units.current.length(it)} ?: "unavailable"}; height above local ground: ${peak.ground?.let{Units.current.length(peak.elevation-it)} ?: "unavailable"}. This is highest absolute elevation, not the tallest object.\n")
             }
             append("${p.id}; survey ${p.metadata.getString("surveyDate")}; ${p.spacing} m cells; ${p.metadata.getString("verticalReference")}.\n")
             append("${p.metadata.getString("sourceURL")}\n${p.wireNotes()}\n${AolState.EXPLANATION}\nThis briefing does not set RTH or a permitted flight altitude.")

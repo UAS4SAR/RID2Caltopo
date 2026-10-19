@@ -30,6 +30,18 @@ public final class FakeCalTopoSessionGateway implements CalTopoSessionGateway {
     public boolean holdRecoveryEdits;
     public int recoveryDeleteResponseCode = 200;
 
+    public boolean markerDeleteSucceeds = true;
+    public final List<String> markerCleanupMaps = new ArrayList<>();
+    @Override
+    public CaltopoOp deleteMarkerOnMap(String mapId, String id, Consumer<CaltopoOp> done) {
+        markerCleanupMaps.add(mapId);
+        record("deleteMarker", id, null);
+        CaltopoOp op = new CaltopoOp(null);
+        op.setOperationIsDone(markerDeleteSucceeds);
+        if (done != null) done.accept(op);
+        return op;
+    }
+
     @Override
     public CaltopoOp editObjectOnMap(String mapId, String type, String id, JSONObject feature, Consumer<CaltopoOp> done) {
         recoveryMaps.add(mapId);

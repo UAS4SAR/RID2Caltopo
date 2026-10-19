@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.video.surface
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import org.json.JSONObject
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -149,7 +152,7 @@ class SurfacePackage private constructor(val metadata: JSONObject, private val s
 data class AolState(val feet:Double?=null, val reason:String="Surface package not prepared", val details:String=reason, val status:MeasurementStatus=if(feet==null) MeasurementStatus.Unknown else MeasurementStatus.Available) {
     val label:String get()=measurementLabel(feet,status)
     companion object {
-        const val EXPLANATION="AOL · 200 ft radius: height above the highest mapped surface nearby. Negative is not a collision prediction. Positive does not exclude wires or unmapped obstacles. Wires may be absent; no wire clearance is inferred from AOL. Reference assumes a ground launch at the observed takeoff location; elevated launches are unsupported. Aircraft and survey uncertainty are not bounded by pixel size."
+        val EXPLANATION: String get() = "AOL · ${Units.current.feet(200.0)} radius: height above the highest mapped surface nearby. Negative is not a collision prediction. Positive does not exclude wires or unmapped obstacles. Wires may be absent; no wire clearance is inferred from AOL. Reference assumes a ground launch at the observed takeoff location; elevated launches are unsupported. Aircraft and survey uncertainty are not bounded by pixel size."
         fun calculate(p:SurfacePackage, latitude:Double, longitude:Double, takeoffLatitude:Double, takeoffLongitude:Double, height:Double?, compatibleGround:Double?=null, pointOnly:Boolean=false):AolState {
             if(height==null || !height.isFinite()) return AolState(reason="Takeoff-relative altitude unavailable")
             val ground=compatibleGround ?: p.groundAt(takeoffLatitude,takeoffLongitude) ?: return AolState(reason="Compatible takeoff ground unavailable")
@@ -161,7 +164,7 @@ data class AolState(val feet:Double?=null, val reason:String="Surface package no
             if(!a.complete) return AolState(reason="Incomplete surface coverage (${a.missing} cells)")
             val peak=a.peak ?: return AolState(reason="Surface coverage unavailable")
             val m=p.metadata
-            return AolState((ground+height-peak.elevation)/0.3048,"Available", "$EXPLANATION\nMapped high point: ${peak.latitude}, ${peak.longitude}; ${"%.0f".format(peak.distance/0.3048)} ft away; surface ${"%.0f".format(peak.elevation/0.3048)} ft; ground ${peak.ground?.div(0.3048)} ft.\n${p.id}; survey ${m.getString("surveyDate")}; ${p.spacing} m cells; ${m.getString("verticalReference")}. Full disk covered. Survey age is independent of telemetry age.\n${m.getString("quality")}\n${p.wireNotes()}")
+            return AolState((ground+height-peak.elevation)/0.3048,"Available", "$EXPLANATION\nMapped high point: ${peak.latitude}, ${peak.longitude}; ${Units.current.feet(peak.distance/0.3048)} away; surface ${Units.current.feet(peak.elevation/0.3048)}; ground ${peak.ground?.let { Units.current.length(it) } ?: "unavailable"}.\n${p.id}; survey ${m.getString("surveyDate")}; ${Units.current.length(p.spacing)} cells; ${m.getString("verticalReference")}. Full disk covered. Survey age is independent of telemetry age.\n${m.getString("quality")}\n${p.wireNotes()}")
         }
     }
 }

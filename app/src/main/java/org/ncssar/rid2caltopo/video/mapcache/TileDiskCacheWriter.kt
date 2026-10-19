@@ -56,6 +56,13 @@ class TileDiskCacheWriter(context: Context) : IFilesystemCache {
                 )
                 return false
             }
+            org.ncssar.rid2caltopo.mapping.LocalMappingTiles.file(appContext,pTileSourceInfo,pMapTileIndex)?.let { file ->
+                file.parentFile!!.mkdirs()
+                val temporary=java.io.File(file.parentFile,file.name+".tmp")
+                temporary.writeBytes(bytes)
+                check(temporary.renameTo(file)) { "Cannot save local mapping imagery." }
+                return true
+            }
             val expiresAt = pExpirationTime?.takeIf { it > System.currentTimeMillis() } ?: diskCache.defaultExpiry()
             diskCache.put(key, bytes, expiresAt)
             if (diskCache.snapshot().bytesUsed > MapCachePolicy.tileCacheMaxBytes(appContext)) {
@@ -74,6 +81,7 @@ class TileDiskCacheWriter(context: Context) : IFilesystemCache {
     }
 
     override fun exists(pTileSourceInfo: ITileSource, pMapTileIndex: Long): Boolean {
+        if (org.ncssar.rid2caltopo.mapping.LocalMappingTiles.file(appContext,pTileSourceInfo,pMapTileIndex)?.isFile==true) return true
         return tileKeysForLookup(pTileSourceInfo, pMapTileIndex).any { diskCache.exists(it) }
     }
 
@@ -82,7 +90,7 @@ class TileDiskCacheWriter(context: Context) : IFilesystemCache {
     }
 
     override fun remove(tileSource: ITileSource, pMapTileIndex: Long): Boolean {
-        var removed = false
+        var removed = org.ncssar.rid2caltopo.mapping.LocalMappingTiles.file(appContext,tileSource,pMapTileIndex)?.delete()==true
         for (key in tileKeysForLookup(tileSource, pMapTileIndex)) {
             removed = diskCache.remove(key) || removed
         }
@@ -90,6 +98,7 @@ class TileDiskCacheWriter(context: Context) : IFilesystemCache {
     }
 
     override fun getExpirationTimestamp(pTileSource: ITileSource, pMapTileIndex: Long): Long? {
+        if (org.ncssar.rid2caltopo.mapping.LocalMappingTiles.file(appContext,pTileSource,pMapTileIndex)?.isFile==true) return Long.MAX_VALUE
         for (key in tileKeysForLookup(pTileSource, pMapTileIndex)) {
             val expiration = diskCache.getExpiration(key)
             if (expiration != null) return expiration
@@ -98,6 +107,9 @@ class TileDiskCacheWriter(context: Context) : IFilesystemCache {
     }
 
     override fun loadTile(pTileSource: ITileSource, pMapTileIndex: Long): Drawable? {
+        org.ncssar.rid2caltopo.mapping.LocalMappingTiles.file(appContext,pTileSource,pMapTileIndex)?.takeIf{it.isFile}?.let { file ->
+            return file.inputStream().use { pTileSource.getDrawable(it) }
+        }
         val keys = tileKeysForLookup(pTileSource, pMapTileIndex)
         var usedKey: String? = null
         var cached: CachedBlob? = null
@@ -161,7 +173,7 @@ class TileDiskCacheWriter(context: Context) : IFilesystemCache {
         val names = if (tileSource.name() == OSM_STANDARD_SOURCE) {
             LEGACY_OSM_SOURCE_NAMES + OSM_STANDARD_SOURCE
         } else listOf(tileSource.name())
-        return diskCache.cacheKeys().mapNotNull { key ->
+        return (org.ncssar.rid2caltopo.mapping.LocalMappingTiles.indices(appContext,tileSource) + diskCache.cacheKeys().mapNotNull { key ->
             val parts = key.split('|')
             if (parts.size != 5 || parts[0] != "v${MapCachePolicy.TILE_CACHE_VERSION}" || parts[1] !in names) return@mapNotNull null
             val z = parts[2].toIntOrNull() ?: return@mapNotNull null
@@ -169,10 +181,11 @@ class TileDiskCacheWriter(context: Context) : IFilesystemCache {
             val y = parts[4].toIntOrNull() ?: return@mapNotNull null
             if (z !in 0..29 || x !in 0 until (1 shl z) || y !in 0 until (1 shl z)) return@mapNotNull null
             MapTileIndex.getTileIndex(z, x, y)
-        }.distinct()
+        }).distinct()
     }
 
     fun readTileBytes(tileSource: ITileSource, mapTileIndex: Long): ByteArray? {
+        org.ncssar.rid2caltopo.mapping.LocalMappingTiles.file(appContext,tileSource,mapTileIndex)?.takeIf{it.isFile}?.let{return it.readBytes()}
         for (key in tileKeysForLookup(tileSource, mapTileIndex)) {
             val cached = diskCache.get(key, countHitMiss = false) ?: continue
             return cached.bytes

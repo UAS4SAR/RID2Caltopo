@@ -7,7 +7,8 @@ public enum OrganizationAccessPolicy {
         trackerAPIKey: String = "",
         caltopoTeamID: String = "",
         caltopoCredentialID: String = "",
-        caltopoCredentialSecret: String = ""
+        caltopoCredentialSecret: String = "",
+        personalCaltopoLoginConfigured: Bool = false
     ) -> Bool {
         let organizationConfigured = !organizationName
             .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -24,7 +25,7 @@ public enum OrganizationAccessPolicy {
         }
         return organizationConfigured ||
             trackerOrganizationConfigured ||
-            teamsAccountConfigured
+            teamsAccountConfigured || personalCaltopoLoginConfigured
     }
 
     public static func authenticatedSessionRemainsValid(

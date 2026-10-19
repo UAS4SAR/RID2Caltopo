@@ -22,7 +22,7 @@ private func clue(_ aircraftID: String, at time: TimeInterval, file: String = "f
         title: "Clue", clueDescription: "", imageFilename: file, thumbnailFilename: file, uploadState: .localOnly)
 }
 
-@Test func boundingBoxReportsInsideWhenCurrentLocationIsWithinTheTrackExtent() throws {
+@Test func boundingBoxReportsInsideWhenCurrentLocationIsWithinTheTrackExtent() async throws {
     let flight = reviewFlight()
     let box = try #require(flight.boundingBox)
     #expect(box == AwaitingMapBoundingBox(coordinates: [(39.0, -121.0), (39.01, -120.99)]))
@@ -31,7 +31,7 @@ private func clue(_ aircraftID: String, at time: TimeInterval, file: String = "f
     #expect(AwaitingMapFlightText.location(.inside) == "You are within this flight's area")
 }
 
-@Test func boundingBoxDistanceUsesNearestEdgePoint() throws {
+@Test func boundingBoxDistanceUsesNearestEdgePoint() async throws {
     let flight = reviewFlight()
     // Due north of the box: nearest point is on the top edge at the same longitude.
     let proximity = try #require(flight.proximity(latitude: 39.02, longitude: -120.995))
@@ -44,7 +44,7 @@ private func clue(_ aircraftID: String, at time: TimeInterval, file: String = "f
     #expect(AwaitingMapFlightText.location(proximity) == "3650 ft from current location at bearing 180° S")
 }
 
-@Test func boundingBoxDistanceUsesNearestCornerOutsideBothRanges() throws {
+@Test func boundingBoxDistanceUsesNearestCornerOutsideBothRanges() async throws {
     let flight = reviewFlight()
     let proximity = try #require(flight.proximity(latitude: 38.99, longitude: -121.01))
     let corner = try #require(RidGeometry.relativePosition(fromLatitude: 38.99, longitude: -121.01, toLatitude: 39.0, longitude: -121.0))
@@ -57,7 +57,7 @@ private func clue(_ aircraftID: String, at time: TimeInterval, file: String = "f
     #expect(meters < centroid.distanceMeters)
 }
 
-@Test func sixteenPointCardinalCoversBoundariesWithoutChangingEightPointHelper() throws {
+@Test func sixteenPointCardinalCoversBoundariesWithoutChangingEightPointHelper() async throws {
     let cases: [(Double, String)] = [(0, "N"), (11.24, "N"), (11.25, "NNE"), (47, "NE"), (90, "E"), (191.25, "SSW"),
                                      (212, "SSW"), (225, "SW"), (337.5, "NNW"), (348.74, "NNW"), (348.75, "N"),
                                      (359.9, "N"), (360, "N"), (-22.5, "NNW"), (.nan, "N")]
@@ -116,7 +116,7 @@ private func clue(_ aircraftID: String, at time: TimeInterval, file: String = "f
     #expect(AwaitingMapClueMatch.ownedClues([tail, own], flight: flight, otherFlights: []).count == 2)
 }
 
-@Test func archiveFilenamesMatchTheArchiveWriter() throws {
+@Test func archiveFilenamesMatchTheArchiveWriter() async throws {
     let flight = reviewFlight()
     let tz = try #require(TimeZone(identifier: "America/Los_Angeles"))
     let names = AwaitingMapFlightArchive.filenames(remoteID: flight.remoteID, startedAt: flight.firstTime, timeZone: tz)
@@ -128,14 +128,14 @@ private func clue(_ aircraftID: String, at time: TimeInterval, file: String = "f
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let tz = TimeZone.current
-    let journal = AwaitingMapFlightJournal(fileURL: root.appendingPathComponent("pending.json"))
+    let journal = await AwaitingMapFlightJournal.loaded(fileURL: root.appendingPathComponent("pending.json"))
     let start: TimeInterval = 1_790_553_873
     // `record` ignores a finished first sighting, so create it live and then finish it.
-    try journal.record(remoteID: "RID-1", label: "Target", observations: reviewFlight(start: start).points.map { $0.observation(remoteID: "RID-1") },
+    try await journal.record(remoteID: "RID-1", label: "Target", observations: reviewFlight(start: start).points.map { $0.observation(remoteID: "RID-1") },
                        mapID: "", teamID: "", finished: false)
-    try journal.record(remoteID: "RID-1", label: "Target", observations: reviewFlight(start: start).points.map { $0.observation(remoteID: "RID-1") },
+    try await journal.record(remoteID: "RID-1", label: "Target", observations: reviewFlight(start: start).points.map { $0.observation(remoteID: "RID-1") },
                        mapID: "", teamID: "", finished: true)
-    try journal.record(remoteID: "RID-2", label: "Other", observations: reviewFlight(id: "RID-2", start: start).points.map { $0.observation(remoteID: "RID-2") },
+    try await journal.record(remoteID: "RID-2", label: "Other", observations: reviewFlight(id: "RID-2", start: start).points.map { $0.observation(remoteID: "RID-2") },
                        mapID: "", teamID: "", finished: false)
     let target = try #require(journal.entries.first { $0.remoteID == "RID-1" })
     let other = try #require(journal.entries.first { $0.remoteID == "RID-2" })
@@ -172,7 +172,7 @@ private func clue(_ aircraftID: String, at time: TimeInterval, file: String = "f
     #expect(Set(result.deletedClueIDs) == Set(owned.map(\.id)))
     #expect(result.archive.deleted.sorted() == targetNames.map { "\(day.lastPathComponent)/\($0)" }.sorted())
     #expect(journal.entries.map(\.id) == [other.id])
-    #expect(AwaitingMapFlightJournal(fileURL: root.appendingPathComponent("pending.json")).entries.map(\.id) == [other.id])
+    #expect((await AwaitingMapFlightJournal.loaded(fileURL: root.appendingPathComponent("pending.json"))).entries.map(\.id) == [other.id])
     #expect(store.map(\.imageFilename) == ["c.jpg", "d.jpg"])
     for name in ["a.jpg", "b.jpg"] { #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path)) }
     for name in ["c.jpg", "d.jpg"] { #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path)) }
@@ -184,8 +184,8 @@ private func clue(_ aircraftID: String, at time: TimeInterval, file: String = "f
 @Test @MainActor func discardKeepsTheEntryWhenAFileCannotBeDeleted() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let journal = AwaitingMapFlightJournal(fileURL: root.appendingPathComponent("pending.json"))
-    try journal.record(remoteID: "RID-1", label: "Target", observations: [reviewSample(1_000, 39, -121)], mapID: "", teamID: "", finished: false)
+    let journal = await AwaitingMapFlightJournal.loaded(fileURL: root.appendingPathComponent("pending.json"))
+    try await journal.record(remoteID: "RID-1", label: "Target", observations: [reviewSample(1_000, 39, -121)], mapID: "", teamID: "", finished: false)
     let target = try #require(journal.entries.first)
     let result = await AwaitingMapFlightDiscarder.discard(flight: target, journal: journal, clueIDs: [UUID()],
         deleteClue: { _ in false }, deleteArchive: { .init() })

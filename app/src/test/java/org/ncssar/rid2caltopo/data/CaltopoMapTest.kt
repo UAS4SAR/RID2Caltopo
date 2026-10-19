@@ -10,6 +10,7 @@ import org.junit.Before
 import org.junit.Test
 import android.location.Location
 import org.ncssar.rid2caltopo.video.MapOfflinePrepRuntime
+import org.ncssar.rid2caltopo.mapping.MappingWorkRuntime
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.util.Calendar
@@ -125,6 +126,10 @@ class CaltopoMapTest {
 
     @Before
     fun setUp() {
+        CaltopoMap::class.java.getDeclaredField("markerJournal").apply { isAccessible = true }.set(null, DeviceMarkerJournal(java.io.File(java.nio.file.Files.createTempDirectory("marker-map-test").toFile(), "journal.json")))
+        for (name in listOf("activeMarkerKeys", "deletingMarkerKeys")) {
+            (CaltopoMap::class.java.getDeclaredField(name).apply { isAccessible = true }.get(null) as MutableSet<*>).clear()
+        }
         fixture = TestR2cRuntimeFactory.create("map-test")
         fixture.setAsDefaultRuntime()
 
@@ -222,6 +227,7 @@ class CaltopoMapTest {
         mapRefreshGenerationField.setLong(null, 1L)
         resetArtifactStoreMethod.invoke(null, "CaltopoMapTest.setUp")
         MapOfflinePrepRuntime.resetForTesting()
+        MappingWorkRuntime.resetForTesting()
         CaltopoMap.resetAutoQuitRelocationForTesting()
     }
 
@@ -252,9 +258,24 @@ class CaltopoMapTest {
         mapRefreshGenerationField.setLong(null, originalMapRefreshGeneration)
         resetArtifactStoreMethod.invoke(null, "CaltopoMapTest.tearDown")
         MapOfflinePrepRuntime.resetForTesting()
+        MappingWorkRuntime.resetForTesting()
         CaltopoMap.resetAutoQuitRelocationForTesting()
         clientStateField.set(null, originalClientState)
         R2cRuntimeRegistry.resetDefaultRuntimeForTesting()
+    }
+
+    @Test
+    fun interruptedMarkerCleanupRetriesOriginalMapAfterFailure() {
+        val journal = CaltopoMap::class.java.getDeclaredField("markerJournal").apply { isAccessible = true }.get(null) as DeviceMarkerJournal
+        journal.arm(CaltopoClient.GetCaltopoDomainAndPort(), "previous-map", "previous-marker")
+        val retry = CaltopoMap::class.java.getDeclaredMethod("retryMarkerCleanup").apply { isAccessible = true }
+        fixture.calTopoSessionGateway.markerDeleteSucceeds = false
+        retry.invoke(null)
+        assertEquals(1, journal.entries().size)
+        fixture.calTopoSessionGateway.markerDeleteSucceeds = true
+        retry.invoke(null)
+        assertTrue(journal.entries().isEmpty())
+        assertEquals(listOf("previous-map", "previous-map"), fixture.calTopoSessionGateway.markerCleanupMaps)
     }
 
     @Test
@@ -648,6 +669,30 @@ class CaltopoMapTest {
 
         assertEquals(0, quitCount)
         assertFalse(CaltopoMap.hasAutoQuitRelocationAnchorForTesting())
+    }
+
+    @Test fun nativeMappingConnectionPreventsInactiveMapDisconnectAndRelocationExit() {
+        val nowMs=1_000_000_000L;var quitCount=0
+        CaltopoMap.setTimeSourceForTesting{nowMs}
+        CaltopoMap.setQuitHandlerForTesting{quitCount++}
+        setLastWaypointTimestamp(nowMs-FIVE_MINUTES_MS-1L)
+        val work=MappingWorkRuntime.begin{}
+        try {
+            assertFalse(CaltopoMap.DisconnectIncidentMapIfInactive("display inactive"))
+            CaltopoMap.evaluateAutoQuitAfterRelocationForTesting(39.153000,-121.132000,5.0f)
+            CaltopoMap.evaluateAutoQuitAfterRelocationForTesting(39.153200,-121.132000,5.0f)
+            assertEquals(0,quitCount)
+            assertFalse(CaltopoMap.hasAutoQuitRelocationAnchorForTesting())
+        }finally{MappingWorkRuntime.finish(work)}
+    }
+
+    @Test fun completedMappingRestartsIncidentMapQuietPeriod() {
+        val work=MappingWorkRuntime.begin{}
+        MappingWorkRuntime.finish(work)
+        val ended=MappingWorkRuntime.snapshot().lastActivityAtMsec
+        setLastWaypointTimestamp(0L)
+        CaltopoMap.setTimeSourceForTesting{ended+FIVE_MINUTES_MS-1L}
+        assertFalse(CaltopoMap.DisconnectIncidentMapIfInactive("display inactive"))
     }
 
     @Test

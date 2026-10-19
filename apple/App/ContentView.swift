@@ -98,6 +98,7 @@ private struct TrackerReauthenticationPromptModifier: ViewModifier {
 }
 
 struct ContentView: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     private let endpoint = MediaStreamEndpoint(designator: "demo")
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openURL) private var openURL
@@ -114,6 +115,7 @@ struct ContentView: View {
     @StateObject private var mapViewportMemory = AppleMapViewportMemory()
     @StateObject private var locationProvider = AppleLocationProvider()
     @StateObject private var caltopoSettings = AppleCaltopoSettings()
+    @ObservedObject private var personalLogin = PersonalProbeModel.shared
     @State private var showingFlightAllowance = false
     @State private var showingBluetoothDisabled = false
     @StateObject private var clueStore = AppleClueStore()
@@ -151,8 +153,6 @@ struct ContentView: View {
     @State private var showConfigurationTransfer = false
     @State private var showStorageManagement = false
     @State private var showPersonalAccountEditor = false
-    @State private var showPersonalCredentialLogin = false
-    @State private var openMapsAfterPersonalLogin = false
     @State private var showIncidentSelection = false
     @State private var connectMapAfterIncidentSelection = false
     @State private var showTeamMaps = false
@@ -443,7 +443,7 @@ struct ContentView: View {
                         showIncidentSelection = false
                     })
             }
-            .sheet(isPresented: $showTeamMaps) {
+            .fullScreenCover(isPresented: $showTeamMaps) {
                 CaltopoTeamMapBrowser(settings: caltopoSettings, onCredentialSelect: requestCredentialProfileSwitch) { map in
                     orgConfigSettings.setIncidentMapTitle(map.title)
                     applyCaltopoConfiguration(caltopoSettings.selectMap(map))
@@ -1306,6 +1306,9 @@ struct ContentView: View {
                 } else {
                     monitoredRoot
                         .privacySensitive()
+                        #if R2C_MAPPING_DEVICE_ACCEPTANCE
+                        .modifier(AppleMappingDeviceAcceptanceModifier())
+                        #endif
                 }
             }
             .navigationTitle("RID2Caltopo")
@@ -1338,30 +1341,11 @@ struct ContentView: View {
                 )
             }
 
-        .sheet(isPresented: $showPersonalAccountEditor, onDismiss: {
+        .fullScreenCover(isPresented: $showPersonalAccountEditor, onDismiss: {
             Task { _ = await caltopoSettings.loadPersonalMaps() }
         }) {
             NavigationStack {
                 AppleCaltopoPersonalProbeView()
-            }
-        }
-        .sheet(isPresented: $showPersonalCredentialLogin, onDismiss: {
-            if openMapsAfterPersonalLogin {
-                openMapsAfterPersonalLogin = false
-                showTeamMaps = true
-            } else if caltopoSettings.usesPersonalCredentials {
-                // Closing the browser is not proof that sign-in was cancelled.
-                Task {
-                    if await caltopoSettings.loadPersonalMaps() { showTeamMaps = true }
-                }
-            }
-        }) {
-            NavigationStack {
-                AppleCaltopoPersonalProbeView(onCatalog: { username, maps in
-                    caltopoSettings.acceptPersonalCatalog(username, maps: maps)
-                    openMapsAfterPersonalLogin = true
-                    showPersonalCredentialLogin = false
-                })
             }
         }
         .safeAreaInset(edge: .bottom, alignment: .leading, spacing: 0) {
@@ -1434,11 +1418,11 @@ struct ContentView: View {
                         await ridTracks.setLocalDeviceMarkerPublishingEnabled(false)
                     },
                     fullCleanup: {
+                        await ridTracks.setLocalDeviceMarkerPublishingEnabled(false)
                         await bluetoothScanner.stop()
                         locationProvider.stop()
                         networkDiagnostics.stop()
                         streamRegistry.shutdown()
-                        await ridTracks.setLocalDeviceMarkerPublishingEnabled(false)
                         await ridTracks.shutdown()
                         await peerCoordinator.shutdown()
                         await mediaMTX.shutdown()
@@ -1454,7 +1438,8 @@ struct ContentView: View {
                     trackerAPIKey: orgConfigSettings.trackerAPIKey,
                     caltopoTeamID: caltopoSettings.teamID,
                     caltopoCredentialID: caltopoSettings.credentialID,
-                    caltopoCredentialSecret: caltopoSettings.credentialSecret
+                    caltopoCredentialSecret: caltopoSettings.credentialSecret,
+                    personalCaltopoLoginConfigured: personalLogin.loginProtectionRequired
                 )
                 let isRequired = OrganizationAccessPolicy.requiresDeviceOwnerAuthentication(
                     organizationName: newValue,
@@ -1462,11 +1447,19 @@ struct ContentView: View {
                     trackerAPIKey: orgConfigSettings.trackerAPIKey,
                     caltopoTeamID: caltopoSettings.teamID,
                     caltopoCredentialID: caltopoSettings.credentialID,
-                    caltopoCredentialSecret: caltopoSettings.credentialSecret
+                    caltopoCredentialSecret: caltopoSettings.credentialSecret,
+                    personalCaltopoLoginConfigured: personalLogin.loginProtectionRequired
                 )
                 if isRequired && (!wasRequired || oldValue != newValue) {
                     organizationAccessGranted = false
                 }
+                reconcileOrganizationAuthentication()
+            }
+            .onChange(of: personalLogin.loginProtectionChecked) { _, checked in
+                if checked { reconcileOrganizationAuthentication() }
+            }
+            .onChange(of: personalLogin.loginProtectionRequired) { wasRequired, isRequired in
+                if isRequired && !wasRequired { organizationAccessGranted = false }
                 reconcileOrganizationAuthentication()
             }
             .onChange(of: caltopoTeamsAuthenticationConfigured, initial: true) { wasRequired, isRequired in
@@ -1522,7 +1515,8 @@ struct ContentView: View {
             trackerAPIKey: orgConfigSettings.trackerAPIKey,
             caltopoTeamID: caltopoSettings.teamID,
             caltopoCredentialID: caltopoSettings.credentialID,
-            caltopoCredentialSecret: caltopoSettings.credentialSecret
+            caltopoCredentialSecret: caltopoSettings.credentialSecret,
+            personalCaltopoLoginConfigured: personalLogin.loginProtectionRequired
         )
     }
 
@@ -1544,7 +1538,8 @@ struct ContentView: View {
     }
 
     private var organizationAccessBlocked: Bool {
-        organizationAccessObscured
+        !personalLogin.loginProtectionChecked
+            || organizationAccessObscured
             || !organizationAccessEvaluated
             || (organizationAuthenticationRequired
                 && !organizationAuthenticationBypassedForTesting
@@ -1555,7 +1550,7 @@ struct ContentView: View {
         ZStack {
             Color(uiColor: .systemBackground).ignoresSafeArea()
             VStack(spacing: 18) {
-                if organizationAccessEvaluated {
+                if organizationAccessEvaluated && personalLogin.loginProtectionChecked {
                     Image(systemName: "lock.shield.fill")
                         .font(.system(size: 52))
                         .foregroundStyle(.orange)
@@ -1578,8 +1573,8 @@ struct ContentView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(organizationAuthenticationInFlight)
                     Text(
-                        "Set up a device passcode or biometrics in Settings before an ORG or "
-                            + "CalTopo Teams configuration can be used."
+                        "Set up a device passcode or biometrics in Settings before a configured "
+                            + "organization or CalTopo account can be used."
                     )
                     .font(.footnote)
                     .multilineTextAlignment(.center)
@@ -1599,11 +1594,12 @@ struct ContentView: View {
         let organizationName = orgConfigSettings.organizationName
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return organizationName.isEmpty
-            ? "the configured CalTopo Teams account, maps, and settings"
+            ? "the configured CalTopo account, maps, and settings"
             : organizationName + "'s CalTopo maps and settings"
     }
 
     private func reconcileOrganizationAuthentication() {
+        guard personalLogin.loginProtectionChecked else { return }
         guard organizationAuthenticationRequired,
               !organizationAuthenticationBypassedForTesting
         else {
@@ -1616,6 +1612,7 @@ struct ContentView: View {
     }
 
     private func authenticateOrganizationAccess() {
+        guard personalLogin.loginProtectionChecked else { return }
         guard organizationAuthenticationRequired,
               !organizationAuthenticationBypassedForTesting,
               !organizationAuthenticationInFlight
@@ -2548,6 +2545,10 @@ struct ContentView: View {
     }
 
     private func requestCredentialProfileSwitch(_ profileID: String) {
+        if profileID == "personal", caltopoSettings.usesPersonalCredentials {
+            showTeamMaps = true
+            return
+        }
         guard profileID != (caltopoSettings.usesPersonalCredentials ? "personal" : profileLifecycle.activeProfileID) else { return }
         if ridTracks.tracks.isEmpty {
             activateCredentialProfile(profileID)
@@ -2559,16 +2560,12 @@ struct ContentView: View {
 
     private func activateCredentialProfile(_ profileID: String) {
         showTeamMaps = false
-        showPersonalCredentialLogin = false
         if profileID == "personal" {
             applyCaltopoConfiguration(caltopoSettings.disconnectMap())
             caltopoSettings.usesPersonalCredentials = true
-            Task {
-                let loaded = await caltopoSettings.loadPersonalMaps()
-                guard caltopoSettings.usesPersonalCredentials else { return }
-                showPersonalCredentialLogin = !loaded
-                showTeamMaps = loaded
-            }
+            // The native browser restores saved login offscreen. It opens the
+            // website only when CalTopo actually requires interactive sign-in.
+            showTeamMaps = true
             return
         }
         if caltopoSettings.usesPersonalCredentials {
@@ -2994,7 +2991,7 @@ struct ContentView: View {
                 maintain: {
                     guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
                     mediaMTX.ensureHealthy(captureStreams: captureStreams)
-                    clueStore.pruneDeletedStorage()
+                    Task { await clueStore.pruneDeletedStorage() }
                 },
                 status: {
                     let freshness = AlertTrackFreshnessSummary(
@@ -3264,7 +3261,7 @@ struct ContentView: View {
     }
 
     private func separationFeet(_ meters: Double) -> String {
-        "\(Int((meters * 3.28084).rounded())) ft"
+        DisplayUnits.current.length(meters)
     }
 
     private var videoStatus: String {
@@ -3333,6 +3330,7 @@ private struct RecordingDownloadApprovalModifier: ViewModifier {
 
 
 private struct ShortFlightRecordingPanel: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @ObservedObject var gate: ShortFlightRecordingGate
     @Environment(\.scenePhase) private var phase
     var body: some View {
@@ -3361,6 +3359,7 @@ private struct ShortFlightRecordingPanel: View {
 // The menu has static contents and stable presentation bindings. Telemetry and
 // one-second status updates must not rebuild an already presented native menu.
 private struct MainScreenMenuItems: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @Binding var showDiagnosticLogs: Bool
     @Binding var showReleaseNotes: Bool
     @Binding var showImportConfig: Bool
@@ -3397,6 +3396,7 @@ private struct MainScreenMenuItems: View {
 }
 
 private struct AwaitingMapPublicationPanel: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @ObservedObject var tracks: RIDTrackViewModel
     @ObservedObject var settings: AppleCaltopoSettings
     @ObservedObject var clues: AppleClueStore
@@ -3450,7 +3450,7 @@ private struct AwaitingMapPublicationPanel: View {
                                 let map = destinationMap; let team = destinationTeam
                                 Task {
                                     if await tracks.decideAwaitingFlight(flight.id, mapID: map, teamID: team) {
-                                        clues.bindAwaitingFlight(flight, mapID: map, teamID: team)
+                                        await clues.bindAwaitingFlight(flight, mapID: map, teamID: team)
                                     }
                                 }
                                 selected = nil
@@ -3628,6 +3628,7 @@ private struct AwaitingMapPublicationPanel: View {
 }
 
 private struct AwaitingMapFlightRow: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let flight: AwaitingMapFlight
     let proximity: AwaitingMapFlightProximity?
     let cluePhotoCount: Int
@@ -3758,6 +3759,7 @@ private struct AwaitingMapFlightRow: View {
 }
 
 private struct AwaitingMapCompassChip: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let proximity: AwaitingMapFlightProximity?
 
     var body: some View {
@@ -3818,6 +3820,7 @@ private struct AwaitingMapWideSheetSizing: PresentationSizing {
 
 /// Measures the complete header instead of squeezing three identity lines into a navigation bar.
 struct AdaptiveOperatorHeader<Title: View, Actions: View>: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @ViewBuilder var title: (Bool) -> Title
     @ViewBuilder var actions: () -> Actions
     var body: some View {
@@ -3842,6 +3845,7 @@ struct AdaptiveOperatorHeader<Title: View, Actions: View>: View {
 }
 
 struct AppleProximityStatusChip: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @ObservedObject var center: AppleProximityAlertCenter
     var onSettings: (() -> Void)? = nil
     var body: some View {
@@ -3856,6 +3860,7 @@ struct AppleProximityStatusChip: View {
 
 
 private struct WorkspaceResizablePane<Content: View>: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let title: String
     let onClose: () -> Void
     @ViewBuilder var content: () -> Content
@@ -3898,6 +3903,7 @@ private struct WorkspaceResizablePane<Content: View>: View {
 }
 
 private struct WorkspaceAboutContactLink: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let title: String
     let url: URL
     @Environment(\.colorScheme) private var colorScheme

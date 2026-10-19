@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.video
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import OverLimitDroneUiState
 import StreamsLayoutMode
 import StreamsViewModel
@@ -863,7 +866,7 @@ fun ComplianceAlertDialog(
         title = { Text("Altitude Alerts") },
         text = {
             if (overLimitDrones.isEmpty()) {
-                Text("No drones are currently above 200 ft AGL.")
+                Text("No drones are currently above ${Units.current.feet(200.0)} AGL.")
             } else {
                 Column(
                     modifier = Modifier

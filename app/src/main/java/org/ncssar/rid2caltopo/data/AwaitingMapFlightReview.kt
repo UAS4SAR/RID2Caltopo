@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.data
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.time.ZoneId
@@ -79,6 +82,7 @@ object AwaitingMapFlightText {
 
     /** Feet rounded to 10 below one mile; miles to one decimal from one mile up. */
     fun distance(meters: Double): String {
+        if (Units.current == DisplayUnits.METRIC) return Units.current.distance(meters)
         val feet = meters / 0.3048
         if (feet < 5_280) return "${(feet / 10).roundToInt() * 10} ft"
         return String.format(Locale.US, "%.1f mi", feet / 5_280)
@@ -108,7 +112,7 @@ object AwaitingMapFlightText {
     fun locationSummary(accuracyMeters: Double?, fixTime: String): String {
         val parts = mutableListOf("Distances from your current location")
         if (accuracyMeters != null && accuracyMeters.isFinite() && accuracyMeters >= 0) {
-            parts += "GPS ±${(accuracyMeters / 0.3048).roundToInt()} ft"
+            parts += "GPS ±${Units.current.length(accuracyMeters)}"
         }
         parts += fixTime
         return parts.joinToString(" · ")

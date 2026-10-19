@@ -7,6 +7,9 @@
 
 package org.ncssar.rid2caltopo.ui
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import org.ncssar.rid2caltopo.ui.DropdownMenu
 
 import org.ncssar.rid2caltopo.ui.AlertDialog
@@ -748,6 +751,9 @@ fun MainScreen(
     var pendingImportToken by rememberSaveable { mutableStateOf("") }
     var showReleaseNotesDialog by remember { mutableStateOf(false) }
     var releaseNoteEntries by remember { mutableStateOf(parseReleaseNotes(null)) }
+    LaunchedEffect(showReleaseNotesDialog) {
+        if(showReleaseNotesDialog)releaseNoteEntries=withContext(Dispatchers.IO){loadReleaseNotes(context)}
+    }
     var pendingMutualAidImportUri by remember { mutableStateOf<Uri?>(null) }
     var pendingMutualAidImportPreview by remember { mutableStateOf<MutualAidPackageManager.PackagePreview?>(null) }
     var mutualAidPreviewRequestId by remember { mutableLongStateOf(0L) }
@@ -1451,9 +1457,9 @@ fun MainScreen(
                                 style = MaterialTheme.typography.titleMedium
                             )
                             Text(
-                                "Horizontal ${"%.1f".format(pair.horizontalSeparationFt)} ft  •  " +
-                                    (if (pair.verticalSeparationKnown) "Vertical ${"%.1f".format(pair.verticalSeparationFt)} ft  •  " +
-                                        "3D ${"%.1f".format(pair.threeDSeparationFt)} ft" else "Vertical separation unknown") +
+                                "Horizontal ${Units.current.feet(pair.horizontalSeparationFt, 1)}  •  " +
+                                    (if (pair.verticalSeparationKnown) "Vertical ${Units.current.feet(pair.verticalSeparationFt, 1)}  •  " +
+                                        "3D ${Units.current.feet(pair.threeDSeparationFt, 1)}" else "Vertical separation unknown") +
                                     if (pair.alerting) "  •  alerting" else ""
                             )
                             Spacer(Modifier.height(10.dp))
@@ -1840,7 +1846,7 @@ fun MainScreen(
                                 menuExpanded = false
                             })
                             DropdownMenuItem(text = { Text("Release Notes") }, onClick = {
-                                releaseNoteEntries = loadReleaseNotes(context)
+                                releaseNoteEntries = emptyList()
                                 showReleaseNotesDialog = true
                                 CaltopoClient.CTEvent(tag,"ReleaseNotesDisplayed", null)
                                 menuExpanded = false
@@ -2047,6 +2053,7 @@ fun MainScreen(
                         .heightIn(max = 520.dp)
                         .verticalScroll(rememberScrollState())
                 ) {
+                    if(releaseNoteEntries.isEmpty())Text("Loading release notes…")
                     releaseNoteEntries.forEachIndexed { index, entry ->
                         if (index > 0) {
                             HorizontalDivider(

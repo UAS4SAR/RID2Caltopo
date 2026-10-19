@@ -44,6 +44,7 @@ internal fun BoxScope.MapPaneSettingsMenus(
     hasMapFolders: Boolean,
     onDownloadMap: () -> Unit,
     onOpenMapFolders: () -> Unit,
+    onOpenLocalMappingLayers: () -> Unit,
     onToggleFollowFocusedDrone: () -> Unit,
     onReloadMap: () -> Unit,
     onOpenBadTiles: () -> Unit,
@@ -100,6 +101,7 @@ internal fun BoxScope.MapPaneSettingsMenus(
                 onClick = onOpenMapFolders,
                 enabled = hasMapFolders
             )
+            DropdownMenuItem(text={Text("Local maps…")},onClick=onOpenLocalMappingLayers)
             DropdownMenuItem(
                 text = { Text("Map Management...") },
                 onClick = {

@@ -1,0 +1,18 @@
+'use strict';
+const assert=require('node:assert/strict');
+require('../../../app/src/main/assets/mapping-surface/boundary.js');
+const boundary=globalThis.R2CBoundary,polygon=[[0,0],[10,0],[10,10],[0,10],[0,0]];
+assert.equal(boundary.alpha(polygon,5,5),1);
+assert.equal(boundary.alpha(polygon,10,5),1);
+assert.equal(boundary.alpha(polygon,12.5,5),.5);
+assert.equal(boundary.alpha(polygon,15,5),0);
+assert.equal(boundary.alpha([[0,0],[10,0],[10,2],[2,2],[2,10],[0,10]],7,7),0);
+const positions=new Float32Array([1,0,-1, 2,0,-1, 1,0,-2, 12.5,0,-5, 20,0,-5]);
+const colors=new Uint8Array(20).fill(255),indices=new Uint32Array([0,1,2,1,2,3,3,4,2,4,4,4]);
+const beforeColors=colors.slice(),beforeIndices=indices.slice(),beforePositions=positions.slice();
+const result=boundary.prepare(positions,colors,indices,polygon);
+assert.equal(result.colors[3],255);assert.equal(result.colors[15],128);assert.equal(result.colors[19],0);
+assert.deepEqual([...result.opaque],[0,1,2]);assert.deepEqual([...result.edge],[1,2,3,3,4,2]);
+assert.deepEqual(result.min,[1,0,-5]);assert.deepEqual(result.max,[12.5,0,-1]);
+assert.deepEqual(colors,beforeColors);assert.deepEqual(indices,beforeIndices);assert.deepEqual(positions,beforePositions);
+console.log('Surface boundary tests passed: inside, fringe, concavity, triangle passes, bounds and unchanged source arrays.');

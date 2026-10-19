@@ -140,6 +140,75 @@ public func cameraFootprintTerrainReusable(cached: CameraFootprintInput, current
     return true
 }
 
+public struct CameraFootprintFrameRect: Sendable, Equatable {
+    public let left, top, right, bottom: Double
+    public init(left: Double, top: Double, right: Double, bottom: Double) {
+        self.left = left; self.top = top; self.right = right; self.bottom = bottom
+    }
+}
+
+/// AD's scan zone is a centered fraction of the video frame, clamped to 0.5...1 like the detector.
+/// Nil means AD is off. A centered crop scales tan(FOV/2) so the frame aspect is unchanged.
+public func cameraFootprintAdScanRect(_ zoneFraction: Double) -> CameraFootprintFrameRect? {
+    guard zoneFraction.isFinite else { return nil }
+    let zone = min(max(zoneFraction, 0.5), 1)
+    let margin = (1 - zone) / 2
+    return CameraFootprintFrameRect(left: margin, top: margin, right: 1 - margin, bottom: 1 - margin)
+}
+
+/// Camera-plane offsets of a video rectangle inside the full FOV. Origin is top-left, y down;
+/// camera x is right and y is up. Order matches `project`: left-top, right-top, right-bottom, left-bottom.
+public func cameraFootprintSubframeRayOffsets(
+    horizontalFovDeg: Double,
+    verticalFovDeg: Double,
+    rect: CameraFootprintFrameRect
+) -> [(Double, Double)]? {
+    let values = [horizontalFovDeg, verticalFovDeg, rect.left, rect.top, rect.right, rect.bottom]
+    guard values.allSatisfy(\.isFinite),
+          (0.01 ... 179).contains(horizontalFovDeg),
+          (0.01 ... 179).contains(verticalFovDeg),
+          rect.left >= 0, rect.top >= 0, rect.right <= 1, rect.bottom <= 1,
+          rect.right - rect.left >= 1e-6, rect.bottom - rect.top >= 1e-6
+    else { return nil }
+    let h = tan(horizontalFovDeg * .pi / 360)
+    let v = tan(verticalFovDeg * .pi / 360)
+    func offset(_ u: Double, _ imageV: Double) -> (Double, Double) {
+        ((u - 0.5) * 2 * h, (0.5 - imageV) * 2 * v)
+    }
+    return [
+        offset(rect.left, rect.top),
+        offset(rect.right, rect.top),
+        offset(rect.right, rect.bottom),
+        offset(rect.left, rect.bottom),
+    ]
+}
+
+public func cameraFootprintApplyingAdScanZone(
+    _ input: CameraFootprintInput,
+    scanZoneFraction: Double?
+) -> CameraFootprintInput {
+    guard let zone = scanZoneFraction, let rect = cameraFootprintAdScanRect(zone), rect.right - rect.left < 1 - 1e-9,
+          let offsets = cameraFootprintSubframeRayOffsets(
+            horizontalFovDeg: input.horizontalFov, verticalFovDeg: input.verticalFov, rect: rect
+          )
+    else { return input }
+    let horizontal = atan(abs(offsets[1].0)) * 360 / .pi
+    let vertical = atan(abs(offsets[0].1)) * 360 / .pi
+    guard (0.01 ... 179).contains(horizontal), (0.01 ... 179).contains(vertical) else { return input }
+    return CameraFootprintInput(
+        latitude: input.latitude, longitude: input.longitude,
+        launchLatitude: input.launchLatitude, launchLongitude: input.launchLongitude,
+        height: input.height, azimuth: input.azimuth, tilt: input.tilt,
+        horizontalFov: horizontal, verticalFov: vertical
+    )
+}
+
+/// Stable per-aircraft key. A blank id is not stored, and a missing key stays off.
+public func cameraFootprintPreferenceKey(_ remoteID: String) -> String? {
+    let normalized = remoteID.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    return normalized.isEmpty ? nil : normalized
+}
+
 public func mergeCameraFootprintTerrain(
     previous: [String: (CameraFootprintInput, [CameraFootprintVertex])],
     computed: [String: (CameraFootprintInput, [CameraFootprintVertex])],

@@ -80,6 +80,7 @@ enum AppleOperationalStatusChipTone {
 }
 
 struct AppleOperationalStatusChipLabel: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let title: String
     let tone: AppleOperationalStatusChipTone
 
@@ -124,10 +125,12 @@ private final class ApplePilotDisplayStore: ObservableObject {
 
     func cameraFootprintEnabled(for remoteID: String) -> Bool {
         _ = revision
-        return defaults.bool(forKey: "camera-footprint.drone." + remoteID.trimmingCharacters(in:.whitespacesAndNewlines).uppercased())
+        guard let key = cameraFootprintPreferenceKey(remoteID) else { return false }
+        return defaults.bool(forKey: "camera-footprint.drone." + key)
     }
     func setCameraFootprintEnabled(_ enabled: Bool, for remoteID: String) {
-        defaults.set(enabled,forKey:"camera-footprint.drone." + remoteID.trimmingCharacters(in:.whitespacesAndNewlines).uppercased())
+        guard let key = cameraFootprintPreferenceKey(remoteID) else { return }
+        defaults.set(enabled, forKey: "camera-footprint.drone." + key)
         revision += 1
     }
 
@@ -213,6 +216,19 @@ private final class AppleMapArtifactModel: ObservableObject {
         snapshot.hiding(folderIDs: hiddenFolderIDs, itemIDs: hiddenItemIDs)
     }
 
+    func mappingMission(for item: CaltopoArtifactItem, launchLocation: CLLocation?) throws -> MappingMission {
+        guard let feature = featureStore.featuresByID[item.id] else {
+            throw MappingMission.Failure("Refresh the incident map to load the original assignment boundary before export.")
+        }
+        let fix = launchLocation.flatMap { location -> MappingLaunchLocation? in
+            guard location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 100,
+                  abs(location.timestamp.timeIntervalSinceNow) <= 30 else { return nil }
+            return MappingLaunchLocation(latitude:location.coordinate.latitude,longitude:location.coordinate.longitude,
+                horizontalAccuracyMeters:location.horizontalAccuracy,capturedAt:ISO8601DateFormatter().string(from:location.timestamp))
+        }
+        return try MappingMission(feature:feature,incidentID:configuredMapID,launchLocation:fix)
+    }
+
     func configure(_ configuration: AppleCaltopoConfiguration) {
         let fingerprint = [
             String(configuration.enabled),
@@ -247,15 +263,18 @@ private final class AppleMapArtifactModel: ObservableObject {
             status = "Map artifacts not configured"
             return
         }
-        if let cached = Self.loadCachedSnapshot(mapID: configuration.mapID) {
-            snapshot = cached
-            initializeVisibility(fallbackFolders: cached.folders)
-            status = "Cached: \(cached.points.count) markers, \(cached.lines.count) lines, \(cached.polygons.count) areas"
-        } else {
-            initializeVisibility(fallbackFolders: [])
-        }
         refreshTask = Task { [weak self] in
-            guard let self else { return }
+            let cached = await Task.detached(priority: .userInitiated) {
+                Self.loadCachedSnapshot(mapID: configuration.mapID)
+            }.value
+            guard let self, !Task.isCancelled else { return }
+            if let cached {
+                snapshot = cached
+                initializeVisibility(fallbackFolders: cached.folders)
+                status = "Cached: \(cached.points.count) markers, \(cached.lines.count) lines, \(cached.polygons.count) areas"
+            } else {
+                initializeVisibility(fallbackFolders: [])
+            }
             do {
                 let client = try CaltopoLiveClient(configuration: live)
                 while !Task.isCancelled {
@@ -396,9 +415,12 @@ private final class AppleMapArtifactModel: ObservableObject {
                 sinceMilliseconds: fullReconciliation ? 0 : lastSuccessfulCursorMilliseconds,
                 now: requestStartedAt
             )
-            var updatedStore = featureStore
-            updatedStore.apply(changes, replacing: fullReconciliation)
-            let value = try updatedStore.snapshot()
+            let previousStore = featureStore
+            let (updatedStore, value) = try await Task.detached(priority: .userInitiated) {
+                var updatedStore = previousStore
+                updatedStore.apply(changes, replacing: fullReconciliation)
+                return (updatedStore, try updatedStore.snapshot())
+            }.value
             guard !Task.isCancelled, mapID == configuredMapID else { return }
             featureStore = updatedStore
             snapshot = value
@@ -420,7 +442,9 @@ private final class AppleMapArtifactModel: ObservableObject {
                 operatorVisibilityOverrides: folderVisibilityOverrides
             )
             status = "\(value.points.count) markers, \(value.lines.count) lines, \(value.polygons.count) areas"
-            Self.saveCachedSnapshot(value, mapID: configuredMapID)
+            await Task.detached(priority: .utility) {
+                Self.saveCachedSnapshot(value, mapID: mapID)
+            }.value
             AppleLog.info(
                 "Map",
                 "CalTopo artifact refresh mode=\(fullReconciliation ? "full" : "delta") " +
@@ -433,7 +457,7 @@ private final class AppleMapArtifactModel: ObservableObject {
         }
     }
 
-    private static func cacheURL(mapID: String) -> URL {
+    private nonisolated static func cacheURL(mapID: String) -> URL {
         let root = (FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory)
             .appendingPathComponent("RID2Caltopo/MapArtifacts", isDirectory: true)
@@ -517,12 +541,12 @@ private final class AppleMapArtifactModel: ObservableObject {
         }
     }
 
-    private static func loadCachedSnapshot(mapID: String) -> CaltopoArtifactSnapshot? {
+    private nonisolated static func loadCachedSnapshot(mapID: String) -> CaltopoArtifactSnapshot? {
         guard let data = try? Data(contentsOf: cacheURL(mapID: mapID)) else { return nil }
         return try? JSONDecoder().decode(CaltopoArtifactSnapshot.self, from: data)
     }
 
-    private static func saveCachedSnapshot(_ snapshot: CaltopoArtifactSnapshot, mapID: String) {
+    private nonisolated static func saveCachedSnapshot(_ snapshot: CaltopoArtifactSnapshot, mapID: String) {
         let destination = cacheURL(mapID: mapID)
         do {
             try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -555,6 +579,7 @@ private struct CalTopoArtifactRefreshLifecycleModifier: ViewModifier {
 }
 
 struct RIDTrackMapView: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     private static let splitDividerTouchThickness: CGFloat = 88
     private static let splitDividerTouchLength: CGFloat = 96
 
@@ -596,6 +621,7 @@ struct RIDTrackMapView: View {
     let onRestartStreams: () -> Void
 
     @StateObject private var artifacts = AppleMapArtifactModel()
+    @ObservedObject private var mappingLayers = AppleMappingLayerStore.shared
     @StateObject private var pilotDisplay = ApplePilotDisplayStore()
     @ObservedObject private var offlineMaps = AppleMapOfflineManager.shared
     @ObservedObject var viewportMemory: AppleMapViewportMemory
@@ -615,6 +641,7 @@ struct RIDTrackMapView: View {
     @AppStorage("video.coordinateDisplayFormat")
     private var coordinateDisplayFormatRaw = OperationalCoordinateDisplayFormat.decimal.rawValue
     @State private var viewport = unresolvedAppleMapRegion
+    @State private var showLocalMapping = false
     @State private var showMapItems = false
     @State private var showOfflinePreparation = false
     @State private var showMapManagement = false
@@ -726,6 +753,8 @@ struct RIDTrackMapView: View {
         .sheet(isPresented: $showMapItems) {
             MapItemsVisibilityView(
                 model: artifacts,
+                mapName: liveViewMapTitle,
+                launchLocation: locationProvider.lastLocation,
                 onZoomToItem: { item in
                     focusedAircraftID = nil
                     operatorAdjustedViewport = true
@@ -852,9 +881,11 @@ struct RIDTrackMapView: View {
         } message: {
             Text("You are currently synced with: \(liveViewMapTitle)")
         }
+        .sheet(isPresented: $showLocalMapping) { AppleLocalMappingView(incidentID:caltopoConfiguration.mapID,location:locationProvider.lastLocation,assignments:artifacts.snapshot.items.compactMap{try? artifacts.mappingMission(for:$0,launchLocation:locationProvider.lastLocation)},mapName:liveViewMapTitle) }
         .sheet(isPresented: $showMutualAidExport) {
             AppleMutualAidExportView(
-                bounds: viewport.offlineBounds
+                bounds: viewport.offlineBounds,
+                incidentID: caltopoConfiguration.mapID
             )
         }
         .takeoffCalibrationPanel(isPresented: $showTakeoffCalibration,
@@ -881,10 +912,12 @@ struct RIDTrackMapView: View {
                 coordinateDisplayFormat: coordinateDisplayFormat,
                 onSubmit: { draft, jpeg, publish in
                     do {
-                        try clueStore.save(draft, jpegData: jpeg, publishToCaltopo: publish)
+                        try await clueStore.save(draft, jpegData: jpeg, publishToCaltopo: publish)
                         pendingSnapshot = nil
+                        return true
                     } catch {
                         clueError = "Clue could not be saved locally: \(error.localizedDescription)"
+                        return false
                     }
                 },
                 onCancel: { pendingSnapshot = nil },
@@ -926,6 +959,13 @@ struct RIDTrackMapView: View {
             handleInitialStreamFocus(state)
         }
         .task { artifacts.configure(caltopoConfiguration) }
+        .task(id:caltopoConfiguration.mapID + "|" + orgSettings.trackerURLPrefix + "|" + String(orgSettings.trackerAPIKey.hashValue)) {
+            let incident=caltopoConfiguration.mapID, prefix=orgSettings.trackerURLPrefix, token=orgSettings.trackerAPIKey
+            while !Task.isCancelled {
+                guard await mappingLayers.refreshShared(prefix:prefix,token:token,incidentID:incident) else { break }
+                try? await Task.sleep(for:.seconds(60))
+            }
+        }
         .task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(250))
@@ -977,7 +1017,7 @@ struct RIDTrackMapView: View {
                     gimbalAngleDegrees: -60
                 )
                 let identity = identityStore.identity(for: track.aircraftID)
-                _ = try? clueStore.save(AppleClueDraft(
+                _ = try? await clueStore.save(AppleClueDraft(
                     capturedAt: snapshot.capturedAt,
                     aircraftID: track.aircraftID,
                     designator: identity?.mappedID ?? track.aircraftID,
@@ -1350,6 +1390,7 @@ struct RIDTrackMapView: View {
                     ? landRestrictions.state
                     : AppleLandRestrictionState(),
                 baseLayer: baseLayer,
+                mappingLayers: mappingLayers.layers.filter { ($0.incidentId==caltopoConfiguration.mapID || $0.id==mappingLayers.localPreviewID) && mappingLayers.isVisible($0.id) },
                 showContours: showContours,
                 tileCacheRevision: offlineMaps.cacheStats.files,
                 operatorCoordinate: locationProvider.lastLocation?.coordinate,
@@ -1458,6 +1499,7 @@ struct RIDTrackMapView: View {
                     }
                 }
                 SettingsToggle("Contours", isOn: $showContours)
+                Button("Local maps…") { selectMapSettingsAction { showLocalMapping = true } }
                 Divider()
                 Button(offlineMaps.downloadMenuStatus.map { "Download Map: \($0)" } ?? "Download Map…") {
                     selectMapSettingsAction { showOfflinePreparation = true }
@@ -1755,12 +1797,14 @@ struct RIDTrackMapView: View {
                   let latitude = telemetry.latitudeDegrees, let longitude = telemetry.longitudeDegrees,
                   let frameHeight = telemetry.relativeUpMeters, let currentHeight = current.relativeUpMeters
             else { continue }
-            result[id] = CameraFootprintInput(
+            let scanZone = session.model.anomalyMode == .off ? nil : session.model.anomalyConfiguration.scanZone
+            result[id] = cameraFootprintApplyingAdScanZone(CameraFootprintInput(
                 latitude: latitude, longitude: longitude,
                 launchLatitude: launch.latitude, launchLongitude: launch.longitude,
                 height: height + frameHeight - currentHeight,
                 azimuth: azimuth, tilt: telemetry.tiltDegrees,
-                horizontalFov: telemetry.horizontalFovDegrees, verticalFov: telemetry.verticalFovDegrees)
+                horizontalFov: telemetry.horizontalFovDegrees, verticalFov: telemetry.verticalFovDegrees),
+                scanZoneFraction: scanZone)
         }
         return result
     }
@@ -2342,6 +2386,7 @@ struct RIDTrackMapView: View {
 }
 
 struct BridgeSignalIndicator: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let rssi: Int?
 
     var body: some View {
@@ -2390,6 +2435,7 @@ struct BridgeSignalIndicator: View {
 }
 
 private struct BadTileRemovalView: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let selection: AppleCachedMapTileSelection
     let onRemove: (Bool) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -2422,6 +2468,7 @@ private struct BadTileRemovalView: View {
 }
 
 private struct StreamAircraftPairingView: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let streamID: String
     let tracks: [RidAircraftTrack]
     @ObservedObject var identityStore: AppleDroneConfirmationStore
@@ -2632,6 +2679,7 @@ private struct ClueDroneConfirmationRequest: Identifiable {
 }
 
 private struct ClueSubmissionView: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     private enum FocusedField: Hashable {
         case title
         case description
@@ -2643,7 +2691,7 @@ private struct ClueSubmissionView: View {
     let altitudeDisplay: [String: OperationalAircraftAltitudeDisplay]
     @ObservedObject var identityStore: AppleDroneConfirmationStore
     let coordinateDisplayFormat: OperationalCoordinateDisplayFormat
-    let onSubmit: (AppleClueDraft, Data, Bool) -> Void
+    let onSubmit: (AppleClueDraft, Data, Bool) async -> Bool
     let onCancel: () -> Void
     let onConfirmDrone: (RidAircraftIdentity) -> Void
     let onIgnoreDrone: (String) -> Void
@@ -2658,6 +2706,8 @@ private struct ClueSubmissionView: View {
     @State private var terrainProjection: OperationalClueProjection?
     @State private var terrainProjectionPending = false
     @State private var submissionFeedback: String?
+    @State private var submitting = false
+    @State private var stampedPreview: UIImage?
     /// Waypoint binding of the selected aircraft; re-bound while the form is open as waypoints
     /// arrive, once more on Submit, and never after.
     @State private var binding: ClueBinding?
@@ -2675,7 +2725,7 @@ private struct ClueSubmissionView: View {
         altitudeDisplay: [String: OperationalAircraftAltitudeDisplay],
         identityStore: AppleDroneConfirmationStore,
         coordinateDisplayFormat: OperationalCoordinateDisplayFormat,
-        onSubmit: @escaping (AppleClueDraft, Data, Bool) -> Void,
+        onSubmit: @escaping (AppleClueDraft, Data, Bool) async -> Bool,
         onCancel: @escaping () -> Void,
         onConfirmDrone: @escaping (RidAircraftIdentity) -> Void,
         onIgnoreDrone: @escaping (String) -> Void
@@ -2824,8 +2874,8 @@ private struct ClueSubmissionView: View {
         NavigationStack {
             Form {
                 Section {
-                    if let image = UIImage(data: pending.snapshot.jpegData) {
-                        Image(uiImage: stampClueCrosshair(image, coordinates: clueImageCoordinates))
+                    if let image = stampedPreview {
+                        Image(uiImage: image)
                             .resizable()
                             .scaledToFit()
                             .frame(maxHeight: 240)
@@ -2854,11 +2904,11 @@ private struct ClueSubmissionView: View {
                         LabeledContent("Heading source", value: heading.sourceLabel ?? "Unavailable")
                         LabeledContent("AGL", value: display?.aglLabel ?? "Unk")
                         LabeledContent("ATO", value: display?.atoLabel ?? "Unk")
-                        LabeledContent("AOL · 200 ft radius") {
+                        LabeledContent("AOL · \(DisplayUnits.current.feet(200)) radius") {
                             Text(display?.aolLabel ?? "Unk").foregroundStyle(display?.positionStale != true && display?.aol.status == .available && (display?.aol.feet ?? 0) < 0 ? .red : .primary)
                         }
                         AircraftAOLDetailsLink(details: display?.aol.details ?? OperationalAOLState.explanation)
-                        LabeledContent("Distance", value: measurement(clueDistanceFeet, suffix: " ft"))
+                        LabeledContent("Distance", value: clueDistanceFeet.map { DisplayUnits.current.feet($0) } ?? "Unk")
                     }
                 }
                 Section("Camera projection") {
@@ -2943,6 +2993,14 @@ private struct ClueSubmissionView: View {
                     Text("Close discards this report. Submit sends it to the Incident Map. Mark Local Only saves it on this device without uploading it.")
                 }
             }
+            .task(id: clueImageCoordinates) {
+                let data = pending.snapshot.jpegData, coordinates = clueImageCoordinates
+                let preview = await Task.detached(priority: .userInitiated) {
+                    UIImage(data: data).map { stampClueCrosshair($0, coordinates: coordinates) }
+                }.value
+                if !Task.isCancelled { stampedPreview = preview }
+            }
+            .disabled(submitting)
             .navigationTitle("Submit Clue")
             .navigationBarTitleDisplayMode(.inline)
             .interactiveDismissDisabled()
@@ -3118,7 +3176,7 @@ private struct ClueSubmissionView: View {
             distanceMeters: clueDistanceFeet.map { $0 * 0.3048 },
             telemetry: publish ? reportTelemetry : nil
         )
-        onSubmit(AppleClueDraft(
+        let draft = AppleClueDraft(
             capturedAt: pending.snapshot.capturedAt,
             aircraftID: selectedAircraftID,
             designator: designator,
@@ -3135,9 +3193,18 @@ private struct ClueSubmissionView: View {
             title: trimmedTitle,
             description: finalDescription,
             binding: submittedBinding
-        ), UIImage(data: pending.snapshot.jpegData).flatMap {
-            stampClueCrosshair($0, coordinates: pending.showCrosshairCoordinates ? OperationalCoordinateFormatter.format(latitude: projection.latitude, longitude: projection.longitude, as: coordinateDisplayFormat) : nil).jpegData(compressionQuality: 0.9)
-        } ?? pending.snapshot.jpegData, upload)
+        )
+        let data = pending.snapshot.jpegData
+        let coordinates = pending.showCrosshairCoordinates ? OperationalCoordinateFormatter.format(latitude: projection.latitude, longitude: projection.longitude, as: coordinateDisplayFormat) : nil
+        guard !submitting else { return }
+        submitting = true
+        Task {
+            let stamped = await Task.detached(priority: .userInitiated) {
+                UIImage(data: data).flatMap { stampClueCrosshair($0, coordinates: coordinates).jpegData(compressionQuality: 0.9) } ?? data
+            }.value
+            _ = await onSubmit(draft, stamped, upload)
+            submitting = false
+        }
     }
 
     private func coordinate(_ latitude: Double, _ longitude: Double) -> String {
@@ -3158,7 +3225,7 @@ private struct ClueSubmissionView: View {
         guard let resolution = projection.demResolutionMeters,
               resolution.isFinite, resolution > 0
         else { return "DEM terrain projection applied" }
-        return String(format: "DEM terrain projection applied (%.0f m grid)", resolution)
+        return "DEM terrain projection applied (\(DisplayUnits.current.length(resolution)) grid)"
     }
 
     private func headingMeasurement(_ value: Double?) -> String {
@@ -3202,18 +3269,21 @@ private struct ClueProjectionInput: Hashable {
 }
 
 private struct ClueDetailView: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let clue: OperationalClueRecord
     @ObservedObject var store: AppleClueStore
     let coordinateDisplayFormat: OperationalCoordinateDisplayFormat
     let onClose: () -> Void
     @State private var share: ClueShareBundle?
     @State private var shareError: String?
+    @State private var photo: UIImage?
+    @State private var preparingShare = false
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    if let image = UIImage(contentsOfFile: store.imageURL(for: clue).path) {
+                    if let image = photo {
                         Image(uiImage: image)
                             .resizable()
                             .scaledToFit()
@@ -3221,16 +3291,24 @@ private struct ClueDetailView: View {
                             .frame(maxWidth: .infinity)
                     }
                     Button {
-                        do {
-                            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ClueShares/\(UUID().uuidString)", isDirectory: true)
-                            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                            let photo = directory.appendingPathComponent("clue-\(clue.id.uuidString).jpg")
-                            try FileManager.default.copyItem(at: store.imageURL(for: clue), to: photo)
-                            share = ClueShareBundle(title: clue.title, report: clue.shareReport(format: coordinateDisplayFormat), photo: photo)
-                        } catch { shareError = "The clue photo could not be prepared for sharing." }
+                        preparingShare = true
+                        let source = store.imageURL(for: clue), id = clue.id
+                        Task {
+                            do {
+                                let url = try await Task.detached(priority: .userInitiated) {
+                                    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ClueShares/\(UUID().uuidString)", isDirectory: true)
+                                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                                    let photo = directory.appendingPathComponent("clue-\(id.uuidString).jpg")
+                                    try FileManager.default.copyItem(at: source, to: photo)
+                                    return photo
+                                }.value
+                                share = ClueShareBundle(title: clue.title, report: clue.shareReport(format: coordinateDisplayFormat), photo: url)
+                            } catch { shareError = "The clue photo could not be prepared for sharing." }
+                            preparingShare = false
+                        }
                     } label: {
                         Label("Share Clue…", systemImage: "square.and.arrow.up")
-                    }
+                    }.disabled(preparingShare)
                 }
                 Section(clue.title) {
                     LabeledContent("Aircraft", value: clue.designator)
@@ -3251,14 +3329,17 @@ private struct ClueDetailView: View {
                     Text(clue.publishedDescription)
                 }
                 if clue.uploadState == .failed || clue.uploadState == .pending {
-                    Section { Button("Retry CalTopo Upload") { store.retry(clue.id) } }
+                    Section { Button("Retry CalTopo Upload") { Task { await store.retry(clue.id) } } }
                 }
                 Section {
                     Button("Delete Local Clue", role: .destructive) {
-                        store.delete(clue.id)
-                        onClose()
+                        Task { await store.delete(clue.id); onClose() }
                     }
                 }
+            }
+            .task(id: clue.id) {
+                let url = store.imageURL(for: clue)
+                photo = await Task.detached(priority: .userInitiated) { UIImage(contentsOfFile: url.path)?.preparingForDisplay() }.value
             }
             .sheet(item: $share) { item in
                 ClueShareSheet(bundle: item)
@@ -3285,7 +3366,10 @@ private struct MapVisibilityRow: Identifiable {
 }
 
 private struct MapItemsVisibilityView: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @ObservedObject var model: AppleMapArtifactModel
+    let mapName: String
+    let launchLocation: CLLocation?
     let onZoomToItem: (CaltopoArtifactItem) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var expandedFolderIDs: Set<String> = []
@@ -3293,6 +3377,8 @@ private struct MapItemsVisibilityView: View {
 
     @State private var surfaceBriefing: AppleSurfaceBriefing?
     @State private var surfaceBriefingRequest=UUID()
+    @State private var mappingMission: MappingMission?
+    @State private var mappingError: String?
     var body: some View {
         NavigationStack {
             List(rows) { row in
@@ -3309,6 +3395,11 @@ private struct MapItemsVisibilityView: View {
             .navigationTitle("Map Folders")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchText, prompt: "Folders and map items")
+            .sheet(item:$mappingMission) { mission in AppleMappingMissionView(mission:mission,mapName:mapName) }
+            .alert("Mapping mission", isPresented:Binding(get:{mappingError != nil},set:{if !$0 {mappingError=nil}})) {
+                Button("Done") {mappingError=nil}
+            } message: {Text(mappingError ?? "")}
+
             .sheet(item:$surfaceBriefing) { briefing in
                 NavigationStack {
                     ScrollView { Text(briefing.text).textSelection(.enabled).padding() }
@@ -3433,6 +3524,12 @@ private struct MapItemsVisibilityView: View {
                         if surfaceBriefingRequest==request { surfaceBriefing=result }
                     }
                 }.buttonStyle(.borderless).accessibilityLabel("Surface high-point briefing for \(item.title)")
+            }
+            if item.className == "Assignment", !model.snapshot.polygons.filter({$0.itemID==item.id}).isEmpty {
+                Button("Map") {
+                    do {mappingMission=try model.mappingMission(for:item,launchLocation:launchLocation)}
+                    catch {mappingError=error.localizedDescription}
+                }.buttonStyle(.borderless).accessibilityLabel("Create mapping mission for \(item.title)")
             }
             if canZoom {
                 Button {
@@ -3619,33 +3716,26 @@ private final class CameraFootprintMapView: UIView {
         guard let map, bounds.width > 0, bounds.height > 0 else { clearPaths(); return }
         let solid = UIBezierPath()
         let dashed = UIBezierPath()
-        let stubLength = min(min(bounds.width, bounds.height) * 0.02, 12)
+        func closedOutline(_ vertices: [CameraFootprintVertex]) {
+            guard vertices.count >= 3 else { return }
+            let points = vertices.map {
+                map.convert(CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude), toPointTo: self)
+            }
+            for index in vertices.indices {
+                let next = (index + 1) % vertices.count
+                let path = vertices[index].clipped || vertices[next].clipped ? dashed : solid
+                path.move(to: points[index])
+                path.addLine(to: points[next])
+            }
+        }
         for (id, input) in inputs {
             let sampled = terrain[id].flatMap { entry -> [CameraFootprintVertex]? in
                 guard !entry.1.isEmpty, cameraFootprintTerrainReusable(cached: entry.0, current: input) else { return nil }
                 return entry.1
             }
             let drawing = CameraFootprintDrawing(input: input, terrain: sampled, liveCorners: true)
-            let boundary = drawing.boundary
-            if !boundary.isEmpty {
-                let points = boundary.map {
-                    map.convert(CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude), toPointTo: self)
-                }
-                for index in boundary.indices {
-                    let next = (index + 1) % boundary.count
-                    let path = boundary[index].clipped || boundary[next].clipped ? dashed : solid
-                    path.move(to: points[index])
-                    path.addLine(to: points[next])
-                }
-            }
-            let corners = drawing.corners.map { corner -> MapScreenPoint in
-                let p = map.convert(CLLocationCoordinate2D(latitude: corner.latitude, longitude: corner.longitude), toPointTo: self)
-                return MapScreenPoint(x: p.x, y: p.y)
-            }
-            for arm in CameraFootprintGeometry.cornerStrokes(points: corners, length: stubLength) {
-                solid.move(to: CGPoint(x: arm.start.x, y: arm.start.y))
-                solid.addLine(to: CGPoint(x: arm.end.x, y: arm.end.y))
-            }
+            closedOutline(drawing.corners)
+            closedOutline(drawing.boundary)
         }
         solidHalo.path = solid.cgPath
         solidStroke.path = solid.cgPath
@@ -3764,6 +3854,7 @@ private struct AircraftMapRenderState: Equatable {
 }
 
 private struct AircraftAOLDetailsLink: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let details: String
 
     var body: some View {
@@ -3782,6 +3873,7 @@ private struct AircraftAOLDetailsLink: View {
 }
 
 private struct PilotDisplaySettingsView: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let selection: PilotDisplaySelection
     let track: RidAircraftTrack?
     let altitudeDisplay: OperationalAircraftAltitudeDisplay?
@@ -3810,9 +3902,9 @@ private struct PilotDisplaySettingsView: View {
                             "Location",
                             value: String(format: "%.6f, %.6f", observation.latitude, observation.longitude)
                         )
-                        LabeledContent("Altitude MSL", value: altitudeDisplay?.positionStale == true ? "POS?" : measurement(observation.altitudeMeters, scale: 3.28084, unit: "ft"))
+                        LabeledContent("Altitude MSL", value: altitudeDisplay?.positionStale == true ? "POS?" : observation.altitudeMeters.map { DisplayUnits.current.length($0) } ?? "Unk")
                         LabeledContent("ATO", value: altitudeDisplay?.atoLabel ?? "Unk")
-                        LabeledContent("AOL · 200 ft radius") {
+                        LabeledContent("AOL · \(DisplayUnits.current.feet(200)) radius") {
                             Button(altitudeDisplay?.aolLabel ?? "Unk") { showTakeoffCalibration = true }
                                 .buttonStyle(.plain)
                                 .disabled(altitudeDisplay?.aolLabel != "CAL")
@@ -3826,8 +3918,8 @@ private struct PilotDisplaySettingsView: View {
                         }
                         LabeledContent("Range from takeoff", value: altitudeDisplay?.rangeLabel ?? "Unk")
                         LabeledContent("Heading", value: altitudeDisplay?.positionStale == true ? "POS?" : measurement(observation.headingDegrees, scale: 1, unit: "°"))
-                        LabeledContent("Speed", value: altitudeDisplay?.positionStale == true ? "POS?" : measurement(observation.speedMetersPerSecond, scale: 1.94384, unit: "kt"))
-                        Text("Only calibrate while hovering at an independently established 50 ft directly above the launch point. This also supplies the AOL launch reference.").font(.caption)
+                        LabeledContent("Speed", value: altitudeDisplay?.positionStale == true ? "POS?" : observation.speedMetersPerSecond.map { DisplayUnits.current.speed($0) } ?? "Unk")
+                        Text("Only calibrate while hovering at an independently established \(DisplayUnits.current.feet(50, decimals: 2)) directly above the launch point. This also supplies the AOL launch reference.").font(.caption)
                         Button("Calibrate 50' ATO") { showTakeoffCalibration = true }
                             .takeoffCalibrationPanel(isPresented: $showTakeoffCalibration,
                                 enabled: observation.altitudeMeters != nil && altitudeDisplay?.positionStale == false,
@@ -3887,7 +3979,7 @@ private struct PilotDisplaySettingsView: View {
 
     private func feet(_ value: Double?, stale: Bool = false) -> String {
         guard let value, value.isFinite else { return "Unk" }
-        return String(format: "%.0f%@ ft", value, stale ? "?" : "")
+        return DisplayUnits.current.feet(value) + (stale ? "?" : "")
     }
 
     private func colorRow(
@@ -3928,6 +4020,7 @@ private final class ViewportPreservingMKMapView: MKMapView {
 }
 
 private struct OperationalMKMapView: UIViewRepresentable {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let tracks: [RidAircraftTrack]
     let seiTrackPointsByAircraftID: [String: [AppleSEIMapPoint]]
     let positionFreshnessRefreshToken: Int
@@ -3941,6 +4034,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
     let notamState: AppleNotamState
     let landRestrictionState: AppleLandRestrictionState
     let baseLayer: OperationalMapBaseLayer
+    let mappingLayers: [MappingLayer]
     let showContours: Bool
     let tileCacheRevision: Int
     let operatorCoordinate: CLLocationCoordinate2D?
@@ -3979,8 +4073,8 @@ private struct OperationalMKMapView: UIViewRepresentable {
         map.delegate = context.coordinator
         map.showsCompass = false
         map.showsScale = false
-        let scale = MKScaleView(mapView: map)
-        scale.scaleVisibility = .visible
+        let scale = UnitMapScaleView()
+        scale.refresh(on: map)
         scale.accessibilityIdentifier = "RID2CaltopoMapScale"
         scale.isHidden = false
         scale.alpha = 1
@@ -3991,6 +4085,8 @@ private struct OperationalMKMapView: UIViewRepresentable {
             scale.leadingAnchor.constraint(equalTo: map.safeAreaLayoutGuide.leadingAnchor, constant: 12),
             // Keep the legal attribution/link clear below the scale control.
             scale.bottomAnchor.constraint(equalTo: map.safeAreaLayoutGuide.bottomAnchor, constant: -48),
+            scale.widthAnchor.constraint(equalToConstant: 180),
+            scale.heightAnchor.constraint(equalToConstant: 32),
         ])
         map.pointOfInterestFilter = .excludingAll
         map.setRegion(viewportMemory.region, animated: false)
@@ -4025,10 +4121,12 @@ private struct OperationalMKMapView: UIViewRepresentable {
     }
 
     func updateUIView(_ map: MKMapView, context: Context) {
+        context.coordinator.updateMappingLayers(on:map,layers:mappingLayers)
         context.coordinator.onSelectAircraft = onSelectAircraft
         if let scale = map.subviews.first(where: { $0.accessibilityIdentifier == "RID2CaltopoMapScale" }) {
             scale.isHidden = false
             scale.alpha = 1
+            (scale as? UnitMapScaleView)?.refresh(on: map)
             map.bringSubviewToFront(scale)
         }
         context.coordinator.onSelectClue = onSelectClue
@@ -4120,6 +4218,8 @@ private struct OperationalMKMapView: UIViewRepresentable {
         @Binding private var operatorAdjustedViewport: Bool
         let footprintView = CameraFootprintMapView()
         private var tileFingerprint = ""
+        private var mappingLayerFingerprint: [MappingLayer] = []
+        private var mappingBoundaryFingerprint: [Bool] = []
         private var staticRenderState: StaticMapRenderState?
         private var aircraftRenderState: AircraftMapRenderState?
         private var aircraftAnnotationsByRemoteID: [String: AircraftAnnotation] = [:]
@@ -4196,6 +4296,14 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 zoom: zoom
             )
             onLongPressTile(tile.zoom, tile.x, tile.y)
+        }
+
+        func updateMappingLayers(on map:MKMapView,layers:[MappingLayer]) {
+            let boundaries=layers.map{UserDefaults.standard.object(forKey:"mapping.soft.\($0.id)") as? Bool ?? true}
+            guard layers != mappingLayerFingerprint || boundaries != mappingBoundaryFingerprint else { return }
+            mappingLayerFingerprint=layers;mappingBoundaryFingerprint=boundaries
+            map.removeOverlays(map.overlays.filter { $0 is MappingLayerTileOverlay })
+            for layer in layers { map.addOverlay(MappingLayerTileOverlay(layer),level:.aboveRoads) }
         }
 
         func updateTiles(
@@ -4786,6 +4894,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
         }
 
         func mapViewDidChangeVisibleRegion(_ mapView: MKMapView) {
+            (mapView.subviews.first { $0 is UnitMapScaleView } as? UnitMapScaleView)?.refresh(on: mapView)
             footprintView.refreshForMapMovement()
             guard !updating, hasActiveViewportGesture(in: mapView) else { return }
             if !currentInset {
@@ -5512,11 +5621,6 @@ private final class CachedMapTileOverlay: MKTileOverlay {
         let completion = TileResultTransfer(result: result)
         let ext = contours ? "png" : (baseLayer?.fileExtension ?? "tile")
         let requestedDestination = cacheDestination(for: path, fileExtension: ext)
-        if let data = usableCachedTile(at: requestedDestination) {
-            completion.result(data, nil)
-            return
-        }
-
         let overzoom = contours ? nil : OperationalOverzoomTile.resolve(
             requestedZoom: path.z,
             requestedX: path.x,
@@ -5532,19 +5636,6 @@ private final class CachedMapTileOverlay: MKTileOverlay {
             )
         } ?? path
         let sourceDestination = cacheDestination(for: sourcePath, fileExtension: ext)
-        if let sourceData = usableCachedTile(at: sourceDestination) {
-            guard let output = Self.displayTileData(
-                sourceData: sourceData,
-                overzoom: overzoom,
-                fileExtension: ext
-            ) else {
-                completion.result(nil, CocoaError(.fileReadCorruptFile))
-                return
-            }
-            cache(output, at: requestedDestination)
-            completion.result(output, nil)
-            return
-        }
         let requestURL = url(forTilePath: sourcePath)
         var request = URLRequest(url: requestURL)
         request.setValue("RID2Caltopo/Apple (contact: kjt@uas4sar.com)", forHTTPHeaderField: "User-Agent")
@@ -5562,6 +5653,18 @@ private final class CachedMapTileOverlay: MKTileOverlay {
 
     private nonisolated static func downloadAndComplete(_ transfer: TileLoadTransfer) {
         Task.detached(priority: .userInitiated) {
+            AppleMapCachePaths.prepare()
+            if let data = Self.usableCachedTile(at: transfer.requestedDestination) {
+                transfer.completion.result(data, nil); return
+            }
+            if let sourceData = Self.usableCachedTile(at: transfer.sourceDestination) {
+                guard let output = Self.displayTileData(sourceData: sourceData, overzoom: transfer.overzoom, fileExtension: transfer.fileExtension) else {
+                    transfer.completion.result(nil, CocoaError(.fileReadCorruptFile)); return
+                }
+                if transfer.requestedDestination != transfer.sourceDestination { Self.cache(output, at: transfer.requestedDestination) }
+                transfer.completion.result(output, nil); return
+            }
+
             do {
                 let downloaded = try await AppleMapTileDownloadCoordinator.shared.download(
                     request: transfer.request,
@@ -5594,7 +5697,7 @@ private final class CachedMapTileOverlay: MKTileOverlay {
             .appendingPathComponent("\(path.y).\(fileExtension)")
     }
 
-    private func usableCachedTile(at destination: URL) -> Data? {
+    private nonisolated static func usableCachedTile(at destination: URL) -> Data? {
         AppleMapCacheAccess.synchronized {
             let maximumAgeDays = max(
                 1,
@@ -6204,4 +6307,51 @@ private struct ClueShareSheet: UIViewControllerRepresentable {
         return controller
     }
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+
+
+/// Uses the same map projection for the bar length and its unit label.
+private final class UnitMapScaleView: UIView {
+    private let label = UILabel()
+    private let bar = CAShapeLayer()
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        label.font = .boldSystemFont(ofSize: 11)
+        label.textColor = .label
+        label.backgroundColor = UIColor.systemBackground.withAlphaComponent(0.85)
+        label.layer.cornerRadius = 3
+        label.clipsToBounds = true
+        addSubview(label)
+        bar.strokeColor = UIColor.label.cgColor
+        bar.lineWidth = 2
+        bar.fillColor = nil
+        layer.addSublayer(bar)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func refresh(on map: MKMapView) {
+        let sample = min(180.0, Double(map.bounds.width) * 0.35)
+        guard sample > 0, map.bounds.height > 0 else { return }
+        let origin = CGPoint(x: 12, y: map.bounds.midY)
+        let a = map.convert(origin, toCoordinateFrom: map)
+        let b = map.convert(CGPoint(x: origin.x + sample, y: origin.y), toCoordinateFrom: map)
+        let meters = CLLocation(latitude: a.latitude, longitude: a.longitude).distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude))
+        guard meters.isFinite, meters > 0 else { return }
+        let metric = DisplayUnits.current == .metric
+        let large = meters >= (metric ? 1000 : 1609.344)
+        let metersPerUnit = metric ? (large ? 1000.0 : 1.0) : (large ? 1609.344 : 0.3048)
+        let maximum = meters / metersPerUnit
+        let magnitude = pow(10.0, floor(log10(maximum)))
+        let value = ([1.0, 2.0, 5.0].last { $0 * magnitude <= maximum } ?? 1) * magnitude
+        let unit = metric ? (large ? "km" : "m") : (large ? "mi" : "ft")
+        let text = "\(value >= 1 ? String(format: "%.0f", value) : String(value)) \(unit)"
+        label.text = text
+        label.sizeToFit()
+        label.frame.origin = .zero
+        let width = value * metersPerUnit / meters * sample
+        let path = UIBezierPath()
+        path.move(to: CGPoint(x: 1, y: 23)); path.addLine(to: CGPoint(x: 1, y: 29))
+        path.addLine(to: CGPoint(x: width + 1, y: 29)); path.addLine(to: CGPoint(x: width + 1, y: 23))
+        bar.path = path.cgPath
+        accessibilityLabel = text
+    }
 }

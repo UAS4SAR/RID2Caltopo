@@ -6,6 +6,9 @@
  */
 package org.ncssar.rid2caltopo.ui
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import androidx.lifecycle.ViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -487,7 +490,7 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
             _notamRefreshIntervalSeconds.value, _landRestrictionsRadiusNm.value)
         if (numbers.any { it.toLongOrNull() == null || it.toLong() < 0 } ||
             _thumbnailRefreshSeconds.value.toDoubleOrNull()?.let { it.isFinite() && it > 0 } != true) {
-            _caltopoCredentialError.value = "Enter valid nonnegative whole numbers for distances and times, and a positive thumbnail interval."
+            _caltopoCredentialError.value = "Enter valid nonnegative distances, whole numbers for times, and a positive thumbnail interval."
             return false
         }
         val trimmedCaltopoTeamId = _caltopoTeamId.value.trim()
@@ -613,16 +616,16 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
         val credentialSource = NotamAuthManager.credentialSource()
         val enabled = CaltopoClient.GetNotamEnabled()
         val radius = CaltopoClient.GetNotamRadiusNm()
-        val radiusUnit = if (radius == 1) "statute mile" else "statute miles"
+        val radiusLabel = Units.current.miles(radius.toDouble())
         return when {
             !enabled -> "Disabled"
             credentialSource == NotamAuthManager.CredentialSource.MANAGED_DEVICE_ENROLLMENT ->
-                "Enabled, managed device enrollment present, $radius $radiusUnit radius"
+                "Enabled, managed device enrollment present, $radiusLabel radius"
             credentialSource == NotamAuthManager.CredentialSource.ORGANIZATION_CONFIG_CREDENTIAL ->
                 "Enabled with an organization-config tracker credential; FAA proxy authorization " +
-                    "must succeed or the QR is stale or needs device enrollment, $radius $radiusUnit radius"
+                    "must succeed or the QR is stale or needs device enrollment, $radiusLabel radius"
             else ->
-                "Enabled, FAA proxy not enrolled; scan a Drone-team enrollment QR, $radius $radiusUnit radius"
+                "Enabled, FAA proxy not enrolled; scan a Drone-team enrollment QR, $radiusLabel radius"
         }
     }
 }

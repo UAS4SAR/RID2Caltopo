@@ -939,6 +939,7 @@ final class AppleOrgConfigImporter: ObservableObject {
     enum State: Equatable {
         case idle
         case downloading
+        case importing(String, progress: Double?)
         case applied(String)
         case awaitingSignIn(String)
         case failed(String)
@@ -955,12 +956,20 @@ final class AppleOrgConfigImporter: ObservableObject {
         switch state {
         case .idle: "No import in progress"
         case .downloading: "Downloading shared configuration…"
+        case let .importing(message, _): message
         case let .applied(message), let .awaitingSignIn(message), let .failed(message): message
         }
     }
 
+    var isBusy: Bool {
+        switch state {
+        case .downloading, .importing: true
+        default: false
+        }
+    }
+
     func prepareForImport() {
-        guard state != .downloading else { return }
+        guard !isBusy else { return }
         state = .idle
     }
 
@@ -972,7 +981,7 @@ final class AppleOrgConfigImporter: ObservableObject {
         force: Bool = false,
         waitForInFlight: Bool = false
     ) async {
-        guard state != .downloading, orgSettings.hasManagedTrackerEnrollment,
+        guard !isBusy, orgSettings.hasManagedTrackerEnrollment,
               profileLifecycle.activeProfileID == "home" || profileLifecycle.activeProfileID.isEmpty
         else { return }
         let prefix = orgSettings.trackerURLPrefix
@@ -1227,7 +1236,14 @@ final class AppleOrgConfigImporter: ObservableObject {
         orgSettings: AppleOrgConfigSettings
     ) async throws {
         let manager = AppleConfigurationTransferManager()
-        let changedProfile = try await manager.importMutualAidPackage(data, caltopo: caltopoSettings, organization: orgSettings)
+        let changedProfile = try await manager.importMutualAidPackage(
+            data,
+            caltopo: caltopoSettings,
+            organization: orgSettings,
+            onProgress: { [weak self] message, progress in
+                self?.state = .importing(message, progress: progress)
+            }
+        )
         if changedProfile { caltopoConfigurationHandler?(caltopoSettings.configuration) }
         state = .applied(manager.status)
     }
@@ -1248,8 +1264,11 @@ final class AppleOrgConfigImporter: ObservableObject {
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         do {
-            let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            let data = try await Task.detached(priority: .userInitiated) {
+                try Data(contentsOf: url, options: .mappedIfSafe)
+            }.value
             if url.pathExtension.lowercased() == "zip" || data.starts(with: [0x50, 0x4b]) {
+                state = .importing("Opening map package…", progress: nil)
                 try await importMAPackageData(data, caltopoSettings: caltopoSettings, orgSettings: orgSettings)
                 return
             }
@@ -1533,7 +1552,15 @@ struct ConfigImportView: View {
             }
             if submitting || isFailed {
                 Section("Import status") {
-                    if submitting { ProgressView("Loading configuration…") }
+                    if submitting {
+                        switch importer.state {
+                        case let .importing(message, progress):
+                            if let progress { ProgressView(value: progress) { Text(message) } }
+                            else { ProgressView(message) }
+                        default:
+                            ProgressView("Loading configuration…")
+                        }
+                    }
                     if isFailed {
                         Text(importer.statusText).foregroundStyle(.red)
                         Text("The configuration was not imported. If the enrollment campaign is inactive, renew its QR/token in Tracker before trying again.")
@@ -1562,7 +1589,7 @@ struct ConfigImportView: View {
                 }
             }
         }
-        .sheet(isPresented: $showCaltopoLink) {
+        .fullScreenCover(isPresented: $showCaltopoLink) {
             NavigationStack {
                 AppleCaltopoPersonalProbeView(initialCaltopoLinkURL: caltopoLinkURL)
             }
@@ -1629,7 +1656,7 @@ struct ConfigImportView: View {
 
     private var canImport: Bool {
         !submitting
-            && importer.state != .downloading
+            && !importer.isBusy
             && (caltopoLinkURL != nil || isTrackerEnrollment || decodedToken != nil || packageToken != nil)
     }
 
@@ -1721,7 +1748,7 @@ struct ConfigImportView: View {
             onFinished(.init(succeeded: false, message: message))
         case .awaitingSignIn:
             break // The Tracker sign-in prompt owns this result; do not replace it with a success alert.
-        case .idle, .downloading:
+        case .idle, .downloading, .importing:
             onFinished(.init(succeeded: false, message: "The configuration import did not complete."))
         }
     }

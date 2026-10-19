@@ -13,6 +13,7 @@ import org.ncssar.rid2caltopo.video.ArcGisWorldImageryTileSource
 import org.ncssar.rid2caltopo.video.GeoBoundary
 import org.ncssar.rid2caltopo.video.UsgsContoursTileSource
 import org.ncssar.rid2caltopo.video.OsmStandardTileSource
+import org.ncssar.rid2caltopo.mapping.MappingLayer
 import org.osmdroid.tileprovider.tilesource.ITileSource
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
@@ -54,6 +55,7 @@ object MutualAidPackageManager {
         tileSources: List<ITileSource>,
         includeDem: Boolean,
         includeAol: Boolean,
+        mappingLayers: List<MappingLayer> = emptyList(),
     ): Pair<Boolean, File?> {
         return try {
             val tempDir = context.cacheDir.resolve("ma-transfer").apply { mkdirs() }
@@ -67,6 +69,7 @@ object MutualAidPackageManager {
                     tileSources = tileSources,
                     includeDem = includeDem,
                     includeAol = includeAol,
+                    mappingLayers = mappingLayers,
                 )
             }
             true to file
@@ -83,7 +86,7 @@ object MutualAidPackageManager {
             val demDir = archiveRoot?.findFile("cache")?.findFile("dem")
                 ?: archiveRoot?.findFile("cache")?.createDirectory("dem")
             val resolver = context.contentResolver
-            val entryBytes = readPackageEntries(context, srcUri)
+            readPackageEntries(context, srcUri).use { entryBytes ->
             val manifestBytes = entryBytes[MANIFEST_PATH] ?: return false to "Package is missing manifest.json."
             val manifest = JSONObject(String(manifestBytes, Charsets.UTF_8))
             if (manifest.optString("format") != FORMAT) {
@@ -97,20 +100,32 @@ object MutualAidPackageManager {
             }
 
             val tileEntries = manifest.optJSONArray("tile_entries") ?: JSONArray()
+            val mappingLayers = manifest.optJSONArray("mapping_layers")?.let { array ->
+                (0 until array.length()).mapNotNull { index -> runCatching { MappingLayer.parse(array.getJSONObject(index)) }.getOrNull() }
+            }.orEmpty()
+            val layerBySource = mappingLayers.associateBy { "R2C-Mapping-${it.id}" }
+            val importedSurfaces=org.ncssar.rid2caltopo.mapping.MappingSurfaceFiles.import(context,manifest.optJSONArray("surface_entries")?:JSONArray(),mappingLayers){path->entryBytes[path]}
             var importedTiles = 0
             for (i in 0 until tileEntries.length()) {
                 val item = tileEntries.getJSONObject(i)
-                val source = resolveTileSource(item.optString("source")) ?: continue
+                val sourceName = item.optString("source")
+                val layer = layerBySource[sourceName]
+                val source = layer?.tileSource() ?: resolveTileSource(sourceName) ?: continue
                 val z = item.optInt("z")
                 val x = item.optInt("x")
                 val y = item.optInt("y")
                 val path = item.optString("path")
                 val bytes = entryBytes[path] ?: continue
-                val expiresAt = item.optLong("expires_at_epoch_ms", 0L).takeIf { it > 0L }
+                val expiresAt = if (layer != null) Long.MAX_VALUE else item.optLong("expires_at_epoch_ms", 0L).takeIf { it > 0L }
                 val idx = MapTileIndex.getTileIndex(z, x, y)
                 if (tileWriter.importTileBytes(source, idx, bytes, expiresAt)) {
                     importedTiles++
                 }
+            }
+            if (mappingLayers.isNotEmpty()) {
+                val incident = mappingLayers.first().incidentId
+                require(mappingLayers.all { it.incidentId == incident }) { "Map package mixes mapping layers from different incidents." }
+                MappingLayer.save(context, incident, MappingLayer.load(context, incident).filterNot { old -> mappingLayers.any { it.id == old.id } } + mappingLayers)
             }
 
             val demEntries = manifest.optJSONArray("dem_entries") ?: JSONArray()
@@ -130,8 +145,9 @@ object MutualAidPackageManager {
                 importedDem++
             }
 
-            val importedAol=org.ncssar.rid2caltopo.video.surface.SurfaceStore.importSets(context,entryBytes)
-            true to "Imported map package: $importedAol AOL tile(s), $importedTiles tile(s), $importedDem DEM tile(s)."
+            val importedAol=org.ncssar.rid2caltopo.video.surface.SurfaceStore.importSets(context,entryBytes.aolEntries())
+            true to "Imported map package: $importedAol AOL tile(s), $importedTiles map tile(s), ${mappingLayers.size} R2C mapping layer(s), $importedSurfaces 3D surface(s), $importedDem DEM tile(s)."
+            }
         } catch (e: Exception) {
             CaltopoClient.CTWarn("MutualAidPackageMgr", "importPackage() failed.", e)
             false to (e.message ?: "Failed to import map package.")
@@ -154,7 +170,7 @@ object MutualAidPackageManager {
 
     fun readPackagePreview(context: Context, srcUri: Uri): Pair<Boolean, PackagePreview?> {
         return try {
-            val entryBytes = readPackageEntries(context, srcUri)
+            readPackageEntries(context, srcUri).use { entryBytes ->
             val manifestBytes = entryBytes[MANIFEST_PATH] ?: return false to null
             val manifest = JSONObject(String(manifestBytes, Charsets.UTF_8))
             if (manifest.optString("format") != FORMAT) {
@@ -180,27 +196,33 @@ object MutualAidPackageManager {
                 demCount = manifest.optJSONArray("dem_entries")?.length() ?: 0,
                 aolCount = manifest.optJSONArray("aol_entries")?.let { entries -> (0 until entries.length()).count { entries.optString(it).endsWith(".aol") } } ?: 0
             )
+            }
         } catch (e: Exception) {
             CaltopoClient.CTWarn("MutualAidPackageMgr", "readPackagePreview() failed.", e)
             false to null
         }
     }
 
-    private fun readPackageEntries(context: Context, srcUri: Uri): LinkedHashMap<String, ByteArray> {
-        val entryBytes = LinkedHashMap<String, ByteArray>()
-        context.contentResolver.openInputStream(srcUri)?.use { rawIn ->
-            ZipInputStream(rawIn).use { zip ->
-                var entry = zip.nextEntry
-                while (entry != null) {
-                    if (!entry.isDirectory) {
-                        entryBytes[entry.name] = zip.readBytes()
-                    }
-                    zip.closeEntry()
-                    entry = zip.nextEntry
-                }
-            }
-        } ?: throw IllegalStateException("Could not open selected map package.")
-        return entryBytes
+    /** Only one entry is held in memory; high-resolution mapping packages can contain thousands of tiles. */
+    private class PackageEntries(private val file:File):java.io.Closeable {
+        private val zip=java.util.zip.ZipFile(file)
+        operator fun get(path:String):ByteArray? {
+            val entry=zip.getEntry(path)?:return null
+            require(entry.size in 0..128L*1024*1024){"Map package entry is too large."}
+            return zip.getInputStream(entry).use{it.readBytes()}
+        }
+        fun aolEntries():Map<String,ByteArray> = zip.entries().asSequence().filter{!it.isDirectory&&it.name.startsWith("aol/")}.associate{it.name to (get(it.name)?:error("Missing AOL entry"))}
+        override fun close(){try{zip.close()}finally{file.delete()}}
+    }
+    private fun readPackageEntries(context: Context, srcUri: Uri):PackageEntries {
+        val file=File.createTempFile("map-package-",".zip",context.cacheDir)
+        try{
+            context.contentResolver.openInputStream(srcUri)?.use{input->file.outputStream().buffered().use{output->
+                val block=ByteArray(65536);var total=0L
+                while(true){val n=input.read(block);if(n<0)break;total+=n;require(total<=2L*1024*1024*1024){"Map package exceeds 2 GiB."};output.write(block,0,n)}
+            }}?:error("Could not open selected map package.")
+            return PackageEntries(file)
+        }catch(e:Exception){file.delete();throw e}
     }
 
     private fun resolveTileSource(sourceName: String): ITileSource? = when (sourceName) {
@@ -221,16 +243,38 @@ object MutualAidPackageManager {
         tileSources: List<ITileSource>,
         includeDem: Boolean,
         includeAol: Boolean,
+        mappingLayers: List<MappingLayer>,
     ): Pair<Boolean, String> {
         val resolver = context.contentResolver
         val tileWriter = TileDiskCacheWriter(context)
         val region = MapPackageRegion(bounds.latNorth, bounds.lonEast, bounds.latSouth, bounds.lonWest)
         val tileEntries = ArrayList<JSONObject>()
+        val layerEntries = JSONArray()
+        val surfaceEntries = JSONArray()
         val demEntries = ArrayList<JSONObject>()
         val archiveDir = CaltopoClient.GetArchiveDir()
         val demDir = archiveDir?.findFile("cache")?.findFile("dem")
         var aolCount=0
         ZipOutputStream(rawOut).use { zip ->
+            for (layer in mappingLayers) {
+                val source = layer.tileSource()
+                val included = tileWriter.cachedTileIndices(source).filter { index ->
+                    region.includesTile(MapTileIndex.getZoom(index), MapTileIndex.getX(index), MapTileIndex.getY(index))
+                }
+                if (included.isEmpty()) continue
+                layerEntries.put(layer.json())
+                for((record,file) in org.ncssar.rid2caltopo.mapping.MappingSurfaceFiles.export(context,layer)){
+                    zip.putNextEntry(ZipEntry(record.getString("path")));file.inputStream().use{it.copyTo(zip)};zip.closeEntry();surfaceEntries.put(record)
+                }
+                for (index in included) {
+                    val bytes = tileWriter.readTileBytes(source, index) ?: continue
+                    val z = MapTileIndex.getZoom(index); val x = MapTileIndex.getX(index); val y = MapTileIndex.getY(index)
+                    val path = "mapping-layers/${layer.id}/$z/$x/$y.png"
+                    zip.putNextEntry(ZipEntry(path));zip.write(bytes);zip.closeEntry()
+                    tileEntries += JSONObject().put("source", source.name()).put("z",z).put("x",x).put("y",y)
+                        .put("expires_at_epoch_ms",0).put("path",path)
+                }
+            }
             for (tileSource in tileSources) {
                 for (tileIndex in tileWriter.cachedTileIndices(tileSource)) {
                     if (!region.includesTile(MapTileIndex.getZoom(tileIndex), MapTileIndex.getX(tileIndex), MapTileIndex.getY(tileIndex))) continue
@@ -284,6 +328,8 @@ object MutualAidPackageManager {
                 .put("package_name", packageName)
                 .put("source_org", "")
                 .put("profile_enc", "")
+                .put("mapping_layers", layerEntries)
+                .put("surface_entries", surfaceEntries)
                 .put("tile_entries", JSONArray(tileEntries))
                 .put("dem_entries", JSONArray(demEntries))
             zip.putNextEntry(ZipEntry(MANIFEST_PATH))

@@ -292,6 +292,7 @@ final class AppleDroneScoutBridgeAlertCenter: ObservableObject {
 
 /// Keep alerts out of layout measurement. The bell retains active alerts after the popup fades.
 struct OperationalAlertPopup: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @ObservedObject var center: AppleOperationalAlertCenter
     let onMap: () -> Void
     @State private var visible = false
@@ -327,6 +328,7 @@ struct OperationalAlertPopup: View {
 }
 
 struct OperationalAlertBanner: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let signalLoss: AppleSignalLossAlert?
     let altitude: AppleAltitudeComplianceAlert?
     let onMap: () -> Void
@@ -345,7 +347,7 @@ struct OperationalAlertBanner: View {
                     "\(signalLoss.mappedID): " +
                         (signalLoss.bridgeRecentlySeen ? "location stale" : "signal lost") +
                         " for \(Int(signalLoss.idleSeconds.rounded())) seconds, " +
-                        "\(Int(signalLoss.distanceFeet.rounded())) ft from this device."
+                        "\(DisplayUnits.current.feet(signalLoss.distanceFeet)) from this device."
                 )
                 controls { onMuteSignal(signalLoss.remoteID) }
             } else if let altitude {
@@ -355,7 +357,7 @@ struct OperationalAlertBanner: View {
                 )
                 .font(.headline)
                 .foregroundStyle(altitude.severity == .overLimit ? .red : .orange)
-                Text("\(altitude.mappedID): \(Int(altitude.aglFeet.rounded())) ft AGL")
+                Text("\(altitude.mappedID): \(DisplayUnits.current.feet(altitude.aglFeet)) AGL")
                 controls { onMuteAltitude(altitude.remoteID) }
             }
         }

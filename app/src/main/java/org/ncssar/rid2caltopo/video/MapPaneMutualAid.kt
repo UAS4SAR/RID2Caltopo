@@ -25,6 +25,7 @@ internal fun MapPaneMutualAidDialogs(
     showPackageDialog: Boolean,
     onShowPackageDialogChange: (Boolean) -> Unit,
     selectedTiles: Set<String>,
+    availableMappingLayers: Int,
     onSelectedTilesChange: (Set<String>) -> Unit,
     preparingShare: Boolean,
     onStartShare: () -> Unit,
@@ -42,11 +43,12 @@ internal fun MapPaneMutualAidDialogs(
                         .verticalScroll(rememberScrollState())
                 ) {
                     Text(
-                        "This exports cached tiles only; it does not download anything. For the checked tile types, all cached zoom levels overlapping the current visible map region are included. Tiles are included whole, so their edges may extend beyond the visible region.",
+                        "This exports cached tiles only; it does not download anything. For the checked tile types, all cached zoom levels overlapping the current visible map region are included. R2C mapping layers are copied for offline use on the receiving device.",
                         fontSize = 12.sp
                     )
                     Spacer(Modifier.height(12.dp))
-                    listOf("Imagery", "OpenStreetMap", "Contours", "DEM", "AOL").forEach { tile ->
+                    (listOf("Imagery", "OpenStreetMap", "Contours", "DEM", "AOL") +
+                        if (availableMappingLayers > 0) listOf("R2C Mapping layers") else emptyList()).forEach { tile ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(checked = tile in selectedTiles, onCheckedChange = { checked ->
                                 onSelectedTilesChange(if (checked) selectedTiles + tile else selectedTiles - tile)
@@ -54,6 +56,7 @@ internal fun MapPaneMutualAidDialogs(
                             Text(tile)
                         }
                     }
+                    if (availableMappingLayers > 0) Text("$availableMappingLayers mapping layer(s) available for this incident.",fontSize=12.sp)
 
                 }
             },

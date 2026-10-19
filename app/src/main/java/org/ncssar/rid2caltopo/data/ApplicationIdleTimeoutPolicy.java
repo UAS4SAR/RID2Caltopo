@@ -10,7 +10,7 @@ import java.util.concurrent.TimeUnit;
 
 public final class ApplicationIdleTimeoutPolicy {
     public static final long DISABLED = -1L;
-    /** Protected work (an offline map download, including AOL preparation) is running; no countdown. */
+    /** Protected work (offline map preparation or a mapping mission) is running; no countdown. */
     public static final long SUSPENDED = -2L;
 
     private ApplicationIdleTimeoutPolicy() {}

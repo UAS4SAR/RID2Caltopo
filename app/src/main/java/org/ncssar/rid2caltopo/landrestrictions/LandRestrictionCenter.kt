@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.landrestrictions
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import android.content.Context
 import android.location.Location
 import kotlinx.coroutines.sync.Mutex
@@ -157,7 +160,7 @@ object LandRestrictionCenter {
     private fun statusLine(nearby: List<LandRestrictionArea>, loading: Boolean): String = when {
         loading -> "Checking federal and Colorado protected lands…"
         nearby.isEmpty() && lastErrors.isNotEmpty() -> "Some protected-land sources could not be checked."
-        nearby.isEmpty() -> "No protected-land boundaries intersect the one-mile operating area."
+        nearby.isEmpty() -> "No protected-land boundaries intersect the ${Units.current.miles(1.0)} operating area."
         else -> "${nearby.size} protected-land area(s) intersect or border the operating area."
     }
 }

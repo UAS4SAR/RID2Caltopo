@@ -77,7 +77,7 @@ public struct OperationalAirspaceState: Sendable, Equatable {
 public enum OperationalFacilityMap {
     public static let operatingRadiusNM = 0.868976
     public static let operatingRadiusStatuteMiles = 1.0
-    public static let operatingAreaLabel = "1 mi operating area"
+    public static var operatingAreaLabel: String { "\(DisplayUnits.current.miles(1, decimals: 0)) operating area" }
     public static let endpoint = "https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/arcgis/rest/services/FAA_UAS_FacilityMap_Data/FeatureServer/0/query"
     public static let outFields = "OBJECTID,CEILING,UNIT,APT1_FAAID,APT1_ICAO,APT1_NAME,APT1_LAANC,AIRSPACE_1,AIRSPACE_2,AIRSPACE_3,AIRSPACE_4,AIRSPACE_5"
 
@@ -182,9 +182,9 @@ public enum OperationalFacilityMap {
                 .map { "Class \($0)" }
                 .joined(separator: "/")
             let gridLimit = containing.compactMap(\.ceilingFeet).min()
-            let gridLimitText = gridLimit.map { "; FAA grid limit \($0) ft AGL" } ?? ""
+            let gridLimitText = gridLimit.map { "; FAA grid limit \(DisplayUnits.current.feet(Double($0))) AGL" } ?? ""
             let coordinationText = gridLimit.map {
-                " The displayed \($0) ft AGL value is the lowest FAA UAS Facility Map limit across the area, not the top of the controlled-airspace class. Requests above it require further FAA coordination."
+                " The displayed \(DisplayUnits.current.feet(Double($0))) AGL value is the lowest FAA UAS Facility Map limit across the area, not the top of the controlled-airspace class. Requests above it require further FAA coordination."
             } ?? ""
             return .init(
                 severity: .danger,
@@ -221,10 +221,10 @@ public enum OperationalFacilityMap {
             .sorted()
             .map { "Class \($0)" }
             .joined(separator: "/")
-        let distanceText = nearest.map { String(format: " %.1f mi", $0.1) } ?? ""
+        let distanceText = nearest.map { " \(DisplayUnits.current.miles($0.1))" } ?? ""
         let proximity = nearest.map {
             " The nearest \(airport) \(classes) facility-map grid is approximately " +
-                "\(String(format: "%.1f", $0.1)) statute miles away and intersects the \(operatingAreaLabel)."
+                "\(DisplayUnits.current.miles($0.1)) away and intersects the \(operatingAreaLabel)."
         } ?? " A controlled-airspace facility-map grid intersects the \(operatingAreaLabel), but its boundary could not be compared with the current position."
         return .init(
             severity: .caution,

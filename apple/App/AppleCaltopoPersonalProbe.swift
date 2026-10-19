@@ -17,6 +17,13 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
     // A dedicated persistent WebKit profile retains site login/trust across
     // app launches. Only explicit Clear login removes the profile's website data.
     static let shared = PersonalProbeModel()
+    // Keep the launch gate closed until saved cookies have been inspected locally.
+    @Published private(set) var loginProtectionChecked = false
+    @Published private(set) var loginProtectionRequired = UserDefaults.standard.bool(forKey: "caltopo.personalLoginProtection")
+    private func protectPersonalLogin() {
+        UserDefaults.standard.set(true, forKey: "caltopo.personalLoginProtection")
+        loginProtectionRequired = true
+    }
     let web: WKWebView
     @Published var link = ""
     @Published var map = ""
@@ -36,9 +43,14 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
     private var clearingLogin = false
     private let redirectBlocker = PersonalProbeRedirectBlocker()
     private var requestTask: Task<Void, Never>?
+    private var browserIdentityRefreshTask: Task<Void, Never>?
+    private var browserLoadError: Error?
 
     private override init() {
         let configuration = WKWebViewConfiguration()
+        // Recommended mode serves desktop content on full-size iPads. Match
+        // Android's mobile browser instead of squeezing a desktop viewport.
+        configuration.defaultWebpagePreferences.preferredContentMode = .mobile
         configuration.websiteDataStore = WKWebsiteDataStore(forIdentifier: UUID(uuidString: "4DCD198B-FE86-4AC4-A487-E419FECC42A8")!)
         web = WKWebView(frame: .zero, configuration: configuration)
         web.isInspectable = false
@@ -51,24 +63,62 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
         web.uiDelegate = self
         web.configuration.userContentController.add(self, contentWorld: .defaultClient, name: "r2cUserInput")
         web.configuration.userContentController.addUserScript(WKUserScript(source: """
+            let r2cTapTimes = { previousUp: -Infinity };
+            document.addEventListener('pointerup', event => {
+                if (!event.isTrusted || event.pointerType !== 'touch') return;
+                if (event.timeStamp - r2cTapTimes.previousUp < 400) {
+                    window.webkit.messageHandlers.r2cUserInput.postMessage('doubleTap');
+                    r2cTapTimes.previousUp = -Infinity;
+                } else {
+                    r2cTapTimes.previousUp = event.timeStamp;
+                }
+            }, {capture: true, passive: true});
             for (const kind of ['pointerdown', 'pointerup', 'pointermove', 'keydown', 'input', 'wheel']) {
                 document.addEventListener(kind, event => {
                     if (event.isTrusted) window.webkit.messageHandlers.r2cUserInput.postMessage(null);
                 }, {capture: true, passive: true});
             }
             """, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .defaultClient))
-        web.load(URLRequest(url: URL(string: CaltopoPersonalProbe.origin)!))
+        Task {
+            let cookies = await web.configuration.websiteDataStore.httpCookieStore.allCookies()
+            // Existing installs may have cookies without the new durable marker.
+            // Treat retained CalTopo cookies conservatively until Clear login.
+            if cookies.contains(where: { $0.domain == "caltopo.com" || $0.domain.hasSuffix(".caltopo.com") }) {
+                protectPersonalLogin()
+            }
+            loginProtectionChecked = true
+            web.load(URLRequest(url: URL(string: CaltopoPersonalProbe.origin)!))
+        }
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "r2cUserInput" else { return }
         AppleApplicationCleanupCenter.shared.noteUserInteraction()
+        if message.body as? String == "doubleTap" {
+            logBrowserViewport("double-tap")
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(1))
+                self?.logBrowserViewport("double-tap+1s")
+                try? await Task.sleep(for: .seconds(1))
+                self?.logBrowserViewport("double-tap+2s")
+            }
+        }
+    }
+
+    func logBrowserViewport(_ reason: String) {
+        // Geometry only: never log webpage text, links, identity, or cookies.
+        let scroll = web.scrollView
+        AppleLog.info("PersonalBrowser", "\(reason) frame=\(web.frame) window=\(web.window?.bounds.size ?? .zero) zoom=\(scroll.zoomScale) range=\(scroll.minimumZoomScale)...\(scroll.maximumZoomScale) offset=\(scroll.contentOffset) content=\(scroll.contentSize)")
     }
 
     /// Best effort: this WebKit-owned layout is observed, not a public path contract.
     /// No cookie contents or filenames are exported. Background flight uploads remain
     /// available after first unlock; browser trust state stays persistent locally.
+    private let storagePolicyQueue = OperationalWorkQueue(label: "org.ncssar.personal-browser.storage")
     private func applyStoragePolicy() {
+        storagePolicyQueue.enqueue { Self.applyStoragePolicyOnWorker() }
+    }
+    private nonisolated static func applyStoragePolicyOnWorker() {
         let manager = FileManager.default
         let storeRoot = manager.urls(for: .libraryDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("WebKit/WebsiteDataStore", isDirectory: true)
@@ -103,19 +153,27 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
 
     func loadNativeCatalog() async throws -> (String, [CaltopoTeamMapNode]) {
         guard !clearingLogin else { throw CancellationError() }
-        let started = sessionGeneration
-        // The retained browser starts loading in init. Give cookie restoration a
-        // chance to finish offscreen before offering interactive sign-in.
+        let requestGeneration = generation
+        // Cookie restoration starts asynchronously. A not-yet-started WebView
+        // has isLoading == false too; it is not evidence that sign-in expired.
         for _ in 0..<75 {
-            guard web.isLoading else { break }
+            if loginProtectionChecked, web.url != nil, !web.isLoading { break }
             try await Task.sleep(for: .milliseconds(200))
         }
+        guard loginProtectionChecked, web.url != nil, !web.isLoading else { throw URLError(.timedOut) }
+        if let browserLoadError { throw browserLoadError }
+        // didFinish discovers the same identity. Let it establish the session
+        // before capturing its epoch so cold-start discovery cannot cancel us.
+        await browserIdentityRefreshTask?.value
+        guard !clearingLogin, generation == requestGeneration else { throw CancellationError() }
+        let started = sessionGeneration
         guard web.url?.scheme == "https", web.url?.host == "caltopo.com",
               let encoded = try await web.evaluateJavaScript(CaltopoPersonalCatalog.identityScript) as? String,
               let identity = try JSONSerialization.jsonObject(with: Data(encoded.utf8)) as? [String: String],
               let id = identity["id"], id.range(of: "^[A-Za-z0-9]+$", options: .regularExpression) != nil
         else { throw CaltopoLiveClientError.httpStatus(401, "Open CalTopo to sign in and load personal maps.") }
         guard !clearingLogin, sessionGeneration == started else { throw CancellationError() }
+        protectPersonalLogin()
         if accountID != id {
             accountID = id
             sessionGeneration = UUID()
@@ -134,7 +192,10 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
         request.httpShouldHandleCookies = false
         request.setValue(cookie, forHTTPHeaderField: "Cookie")
         let (data, response) = try await session.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw CaltopoLiveClientError.httpStatus(401, "Unable to load personal maps. Check your login.") }
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard statusCode == 200 else {
+            throw CaltopoLiveClientError.httpStatus(statusCode, "Unable to load personal maps.")
+        }
         let account = try CaltopoPersonalCatalog.account(data)
         guard let username = account["username"] as? String, !username.isEmpty,
               accountID == id, sessionGeneration == sessionEpoch else { throw CaltopoLiveClientError.invalidConfiguration }
@@ -261,17 +322,31 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
         decisionHandler(url?.scheme == "https" || url?.absoluteString == "about:blank" ? .allow : .cancel)
     }
 
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        browserLoadError = nil
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        browserLoadError = error
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        browserLoadError = error
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         applyStoragePolicy()
         guard let url = webView.url else { return }
+        logBrowserViewport("navigation-finished")
         origin = "\(url.scheme ?? "")://\(url.host ?? "")"
         let observedGeneration = sessionGeneration
-        Task {
+        browserIdentityRefreshTask = Task {
             if url.scheme == "https", url.host == "caltopo.com", url.port == nil {
                 let raw = try? await web.evaluateJavaScript(CaltopoPersonalCatalog.identityScript) as? String
                 let identity = raw.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: String] }
                 guard !clearingLogin, sessionGeneration == observedGeneration, web.url == url else { return }
                 let nextID = identity?["id"]
+                if let nextID, !nextID.isEmpty { protectPersonalLogin() }
                 if accountID != nextID {
                     accountID = nextID
                     sessionGeneration = UUID()
@@ -315,6 +390,8 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
         guard sessionGeneration == attempt else { return }
         busy = false
         clearingLogin = false
+        UserDefaults.standard.set(false, forKey: "caltopo.personalLoginProtection")
+        loginProtectionRequired = false
         status = "Local login cleared."
         if reload { web.load(URLRequest(url: URL(string: CaltopoPersonalProbe.origin + "/account/login")!)) }
     }
@@ -435,8 +512,34 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
 
 private struct PersonalProbeBrowser: UIViewRepresentable {
     let web: WKWebView
-    func makeUIView(context: Context) -> WKWebView { web }
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func makeUIView(context: Context) -> UIView {
+        let host = UIView()
+        host.clipsToBounds = true
+        web.removeFromSuperview()
+        web.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(web)
+        web.scrollView.contentInsetAdjustmentBehavior = .never
+        NSLayoutConstraint.activate([
+            web.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            web.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            web.topAnchor.constraint(equalTo: host.topAnchor),
+            web.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+        ])
+        return host
+    }
+    func updateUIView(_ uiView: UIView, context: Context) {}
+    static func dismantleUIView(_ uiView: UIView, coordinator: ()) {
+        // Retain the browser session, but detach it from the old sheet's gesture
+        // and layout hierarchy before a later presentation reuses it.
+        uiView.subviews.forEach { $0.removeFromSuperview() }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UIView, context: Context) -> CGSize? {
+        // Browser content/zoom must not determine the surrounding sheet's size.
+        guard let width = proposal.width, let height = proposal.height,
+              width.isFinite, height.isFinite else { return nil }
+        return CGSize(width: max(0, width), height: max(0, height))
+    }
 }
 
 struct AppleCaltopoPersonalProbeView: View {
@@ -449,16 +552,20 @@ struct AppleCaltopoPersonalProbeView: View {
     @State private var showScanner = false
     @State private var started = false
     @State private var confirmMarker = false
+    @State private var showLinkEditor = false
     var body: some View {
         VStack(spacing: 8) {
-            Text(onCatalog == nil ? "Sign in or open a CalTopo invitation. Close keeps your login." : "Sign in or open a CalTopo invitation. Load maps or Close continues to your map list after sign-in.")
-                .font(.footnote)
-            HStack {
-                TextField("CalTopo HTTPS link", text: $model.link)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
-                Button { scanQR() } label: { Image(systemName: "qrcode.viewfinder") }
-                    .accessibilityLabel("Scan CalTopo QR code").disabled(model.busy)
-                Button("Open link") { model.openLink() }.disabled(model.busy)
+            DisclosureGroup("Open a CalTopo link", isExpanded: $showLinkEditor) {
+                HStack {
+                    TextField("CalTopo HTTPS link", text: $model.link)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                    Button { scanQR() } label: { Image(systemName: "qrcode.viewfinder") }
+                        .accessibilityLabel("Scan CalTopo QR code").disabled(model.busy)
+                    Button("Open link") { model.openLink() }.disabled(model.busy)
+                }
+                Text("Sign in or open a CalTopo invitation. Close keeps your login.")
+                    .font(.footnote)
+                Text(model.origin).font(.caption).lineLimit(1)
             }
             if diagnostics {
                 TextField("Test map ID or link", text: $model.map)
@@ -468,8 +575,10 @@ struct AppleCaltopoPersonalProbeView: View {
                     confirmMarker = true
                 }.disabled(model.busy)
             }
-            Text(model.status).font(.footnote).textSelection(.enabled)
-            Text(model.origin).font(.caption).lineLimit(1)
+            Text(model.status)
+                .font(.caption)
+                .lineLimit(2)
+                .textSelection(.enabled)
             HStack {
                 Button("Back") { model.web.goBack() }.disabled(!model.web.canGoBack)
                 Button("Clear login") { model.clear() }.disabled(model.busy)
@@ -480,16 +589,26 @@ struct AppleCaltopoPersonalProbeView: View {
                 }.disabled(model.busy)
                 Button("Close") { dismiss() }
             }
-            PersonalProbeBrowser(web: model.web).allowsHitTesting(!model.busy)
+            GeometryReader { viewport in
+                PersonalProbeBrowser(web: model.web)
+                    .frame(width: viewport.size.width, height: viewport.size.height)
+            }
+            .clipped()
+            .allowsHitTesting(!model.busy)
         }
         .padding(.horizontal)
         .onAppear {
             guard !started else { return }
             started = true
             model.catalogFailed = false
+            Task {
+                try? await Task.sleep(for: .milliseconds(300))
+                model.logBrowserViewport("browser-presented")
+            }
             if let url = initialCaltopoLinkURL,
                let validated = CaltopoPersonalProbe.caltopoLinkURL(url.absoluteString) {
                 model.link = validated.absoluteString
+                showLinkEditor = true
                 model.openLink()
             }
             if let onCatalog { model.beginCatalogLogin(onCatalog) } else if let onSelect { model.beginPicker(onSelect) }

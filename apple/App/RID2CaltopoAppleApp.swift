@@ -1,3 +1,4 @@
+import R2CMapping
 import R2CCore
 import SwiftUI
 import UIKit
@@ -455,7 +456,15 @@ struct RID2CaltopoAppleApp: App {
 
     var body: some Scene {
         WindowGroup {
+            #if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--settings-units-ui-qualification") {AppleSettingsUnitsUIProbe()}
+            else if ProcessInfo.processInfo.arguments.contains("--mapping-ui-qualification") {AppleMappingUIProbe()}
+            else if ProcessInfo.processInfo.arguments.contains("--mapping-simulator-qualification") {AppleMappingSimulatorProbe()}
+            else {LaunchDisclaimerGate()}
+            #else
             LaunchDisclaimerGate()
+                .task{_ = try? await Task.detached{try PilotCloudProvisioner.prepare()}.value}
+            #endif
         }
     }
 }

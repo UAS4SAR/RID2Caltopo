@@ -39,7 +39,7 @@ class NotamMapFocusTest {
             proximityText = "HERE", intersectsPilotBubble = true, horizontalIntersectsPilotBubble = true,
             verticallyIntersectsPilotBand = true, classification = "FDC", scheduleText = ""
         )
-        assertTrue(humanized.summary.contains("590 NM radius"))
+        assertTrue(humanized.summary.contains("678.96 mi radius"))
         assertTrue(humanized.summary.contains("ADS-B services may be unavailable"))
         assertFalse(humanized.details.contains("Polygon"))
         assertFalse(humanized.details.contains("restriction"))

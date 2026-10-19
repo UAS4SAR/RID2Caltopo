@@ -1,3 +1,35 @@
 Latest changes:
-- Choose a name when registering a new device with Tracker; the name is preserved when reconnecting.
-- Tapping the incident map opens map options directly when connected, or the map picker when disconnected. Disconnected maps show “No map”.
+- Keep mission planning responsive while route and storage estimates update in the background.
+- Export local 2D maps as georeferenced GeoTIFFs with lossless compression, full saved detail and transparent gaps.
+- Optionally limit GeoTIFF exports to 40 MB for CalTopo. Keep full detail when compression fits; otherwise use the highest saved zoom that fits and show any reduction.
+- Share GeoTIFFs and map ZIPs using the assignment name.
+- Choose Imperial or Metric in Settings to convert measurement inputs and displays, including distances, altitudes, speeds, weights and map scales.
+- Preview unit changes in Settings; Save keeps your selection after restarting, while Cancel discards unsaved changes.
+- Restore the Map action on area assignments in Map Folders, using the same local mission planner.
+- Keep plans, captured originals and reconstructed results together in Local Maps.
+- See separate planning, capture and result-generation timestamps to distinguish repeated map attempts.
+- Browse saved local missions without first selecting an incident map.
+- Delete generated results while keeping originals, or confirm deletion of an entire saved mission and its photos.
+- Close the selected mission's Pilot 2 connection when confirming deletion, preventing an idle connection from blocking cleanup.
+- Plan standard brush/tree or open-ground surveys with descriptions that match the selected capture pattern.
+- Set maximum obstacle height and an adjustable clearance allowance, defaulting to 15 m / 49 ft.
+- Select 3× or 7× telephoto capture while preserving the requested ground resolution and showing required clearance.
+- Configure the selected visible camera, VIS-only capture and automatic original-photo return for Pilot 2 missions.
+- Improve initial Pilot 2 connection handling while waiting for confirmation of automatic photo return.
+- Use conservative telephoto capture speeds and separate transit speed from photo-capture speed.
+- Reconstruct larger photo sets in bounded regions with resumable processing and clearer progress feedback.
+- Improve depth fusion, overhead-photo selection and obstruction checks to reduce map seams and surface artifacts.
+- Display reconstructed regions together in the 3D viewer, with individual-region views and a scale reference.
+- Recover telephoto reconstruction when normal position uncertainty previously caused premature triangulation rejection.
+- Preserve usable imagery with a clearly labeled approximate photo map when measured depth cannot be recovered.
+- Retry outstanding map-marker cleanup after an interrupted shutdown when authenticated access is restored.
+
+Fixed a crash when Local Maps refreshed while a saved map was being deleted.
+
+Fixed rejection of wide-camera originals labeled as zoom imagery by the aircraft. Reopening a saved Pilot 2 connection rechecks eligible retained photos without another upload.
+
+Start reconstruction automatically after a verified completed photo transfer, including recovered transfers. Retain visible local-map tiles while zoomed beyond their native resolution, and round wide-camera capture speeds down to controller-friendly increments.
+
+Set a maximum photo-capture speed in ft/s or m/s in the mission planner, with separate planned capture and transit speeds. Photo spacing can reduce the planned speed below your limit.
+
+Adjust transit speed separately from photo-capture speed in ft/s or m/s. Transit applies to reaching the first waypoint and resuming a route; Return-to-Home speed remains controlled by the aircraft/Pilot 2.

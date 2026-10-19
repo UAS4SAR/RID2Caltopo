@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.notam
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -76,8 +79,7 @@ fun NotamPanel(
                     Text("NOTAM query used: $it")
                 }
                 Text(
-                    "Radius: ${state.radiusStatuteMiles} " +
-                        if (state.radiusStatuteMiles == 1) "statute mile" else "statute miles"
+                    "Radius: ${Units.current.miles(state.radiusStatuteMiles.toDouble())}"
                 )
                 state.lastUpdatedText?.let {
                     Text(it, color = if (state.stale) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
@@ -102,7 +104,7 @@ fun NotamPanel(
                 Spacer(Modifier.height(10.dp))
                 if (state.suppressedNoticeCount > 0) {
                     Text(
-                        "Showing only notices within ${state.radiusStatuteMiles} statute miles. ${state.suppressedNoticeCount} farther notices hidden.",
+                        "Showing only notices within ${Units.current.miles(state.radiusStatuteMiles.toDouble())}. ${state.suppressedNoticeCount} farther notices hidden.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(Modifier.height(10.dp))
@@ -115,7 +117,7 @@ fun NotamPanel(
                         }
                         nearestHidden != null -> {
                             Text(
-                                "Nearest NOTAM is ${nearestHidden.proximityText.ifBlank { nearestHidden.distanceNm?.let { "${"%.1f".format(it / OperatingArea.radiusNm)} mi" } ?: "unavailable" }} away.",
+                                "Nearest NOTAM is ${nearestHidden.proximityText.ifBlank { nearestHidden.distanceNm?.let { Units.current.miles(it / OperatingArea.radiusNm) } ?: "unavailable" }} away.",
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Spacer(Modifier.height(8.dp))
@@ -294,7 +296,7 @@ private fun AirspaceRestrictionsPanel(
             ) {
                 AirspaceSafetyNotice()
                 Text("Location: $currentLocationText")
-                Text("Operating area: 1 statute mile")
+                Text("Operating area: ${Units.current.miles(1.0)}")
                 AirspaceQueryMetadata(state)
                 Spacer(Modifier.height(10.dp))
                 if (state.summary.isNotBlank()) {
@@ -321,7 +323,7 @@ private fun AirspaceRestrictionsPanel(
                 )
                 Spacer(Modifier.height(14.dp))
                 Text("Nearby NOTAMs", fontWeight = FontWeight.SemiBold)
-                Text("Query radius: ${notamState.radiusStatuteMiles} statute mile(s)")
+                Text("Query radius: ${Units.current.miles(notamState.radiusStatuteMiles.toDouble())}")
                 notamState.lastUpdatedText?.let { Text(it) }
                 if (notamState.queryLatitude != null && notamState.queryLongitude != null) {
                     Text("Query location: " + CoordinateFormatter.format(notamState.queryLatitude, notamState.queryLongitude, coordinateDisplayFormat))
@@ -383,5 +385,5 @@ private fun AirspaceSafetyNotice() {
 @Composable
 private fun AirspaceQueryMetadata(state: AirspaceUiState) {
     Text("Last successful facility-map check: ${state.lastSuccessfulCheck}")
-    state.queryCoordinate?.let { Text("Query location: %.5f, %.5f • radius: 1 statute mile".format(java.util.Locale.US, it.latitude, it.longitude)) }
+    state.queryCoordinate?.let { Text("Query location: %.5f, %.5f".format(java.util.Locale.US, it.latitude, it.longitude) + " • radius: ${Units.current.miles(1.0)}") }
 }

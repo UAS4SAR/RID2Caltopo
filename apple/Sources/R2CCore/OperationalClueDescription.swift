@@ -34,6 +34,7 @@ public enum OperationalClueDescription {
     private static let feetPerMeter = 3.28084
     private static func number(_ value: Double?, _ format: String) -> String {
         guard let value, value.isFinite else { return "N/A" }
+        if format.hasSuffix("'") { return DisplayUnits.current.feet(value, decimals: format.contains(".1") ? 1 : 0) }
         return String(format: format, locale: Locale(identifier: "en_US_POSIX"), value)
     }
     private static func position(_ lat: Double, _ lon: Double, _ format: OperationalCoordinateDisplayFormat) -> String {
@@ -82,7 +83,7 @@ public enum OperationalClueDescription {
         if projection.demSource?.hasPrefix("usgs-geotiff-local-") == true { source = "local USGS GeoTIFF" }
         else if projection.demSource == "usgs-epqs" { source = "USGS elevation service" }
         else { source = projection.demSource.flatMap { $0.isEmpty ? nil : $0 } ?? "USGS elevation data" }
-        let resolution = projection.demResolutionMeters.flatMap { $0.isFinite && $0 > 0 ? " (\(number($0, "%.0f")) m grid)" : nil } ?? " (resolution not reported)"
+        let resolution = projection.demResolutionMeters.flatMap { $0.isFinite && $0 > 0 ? " (\(DisplayUnits.current.length($0)) grid)" : nil } ?? " (resolution not reported)"
         return "  DEM used: \(source)\(resolution)\(projection.demSampleStale ? ", cached" : "")"
     }
 
@@ -95,8 +96,8 @@ public enum OperationalClueDescription {
         lines += ["  Heading: \(number(data.headingDegrees, "%.1f°"))",
                   "  AGL: \(number(data.aglMeters.map { $0 * feetPerMeter }, "%.0f'"))",
                   "  ATO: \(number(data.atoMeters.map { $0 * feetPerMeter }, "%.0f'"))"]
-        if let rate = data.verticalRateFeetPerMinute, rate.isFinite { lines.append("  Vertical rate: \(number(rate, "%.0f")) fpm") }
-        if let speed = drone.speedMetersPerSecond, speed.isFinite { lines.append("  Ground speed: \(number(speed * 1.94384449, "%.1f")) kt") }
+        if let rate = data.verticalRateFeetPerMinute, rate.isFinite { lines.append("  Vertical rate: \(DisplayUnits.current.climb(rate * 0.3048 / 60))") }
+        if let speed = drone.speedMetersPerSecond, speed.isFinite { lines.append("  Ground speed: \(DisplayUnits.current.speed(speed))") }
         if let track = drone.headingDegrees, track.isFinite { lines.append("  Track: \(number(track, "%.1f°"))") }
         if let raw = data.rawTiltDegrees, raw.isFinite {
             if let calibrated = data.calibratedTiltDegrees, calibrated.isFinite {

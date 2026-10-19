@@ -117,6 +117,7 @@ final class MediaMTXViewModel: ObservableObject {
     var eventHandler: ((MediaServerEvent) -> Void)?
 
     private let controller = MediaMTXMobileController()
+    private let storageControl = OperationalWorkQueue(label: "org.ncssar.media-storage.control")
     private var eventTask: Task<Void, Never>?
     private var healthCheckTask: Task<Void, Never>?
     private var recordingAllowed = true
@@ -135,10 +136,10 @@ final class MediaMTXViewModel: ObservableObject {
                     let storageOwner = "finalize-" + UUID().uuidString
                     if case let .recordFileCompleted(_, filePath, _) = event,
                        let date = ManagedVideoRecordingIdentity.recordingStartedAt(forPath: filePath) {
-                        AppleFlightStorage.protect(AppleFlightStorage.dayName(date), owner: storageOwner)
+                        await storageControl.perform { AppleFlightStorage.protect(AppleFlightStorage.dayName(date), owner: storageOwner) }
                     }
-                    defer { AppleFlightStorage.release(owner: storageOwner) }
-                    let localizedEvent = Self.localizeCompletedRecordingIfNeeded(event)
+                    defer { storageControl.enqueue { AppleFlightStorage.release(owner: storageOwner) } }
+                    let localizedEvent = await Task.detached(priority: .utility) { Self.localizeCompletedRecordingIfNeeded(event) }.value
                     let deliveredEvent = await Self.normalizeCompletedRecordingIfNeeded(localizedEvent)
                     eventHandler?(deliveredEvent)
                     switch deliveredEvent {
@@ -171,8 +172,9 @@ final class MediaMTXViewModel: ObservableObject {
                     status = "Configuration missing"
                     return
                 }
-                let baseConfiguration = try Data(contentsOf: url)
-                let recordingRoot = try Self.capturedStreamsDirectory()
+                let (baseConfiguration, recordingRoot) = try await Task.detached(priority: .userInitiated) {
+                    (try Data(contentsOf: url), try Self.capturedStreamsDirectory())
+                }.value
                 let storage = await Task.detached { AppleFlightStorage.maintain() }.value
                 recordingAllowed = !storage.blocked
                 reportStoragePressure(storage)
@@ -186,7 +188,7 @@ final class MediaMTXViewModel: ObservableObject {
                     recordingRoot: recordingRoot
                 )
                 try await controller.start(configuration: configuration)
-                AppleFlightStorage.setRecorderRunning(true)
+                await storageControl.perform { AppleFlightStorage.setRecorderRunning(true) }
                 isRunning = true
                 if status == "Starting" {
                     status = captureStreams && recordingAllowed ? "Running • capturing streams" : (captureStreams ? "Capture paused: storage limit" : "Running")
@@ -201,7 +203,7 @@ final class MediaMTXViewModel: ObservableObject {
         }
     }
 
-    private static func localizeCompletedRecordingIfNeeded(
+    private nonisolated static func localizeCompletedRecordingIfNeeded(
         _ event: MediaServerEvent
     ) -> MediaServerEvent {
         guard case let .recordFileCompleted(path, filePath, durationMs) = event else {
@@ -319,8 +321,10 @@ final class MediaMTXViewModel: ObservableObject {
         guard isRunning else { return }
         Task {
             await controller.stop()
-            AppleFlightStorage.release(owner: "recorder")
-            AppleFlightStorage.setRecorderRunning(false)
+            await storageControl.perform {
+                AppleFlightStorage.release(owner: "recorder")
+                AppleFlightStorage.setRecorderRunning(false)
+            }
             for path in activePublisherPaths {
                 eventHandler?(.streamStopped(path: path, publisherConnectionID: nil))
             }
@@ -341,6 +345,7 @@ final class MediaMTXViewModel: ObservableObject {
     }
 
     private func startStorageMonitor() {
+        storageControl.enqueue { [weak self] in
         AppleFlightStorage.observe { [weak self] snapshot in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -353,17 +358,20 @@ final class MediaMTXViewModel: ObservableObject {
                 }
             }
         }
+        }
     }
 
     func shutdown() async {
-        AppleFlightStorage.stopObserving()
+        storageControl.enqueue { AppleFlightStorage.stopObserving() }
         healthCheckTask?.cancel()
         healthCheckTask = nil
         eventTask?.cancel()
         eventTask = nil
         await controller.stop()
-        AppleFlightStorage.release(owner: "recorder")
-        AppleFlightStorage.setRecorderRunning(false)
+        await storageControl.perform {
+            AppleFlightStorage.release(owner: "recorder")
+            AppleFlightStorage.setRecorderRunning(false)
+        }
         for path in activePublisherPaths {
             eventHandler?(.streamStopped(path: path, publisherConnectionID: nil))
         }
@@ -381,8 +389,10 @@ final class MediaMTXViewModel: ObservableObject {
         status = "Restarting"
         Task {
             await controller.stop()
-            AppleFlightStorage.release(owner: "recorder")
-            AppleFlightStorage.setRecorderRunning(false)
+            await storageControl.perform {
+                AppleFlightStorage.release(owner: "recorder")
+                AppleFlightStorage.setRecorderRunning(false)
+            }
             for path in activePublisherPaths {
                 eventHandler?(.streamStopped(path: path, publisherConnectionID: nil))
             }
@@ -434,7 +444,7 @@ final class MediaMTXViewModel: ObservableObject {
         }
     }
 
-    private static func capturedStreamsDirectory() throws -> URL {
+    private nonisolated static func capturedStreamsDirectory() throws -> URL {
         let documents = try FileManager.default.url(
             for: .documentDirectory,
             in: .userDomainMask,

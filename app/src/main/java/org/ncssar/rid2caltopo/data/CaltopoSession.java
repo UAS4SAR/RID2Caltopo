@@ -807,6 +807,29 @@ public class CaltopoSession {
         return op;
     }
 
+    public static CaltopoOp DeleteMarkerOnMap(String mapId, String id, Consumer<CaltopoOp> done) {
+        if(!mapId.matches("[A-Za-z0-9_-]+") || !id.matches("[A-Za-z0-9_-]+"))throw new IllegalArgumentException("Invalid marker cleanup target");
+        CaltopoOp op=new CaltopoOp(deleted -> {
+            if (!deleted.success()) { if (done != null) done.accept(deleted); return; }
+            // An accepted DELETE alone does not prove that all occurrences disappeared.
+            CaltopoOp verification = new CaltopoOp(snapshot -> {
+                JSONObject state = snapshot.responseJson == null ? null : snapshot.responseJson.optJSONObject("state");
+                org.json.JSONArray features = state == null ? null : state.optJSONArray("features");
+                boolean absent = snapshot.success() && features != null;
+                if (features != null) for (int i=0; i<features.length(); i++) {
+                    JSONObject feature = features.optJSONObject(i);
+                    if (feature != null && id.equalsIgnoreCase(feature.optString("id"))) absent = false;
+                }
+                snapshot.goodResponse = absent;
+                if (done != null) done.accept(snapshot);
+            });
+            SendRequest(verification,CtsMethod_t.GET,CALTOPO_MAP_API_V1+mapId+"/since/0",null,false);
+        });
+        op.acceptedErrorCodes=new int[]{400,404};
+        SendRequest(op,CtsMethod_t.DELETE,CALTOPO_MAP_API_V1+mapId+"/Marker/"+id,null,false);
+        return op;
+    }
+
     public static CaltopoOp DeleteLiveTrackOnMap(String mapId, String id, Consumer<CaltopoOp> done) {
         CaltopoOp op = new CaltopoOp(done);
         // CalTopo returns 400 for an absent LiveTrack after standalone upload.

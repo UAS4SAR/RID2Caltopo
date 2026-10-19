@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.video
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import org.ncssar.rid2caltopo.ui.PanelSettingLabel
 
 import android.content.Context
@@ -205,7 +208,7 @@ internal fun MapPaneNotamDialogs(
                         Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     val metaText = buildString {
-                        if (notice.intersectsPilotBubble) append("intersects 1 mi operating area")
+                        if (notice.intersectsPilotBubble) append("intersects ${Units.current.miles(1.0)} operating area")
                         if (notice.effectiveText.isNotBlank()) {
                             if (isNotBlank()) append(" • ")
                             append(notice.effectiveText)
@@ -312,6 +315,7 @@ internal fun MapPaneManagementDialogs(
     onAllItemsToggled: (List<String>, Boolean) -> Unit,
     onZoomToItem: (String) -> Unit,
     onSurfaceBriefing: (String) -> Unit,
+    onMapAssignment: (String) -> Unit,
     showBadTilesHowToDialog: Boolean,
     onShowBadTilesHowToDialogChange: (Boolean) -> Unit,
     showMapCacheSizeDialog: Boolean,
@@ -367,6 +371,7 @@ internal fun MapPaneManagementDialogs(
             onAllItemsToggled = onAllItemsToggled,
             onZoomToItem = onZoomToItem,
             onSurfaceBriefing = onSurfaceBriefing,
+            onMapAssignment = onMapAssignment,
             onDismiss = { onShowMapFoldersDialogChange(false) }
         )
     }

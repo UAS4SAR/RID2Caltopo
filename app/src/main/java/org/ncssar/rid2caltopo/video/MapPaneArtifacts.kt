@@ -69,7 +69,8 @@ internal fun buildMapFolderUiStates(features: Map<String, JSONObject>): List<Map
                 MapItemUiState(
                     featureId = id,
                     title = title,
-                    zoomableAssignment = zoomableAssignment
+                    zoomableAssignment = zoomableAssignment,
+                    mappableAssignment = zoomableAssignment && feature.optJSONObject("geometry")?.optString("type") == "Polygon"
                 )
             )
         }

@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.video
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import StreamsViewModel
 import LocalMapMarker
 import localMapMarkerForArtifact
@@ -201,15 +204,11 @@ internal fun cachedArtifactOverlayState(overlayState: Any?): ArtifactOverlayStat
 
 internal fun demSamplingSummary(stepMeters: Double): String {
     if (stepMeters <= 0.0) return "DEM sampling disabled"
-    val stepFeet = stepMeters * METERS_TO_FEET
-    val densityPerKm2 = 1_000_000.0 / (stepMeters * stepMeters)
-    return String.format(
-        Locale.US,
-        "DEM sample spacing ~%.0f m (%.0f ft), ~%.1f samples/km²",
-        stepMeters,
-        stepFeet,
-        densityPerKm2
-    )
+    val units = Units.current
+    val metric = units == DisplayUnits.METRIC
+    val areaMeters = if (metric) 1_000_000.0 else 1609.344 * 1609.344
+    val density = areaMeters / (stepMeters * stepMeters)
+    return "DEM sample spacing ~${units.length(stepMeters)}, ~${units.number(density)} samples/${if (metric) "km²" else "sq mi"}"
 }
 
 // DroneAglState, AtoSeedSource, DroneAltitudeCalibration — defined in DroneAltitudeModels.kt
@@ -475,65 +474,77 @@ internal fun mapPaneAttributionText(contoursEnabled: Boolean): String =
         if (contoursEnabled) append(" · Contours: USGS")
     }
 
-private fun shareClueSnapshot(context: Context, title: String, report: String, bitmap: Bitmap?, imagePath: String?) {
-    try {
-        val directory = File(context.cacheDir, "shared_clues/${java.util.UUID.randomUUID()}").apply { mkdirs() }
-        val photo = File(directory, sanitizeClueSnapshotFileName(title))
-        val source = imagePath?.let(::File)?.takeIf { it.isFile }
-        if (source != null) source.copyTo(photo)
-        else if (bitmap != null) FileOutputStream(photo).use { check(bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it)) }
-        else { CaltopoClient.ShowToast("No clue photo available to share."); return }
-        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photo)
-        val send = Intent(Intent.ACTION_SEND).apply {
-            type = "image/jpeg"
-            putExtra(Intent.EXTRA_SUBJECT, title)
-            putExtra(Intent.EXTRA_TEXT, report)
-            putExtra(Intent.EXTRA_STREAM, uri)
-            clipData = android.content.ClipData.newRawUri("Clue photo", uri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+private fun shareClueSnapshot(context: Context, scope: kotlinx.coroutines.CoroutineScope, title: String, report: String, bitmap: Bitmap?, imagePath: String?) {
+    scope.launch {
+        try {
+            val photo = withContext(Dispatchers.IO) {
+                val directory = File(context.cacheDir, "shared_clues/${java.util.UUID.randomUUID()}").apply { mkdirs() }
+                val photo = File(directory, sanitizeClueSnapshotFileName(title))
+                val source = imagePath?.let(::File)?.takeIf { it.isFile }
+                if (source != null) source.copyTo(photo)
+                else if (bitmap != null) FileOutputStream(photo).use { check(bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it)) }
+                else { return@withContext null }
+                photo
+            } ?: run { CaltopoClient.ShowToast("No clue photo available to share."); return@launch }
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photo)
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "image/jpeg"
+                putExtra(Intent.EXTRA_SUBJECT, title)
+                putExtra(Intent.EXTRA_TEXT, report)
+                putExtra(Intent.EXTRA_STREAM, uri)
+                clipData = android.content.ClipData.newRawUri("Clue photo", uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(send, "Share Clue…"))
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            CTError(MAP_PANE_TAG, "Unable to share clue", error)
+            CaltopoClient.ShowToast("Clue could not be shared.")
         }
-        context.startActivity(Intent.createChooser(send, "Share Clue…"))
-    } catch (error: Exception) {
-        CTError(MAP_PANE_TAG, "Unable to share clue", error)
-        CaltopoClient.ShowToast("Clue could not be shared.")
     }
 }
 
 private fun openClueSnapshotInExternalViewer(
     context: Context,
+    scope: kotlinx.coroutines.CoroutineScope,
     title: String,
     bitmap: Bitmap?,
     imagePath: String? = null,
 ) {
-    val sourceFile = imagePath?.let(::File)?.takeIf { it.isFile }
-    if (bitmap == null && sourceFile == null) {
-        CaltopoClient.ShowToast("No clue snapshot available.")
-        return
-    }
-    try {
-        val snapshotDir = File(context.cacheDir, "clue-snapshots").apply { mkdirs() }
-        val fileName = sanitizeClueSnapshotFileName(title)
-        val snapshotFile = File(snapshotDir, fileName)
-        if (sourceFile != null) {
-            sourceFile.copyTo(snapshotFile, overwrite = true)
-        } else {
-            FileOutputStream(snapshotFile).use { output ->
-                bitmap?.compress(Bitmap.CompressFormat.JPEG, 90, output)
+    scope.launch {
+        try {
+            val snapshotFile = withContext(Dispatchers.IO) {
+                val sourceFile = imagePath?.let(::File)?.takeIf { it.isFile }
+                if (bitmap == null && sourceFile == null) return@withContext null
+                val snapshotDir = File(context.cacheDir, "clue-snapshots").apply { mkdirs() }
+                val fileName = sanitizeClueSnapshotFileName(title)
+                val snapshotFile = File(snapshotDir, fileName)
+                if (sourceFile != null) {
+                    sourceFile.copyTo(snapshotFile, overwrite = true)
+                } else {
+                    FileOutputStream(snapshotFile).use { output ->
+                        bitmap?.compress(Bitmap.CompressFormat.JPEG, 90, output)
+                    }
+                }
+                snapshotFile
+            } ?: run { CaltopoClient.ShowToast("No clue snapshot available."); return@launch }
+            val uri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                snapshotFile
+            )
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "image/jpeg")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
+            context.startActivity(intent)
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
+        } catch (e: Exception) {
+            CTError(MAP_PANE_TAG, "openClueSnapshotInExternalViewer(): failed", e)
+            CaltopoClient.ShowToast("No app found to open clue snapshot.")
         }
-        val uri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            snapshotFile
-        )
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "image/jpeg")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        context.startActivity(intent)
-    } catch (e: Exception) {
-        CTError(MAP_PANE_TAG, "openClueSnapshotInExternalViewer(): failed", e)
-        CaltopoClient.ShowToast("No app found to open clue snapshot.")
     }
 }
 
@@ -680,6 +691,29 @@ internal fun SplitMapPane(
     var showMapFoldersDialog by remember { mutableStateOf(false) }
     var surfaceBriefing by remember { mutableStateOf<org.ncssar.rid2caltopo.video.surface.SurfaceBriefing?>(null) }
     var surfaceBriefingRequest by remember { mutableStateOf(0L) }
+    var localMappingPreview by remember { mutableStateOf(org.ncssar.rid2caltopo.mapping.MappingLayer.selectedLocal(context)) }
+    var mappingLayers by remember { mutableStateOf(org.ncssar.rid2caltopo.mapping.MappingLayer.load(context,CaltopoMap.GetMapId())) }
+    val mappingProcessing by org.ncssar.rid2caltopo.mapping.MappingProcessingManager.state.collectAsState()
+    LaunchedEffect(mappingProcessing?.layer?.id) {
+        mappingProcessing?.layer?.let { layer -> localMappingPreview=layer;org.ncssar.rid2caltopo.mapping.MappingLayer.selectLocal(context,layer)
+            mappingLayers=org.ncssar.rid2caltopo.mapping.MappingLayer.load(context,CaltopoMap.GetMapId()) }
+    }
+    val mappingLayerChanges by org.ncssar.rid2caltopo.mapping.MappingWorkspaceState.layerChanges.collectAsState()
+    LaunchedEffect(mappingLayerChanges) {
+        mappingLayers=org.ncssar.rid2caltopo.mapping.MappingLayer.load(context,CaltopoMap.GetMapId())
+        localMappingPreview=org.ncssar.rid2caltopo.mapping.MappingLayer.selectedLocal(context)
+        if(mappingLayerChanges>0)localMappingPreview?.takeIf{it.bounds.size==4}?.let { layer ->
+            val bounds=layer.displayBounds(context)
+            currentMapView?.zoomToBoundingBox(org.osmdroid.util.BoundingBox(bounds[3],bounds[2],bounds[1],bounds[0]),true,48)
+        }
+    }
+    val displayedMappingLayers=(mappingLayers+listOfNotNull(localMappingPreview)).distinctBy{it.id}
+    val mappingDisplayChanges by org.ncssar.rid2caltopo.mapping.MappingWorkspaceState.displayChanges.collectAsState()
+    val mappingOverlayStore=remember(context) { org.ncssar.rid2caltopo.mapping.MappingLayerOverlays(context) {
+        currentMapView?.postInvalidateOnAnimation()
+    } }
+    val mappingLayerOverlays = remember(displayedMappingLayers,mappingDisplayChanges) { mappingOverlayStore.update(displayedMappingLayers) }
+    DisposableEffect(mappingOverlayStore) { onDispose { mappingOverlayStore.close() } }
     var pendingArtifactZoomFeatureId by remember { mutableStateOf<String?>(null) }
     val hiddenFolderIds = viewModel.hiddenFolderIds
     val hiddenItemIds = viewModel.hiddenItemIds
@@ -734,25 +768,25 @@ internal fun SplitMapPane(
     var offlinePrepJob by offlinePrepCoordinator.job
     var offlinePrepAutoCloseJob by offlinePrepCoordinator.autoCloseJob
     val offlinePrepActiveCalls = offlinePrepCoordinator.activeCalls
-    var mapBounds by remember { mutableStateOf<BoundingBox?>(null) }
+    val viewportSnapshot=remember { MapPaneViewportSnapshot() }
     // "Current visible map" is frozen while Download Map is open, so keyboard/layout resizes cannot change the selection.
     var offlinePrepViewportBounds by remember { mutableStateOf<BoundingBox?>(null) }
-    fun offlinePrepMapBounds(): BoundingBox? = if (showOfflinePrepDialog) offlinePrepViewportBounds ?: mapBounds else mapBounds
-    LaunchedEffect(showOfflinePrepDialog, mapBounds != null) {
-        offlinePrepViewportBounds = if (showOfflinePrepDialog) offlinePrepViewportBounds ?: mapBounds else null
+    fun offlinePrepMapBounds(): BoundingBox? = if (showOfflinePrepDialog) offlinePrepViewportBounds ?: viewportSnapshot.bounds else viewportSnapshot.bounds
+    LaunchedEffect(showOfflinePrepDialog, viewportSnapshot.available.value) {
+        offlinePrepViewportBounds = if (showOfflinePrepDialog) offlinePrepViewportBounds ?: viewportSnapshot.bounds else null
     }
-    var mapScaleBar by remember { mutableStateOf<MapScaleBarState?>(null) }
+    val mapScaleBar=remember { mutableStateOf<MapScaleBarState?>(null) }
     fun updateMapScaleBar(mapView: MapView) {
         val density = mapView.resources.displayMetrics.density
         val samplePx = minOf(180f * density, mapView.width * 0.35f).toInt()
-        if (samplePx <= 0 || mapView.height <= 0) { mapScaleBar = null; return }
+        if (samplePx <= 0 || mapView.height <= 0) { mapScaleBar.value = null; return }
         val x = (12 * density).toInt()
         val y = (mapView.height - 16 * density).toInt()
         val start = mapView.projection.fromPixels(x, y)
         val end = mapView.projection.fromPixels(x + samplePx, y)
         val distance = FloatArray(1)
         Location.distanceBetween(start.latitude, start.longitude, end.latitude, end.longitude, distance)
-        mapScaleBar = mapScaleBarState(distance[0].toDouble() / samplePx, samplePx.toDouble())
+        mapScaleBar.value = mapScaleBarState(distance[0].toDouble() / samplePx, samplePx.toDouble())
     }
 
     var maPackageTiles by remember { mutableStateOf(setOf("Imagery", "OpenStreetMap", "Contours", "DEM", "AOL")) }
@@ -1561,7 +1595,7 @@ internal fun SplitMapPane(
     val offlinePackageReady = offlinePrepCacheStatus.readyForPackage || offlinePrepReadyByCompletion
 
     fun startMutualAidShare() {
-        val prepBounds = mapBounds
+        val prepBounds = viewportSnapshot.bounds
         if (prepBounds == null) {
             CaltopoClient.ShowToast("Map package export needs visible map bounds.")
             return
@@ -1580,6 +1614,7 @@ internal fun SplitMapPane(
                 },
                 includeDem = "DEM" in maPackageTiles,
                 includeAol = "AOL" in maPackageTiles,
+                mappingLayers = if ("R2C Mapping layers" in maPackageTiles) displayedMappingLayers else emptyList(),
             )
             val result = if (exportResult.first && exportResult.second != null) {
                 MutualAidPackageTransferManager.startShareSession(context, exportResult.second!!, packageName)
@@ -1594,7 +1629,8 @@ internal fun SplitMapPane(
     }
 
     fun openMutualAidPackageDialog() {
-        maPackageTiles = setOf("Imagery", "OpenStreetMap", "Contours", "DEM", "AOL")
+        maPackageTiles = setOf("Imagery", "OpenStreetMap", "Contours", "DEM", "AOL") +
+            if (displayedMappingLayers.isNotEmpty()) setOf("R2C Mapping layers") else emptySet()
         showMutualAidPackageDialog = true
     }
 
@@ -2421,6 +2457,7 @@ internal fun SplitMapPane(
     }
 
     LaunchedEffect(mapName) {
+        mappingLayers = org.ncssar.rid2caltopo.mapping.MappingLayer.load(context,CaltopoMap.GetMapId())
         if (artifactRenderCache.resetIfMapChanged(mapName)) {
             artifactOverlayState = cachedOverlayState()
         } else {
@@ -2452,6 +2489,18 @@ internal fun SplitMapPane(
         restoredViewportStartupCheckStartedAtMs = System.currentTimeMillis()
         localDeviceLocationMissingLogged = false
         startArtifactHydration("mapName=$mapName")
+    }
+
+    LaunchedEffect(mapName, CaltopoClient.GetTrackerUrlPfx()) {
+        val incidentId=CaltopoMap.GetMapId()
+        while(isActive && incidentId.isNotBlank()) {
+            val enabled=withContext(Dispatchers.IO) {
+                runCatching { org.ncssar.rid2caltopo.mapping.MappingLayer.refreshShared(context,incidentId) }.getOrDefault(true)
+            }
+            if(incidentId==CaltopoMap.GetMapId())mappingLayers=org.ncssar.rid2caltopo.mapping.MappingLayer.load(context,incidentId)
+            if(!enabled)break
+            delay(60_000)
+        }
     }
     LaunchedEffect(Unit) {
         while (isActive) {
@@ -2560,6 +2609,16 @@ internal fun SplitMapPane(
             if (visible) hiddenItemIds.removeAll(itemIds.toSet())
             else hiddenItemIds.addAll(itemIds)
             startArtifactOverlayRebuild("bulk-item-visibility")
+        },
+        onMapAssignment = { itemId ->
+            runCatching {
+                val feature = requireNotNull(artifactStoreById[itemId]) { "Assignment is no longer available. Refresh the incident map." }
+                val fix = CaltopoMap.GetMyLocation()?.takeIf { System.currentTimeMillis()-it.time in 0..30_000 && it.hasAccuracy() && it.accuracy<=100f }
+                val launch = fix?.let { org.ncssar.rid2caltopo.mapping.MappingLaunchLocation(it.latitude,it.longitude,it.accuracy,it.time) }
+                val mission = org.ncssar.rid2caltopo.mapping.MappingMission(JSONObject(feature.toString()),CaltopoMap.GetMapId(),launch,CaltopoMap.GetMapName())
+                org.ncssar.rid2caltopo.mapping.MappingWorkspaceState.close()
+                org.ncssar.rid2caltopo.mapping.MappingWorkspaceState.open(mission)
+            }.onFailure { android.widget.Toast.makeText(context,it.message ?: "Unable to prepare mapping mission.",android.widget.Toast.LENGTH_LONG).show() }
         },
         onSurfaceBriefing = { itemId ->
             val feature = artifactStoreById[itemId]
@@ -2744,7 +2803,7 @@ internal fun SplitMapPane(
                             }
                         }
                         detailLines.drop(1).forEach { line ->
-                            val negativeAol = line.startsWith("AOL · 200 ft radius: ") &&
+                            val negativeAol = line.startsWith("AOL · ") &&
                                 bubbleDisplayState?.positionStale != true &&
                                 bubbleDisplayState?.aol?.status == org.ncssar.rid2caltopo.video.surface.MeasurementStatus.Available &&
                                 (bubbleDisplayState.aol.feet ?: 0.0) < 0
@@ -2757,7 +2816,7 @@ internal fun SplitMapPane(
                                 )
                             }, modifier = Modifier.clickable(enabled = line.contains("CAL")) { calibrationDesignator = point.designator })
                         }
-                        Text("Only calibrate while hovering at an independently established 50 ft directly above the launch point. This also supplies the AOL launch reference.",fontSize=12.sp)
+                        Text("Only calibrate while hovering at an independently established ${Units.current.feet(50.0, 2)} directly above the launch point. This also supplies the AOL launch reference.",fontSize=12.sp)
                         TextButton(enabled=bubbleDisplayState != null && !bubbleDisplayState.positionStale,onClick={
                             calibrationDesignator = point.designator
                         }) { Text("Calibrate 50' ATO") }
@@ -3122,6 +3181,7 @@ internal fun SplitMapPane(
                     addMapListener(
                         object : MapListener {
                             override fun onScroll(event: ScrollEvent?): Boolean {
+                                viewportSnapshot.bounds=this@apply.boundingBox
                                 footprintProjection.bump()
                                 if (!isInsetMode) {
                                     persistFullMapViewport(this@apply)
@@ -3131,6 +3191,7 @@ internal fun SplitMapPane(
                             }
 
                             override fun onZoom(event: ZoomEvent?): Boolean {
+                                viewportSnapshot.bounds=this@apply.boundingBox
                                 footprintProjection.bump()
                                 if (!isInsetMode) {
                                     persistFullMapViewport(this@apply)
@@ -3174,10 +3235,10 @@ internal fun SplitMapPane(
                     markerInfoWindow.getOrCreate(mapView) { LocalMarkerInfoWindow(mapView) }
                 }
                 val uiNowWallMsec = System.currentTimeMillis()
-                mapBounds = mapView.boundingBox
+                viewportSnapshot.bounds = mapView.boundingBox
                 updateMapScaleBar(mapView)
                 val tileSource = baseTileSource
-                val maxZoom = MAP_DISPLAY_MAX_ZOOM
+                val maxZoom = if (displayedMappingLayers.isNotEmpty()) 25.0 else MAP_DISPLAY_MAX_ZOOM
                 if (mapView.maxZoomLevel != maxZoom) {
                     mapView.setMaxZoomLevel(maxZoom)
                 }
@@ -3343,6 +3404,12 @@ internal fun SplitMapPane(
                     }
                     mapView.overlays.add(contourOverlay)
                     managedOverlays.add(contourOverlay)
+                }
+
+                mappingLayerOverlays.forEach { (provider, overlay) ->
+                    provider.setUseDataConnection(tileNetworkActive)
+                    mapView.overlays.add(overlay)
+                    managedOverlays.add(overlay)
                 }
 
                 artifactOverlayState.polygons.forEach { polygonSpec ->
@@ -3613,6 +3680,7 @@ internal fun SplitMapPane(
                                                     {
                                                         openClueSnapshotInExternalViewer(
                                                             context,
+                                                            uiScope,
                                                             it.title,
                                                             it.fullImage,
                                                             it.fullImagePath,
@@ -3620,15 +3688,13 @@ internal fun SplitMapPane(
                                                     }
                                                 },
                                                 onShare = snapshot?.takeIf { it.fullImage != null || it.fullImagePath != null }?.let { captured ->
-                                                    { shareClueSnapshot(context, markerTitle,
+                                                    { shareClueSnapshot(context, uiScope, markerTitle,
                                                         viewModel.clueShareText(point.id) ?: "$markerTitle\n\n$markerSnippet",
                                                         captured.fullImage, viewModel.clueShareImagePath(point.id) ?: captured.fullImagePath) }
                                                 },
                                                 markerId = point.id,
                                                 onDelete = { markerId ->
-                                                    if (viewModel.deleteLocalMapMarker(markerId)) {
-                                                        mapView.invalidate()
-                                                    }
+                                                    viewModel.deleteLocalMapMarker(markerId) { mapView.invalidate() }
                                                 },
                                             )
                                         )
@@ -3712,6 +3778,7 @@ internal fun SplitMapPane(
                                                 {
                                                     openClueSnapshotInExternalViewer(
                                                         context,
+                                                        uiScope,
                                                         captured.title,
                                                         captured.fullImage,
                                                         captured.fullImagePath,
@@ -3719,16 +3786,14 @@ internal fun SplitMapPane(
                                                 }
                                             },
                                             onShare = viewableSnapshot?.let { captured ->
-                                                { shareClueSnapshot(context, point.title,
+                                                { shareClueSnapshot(context, uiScope, point.title,
                                                     localCopy?.id?.let(viewModel::clueShareText) ?: "${point.title}\nLocation: ${CoordinateFormatter.format(point.lat, point.lng, viewModel.coordinateDisplayFormat)}\n\n${point.description}",
                                                     captured.fullImage, localCopy?.id?.let(viewModel::clueShareImagePath) ?: captured.fullImagePath) }
                                             },
                                             markerId = localCopy?.id,
                                             onDelete = localCopy?.let {
                                                 { markerId ->
-                                                    if (viewModel.deleteLocalMapMarker(markerId)) {
-                                                        mapView.invalidate()
-                                                    }
+                                                    viewModel.deleteLocalMapMarker(markerId) { mapView.invalidate() }
                                                 }
                                             },
                                         )
@@ -4534,34 +4599,7 @@ internal fun SplitMapPane(
             }
         }
 
-        mapScaleBar?.let { scale ->
-            val density = LocalDensity.current
-            val barWidth = with(density) { scale.widthPx.toFloat().toDp() }
-            Canvas(Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 44.dp)
-                .width(barWidth + 8.dp).height(30.dp)) {
-                val x = 2.dp.toPx()
-                val end = x + scale.widthPx.toFloat()
-                val y = size.height - 2.dp.toPx()
-                for ((color, stroke) in listOf(Color.Black to 8.dp.toPx(), Color.White to 4.dp.toPx())) {
-                    drawLine(color, androidx.compose.ui.geometry.Offset(x, y), androidx.compose.ui.geometry.Offset(end, y), stroke, StrokeCap.Round)
-                    drawLine(color, androidx.compose.ui.geometry.Offset(x, y - 5.dp.toPx()), androidx.compose.ui.geometry.Offset(x, y), stroke, StrokeCap.Round)
-                    drawLine(color, androidx.compose.ui.geometry.Offset(end, y - 5.dp.toPx()), androidx.compose.ui.geometry.Offset(end, y), stroke, StrokeCap.Round)
-                }
-                drawIntoCanvas { canvas ->
-                    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                        textSize = 11.sp.toPx()
-                        typeface = android.graphics.Typeface.DEFAULT_BOLD
-                        color = AndroidColor.BLACK
-                        style = android.graphics.Paint.Style.STROKE
-                        strokeWidth = 3.dp.toPx()
-                    }
-                    canvas.nativeCanvas.drawText(scale.label, x, y - 9.dp.toPx(), paint)
-                    paint.style = android.graphics.Paint.Style.FILL
-                    paint.color = AndroidColor.WHITE
-                    canvas.nativeCanvas.drawText(scale.label, x, y - 9.dp.toPx(), paint)
-                }
-            }
-        }
+        MapScaleBarHud(mapScaleBar,Modifier.align(Alignment.BottomStart).padding(start=12.dp,bottom=44.dp))
 
         if (!isInsetMode) {
             MapPaneSettingsMenus(
@@ -4592,7 +4630,7 @@ internal fun SplitMapPane(
                             "%.1f",
                             MapCachePolicy.tileCacheMaxBytes(context) / 1_000_000_000.0
                         )
-                        offlinePrepViewportBounds = mapBounds
+                        offlinePrepViewportBounds = viewportSnapshot.bounds
                     }
                     settingsMenuExpanded = false
                     showOfflinePrepDialog = true
@@ -4613,6 +4651,17 @@ internal fun SplitMapPane(
                     )
                     settingsMenuExpanded = false
                     showMapFoldersDialog = true
+                },
+                onOpenLocalMappingLayers = {
+                    settingsMenuExpanded=false
+                    val deviceFix=CaltopoMap.GetMyLocation()?.takeIf { System.currentTimeMillis()-it.time in 0..30_000 && it.hasAccuracy() && it.accuracy<=100f }
+                    val launch=deviceFix?.let { org.ncssar.rid2caltopo.mapping.MappingLaunchLocation(it.latitude,it.longitude,it.accuracy,it.time) }
+                    val assignments=buildMapFolderUiStates(artifactStoreById).flatMap{it.items}.filter{it.zoomableAssignment}.distinctBy{it.featureId}.mapNotNull{item->
+                        artifactStoreById[item.featureId]?.let { feature -> runCatching {
+                            org.ncssar.rid2caltopo.mapping.MappingMission(JSONObject(feature.toString()),CaltopoMap.GetMapId(),launch,CaltopoMap.GetMapName())
+                        }.getOrNull() }
+                    }
+                    org.ncssar.rid2caltopo.mapping.MappingWorkspaceState.openLibrary(assignments)
                 },
                 onToggleFollowFocusedDrone = {
                     val enabled = !followFocusedDroneEnabled
@@ -4705,6 +4754,7 @@ internal fun SplitMapPane(
             showPackageDialog = showMutualAidPackageDialog,
             onShowPackageDialogChange = { showMutualAidPackageDialog = it },
             selectedTiles = maPackageTiles,
+            availableMappingLayers = displayedMappingLayers.size,
             onSelectedTilesChange = { maPackageTiles = it },
             preparingShare = preparingMutualAidShare,
             onStartShare = { startMutualAidShare() },
@@ -4814,7 +4864,7 @@ internal fun SplitMapPane(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable(enabled = enabled && !offlinePrepInFlight) {
-                                        if (area == OfflinePrepAreaMode.Viewport && offlinePrepAreaMode != area) offlinePrepViewportBounds = mapBounds
+                                        if (area == OfflinePrepAreaMode.Viewport && offlinePrepAreaMode != area) offlinePrepViewportBounds = viewportSnapshot.bounds
                                         offlinePrepAreaMode = area
                                     },
                                 verticalAlignment = Alignment.CenterVertically
@@ -4823,7 +4873,7 @@ internal fun SplitMapPane(
                                     checked = offlinePrepAreaMode == area,
                                     onCheckedChange = {
                                         if (enabled && !offlinePrepInFlight && it == true) {
-                                            if (area == OfflinePrepAreaMode.Viewport && offlinePrepAreaMode != area) offlinePrepViewportBounds = mapBounds
+                                            if (area == OfflinePrepAreaMode.Viewport && offlinePrepAreaMode != area) offlinePrepViewportBounds = viewportSnapshot.bounds
                                             offlinePrepAreaMode = area
                                         }
                                     },
@@ -4875,15 +4925,15 @@ internal fun SplitMapPane(
                         Text("Elevation data", style = MaterialTheme.typography.titleSmall)
                         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             DownloadMapCheckbox("DEM", offlinePrepIncludeDem, !offlinePrepInFlight, modifier = Modifier.weight(1f)) { offlinePrepIncludeDem = it }
-                            DownloadMapChoice("${offlinePrepDemResolution.meters} m", listOf("1 m", "10 m", "30 m"), !offlinePrepInFlight && offlinePrepIncludeDem, modifier = Modifier.width(120.dp)) { label ->
-                                offlinePrepDemResolution = DemResolutionOption.values().first { "${it.meters} m" == label }
+                            DownloadMapChoice(Units.current.length(offlinePrepDemResolution.meters.toDouble(), 1), DemResolutionOption.values().map { Units.current.length(it.meters.toDouble(), 1) }, !offlinePrepInFlight && offlinePrepIncludeDem, modifier = Modifier.width(120.dp)) { label ->
+                                offlinePrepDemResolution = DemResolutionOption.values().first { Units.current.length(it.meters.toDouble(), 1) == label }
                             }
                         }
                         DownloadMapCheckbox("AOL (1 m)", offlinePrepIncludeAol, !offlinePrepInFlight) { offlinePrepIncludeAol = it }
                         if (offlinePrepIncludeDem) Text(offlinePrepDemResolution.explanation, fontSize = 11.sp)
                         if (offlinePrepIncludeAol) Text("AOL obstacle tiles are prepared at 1 m; DEM resolution does not change AOL detail.", fontSize = 11.sp)
                         if(offlinePrepIncludeAol) {
-                            Text("Downloads USGS lidar and builds obstacle tiles on this device after map and terrain downloads. Prepare before flight. Uses the selected region's bounding rectangle plus a 200 ft margin. Prepared tiles are used automatically for AOL calculations.",fontSize=11.sp)
+                            Text("Downloads USGS lidar and builds obstacle tiles on this device after map and terrain downloads. Prepare before flight. Uses the selected region's bounding rectangle plus a ${Units.current.feet(200.0)} margin. Prepared tiles are used automatically for AOL calculations.",fontSize=11.sp)
                             Text(offlinePrepAolPlanText,fontSize=12.sp)
                             if(offlinePrepAolCatalogFailed) {
                                 TextButton(onClick={ offlinePrepAolCatalogAttempt++ },enabled=!offlinePrepInFlight) { Text("Retry AOL check") }
@@ -4896,8 +4946,8 @@ internal fun SplitMapPane(
                         Text("Estimated download", style = MaterialTheme.typography.titleSmall)
                         bounds?.let {
                             val area = DownloadAreaSummary(it.latNorth, it.latSouth, it.lonWest, it.lonEast)
-                            DownloadMapSummaryRow("Width × height", String.format(Locale.US, "%.2f × %.2f mi", area.widthMiles, area.heightMiles))
-                            DownloadMapSummaryRow("Area", String.format(Locale.US, "%.2f sq mi", area.squareMiles))
+                            DownloadMapSummaryRow("Width × height", "${Units.current.miles(area.widthMiles, 2)} × ${Units.current.miles(area.heightMiles, 2)}")
+                            DownloadMapSummaryRow("Area", Units.current.area(area.squareMiles))
                             DownloadMapSummaryRow("Centroid", String.format(Locale.US, "%.5f°, %.5f°", area.latitude, area.longitude))
                             Text("Measurements describe the download bounding rectangle; centroid is latitude, longitude.", style = MaterialTheme.typography.bodySmall)
                         }

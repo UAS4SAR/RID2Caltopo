@@ -13,7 +13,7 @@
 	<key>provisioningProfiles</key>
 	<dict>
 		<key>org.ncssar.RID2CaltopoApple</key>
-		<string>RID2Caltopo Apple TestFlight</string>
+		<string>RID2Caltopo Apple TestFlight 2026-10-09</string>
 	</dict>
 	<key>signingCertificate</key>
 	<string>Apple Distribution</string>

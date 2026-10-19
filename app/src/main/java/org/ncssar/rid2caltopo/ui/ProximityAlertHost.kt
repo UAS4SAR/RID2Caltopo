@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.ui
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import android.content.Context
 import android.os.Build
 import android.os.VibrationEffect
@@ -1151,7 +1154,7 @@ private fun RowScope.GridCell(
 }
 
 internal fun formatFeet(value: Double): String =
-    String.format(Locale.US, "%.0f ft", value)
+    Units.current.feet(value)
 
 internal fun vibrateBriefly(context: Context) {
     val effect = VibrationEffect.createOneShot(

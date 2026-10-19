@@ -4,6 +4,8 @@ import MessageUI
 struct DiagnosticLogView: View {
     @ObservedObject var diagnostics: AppleDiagnosticsCenter
     @State private var showingMailComposer = false
+    @State private var mailAttachment: Data?
+    @State private var preparingMail = false
 
     var body: some View {
         List {
@@ -79,12 +81,18 @@ struct DiagnosticLogView: View {
                 if let bundleURL = diagnostics.bundleURL {
                     if MFMailComposeViewController.canSendMail() {
                         Button {
-                            showingMailComposer = true
+                            preparingMail = true
+                            Task {
+                                mailAttachment = await Task.detached(priority: .userInitiated) { try? Data(contentsOf: bundleURL) }.value
+                                preparingMail = false
+                                showingMailComposer = mailAttachment != nil
+                            }
                         } label: {
                             Label("Email diagnostics to developer", systemImage: "envelope")
                         }
+                        .disabled(preparingMail)
                         .sheet(isPresented: $showingMailComposer) {
-                            DiagnosticMailComposer(attachmentURL: bundleURL)
+                            if let mailAttachment { DiagnosticMailComposer(attachmentURL: bundleURL, attachment: mailAttachment) }
                         }
                     } else {
                         ShareLink(
@@ -114,6 +122,7 @@ struct DiagnosticLogView: View {
 
 private struct DiagnosticMailComposer: UIViewControllerRepresentable {
     let attachmentURL: URL
+    let attachment: Data
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -123,13 +132,11 @@ private struct DiagnosticMailComposer: UIViewControllerRepresentable {
         composer.setToRecipients(["help@uas4sar.com"])
         composer.setSubject("RID2Caltopo Diagnostics")
         composer.setMessageBody("RID2Caltopo diagnostic bundle attached.", isHTML: false)
-        if let data = try? Data(contentsOf: attachmentURL) {
-            composer.addAttachmentData(
-                data,
+        composer.addAttachmentData(
+                attachment,
                 mimeType: "application/zip",
                 fileName: attachmentURL.lastPathComponent
             )
-        }
         return composer
     }
 

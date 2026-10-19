@@ -119,7 +119,7 @@ fun AwaitingMapPublicationPanel(onChooseMap: () -> Unit = {}) {
     var refreshTick by remember { mutableStateOf(0) }
     LaunchedEffect(refreshTick) {
         while (true) {
-            pending = AwaitingMapFlights.pending()
+            pending = withContext(Dispatchers.IO) { AwaitingMapFlights.pending() }
             mapId = CaltopoMap.GetMapId()
             mapName = CaltopoMap.GetMapName()
             // Re-read the device fix on every pass so distances follow the operator while open.
@@ -170,14 +170,20 @@ fun AwaitingMapPublicationPanel(onChooseMap: () -> Unit = {}) {
         AlertDialog(onDismissRequest = { selected = null }, title = { Text("Publish earlier flight?") },
             text = { Text("${flight.optString("label")}\nTo $destinationName ($destination)\nIncludes the recorded track and associated clues marked for publication. Clues kept local stay local.") },
             confirmButton = { TextButton(onClick = {
-                runCatching { AwaitingMapFlights.decide(flight.getString("id"), destination, team) }
-                    .onFailure { CaltopoClient.ShowToast("Publication choice could not be saved; please retry.") }
-                selected = null; pending = AwaitingMapFlights.pending()
+                selected = null
+                scope.launch {
+                    runCatching { withContext(Dispatchers.IO) { AwaitingMapFlights.decide(flight.getString("id"), destination, team) } }
+                        .onFailure { CaltopoClient.ShowToast("Publication choice could not be saved; please retry.") }
+                    pending = withContext(Dispatchers.IO) { AwaitingMapFlights.pending() }
+                }
             }, enabled = destination.isNotBlank() && team.isNotBlank()) { Text("Publish") } },
             dismissButton = { TextButton(onClick = {
-                runCatching { AwaitingMapFlights.decide(flight.getString("id"), null, team) }
-                    .onFailure { CaltopoClient.ShowToast("Publication choice could not be saved; please retry.") }
-                selected = null; pending = AwaitingMapFlights.pending()
+                selected = null
+                scope.launch {
+                    runCatching { withContext(Dispatchers.IO) { AwaitingMapFlights.decide(flight.getString("id"), null, team) } }
+                        .onFailure { CaltopoClient.ShowToast("Publication choice could not be saved; please retry.") }
+                    pending = withContext(Dispatchers.IO) { AwaitingMapFlights.pending() }
+                }
             }) { Text("Keep local") } })
     }
     discardCandidate?.let { flight ->
@@ -203,7 +209,7 @@ fun AwaitingMapPublicationPanel(onChooseMap: () -> Unit = {}) {
                                 CaltopoClient.CTWarn(TAG, result.logSummary(flight))
                                 CaltopoClient.ShowToast("Flight log was not fully discarded; please retry.")
                             }
-                            pending = AwaitingMapFlights.pending()
+                            pending = withContext(Dispatchers.IO) { AwaitingMapFlights.pending() }
                             refreshTick++
                         }
                     },

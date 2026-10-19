@@ -18,6 +18,16 @@ import org.osmdroid.util.MapTileIndex
 
 class MapPaneArtifactOverlayStateTest {
     @Test
+    fun areaAssignmentsOfferMappingButRoutesAndMarkersDoNot() {
+        val area = JSONObject("""{"id":"area","properties":{"class":"Assignment","title":"Area"},"geometry":{"type":"Polygon","coordinates":[[[0,0],[0.001,0],[0.001,0.001],[0,0]]]}}""")
+        val route = JSONObject("""{"id":"route","properties":{"class":"Assignment","title":"Route"},"geometry":{"type":"LineString","coordinates":[[0,0],[0.001,0.001]]}}""")
+        val marker = JSONObject("""{"id":"marker","properties":{"class":"Marker","title":"Marker"},"geometry":{"type":"Point","coordinates":[0,0]}}""")
+        val items = buildMapFolderUiStates(mapOf("area" to area,"route" to route,"marker" to marker)).flatMap { it.items }
+        assertEquals(setOf("area"),items.filter { it.mappableAssignment }.map { it.featureId }.toSet())
+        assertEquals(true,items.single { it.featureId=="route" }.zoomableAssignment)
+    }
+
+    @Test
     fun localDeviceMarkerOutline_buildsACompleteThreePixelHalo() {
         val offsets = markerOutlineOffsets(radiusPx = 3).toSet()
 

@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.notam
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import org.ncssar.rid2caltopo.airspace.OperatingArea
 import java.util.Locale
 
@@ -39,7 +42,7 @@ internal object NotamHumanizer {
         when {
             intersectsPilotBubble -> summaryParts += "Intersects the pilot's ${OperatingArea.displayLabel}."
             horizontalIntersectsPilotBubble && verticallyIntersectsPilotBand == false ->
-                summaryParts += "Overlaps the pilot's ${OperatingArea.displayLabel} horizontally, but stays above the 400 ft AGL operating ceiling."
+                summaryParts += "Overlaps the pilot's ${OperatingArea.displayLabel} horizontally, but stays above the ${Units.current.feet(400.0)} AGL operating ceiling."
             proximityText.isNotBlank() -> summaryParts += "$proximityText from current location."
         }
         areaSummary(sourceText)?.let(summaryParts::add)
@@ -116,7 +119,7 @@ internal object NotamHumanizer {
         return when {
             radiusRegex.containsMatchIn(normalized) -> {
                 val radius = radiusRegex.find(normalized)?.groupValues?.getOrNull(1) ?: return null
-                "Applies inside a $radius NM radius area."
+                "Applies inside a ${Units.current.distance((radius.toDoubleOrNull() ?: 0.0) * 1852)} radius area."
             }
             normalized.contains("WI AN AREA DEFINED AS") || normalized.contains("WI AREA DEFINED AS") ->
                 "Applies inside a polygon-defined area."
@@ -133,7 +136,7 @@ internal object NotamHumanizer {
             radiusRegex.containsMatchIn(normalized) -> {
                 val radius = radiusRegex.find(normalized)?.groupValues?.getOrNull(1) ?: return null
                 val nearFix = firstReference?.let { " centered near $it" }.orEmpty()
-                "Area: $radius NM radius$nearFix."
+                "Area: ${Units.current.distance((radius.toDoubleOrNull() ?: 0.0) * 1852)} radius$nearFix."
             }
             normalized.contains("WI AN AREA DEFINED AS") || normalized.contains("WI AREA DEFINED AS") -> {
                 val nearFix = firstReference?.let { " First reference point: $it." }.orEmpty()
@@ -165,5 +168,5 @@ internal object NotamHumanizer {
         if (raw == "SFC") "surface" else raw
 
     private fun formatAltitudeCeiling(raw: String): String =
-        if (raw.endsWith("FT")) raw.removeSuffix("FT") + " ft" else raw
+        if (raw.endsWith("FT")) raw.removeSuffix("FT").toDoubleOrNull()?.let { Units.current.feet(it) } ?: raw else raw
 }

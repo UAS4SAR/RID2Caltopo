@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.ui
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import PendingClue
 import formatClueHeading
 import androidx.compose.foundation.Image
@@ -234,11 +237,11 @@ fun ClueSheetContent (
             Text(
                 text = String.format(
                     Locale.US,
-                    "Clue location (%s): %s, alt %.0f ft",
+                    "Clue location (%s): %s, alt %s",
                     coordinateDisplayFormat.label,
                     CoordinateFormatter.format(clue.lat, clue.lng, coordinateDisplayFormat)
                         .removePrefix("loc:"),
-                    clue.alt * 3.28084
+                    Units.current.length(clue.alt)
                 ),
                 style = MaterialTheme.typography.bodySmall
             )
@@ -253,8 +256,8 @@ fun ClueSheetContent (
                 Text(
                     text = String.format(
                         Locale.US,
-                        "Projection height %.0f ft (%s)",
-                        clue.projectionHeightMeters * 3.28084,
+                        "Projection height %s (%s)",
+                        Units.current.length(clue.projectionHeightMeters),
                         clue.projectionHeightSourceLabel ?: "unspecified",
                     ),
                     style = MaterialTheme.typography.bodySmall,
@@ -264,11 +267,11 @@ fun ClueSheetContent (
             Text(
                 text = String.format(
                     Locale.US,
-                    "Drone location (%s): %s, alt %.0f ft (%s)",
+                    "Drone location (%s): %s, alt %s (%s)",
                     coordinateDisplayFormat.label,
                     CoordinateFormatter.format(clue.droneLat, clue.droneLng, coordinateDisplayFormat)
                         .removePrefix("loc:"),
-                    clue.droneAlt * 3.28084,
+                    Units.current.length(clue.droneAlt),
                     clue.aircraftPositionSourceLabel,
                 ),
                 style = MaterialTheme.typography.bodySmall
@@ -303,7 +306,7 @@ fun ClueSheetContent (
                     append("  |  ")
                     append(
                         clue.aglMeters?.let {
-                            String.format(Locale.US, "AGL %.0f ft", it * 3.28084)
+                            "AGL ${Units.current.length(it)}"
                         } ?: "AGL unavailable"
                     )
                     clue.aglSourceLabel?.let {

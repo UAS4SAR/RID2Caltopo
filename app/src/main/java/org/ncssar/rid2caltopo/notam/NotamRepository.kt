@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.notam
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import android.location.Location
 import java.io.IOException
 import java.net.SocketTimeoutException
@@ -874,7 +877,7 @@ internal class NotamRepository {
                 append(lastErrorMessage)
             } else if (location != null && location.hasAccuracy()) {
                 append("GPS accuracy ")
-                append("%.0f ft".format(Locale.US, location.accuracy * 3.28084))
+                append(Units.current.length(location.accuracy.toDouble()))
             } else {
                 append("Waiting for reliable GPS fix")
             }
@@ -902,7 +905,7 @@ internal class NotamRepository {
     private fun proximityText(distanceNm: Double?, bearingDeg: Double?): String {
         if (distanceNm == null) return "Distance unavailable"
         if (distanceNm < 0.05) return "HERE"
-        val distanceText = String.format(Locale.US, "%.1f mi", distanceNm / OperatingArea.radiusNm)
+        val distanceText = Units.current.miles(distanceNm / OperatingArea.radiusNm)
         val bearingText = bearingDeg?.let(::compassDirection)
         return if (bearingText.isNullOrBlank()) distanceText else "$bearingText $distanceText"
     }

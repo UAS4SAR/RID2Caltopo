@@ -44,11 +44,11 @@ private func report(heading: Double? = 273.2, telemetry: OperationalClueReportTe
     let expected = """
     Designator: 1SAR7
     Telemetry:
-      Drone position (Decimal): 39.10000,-75.10000 alt 394'
+      Drone position (Decimal): 39.10000,-75.10000 alt 394 ft
       Heading: 273.2°
-      AGL: 82'
-      ATO: 131'
-      Ground speed: 19.4 kt
+      AGL: 82 ft
+      ATO: 131 ft
+      Ground speed: 22.4 mph
       Track: 273.2°
       Camera tilt: -45.0° (raw -90.0°)
       DJI raw azimuth encoder: 180.0°
@@ -56,9 +56,9 @@ private func report(heading: Double? = 273.2, telemetry: OperationalClueReportTe
       Vertical FOV: 40.00°
       Telemetry source: dji-sei-245 (confidence=0.95)
       Telemetry timestamp(us): 123456
-      DJI SEI aircraft position: 39.2000000, -75.2000000 relative-up 131.2'
+      DJI SEI aircraft position: 39.2000000, -75.2000000 relative-up 131.2 ft
       Clue aircraft position source: DJI SEI local displacement
-      DJI SEI home/reference: 39.3000000, -75.3000000 datum alt 262.5'
+      DJI SEI home/reference: 39.3000000, -75.3000000 datum alt 262.5 ft
     """
     #expect(OperationalClueDescription.telemetrySummary(telemetry, designator: "1SAR7", format: .decimal) == expected)
     #expect(report(telemetry: telemetry) == report() + "\n\n" + expected)

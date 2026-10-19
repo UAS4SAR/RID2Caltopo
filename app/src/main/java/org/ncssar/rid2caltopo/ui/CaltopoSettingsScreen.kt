@@ -6,6 +6,9 @@
  */
 package org.ncssar.rid2caltopo.ui
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import org.ncssar.rid2caltopo.ui.AlertDialog
 
 import org.opendroneid.android.bluetooth.DroneScoutBridgeMonitor
@@ -15,6 +18,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.ScrollState
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
@@ -51,6 +55,8 @@ fun CaltopoSettingsScreen(
     settingsViewModel: CaltopoSettingsViewModel = viewModel(),
     startAtProximity: Boolean = false
 ) {
+    val initialUnits = remember { Units.current }
+    var units by remember { mutableStateOf(initialUnits) }
     val savedBridgeWarningsMuted by DroneScoutBridgeMonitor.audioMuted.collectAsState()
     var bridgeWarningsMuted by remember { mutableStateOf(savedBridgeWarningsMuted) }
     val initialBridgeMuted = remember { savedBridgeWarningsMuted }
@@ -109,11 +115,12 @@ fun CaltopoSettingsScreen(
     val externalDisplayAllowInteraction by settingsViewModel.externalDisplayAllowInteraction.collectAsState()
     val externalDisplayAlertRouting by settingsViewModel.externalDisplayAlertRouting.collectAsState()
     var pendingExit by remember { mutableStateOf<(() -> Unit)?>(null) }
-    fun dirty() = settingsViewModel.hasUnsavedChanges() || bridgeWarningsMuted != initialBridgeMuted ||
+    fun dirty() = units != initialUnits || settingsViewModel.hasUnsavedChanges() || bridgeWarningsMuted != initialBridgeMuted ||
         proximityConsent.enabled != initialProximityEnabled || alertAllAircraft != initialAlertAll
     fun saveAndContinue(action: () -> Unit) {
         pendingExit = null
         if (!settingsViewModel.saveSettings()) return
+        Units.save(units)
         if (bridgeWarningsMuted != initialBridgeMuted) DroneScoutBridgeMonitor.setAudioMuted(bridgeWarningsMuted)
         if (alertAllAircraft != initialAlertAll) ProximityAlertCenter.setAlertAllAircraft(alertAllAircraft)
         if (proximityConsent.enabled != initialProximityEnabled) {
@@ -152,6 +159,16 @@ fun CaltopoSettingsScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text("Settings", style = MaterialTheme.typography.headlineSmall)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Units", modifier = Modifier.weight(1f))
+                    DisplayUnits.entries.forEach { choice ->
+                        Row(modifier = Modifier.selectable(selected = units == choice, onClick = { units = choice }, role = Role.RadioButton),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = units == choice, onClick = null)
+                            Text(if (choice == DisplayUnits.IMPERIAL) "Imperial" else "Metric")
+                        }
+                    }
+                }
                 caltopoCredentialError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 Text("Changes apply only when you Save. Cancel discards edits. Map connection, sign-in, file deletion, and test actions are separate workflows.", style = MaterialTheme.typography.bodySmall)
                 Spacer(modifier = Modifier.height(16.dp))
@@ -336,14 +353,8 @@ fun CaltopoSettingsScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(modifier = Modifier.height(8.dp))
-                SettingsHelpLabel("Min Dist (ft)")
-                OutlinedTextField(
-                    value = minDistance,
-                    onValueChange = { settingsViewModel.onMinDistanceChanged(it) },
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-
-                    modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Min Dist (ft)" }
-                )
+                UnitSettingField("Min Dist", minDistance, units, miles = false,
+                    onChange = settingsViewModel::onMinDistanceChanged)
                 SettingsHelpLabel("New Track Delay (s)")
                 OutlinedTextField(
                     value = newTrackDelay,
@@ -352,12 +363,12 @@ fun CaltopoSettingsScreen(
 
                     modifier = Modifier.fillMaxWidth().semantics { contentDescription = "New Track Delay (s)" }
                 )
-                SettingsHelpLabel("Minimum Location Accuracy")
+                SettingsHelpLabel("Minimum Location Accuracy", units = units)
                 Button(
                     onClick = { showMinimumLocationAccuracyDialog = true },
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Minimum Location Accuracy: ${RidLocationAccuracyPrefs.labelForCode(minimumLocationAccuracyCode)}")
+                    Text("Minimum Location Accuracy: ${RidLocationAccuracyPrefs.labelForCode(minimumLocationAccuracyCode, units)}")
                 }
                 Text(
                     "RID positions less accurate than this threshold are retained as signal but are not added to the track.",
@@ -365,16 +376,8 @@ fun CaltopoSettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.fillMaxWidth()
                 )
-                SettingsHelpLabel("Bridge Check Distance (ft)")
-                OutlinedTextField(
-                    value = bridgeCheckDistanceFeet,
-                    onValueChange = {
-                        settingsViewModel.onBridgeCheckDistanceFeetChanged(it.filter { ch -> ch.isDigit() })
-                    },
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-
-                    modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Bridge Check Distance (ft)" }
-                )
+                UnitSettingField("Bridge Check Distance", bridgeCheckDistanceFeet, units, miles = false,
+                    onChange = settingsViewModel::onBridgeCheckDistanceFeetChanged)
                 Column(modifier = Modifier.fillMaxWidth()) {
                     SettingsHelpLabel("Audio Alarm Volume: $alarmVolumePercent%")
                     Slider(
@@ -425,16 +428,8 @@ fun CaltopoSettingsScreen(
                     onCheckedChange = { alertAllAircraft = it }
                 )
                 Text("Published only: pairs involving an aircraft claimed by this tablet. All aircraft: any received pair, including ignored or unconfirmed flights. This does not change recording or publishing.")
-                SettingsHelpLabel("Proximity Alert Spacing (ft, minimum 50; default 100)")
-                OutlinedTextField(
-                    value = proximityAlertSpacingFeet,
-                    onValueChange = {
-                        settingsViewModel.onProximityAlertSpacingFeetChanged(it.filter { ch -> ch.isDigit() })
-                    },
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-
-                    modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Proximity Alert Spacing (ft, minimum 50; default 100)" }
-                )
+                UnitSettingField("Proximity Alert Spacing", proximityAlertSpacingFeet, units, miles = false,
+                    onChange = settingsViewModel::onProximityAlertSpacingFeetChanged)
 
                 Spacer(modifier = Modifier.height(16.dp))
                 HorizontalDivider()
@@ -513,15 +508,8 @@ fun CaltopoSettingsScreen(
                     onCheckedChange = settingsViewModel::onNotamEnabledChanged
                 )
 
-                SettingsHelpLabel("NOTAM radius (statute miles)")
-                OutlinedTextField(
-                    value = notamRadiusNm,
-                    onValueChange = { settingsViewModel.onNotamRadiusNmChanged(it.filter { ch -> ch.isDigit() }) },
-                    enabled = notamEnabled,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-
-                    modifier = Modifier.fillMaxWidth().semantics { contentDescription = "NOTAM radius (statute miles)" }
-                )
+                UnitSettingField("NOTAM radius", notamRadiusNm, units, miles = true, enabled = notamEnabled,
+                    onChange = settingsViewModel::onNotamRadiusNmChanged)
 
                 SettingsHelpLabel("Refresh interval (seconds, minimum 1800)")
                 OutlinedTextField(
@@ -574,15 +562,8 @@ fun CaltopoSettingsScreen(
                     enabled = landRestrictionsEnabled,
                     onCheckedChange = settingsViewModel::onLandRestrictionsAutoRefreshChanged
                 )
-                SettingsHelpLabel("Boundary query radius (statute miles)")
-                OutlinedTextField(
-                    value = landRestrictionsRadiusNm,
-                    onValueChange = { settingsViewModel.onLandRestrictionsRadiusNmChanged(it.filter(Char::isDigit)) },
-                    enabled = landRestrictionsEnabled,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-
-                    modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Boundary query radius (statute miles)" }
-                )
+                UnitSettingField("Boundary query radius", landRestrictionsRadiusNm, units, miles = true, enabled = landRestrictionsEnabled,
+                    onChange = settingsViewModel::onLandRestrictionsRadiusNmChanged)
 
                 Spacer(modifier = Modifier.height(16.dp))
                 HorizontalDivider()
@@ -759,7 +740,7 @@ fun CaltopoSettingsScreen(
                                     showMinimumLocationAccuracyDialog = false
                                 }
                             )
-                            Text(RidLocationAccuracyPrefs.labelForCode(code))
+                            Text(RidLocationAccuracyPrefs.labelForCode(code, units))
                         }
                     }
                 }
@@ -815,7 +796,7 @@ private fun <T> SingleChoiceGroup(
 }
 
 @Composable
-private fun SettingsHelpLabel(title: String, modifier: Modifier = Modifier) {
+private fun SettingsHelpLabel(title: String, modifier: Modifier = Modifier, units: DisplayUnits = Units.current) {
     var showing by remember { mutableStateOf(false) }
     TextButton(onClick = { showing = true }, modifier = modifier) {
         Text(title + "  ⓘ", textAlign = androidx.compose.ui.text.style.TextAlign.Start)
@@ -824,7 +805,7 @@ private fun SettingsHelpLabel(title: String, modifier: Modifier = Modifier) {
         AlertDialog(
             onDismissRequest = { showing = false },
             title = { Text(title.substringBefore(":")) },
-            text = { Text(SettingsFieldHelp.description(title), modifier = Modifier.verticalScroll(rememberScrollState())) },
+            text = { Text(SettingsFieldHelp.description(title, units), modifier = Modifier.verticalScroll(rememberScrollState())) },
             confirmButton = { TextButton(onClick = { showing = false }) { Text("Done") } }
         )
     }
@@ -844,4 +825,28 @@ private fun Modifier.verticalScrollbar(state: ScrollState, color: Color): Modifi
         size = Size(width, thumbHeight),
         cornerRadius = CornerRadius(width / 2)
     )
+}
+
+/** Keep partially typed decimals in the field; round only the native integer configuration. */
+@Composable
+private fun UnitSettingField(label: String, native: String, units: DisplayUnits, miles: Boolean = false,
+    enabled: Boolean = true, onChange: (String) -> Unit) {
+    val factor = if (miles) (if (units == DisplayUnits.METRIC) 1.609344 else 1.0)
+        else (if (units == DisplayUnits.METRIC) 0.3048 else 1.0)
+    var text by remember(units) { mutableStateOf(native.toDoubleOrNull()?.let { units.number(it * factor, 2).trimEnd('0').trimEnd('.') } ?: native) }
+    var lastNative by remember(units) { mutableStateOf(native) }
+    LaunchedEffect(native) {
+        if (native != lastNative) {
+            text = native.toDoubleOrNull()?.let { units.number(it * factor, 2).trimEnd('0').trimEnd('.') } ?: native
+            lastNative = native
+        }
+    }
+    SettingsHelpLabel(label, units = units)
+    OutlinedTextField(value = text, onValueChange = {
+        text = it
+        lastNative = it.toDoubleOrNull()?.takeIf { n -> n.isFinite() && n >= 0 }?.let { n -> kotlin.math.round(n / factor).toLong().toString() } ?: ""
+        onChange(lastNative)
+    }, label = { Text("$label (${if (miles) units.distanceUnit else units.lengthUnit})") },
+        enabled = enabled, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+        modifier = Modifier.fillMaxWidth().semantics { contentDescription = "$label (${if (miles) units.distanceUnit else units.lengthUnit})" })
 }

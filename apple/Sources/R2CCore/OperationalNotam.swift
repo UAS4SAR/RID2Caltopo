@@ -172,7 +172,7 @@ public enum OperationalNotamPolicy {
 
     private static func distanceLabel(_ notice: OperationalNotam) -> String {
         notice.distanceNM.map {
-            String(format: "%.1f mi", $0 / nauticalMilesPerStatuteMile)
+            DisplayUnits.current.miles($0 / nauticalMilesPerStatuteMile)
         } ?? "pilot area"
     }
 }
@@ -387,12 +387,12 @@ public enum OperationalNotamParser {
         if upper.contains("FIS-B") { services.append("flight information (FIS-B)") }
         if upper.contains("MAY NOT BE AVBL"), !services.isEmpty {
             let availability = services.joined(separator: ", ") + " services may be unavailable during the effective period."
-            let area = radiusGeometry(from: text).map { " Area: \(String(format: "%g", $0.radiusNM)) NM radius." } ?? ""
+            let area = radiusGeometry(from: text).map { " Area: \(DisplayUnits.current.distance($0.radiusNM * 1852)) radius." } ?? ""
             return availability + area + (intersects ? " Overlaps the pilot operating area." : "")
         }
         if intersects { return "\(kind) intersects the pilot operating area." }
         if let distanceNM {
-            return "\(kind) is \(String(format: "%.1f", distanceNM / OperationalNotamPolicy.nauticalMilesPerStatuteMile)) mi from the pilot."
+            return "\(kind) is \(DisplayUnits.current.miles(distanceNM / OperationalNotamPolicy.nauticalMilesPerStatuteMile)) from the pilot."
         }
         return kind
     }

@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.ui
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -141,12 +144,12 @@ private fun signalLossAlertSummary(flight: DroneSignalLossFlightUiState): String
         return String.format(
             Locale.US,
             if (flight.bridgeRecentlySeen) {
-                "Bridge active; drone location stale for %.1f s at %.0f ft from tablet"
+                "Bridge active; drone location stale for %.1f s at %s from tablet"
             } else {
-                "Drone signal lost for %.1f s at %.0f ft from tablet"
+                "Drone signal lost for %.1f s at %s from tablet"
             },
             idleSeconds,
-            distanceFeet
+            Units.current.feet(distanceFeet)
         )
     }
     return "Muted for this flight"

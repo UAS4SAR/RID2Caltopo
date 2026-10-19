@@ -96,6 +96,11 @@ public final class DefaultCalTopoSessionGateway implements CalTopoSessionGateway
     }
 
     @Override
+    public CaltopoOp deleteMarkerOnMap(String mapId, String id, Consumer<CaltopoOp> done) {
+        return CaltopoSession.DeleteMarkerOnMap(mapId, id, done);
+    }
+
+    @Override
     public CaltopoOp deleteLiveTrackOnMap(String mapId, String id, Consumer<CaltopoOp> done) {
         return CaltopoSession.DeleteLiveTrackOnMap(mapId, id, done);
     }

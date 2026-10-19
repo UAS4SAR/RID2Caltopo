@@ -41,6 +41,13 @@ class OrganizationAccessPolicyTest {
     }
 
     @Test
+    fun savedPersonalLoginRequiresAuthenticationWithoutOrganizationOrTeams() {
+        assertTrue(organizationAccessAuthenticationRequired("", false, false, true))
+        assertFalse(organizationAccessAuthenticationRequired("", false, false, false))
+        assertTrue(organizationAccessAuthenticationRequired("NCSSAR", false, false, true))
+    }
+
+    @Test
     fun authenticatedSessionSurvivesTrustedArchivePickerUntilItsResult() {
         val session = OrganizationAccessSession()
         session.markAuthenticated()

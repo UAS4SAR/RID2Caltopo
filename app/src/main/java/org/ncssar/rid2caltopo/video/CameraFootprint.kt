@@ -170,13 +170,74 @@ internal fun mergeCameraFootprintTerrain(
     return merged
 }
 
-/** Corner stubs follow [input]. [terrain] only adds the outline, so a slightly older pass cannot freeze the preview. */
+/** The closed corner outline follows [input]. [terrain] is the terrain polygon, so a slightly older pass cannot freeze the preview. */
 internal fun cameraFootprintLiveDrawing(input: CameraFootprintInput, terrain: List<CameraFootprintVertex>?): CameraFootprintDrawing {
     val boundary = terrain.orEmpty()
     val corners = CameraFootprintGeometry.project(input).ifEmpty {
         boundary.filter { it.corner }.takeIf { it.size == 4 }.orEmpty()
     }
     return CameraFootprintDrawing(corners, boundary)
+}
+
+/**
+ * AD's scan zone is a centered fraction of the video frame (the same rectangle as the on-video
+ * guide), clamped to 0.5–1 like the detector. Null means AD is off and the full frame is used.
+ * The rectangle is mapped through the pinhole: a centered crop scales tan(FOV/2), which keeps
+ * the frame aspect. Scaling the angle itself would squash a wide FOV.
+ */
+internal fun cameraFootprintAdScanRect(zoneFraction: Double): CameraFootprintFrameRect? {
+    if (!zoneFraction.isFinite()) return null
+    val zone = zoneFraction.coerceIn(0.5, 1.0)
+    val margin = (1.0 - zone) / 2.0
+    return CameraFootprintFrameRect(margin, margin, 1.0 - margin, 1.0 - margin)
+}
+
+internal data class CameraFootprintFrameRect(
+    val left: Double, val top: Double, val right: Double, val bottom: Double,
+)
+
+/**
+ * Camera-plane offsets of a video rectangle inside the full FOV. Origin is top-left, y down;
+ * camera x is right and y is up. Order matches [CameraFootprintGeometry.project]:
+ * left-top, right-top, right-bottom, left-bottom.
+ */
+internal fun cameraFootprintSubframeRayOffsets(
+    horizontalFovDeg: Double,
+    verticalFovDeg: Double,
+    rect: CameraFootprintFrameRect,
+): List<Pair<Double, Double>>? {
+    if (!listOf(horizontalFovDeg, verticalFovDeg, rect.left, rect.top, rect.right, rect.bottom).all { it.isFinite() }) return null
+    if (horizontalFovDeg !in 0.01..179.0 || verticalFovDeg !in 0.01..179.0) return null
+    if (rect.left < 0.0 || rect.top < 0.0 || rect.right > 1.0 || rect.bottom > 1.0) return null
+    if (rect.right - rect.left < 1e-6 || rect.bottom - rect.top < 1e-6) return null
+    val h = tan(Math.toRadians(horizontalFovDeg / 2.0))
+    val v = tan(Math.toRadians(verticalFovDeg / 2.0))
+    fun offset(u: Double, imageV: Double) = ((u - 0.5) * 2.0 * h) to ((0.5 - imageV) * 2.0 * v)
+    return listOf(
+        offset(rect.left, rect.top),
+        offset(rect.right, rect.top),
+        offset(rect.right, rect.bottom),
+        offset(rect.left, rect.bottom),
+    )
+}
+
+internal fun cameraFootprintApplyingAdScanZone(
+    input: CameraFootprintInput,
+    scanZoneFraction: Double?,
+): CameraFootprintInput {
+    val rect = scanZoneFraction?.let { cameraFootprintAdScanRect(it) } ?: return input
+    if (rect.right - rect.left >= 1.0 - 1e-9) return input
+    val offsets = cameraFootprintSubframeRayOffsets(input.horizontalFov, input.verticalFov, rect) ?: return input
+    val horizontal = Math.toDegrees(2.0 * atan(abs(offsets[1].first)))
+    val vertical = Math.toDegrees(2.0 * atan(abs(offsets[0].second)))
+    if (horizontal !in 0.01..179.0 || vertical !in 0.01..179.0) return input
+    return input.copy(horizontalFov = horizontal, verticalFov = vertical)
+}
+
+/** Stable per-aircraft key. A blank id is not stored, and a missing key stays off. */
+internal fun cameraFootprintPreferenceKey(remoteId: String): String? {
+    val normalized = remoteId.trim().uppercase(java.util.Locale.US)
+    return normalized.ifBlank { null }
 }
 
 /** Two short arms point along the actual adjacent edges, including oblique views. */

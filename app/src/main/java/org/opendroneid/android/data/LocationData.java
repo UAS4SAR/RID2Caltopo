@@ -101,13 +101,13 @@ public class LocationData extends MessageData {
     public double getSpeedHorizontal() { return speedHorizontal; }
     public String getSpeedHorizontalAsString(Resources res) {
         if (speedHorizontal != 255)
-            return String.format(Locale.US,"%3.2f m/s", speedHorizontal);
+            return org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().speed(speedHorizontal);
         else
             return UNKNOWN;
     }
     public String getSpeedHorizontalLessPreciseAsString(Resources res) {
         if (speedHorizontal != 255)
-            return String.format(Locale.US,"%3.0fm/s", speedHorizontal);
+            return org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().speed(speedHorizontal);
         else
             return UNKNOWN;
     }
@@ -120,7 +120,7 @@ public class LocationData extends MessageData {
     public double getSpeedVertical() { return speedVertical; }
     public String getSpeedVerticalAsString(Resources res) {
         if (speedVertical != 63)
-            return String.format(Locale.US,"%3.2f m/s", speedVertical);
+            return org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().climb(speedVertical);
         else
             return UNKNOWN;
     }
@@ -161,7 +161,7 @@ public class LocationData extends MessageData {
     private String getAltitudeAsString(double altitude, Resources res) {
         if (altitude == -1000)
             return UNKNOWN;
-        return String.format(Locale.US,"%3.1f m", altitude);
+        return org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().length(altitude, 1);
     }
     public double getAltitudePressure() { return altitudePressure; }
     public String getAltitudePressureAsString(Resources res) { return getAltitudeAsString(altitudePressure, res); }
@@ -209,18 +209,18 @@ public class LocationData extends MessageData {
     public int getHorizontalAccuracyCode() { return horizontalAccuracyCode; }
     public String getHorizontalAccuracyAsString(Resources res) {
         switch(horizontalAccuracy) {
-            case kilometers_18_52: return "< 18.52 km";
-            case kilometers_7_408: return "< 7.408 km";
-            case kilometers_3_704: return "< 3.704 km";
-            case kilometers_1_852: return "< 1.852 km";
-            case meters_926: return "< 926 m";
-            case meters_555_6: return "< 555.6 m";
-            case meters_185_2: return "< 185.2 m";
-            case meters_92_6: return "< 92.6 m";
-            case meters_30: return "< 30 m";
-            case meters_10: return "< 10 m";
-            case meters_3: return "< 3 m";
-            case meters_1: return "< 1 m";
+            case kilometers_18_52: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().length(18520.0, 1);
+            case kilometers_7_408: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().length(7408.0, 1);
+            case kilometers_3_704: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().length(3704.0, 1);
+            case kilometers_1_852: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().length(1852.0, 1);
+            case meters_926: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().length(926.0, 1);
+            case meters_555_6: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().length(555.6, 1);
+            case meters_185_2: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().length(185.2, 1);
+            case meters_92_6: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().length(92.6, 1);
+            case meters_30: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().length(30.0, 1);
+            case meters_10: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().length(10.0, 1);
+            case meters_3: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().length(3.0, 1);
+            case meters_1: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().length(1.0, 1);
             default: return UNKNOWN;
         }
     }
@@ -255,12 +255,12 @@ public class LocationData extends MessageData {
     public VerticalAccuracyEnum getVerticalAccuracy() { return verticalAccuracy; }
     public String getVerticalAccuracyAsString(VerticalAccuracyEnum accuracy, Resources res) {
         switch(accuracy) {
-            case meters_150: return "< 150 m";
-            case meters_45: return "< 45 m";
-            case meters_25: return "< 25 m";
-            case meters_10: return "< 10 m";
-            case meters_3: return "< 3 m";
-            case meters_1: return "< 1 m";
+            case meters_150: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().length(150.0, 1);
+            case meters_45: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().length(45.0, 1);
+            case meters_25: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().length(25.0, 1);
+            case meters_10: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().length(10.0, 1);
+            case meters_3: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().length(3.0, 1);
+            case meters_1: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().length(1.0, 1);
             default: return UNKNOWN;
         }
     }
@@ -293,10 +293,10 @@ public class LocationData extends MessageData {
     public SpeedAccuracyEnum getSpeedAccuracy() { return speedAccuracy; }
     public String getSpeedAccuracyAsString(Resources res) {
         switch(speedAccuracy) {
-            case meter_per_second_10: return "< 10 m/s";
-            case meter_per_second_3: return "< 3 m/s";
-            case meter_per_second_1: return "< 1 m/s";
-            case meter_per_second_0_3: return "< 0.3 m/s";
+            case meter_per_second_10: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().speed(10);
+            case meter_per_second_3: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().speed(3);
+            case meter_per_second_1: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().speed(1);
+            case meter_per_second_0_3: return "< " + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().speed(0.3);
             default: return UNKNOWN;
         }
     }
@@ -352,7 +352,7 @@ public class LocationData extends MessageData {
         this.timeAccuracy = timeAccuracy;
     }
 
-    public String getDistanceAsString() { return String.format(Locale.US,"~%.0f m", distance); }
+    public String getDistanceAsString() { return "~" + org.ncssar.rid2caltopo.data.Units.INSTANCE.getCurrent().distance(distance); }
     public float getDistance() { return distance; }
     public void setDistance(float distance) { this.distance = distance; }
 }

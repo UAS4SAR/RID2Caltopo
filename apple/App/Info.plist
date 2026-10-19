@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>R2CVersionReleaseDate</key>
-	<string>2026-10-09</string>
+	<string>2026-10-19</string>
     <key>CFBundleDisplayName</key>
     <string>RID2Caltopo</string>
     <key>CFBundleExecutable</key>
@@ -77,7 +77,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>RID2Caltopo scans configuration codes, aircraft serial numbers, and CalTopo account values.</string>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>RID2Caltopo receives drone telemetry, video streams, and shared MA map packages over the local network.</string>
+    <string>RID2Caltopo exchanges mapping missions and imagery, drone telemetry, video streams, and shared MA map packages over the local network.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>RID2Caltopo uses location to map Remote ID observations relative to this device and to keep Remote ID tracking, video ingest, and spoken advisories running while the display is locked. The location indicator shows while it continues in the background.</string>
 	<key>NSFaceIDUsageDescription</key>

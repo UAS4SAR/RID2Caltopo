@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.video
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import org.ncssar.rid2caltopo.video.surface.MeasurementStatus
 import org.ncssar.rid2caltopo.video.surface.measurementLabel
 import android.graphics.Bitmap
@@ -40,11 +43,10 @@ internal fun drawCameraFootprints(
     density: Float,
 ) {
     if (footprints.isEmpty() || mapView.width <= 0 || mapView.height <= 0) return
-    val stubLength = (minOf(mapView.width, mapView.height) * 0.02f).coerceAtMost(12f * density)
     val projection = mapView.projection
     val pixel = android.graphics.Point()
-    footprints.forEach { footprint ->
-        val vertices = footprint.boundary
+    fun closedOutline(vertices: List<CameraFootprintVertex>) {
+        if (vertices.size < 3) return
         val points = vertices.map { vertex ->
             projection.toPixels(GeoPoint(vertex.latitude, vertex.longitude), pixel)
             pixel.x to pixel.y
@@ -62,14 +64,10 @@ internal fun drawCameraFootprints(
         }
         paints.halo.pathEffect = null
         paints.border.pathEffect = null
-        val corners = footprint.corners.map { vertex ->
-            projection.toPixels(GeoPoint(vertex.latitude, vertex.longitude), pixel)
-            CameraFootprintScreenPoint(pixel.x.toDouble(), pixel.y.toDouble())
-        }
-        cameraFootprintCornerStrokes(corners, stubLength.toDouble()).forEach { stroke ->
-            canvas.drawLine(stroke.start.x.toFloat(), stroke.start.y.toFloat(), stroke.end.x.toFloat(), stroke.end.y.toFloat(), paints.halo)
-            canvas.drawLine(stroke.start.x.toFloat(), stroke.start.y.toFloat(), stroke.end.x.toFloat(), stroke.end.y.toFloat(), paints.border)
-        }
+    }
+    footprints.forEach { footprint ->
+        closedOutline(footprint.corners)
+        closedOutline(footprint.boundary)
     }
 }
 
@@ -499,11 +497,11 @@ internal fun droneDetailLines(
     add("Location: $locationText ($coordinateFormatLabel)")
     add("ATO: $ato")
     add("AGL: $agl")
-    add("AOL · 200 ft radius: ${label(aol?.feet,aol?.status ?: MeasurementStatus.Unknown,suffix=" ft")}")
+    add("AOL · ${Units.current.feet(200.0)} radius: ${label(aol?.feet,aol?.status ?: MeasurementStatus.Unknown,suffix=" ft")}")
     add("RNG: $range")
     add("HDG: $heading")
-    speedKnots?.let { add(if(positionStale) "Speed: POS?" else String.format(Locale.US, "Speed: %.1f kt", it)) }
-    climbFpm?.let { add(if(positionStale) "Climb: POS?" else String.format(Locale.US, "Climb: %.0f fpm", it)) }
+    speedKnots?.let { add(if(positionStale) "Speed: POS?" else "Speed: ${Units.current.speed(it / 1.9438444924406)}") }
+    climbFpm?.let { add(if(positionStale) "Climb: POS?" else "Climb: ${Units.current.climb(it * 0.3048 / 60)}") }
 }
 
 internal fun bearingLineToViewportEdge(

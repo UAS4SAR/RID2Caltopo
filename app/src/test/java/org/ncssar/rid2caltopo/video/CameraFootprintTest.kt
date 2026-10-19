@@ -152,4 +152,49 @@ class CameraFootprintTest {
         assertTrue(hidden.boundary.isEmpty())
         assertEquals(CameraFootprintGeometry.project(origin.copy(latitude = 39.01)), hidden.corners)
     }
+    @Test fun adSubframeRaysScaleTheTangentAndPreserveAspect() {
+        assertNull(cameraFootprintAdScanRect(Double.NaN))
+        val rect = checkNotNull(cameraFootprintAdScanRect(0.5))
+        assertEquals(0.25, rect.left, 1e-12)
+        assertEquals(0.75, rect.bottom, 1e-12)
+        val h = tan(Math.toRadians(45.0))
+        val v = tan(Math.toRadians(30.0))
+        val offsets = checkNotNull(cameraFootprintSubframeRayOffsets(90.0, 60.0, rect))
+        assertEquals(-0.5 * h, offsets[0].first, 1e-9)
+        assertEquals(0.5 * v, offsets[0].second, 1e-9)
+        assertEquals(0.5 * h, offsets[1].first, 1e-9)
+        assertEquals(-0.5 * v, offsets[2].second, 1e-9)
+        assertEquals(-0.5 * h, offsets[3].first, 1e-9)
+        val shifted = checkNotNull(cameraFootprintSubframeRayOffsets(90.0, 60.0, CameraFootprintFrameRect(0.0, 0.0, 0.5, 0.5)))
+        assertEquals(-h, shifted[0].first, 1e-9)
+        assertEquals(0.0, shifted[1].first, 1e-9)
+        assertEquals(v, shifted[0].second, 1e-9)
+        assertNull(cameraFootprintSubframeRayOffsets(90.0, 60.0, CameraFootprintFrameRect(-0.1, 0.0, 0.5, 1.0)))
+        val full = input()
+        assertEquals(90.0, cameraFootprintApplyingAdScanZone(full, null).horizontalFov, 0.0)
+        assertEquals(90.0, cameraFootprintApplyingAdScanZone(full, 1.0).horizontalFov, 1e-9)
+        val half = cameraFootprintApplyingAdScanZone(full, 0.5)
+        assertEquals(half.horizontalFov, cameraFootprintApplyingAdScanZone(full, 0.1).horizontalFov, 1e-9)
+        assertEquals(Math.toDegrees(2.0 * atan(0.5 * h)), half.horizontalFov, 1e-6)
+        assertEquals(Math.toDegrees(2.0 * atan(0.5 * v)), half.verticalFov, 1e-6)
+        assertEquals(
+            h / v,
+            tan(Math.toRadians(half.horizontalFov / 2.0)) / tan(Math.toRadians(half.verticalFov / 2.0)),
+            1e-9,
+        )
+        val points = CameraFootprintGeometry.project(half)
+        val north = Math.toRadians(points[0].latitude - 39.0) * 6378137
+        val east = Math.toRadians(points[0].longitude + 121.0) * 6378137 * cos(Math.toRadians(39.0))
+        assertEquals(50.0 * v, north, 0.05)
+        assertEquals(-50.0, east, 0.05)
+        val halfAngle = CameraFootprintGeometry.project(full.copy(horizontalFov = 45.0, verticalFov = 30.0))
+        val halfAngleEast = Math.toRadians(halfAngle[0].longitude + 121.0) * 6378137 * cos(Math.toRadians(39.0))
+        assertTrue(abs(halfAngleEast - east) > 5.0)
+    }
+    @Test fun footprintPreferenceKeyIsStableAndBlankStaysUnset() {
+        assertEquals("ABC-1", cameraFootprintPreferenceKey(" abc-1 "))
+        assertEquals("ABC-1", cameraFootprintPreferenceKey("abc-1"))
+        assertNull(cameraFootprintPreferenceKey("  "))
+        assertNull(cameraFootprintPreferenceKey(""))
+    }
 }

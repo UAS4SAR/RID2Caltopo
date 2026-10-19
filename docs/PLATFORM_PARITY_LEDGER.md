@@ -642,3 +642,367 @@ both device builds and installs passed. The user reported improvement after the
 corner-first correction. Full release gate and store evidence is tracked in the
 rc3 release record; live-flight accuracy and terrain-boundary qualification are
 separate evidence. See [validation](validation/2026-10-09-camera-footprint.md).
+
+### 2026-10-13 — Local Maps testing candidate (2.5.1, build 343)
+
+User-authorized TestFlight beta for Local Maps and on-device regional mapping.
+The shared build number is 343 on both platforms. Apple host/native tests,
+Android mapping host tests, two distinct regional models in an isolated iPad
+simulator, and the unsigned arm64 release archive passed. No physical device
+was used as a release-test dependency. This is a beta qualification, not a
+claim of completed field testing or full mapping parity; remaining differences
+are recorded in `apple/ANDROID_UI_PARITY.md`.
+
+The initial signed export failed because the configured provisioning-profile
+name was stale. Export succeeded using the installed active profile
+`RID2Caltopo Apple TestFlight 2026-10-09`, with its certificate matching the
+installed Apple Distribution identity. Signature, entitlements, version and
+archive checks passed. Apple accepted the upload without errors (delivery
+`2624f794-a5fe-4f98-a4cc-53dbfc32dbfc`).
+
+- IPA SHA-256: `960c19d8d440a39add87ad9891b13de3578a46023da26528431df3ad34dd0530`.
+- Source-manifest SHA-256: `4e318fff44fdbbfc01c2048f0cb51a8c68246fe0b510658da94ab59912e67212`.
+- Candidate source was rechecked unchanged after upload. The working-tree
+  candidate remains uncommitted; no release tag was created over unrelated
+  pending work.
+- No Google Play upload or physical-device installation was performed.
+- App Store Connect processing completed as `VALID`; internal build state is
+  `IN_BETA_TESTING`. Build 343 was verified in the existing `R2C_AppleTests`
+  internal group's build list. The external state remains
+  `READY_FOR_BETA_SUBMISSION`; no external review was requested in this run.
+- The TestFlight “What to Test” entry describes Map pane → gear → Local maps,
+  original photo intake, foreground reconstruction, regional navigation, and
+  the beta's current storage/transfer limitations.
+
+### 2026-10-13 — Mapping UI correction (2.5.1, build 344)
+
+Corrected Apple mapping UI against Android's existing dialogs, following the
+user's explicit parity requirement. Local maps is the sole mapping entry point
+under Map pane Settings; the old Map Folders creation action was removed.
+Library cards, ordering, assignment chooser, Define Map Mission fields and
+presets, mission detail sections, completed/all-original reconstruction actions,
+result inspector and foreground progress follow Android. Native file/share
+pickers and the disclosed browser-transfer backend difference remain.
+
+The full device-independent release gate passed. Mapping tests include selected
+originals, preserving all source photos, exact storage accounting, −60° route
+exports and blocked −45° preview exports. Headless iPad renders were inspected;
+interactive UI navigation was not automated because Simulator.app is absent.
+Two different regional GLBs rendered successfully in the release simulator test.
+No A5 Pro or physical iPad was used or changed.
+
+Signed export verified and upload accepted without errors, delivery
+`a5340b19-f02e-4f68-9339-c12605c21f1a`.
+IPA SHA-256: `f5f62800a96546c0a52cb65ed1207d38551067a6e248c09dc6712f13f7bb4215`.
+Source manifest SHA-256: `061d1420b965a25c18f89cf98f20a5da9a3ef0644bba56cf0b4fd15ad7de40cd`.
+All 295 source files were checked unchanged before and after upload. No release
+tag was created over the mixed pending working tree. Evidence and screenshots:
+[validation](validation/2026-10-13-mapping-ui-parity/README.md).
+
+#### Local acceptance required before distribution
+
+The user clarified the release boundary: prepare and install a local candidate,
+wait for their local testing, and obtain explicit approval of that build before
+any TestFlight upload. Automated release checks do not replace user acceptance.
+No further TestFlight actions were performed after this clarification.
+
+Build 344 was subsequently exported with the existing Apple Development profile
+and installed directly on Ken’s paired physical iPad as an in-place update from
+342. Device inventory confirmed 2.5.1 (344), and app launch succeeded. This was a
+user-requested local installation, not an automated release-test dependency.
+Local user testing is pending; this is not distribution approval.
+
+#### Build 344 withdrawn from TestFlight — 2026-10-13
+
+At the user's explicit request, expired build 344
+(`a5340b19-f02e-4f68-9339-c12605c21f1a`). App Store Connect read-back confirmed
+`expired: true`, `internalBuildState: EXPIRED`, and `externalBuildState: EXPIRED`.
+The directly installed development build on the local iPad was not changed.
+Do not upload another candidate without the user's explicit approval after
+local testing.
+
+### 2026-10-13 — Local correction candidate 2.5.2 (345)
+
+Restored Map Folders → area assignment → Map on iOS. It opens the existing
+Define Map Mission screen with the selected assignment, actual incident name
+and launch location. This planning shortcut and the consolidated Local maps
+mission/results list coexist; removing the shortcut was an incorrect
+interpretation of the user's consolidation request.
+
+Shared marketing version bumped from 2.5.1 to 2.5.2 and build from 344 to 345.
+Development-signed arm64 build and signature validation passed. Installed as
+an in-place update on the local iPad for user acceptance. No TestFlight upload
+or other publication was performed. Functional user testing remains pending.
+
+### 2026-10-13 — Restore Android assignment Map shortcut
+
+Restored Map Folders → area assignment → Map on Android as well. Area polygons
+expose the action; route assignments retain zoom but do not offer area mapping.
+The callback opens the same Define Map Mission planner used by Local maps,
+carrying the selected feature, incident name and fresh launch fix.
+
+Source comparison confirms both platforms now have the assignment shortcut and
+Local maps → New flight → assignment chooser; matching planner field order,
+five capture presets, mission/result actions and reconstruction progress labels.
+This is a source-level mapping UI audit, not a claim of complete feature parity
+or completed hands-on testing. Browser-vs-Cloud transfer and external-storage
+capabilities still differ as recorded in apple/ANDROID_UI_PARITY.md.
+
+Android debug build and 186 host tests passed, including area-vs-route/marker
+eligibility regression coverage. Version remains the local 2.5.2 (345) candidate.
+No publishing or TestFlight changes were performed; user acceptance is pending.
+
+### 2026-10-13 — Local iOS transfer startup fix, 2.5.2 (346)
+
+The transfer screen called preferredIPv4Address() without any NWPath/interface
+information. The selector intentionally considers only explicitly identified
+Wi-Fi/Ethernet interfaces, so this call returned nil and the listener never
+started. The UI nonetheless displayed blank credentials and active-session text.
+
+The screen now observes the existing network diagnostic center, preferring the
+wired address then Wi-Fi, and restarts on address changes. Credentials and active
+text appear only after listener readiness. Missing addresses, waiting, failure
+and expiry have explicit feedback; Retry connection is available. Stopped and
+stale sessions clear credentials and cannot overwrite a newer session's state.
+The monitored network does not require a successful Internet route.
+
+Host tests verify listener URL/port, six-digit credentials, pairing, bounded
+resumable upload, and wired/Wi-Fi address selection. Local iPad acceptance is
+still required. No upload or publication is authorized by this correction.
+
+Build 346 compiled and passed development signature verification. Installed
+in place on the paired iPad; device inventory confirmed 2.5.2 (346) and launch
+succeeded. User verification of the connection screen and controller pairing
+on the field network remains pending. Nothing was uploaded.
+
+
+### 2026-10-13 — Native Pilot 2 local candidate (2.5.2, build 347)
+
+Replaced Apple's browser-only mapping connection with the Android Open Platforms
+page and native workspace, mission-library, WebSocket/MQTT and signed MinIO
+original-transfer services. Shared page assets prevent separate controller
+workflows. Device-only Keychain setup, receipt persistence, checksum verification,
+mission/camera matching, completed-selection handoff, and retained unmatched
+originals are implemented. Physical DJI controller qualification is still pending;
+HTTP is implemented, Apple HTTPS provisioning is not. iPad foreground operation
+remains required. No beta upload or publication is authorized.
+
+Android's disabled HTTP action was traced to 1 cm/px (about 29 m) combined with
+30 m canopy/terrain and a required 15 m margin. Both platforms now explain the
+required height and resolution. The Android action footer no longer contains a
+large description that obscures the reason; connection settings remain reachable.
+
+Host validation: 120 Android mapping tests, 8 Apple mapping XCTest cases,
+576 Apple core tests, and the shared native-page JavaScript checks passed.
+Native protocol tests exercise actual localhost HTTP/WebSocket sockets, signed
+single/multipart upload, controller registration, valid original completion,
+restart persistence, rejected corruption and preservation of unusable originals.
+See `docs/validation/2026-10-13-native-pilot-ios.md` for qualification boundaries.
+
+
+### 2026-10-13 — Automatic DJI provisioning (local iPad 348)
+
+Corrected the missing administrator provisioning path on Apple. Device-only
+Keychain enrollment and encrypted automatic import now mirror Android's
+operator experience. The explicit Android deployment helper reads the saved
+credentials inside the target app UID, re-encrypts them for the verified iPad
+recipient, and exports no plaintext. The local deployment script checks the
+recipient fingerprint and the iPad's accepted-envelope receipt. No release gate
+requires a physical device, and the helper is excluded from release APKs.
+
+Host recipient/tamper/native-protocol tests passed; development-signed iPad 348
+was installed and launched. After the A5 Pro was reconnected, the explicit
+deployment completed successfully. The iPad confirmed the accepted envelope hash
+and configured Keychain status; no plaintext credentials were displayed or
+transferred through the Mac. No distribution operation occurred. Manual entry
+should not have been presented as a requirement.
+
+### 2.5.2 local candidate 351 — reconstruction positioning resilience
+
+- Both platforms use the same shared solver fallback when too few laser targets match image features: fixed nominal camera intrinsics, recorded camera baseline, explicit unverified-height/scale warning. Non-fixed positioning metadata now receives conservative GNSS priors and an uncertainty-aware displacement check; fixed-RTK retains its tighter limit.
+- Both retain image connectivity and reprojection checks and preserve originals. Known-ground-truth native fixtures cover missing laser anchors and an inaccurate GNSS camera position. Apple end-to-end tests cover non-fixed originals without laser measurements; Android mapping unit tests remain device-independent.
+- Local builds installed on the A5 Pro and iPad. Actual-flight acceptance is recorded in [the reconstruction validation record](validation/2026-10-13-nonfixed-reconstruction.md). No distribution or release approval is implied.
+
+### 2.5.2 local candidate 352 — combined regional display
+
+- Both native 3D screens now default to all regions together through the shared viewer, with individual-region controls retained. Shared coordinate and altitude transforms support Android and existing/new iPad exports. Combined source meshes have an explicit 32 MiB memory budget; larger collections still require individual-region viewing.
+- Android selected mission details now display before storage scans; A5 Pro MapTest metadata load measured 732 ms.
+- Both local builds installed. A5 Pro combined/individual viewer checks and device-free regressions passed. Remaining MapTest geometry gaps are quantified in [the audit](validation/2026-10-14-maptest-gaps/README.md); display completion is not geometry-quality acceptance.
+
+### 2.5.2 local candidate 354 — surface refinement and projection
+
+- Android and Apple call the same native local height refinement and adaptive triangle builder. Both keep 0.4 m regional spacing, preserve unknown heights, and invalidate obsolete product checkpoints without repeatedly filtering retained geometry.
+- Shared 2D/3D texturing now prefers near-overhead visible rays and avoids interpolating across large height discontinuities. Oblique photos remain in the geometric solution. MapTest's major pool/roof/car ripples were corrected without inventing lens coefficients; nominal calibration remains explicitly unverified.
+- Both local tablet builds installed; no TestFlight/App Store distribution. The A5 Pro rebuilt the existing 121-photo MapTest, and its combined/individual WebView acceptance passed. Target mesh coverage improved from 88.6% to 96.6%; remaining gaps are documented, not hidden.
+- Device-free Android mapping, Apple end-to-end, shared native geometry/projection, and shared viewer tests passed. Physical-device acceptance remains opt-in. Evidence and limitations: [surface refinement validation](validation/2026-10-14-surface-refinement/README.md).
+
+### 2.5.2 local candidate 355 — mission and result timestamps
+
+Android and iOS mission details now label plan generation, first-photo capture (camera-local time), and each result's generation time separately. Result cards omit the legacy capture-time suffix and sort by generation time, newest first; unknown generation times sort last and remain explicitly unavailable. Generation labels include seconds and the device time zone. Android now preserves `processedAt` through layer JSON round trips. Existing manifests require no reconstruction or migration. Android reuses the library's cached original-header lookup off the UI thread; iOS uses its photo inventory metadata.
+
+Device-free checks: Android MappingLayerTest (3 tests) and Swift MappingMissionTests (12 tests), including generation/capture separation, microsecond ISO parsing, time-zone display, and metadata round trips. MapTest's three existing manifest generation times resolve to Oct 14 09:23:11 PDT, Oct 14 08:59:36 PDT, and Oct 13 21:07:46 PDT. Local tablet installation only; no TestFlight or App Store publication.
+
+### 2.5.2 local candidate 356 — stereo consensus and source-photo seams
+
+Both platforms retain four competing stereo-height modes and choose the most-supported qualified mode. A shared native graph-cut seam stage places source changes where overlapping photos agree, with nearest-view constraints, preserved unknown cells, bounded memory/stack fallbacks, and cancellation/progress feedback. The same source selection colors 2D tiles and 3D surfaces. Old geometry/product checkpoints invalidate appropriately; Android restores verified sparse tracks and sample-scale intrinsics when upgrading saved camera solutions. No changes to the capture pattern or original photographs.
+
+Android mapping suite: 126 tests, 0 failures/errors, 1 skipped; focused height-consensus and sparse-checkpoint fixtures also passed after final changes. Apple reconstruction/export/resume: 2 tests passed. Shared native source selection, nonzero lens projection, seam/unknown/cancellation/bounded-depth and height-consensus fixtures passed. Local installs only; no external distribution. Evidence and physical acceptance are in `docs/validation/2026-10-14-photo-seams/README.md`.
+
+356 local acceptance completed: all 121 retained MapTest originals, both regions, 1,376.645 seconds with stereo recomputed; actual combined/individual Android 3D viewer passed. Final local installs confirmed on both tablets. Actual 2D coverage is 99.3417%; mesh coverage remains approximately 96.58%. Small artifacts and canopy gaps remain; see the actual-tablet comparison and metrics in the validation directory.
+
+
+### 2.5.2 local candidate 357 — mission descriptions and obstacle clearance
+
+Both planners now show the selected capture profile's own concise description and organize capture settings, obstacle clearance, route estimate and storage. Technical capture details remain collapsed. The new optional maximum obstacle-top input is feet above takeoff, converted to meters in `parameters.maximumObstacleHeightMeters`. It is independent of the canopy surface used for overlap, so an isolated tower does not densify the entire route. Blank explicitly means unassessed. Mission creation and saved-route loading reject entered obstacles leaving less than the existing 15 m planning allowance. Height is not automatically changed. This is a global height estimate, not point-obstacle routing or collision avoidance.
+
+Device-independent verification: Android MappingMissionTest/DjiMappingRouteTest 8 tests passed; Swift MappingMissionTests/MappingFlightRouteTests 18 tests passed. New fixtures exercise 200 ft conversion, all exportable capture patterns, unchanged photo estimates, invalid values, and saved-route clearance revalidation. Both local builds target 2.5.2 (357); no store/TestFlight distribution.
+
+Operator feedback on candidate 356: propane tank improved, but outbuilding and entryway discontinuities were worse than the first result. Those reconstruction issues remain unresolved. Candidate 357 changes only planning and does not claim to repair them. The prior changes were generic height fusion and source-photo seam algorithms, not site-specific image edits.
+
+### 2.5.2 local candidate 358 — reconstruction seam regression
+
+The operator reported 356's building/entryway regression. Shared native seam planning now applies the renderer's visibility rule, with height sampling at the actual ray location instead of the maximum surrounding corner. A/B seam decisions include their boundary against a third photo. Both platforms invalidate rendered products with `photo-seams-v2` / `regions-v6-visible-seams-mesh04` while retaining verified geometry and 0.4 m mesh spacing. No site-specific masks or source-photo choices; no new capture or original modification.
+
+Android: 127 mapping tests, zero failures/errors, one skip. Apple: two device-free reconstruction/export/resume tests. Native regression fixtures cover roof-adjacent rays, real occlusion, unknown support and third-photo boundaries, alongside existing seam/cancellation/geometry checks. Build 358 installed locally on both tablets; no external publishing. Full-image host replay retains assignment coverage (99.3318%) and improves marked discontinuities; minor irregularities remain. Physical A5 acceptance details and before/after evidence are maintained in `docs/validation/2026-10-14-seam-regression/README.md`.
+
+
+Candidate 358 physical acceptance: MapTest `04d2913d-93e3-441b-91ea-99aa4e109e45`, generated Oct 14 14:23:01 PDT, completed in 1,098.637 seconds with 121 originals. Actual before/after tiles inspected; both height arrays unchanged and assignment image coverage retained at 99.3318%. Combined 3D loaded all 221,260 triangles. Individual-region checks were invalid while the tablet was dozing/locked; the test now requires an interactive unlocked device. After the user unlocked the A5 Pro, final combined/individual-region selector acceptance passed (1 test, 7.691 seconds; `/tmp/r2c-358-viewer-unlocked.log`). Both native viewers additionally use explicit region resource identities with shared device-free loader tests. Final local 358 apps installed on both tablets; no publication.
+
+### 2026-10-14 — Physical iPad MapTest acceptance, local 358
+
+Independently reconstructed the same 121 Android originals on the iPad. Both 0.4 m regions render together in the production WKWebView; individual region views also passed. Actual saved outbuilding/entryway tiles are closely consistent with Android 358, with minor residual artifacts. Target mesh coverage: Android 96.5808%, iPad 96.6847%; 2D coverage: 99.3417% / 99.3632%. Full-image/mesh counts differ because Apple clips exports to the assignment and 5 m border. See [physical acceptance evidence](validation/2026-10-14-ipad-maptest/README.md).
+
+Fixed an Apple-only persistence issue found during the install check: saved map references now resolve relative to the current data container, including migration of prior absolute references. Both tile and 3D access use it. Three device-free relocation/security tests pass. The opt-in device harness remains excluded from normal builds and protected by the existing authentication gate when explicitly compiled. No store publishing.
+
+### 2.5.2 local candidates 360–361 — shared depth fusion and 3D scale
+
+Both platforms use the same disk-backed all-vote depth fusion, retaining later
+supported modes and deterministically selecting an upper supported mode on tied
+separated surfaces. Physical 121-photo MapTest runs and both-region viewer checks
+passed on both tablets. Coverage is about 96.6% 3D / 99.42% 2D; large height-field
+gaps remain and are explicitly documented. Local 361 additionally packages the
+same feet/meters 3D reference scale, with perspective-center labeling and zoom
+updates. Both normal 361 apps installed locally; no publication.
+
+Evidence, rejected intermediate result, tests, and limitations:
+[all-vote fusion validation](validation/2026-10-14-all-depth-votes/README.md).
+A future separate metric/imperial settings task is recorded there.
+
+### 2026-10-15 local mapping follow-up (2.5.2 build 365)
+
+- Both planners use one maximum obstacle-top height above takeoff for clearance
+  and brush/tree photo spacing; the duplicate canopy-height input was removed.
+  The input is required for brush/tree planning. Existing saved plans retain their
+  original parameters. Obstacle shape/location routing is outside this change.
+- iOS planned mission list timestamps now use the local-time formatter already
+  used in mission details. Capture timestamps retain camera-local labeling.
+- iOS deletion confirmation keeps operation state independent of alert dismissal.
+  A dedicated simulator test verifies cancel, results-only deletion, and confirmed
+  whole-mission deletion; it does not depend on a physical tablet.
+- Shared projection now checks every camera ray for measured obstruction and
+  prefers clear sightlines over unknown-only fallback sightlines. See
+  `docs/validation/2026-10-15-ray-visibility/README.md` for local MapTest evidence.
+
+### 2026-10-15 adjustable mapping clearance and bounded rasters (local 366)
+
+- Android and iOS expose the same per-mission clearance margin beneath maximum
+  obstacle top, default 15 m (about 49 ft), in the selected display units.
+  Both route validators honor it; older plans default to 15 m.
+- Both native packages share a 256 MiB LRU image-mapping cache rather than
+  retaining every full-resolution RGBA mapping for a region. Projection rules
+  are unchanged. Mapping failures now include the OS error.
+- Both transfer status messages distinguish extra IR images from rejected
+  visible originals. The new iPad flight retained all 330 visible originals;
+  controller-side additional IR capture remains under investigation.
+- Host/native parity, Android mapping tests and an iOS simulator planner UI test
+  pass without connected physical devices. Local-device evidence is recorded in
+  [build 366 validation](validation/2026-10-15-clearance-raster-cache/README.md).
+
+
+### 2026-10-16 — Mapping candidate 2.5.2 (379), local regression pending
+
+Both Android/A5 Pro and iOS/iPad have version 2.5.2 build 379 installed locally.
+The user reports the latest reconstruction results look fine on the iPad and
+plans a complete regression on both devices. This is a positive operator check,
+not completed cross-platform regression or release approval. Distribution remains
+unapproved; no upload, publication, or device installation was performed during
+this release-note update.
+
+Changes since the preceding ledger entries include incident-independent Local
+Maps browsing and larger 3D inspection on iPad; consistent mission deletion that
+closes the selected Pilot connection; VIS-only route export; shared Pilot 2
+connection recovery and asynchronous automatic-original-return confirmation;
+durable marker-cleanup retries; 3×/7× route and camera support with preserved
+requested resolution; and separate telephoto capture/transit speeds. The actual
+reported route now exports 1.0 m/s capture and 4.0 m/s transit. A fresh route is
+required for these speed changes. The suggested 10 m/s transit speed is not yet
+implemented. Camera Photo Resolution 4K and Image Ratio 4:3 remain a Pilot 2
+check: automatic camera-resolution setting/verification is not claimed.
+
+Shared reconstruction now accounts for focal length and position uncertainty at
+initial triangulation while retaining final geometry checks. Geometry failures
+can produce an explicitly approximate reference-plane image projection with zero
+measured-depth support; the shared viewer retains that warning in combined
+regional displays. The copied 102-photo flight completed through the Apple host
+pipeline with all 102 cameras, about 29,000 stereo-supported cells and 0.38 sample
+pixel reprojection RMS. These are internal quality measures, not independently
+surveyed position/height accuracy. Host validation exercises the actual Android
+JNI adapter and shared C API, plus Apple export/checkpoint recovery, without
+requiring either physical tablet. See
+[telephoto and recovery validation](validation/2026-10-15-telephoto-mapping/README.md),
+[connection validation](validation/2026-10-15-pilot-connect/README.md), and
+[marker cleanup](validation/2026-10-15-marker-cleanup/README.md).
+
+Canonical 2.5.2 operator notes and the store metadata mirror are synchronized.
+The Xcode resource reference was corrected from 2.5.1 to 2.5.2; Android already
+resolves notes from the current marketing version. Installed build 379 packages
+are unchanged, so these updated in-app notes will appear in the next build.
+
+### 2026-10-16 — local Android build 380: deletion during library refresh
+
+- A5 Pro crash at 12:43:10: Kotlin FileTreeWalk asserted after a map directory disappeared during `MappingLayer.allLocal`, called by the Local Maps refresh coroutine. The assertion is an Error, so the UI's Exception handler did not catch it.
+- Replaced the four library product-presence scans with a deletion-tolerant scanner. Missing directories are empty branches; card aliases remain supported and alias cycles terminate. File deletion behavior and original-photo confirmation are unchanged.
+- Host tests: MappingLibraryFilesTest (3), MappingFlightDeletionTest (4), MappingLibraryEntryTest (4), all passed. Tests deliberately remove files/directories during scanning and verify remaining products and card aliases.
+- Apple audit: AppleLocalMappingModel queues mission refresh and removal on the same serial DispatchQueue and handles thrown errors. It does not use Kotlin FileTreeWalk; no matching implementation change is needed. iPad remains on local build 379.
+- Local Android installation succeeded after the operator confirmed both devices were quiet; package-manager verification confirmed 2.5.2 (380). Physical deletion retesting remains with the operator. No store or TestFlight publication.
+
+### 2026-10-16 — local build 381: wide-camera photo return
+
+Both platforms accept aircraft ZoomCamera metadata for a wide mission when the recorded equivalent focal length verifies 24 mm, and recheck eligible retained mismatches on saved-connection reopening. The A5 Pro's 74-photo SwampArea flight was misclassified: all headers confirm 24 mm and 4032 × 3024. Camera policy, Pilot 2 and recovery host tests passed; both local builds passed. Both local installations succeeded after closed-session confirmation; installed version 2.5.2 (381) was verified on each tablet. Actual A5 Pro recovery verified after authentication: all 74 retained originals accepted, completed group ready=true, and the enabled “Reconstruct completed set · 74 originals” action is visible. Temporary connection closed; left mission details ready for operator testing. See docs/validation/2026-10-16-wide-camera-return/README.md. No publication.
+
+### 2026-10-16 — local build 382: completion, overzoom, wide speed
+
+- Android checks recovered completion after cloud startup and uses the same persisted completed-selection concept as iPad for automatic reconstruction. Prior status files no longer permanently suppress new completed selections.
+- Both route generators round wide capture speed down to tenths as already done for telephoto. The actual iPad half-inch/pixel brush survey now exports 3.0 m/s instead of 3.0821566 m/s; resolution and transit speed are preserved.
+- Android's osmdroid cache retains visible native parent tiles while overzooming; iPad does not use this cache. Host collection/panning regression passes.
+- Cloud-route pencil remains unavailable in the observed Pilot 2 UI; no controller editing support claimed. Details: validation/2026-10-16-map-zoom-and-completion/README.md.
+
+### 2026-10-17 — local build 383: adjustable capture speed
+
+Both planners expose the same maximum capture-speed field in ft/s or m/s according to unit settings, defaulting to 4 m/s. Persisted capture limits are independent of transit speed, and both previews show the effective capture/transit speeds. Both route exporters cap speed by photo spacing and round down. Legacy plans remain compatible. Matching host tests exercise limits, Imperial conversion, exported WPML and invalid values. Evidence: validation/2026-10-17-capture-speed/README.md.
+
+### 2026-10-18 — local build 384: separate transit speed
+
+Both planners now expose independent Transit speed in the same ft/s or m/s units as capture speed. Both exporters preserve capture speed when transit changes, with legacy-plan compatibility. The same UI text limits the setting to first-waypoint/resume travel and identifies Return-to-Home as aircraft/Pilot 2 controlled. Details: validation/2026-10-18-transit-speed/README.md.
+
+### 2026-10-19 — final local verification candidate 2.5.2 (396)
+
+- Both export assignment-named, georeferenced lossless Deflate GeoTIFFs. Full saved
+  resolution remains the default. The adjacent, unchecked `Limit to 40 MB for
+  CalTopo` checkbox uses actual compressed size and only falls back to lower saved
+  zooms when required. Both show the selected size/zoom and any reduced detail,
+  invalidate prepared sharing when the option changes, and preserve cancellation,
+  partial-file cleanup and source data.
+- Reviewed recent 2.5.2 unit, library/deletion, camera, transfer/recovery,
+  capture/transit, reconstruction/viewer and cleanup behavior. No new functional
+  gap found in that scope. Shared packaged controller/viewer assets are identical;
+  native pickers, removable-storage and background-operation differences remain.
+- Moved remaining planner parsing/estimation and initial credential/storage access
+  off UI execution paths on both platforms. Both release-note screens now load
+  bundle files on workers. Two stale Android camera-action test expectations were
+  corrected to assert the existing wide-camera selection sequence.
+- Canonical notes/store mirror and both packaged notes match exactly. Full platform
+  unit suites, shared native/JNI tests, JS viewer/controller checks and metadata
+  validation passed. Both candidates use 2.5.2 (396); no upload/publication.
+- Evidence and boundaries: [final verification record](validation/2026-10-19-final-verification/README.md).
+  Final physical regression remains with the operator.

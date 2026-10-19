@@ -49,6 +49,9 @@ actor AppleCaltopoPublisher {
     private let interruptedJournal: CaltopoInterruptedPublicationJournal
     private var recoveryTask: Task<Void, Never>?
     private var recoveryInFlight = false
+    private let markerJournal = DeviceMarkerJournal(file: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("device-marker-cleanup.json"))
+    private var markerCleanupInFlight = false
+    private var publishedMarkerOwnership: DeviceMarkerJournal.Entry?
 
     init(interruptedJournal: CaltopoInterruptedPublicationJournal? = nil) {
         let pair = AsyncStream<AppleCaltopoPublisherEvent>.makeStream(bufferingPolicy: .bufferingNewest(128))
@@ -153,6 +156,7 @@ actor AppleCaltopoPublisher {
                 }
             }
             pendingInterruptedRecoveries = await interruptedJournal.entries(mapID: configuration.mapID)
+            await retryMarkerCleanup()
             do {
                 try await ensureFolders(client: configuredClient)
                 await removeStaleR2CDeviceMarkers(client: configuredClient)
@@ -193,7 +197,8 @@ actor AppleCaltopoPublisher {
     }
 
     private func performDeviceMarkerPublication(_ marker: CaltopoDeviceMarker, force: Bool) async {
-        guard !deviceMarkerPublishingSuspended, let client else { return }
+        guard !deviceMarkerPublishingSuspended, !markerCleanupInFlight, let client,
+              let markerConfiguration = configuredConfiguration?.liveConfiguration else { return }
         let generation = deviceMarkerGeneration
         let now = Date()
         if !force, let lastDeviceMarkerPublishedAt,
@@ -203,9 +208,13 @@ actor AppleCaltopoPublisher {
         do {
             try await ensureFolders(client: client)
             await recoverInterruptedPublications(client: client)
+            await retryMarkerCleanup()
+            guard generation == deviceMarkerGeneration, !deviceMarkerPublishingSuspended else { return }
+            let ownership = try markerJournal.arm(domain: markerConfiguration.domainAndPort, map: markerConfiguration.mapID, marker: marker.id)
+            publishedMarkerOwnership = ownership
             try await client.publishDeviceMarker(marker, folderID: trackFolderID, now: now)
             guard generation == deviceMarkerGeneration, !deviceMarkerPublishingSuspended else {
-                await deleteAllDeviceMarkerOccurrences(client: client, markerID: marker.id)
+                if await deleteAllDeviceMarkerOccurrences(client: client, markerID: marker.id) { try markerJournal.acknowledge(ownership) }
                 return
             }
             lastDeviceMarkerPublishedAt = now
@@ -242,19 +251,44 @@ actor AppleCaltopoPublisher {
     }
 
     private func removePublishedDeviceMarker() async {
-        guard let client, let markerID = publishedDeviceMarkerID else {
-            publishedDeviceMarkerID = nil
-            lastDeviceMarkerPublishedAt = nil
-            return
+        if let client, let ownership = publishedMarkerOwnership {
+            if await deleteAllDeviceMarkerOccurrences(client: client, markerID: ownership.marker) {
+                do { try markerJournal.acknowledge(ownership) }
+                catch { AppleLog.warning("CalTopo", "Marker cleanup acknowledgement could not be saved") }
+            }
+        } else if let client, let markerID = publishedDeviceMarkerID, let config = configuredConfiguration?.liveConfiguration {
+            do {
+                let ownership = try markerJournal.arm(domain: config.domainAndPort, map: config.mapID, marker: markerID)
+                if await deleteAllDeviceMarkerOccurrences(client: client, markerID: markerID) { try markerJournal.acknowledge(ownership) }
+            } catch { AppleLog.warning("CalTopo", "Marker cleanup retained for retry: \(error.localizedDescription)") }
         }
-        await deleteAllDeviceMarkerOccurrences(client: client, markerID: markerID)
+        publishedMarkerOwnership = nil
         publishedDeviceMarkerID = nil
         lastDeviceMarkerPublishedAt = nil
     }
 
-    private func deleteAllDeviceMarkerOccurrences(client: CaltopoLiveClient, markerID: String) async {
+    private func retryMarkerCleanup() async {
+        guard !markerCleanupInFlight, let config = configuredConfiguration?.liveConfiguration else { return }
+        markerCleanupInFlight = true
+        defer { markerCleanupInFlight = false }
+        do {
+            for entry in try markerJournal.entries() where entry.domain == config.domainAndPort {
+                if entry == publishedMarkerOwnership { continue }
+                let target = CaltopoLiveConfiguration(domainAndPort: config.domainAndPort, mapID: entry.map,
+                    credentialID: config.credentialID, credentialSecretBase64: config.credentialSecretBase64,
+                    connectKey: config.connectKey, personalSessionID: config.personalSessionID,
+                    personalAccountID: config.personalAccountID, personalMediaOwnerID: config.personalMediaOwnerID)
+                let cleanupClient = try CaltopoLiveClient(configuration: target)
+                if await deleteAllDeviceMarkerOccurrences(client: cleanupClient, markerID: entry.marker) {
+                    try markerJournal.acknowledge(entry)
+                }
+            }
+        } catch { AppleLog.warning("CalTopo", "Marker cleanup journal retained for retry: \(error.localizedDescription)") }
+    }
+
+    private func deleteAllDeviceMarkerOccurrences(client: CaltopoLiveClient, markerID: String) async -> Bool {
         let normalizedID = markerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !normalizedID.isEmpty else { return }
+        guard !normalizedID.isEmpty else { return false }
         let maximumAttempts = 8
         for attempt in 1...maximumAttempts {
             do {
@@ -264,7 +298,7 @@ actor AppleCaltopoPublisher {
                     "CalTopo",
                     "Could not remove local device marker id=\(normalizedID): \(error.localizedDescription)"
                 )
-                return
+                return false
             }
             do {
                 let snapshot = try await client.fetchMapArtifacts()
@@ -274,7 +308,7 @@ actor AppleCaltopoPublisher {
                         "CalTopo",
                         "Removed local device marker id=\(normalizedID) attempts=\(attempt)"
                     )
-                    return
+                    return true
                 }
                 AppleLog.warning(
                     "CalTopo",
@@ -283,15 +317,16 @@ actor AppleCaltopoPublisher {
             } catch {
                 AppleLog.info(
                     "CalTopo",
-                    "Removed local device marker id=\(normalizedID); verification unavailable: \(error.localizedDescription)"
+                    "Marker removal unverified; retaining retry id=\(normalizedID): \(error.localizedDescription)"
                 )
-                return
+                return false
             }
         }
         AppleLog.warning(
             "CalTopo",
             "Local device marker id=\(normalizedID) remained after \(maximumAttempts) delete attempts"
         )
+        return false
     }
 
     private func removeStaleR2CDeviceMarkers(client: CaltopoLiveClient, now: Date = Date()) async {
@@ -648,6 +683,7 @@ actor AppleCaltopoPublisher {
     }
 
     private func retryInterruptedPublications(generation: Int) async {
+        if generation == configurationGeneration && !configurationTransitionInFlight { await retryMarkerCleanup() }
         guard generation == configurationGeneration, !configurationTransitionInFlight,
               !pendingInterruptedRecoveries.isEmpty, let client else { return }
         do {

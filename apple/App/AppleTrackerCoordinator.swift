@@ -88,7 +88,7 @@ private struct AppleManagedVideoStreamAdvertisement: Codable, Equatable {
     }
 }
 
-private struct AppleManagedVideoRecording: Equatable {
+private struct AppleManagedVideoRecording: Equatable, Sendable {
     let sessionId: String
     let droneDesignator: String
     let url: URL
@@ -99,7 +99,7 @@ private struct AppleManagedVideoRecording: Equatable {
     let sizeBytes: Int64
 }
 
-private struct AppleRecordingMetadata: Equatable {
+private struct AppleRecordingMetadata: Equatable, Sendable {
     let width: Int
     let height: Int
     let fps: Double
@@ -138,7 +138,7 @@ private struct AppleRecordingMetadata: Equatable {
 
 @MainActor
 private enum AppleManagedVideoRecordingCatalog {
-    private struct Fingerprint: Hashable {
+    private struct Fingerprint: Hashable, Sendable {
         let url: URL
         let size: Int
         let modified: Date
@@ -159,8 +159,11 @@ private enum AppleManagedVideoRecordingCatalog {
                     retryAfter[key] = Date().addingTimeInterval(30)
                     return
                 }
-                let current = try key.url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-                guard current.fileSize == key.size, current.contentModificationDate == key.modified else { return }
+                let unchanged = try await Task.detached(priority: .utility) {
+                    let current = try key.url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                    return current.fileSize == key.size && current.contentModificationDate == key.modified
+                }.value
+                guard unchanged else { return }
                 metadataCache = metadataCache.filter { $0.key.url != key.url }
                 metadataCache[key] = loaded
                 retryAfter.removeValue(forKey: key)
@@ -173,7 +176,30 @@ private enum AppleManagedVideoRecordingCatalog {
         return nil
     }
 
+    private static var cachedFiles: [AppleManagedVideoRecording] = []
+    private static var scanTask: Task<Void, Never>?
+    private static var lastScan = Date.distantPast
     static func snapshot(sessionStartedAt: Date, now: Date = Date()) -> [AppleManagedVideoRecording] {
+        if scanTask == nil, now.timeIntervalSince(lastScan) >= 1 {
+            lastScan = now
+            scanTask = Task {
+                let files = await Task.detached(priority: .utility) {
+                    Self.scan(sessionStartedAt: sessionStartedAt, now: now)
+                }.value
+                cachedFiles = files
+                scanTask = nil
+            }
+        }
+        return cachedFiles.filter { $0.recordedAt >= sessionStartedAt }.map { recording in
+            let key = Fingerprint(url: recording.url, size: Int(recording.sizeBytes), modified: recording.recordedAt)
+            let details = metadata(for: key, now: now)
+            return AppleManagedVideoRecording(sessionId: recording.sessionId, droneDesignator: recording.droneDesignator,
+                url: recording.url, startedAt: recording.startedAt, recordedAt: recording.recordedAt,
+                durationMs: details?.durationMs ?? recording.durationMs, metadata: details, sizeBytes: recording.sizeBytes)
+        }
+    }
+
+    private nonisolated static func scan(sessionStartedAt: Date, now: Date) -> [AppleManagedVideoRecording] {
         guard (UserDefaults.standard.object(forKey: "video.captureStreams") as? Bool ?? true),
               let documents = try? FileManager.default.url(
                   for: .documentDirectory,
@@ -210,7 +236,7 @@ private enum AppleManagedVideoRecordingCatalog {
                   modified >= sessionStartedAt,
                   now.timeIntervalSince(modified) >= 3
             else { return nil }
-            let metadata = metadata(for: Fingerprint(url: url, size: values.fileSize ?? 0, modified: modified), now: now)
+            let metadata: AppleRecordingMetadata? = nil
             let designator = url.deletingLastPathComponent().lastPathComponent
             let startedAt = min(
                 ManagedVideoRecordingIdentity.recordingStartedAt(forPath: url.path) ?? modified,
@@ -1619,16 +1645,8 @@ final class AppleTrackerCoordinator: ObservableObject {
         let recordingIDs = Set(recordings.map(\.sessionId))
         let now = Date()
         recordings += managedVideoRecordingsBySessionID.values.filter { recording in
-            guard !recordingIDs.contains(recording.sessionId),
-                  let values = try? recording.url.resourceValues(forKeys: [
-                      .isRegularFileKey,
-                      .contentModificationDateKey,
-                  ]),
-                  values.isRegularFile == true,
-                  let modified = values.contentModificationDate
-            else { return false }
-            return modified >= managedVideoIncidentStartedAt
-                && now.timeIntervalSince(modified) < 10
+            !recordingIDs.contains(recording.sessionId) && recording.recordedAt >= managedVideoIncidentStartedAt
+                && now.timeIntervalSince(recording.recordedAt) < 10
         }
         recordings.sort { $0.recordedAt > $1.recordedAt }
         recordings = Array(recordings.prefix(20))
@@ -1719,8 +1737,9 @@ final class AppleTrackerCoordinator: ObservableObject {
                     ownedSource?.stop()
                     self.managedVideoThumbnailTasks.removeValue(forKey: sessionID)
                 }
-                guard let snapshot = try? await source?.captureSnapshot(),
-                      let jpeg = Self.catalogThumbnailJPEG(snapshot.jpegData),
+                guard let snapshot = try? await source?.captureSnapshot() else { return }
+                let thumbnail = await Task.detached(priority: .utility) { Self.catalogThumbnailJPEG(snapshot.jpegData) }.value
+                guard let jpeg = thumbnail,
                       jpeg.count <= 256 * 1024,
                       let index = self.managedVideoStreams.firstIndex(where: {
                           $0.sessionId == sessionID
@@ -1815,7 +1834,7 @@ final class AppleTrackerCoordinator: ObservableObject {
         managedVideoThumbnailUpdatedHandler = handler
     }
 
-    private static func catalogThumbnailJPEG(_ source: Data) -> Data? {
+    private nonisolated static func catalogThumbnailJPEG(_ source: Data) -> Data? {
         guard let image = UIImage(data: source) else { return nil }
         let size = CGSize(width: 320, height: 180)
         let renderer = UIGraphicsImageRenderer(size: size)

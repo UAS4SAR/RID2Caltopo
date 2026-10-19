@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.notam
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import java.util.Locale
 import org.ncssar.rid2caltopo.airspace.OperatingArea
 
@@ -82,6 +85,6 @@ internal object NotamPolicy {
 
     private fun formatDistance(notice: NearbyNotam): String =
         notice.distanceNm?.let {
-            String.format(Locale.US, "%.1f mi", it / OperatingArea.radiusNm)
+            Units.current.miles(it / OperatingArea.radiusNm)
         } ?: "pilot area"
 }

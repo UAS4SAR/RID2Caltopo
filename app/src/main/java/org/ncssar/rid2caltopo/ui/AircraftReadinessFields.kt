@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.ui
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -39,11 +42,12 @@ fun AircraftReadinessFields(value: AircraftReadiness, enabled: Boolean, onChange
 
 @Composable
 fun WeightField(label: String, value: Double?, enabled: Boolean = true, onChange: (Double?) -> Unit) {
-    var text by remember { mutableStateOf(value?.toString().orEmpty()) }
-    val parsed = text.toDoubleOrNull()
+    val units = Units.current
+    var text by remember(units) { mutableStateOf(value?.let { units.number(units.gramsValue(it), 2) }.orEmpty()) }
+    val parsed = text.toDoubleOrNull()?.let(units::grams)
     val valid = text.isBlank() || (parsed != null && parsed.isFinite() && parsed in 0.0..100000.0)
     OutlinedTextField(value = text, enabled = enabled, onValueChange = {
         text = it
-        onChange(it.toDoubleOrNull()?.takeIf { number -> number.isFinite() && number in 0.0..100000.0 })
-    }, label = { Text(label) }, isError = !valid, supportingText = { Text(if (valid) "Blank means unknown" else "Enter a nonnegative weight in grams") }, modifier = Modifier.fillMaxWidth())
+        onChange(it.toDoubleOrNull()?.let(units::grams)?.takeIf { number -> number.isFinite() && number in 0.0..100000.0 })
+    }, label = { Text(label.replace("grams", units.weightUnit)) }, isError = !valid, supportingText = { Text(if (valid) "Blank means unknown" else "Enter a nonnegative weight in ${units.weightUnit}") }, modifier = Modifier.fillMaxWidth())
 }

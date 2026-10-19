@@ -25,26 +25,36 @@ final class RIDTrackViewModel: ObservableObject {
         if let track = tracks.first(where: { $0.aircraftID == remoteID }) { recordAwaitingFlight(track) }
     }
 
-    private func recordAwaitingFlight(_ track: RidAircraftTrack, finished: Bool = false) {
+    private var awaitingFlightWrites: [String: Task<Void, Never>] = [:]
+    @discardableResult
+    private func recordAwaitingFlight(_ track: RidAircraftTrack, finished: Bool = false) -> Task<Void, Never>? {
         guard flightRecordingAllowed?(track.aircraftID) == true,
-              publicationSuppressionProvider?(track.aircraftID) != true else { return }
+              publicationSuppressionProvider?(track.aircraftID) != true else { return nil }
         let now = Date()
-        if !finished, now.timeIntervalSince(lastDeferredSnapshot[track.aircraftID] ?? .distantPast) < 5 { return }
+        if !finished, now.timeIntervalSince(lastDeferredSnapshot[track.aircraftID] ?? .distantPast) < 5 { return nil }
         let samples = track.points.map { RidObservation(source: $0.source ?? track.lastObservation.source, aircraftId: track.aircraftID,
             receivedAt: $0.receivedAt, latitude: $0.latitude, longitude: $0.longitude, altitudeMeters: $0.altitudeMeters,
             droneTimestamp: $0.droneTime) }
-        do {
-            try awaitingMapJournal.record(remoteID: track.aircraftID, label: identityProvider?(track.aircraftID)?.displayLabel ?? track.aircraftID,
-                observations: samples, mapID: publicationMapID, teamID: publicationTeamID, finished: finished,
-                flightID: RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt))
-            lastDeferredSnapshot[track.aircraftID] = now
-            awaitingMapFlights = awaitingMapJournal.entries.filter { $0.decision == "review" }
-        } catch { archiveStatus = "Could not save pending publication: \(error.localizedDescription)" }
+        let label = identityProvider?(track.aircraftID)?.displayLabel ?? track.aircraftID
+        let mapID = publicationMapID, teamID = publicationTeamID
+        let previous = awaitingFlightWrites[track.aircraftID]
+        lastDeferredSnapshot[track.aircraftID] = now
+        let task = Task {
+            await previous?.value
+            do {
+                try await awaitingMapJournal.record(remoteID: track.aircraftID, label: label,
+                    observations: samples, mapID: mapID, teamID: teamID, finished: finished,
+                    flightID: RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt))
+                awaitingMapFlights = awaitingMapJournal.entries.filter { $0.decision == "review" }
+            } catch { archiveStatus = "Could not save pending publication: \(error.localizedDescription)" }
+        }
+        awaitingFlightWrites[track.aircraftID] = task
+        return task
     }
 
     func decideAwaitingFlight(_ id: String, mapID: String?, teamID: String) async -> Bool {
         do {
-            try awaitingMapJournal.decide(id: id, mapID: mapID, teamID: teamID)
+            try await awaitingMapJournal.decide(id: id, mapID: mapID, teamID: teamID)
             awaitingMapFlights = awaitingMapJournal.entries.filter { $0.decision == "review" }
             await queueCompletedDeferredFlights()
             return true
@@ -70,7 +80,7 @@ final class RIDTrackViewModel: ObservableObject {
             flight: current,
             journal: awaitingMapJournal,
             clueIDs: owned.map(\.id),
-            deleteClue: { clues.delete($0) },
+            deleteClue: { await clues.delete($0) },
             deleteArchive: { [archiveStore] in await archiveStore.deleteFlightArchive(current) }
         )
         awaitingMapFlights = awaitingMapJournal.entries.filter { $0.decision == "review" }
@@ -84,11 +94,12 @@ final class RIDTrackViewModel: ObservableObject {
     }
 
     private func queueCompletedDeferredFlights() async {
+        await awaitingMapJournal.ready()
         for entry in awaitingMapJournal.entries where entry.finished && entry.decision == "publish" &&
                 entry.mapID == publicationMapID && entry.teamID == publicationTeamID {
             do {
                 try await caltopoPublisher.queueDeferredArchive(entry.publication)
-                try awaitingMapJournal.markQueued(id: entry.id)
+                try await awaitingMapJournal.markQueued(id: entry.id)
             } catch { archiveStatus = "Publication remains pending: \(error.localizedDescription)" }
         }
     }
@@ -491,7 +502,7 @@ final class RIDTrackViewModel: ObservableObject {
             for job in await archiveStore.pendingRewrites() {
                 let clues = self.clueStore?.clues(aircraftID: job.aircraftID) ?? []
                 let updated = await archiveStore.performRewrite(job, clues: clues)
-                self.clueStore?.applyArchivedBindings(updated)
+                await self.clueStore?.applyArchivedBindings(updated)
             }
             self.rewriteTask = nil
             if self.rewriteAgain { self.scheduleArchiveRewrites() }
@@ -811,6 +822,8 @@ final class RIDTrackViewModel: ObservableObject {
         publicationTeamID = configuration.publicationScope
         awaitingMapFlights = awaitingMapJournal.entries.filter { $0.decision == "review" }
         Task { [caltopoPublisher] in
+            await awaitingMapJournal.ready()
+            awaitingMapFlights = awaitingMapJournal.entries.filter { $0.decision == "review" }
             await caltopoPublisher.configure(
                 configuration,
                 trackFolderName: trackFolderName
@@ -1092,7 +1105,7 @@ final class RIDTrackViewModel: ObservableObject {
         }
         let flightID = liveFlightID(aircraftID: track.aircraftID)
             ?? RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
-        recordAwaitingFlight(track, finished: true)
+        await recordAwaitingFlight(track, finished: true)?.value
         await queueCompletedDeferredFlights()
         let identity = identityProvider?(track.aircraftID)
         let archiveConfiguration = archiveConfiguration
@@ -1115,7 +1128,7 @@ final class RIDTrackViewModel: ObservableObject {
             .map { OperationalFlightKMZ.candidate(id: $0.key, contents: $0.value) }
         let flightCandidate = AwaitingMapClueMatch.Candidate(
             id: flightID, remoteID: track.aircraftID, times: track.points.map(\.bindingTime))
-        let clues = clueStore?.archiveClues(flight: flightCandidate, otherFlights: otherFlights) ?? []
+        let clues = await clueStore?.archiveClues(flight: flightCandidate, otherFlights: otherFlights) ?? []
         if publishFlightEnd {
             // Capture the completed flight's identity/readiness above before observers
             // clear its confirmation. Network archive retries must not delay that reset.
@@ -1130,10 +1143,12 @@ final class RIDTrackViewModel: ObservableObject {
         if shortFlightDecisions.request(aircraft: metadata.mappedID,
             seconds: track.lastAircraftMessageAt.timeIntervalSince(start), meters: track.distanceMeters, keep: save, discard: { [weak self] in
                 guard let self else { return }
+                Task {
                 do {
-                    try self.awaitingMapJournal.discard(remoteID: track.aircraftID, startedAt: start)
+                    try await self.awaitingMapJournal.discard(remoteID: track.aircraftID, startedAt: start)
                     self.awaitingMapFlights = self.awaitingMapJournal.entries.filter { $0.decision == "review" }
                 } catch { self.archiveStatus = "Could not discard publication offer: \(error.localizedDescription)" }
+                }
             }) { return }
         await archiveRecorded(track, metadata: metadata, clues: clues)
     }
@@ -1381,7 +1396,7 @@ final class RIDTrackViewModel: ObservableObject {
                 cameraMetadata: cameraMetadata
             )
             if await caltopoPublisher.hasBufferedPublication(remoteID: remoteID, mapID: self.publicationMapID) {
-                do { try self.awaitingMapJournal.notePublication(remoteID: remoteID, mapID: self.publicationMapID) }
+                do { try await self.awaitingMapJournal.notePublication(remoteID: remoteID, mapID: self.publicationMapID) }
                 catch { self.archiveStatus = "Publication handoff could not be saved" }
             }
         }

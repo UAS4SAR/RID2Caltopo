@@ -177,6 +177,12 @@ final class CaltopoPersonalNoRedirect: NSObject, URLSessionTaskDelegate, @unchec
 }
 
 public enum CaltopoPersonalCatalog {
+    /// Network, server, decoding, and cancellation failures stay in the native
+    /// browser. Only an authentication rejection calls for interactive sign-in.
+    public static func requiresInteractiveLogin(after error: Error) -> Bool {
+        guard case CaltopoLiveClientError.httpStatus(let status, _) = error else { return false }
+        return status == 401 || status == 403
+    }
     public static let identityScript = """
     (function(){if(location.origin!=='https://caltopo.com')return null;var s=window.sarsoft;var id=s&&(s.account_id||(s.account&&s.account.id));return id?JSON.stringify({id:String(id)}):null;})()
     """

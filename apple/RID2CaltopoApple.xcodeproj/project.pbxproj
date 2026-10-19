@@ -6,6 +6,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        A76000000000000000000001 = {isa = PBXBuildFile; fileRef = A76000000000000000000002; };
+        A75000000000000000000009 = {isa = PBXBuildFile; fileRef = A7500000000000000000000A; };
+        A75000000000000000000007 = {isa = PBXBuildFile; fileRef = A75000000000000000000008; };
+        A75000000000000000000001 = {isa = PBXBuildFile; fileRef = A75000000000000000000002; };
+        A75000000000000000000003 = {isa = PBXBuildFile; productRef = A75000000000000000000004; };
+        A75000000000000000000005 = {isa = PBXBuildFile; fileRef = A75000000000000000000006; };
+		A74000000000000000000001 /* AppleMappingMissionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A74000000000000000000002; };
 		100000000000000000000001 /* RID2CaltopoAppleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000011 /* RID2CaltopoAppleApp.swift */; };
 		100000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000012 /* ContentView.swift */; };
 		100000000000000000000003 /* R2CCore in Frameworks */ = {isa = PBXBuildFile; productRef = 100000000000000000000031 /* R2CCore */; };
@@ -60,6 +67,12 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        A76000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = folder; name = "dji-cloud"; path = "../app/src/main/assets/dji-cloud"; sourceTree = SOURCE_ROOT; };
+        A7500000000000000000000A = {isa = PBXFileReference; lastKnownFileType = folder; name = legal; path = "../app/src/main/assets/legal"; sourceTree = SOURCE_ROOT; };
+        A75000000000000000000008 = {isa = PBXFileReference; lastKnownFileType = folder; name = "mapping-transfer"; path = "../app/src/main/assets/mapping-transfer"; sourceTree = SOURCE_ROOT; };
+        A75000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleLocalMappingView.swift; sourceTree = "<group>"; };
+        A75000000000000000000006 = {isa = PBXFileReference; lastKnownFileType = folder; name = "mapping-surface"; path = "../app/src/main/assets/mapping-surface"; sourceTree = SOURCE_ROOT; };
+		A74000000000000000000002 /* AppleMappingMissionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMappingMissionView.swift; sourceTree = "<group>"; };
 		100000000000000000000010 /* RID2CaltopoApple.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RID2CaltopoApple.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		100000000000000000000011 /* RID2CaltopoAppleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RID2CaltopoAppleApp.swift; sourceTree = "<group>"; };
 		100000000000000000000012 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -106,7 +119,7 @@
 		100000000000000000000219 /* AppleSpokenWarningCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSpokenWarningCenter.swift; sourceTree = "<group>"; };
 		10000000000000000000021C /* AppleManagedVideoPreflightPeer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleManagedVideoPreflightPeer.swift; sourceTree = "<group>"; };
 		10000000000000000000021D /* AppleManagedVideoMediaPeer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleManagedVideoMediaPeer.swift; sourceTree = "<group>"; };
-		100000000000000000000215 /* whats_new.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = whats_new.txt; path = ../release-notes/2.5.1/whats_new.txt; sourceTree = "<group>"; };
+		100000000000000000000215 /* whats_new.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = whats_new.txt; path = ../release-notes/2.5.2/whats_new.txt; sourceTree = "<group>"; };
 		A73000000000000000000004 /* AppleTrackerDeviceReconciliation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleTrackerDeviceReconciliation.swift; sourceTree = "<group>"; };
 		A73000000000000000000002 /* AppleCaltopoPersonalProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleCaltopoPersonalProbe.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -115,7 +128,7 @@
 		100000000000000000000020 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
-			files = (100000000000000000000003 /* R2CCore in Frameworks */, 100000000000000000000004 /* R2CAppleRadios in Frameworks */, 100000000000000000000005 /* MediaMTXMobile.xcframework in Frameworks */, 100000000000000000000009 /* R2CAnomalyApple.xcframework in Frameworks */, 10000000000000000000011A /* R2CFFmpegMobile.xcframework in Frameworks */, 10000000000000000000011C /* WebRTC in Frameworks */,);
+			files = (A75000000000000000000003, 100000000000000000000003 /* R2CCore in Frameworks */, 100000000000000000000004 /* R2CAppleRadios in Frameworks */, 100000000000000000000005 /* MediaMTXMobile.xcframework in Frameworks */, 100000000000000000000009 /* R2CAnomalyApple.xcframework in Frameworks */, 10000000000000000000011A /* R2CFFmpegMobile.xcframework in Frameworks */, 10000000000000000000011C /* WebRTC in Frameworks */,);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -128,7 +141,7 @@
 		};
 		100000000000000000000041 /* App */ = {
 			isa = PBXGroup;
-			children = (A73000000000000000000004, A73000000000000000000002 /* AppleCaltopoPersonalProbe.swift */, 100000000000000000000011 /* RID2CaltopoAppleApp.swift */, 100000000000000000000012 /* ContentView.swift */, 100000000000000000000014 /* MediaMTXMobileController.swift */, 10000000000000000000001F /* AppleNetworkAddress.swift */, 100000000000000000000200 /* AppleDiagnosticLog.swift */, 100000000000000000000201 /* DiagnosticLogView.swift */, 100000000000000000000204 /* AboutPrivacyView.swift */, 100000000000000000000205 /* AppleLocationProvider.swift */, 100000000000000000000206 /* RIDAircraftDetailView.swift */, 100000000000000000000207 /* AppleOrgConfigImporter.swift */, 10000000000000000000021B /* RidMappingAdminView.swift */, 100000000000000000000208 /* AppleTrackerCoordinator.swift */, 10000000000000000000021C /* AppleManagedVideoPreflightPeer.swift */, 10000000000000000000021D /* AppleManagedVideoMediaPeer.swift */, 100000000000000000000209 /* AppleProximityAlertCenter.swift */, 100000000000000000000219 /* AppleSpokenWarningCenter.swift */, 10000000000000000000021E /* AppleAlertCoordinator.swift */, 10000000000000000000020A /* AppleStatusView.swift */, 10000000000000000000020B /* AppleTerrainElevationService.swift */, 10000000000000000000020C /* AppleClueStore.swift */, 10000000000000000000020D /* AppleMapOfflineManager.swift */, 10000000000000000000020E /* AppleOperationalAlertCenter.swift */, 100000000000000000000221 /* AppleAlertBellCenter.swift */, 10000000000000000000020F /* AppleNotamCenter.swift */, 100000000000000000000214 /* AppleAirspaceCenter.swift */, 100000000000000000000216 /* AppleLandRestrictionCenter.swift */, 100000000000000000000210 /* AppleStreamRegistry.swift */, 100000000000000000000211 /* AppleConfigurationTransfer.swift */, 100000000000000000000212 /* AppleCapturedVideoReview.swift */, 100000000000000000000213 /* AppleAnomalySettingsView.swift */, 100000000000000000000016 /* AppleVideoFrameSource.swift */, 100000000000000000000217 /* AppleLiveVideoSurface.swift */, 10000000000000000000001E /* AnomalyLiveView.swift */, 100000000000000000000018 /* RIDTrackViewModel.swift */, 100000000000000000000019 /* RIDTrackMapView.swift */, 10000000000000000000001A /* AppleTrackArchiveStore.swift */, 10000000000000000000001B /* AppleCaltopoSettings.swift */, 10000000000000000000001C /* AppleCaltopoPublisher.swift */, 10000000000000000000001D /* CaltopoSettingsView.swift */, 100000000000000000000202 /* Assets.xcassets */, 100000000000000000000203 /* PrivacyInfo.xcprivacy */, 100000000000000000000015 /* mediamtx.yml */,);
+			children = (A76000000000000000000002, A7500000000000000000000A, A75000000000000000000008, A75000000000000000000002, A75000000000000000000006, A74000000000000000000002, A73000000000000000000004, A73000000000000000000002 /* AppleCaltopoPersonalProbe.swift */, 100000000000000000000011 /* RID2CaltopoAppleApp.swift */, 100000000000000000000012 /* ContentView.swift */, 100000000000000000000014 /* MediaMTXMobileController.swift */, 10000000000000000000001F /* AppleNetworkAddress.swift */, 100000000000000000000200 /* AppleDiagnosticLog.swift */, 100000000000000000000201 /* DiagnosticLogView.swift */, 100000000000000000000204 /* AboutPrivacyView.swift */, 100000000000000000000205 /* AppleLocationProvider.swift */, 100000000000000000000206 /* RIDAircraftDetailView.swift */, 100000000000000000000207 /* AppleOrgConfigImporter.swift */, 10000000000000000000021B /* RidMappingAdminView.swift */, 100000000000000000000208 /* AppleTrackerCoordinator.swift */, 10000000000000000000021C /* AppleManagedVideoPreflightPeer.swift */, 10000000000000000000021D /* AppleManagedVideoMediaPeer.swift */, 100000000000000000000209 /* AppleProximityAlertCenter.swift */, 100000000000000000000219 /* AppleSpokenWarningCenter.swift */, 10000000000000000000021E /* AppleAlertCoordinator.swift */, 10000000000000000000020A /* AppleStatusView.swift */, 10000000000000000000020B /* AppleTerrainElevationService.swift */, 10000000000000000000020C /* AppleClueStore.swift */, 10000000000000000000020D /* AppleMapOfflineManager.swift */, 10000000000000000000020E /* AppleOperationalAlertCenter.swift */, 100000000000000000000221 /* AppleAlertBellCenter.swift */, 10000000000000000000020F /* AppleNotamCenter.swift */, 100000000000000000000214 /* AppleAirspaceCenter.swift */, 100000000000000000000216 /* AppleLandRestrictionCenter.swift */, 100000000000000000000210 /* AppleStreamRegistry.swift */, 100000000000000000000211 /* AppleConfigurationTransfer.swift */, 100000000000000000000212 /* AppleCapturedVideoReview.swift */, 100000000000000000000213 /* AppleAnomalySettingsView.swift */, 100000000000000000000016 /* AppleVideoFrameSource.swift */, 100000000000000000000217 /* AppleLiveVideoSurface.swift */, 10000000000000000000001E /* AnomalyLiveView.swift */, 100000000000000000000018 /* RIDTrackViewModel.swift */, 100000000000000000000019 /* RIDTrackMapView.swift */, 10000000000000000000001A /* AppleTrackArchiveStore.swift */, 10000000000000000000001B /* AppleCaltopoSettings.swift */, 10000000000000000000001C /* AppleCaltopoPublisher.swift */, 10000000000000000000001D /* CaltopoSettingsView.swift */, 100000000000000000000202 /* Assets.xcassets */, 100000000000000000000203 /* PrivacyInfo.xcprivacy */, 100000000000000000000015 /* mediamtx.yml */,);
 			path = App;
 			sourceTree = "<group>";
 		};
@@ -148,7 +161,7 @@
 			buildRules = ();
 			dependencies = ();
 			name = RID2CaltopoApple;
-			packageProductDependencies = (100000000000000000000031 /* R2CCore */, 100000000000000000000032 /* R2CAppleRadios */, 100000000000000000000034 /* WebRTC */,);
+			packageProductDependencies = (A75000000000000000000004, 100000000000000000000031 /* R2CCore */, 100000000000000000000032 /* R2CAppleRadios */, 100000000000000000000034 /* WebRTC */,);
 			productName = RID2CaltopoApple;
 			productReference = 100000000000000000000010 /* RID2CaltopoApple.app */;
 			productType = "com.apple.product-type.application";
@@ -181,14 +194,14 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		100000000000000000000061 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000007 /* mediamtx.yml in Resources */, 100000000000000000000104 /* Assets.xcassets in Resources */, 100000000000000000000105 /* PrivacyInfo.xcprivacy in Resources */, 100000000000000000000117 /* whats_new.txt in Resources */,); runOnlyForDeploymentPostprocessing = 0;};
+		100000000000000000000061 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A76000000000000000000001, A75000000000000000000009, A75000000000000000000007, A75000000000000000000005, 100000000000000000000007 /* mediamtx.yml in Resources */, 100000000000000000000104 /* Assets.xcassets in Resources */, 100000000000000000000105 /* PrivacyInfo.xcprivacy in Resources */, 100000000000000000000117 /* whats_new.txt in Resources */,); runOnlyForDeploymentPostprocessing = 0;};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		100000000000000000000060 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = (A73000000000000000000003, A73000000000000000000001 /* AppleCaltopoPersonalProbe.swift in Sources */, 100000000000000000000002 /* ContentView.swift in Sources */, 100000000000000000000001 /* RID2CaltopoAppleApp.swift in Sources */, 100000000000000000000006 /* MediaMTXMobileController.swift in Sources */, 100000000000000000000101 /* AppleNetworkAddress.swift in Sources */, 100000000000000000000102 /* AppleDiagnosticLog.swift in Sources */, 100000000000000000000103 /* DiagnosticLogView.swift in Sources */, 100000000000000000000106 /* AboutPrivacyView.swift in Sources */, 100000000000000000000107 /* AppleLocationProvider.swift in Sources */, 100000000000000000000108 /* RIDAircraftDetailView.swift in Sources */, 100000000000000000000109 /* AppleOrgConfigImporter.swift in Sources */, 10000000000000000000011D /* RidMappingAdminView.swift in Sources */, 10000000000000000000010A /* AppleTrackerCoordinator.swift in Sources */, 10000000000000000000011E /* AppleManagedVideoPreflightPeer.swift in Sources */, 10000000000000000000011F /* AppleManagedVideoMediaPeer.swift in Sources */, 10000000000000000000010B /* AppleProximityAlertCenter.swift in Sources */, 10000000000000000000011B /* AppleSpokenWarningCenter.swift in Sources */, 100000000000000000000120 /* AppleAlertCoordinator.swift in Sources */, 10000000000000000000010C /* AppleStatusView.swift in Sources */, 10000000000000000000010D /* AppleTerrainElevationService.swift in Sources */, 10000000000000000000010E /* AppleClueStore.swift in Sources */, 10000000000000000000010F /* AppleMapOfflineManager.swift in Sources */, 100000000000000000000110 /* AppleOperationalAlertCenter.swift in Sources */, 100000000000000000000121 /* AppleAlertBellCenter.swift in Sources */, 100000000000000000000111 /* AppleNotamCenter.swift in Sources */, 100000000000000000000116 /* AppleAirspaceCenter.swift in Sources */, 100000000000000000000118 /* AppleLandRestrictionCenter.swift in Sources */, 100000000000000000000112 /* AppleStreamRegistry.swift in Sources */, 100000000000000000000113 /* AppleConfigurationTransfer.swift in Sources */, 100000000000000000000114 /* AppleCapturedVideoReview.swift in Sources */, 100000000000000000000115 /* AppleAnomalySettingsView.swift in Sources */, 100000000000000000000008 /* AppleVideoFrameSource.swift in Sources */, 100000000000000000000119 /* AppleLiveVideoSurface.swift in Sources */, 100000000000000000000100 /* AnomalyLiveView.swift in Sources */, 10000000000000000000000A /* RIDTrackViewModel.swift in Sources */, 10000000000000000000000B /* RIDTrackMapView.swift in Sources */, 10000000000000000000000C /* AppleTrackArchiveStore.swift in Sources */, 10000000000000000000000D /* AppleCaltopoSettings.swift in Sources */, 10000000000000000000000E /* AppleCaltopoPublisher.swift in Sources */, 10000000000000000000000F /* CaltopoSettingsView.swift in Sources */,);
+			files = (A75000000000000000000001, A74000000000000000000001, A73000000000000000000003, A73000000000000000000001 /* AppleCaltopoPersonalProbe.swift in Sources */, 100000000000000000000002 /* ContentView.swift in Sources */, 100000000000000000000001 /* RID2CaltopoAppleApp.swift in Sources */, 100000000000000000000006 /* MediaMTXMobileController.swift in Sources */, 100000000000000000000101 /* AppleNetworkAddress.swift in Sources */, 100000000000000000000102 /* AppleDiagnosticLog.swift in Sources */, 100000000000000000000103 /* DiagnosticLogView.swift in Sources */, 100000000000000000000106 /* AboutPrivacyView.swift in Sources */, 100000000000000000000107 /* AppleLocationProvider.swift in Sources */, 100000000000000000000108 /* RIDAircraftDetailView.swift in Sources */, 100000000000000000000109 /* AppleOrgConfigImporter.swift in Sources */, 10000000000000000000011D /* RidMappingAdminView.swift in Sources */, 10000000000000000000010A /* AppleTrackerCoordinator.swift in Sources */, 10000000000000000000011E /* AppleManagedVideoPreflightPeer.swift in Sources */, 10000000000000000000011F /* AppleManagedVideoMediaPeer.swift in Sources */, 10000000000000000000010B /* AppleProximityAlertCenter.swift in Sources */, 10000000000000000000011B /* AppleSpokenWarningCenter.swift in Sources */, 100000000000000000000120 /* AppleAlertCoordinator.swift in Sources */, 10000000000000000000010C /* AppleStatusView.swift in Sources */, 10000000000000000000010D /* AppleTerrainElevationService.swift in Sources */, 10000000000000000000010E /* AppleClueStore.swift in Sources */, 10000000000000000000010F /* AppleMapOfflineManager.swift in Sources */, 100000000000000000000110 /* AppleOperationalAlertCenter.swift in Sources */, 100000000000000000000121 /* AppleAlertBellCenter.swift in Sources */, 100000000000000000000111 /* AppleNotamCenter.swift in Sources */, 100000000000000000000116 /* AppleAirspaceCenter.swift in Sources */, 100000000000000000000118 /* AppleLandRestrictionCenter.swift in Sources */, 100000000000000000000112 /* AppleStreamRegistry.swift in Sources */, 100000000000000000000113 /* AppleConfigurationTransfer.swift in Sources */, 100000000000000000000114 /* AppleCapturedVideoReview.swift in Sources */, 100000000000000000000115 /* AppleAnomalySettingsView.swift in Sources */, 100000000000000000000008 /* AppleVideoFrameSource.swift in Sources */, 100000000000000000000119 /* AppleLiveVideoSurface.swift in Sources */, 100000000000000000000100 /* AnomalyLiveView.swift in Sources */, 10000000000000000000000A /* RIDTrackViewModel.swift in Sources */, 10000000000000000000000B /* RIDTrackMapView.swift in Sources */, 10000000000000000000000C /* AppleTrackArchiveStore.swift in Sources */, 10000000000000000000000D /* AppleCaltopoSettings.swift in Sources */, 10000000000000000000000E /* AppleCaltopoPublisher.swift in Sources */, 10000000000000000000000F /* CaltopoSettingsView.swift in Sources */,);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
@@ -210,7 +223,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = App/RID2CaltopoApple.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 342;
+				CURRENT_PROJECT_VERSION = 396;
 				DEVELOPMENT_TEAM = 94UV79S6LR;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
@@ -224,7 +237,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				MARKETING_VERSION = 2.5.1;
+				MARKETING_VERSION = 2.5.2;
 				OTHER_LDFLAGS = "$(inherited) -lresolv -framework VideoToolbox -framework CoreMedia -framework CoreVideo";
 				PRODUCT_BUNDLE_IDENTIFIER = org.ncssar.RID2CaltopoApple;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -243,7 +256,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = App/RID2CaltopoApple.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 342;
+				CURRENT_PROJECT_VERSION = 396;
 				DEVELOPMENT_TEAM = 94UV79S6LR;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
@@ -257,7 +270,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				MARKETING_VERSION = 2.5.1;
+				MARKETING_VERSION = 2.5.2;
 				OTHER_LDFLAGS = "$(inherited) -lresolv -framework VideoToolbox -framework CoreMedia -framework CoreVideo";
 				PRODUCT_BUNDLE_IDENTIFIER = org.ncssar.RID2CaltopoApple;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -286,6 +299,7 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+        A75000000000000000000004 = {isa = XCSwiftPackageProductDependency; package = 100000000000000000000030; productName = R2CMapping;};
 		100000000000000000000031 /* R2CCore */ = {isa = XCSwiftPackageProductDependency; package = 100000000000000000000030 /* XCLocalSwiftPackageReference "." */; productName = R2CCore;};
 		100000000000000000000032 /* R2CAppleRadios */ = {isa = XCSwiftPackageProductDependency; package = 100000000000000000000030 /* XCLocalSwiftPackageReference "." */; productName = R2CAppleRadios;};
 		100000000000000000000034 /* WebRTC */ = {isa = XCSwiftPackageProductDependency; package = 100000000000000000000033 /* XCRemoteSwiftPackageReference "Specs" */; productName = WebRTC;};

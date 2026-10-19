@@ -304,6 +304,7 @@ final class AppleProximityAlertCenter: ObservableObject {
 }
 
 struct ProximityAlertBanner: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let alert: RidProximityAlertState
     let onMap: () -> Void
     let onSuspend: () -> Void
@@ -346,7 +347,7 @@ struct ProximityAlertBanner: View {
     }
 
     private func feet(_ value: Double) -> String {
-        "\(Int(value.rounded())) ft"
+        DisplayUnits.current.feet(value)
     }
 }
 
@@ -356,6 +357,7 @@ struct ProximityAlertBanner: View {
 /// notice is showing, so it never blocks the horizontally scrolling chip / URL row.
 /// Hiding the brief notice never acknowledges, suspends, or clears the engine.
 struct AppleProximityWarningHost: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @ObservedObject var center: AppleProximityAlertCenter
     @ObservedObject var alertBell: AppleAlertBellCenter
     let onMap: () -> Void
@@ -371,7 +373,7 @@ struct AppleProximityWarningHost: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Label("Proximity warning", systemImage: "exclamationmark.triangle.fill")
                                 .font(.subheadline.bold()).foregroundStyle(.red)
-                            Text("\(alert.nearestDroneMappedID) · \(Int(alert.horizontalSeparationFeet.rounded())) ft horizontal")
+                            Text("\(alert.nearestDroneMappedID) · \(DisplayUnits.current.feet(alert.horizontalSeparationFeet)) horizontal")
                                 .font(.caption).lineLimit(2)
                             Text("Tap the bell by Bridge for the alert mute panel.").font(.caption2)
                         }

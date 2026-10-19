@@ -72,6 +72,8 @@ import org.ncssar.rid2caltopo.ui.ProximityAlertCenter;
 import org.ncssar.rid2caltopo.video.PairedVideoFlightActivity;
 import org.ncssar.rid2caltopo.video.StreamFlightActivityRegistry;
 import org.ncssar.rid2caltopo.video.MapOfflinePrepRuntime;
+import org.ncssar.rid2caltopo.mapping.MappingWorkRuntime;
+import org.ncssar.rid2caltopo.mapping.MappingWorkState;
 import com.google.firebase.analytics.FirebaseAnalytics;
 
 import okhttp3.MediaType;
@@ -4130,6 +4132,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
                     activity.finish();
                 }
                 MapOfflinePrepRuntime.cancelActive();
+                MappingWorkRuntime.cancelActive();
             };
             // The idle watchdog runs on a background scheduler. Activity lifecycle calls must
             // always be dispatched to Android's main thread.
@@ -4139,7 +4142,10 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
                 activity.runOnUiThread(finishActivity);
             }
         } else {
-            new Handler(Looper.getMainLooper()).post(MapOfflinePrepRuntime::cancelActive);
+            new Handler(Looper.getMainLooper()).post(() -> {
+                MapOfflinePrepRuntime.cancelActive();
+                MappingWorkRuntime.cancelActive();
+            });
         }
 
         // Submit the activity removal before any cleanup that can block on Android services,
@@ -4215,6 +4221,8 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         }
         long shutdownDebugLogGeneration = CaptureDebugLogGeneration();
         try {
+            // Remote presence cleanup must precede potentially slow archive/service teardown.
+            CaltopoMap.BeginShutdownMarkerCleanup();
             AirspaceCenter.INSTANCE.shutdown();
             NotamCenter.INSTANCE.shutdown();
             LandRestrictionCenter.INSTANCE.shutdown();
@@ -4389,21 +4397,22 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         if (IsExitRequested()) return;
         long appActiveStartedAtMsec = AppActiveStartedAtMsec;
         long lastRidMessageMsec = CtDroneSpec.LastRidMessageTimestampMsec();
-        long lastProtectedActivityMsec = MapOfflinePrepRuntime.lastActivityAtMsec();
+        MappingWorkState mappingWork = MappingWorkRuntime.snapshot();
+        long lastProtectedActivityMsec = Math.max(MapOfflinePrepRuntime.lastActivityAtMsec(), mappingWork.getLastActivityAtMsec());
         long lastUserInteractionMsec = LastUserInteractionAtMsec;
         long nowMsec = System.currentTimeMillis();
-        // A running offline map download (including AOL preparation) suspends the timeout;
-        // MapOfflinePrepRuntime.finish() re-runs CheckIdle, restarting the countdown from the download's end.
+        // Offline preparation and mapping sessions suspend idle shutdown. Their final resource
+        // release re-runs CheckIdle and restarts the normal countdown from the work's end.
         long remainingMsec = ApplicationIdleTimeoutPolicy.remainingDelayMsec(
                 appActiveStartedAtMsec,
                 lastRidMessageMsec,
                 lastProtectedActivityMsec,
-                MapOfflinePrepRuntime.isActive(),
+                MapOfflinePrepRuntime.isActive() || mappingWork.getActive(),
                 lastUserInteractionMsec,
                 maxIdleInMinutes,
                 nowMsec);
         if (remainingMsec == ApplicationIdleTimeoutPolicy.SUSPENDED) {
-            Log.i(TAG, "CheckIdle(): offline map preparation is active; deferring automatic shutdown.");
+            Log.i(TAG, "CheckIdle(): protected map preparation or mapping work is active; deferring automatic shutdown.");
             return;
         }
         if (remainingMsec == ApplicationIdleTimeoutPolicy.DISABLED) return;

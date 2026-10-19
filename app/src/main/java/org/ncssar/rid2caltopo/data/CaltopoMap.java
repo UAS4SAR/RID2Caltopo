@@ -34,6 +34,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 import org.ncssar.rid2caltopo.app.R2CApplication;
 import org.ncssar.rid2caltopo.video.MapOfflinePrepRuntime;
+import org.ncssar.rid2caltopo.mapping.MappingWorkRuntime;
 
 
 import java.nio.charset.StandardCharsets;
@@ -272,6 +273,7 @@ public class CaltopoMap {
             SessionNodeMap = parseMapHierarchy(verifyOp.responseJson);
             CTDebug(TAG, String.format(Locale.US,
                     "parseMapHierarchy() returned list with %d top-level items", SessionNodeMap.size()));
+            retryMarkerCleanup();
             SetMapStatus(MapStatusListener.mapStatus.credentialsVerified, null);
         } else {
             String emsg = String.format(Locale.US,
@@ -1154,6 +1156,7 @@ public class CaltopoMap {
             return;
         }
 
+        retryMarkerCleanup();
         if (!InitialMarkerPublishPending && !DisconnectInProgress) {
             publishMyDeviceMarkerIfPossible(GetMyLocation());
         }
@@ -1499,6 +1502,7 @@ public class CaltopoMap {
             long nowMs
     ) {
         if (CaltopoClient.IsExitRequested()) return false;
+        if (MappingWorkRuntime.preventsMapDisconnect(nowMs, AUTO_QUIT_FLIGHT_QUIET_MS)) return false;
         if (MapOfflinePrepRuntime.isActive() ||
                 (MapOfflinePrepRuntime.lastActivityAtMsec() > 0L &&
                  nowMs - MapOfflinePrepRuntime.lastActivityAtMsec() < AUTO_QUIT_FLIGHT_QUIET_MS)) return false;
@@ -1521,6 +1525,7 @@ public class CaltopoMap {
         if (ShutdownInProgress || MapStatus != MapStatusListener.mapStatus.up || MapNode == null) {
             return false;
         }
+        if (MappingWorkRuntime.preventsMapDisconnect(timeSource.now(), AUTO_QUIT_FLIGHT_QUIET_MS)) return false;
         if (MapOfflinePrepRuntime.isActive() || CaltopoClient.GetActiveFlightCount() > 0) {
             return false;
         }
@@ -1916,6 +1921,33 @@ public class CaltopoMap {
         CTDebug(TAG, "resetArtifactStore(): " + reason);
     }
 
+    private static DeviceMarkerJournal markerJournal;
+    private static final java.util.Set<String> activeMarkerKeys=java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final java.util.Set<String> deletingMarkerKeys=java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static synchronized DeviceMarkerJournal markerJournal() {
+        if(markerJournal==null)markerJournal=new DeviceMarkerJournal(new java.io.File(R2CApplication.getAppCtxt().getFilesDir(),"device-marker-cleanup.json"));
+        return markerJournal;
+    }
+    private static void retryMarkerCleanup() {
+        try {
+            String domain=CaltopoClient.GetCaltopoDomainAndPort();
+            for(DeviceMarkerJournal.Entry entry:markerJournal().entries())
+                if(entry.domain.equals(domain)&&!activeMarkerKeys.contains(entry.key()))deleteJournalMarker(entry);
+        }catch(Exception error){CTWarn(TAG,"Marker cleanup journal unavailable; retry retained",error);}
+    }
+    private static CaltopoOp deleteJournalMarker(DeviceMarkerJournal.Entry entry) {
+        if(!entry.domain.equals(CaltopoClient.GetCaltopoDomainAndPort())||!deletingMarkerKeys.add(entry.key()))return null;
+        try {
+            return getCurrentRuntime().getCalTopoSessionGateway().deleteMarkerOnMap(entry.map,entry.marker,op->{
+                try {
+                    if(op!=null&&op.success())markerJournal().acknowledge(entry);
+                    CTDebug(TAG,"Marker cleanup map="+entry.map+" id="+entry.marker+" success="+(op!=null&&op.success()));
+                }catch(Exception error){CTWarn(TAG,"Marker cleanup acknowledgement not persisted",error);}
+                finally{deletingMarkerKeys.remove(entry.key());}
+            });
+        }catch(Exception error){deletingMarkerKeys.remove(entry.key());CTWarn(TAG,"Marker cleanup deferred",error);return null;}
+    }
+
     private static void publishMyDeviceMarkerIfPossible(@Nullable Location location) {
         if (ShutdownInProgress || DisconnectInProgress || MapStatus != MapStatusListener.mapStatus.up ||
                 MapNode == null || FolderId == null || FolderId.isEmpty() || location == null) {
@@ -1924,6 +1956,13 @@ public class CaltopoMap {
         String markerId = GetMyUUID();
         if (markerId.isEmpty()) return;
         try {
+            String markerDomain=CaltopoClient.GetCaltopoDomainAndPort();
+            String markerMap=GetMapId();
+            String key=markerDomain+"/"+markerMap+"/"+markerId;
+            if(deletingMarkerKeys.contains(key))return;
+            final long markerGeneration=MapRefreshGeneration;
+            final DeviceMarkerJournal.Entry ownership=markerJournal().arm(markerDomain,markerMap,markerId);
+            activeMarkerKeys.add(key);
             long nowMs = System.currentTimeMillis();
             JSONObject extraProperties = new JSONObject();
             extraProperties.put(LOCAL_DEVICE_MARKER_NAME_PROP, R2CActivity.MyDeviceName);
@@ -1943,9 +1982,18 @@ public class CaltopoMap {
                     extraProperties,
                     markerOp -> {
                         String resolvedId = (markerOp != null && markerOp.success()) ? markerOp.id() : "";
-                        if (!resolvedId.isEmpty()) {
-                            ResolvedMyDeviceMarkerId = resolvedId;
+                        if (!resolvedId.isEmpty()&&!resolvedId.equals(markerId)) {
+                            try{DeviceMarkerJournal.Entry resolved=markerJournal().arm(markerDomain,markerMap,resolvedId);activeMarkerKeys.add(resolved.key());}catch(Exception error){CTWarn(TAG,"Could not journal resolved marker",error);}
                         }
+                        if(DisconnectInProgress||ShutdownInProgress||markerGeneration!=MapRefreshGeneration||!markerMap.equals(GetMapId())) {
+                            activeMarkerKeys.remove(ownership.key());
+                            if(!resolvedId.isEmpty())activeMarkerKeys.remove(markerDomain+"/"+markerMap+"/"+resolvedId);
+                            // A POST may finish after shutdown's DELETE. Arm again before compensating deletion.
+                            try{deleteJournalMarker(markerJournal().arm(markerDomain,markerMap,resolvedId.isEmpty()?markerId:resolvedId));}
+                            catch(Exception error){CTWarn(TAG,"Late marker cleanup deferred",error);}
+                            return;
+                        }
+                        if (!resolvedId.isEmpty()) ResolvedMyDeviceMarkerId = resolvedId;
                         LastPublishedMyDeviceMarkerColor = markerColor;
                         LastPublishedMyDeviceMarkerDescription = markerDescription;
                         CTDebug(TAG, String.format(Locale.US,
@@ -1997,43 +2045,26 @@ public class CaltopoMap {
         }
     }
 
+    public static void BeginShutdownMarkerCleanup() {
+        DisconnectInProgress=true;
+        InitialMarkerPublishDelay.stop();
+        removeMyDeviceMarker(4_000L);
+    }
+
     private static void removeMyDeviceMarker(long maxWaitInMilliseconds) {
-        if (MapNode == null) return;
-        String markerId = GetMyUUID();
-        if (markerId.isEmpty()) return;
-        long waitBudgetMs = shouldWaitForMarkerDeleteAck()
-                ? Math.min(maxWaitInMilliseconds, MARKER_DELETE_WAIT_MS)
-                : 0L;
+        if(MapNode==null)return;
+        String map=GetMapId(),domain=CaltopoClient.GetCaltopoDomainAndPort();
+        long wait=shouldWaitForMarkerDeleteAck()?Math.min(maxWaitInMilliseconds,MARKER_DELETE_WAIT_MS):0;
         try {
-            CaltopoOp deletePrimaryOp = getCurrentRuntime().getCalTopoSessionGateway()
-                    .deleteMarkerWithId(markerId, deleteOp ->
-                            CTDebug(TAG, String.format(Locale.US,
-                                    "removeMyDeviceMarker(): markerId=%s success=%s responseCode=%d",
-                                    markerId, deleteOp != null && deleteOp.success(),
-                                    deleteOp != null ? deleteOp.responseCode : -1)));
-            if (waitBudgetMs > 0L) {
-                deletePrimaryOp.syncOp(waitBudgetMs);
+            // Also enroll legacy markers published before the durable journal existed.
+            markerJournal().arm(domain,map,GetMyUUID());
+            if(ResolvedMyDeviceMarkerId!=null&&!ResolvedMyDeviceMarkerId.isEmpty())markerJournal().arm(domain,map,ResolvedMyDeviceMarkerId);
+            for(DeviceMarkerJournal.Entry entry:markerJournal().entries())if(entry.domain.equals(domain)&&entry.map.equals(map)) {
+                activeMarkerKeys.remove(entry.key());
+                CaltopoOp op=deleteJournalMarker(entry);
+                if(wait>0&&op!=null)try{op.syncOp(wait);}catch(java.util.concurrent.TimeoutException error){CTWarn(TAG,"Marker delete timed out; durable retry retained");}
             }
-            if (ResolvedMyDeviceMarkerId != null && !ResolvedMyDeviceMarkerId.isEmpty() &&
-                    !ResolvedMyDeviceMarkerId.equals(markerId)) {
-                String resolvedId = ResolvedMyDeviceMarkerId;
-                CaltopoOp deleteResolvedOp = getCurrentRuntime().getCalTopoSessionGateway()
-                        .deleteMarkerWithId(resolvedId, deleteOp ->
-                                CTDebug(TAG, String.format(Locale.US,
-                                        "removeMyDeviceMarker(): resolvedMarkerId=%s success=%s responseCode=%d",
-                                        resolvedId, deleteOp != null && deleteOp.success(),
-                                        deleteOp != null ? deleteOp.responseCode : -1)));
-                if (waitBudgetMs > 0L) {
-                    deleteResolvedOp.syncOp(waitBudgetMs);
-                }
-            }
-        } catch (java.util.concurrent.TimeoutException e) {
-            CTWarn(TAG, String.format(Locale.US,
-                    "removeMyDeviceMarker(): timed out waiting %d ms for delete acknowledgement.",
-                    waitBudgetMs));
-        } catch (Exception e) {
-            CTWarn(TAG, "removeMyDeviceMarker() raised", e);
-        }
+        }catch(Exception error){CTWarn(TAG,"Marker cleanup deferred",error);}
     }
 
     private static boolean shouldWaitForMarkerDeleteAck() {

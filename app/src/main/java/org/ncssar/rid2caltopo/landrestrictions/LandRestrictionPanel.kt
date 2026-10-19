@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.landrestrictions
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -67,7 +70,7 @@ fun LandRestrictionPanel(
                                 Text(area.rule.label, color = MaterialTheme.colorScheme.tertiary)
                                 Text(
                                     if (area.containsOperator) "Operator is inside this mapped boundary."
-                                    else "Boundary ${"%.1f".format(area.distanceNm)} NM away.",
+                                    else "Boundary ${Units.current.distance(area.distanceNm * 1852)} away.",
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                                 area.detailsUrl?.let { detailsUrl ->

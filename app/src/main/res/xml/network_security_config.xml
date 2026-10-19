@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
 
+    <!-- Mapping stations use operator-selected LAN addresses. Mission URL validation
+         restricts this workflow to private IPv4 and .local hosts. TLS remains the
+         default for organization services. Android cannot express IP ranges here. -->
+    <base-config cleartextTrafficPermitted="true" />
+
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">127.0.0.1</domain>
         <domain includeSubdomains="false">localhost</domain>

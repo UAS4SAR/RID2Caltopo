@@ -25,11 +25,12 @@ import org.osmdroid.util.MapTileIndex
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
-class TileCacheMapProvider private constructor(
+open class TileCacheMapProvider private constructor(
     context: Context,
     tileSource: ITileSource,
     private val tileWriter: IFilesystemCache,
-    private val registerReceiver: SimpleRegisterReceiver
+    private val registerReceiver: SimpleRegisterReceiver,
+    private val networkAllowed: Boolean
 ) : MapTileProviderArray(tileSource, registerReceiver) {
     private companion object {
         private const val PROBE_MIN_INTERVAL_MS = 30_000L
@@ -39,8 +40,9 @@ class TileCacheMapProvider private constructor(
     constructor(
         context: Context,
         tileSource: ITileSource = TileSourceFactory.DEFAULT_TILE_SOURCE,
-        tileWriter: IFilesystemCache
-    ) : this(context, tileSource, tileWriter, SimpleRegisterReceiver(context))
+        tileWriter: IFilesystemCache,
+        networkAllowed: Boolean = true
+    ) : this(context, tileSource, tileWriter, SimpleRegisterReceiver(context), networkAllowed)
 
     private val platformNetworkCheck = NetworkAvailabliltyCheck(context)
     private val networkAvailabilityCheck: INetworkAvailablityCheck = object : INetworkAvailablityCheck {
@@ -115,7 +117,8 @@ class TileCacheMapProvider private constructor(
                 return drawable
             }
         })
-        mTileProviderList.add(downloaderProvider)
+        if (networkAllowed) mTileProviderList.add(downloaderProvider)
+        else downloaderProvider.detach()
 
         // Keep tile activity strictly tied to current viewport to reduce background work.
         getTileCache().setAutoEnsureCapacity(false)
@@ -125,6 +128,11 @@ class TileCacheMapProvider private constructor(
         getTileCache().protectedTileContainers.add(this)
 
         setOfflineFirst(true)
+        setUseDataConnection(networkAllowed)
+    }
+
+    override fun setUseDataConnection(enabled: Boolean) {
+        super.setUseDataConnection(enabled && networkAllowed)
     }
 
     override fun getTileWriter(): IFilesystemCache = tileWriter
@@ -178,6 +186,7 @@ class TileCacheMapProvider private constructor(
     }
 
     private fun probeFailedTile(tileIndex: Long) {
+        if (!networkAllowed) return
         val now = System.currentTimeMillis()
         synchronized(lastProbeByTile) {
             val prev = lastProbeByTile[tileIndex]

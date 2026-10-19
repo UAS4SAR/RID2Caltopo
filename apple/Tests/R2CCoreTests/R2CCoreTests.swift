@@ -29,6 +29,18 @@ import Testing
     ))
 }
 
+@Test func savedPersonalLoginRequiresAuthenticationWithoutOrganizationOrTeams() {
+    #expect(OrganizationAccessPolicy.requiresDeviceOwnerAuthentication(
+        organizationName: "", personalCaltopoLoginConfigured: true
+    ))
+    #expect(!OrganizationAccessPolicy.requiresDeviceOwnerAuthentication(
+        organizationName: "", personalCaltopoLoginConfigured: false
+    ))
+    #expect(OrganizationAccessPolicy.requiresDeviceOwnerAuthentication(
+        organizationName: "NCSSAR", personalCaltopoLoginConfigured: true
+    ))
+}
+
 @Test func organizationAuthenticationSurvivesOrdinaryBackgroundingUntilDeviceLock() {
     let backgroundedAt = Date(timeIntervalSince1970: 1_000)
     #expect(OrganizationAccessPolicy.authenticatedSessionRemainsValid(

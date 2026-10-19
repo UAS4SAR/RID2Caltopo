@@ -1,7 +1,10 @@
 package org.ncssar.rid2caltopo.ui
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 object SettingsFieldHelp {
-    private val descriptions = mapOf(
+    private fun descriptions(units: DisplayUnits) = mapOf(
         "AD Mode" to "Off disables detection. Color Uniqueness looks for unusual colors; Target Colors looks for selected color families; Infrared looks for thermal contrast. Detector settings last for this app session; startup returns AD to Off.",
         "Realtime Defaults" to "Reset restores the detector settings to the realtime defaults for the selected mode.",
         "Motion" to "On includes motion evidence in anomaly detection. Off disables the motion detector. Camera movement compensation is controlled by Registration and Movement Estimator.",
@@ -57,11 +60,11 @@ object SettingsFieldHelp {
         "Wi-Fi RID scanning" to "Receives Remote ID over supported Wi-Fi hardware in addition to other enabled receivers. Availability depends on Android hardware and permissions.",
         "Proximity alerts" to "Enables optional aircraft proximity warnings from received telemetry after accepting the notice. Off disables these warnings. Missing or delayed telemetry can prevent an alert; this is not proof that airspace is clear.",
         "Alert scope" to "Published only checks pairs involving an aircraft claimed by this tablet. All aircraft checks any received pair, including ignored or unconfirmed aircraft. This does not change recording or publishing.",
-        "Proximity spacing" to "Separation threshold used by proximity alerts, in feet. Minimum 50 feet; default 100 feet.",
-        "Min Dist" to "Minimum movement, in feet, before another track point is recorded. Smaller values retain more detail and may retain more position noise. Minimum 2 feet.",
+        "Proximity spacing" to "Separation threshold used by proximity alerts. Minimum ${units.feet(50.0, 2)}; default ${units.feet(100.0, 2)}.",
+        "Min Dist" to "Minimum movement, before another track point is recorded. Smaller values retain more detail and may retain more position noise. Minimum ${units.feet(2.0, 2)}.",
         "New Track Delay" to "Gap between aircraft waypoints after which the current track ends and a later observation starts a new track. Measured in seconds; this is not a delay before publishing.",
-        "Minimum Location Accuracy" to "Required reported horizontal accuracy for RID positions. Choices: 30 m, 10 m, 3 m, or 1 m. Less accurate positions remain signal-only and are not added to the track.",
-        "Bridge Check Distance" to "Distance used by signal-loss warnings to distinguish an aircraft near the tablet from one that has moved away. Warnings are armed after the aircraft moves beyond this distance and suppressed when it returns near the tablet. Minimum 1 foot; default 20 feet. This is separate from proximity-alert spacing.",
+        "Minimum Location Accuracy" to "Required reported horizontal accuracy for RID positions. Choices: ${units.length(30.0, 1)}, ${units.length(10.0, 1)}, ${units.length(3.0, 1)}, or ${units.length(1.0, 1)}. Less accurate positions remain signal-only and are not added to the track.",
+        "Bridge Check Distance" to "Distance used by signal-loss warnings to distinguish an aircraft near the tablet from one that has moved away. Warnings are armed after the aircraft moves beyond this distance and suppressed when it returns near the tablet. Minimum ${units.feet(1.0, 2)}; default ${units.feet(20.0, 2)}. This is separate from proximity-alert spacing.",
         "Max Idle Time" to "Minutes without qualifying RID activity or user interaction before the app closes automatically. Use 0 to disable automatic closing. Enter a nonnegative whole number.",
         "Audio Alarm Volume" to "App alarm volume from 0% (silent) to 100%. The slider moves in 5% steps. Use Audio Alarm Test to check the current device output.",
         "Enable FAA Facility Map / LAANC lookup" to "Looks up FAA UAS Facility Map information near the operating location. This is informational and does not request or grant an airspace authorization.",
@@ -69,12 +72,12 @@ object SettingsFieldHelp {
         "Enable nearby NOTAM / TFR monitoring" to "Checks nearby NOTAMs and temporary flight restrictions through the configured FAA proxy. Requires organization-provided proxy access.",
         "Show NOTAMs on map" to "Displays available NOTAM overlays on the map. Hiding the overlay does not change the restriction or grant permission to fly.",
         "Refresh automatically" to "Periodically updates nearby NOTAM/TFR information while monitoring is enabled. Requires a connection and configured proxy access.",
-        "NOTAM radius" to "Search distance around the operating location, in statute miles. Larger areas may return more notices.",
+        "NOTAM radius" to "Search distance around the operating location in the selected distance units. Larger areas may return more notices.",
         "Refresh interval" to "Time between automatic NOTAM/TFR refreshes. Minimum 1800 seconds (30 minutes).",
         "Enable protected-land checks" to "Checks supported agency boundaries and land-use restrictions near the operating area. These are separate from FAA airspace restrictions.",
         "Show protected lands on map" to "Displays supported protected-land boundaries on the map. Available when protected-land checks are enabled.",
         "Refresh protected lands automatically" to "Automatically refreshes protected-land boundary information while checks are enabled. Requires network access for uncached data.",
-        "Boundary query radius" to "Search radius for protected-land boundaries in statute miles. Allowed: 1–50.",
+        "Boundary query radius" to "Search radius for protected-land boundaries in the selected distance units. Allowed: ${units.miles(1.0)}–${units.miles(50.0)}.",
         "Mode" to "External display behavior. Off leaves it unmanaged; OS mirroring uses system display controls; App-managed presents a separate RID2Caltopo layout.",
         "Content" to "Layout shown on an app-managed external display. Choices: Streams Grid, Map Only, Split: Streams + Map, or Observer Mode. This does not change the tablet’s main view.",
         "Alert routing" to "Chooses where alerts appear when an external display is connected. Choices: Phone only (this device), External display only, or Both.",
@@ -88,19 +91,19 @@ object SettingsFieldHelp {
         "Active profile" to "The selected CalTopo credential source. Personal uses your browser sign-in; Teams uses installed team credentials. This is separate from the destination map.",
         "Connected Map" to "The selected CalTopo destination. Tracks require flight confirmation; earlier flights awaiting a map require a publication choice.",
         "Domain and port" to "CalTopo server hostname, optionally followed by a port, such as caltopo.com. Do not enter a map URL or path. Personal login uses caltopo.com.",
-        "Min Dist (ft)" to "Minimum movement, in feet, before another track point is recorded. Smaller values retain more detail and may retain more position noise. Minimum 2 feet.",
+        "Min Dist (ft)" to "Minimum movement, before another track point is recorded. Smaller values retain more detail and may retain more position noise. Minimum ${units.feet(2.0, 2)}.",
         "New Track Delay (s)" to "Gap between aircraft waypoints after which the current track ends and a later observation starts a new track. Measured in seconds; this is not a delay before publishing. Minimum 15 seconds; smaller values are raised to 15.",
         "Max Idle Time (minutes)" to "Minutes without qualifying RID activity or user interaction before the app closes automatically. Use 0 to disable automatic closing. Enter a nonnegative whole number.",
-        "Bridge Check Distance (ft)" to "Distance used by signal-loss warnings to distinguish an aircraft near the tablet from one that has moved away. Warnings are armed after the aircraft moves beyond this distance and suppressed when it returns near the tablet. Minimum 1 foot; default 20 feet. This is separate from proximity-alert spacing.",
-        "Proximity Alert Spacing (ft, minimum 50; default 100)" to "Separation threshold used by proximity alerts, in feet. Minimum 50 feet; default 100 feet.",
-        "NOTAM radius (statute miles)" to "Search distance around the operating location, in statute miles. Larger areas may return more notices. Supported radii: 1, 2, 4, 8, or 16; intermediate values round up to the next supported radius (maximum 16).",
+        "Bridge Check Distance (ft)" to "Distance used by signal-loss warnings to distinguish an aircraft near the tablet from one that has moved away. Warnings are armed after the aircraft moves beyond this distance and suppressed when it returns near the tablet. Minimum ${units.feet(1.0, 2)}; default ${units.feet(20.0, 2)}. This is separate from proximity-alert spacing.",
+        "Proximity Alert Spacing (ft, minimum 50; default 100)" to "Separation threshold used by proximity alerts. Minimum ${units.feet(50.0, 2)}; default ${units.feet(100.0, 2)}.",
+        "NOTAM radius (statute miles)" to "Search distance around the operating location in the selected distance units. Larger areas may return more notices. Supported radii: 1, 2, 4, 8, or 16; intermediate values round up to the next supported radius (maximum 16).",
         "Refresh interval (seconds, minimum 1800)" to "Time between automatic NOTAM/TFR refreshes. Minimum 1800 seconds (30 minutes).",
-        "Boundary query radius (statute miles)" to "Search radius for protected-land boundaries in statute miles. Allowed: 1–50.",
+        "Boundary query radius (statute miles)" to "Search radius for protected-land boundaries in the selected distance units. Allowed: ${units.miles(1.0)}–${units.miles(50.0)}.",
         "FAA monitoring" to "Checks nearby NOTAMs and temporary flight restrictions through the configured FAA proxy. Requires organization-provided proxy access.",
         "External display mode" to "External display behavior. Off leaves it unmanaged; OS mirroring uses system display controls; App-managed presents a separate RID2Caltopo layout.",
         "Auto-open on connect" to "Automatically opens the app-managed external view when a display connects. Off requires opening it manually.",
         "Allow external display interaction" to "Allows supported input on the app-managed external display. Off makes that view display-only.",
     )
-    fun description(title: String): String = descriptions[title.substringBefore(":")]
+    fun description(title: String, units: DisplayUnits = Units.current): String = descriptions(units)[title.substringBefore(":")]
         ?: "Choose a value using this control. The available choices are shown in Settings."
 }

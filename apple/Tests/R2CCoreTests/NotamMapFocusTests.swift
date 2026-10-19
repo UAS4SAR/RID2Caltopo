@@ -33,7 +33,7 @@ import Testing
         Data(payload.utf8), pilot: .init(latitude: 35, longitude: -119), operatingRadiusNM: 1
     ).first)
     #expect(notice.summary.contains("services may be unavailable"))
-    #expect(notice.summary.contains("590 NM radius"))
+    #expect(notice.summary.contains("678.96 mi radius"))
     #expect(notice.details.contains("FAA notice: AIRSPACE ADS-B"))
     #expect(notice.effectiveText == "Effective 2026-10-01T09:00:00Z to 2026-10-01T11:00:00Z")
 }

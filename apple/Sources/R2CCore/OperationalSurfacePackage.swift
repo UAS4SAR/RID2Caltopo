@@ -161,7 +161,7 @@ public struct OperationalAOLState: Sendable, Equatable {
     public let reason, details: String
     public init(feet:Double?=nil,reason:String="Surface package not prepared",details:String?=nil,status:OperationalMeasurementStatus?=nil) { self.status=status ?? (feet == nil ? .unknown : .available); self.feet=feet; self.reason=reason; self.details=details ?? reason }
     public var label:String { status.label(feet) }
-    public static let explanation="AOL · 200 ft radius: height above the highest mapped surface nearby. Negative is not a collision prediction. Positive does not exclude wires or unmapped obstacles. Wires may be absent; no wire clearance is inferred from AOL. Reference assumes a ground launch at the observed takeoff location; elevated launches are unsupported. Aircraft and survey uncertainty are not bounded by pixel size."
+    public static var explanation: String { "AOL · \(DisplayUnits.current.feet(200)) radius: height above the highest mapped surface nearby. Negative is not a collision prediction. Positive does not exclude wires or unmapped obstacles. Wires may be absent; no wire clearance is inferred from AOL. Reference assumes a ground launch at the observed takeoff location; elevated launches are unsupported. Aircraft and survey uncertainty are not bounded by pixel size." }
     public static func calculate(package p:OperationalSurfacePackage,position:OperationalSurfacePackage.Point,takeoff:OperationalSurfacePackage.Point,height:Double?,compatibleGround:Double? = nil, pointOnly: Bool = false) -> Self {
         guard let height,height.isFinite else { return Self(reason:"Takeoff-relative altitude unavailable") }
         guard let ground=compatibleGround ?? p.groundAt(takeoff) else { return Self(reason:"Compatible takeoff ground unavailable") }
@@ -173,24 +173,25 @@ public struct OperationalAOLState: Sendable, Equatable {
         guard a.complete else { return Self(reason:"Incomplete surface coverage (\(a.missing) cells)") }
         guard let peak=a.peak else { return Self(reason:"Surface coverage unavailable") }
         let m=p.metadata
-        return Self(feet:(ground+height-peak.elevation)/0.3048,reason:"Available",details:"\(explanation)\nMapped high point: \(peak.latitude), \(peak.longitude); \(String(format:"%.0f",peak.distance/0.3048)) ft away; surface \(String(format:"%.0f",peak.elevation/0.3048)) ft; ground \(peak.ground.map{String(format:"%.0f",$0/0.3048)} ?? "—") ft.\n\(p.id); survey \(m.surveyDate); \(m.spacing) m cells; \(m.verticalReference). Full disk covered. Survey age is independent of telemetry age.\n\(m.quality)\n\(p.wireNotes)")
+        return Self(feet:(ground+height-peak.elevation)/0.3048,reason:"Available",details:"\(explanation)\nMapped high point: \(peak.latitude), \(peak.longitude); \(DisplayUnits.current.length(peak.distance)) away; surface \(DisplayUnits.current.length(peak.elevation)); ground \(peak.ground.map{DisplayUnits.current.length($0)} ?? "—").\n\(p.id); survey \(m.surveyDate); \(DisplayUnits.current.length(m.spacing)) cells; \(m.verticalReference). Full disk covered. Survey age is independent of telemetry age.\n\(m.quality)\n\(p.wireNotes)")
     }
 }
 
 public enum OperationalMeasurementStatus: Sendable, Equatable {
     case available, unknown, pending, stale, calibrationRequired
-    public func label(_ value: Double?, suffix: String = "", maxAbs: Double = .infinity, showPendingValue: Bool = false) -> String {
+    public func label(_ value: Double?, suffix: String = "", maxAbs: Double = .infinity, showPendingValue: Bool = false, units: DisplayUnits = .current) -> String {
         switch self {
         case .stale: return "POS?"
         case .calibrationRequired: return "CAL"
         case .pending:
             if showPendingValue, let value, value.isFinite, abs(value) <= maxAbs {
-                return OperationalMeasurementStatus.available.label(value, suffix: suffix, maxAbs: maxAbs) + "?"
+                return OperationalMeasurementStatus.available.label(value, suffix: suffix, maxAbs: maxAbs, units: units) + "?"
             }
             return "--"
         case .unknown: return "Unk"
         case .available:
             guard let value,value.isFinite,abs(value)<=maxAbs else { return "Unk" }
+            if suffix == " ft" || (suffix == "\'" && units == .metric) { return units.feet(value) }
             let rounded = String(format:"%.0f",value)
             return (rounded == "-0" ? "0" : rounded)+suffix
         }

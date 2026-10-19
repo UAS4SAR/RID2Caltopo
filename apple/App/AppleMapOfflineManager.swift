@@ -60,9 +60,12 @@ enum AppleMapCachePaths {
         }
     }()
 
-    static var root: URL {
+    // Path construction is used by MapKit and SwiftUI on the main thread.
+    // Migration must be requested only by the workers that access the files.
+    static var root: URL { durableRoot }
+    static func prepare() {
+        assert(!Thread.isMainThread, "Tile-cache migration must run on a worker")
         _ = prepareStorage
-        return durableRoot
     }
 
     static var demRoot: URL {
@@ -82,7 +85,7 @@ enum AppleMapCachePaths {
 /// One persistent map-data budget. Reservations include downloads not yet published.
 enum AppleUnifiedMapCache {
     private struct Entry { let bytes: Int64; let date: Date }
-    // All mutable state is protected by AppleMapCacheAccess's recursive lock.
+    // Entries/reservations use the disk-cache lock; UI status uses statusLock.
     private final class State: @unchecked Sendable {
         var entries: [URL: Entry] = [:]
         var initialized = false
@@ -93,8 +96,12 @@ enum AppleUnifiedMapCache {
         var blocked = false
     }
     private static let state = State()
-    static var generation: Int { AppleMapCacheAccess.synchronized { state.generation } }
-    static var blocked: Bool { AppleMapCacheAccess.synchronized { state.blocked } }
+    // UI readers must not wait behind disk-cache migration, scans or eviction.
+    private static let statusLock = NSLock()
+    private static func invalidateTerrain() { statusLock.withLock { state.generation += 1 } }
+    private static func setBlocked(_ value: Bool) { statusLock.withLock { state.blocked = value } }
+    static var generation: Int { statusLock.withLock { state.generation } }
+    static var blocked: Bool { statusLock.withLock { state.blocked } }
 
     static var roots: [URL] {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
@@ -114,6 +121,7 @@ enum AppleUnifiedMapCache {
     private static func initialize() {
         guard !state.initialized else { return }
         state.initialized = true
+        AppleMapCachePaths.prepare()
         for root in roots {
             guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]) else { continue }
             for case let url as URL in enumerator {
@@ -125,14 +133,15 @@ enum AppleUnifiedMapCache {
         AppleMapCacheAccess.synchronized {
             guard let value = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) else { return }
             state.entries[url] = Entry(bytes: Int64(value.fileSize ?? 0), date: value.contentModificationDate ?? .distantPast)
-            if url.path.hasPrefix(AppleMapCachePaths.demRoot.path + "/") { state.generation += 1 }
+            if url.path.hasPrefix(AppleMapCachePaths.demRoot.path + "/") { invalidateTerrain() }
         }
     }
     static func forget(_ url: URL) { AppleMapCacheAccess.synchronized { state.entries[url] = nil } }
     static func protect(_ names: [String]) { AppleMapCacheAccess.synchronized { state.protectedTerrain = Set(names) } }
     static func touch(_ name: String) { AppleMapCacheAccess.synchronized { state.touched[name] = Date() } }
     static func usedBytes() -> Int64 {
-        AppleMapCacheAccess.synchronized { initialize(); return state.entries.values.reduce(0) { $0 + $1.bytes } }
+        assert(!Thread.isMainThread, "Map-cache enumeration must run on a worker")
+        return AppleMapCacheAccess.synchronized { initialize(); return state.entries.values.reduce(0) { $0 + $1.bytes } }
     }
     private static func trim(to target: Int64) {
         var used = usedBytes()
@@ -146,11 +155,12 @@ enum AppleUnifiedMapCache {
                 try FileManager.default.removeItem(at: url)
                 state.entries[url] = nil
                 used -= entry.bytes
-                if isTerrain { state.generation += 1 }
+                if isTerrain { invalidateTerrain() }
             } catch { }
         }
     }
     static func maintain() {
+        assert(!Thread.isMainThread, "Map-cache maintenance must run on a worker")
         AppleMapCacheAccess.synchronized { initialize(); trim(to: max(0, maximumBytes - state.reserved)) }
     }
     static func reserveWithoutEviction(_ bytes: Int64) throws -> Reservation {
@@ -167,12 +177,12 @@ enum AppleUnifiedMapCache {
             initialize()
             let amount = max(0, bytes)
             let limit = maximumBytes
-            guard amount <= limit - state.reserved else { state.blocked = true; throw CocoaError(.fileWriteOutOfSpace) }
+            guard amount <= limit - state.reserved else { setBlocked(true); throw CocoaError(.fileWriteOutOfSpace) }
             trim(to: limit - state.reserved - amount)
             guard OperationalMapCacheBudget.fits(used: usedBytes(), reserved: state.reserved, incoming: amount, limit: limit)
-            else { state.blocked = true; throw CocoaError(.fileWriteOutOfSpace) }
+            else { setBlocked(true); throw CocoaError(.fileWriteOutOfSpace) }
             state.reserved += amount
-            state.blocked = false
+            setBlocked(false)
             return Reservation(bytes: amount)
         }
     }
@@ -195,7 +205,8 @@ enum AppleMapCacheAccess {
     }
 
     static func write(_ data: Data, to destination: URL) throws -> Int64 {
-        try synchronized {
+        assert(!Thread.isMainThread, "Map-cache writes and eviction must run on a worker")
+        return try synchronized {
             let reservation = try AppleUnifiedMapCache.reserve(Int64(data.count))
             defer { reservation.close() }
             let oldSize = Int64((try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
@@ -1043,21 +1054,23 @@ final class AppleMapOfflineManager: ObservableObject {
             layerKey: baseLayer.cacheKey,
             fileExtension: baseLayer.fileExtension
         )
-        guard let data = await Task.detached(priority: .userInitiated, operation: {
-            AppleMapCacheAccess.synchronized { try? Data(contentsOf: url) }
+        guard let digest = await Task.detached(priority: .userInitiated, operation: {
+            AppleMapCachePaths.prepare()
+            return AppleMapCacheAccess.synchronized { (try? Data(contentsOf: url)).map(Self.hash) }
         }).value else { return nil }
         return AppleCachedMapTileSelection(
             zoom: zoom,
             x: x,
             y: y,
-            hash: Self.hash(data),
+            hash: digest,
             url: url
         )
     }
 
     func removeCachedTile(_ selection: AppleCachedMapTileSelection, quarantineMatchingHash: Bool) {
+        Task {
         do {
-            try AppleMapCacheAccess.remove(selection.url)
+            try await Task.detached(priority: .userInitiated) { try AppleMapCacheAccess.remove(selection.url) }.value
             if quarantineMatchingHash {
                 AppleBadTilePolicy.record(hash: selection.hash, defaults: defaults)
                 status = "Tile removed and hash quarantined"
@@ -1067,6 +1080,7 @@ final class AppleMapOfflineManager: ObservableObject {
             refreshStats()
         } catch {
             status = "Bad tile removal failed: \(error.localizedDescription)"
+        }
         }
     }
 
@@ -1447,6 +1461,7 @@ final class AppleMapOfflineManager: ObservableObject {
 }
 
 struct AppleOfflineMapPreparationView: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     struct BoundaryOption: Identifiable {
         let id: String
         let title: String
@@ -1712,9 +1727,9 @@ struct AppleOfflineMapPreparationView: View {
                     HStack {
                         DownloadMapCheckbox("DEM", isOn: $includeDEM)
                         Picker("DEM resolution", selection: $demResolution) {
-                            Text("1 m").tag(OperationalDEMResolution.maximum1m)
-                            Text("10 m").tag(OperationalDEMResolution.enhanced10m)
-                            Text("30 m").tag(OperationalDEMResolution.standard30m)
+                            Text(DisplayUnits.current.length(1, decimals: 1)).tag(OperationalDEMResolution.maximum1m)
+                            Text(DisplayUnits.current.length(10, decimals: 1)).tag(OperationalDEMResolution.enhanced10m)
+                            Text(DisplayUnits.current.length(30, decimals: 1)).tag(OperationalDEMResolution.standard30m)
                         }
                         .pickerStyle(.menu).labelsHidden().fixedSize()
                         .accessibilityLabel("DEM resolution")
@@ -1724,7 +1739,7 @@ struct AppleOfflineMapPreparationView: View {
                     if includeDEM { Text(demResolution.explanation).font(.footnote).foregroundStyle(.secondary) }
                     if includeAOL { Text("AOL obstacle tiles are prepared at 1 m; DEM resolution does not change AOL detail.").font(.footnote).foregroundStyle(.secondary) }
                     if includeAOL {
-                        Text("Downloads USGS lidar and builds obstacle tiles on this device after map and terrain downloads. Prepare before flight. Uses the selected region's bounding rectangle plus a 200 ft margin. Prepared tiles are used automatically for AOL calculations.")
+                        Text("Downloads USGS lidar and builds obstacle tiles on this device after map and terrain downloads. Prepare before flight. Uses the selected region's bounding rectangle plus a \(DisplayUnits.current.feet(200)) margin. Prepared tiles are used automatically for AOL calculations.")
                             .font(.footnote).foregroundStyle(.secondary)
                         Text(aolPlanMessage).font(.footnote)
                         if aolCatalogFailed {
@@ -1739,8 +1754,8 @@ struct AppleOfflineMapPreparationView: View {
                 }.disabled(manager.isRunning)
                 Section("Estimated download") {
                     let area = OperationalDownloadAreaSummary(bounds: bounds)
-                    LabeledContent("Width × height", value: String(format: "%.2f × %.2f mi", area.widthMiles, area.heightMiles))
-                    LabeledContent("Area", value: String(format: "%.2f sq mi", area.squareMiles))
+                    LabeledContent("Width × height", value: "\(DisplayUnits.current.miles(area.widthMiles, decimals: 2)) × \(DisplayUnits.current.miles(area.heightMiles, decimals: 2))")
+                    LabeledContent("Area", value: DisplayUnits.current.area(area.squareMiles))
                     LabeledContent("Centroid", value: String(format: "%.5f°, %.5f°", area.latitude, area.longitude))
                     Text("Measurements describe the download bounding rectangle; centroid is latitude, longitude.")
                         .font(.footnote).foregroundStyle(.secondary)
@@ -2004,6 +2019,7 @@ struct AppleOfflineMapPreparationView: View {
 }
 
 struct AppleMapCacheManagementView: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @ObservedObject var manager: AppleMapOfflineManager
     @Binding var followFocusedDrone: Bool
     let canReloadMap: Bool
@@ -2101,6 +2117,7 @@ private enum AppleMapCacheSetting: String, Identifiable {
 }
 
 private struct AppleMapCacheSettingEditor: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @ObservedObject var manager: AppleMapOfflineManager
     let setting: AppleMapCacheSetting
     @Environment(\.dismiss) private var dismiss
@@ -2195,6 +2212,7 @@ private struct AppleMapCacheSettingEditor: View {
 }
 
 private struct AppleBadTileManagementView: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @ObservedObject var manager: AppleMapOfflineManager
     @State private var badHashExport: URL?
 
@@ -2228,6 +2246,7 @@ private struct AppleBadTileManagementView: View {
 }
 
 private struct AppleBadTileHowToView: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     var body: some View {
         Form {
             Section {
@@ -2522,12 +2541,12 @@ actor AppleSurfaceBriefings {
         let key="\(p.id)|\(String(data:(try? encoder.encode(p.metadata)) ?? Data(),encoding:.utf8) ?? "")|\(points)|\(polygon)|60.96"
         if let cached=cache[key] { return cached }
         let a=prepared?.1 ?? p.briefing(points:points,corridor:60.96,polygon:polygon)
-        var text="\(polygon ? "Assignment with 200 ft boundary buffer" : "Route with 200 ft corridor radius").\n"
+        var text="\(polygon ? "Assignment with \(DisplayUnits.current.feet(200)) boundary buffer" : "Route with \(DisplayUnits.current.feet(200)) corridor radius").\n"
         text += "Extent: \(points.map(\.latitude).min()!), \(points.map(\.longitude).min()!) to \(points.map(\.latitude).max()!), \(points.map(\.longitude).max()!); \(points.count) vertices.\n"
         text += a.complete ? "Coverage complete.\n" : "INCOMPLETE: \(a.missing) of \(a.checked) cells missing. Maximum below is only the covered portion.\n"
         if let peak=a.peak {
-            text += "Highest mapped surface: \(String(format:"%.0f",peak.elevation/0.3048)) ft at \(peak.latitude), \(peak.longitude).\n"
-            text += "Ground at high point: \(peak.ground.map{String(format:"%.0f ft",$0/0.3048)} ?? "unavailable"); height above local ground: \(peak.ground.map{String(format:"%.0f ft",(peak.elevation-$0)/0.3048)} ?? "unavailable"). This is highest absolute elevation, not the tallest object.\n"
+            text += "Highest mapped surface: \(DisplayUnits.current.length(peak.elevation)) at \(peak.latitude), \(peak.longitude).\n"
+            text += "Ground at high point: \(peak.ground.map{DisplayUnits.current.length($0)} ?? "unavailable"); height above local ground: \(peak.ground.map{DisplayUnits.current.length(peak.elevation-$0)} ?? "unavailable"). This is highest absolute elevation, not the tallest object.\n"
         }
         text += "\(p.id); survey \(p.metadata.surveyDate); \(p.metadata.spacing) m cells; \(p.metadata.verticalReference).\n\(p.metadata.sourceURL)\n\(p.wireNotes)\n\(OperationalAOLState.explanation)\nThis briefing does not set RTH or a permitted flight altitude."
         let result=AppleSurfaceBriefing(text:text,peak:a.peak)
@@ -2729,6 +2748,7 @@ private final class AppleOfflineTiming {
 
 
 struct AppleStorageCacheView: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @ObservedObject var manager: AppleMapOfflineManager
     @State private var editor: AppleMapCacheSetting?
     var body: some View {
@@ -2746,6 +2766,7 @@ struct AppleStorageCacheView: View {
 }
 
 private struct DownloadMapCheckbox: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let title: String
     @Binding var isOn: Bool
     init(_ title: String, isOn: Binding<Bool>) { self.title = title; _isOn = isOn }

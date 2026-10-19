@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>R2C controller transfer</title><link rel="stylesheet" href="/style.css"></head>
+<body><main><h1>R2C Mapping</h1><p id="connection" role="status">Connecting to the R2C tablet…</p>
+<section id="pairing" hidden><label>Access code from R2C <input id="code" type="text" inputmode="numeric" maxlength="6" autocomplete="off"></label><button id="pair">Open mission</button></section>
+<section id="workspace" hidden><h2 id="title"></h2><p id="incident"></p><p id="sensor"></p>
+<section><h2>1. Load the flight route</h2><p>Download this flight route, then import it in Pilot 2 → Flight Route. Choose M4D → M4TD and review the camera, route and clearance before flight.</p>
+<button id="boundary">Download flight route KMZ</button><p>The KMZ contains the capture pattern. Review these flight parameters in Pilot 2:</p><ul id="settings"></ul>
+<details><summary>Mission record</summary><p>Contains the R2C mission record, boundary and flight route. Pilot 2 imports mission.kmz.</p><button id="package">Download mission ZIP</button></details></section>
+<section><h2>2. Return original photos</h2><p>After landing, download the aircraft's original photos in Pilot 2. Select this flight's JPEGs below. They go directly to this mission on the R2C tablet.</p>
+<p id="mode"></p><label class="file">Choose original photos<input id="photos" type="file" multiple accept=".jpg,.jpeg,image/jpeg"></label>
+<progress id="progress" max="100" value="0" hidden></progress><p id="transfer" role="status" aria-live="polite"></p><button id="cancel" hidden>Pause upload</button>
+<p id="inventory"></p><p>Selecting the same files resumes an interrupted upload and skips verified duplicates. Originals remain on both devices.</p></section>
+<p id="expires"></p><p>Keep R2C open on the tablet and both devices on the same Wi-Fi. This page cannot start or control the aircraft.</p></section>
+<p id="error" role="alert"></p></main><script src="/sha256.js"></script><script src="/transfer.js"></script></body></html>

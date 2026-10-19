@@ -3,6 +3,23 @@ import XCTest
 import Foundation
 
 final class CaltopoPersonalCatalogTests: XCTestCase {
+    func testOnlyAuthenticationRejectionsOpenInteractiveLogin() {
+        for status in [401, 403] {
+            XCTAssertTrue(CaltopoPersonalCatalog.requiresInteractiveLogin(
+                after: CaltopoLiveClientError.httpStatus(status, "Sign in required")
+            ))
+        }
+        let retryable: [Error] = [
+            URLError(.notConnectedToInternet), URLError(.timedOut), CancellationError(),
+            CaltopoLiveClientError.invalidConfiguration,
+            CaltopoLiveClientError.httpStatus(429, "Retry later"),
+            CaltopoLiveClientError.httpStatus(500, "Server error"),
+            CaltopoLiveClientError.httpStatus(503, "Unavailable"),
+        ]
+        for error in retryable {
+            XCTAssertFalse(CaltopoPersonalCatalog.requiresInteractiveLogin(after: error))
+        }
+    }
     let fixture = #"{"status":"ok","result":{"account":{"id":"USER01","folders":[{"id":"FOLDER1","properties":{"class":"UserFolder","label":"Searches"}}],"tenants":[{"id":"ABC123","properties":{"class":"CollaborativeMap","title":"Private test","folderId":"FOLDER1","updated":123}}],"bookmarks":[{"id":"REL001","properties":{"class":"UserAccountMapRel","mapId":"DEF456","title":"Shared map","mapUpdated":456}}],"groupAccounts":[{"id":"WORK01","alias":"Incident Workspace","isWorkspace":true,"tenants":[{"id":"GHI789","properties":{"class":"CollaborativeMap","title":"Incident"}}]},{"id":"OTHER1","alias":"Other","isWorkspace":false,"tenants":[{"id":"JKL123","properties":{"class":"CollaborativeMap","title":"Excluded"}}]}]}}}"#
     func testPhotoOwnershipUsesWritableWorkspaceOtherwisePersonal() throws {
         let writable = fixture.replacingOccurrences(of: "\"isWorkspace\":true", with: "\"isWorkspace\":true,\"type\":16")

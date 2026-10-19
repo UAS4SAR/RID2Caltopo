@@ -3,6 +3,7 @@ import R2CCore
 import SwiftUI
 
 struct RIDAircraftSummaryRow: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let track: RidAircraftTrack
     let operatorLocation: CLLocation?
     let identity: RidAircraftIdentity?
@@ -31,7 +32,7 @@ struct RIDAircraftSummaryRow: View {
                 Label(sourceSummary, systemImage: sourceIcon)
                 Text("\(track.points.count) pts")
                 if let altitude = track.lastObservation.altitudeMeters {
-                    Text("\(Int((altitude * 3.28084).rounded())) ft")
+                    Text(DisplayUnits.current.length(altitude))
                 }
                 if let relativePosition {
                     Text(formatRange(relativePosition.distanceMeters))
@@ -79,6 +80,7 @@ struct RIDAircraftSummaryRow: View {
 }
 
 struct RIDAircraftDetailView: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let track: RidAircraftTrack
     let operatorLocation: CLLocation?
     @ObservedObject var identityStore: AppleDroneConfirmationStore
@@ -152,7 +154,7 @@ struct RIDAircraftDetailView: View {
                         "Bearing",
                         value: "\(Int(relativePosition.bearingDegrees.rounded()))° \(relativePosition.cardinalDirection)"
                     )
-                    LabeledContent("Location accuracy", value: "±\(Int(operatorLocation.horizontalAccuracy.rounded())) m")
+                    LabeledContent("Location accuracy", value: "±\(DisplayUnits.current.length(operatorLocation.horizontalAccuracy))")
                 }
             }
 
@@ -195,19 +197,16 @@ struct RIDAircraftDetailView: View {
 
     private var altitudeText: String {
         guard let meters = track.lastObservation.altitudeMeters else { return "Unavailable" }
-        return "\(Int((meters * 3.28084).rounded())) ft (\(Int(meters.rounded())) m)"
+        return DisplayUnits.current.length(meters)
     }
 
     private var speedText: String {
         guard let metersPerSecond = track.lastObservation.speedMetersPerSecond else { return "Unavailable" }
-        return String(format: "%.1f mph (%.1f m/s)", metersPerSecond * 2.23694, metersPerSecond)
+        return DisplayUnits.current.speed(metersPerSecond)
     }
 
     private var distanceText: String {
-        if track.distanceMeters >= 1_000 {
-            return String(format: "%.2f km", track.distanceMeters / 1_000)
-        }
-        return "\(Int(track.distanceMeters.rounded())) m"
+        return DisplayUnits.current.distance(track.distanceMeters)
     }
 
     private func coordinate(_ value: Double) -> String {
@@ -486,6 +485,7 @@ final class AppleDroneConfirmationStore: ObservableObject {
 }
 
 struct DroneConfirmationView: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @State private var profileJSON = "{}"
     @State private var profileTouched = false
     @State private var useForAssignment = true
@@ -789,8 +789,8 @@ struct DroneConfirmationView: View {
                 }))
             }
             TextField("Takeoff payload (for example water bottle)", text: $readiness.payloadDescription)
-            TextField("Payload weight (grams, if known)", value: $readiness.payloadWeightGrams, format: .number)
-            Text("Takeoff weight: " + (readiness.aircraft.totalWeight(selected: readiness.selectedAccessories, payloadDescription: readiness.payloadDescription, payloadGrams: readiness.payloadWeightGrams).map { "\($0) grams" } ?? "incomplete — weight unknown"))
+            TextField("Payload weight (\(DisplayUnits.current.weightUnit), if known)", value: Binding<Double?>(get: { readiness.payloadWeightGrams.map(DisplayUnits.current.gramsValue) }, set: { readiness.payloadWeightGrams = $0.map(DisplayUnits.current.grams) }), format: .number)
+            Text("Takeoff weight: " + (readiness.aircraft.totalWeight(selected: readiness.selectedAccessories, payloadDescription: readiness.payloadDescription, payloadGrams: readiness.payloadWeightGrams).map { "\(DisplayUnits.current.number(DisplayUnits.current.gramsValue($0))) \(DisplayUnits.current.weightUnit)" } ?? "incomplete — weight unknown"))
         }
     }
 
@@ -812,6 +812,7 @@ struct DroneConfirmationView: View {
 }
 
 private struct RIDSignalStrengthBars: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let rssi: Int?
 
     var body: some View {
@@ -860,11 +861,7 @@ private func sourceName(_ source: RidObservation.Source) -> String {
 }
 
 private func formatRange(_ meters: Double) -> String {
-    let feet = meters * 3.28084
-    if feet >= 5_280 {
-        return String(format: "%.2f mi", feet / 5_280)
-    }
-    return "\(Int(feet.rounded())) ft"
+    DisplayUnits.current.distance(meters)
 }
 
 private extension String {

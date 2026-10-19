@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.video.surface
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 /** Caller confines this gate to the UI thread. Busy requests are dropped, never queued. */
 internal class SurfaceWorkGate {
     private var busy = false
@@ -22,12 +25,13 @@ internal fun canObserveAolLaunch(grounded: Boolean, height: Double?, heightFresh
 
 /** No unit suffix is attached to a status word. */
 enum class MeasurementStatus { Available, Unknown, Pending, Stale, CalibrationRequired }
-fun measurementLabel(value: Double?, status: MeasurementStatus = MeasurementStatus.Available, suffix: String = "", maxAbs: Double = Double.POSITIVE_INFINITY, showPendingValue: Boolean = false): String = when {
+fun measurementLabel(value: Double?, status: MeasurementStatus = MeasurementStatus.Available, suffix: String = "", maxAbs: Double = Double.POSITIVE_INFINITY, showPendingValue: Boolean = false, units: DisplayUnits = Units.current): String = when {
     status == MeasurementStatus.Stale -> "POS?"
     status == MeasurementStatus.CalibrationRequired -> "CAL"
     status == MeasurementStatus.Pending -> if (showPendingValue && value != null && value.isFinite() && kotlin.math.abs(value) <= maxAbs)
-        measurementLabel(value, MeasurementStatus.Available, suffix, maxAbs) + "?" else "--"
+        measurementLabel(value, MeasurementStatus.Available, suffix, maxAbs, units = units) + "?" else "--"
     status == MeasurementStatus.Unknown || value == null || !value.isFinite() || kotlin.math.abs(value)>maxAbs -> "Unk"
+    suffix == " ft" || (suffix == "\'" && units == DisplayUnits.METRIC) -> units.feet(value)
     else -> String.format(java.util.Locale.US,"%.0f",value).let { if (it == "-0") "0" else it }+suffix
 }
 

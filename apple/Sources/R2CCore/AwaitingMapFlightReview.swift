@@ -75,6 +75,7 @@ public enum AwaitingMapFlightText {
 
     /// Feet rounded to 10 below one mile; miles to one decimal from one mile up.
     public static func distance(meters: Double) -> String {
+        if DisplayUnits.current == .metric { return DisplayUnits.current.distance(meters) }
         let feet = meters / 0.3048
         if feet < 5_280 { return "\(Int((feet / 10).rounded()) * 10) ft" }
         return String(format: "%.1f mi", locale: Locale(identifier: "en_US_POSIX"), feet / 5_280)
@@ -108,7 +109,7 @@ public enum AwaitingMapFlightText {
     public static func locationSummary(accuracyMeters: Double?, fixTime: String) -> String {
         var parts = ["Distances from your current location"]
         if let accuracyMeters, accuracyMeters.isFinite, accuracyMeters >= 0 {
-            parts.append("GPS ±\(Int((accuracyMeters / 0.3048).rounded())) ft")
+            parts.append("GPS ±\(DisplayUnits.current.length(accuracyMeters))")
         }
         parts.append(fixTime)
         return parts.joined(separator: " · ")
@@ -302,17 +303,17 @@ public enum AwaitingMapFlightDiscarder {
         flight: AwaitingMapFlight,
         journal: AwaitingMapFlightJournal,
         clueIDs: [UUID],
-        deleteClue: (UUID) -> Bool,
+        deleteClue: (UUID) async -> Bool,
         deleteArchive: () async -> AwaitingMapArchiveDeletion
     ) async -> AwaitingMapFlightDiscardResult {
         var result = AwaitingMapFlightDiscardResult()
         for id in clueIDs {
-            if deleteClue(id) { result.deletedClueIDs.append(id) } else { result.failures.append("clue \(id.uuidString.lowercased())") }
+            if await deleteClue(id) { result.deletedClueIDs.append(id) } else { result.failures.append("clue \(id.uuidString.lowercased())") }
         }
         result.archive = await deleteArchive()
         guard result.failures.isEmpty, result.archive.failures.isEmpty else { return result }
         do {
-            result.entryRemoved = try journal.discard(id: flight.id)
+            result.entryRemoved = try await journal.discard(id: flight.id)
             if !result.entryRemoved { result.failures.append("journal entry not found") }
         } catch {
             result.failures.append("journal: \(error.localizedDescription)")

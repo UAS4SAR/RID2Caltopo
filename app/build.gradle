@@ -10,9 +10,33 @@ plugins {
 def generatedReleaseNotesAssetsDir = layout.buildDirectory.dir("generated/release-notes/assets")
 def generatedLegalAssetsDir = layout.buildDirectory.dir("generated/legal/assets/legal")
 def generatedAppConfigProtoDir = layout.buildDirectory.dir("generated/source/proto/main/java")
+def generatedDjiProvisioningAssetsDir = layout.buildDirectory.dir("generated/dji-provisioning/assets")
+def djiProvisioningBundlePath = providers.environmentVariable("R2C_DJI_PROVISIONING_BUNDLE").orNull
+def generateDjiProvisioningAssets = tasks.register("generateDjiProvisioningAssets") {
+    inputs.property("bundlePath", djiProvisioningBundlePath ?: "none")
+    if (djiProvisioningBundlePath) inputs.file(file(djiProvisioningBundlePath))
+    outputs.dir(generatedDjiProvisioningAssetsDir)
+    doLast {
+        def output = generatedDjiProvisioningAssetsDir.get().asFile
+        delete(output)
+        output.mkdirs()
+        if (djiProvisioningBundlePath) {
+            def bundle = file(djiProvisioningBundlePath)
+            def value = new groovy.json.JsonSlurper().parse(bundle)
+            def expected = ["type", "version", "recipientSha256", "wrappedKey", "iv", "ciphertext"] as Set
+            if (bundle.length() > 32768 || value.keySet() != expected || value.type != "r2c_dji_device_provisioning" || value.version != 1 || !(value.recipientSha256 ==~ /[a-f0-9]{64}/)) {
+                throw new GradleException("Use a sealed device provisioning bundle; plaintext DJI credentials are never accepted as build assets.")
+            }
+            def asset = new File(output, "dji-provisioning/sealed.json")
+            asset.parentFile.mkdirs()
+            asset.bytes = bundle.bytes
+        }
+    }
+}
+tasks.named("preBuild").configure { dependsOn(generateDjiProvisioningAssets) }
 def versionMajor = 2
 def versionMinor = 5
-def versionPatch = 1
+def versionPatch = 2
 def appVersionName = "${versionMajor}.${versionMinor}.${versionPatch}"
 def canonicalReleaseNotesFile = rootProject.file("release-notes/${appVersionName}/whats_new.txt")
 def runProcess = { File workingDirectory, List command, Map environmentOverrides = [:], boolean ignoreExitValue = false ->
@@ -225,7 +249,7 @@ android {
         applicationId "org.ncssar.rid2caltopo"
         minSdk = 29
         targetSdk = 36
-        versionCode = 342
+        versionCode = 396
         versionName appVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
@@ -235,7 +259,7 @@ android {
         resValue "string", "app_version", "${appVersionName}"
 
         android.buildFeatures.buildConfig = true
-        buildConfigField "String", "VERSION_RELEASE_DATE", "\"2026-10-09\""
+        buildConfigField "String", "VERSION_RELEASE_DATE", "\"2026-10-19\""
         buildConfigField "String", "BUILD_VERSION", "\"${appVersionName}\""
         buildConfigField "int", "TRACKER_FUNCTIONALITY_RELEASE", "148"
         def buildTime = new Date()
@@ -261,9 +285,11 @@ android {
     }
     sourceSets {
         main {
-            jniLibs.srcDirs = ['src/main/jniLibs']
+            jniLibs.srcDirs = ['src/main/jniLibs', '../tools/mapping/dist/native/android']
             java.srcDirs += [generatedAppConfigProtoDir.get().asFile]
         }
+        test.kotlin.srcDir 'src/mappingTestFixtures/java'
+        androidTest.kotlin.srcDir 'src/mappingTestFixtures/java'
     }
 
     buildTypes {
@@ -326,7 +352,8 @@ android {
             assets.srcDirs += [
                     'src/main/assets',
                     generatedReleaseNotesAssetsDir.get().asFile,
-                    generatedLegalAssetsDir.get().asFile
+                    generatedLegalAssetsDir.get().asFile,
+                    generatedDjiProvisioningAssetsDir.get().asFile
             ]
         }
     }
@@ -423,6 +450,8 @@ dependencies {
     implementation("com.google.ai.edge.litert:litert:2.1.5")
     implementation("org.osmdroid:osmdroid-android:6.1.20")
     implementation("mil.nga:tiff:3.0.0")
+    // Bundled CPU image registration for offline, same-device 2D mapping.
+    implementation("org.opencv:opencv:4.12.0")
     // QR code generation plus a bundled scanner that remains available offline.
     implementation("com.google.zxing:core:3.5.3")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")

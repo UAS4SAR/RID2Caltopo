@@ -12,8 +12,8 @@ final class AppleConfigurationTransferManager: ObservableObject {
     @Published private(set) var exportURL: URL?
     @Published private(set) var isWorking = false
 
-    private static let backupFormat = "rid2caltopo_apple_config_backup"
-    private static let packageFormat = "rid2caltopo_mutual_aid_package"
+    private nonisolated static let backupFormat = "rid2caltopo_apple_config_backup"
+    private nonisolated static let packageFormat = "rid2caltopo_mutual_aid_package"
 
     func prepareBackup(
         passphrase: String,
@@ -24,14 +24,17 @@ final class AppleConfigurationTransferManager: ObservableObject {
         guard passphrase.count >= 8 else { status = "Use a backup passphrase of at least eight characters."; return }
         isWorking = true
         status = "Preparing encrypted configuration backup…"
+        Task {
         do {
             let data = try configurationBackupData(
                 passphrase: passphrase, caltopo: caltopo, organization: organization, identities: identities
             )
-            exportURL = try writeExport(data, name: "RID2Caltopo_Config_\(stamp()).json")
+            let filename = "RID2Caltopo_Config_\(stamp()).json"
+            exportURL = try await Task.detached(priority: .utility) { try Self.writeExport(data, name: filename) }.value
             status = "Encrypted configuration backup ready to share."
         } catch { status = "Backup failed: \(error.localizedDescription)" }
         isWorking = false
+        }
     }
 
     func importFile(
@@ -46,7 +49,7 @@ final class AppleConfigurationTransferManager: ObservableObject {
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() }; isWorking = false }
         do {
-            let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            let data = try await Task.detached(priority: .userInitiated) { try Data(contentsOf: url, options: .mappedIfSafe) }.value
             if url.pathExtension.lowercased() == "zip" || data.starts(with: [0x50, 0x4b]) {
                 _ = try await importMutualAidPackage(data, caltopo: caltopo, organization: organization)
             } else {
@@ -63,18 +66,32 @@ final class AppleConfigurationTransferManager: ObservableObject {
     func prepareMutualAidPackage(
         bounds: OperationalMapBounds,
         selectedTiles: Set<String>,
-        packageName: String
+        packageName: String,
+        incidentID: String
     ) async {
         exportURL = nil
         isWorking = true
         status = "Collecting cached map data…"
         defer { isWorking = false }
         do {
-            let cleanName = sanitize(packageName)
+            let layers = AppleMappingLayerStore.shared.layers.filter { $0.incidentId == incidentID }
+            let result = try await Task.detached(priority: .utility) {
+                try await Self.buildMapPackage(bounds: bounds, selectedTiles: selectedTiles, packageName: packageName, layers: layers)
+            }.value
+            exportURL = result.0
+            status = result.1
+        } catch { status = "Map package export failed: \(error.localizedDescription)" }
+    }
+
+    private nonisolated static func buildMapPackage(bounds: OperationalMapBounds, selectedTiles: Set<String>, packageName: String, layers: [MappingLayer]) async throws -> (URL, String) {
+            AppleMapCachePaths.prepare()
+            let cleanName = Self.sanitize(packageName)
             var entries: [OperationalZipArchive.Entry] = []
             let maximumPackageBytes = 512 * 1_024 * 1_024
             var packageBytes = 0
             var tileManifest: [[String: Any]] = []
+            var mappingManifest: [[String: Any]] = []
+            var mappingSurfaces: [[String: Any]] = []
             let sources: [(label: String, key: String, ext: String, source: String)] = [
                 ("Imagery", OperationalMapBaseLayer.imagery.cacheKey, OperationalMapBaseLayer.imagery.fileExtension, "ArcGIS-WorldImagery"),
                 ("OpenStreetMap", OperationalMapBaseLayer.openStreetMap.cacheKey, OperationalMapBaseLayer.openStreetMap.fileExtension, "OSM-Standard"),
@@ -96,6 +113,35 @@ final class AppleConfigurationTransferManager: ObservableObject {
                         "z": tile.zoom, "x": tile.x, "y": tile.y,
                         "expires_at_epoch_ms": 0, "path": path,
                     ])
+                }
+            }
+            if selectedTiles.contains("R2C Mapping layers") {
+                for layer in layers {
+                    let root=AppleMappingTileCache.layerRoot(layer.id)
+                    let tiles=try MapPackageRegion.cachedTiles(root:root,fileExtension:"png",bounds:bounds)
+                    guard !tiles.isEmpty else { continue }
+                    guard let value=try JSONSerialization.jsonObject(with:JSONEncoder().encode(layer)) as? [String:Any] else { continue }
+                    mappingManifest.append(value)
+                    let surface=root.appendingPathComponent("surface")
+                    if let files=FileManager.default.enumerator(at:surface,includingPropertiesForKeys:[.isRegularFileKey]) {
+                        for file in ({ files.allObjects.compactMap{$0 as? URL} })() where (try? file.resourceValues(forKeys:[.isRegularFileKey]).isRegularFile)==true {
+                            let bytes=try Data(contentsOf:file)
+                            guard bytes.count<=maximumPackageBytes-packageBytes else{throw TransferError.packageBytesTooLarge}
+                            packageBytes+=bytes.count
+                            let relative=String(file.path.dropFirst(root.path.count+1)),path="mapping-layers/\(layer.id)/"+relative
+                            entries.append(.init(path:path,data:bytes))
+                            mappingSurfaces.append(["layerId":layer.id,"path":path,"bytes":bytes.count,"sha256":SHA256.hash(data:bytes).map{String(format:"%02x",$0)}.joined()])
+                        }
+                    }
+                    for tile in tiles {
+                        let source=AppleMappingTileCache.tile(layerID:layer.id,zoom:tile.zoom,x:tile.x,y:tile.y)
+                        guard let bytes=AppleMapCacheAccess.synchronized({try? Data(contentsOf:source)}) else {continue}
+                        guard bytes.count<=maximumPackageBytes-packageBytes else {throw TransferError.packageBytesTooLarge}
+                        packageBytes+=bytes.count
+                        let path="mapping-layers/\(layer.id)/\(tile.zoom)/\(tile.x)/\(tile.y).png"
+                        entries.append(.init(path:path,data:bytes))
+                        tileManifest.append(["source":"R2C-Mapping-\(layer.id)","z":tile.zoom,"x":tile.x,"y":tile.y,"expires_at_epoch_ms":0,"path":path])
+                    }
                 }
             }
             var demManifest: [[String: Any]] = []
@@ -131,14 +177,12 @@ final class AppleConfigurationTransferManager: ObservableObject {
                 "generated": ISO8601DateFormatter().string(from: Date()),
                 "package_name": packageName, "source_org": "",
                 "profile_enc": "",
-                "tile_entries": tileManifest, "dem_entries": demManifest,
+                "tile_entries": tileManifest, "dem_entries": demManifest, "mapping_layers": mappingManifest, "surface_entries":mappingSurfaces,
             ]
             entries.append(.init(path: "manifest.json", data: try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])))
-            status = "Building map package…"
-            let archive = try await Task.detached(priority: .utility) { try OperationalZipArchive.encode(entries) }.value
-            exportURL = try writeExport(archive, name: "\(cleanName)_map_package.zip")
-            status = "Map package ready: \(aolFiles.filter { $0.path.hasSuffix(".aol") }.count) AOL tile(s), \(tileManifest.count) tile(s), \(demManifest.count) DEM tile(s)."
-        } catch { status = "Map package export failed: \(error.localizedDescription)" }
+            let archive = try OperationalZipArchive.encode(entries)
+            let url = try Self.writeExport(archive, name: "\(cleanName)_map_package.zip")
+            return (url, "Map package ready: \(aolFiles.filter { $0.path.hasSuffix(".aol") }.count) AOL tile(s), \(tileManifest.count) tile(s), \(demManifest.count) DEM tile(s).")
     }
 
     func configurationBackupData(
@@ -216,9 +260,14 @@ final class AppleConfigurationTransferManager: ObservableObject {
     func importMutualAidPackage(
         _ data: Data,
         caltopo: AppleCaltopoSettings,
-        organization: AppleOrgConfigSettings
+        organization: AppleOrgConfigSettings,
+        onProgress: @escaping @MainActor @Sendable (String, Double?) -> Void = { _, _ in }
     ) async throws -> Bool {
-        let decoded = try OperationalZipArchive.decode(data)
+        onProgress("Reading map package…", nil)
+        let decoded = try await Task.detached(priority: .userInitiated) {
+            try OperationalZipArchive.decode(data)
+        }.value
+        onProgress("Checking package contents…", 0.03)
         let lookup = Dictionary(uniqueKeysWithValues: decoded.map { ($0.path, $0.data) })
         guard let manifestData = lookup["manifest.json"],
               let manifest = try JSONSerialization.jsonObject(with: manifestData) as? [String: Any],
@@ -239,15 +288,55 @@ final class AppleConfigurationTransferManager: ObservableObject {
             try organization.apply(mutualAid: profile, normalizedToken: "local-ma-package")
             try caltopo.applyImported(mutualAid: profile)
         }
+        let result = try await Task.detached(priority: .userInitiated) {
+            try await Self.importMapFiles(decoded, progress: onProgress)
+        }.value
+        try AppleMappingLayerStore.shared.installShared(result.layers, incidentID: result.layers.first?.incidentId ?? "")
+        status = result.summary
+        onProgress("Import complete.", 1)
+        return !(manifest["profile_enc"] as? String ?? "").isEmpty
+    }
+
+    private struct ImportedMapFiles: Sendable {
+        let layers: [MappingLayer]
+        let summary: String
+    }
+    private nonisolated static func importMapFiles(_ decoded: [OperationalZipArchive.Entry], progress: @escaping @MainActor @Sendable (String, Double?) -> Void) async throws -> ImportedMapFiles {
+        AppleMapCachePaths.prepare()
+        let lookup = Dictionary(uniqueKeysWithValues: decoded.map { ($0.path, $0.data) })
+        guard let bytes = lookup["manifest.json"], let manifest = try JSONSerialization.jsonObject(with: bytes) as? [String: Any] else { throw TransferError.invalidPackage }
         var importedTiles = 0
-        for item in manifest["tile_entries"] as? [[String: Any]] ?? [] {
+        var importedMappingLayers:[MappingLayer]=[]
+        for value in manifest["mapping_layers"] as? [[String:Any]] ?? [] {
+            guard let data=try? JSONSerialization.data(withJSONObject:value),
+                  let layer=try? MappingLayer.decode(data,incidentID: value["incidentId"] as? String ?? "") else {continue}
+            importedMappingLayers.append(layer)
+        }
+        let tileEntries = manifest["tile_entries"] as? [[String: Any]] ?? []
+        let totalTiles = max(1, tileEntries.count)
+        for (index, item) in tileEntries.enumerated() {
+            if index.isMultiple(of: 8) {
+                let fraction = 0.05 + 0.84 * Double(index) / Double(totalTiles)
+                await progress("Importing imagery \(index + 1) of \(tileEntries.count)…", fraction)
+            }
             guard let path = item["path"] as? String, let bytes = lookup[path],
                   let z = (item["z"] as? NSNumber)?.intValue,
                   let x = (item["x"] as? NSNumber)?.intValue,
                   let y = (item["y"] as? NSNumber)?.intValue else { continue }
             let key: String
             let ext: String
-            switch item["source"] as? String {
+            let source=item["source"] as? String ?? ""
+            if source.hasPrefix("R2C-Mapping-") {
+                let layerID=String(source.dropFirst("R2C-Mapping-".count))
+                guard UUID(uuidString:layerID) != nil,
+                      importedMappingLayers.contains(where:{$0.id==layerID}),
+                      (0...23).contains(z),(0..<(1 << z)).contains(x),(0..<(1 << z)).contains(y) else {continue}
+                let destination=AppleMappingTileCache.tile(layerID:layerID,zoom:z,x:x,y:y)
+                _ = try AppleMapCacheAccess.write(bytes,to:destination)
+                importedTiles+=1
+                continue
+            }
+            switch source {
             case "ArcGIS-WorldImagery":
                 key = OperationalMapBaseLayer.imagery.cacheKey
                 ext = OperationalMapBaseLayer.imagery.fileExtension
@@ -264,6 +353,18 @@ final class AppleConfigurationTransferManager: ObservableObject {
             AppleMapOfflineManager.noteTileCached(bytes: Int(bytesAdded))
             importedTiles += 1
         }
+
+        for item in manifest["surface_entries"] as? [[String:Any]] ?? [] {
+            guard let id=item["layerId"] as? String,importedMappingLayers.contains(where:{$0.id==id}),
+                  let path=item["path"] as? String,path.hasPrefix("mapping-layers/\(id)/surface/"),
+                  let bytes=lookup[path],let expected=item["bytes"] as? Int,expected==bytes.count,
+                  let digest=item["sha256"] as? String,
+                  SHA256.hash(data:bytes).map({String(format:"%02x",$0)}).joined()==digest else{throw TransferError.invalidPackage}
+            let relative=String(path.dropFirst("mapping-layers/\(id)/".count))
+            guard !relative.split(separator:"/").contains(".."),!relative.contains("\\") else{throw TransferError.invalidPackage}
+            _ = try AppleMapCacheAccess.write(bytes,to:AppleMappingTileCache.layerRoot(id).appendingPathComponent(relative))
+        }
+        await progress("Saving mapping layer and other package data…", 0.92)
         var importedDEM = 0
         for item in manifest["dem_entries"] as? [[String: Any]] ?? [] {
             guard let path = item["path"] as? String, let bytes = lookup[path],
@@ -274,11 +375,10 @@ final class AppleConfigurationTransferManager: ObservableObject {
             importedDEM += 1
         }
         let importedAOL=try await AppleSurfaceStore.shared.importSets(lookup)
-        status = "Imported Map package: \(importedAOL) AOL tile(s), \(importedTiles) tile(s), \(importedDEM) DEM tile(s)."
-        return !(manifest["profile_enc"] as? String ?? "").isEmpty
+        return ImportedMapFiles(layers: importedMappingLayers, summary: "Imported Map package: \(importedAOL) AOL tile(s), \(importedTiles) map tile(s), \(importedMappingLayers.count) R2C mapping layer(s), \(importedDEM) DEM tile(s).")
     }
 
-    private func writeExport(_ data: Data, name: String) throws -> URL {
+    private nonisolated static func writeExport(_ data: Data, name: String) throws -> URL {
         let root = (FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory)
             .appendingPathComponent("RID2Caltopo/Exports", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -292,7 +392,7 @@ final class AppleConfigurationTransferManager: ObservableObject {
         return formatter.string(from: Date())
     }
 
-    private func sanitize(_ value: String) -> String {
+    private nonisolated static func sanitize(_ value: String) -> String {
         let safe = value.lowercased().map { $0.isLetter || $0.isNumber || "._-".contains($0) ? $0 : "_" }
         let result = String(safe).trimmingCharacters(in: CharacterSet(charactersIn: "_"))
         return result.isEmpty ? "mutual_aid" : result
@@ -601,6 +701,7 @@ struct AppleConfigurationTransferView: View {
 
 struct AppleMutualAidExportView: View {
     let bounds: OperationalMapBounds
+    let incidentID: String
     @StateObject private var manager = AppleConfigurationTransferManager()
     @State private var selectedTiles: Set<String> = ["Imagery", "OpenStreetMap", "Contours", "DEM", "AOL"]
     @State private var packageName = "Map Package"
@@ -614,7 +715,7 @@ struct AppleMutualAidExportView: View {
                 }
                 Section("Package") {
                     TextField("Package name", text: $packageName)
-                    ForEach(["Imagery", "OpenStreetMap", "Contours", "DEM", "AOL"], id: \.self) { tile in
+                    ForEach(["Imagery", "OpenStreetMap", "Contours", "DEM", "AOL"] + (AppleMappingLayerStore.shared.layers.contains(where:{$0.incidentId==incidentID}) ? ["R2C Mapping layers"] : []), id: \.self) { tile in
                         Toggle(isOn: Binding(
                             get: { selectedTiles.contains(tile) },
                             set: { checked in
@@ -628,7 +729,7 @@ struct AppleMutualAidExportView: View {
                     Button("Prepare Map Package", systemImage: "shippingbox") {
                         Task {
                             await manager.prepareMutualAidPackage(
-                                bounds: bounds, selectedTiles: selectedTiles, packageName: packageName
+                                bounds: bounds, selectedTiles: selectedTiles, packageName: packageName, incidentID: incidentID
                             )
                         }
                     }

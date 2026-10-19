@@ -6,38 +6,38 @@ private func awaitingSample(_ time: TimeInterval = 1_000_000, latitude: Double =
     RidObservation(source: .bluetoothLegacy, aircraftId: "RID-1", receivedAt: Date(timeIntervalSince1970: time), latitude: latitude, longitude: -121, altitudeMeters: 500)
 }
 
-@Test @MainActor func pendingFlightRequiresDecisionAndSurvivesRestart() throws {
+@Test @MainActor func pendingFlightRequiresDecisionAndSurvivesRestart() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let file = root.appendingPathComponent("pending.json")
-    let journal = AwaitingMapFlightJournal(fileURL: file)
-    try journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample()], mapID: "", teamID: "team-a", finished: false)
+    let journal = await AwaitingMapFlightJournal.loaded(fileURL: file)
+    try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample()], mapID: "", teamID: "team-a", finished: false)
     let id = try #require(journal.entries.first?.id)
     #expect(journal.entries[0].decision == "review")
     // Connecting a map does not bind or authorize the flight.
-    try journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample(), awaitingSample(1_000_010)], mapID: "map-a", teamID: "team-a", finished: false)
+    try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample(), awaitingSample(1_000_010)], mapID: "map-a", teamID: "team-a", finished: false)
     #expect(journal.entries[0].mapID.isEmpty)
     #expect(journal.entries[0].decision == "review")
-    try journal.decide(id: id, mapID: "map-a", teamID: "team-a")
-    let reopened = AwaitingMapFlightJournal(fileURL: file)
+    try await journal.decide(id: id, mapID: "map-a", teamID: "team-a")
+    let reopened = await AwaitingMapFlightJournal.loaded(fileURL: file)
     #expect(reopened.entries[0].id == id)
     #expect(reopened.entries[0].finished)
     #expect(reopened.entries[0].mapID == "map-a")
     #expect(reopened.entries[0].points.count == 2)
     // Subsequent requests cannot silently retarget an accepted flight.
-    try reopened.decide(id: id, mapID: "map-b", teamID: "team-b")
+    try await reopened.decide(id: id, mapID: "map-b", teamID: "team-b")
     #expect(reopened.entries[0].mapID == "map-a")
 }
 
-@Test @MainActor func keepLocalAndSeparateFlightConsentSurviveRestart() throws {
+@Test @MainActor func keepLocalAndSeparateFlightConsentSurviveRestart() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let file = root.appendingPathComponent("pending.json")
-    let journal = AwaitingMapFlightJournal(fileURL: file)
-    try journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample()], mapID: "", teamID: "", finished: false)
-    try journal.decide(id: journal.entries[0].id, mapID: nil, teamID: "")
-    let reopened = AwaitingMapFlightJournal(fileURL: file)
-    try reopened.record(remoteID: "RID-1", label: "New flight", observations: [awaitingSample(1_100_000)], mapID: "", teamID: "", finished: false)
+    let journal = await AwaitingMapFlightJournal.loaded(fileURL: file)
+    try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample()], mapID: "", teamID: "", finished: false)
+    try await journal.decide(id: journal.entries[0].id, mapID: nil, teamID: "")
+    let reopened = await AwaitingMapFlightJournal.loaded(fileURL: file)
+    try await reopened.record(remoteID: "RID-1", label: "New flight", observations: [awaitingSample(1_100_000)], mapID: "", teamID: "", finished: false)
     #expect(reopened.entries.map(\.decision) == ["local", "review"])
 }
 
@@ -57,33 +57,33 @@ private func awaitingSample(_ time: TimeInterval = 1_000_000, latitude: Double =
     #expect(entry.points.first?.receivedAt == samples.first?.receivedAt)
 }
 
-@Test @MainActor func selectedMapIsBoundAndDoesNotBecomeAnOfferWhenMapChanges() throws {
+@Test @MainActor func selectedMapIsBoundAndDoesNotBecomeAnOfferWhenMapChanges() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let journal = AwaitingMapFlightJournal(fileURL: root.appendingPathComponent("pending.json"))
-    try journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample()], mapID: "original", teamID: "team-a", finished: false)
-    try journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample(), awaitingSample(1_000_001)], mapID: "other", teamID: "team-b", finished: false)
+    let journal = await AwaitingMapFlightJournal.loaded(fileURL: root.appendingPathComponent("pending.json"))
+    try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample()], mapID: "original", teamID: "team-a", finished: false)
+    try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample(), awaitingSample(1_000_001)], mapID: "other", teamID: "team-b", finished: false)
     #expect(journal.entries[0].decision == "bound")
     #expect(journal.entries[0].mapID == "original")
     #expect(journal.entries[0].teamID == "team-a")
-    try journal.notePublication(remoteID: "RID-1", mapID: "original")
-    try journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample()], mapID: "", teamID: "", finished: true)
+    try await journal.notePublication(remoteID: "RID-1", mapID: "original")
+    try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample()], mapID: "", teamID: "", finished: true)
     #expect(journal.entries.isEmpty)
 }
 
-@Test @MainActor func discardingOneShortFlightDoesNotDiscardEarlierFlightOffer() throws {
+@Test @MainActor func discardingOneShortFlightDoesNotDiscardEarlierFlightOffer() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let journal = AwaitingMapFlightJournal(fileURL: root.appendingPathComponent("pending.json"))
-    try journal.record(remoteID: "RID-1", label: "Old", observations: [awaitingSample()], mapID: "", teamID: "", finished: false)
-    try journal.record(remoteID: "RID-1", label: "Old", observations: [awaitingSample()], mapID: "", teamID: "", finished: true)
-    try journal.record(remoteID: "RID-1", label: "New", observations: [awaitingSample(1_100_000)], mapID: "", teamID: "", finished: false)
-    try journal.discard(remoteID: "RID-1", startedAt: Date(timeIntervalSince1970: 1_100_000))
+    let journal = await AwaitingMapFlightJournal.loaded(fileURL: root.appendingPathComponent("pending.json"))
+    try await journal.record(remoteID: "RID-1", label: "Old", observations: [awaitingSample()], mapID: "", teamID: "", finished: false)
+    try await journal.record(remoteID: "RID-1", label: "Old", observations: [awaitingSample()], mapID: "", teamID: "", finished: true)
+    try await journal.record(remoteID: "RID-1", label: "New", observations: [awaitingSample(1_100_000)], mapID: "", teamID: "", finished: false)
+    try await journal.discard(remoteID: "RID-1", startedAt: Date(timeIntervalSince1970: 1_100_000))
     #expect(journal.entries.count == 1)
     #expect(journal.entries[0].label == "Old")
 }
 
-@Test func deferredFlightPublicationUsesFirstWaypointTimestamp() throws {
+@Test func deferredFlightPublicationUsesFirstWaypointTimestamp() async throws {
     let first = awaitingSample(1_790_553_873)
     let flight = AwaitingMapFlight(remoteID: "RID-1", label: "1sar7DjMn4Pr",
         observations: [first, awaitingSample(1_790_554_000)], teamID: "team-a")
@@ -97,19 +97,19 @@ private func awaitingSample(_ time: TimeInterval = 1_000_000, latitude: Double =
     #expect(restored.label == flight.label) // Publication does not mutate the saved base label.
 }
 
-@Test @MainActor func personalFlightCanBeAssignedAfterMapSelectionAndRestart() throws {
+@Test @MainActor func personalFlightCanBeAssignedAfterMapSelectionAndRestart() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let url = root.appendingPathComponent("pending.json")
-    let journal = AwaitingMapFlightJournal(fileURL: url)
+    let journal = await AwaitingMapFlightJournal.loaded(fileURL: url)
     let samples = (0..<64).map { awaitingSample(Double(1_000_000 + $0)) }
-    try journal.record(remoteID: "RID-1", label: "Personal flight", observations: samples, mapID: "", teamID: "", finished: false)
-    try journal.record(remoteID: "RID-1", label: "Personal flight", observations: samples, mapID: "personal-map", teamID: "", finished: true)
-    let reopened = AwaitingMapFlightJournal(fileURL: url)
+    try await journal.record(remoteID: "RID-1", label: "Personal flight", observations: samples, mapID: "", teamID: "", finished: false)
+    try await journal.record(remoteID: "RID-1", label: "Personal flight", observations: samples, mapID: "personal-map", teamID: "", finished: true)
+    let reopened = await AwaitingMapFlightJournal.loaded(fileURL: url)
     #expect(reopened.entries[0].decision == "review")
     let scope = CaltopoPublicationScope.identifier(personalAccountID: "responder-a", teamID: "")
-    try reopened.decide(id: reopened.entries[0].id, mapID: "personal-map", teamID: scope)
-    let saved = AwaitingMapFlightJournal(fileURL: url).entries[0]
+    try await reopened.decide(id: reopened.entries[0].id, mapID: "personal-map", teamID: scope)
+    let saved = (await AwaitingMapFlightJournal.loaded(fileURL: url)).entries[0]
     #expect(saved.decision == "publish")
     #expect(saved.teamID == "personal:responder-a")
     #expect(saved.publication.points.count == 64)
@@ -119,17 +119,40 @@ private func awaitingSample(_ time: TimeInterval = 1_000_000, latitude: Double =
     #expect(CaltopoPublicationScope.identifier(personalAccountID: nil, teamID: "team-a") == "team-a")
 }
 
-@Test @MainActor func journalEntriesUseTheStableFlightID() throws {
+@Test @MainActor func journalEntriesUseTheStableFlightID() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let journal = AwaitingMapFlightJournal(fileURL: root.appendingPathComponent("pending.json"))
+    let journal = await AwaitingMapFlightJournal.loaded(fileURL: root.appendingPathComponent("pending.json"))
     let flightID = RidFlightID.make(aircraftID: "RID-1", startedAt: Date(timeIntervalSince1970: 1_000_000))
-    try journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample()], mapID: "", teamID: "team-a",
+    try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample()], mapID: "", teamID: "team-a",
                        finished: false, flightID: flightID)
     #expect(journal.entries.map(\.id) == [flightID])
     // Later snapshots of the same open flight keep the id (and it stays a UUID for CalTopo live tracks).
-    try journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample(), awaitingSample(1_000_010)],
+    try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample(), awaitingSample(1_000_010)],
                        mapID: "", teamID: "team-a", finished: false, flightID: "other")
     #expect(journal.entries.map(\.id) == [flightID])
     #expect(journal.entries[0].publication.liveTrackID == flightID)
+}
+
+@Test @MainActor func concurrentJournalWritesRetainBothFlightsAfterRestart() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("pending.json")
+    let journal = AwaitingMapFlightJournal(fileURL: url)
+    async let first: Void = journal.record(remoteID: "RID-1", label: "First", observations: [awaitingSample()], mapID: "", teamID: "", finished: false)
+    async let second: Void = journal.record(remoteID: "RID-2", label: "Second", observations: [awaitingSample()], mapID: "", teamID: "", finished: false)
+    _ = try await (first, second)
+    let reopened = await AwaitingMapFlightJournal.loaded(fileURL: url)
+    #expect(Set(reopened.entries.map(\.remoteID)) == ["RID-1", "RID-2"])
+}
+
+@Test @MainActor func failedJournalWriteDoesNotExposeUncommittedFlight() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try Data([1]).write(to: root)
+    let journal = AwaitingMapFlightJournal(fileURL: root.appendingPathComponent("pending.json"))
+    do {
+        try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample()], mapID: "", teamID: "", finished: false)
+        Issue.record("Expected an unwritable journal to fail")
+    } catch { #expect(journal.entries.isEmpty) }
 }

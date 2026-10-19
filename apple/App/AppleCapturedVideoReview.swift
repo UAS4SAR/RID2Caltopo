@@ -6,13 +6,13 @@ import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
-enum AppleReviewVerdict: String, CaseIterable, Identifiable, Codable {
+enum AppleReviewVerdict: String, Sendable, CaseIterable, Identifiable, Codable {
     case good, bad, unsure
     var id: String { rawValue }
     var label: String { rawValue.capitalized }
 }
 
-enum AppleReviewKind: String, CaseIterable, Identifiable, Codable {
+enum AppleReviewKind: String, Sendable, CaseIterable, Identifiable, Codable {
     case missedTarget = "missed_target"
     case falsePositive = "false_positive"
     case correctDetection = "correct_detection"
@@ -28,13 +28,13 @@ enum AppleReviewKind: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-enum AppleReviewObjectType: String, CaseIterable, Identifiable, Codable {
+enum AppleReviewObjectType: String, Sendable, CaseIterable, Identifiable, Codable {
     case person, team, tree, vehicle, artifact, unknown
     var id: String { rawValue }
     var label: String { rawValue.capitalized }
 }
 
-enum AppleReviewScenario: String, CaseIterable, Identifiable, Codable {
+enum AppleReviewScenario: String, Sendable, CaseIterable, Identifiable, Codable {
     case easyTrueTarget = "easy_true_target"
     case subtleUnderCanopy = "subtle_under_canopy"
     case treeFalsePositive = "tree_false_positive"
@@ -48,7 +48,7 @@ enum AppleReviewScenario: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-struct AppleReviewAnnotation: Codable, Identifiable, Equatable {
+struct AppleReviewAnnotation: Sendable, Codable, Identifiable, Equatable {
     let id: UUID
     let xNorm: Double
     let yNorm: Double
@@ -103,14 +103,14 @@ struct AppleReviewAnnotation: Codable, Identifiable, Equatable {
     }
 }
 
-struct AppleReviewNormalizedBox: Codable, Equatable {
+struct AppleReviewNormalizedBox: Sendable, Codable, Equatable {
     let xMin: Double, yMin: Double, xMax: Double, yMax: Double
     enum CodingKeys: String, CodingKey {
         case xMin = "x_min", yMin = "y_min", xMax = "x_max", yMax = "y_max"
     }
 }
 
-struct AppleReviewFrame: Codable, Equatable {
+struct AppleReviewFrame: Sendable, Codable, Equatable {
     let sourceTimestampMicroseconds: Int64
     var annotations: [AppleReviewAnnotation]
 
@@ -120,7 +120,7 @@ struct AppleReviewFrame: Codable, Equatable {
     }
 }
 
-struct AppleReviewSidecar: Codable, Equatable {
+struct AppleReviewSidecar: Sendable, Codable, Equatable {
     var schemaVersion = 2
     var sourceDisplayName: String
     var originalSourceURI: String?
@@ -209,7 +209,10 @@ final class AppleCapturedVideoReviewModel: ObservableObject {
         openGeneration += 1
         let generation = openGeneration
         closePlayback(deleteStagedVideo: true)
-        if let day = sourceURL.pathComponents.first(where: { AppleFlightStorage.date($0) != nil }) { AppleFlightStorage.protect(day, owner: "video-review") }
+        if let day = sourceURL.pathComponents.first(where: { AppleFlightStorage.date($0) != nil }) {
+            await reviewDisk.perform { AppleFlightStorage.protect(day, owner: "video-review") }
+        }
+        guard generation == openGeneration else { return }
         displayName = sourceURL.lastPathComponent
         state = "Preparing captured video…"
         isStaging = true
@@ -234,17 +237,17 @@ final class AppleCapturedVideoReviewModel: ObservableObject {
                 return destination
             }.value
             guard generation == openGeneration else {
-                try? FileManager.default.removeItem(at: destination)
+                reviewDisk.enqueue { try? FileManager.default.removeItem(at: destination) }
                 throw CapturedVideoError.staleSelection
             }
-            install(destination, original: sourceURL)
+            await install(destination, original: sourceURL)
         } catch is CancellationError {
-            AppleFlightStorage.release(owner: "video-review")
+            reviewDisk.enqueue { AppleFlightStorage.release(owner: "video-review") }
             state = "Captured-video preparation cancelled."
         } catch CapturedVideoError.staleSelection {
             // A later picker result owns the UI, status, and storage protection.
         } catch {
-            AppleFlightStorage.release(owner: "video-review")
+            reviewDisk.enqueue { AppleFlightStorage.release(owner: "video-review") }
             state = "Unable to open captured video: \(error.localizedDescription)"
         }
         if generation == openGeneration { isStaging = false }
@@ -338,7 +341,7 @@ final class AppleCapturedVideoReviewModel: ObservableObject {
         sidecar = .init(sourceDisplayName: "", updatedAtMilliseconds: 0, frames: [])
     }
 
-    private func install(_ playbackURL: URL, original: URL) {
+    private func install(_ playbackURL: URL, original: URL) async {
         stagedURL = playbackURL
         let item = AVPlayerItem(url: playbackURL)
         let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
@@ -368,21 +371,15 @@ final class AppleCapturedVideoReviewModel: ObservableObject {
         let digest = SHA256.hash(data: Data(original.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined()
         let originalDay = original.pathComponents.first { AppleFlightStorage.date($0) != nil }
         let root = AppleFlightStorage.root.appendingPathComponent(originalDay ?? AppleFlightStorage.dayName(Date()))
-        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        sidecarURL = root.appendingPathComponent("\(digest).review.json")
-        if let sidecarURL, let data = try? Data(contentsOf: sidecarURL),
-           let decoded = try? JSONDecoder().decode(AppleReviewSidecar.self, from: data) {
-            sidecar = decoded
-        } else {
-            sidecar = .init(
-                sourceDisplayName: original.lastPathComponent,
-                originalSourceURI: original.absoluteString,
-                playbackURI: playbackURL.absoluteString,
-                annotationSidecarPath: sidecarURL?.path,
-                updatedAtMilliseconds: 0,
-                frames: []
-            )
+        let url = root.appendingPathComponent("\(digest).review.json")
+        sidecarURL = url
+        let decoded = try? await reviewDisk.run {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            return (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(AppleReviewSidecar.self, from: $0) }
         }
+        guard generation == openGeneration else { return }
+        sidecar = decoded ?? .init(sourceDisplayName: original.lastPathComponent, originalSourceURI: original.absoluteString,
+            playbackURI: playbackURL.absoluteString, annotationSidecarPath: url.path, updatedAtMilliseconds: 0, frames: [])
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.1, preferredTimescale: 600), queue: .main
         ) { [weak self] time in
@@ -416,18 +413,28 @@ final class AppleCapturedVideoReviewModel: ObservableObject {
         if !accepted { droppedAnalysisFrameCount += 1 }
     }
 
+    private let reviewDisk = OperationalWorkQueue(label: "org.ncssar.video-review.disk")
     private func persistSidecar() {
         guard let sidecarURL else { return }
-        do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(sidecar).write(to: sidecarURL, options: .atomic)
-            state = "Saved \(annotationCount) review annotation(s)."
-        } catch { state = "Review annotation could not be saved: \(error.localizedDescription)" }
+        let snapshot = sidecar, generation = openGeneration, count = annotationCount
+        reviewDisk.enqueue { [weak self] in
+            let result = Result {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                try encoder.encode(snapshot).write(to: sidecarURL, options: .atomic)
+            }
+            Task { @MainActor in
+                guard let self, generation == self.openGeneration else { return }
+                switch result {
+                case .success: self.state = "Saved \(count) review annotation(s)."
+                case .failure(let error): self.state = "Review annotation could not be saved: \(error.localizedDescription)"
+                }
+            }
+        }
     }
 
     private func closePlayback(deleteStagedVideo: Bool) {
-        AppleFlightStorage.release(owner: "video-review")
+        reviewDisk.enqueue { AppleFlightStorage.release(owner: "video-review") }
         player?.pause()
         if let timeObserver, let player { player.removeTimeObserver(timeObserver) }
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
@@ -443,7 +450,7 @@ final class AppleCapturedVideoReviewModel: ObservableObject {
         durationSeconds = 0
         videoAspectRatio = 16.0 / 9.0
         isPaused = true
-        if deleteStagedVideo, let stagedURL { try? FileManager.default.removeItem(at: stagedURL) }
+        if deleteStagedVideo, let stagedURL { reviewDisk.enqueue { try? FileManager.default.removeItem(at: stagedURL) } }
         stagedURL = nil
     }
 }

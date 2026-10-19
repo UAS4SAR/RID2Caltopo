@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.video
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import org.ncssar.rid2caltopo.ui.PanelSettingLabel
 
 import DroneDisplayState
@@ -205,7 +208,7 @@ private fun CenterpointElevationOverlay(
             .fillMaxSize()
             .semantics {
                 contentDescription = if (!showLabel) "Crosshair" else sample?.let {
-                    val resolution = it.demResolutionMeters?.let { meters -> ", $meters meter DEM" }
+                    val resolution = it.demResolutionMeters?.let { meters -> ", ${Units.current.length(meters.toDouble())} DEM" }
                         ?: ", USGS DEM"
                     "Centerpoint elevation ${it.elevationFeet} feet$resolution"
                 }

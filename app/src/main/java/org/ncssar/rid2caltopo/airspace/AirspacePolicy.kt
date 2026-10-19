@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.airspace
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import java.util.Locale
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -55,9 +58,9 @@ object AirspacePolicy {
                 .sorted()
                 .joinToString("/") { "Class $it" }
             val gridLimit = containing.mapNotNull { it.ceilingFeet }.minOrNull()
-            val gridLimitText = gridLimit?.let { "; FAA grid limit $it ft AGL" }.orEmpty()
+            val gridLimitText = gridLimit?.let { "; FAA grid limit ${Units.current.feet(it.toDouble())} AGL" }.orEmpty()
             val coordinationText = gridLimit?.let {
-                " The displayed $it ft AGL value is the lowest FAA UAS Facility Map limit across the area, not the top of the controlled-airspace class. Requests above it require further FAA coordination."
+                " The displayed ${Units.current.feet(it.toDouble())} AGL value is the lowest FAA UAS Facility Map limit across the area, not the top of the controlled-airspace class. Requests above it require further FAA coordination."
             }.orEmpty()
             return AirspaceUiState(
                 chipSeverity = AirspaceChipSeverity.Danger,
@@ -95,11 +98,11 @@ object AirspacePolicy {
             .sorted()
             .joinToString("/") { "Class $it" }
         val distanceText = nearest?.second?.let {
-            String.format(Locale.US, " %.1f mi", it)
+            " ${Units.current.miles(it)}"
         }.orEmpty()
         val proximity = nearest?.second?.let {
             " The nearest $airport $classes facility-map grid is approximately " +
-                "${String.format(Locale.US, "%.1f", it)} statute miles away and intersects the " +
+                "${Units.current.miles(it)} away and intersects the " +
                 "${OperatingArea.displayLabel}."
         } ?: " A controlled-airspace facility-map grid intersects the ${OperatingArea.displayLabel}, but its boundary could not be compared with the current position."
         return AirspaceUiState(

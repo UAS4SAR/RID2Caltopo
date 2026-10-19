@@ -11,6 +11,19 @@ import androidx.compose.runtime.mutableStateOf
 class PersonalCaltopoLoginRequired : IllegalStateException("Sign in to CalTopo to load personal maps.")
 
 object CaltopoPersonalSession {
+    // Starts protected; read the isolated browser before showing the main activity.
+    var loginProtectionRequired by mutableStateOf(true)
+        private set
+
+    fun refreshLoginProtection(context: Context) {
+        loginProtectionRequired = runCatching {
+            context.contentResolver.call(
+                Uri.parse("content://org.ncssar.rid2caltopo.personal-session"),
+                "loginProtectionRequired", null, null
+            )?.getBoolean("required", true) ?: true
+        }.getOrDefault(true)
+    }
+
     @Volatile var generation = 0L
         private set
     suspend fun clearPersistedLogin(context: Context) {
@@ -27,6 +40,7 @@ object CaltopoPersonalSession {
                 }
             }
             resetRuntimeState()
+            loginProtectionRequired = false
         }
     }
 
@@ -52,6 +66,7 @@ object CaltopoPersonalSession {
         val decoded = parseMapHierarchy(json).map(::convert).sortedBy {
             when (it.id) { "virtual_recents" -> 0; accountID -> 1; else -> 2 }
         }
+        loginProtectionRequired = true
         this.accountID = accountID
         val owners = json.getJSONObject("mediaOwners")
         mediaOwners = owners.keys().asSequence().associateWith { owners.getString(it) }

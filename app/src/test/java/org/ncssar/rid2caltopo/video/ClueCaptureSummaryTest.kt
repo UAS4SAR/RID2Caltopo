@@ -70,10 +70,10 @@ class ClueCaptureSummaryTest {
         assertTrue(summary.contains("  Camera Azimuth: 273.2°"))
         assertTrue(!summary.contains("Heading used for clue"))
         assertTrue(summary.contains("  Gimbal angle at capture: -45.0°"))
-        assertTrue(summary.contains("  AGL: 82'"))
-        assertTrue(summary.contains("  ATO: 131'"))
-        assertTrue(summary.contains("  Projection height: 82' (fresh AGL)"))
-        assertTrue(summary.contains("  DEM used: local USGS GeoTIFF (1 m grid)"))
+        assertTrue(summary.contains("  AGL: 82 ft"))
+        assertTrue(summary.contains("  ATO: 131 ft"))
+        assertTrue(summary.contains("  Projection height: 82 ft (fresh AGL)"))
+        assertTrue(summary.contains("  DEM used: local USGS GeoTIFF (3 ft grid)"))
         assertTrue(summary.contains("  Distance to clue:"))
     }
 

@@ -33,6 +33,9 @@ public interface CalTopoSessionGateway {
     default CaltopoOp editObjectOnMap(String mapId, String type, String id, JSONObject feature, Consumer<CaltopoOp> done) {
         return editObjectWithId(type, id, feature, done);
     }
+    default CaltopoOp deleteMarkerOnMap(String mapId, String id, Consumer<CaltopoOp> done) {
+        return deleteMarkerWithId(id, done);
+    }
     default CaltopoOp deleteLiveTrackOnMap(String mapId, String id, Consumer<CaltopoOp> done) {
         return deleteLiveTrackWithId(id, done, 404);
     }

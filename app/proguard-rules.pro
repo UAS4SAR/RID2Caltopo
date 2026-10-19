@@ -43,3 +43,11 @@
 -keep class org.eclipse.paho.** { *; }
 
 -keep class org.ncssar.rid2caltopo.video.surface.SurfaceNative { *; }
+-keep class org.opencv.** { *; }
+-keep class org.ncssar.rid2caltopo.mapping.MappingSurfaceNative { *; }
+-keep class * implements org.ncssar.rid2caltopo.mapping.MappingSurfaceNative$Progress { *; }
+
+-keep class org.ncssar.rid2caltopo.mapping.MappingSurfaceNative$Reconstruction { *; }
+-keep class * implements org.ncssar.rid2caltopo.mapping.MappingSurfaceNative$StageProgress { *; }
+
+-keep interface org.ncssar.rid2caltopo.mapping.MappingSurfaceNative$StageProgress { *; }

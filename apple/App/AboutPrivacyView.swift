@@ -1,11 +1,12 @@
 import SwiftUI
 
 struct AppleReleaseNotesView: View {
+    @State private var notes: String?
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Version \(appVersion)").font(.title2.bold())
-                Text(releaseNotes)
+                if let notes {Text(notes)} else {ProgressView("Loading release notes…")}
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
@@ -13,13 +14,14 @@ struct AppleReleaseNotesView: View {
         }
         .navigationTitle("Release Notes")
         .navigationBarTitleDisplayMode(.inline)
-    }
-
-    private var releaseNotes: String {
-        guard let url = Bundle.main.url(forResource: "whats_new", withExtension: "txt"),
-              let text = try? String(contentsOf: url, encoding: .utf8)
-        else { return "Release notes are unavailable in this build." }
-        return text
+        .task {
+            let loaded=await Task.detached(priority:.userInitiated) {
+                guard let url=Bundle.main.url(forResource:"whats_new",withExtension:"txt"),
+                      let text=try? String(contentsOf:url,encoding:.utf8) else {return "Release notes are unavailable in this build."}
+                return text
+            }.value
+            if !Task.isCancelled {notes=loaded}
+        }
     }
 
     private var appVersion: String {

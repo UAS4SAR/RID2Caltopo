@@ -103,3 +103,31 @@ Upstream copyright notices are retained in the vendored source.
   [License](apple/Sources/CAOL/GEOGRAPHICLIB-LICENSE).
 - Pinned source provenance and build configuration:
   [CAOL README](apple/Sources/CAOL/README.md).
+
+## OpenCV
+
+Local visible-image mapping uses the official `org.opencv:opencv:4.12.0` Android
+archive, bundled in the application for offline CPU image registration.
+Copyright OpenCV contributors. Licensed under the Apache License, Version 2.0.
+Source and license: https://github.com/opencv/opencv/tree/4.12.0
+Android distribution: https://opencv.org/opencv4android-usage-models/
+
+## Local RTK surface runtime
+
+The Android and Apple local mapping runtimes use Ceres Solver and Eigen from the pinned
+OpenMVG 2.1 dependency tree, revision
+`01193a245ee3c36458e650b1cf4402caad8983ef`. R2C's camera adjustment, stereo
+fusion, surface interpolation, texturing and viewer are repository source.
+No OpenMVG command-line executable is run by the installed app.
+
+- Ceres Solver, copyright Google Inc. and contributors, BSD 3-Clause.
+  Full license: `CERES-LICENSE.txt` beside this notice.
+  Source: https://github.com/openMVG/openMVG/tree/01193a245ee3c36458e650b1cf4402caad8983ef/src/third_party/ceres-solver
+- Eigen, copyright Eigen contributors, Mozilla Public License 2.0.
+  Full license: `EIGEN-MPL2-LICENSE.txt` beside this notice.
+  Source: https://github.com/openMVG/openMVG/tree/01193a245ee3c36458e650b1cf4402caad8983ef/src/third_party/eigen
+- LLVM OpenMP runtime supplied by Android NDK 29, Apache License 2.0 with LLVM
+  exceptions. Source and license: https://github.com/llvm/llvm-project/tree/main/openmp
+
+The offline 3D viewer loads only the locally stored geometry and bundled R2C
+JavaScript. It has no CDN dependency or external model/texture loading.

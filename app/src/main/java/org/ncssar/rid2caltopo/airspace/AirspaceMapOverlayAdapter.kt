@@ -1,5 +1,8 @@
 package org.ncssar.rid2caltopo.airspace
 
+import org.ncssar.rid2caltopo.data.Units
+import org.ncssar.rid2caltopo.data.DisplayUnits
+
 import android.graphics.Color
 import org.osmdroid.util.GeoPoint
 
@@ -19,7 +22,7 @@ internal object AirspaceMapOverlayAdapter {
             val stroke = if (record.ceilingFeet == 0) Color.RED else Color.rgb(245, 124, 0)
             val alpha = if (record.ceilingFeet == 0) 0x38 else 0x20
             val fill = Color.argb(alpha, Color.red(stroke), Color.green(stroke), Color.blue(stroke))
-            val gridLimit = record.ceilingFeet?.let { "FAA grid limit: $it ft AGL" } ?: "FAA grid limit not published"
+            val gridLimit = record.ceilingFeet?.let { "FAA grid limit: ${Units.current.feet(it.toDouble())} AGL" } ?: "FAA grid limit not published"
             record.rings.forEachIndexed { index, ring ->
                 val points = ring.map { GeoPoint(it.latitude, it.longitude) }
                 if (points.size >= 3) {

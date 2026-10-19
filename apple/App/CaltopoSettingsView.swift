@@ -7,6 +7,8 @@ import UniformTypeIdentifiers
 import QuickLook
 
 struct CaltopoSettingsView: View {
+    @AppStorage(DisplayUnits.storageKey) private var storedUnits = DisplayUnits.imperial.rawValue
+    private var units: DisplayUnits { DisplayUnits(rawValue: draft.value("display.units", storedUnits)) ?? .imperial }
     @ObservedObject var settings: AppleCaltopoSettings
     @ObservedObject var orgSettings: AppleOrgConfigSettings
     @ObservedObject var locationProvider: AppleLocationProvider
@@ -84,6 +86,12 @@ struct CaltopoSettingsView: View {
     var body: some View {
         ScrollViewReader { scroll in
         Form {
+            Section("Display") {
+                Picker("Units", selection: draft.binding("display.units", $storedUnits)) {
+                    Text("Imperial").tag(DisplayUnits.imperial.rawValue)
+                    Text("Metric").tag(DisplayUnits.metric.rawValue)
+                }.pickerStyle(.segmented)
+            }
             Section("Administration") {
                 NavigationLink {
                     RidMappingAdminView(
@@ -176,8 +184,7 @@ struct CaltopoSettingsView: View {
                     Label("No CalTopo map selected", systemImage: "map")
                         .foregroundStyle(.secondary)
                 } else {
-                    SettingsValue("Connected Map", value: settings.mapTitle.isEmpty ? settings.mapID : settings.mapTitle)
-                    SettingsValue("Map ID", value: settings.mapID)
+                    SettingsValue("Map / Incident name", value: settings.mapTitle.isEmpty ? "Map name unavailable" : settings.mapTitle)
                 }
                 Button { showingIncidentSelection = true } label: {
                     Label("Select Incident…", systemImage: "map.fill").font(.headline)
@@ -291,23 +298,23 @@ struct CaltopoSettingsView: View {
                 Text("Published only: pairs involving an aircraft claimed by this tablet. All aircraft: any received pair, including ignored or unconfirmed flights. This does not change recording or publishing.")
                     .font(.footnote).foregroundStyle(.secondary)
                 SettingsStepper(
-                    "Proximity spacing: \(draft.value("orgSettings.proximityAlertSpacingFeet", orgSettings.proximityAlertSpacingFeet)) ft",
+                    "Proximity spacing: \(units.feet(Double(draft.value("orgSettings.proximityAlertSpacingFeet", orgSettings.proximityAlertSpacingFeet)), decimals: 1))",
                     value: draft.binding("orgSettings.proximityAlertSpacingFeet", Binding(
                         get: { orgSettings.proximityAlertSpacingFeet },
                         set: { orgSettings.setProximityAlertSpacingFeet($0) }
                     )),
-                    in: 50 ... 1_000
+                    in: 50 ... 1_000, units: units, rangeDescription: "\(units.feet(50, decimals: 2))–\(units.feet(1000, decimals: 2))"
                 )
             }
             .id("proximity-settings")
             Section("Tracking and device") {
                 SettingsStepper(
-                    "Min Dist: \(draft.value("orgSettings.minimumTrackDistanceFeet", orgSettings.minimumTrackDistanceFeet)) ft",
+                    "Min Dist: \(units.feet(Double(draft.value("orgSettings.minimumTrackDistanceFeet", orgSettings.minimumTrackDistanceFeet)), decimals: 1))",
                     value: draft.binding("orgSettings.minimumTrackDistanceFeet", Binding(
                         get: { orgSettings.minimumTrackDistanceFeet },
                         set: { orgSettings.setMinimumTrackDistanceFeet($0) }
                     )),
-                    in: 2 ... 1_000
+                    in: 2 ... 1_000, units: units, rangeDescription: "\(units.feet(2, decimals: 2))–\(units.feet(1000, decimals: 2))"
                 )
                 SettingsStepper(
                     "New Track Delay: \(draft.value("orgSettings.newTrackDelaySeconds", orgSettings.newTrackDelaySeconds)) s",
@@ -317,23 +324,23 @@ struct CaltopoSettingsView: View {
                     )),
                     in: 1 ... 600
                 )
-                SettingsPicker("Minimum Location Accuracy", selection: draft.binding("minimumHorizontalAccuracyCode", $minimumHorizontalAccuracyCode)) {
-                    Text("30 m").tag(9)
-                    Text("10 m").tag(10)
-                    Text("3 m").tag(11)
-                    Text("1 m").tag(12)
+                SettingsPicker("Minimum Location Accuracy", selection: draft.binding("minimumHorizontalAccuracyCode", $minimumHorizontalAccuracyCode), units: units) {
+                    Text(units.length(30, decimals: 1)).tag(9)
+                    Text(units.length(10, decimals: 1)).tag(10)
+                    Text(units.length(3, decimals: 1)).tag(11)
+                    Text(units.length(1, decimals: 1)).tag(12)
                 }
                 .pickerStyle(.menu)
                 Text("RID positions less accurate than this threshold remain signal-only and are not added to the track.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 SettingsStepper(
-                    "Bridge Check Distance: \(draft.value("orgSettings.bridgeCheckDistanceFeet", orgSettings.bridgeCheckDistanceFeet)) ft",
+                    "Bridge Check Distance: \(units.feet(Double(draft.value("orgSettings.bridgeCheckDistanceFeet", orgSettings.bridgeCheckDistanceFeet)), decimals: 1))",
                     value: draft.binding("orgSettings.bridgeCheckDistanceFeet", Binding(
                         get: { orgSettings.bridgeCheckDistanceFeet },
                         set: { orgSettings.setBridgeCheckDistanceFeet($0) }
                     )),
-                    in: 1 ... 1_000
+                    in: 1 ... 1_000, units: units, rangeDescription: "\(units.feet(1, decimals: 2))–\(units.feet(1000, decimals: 2))"
                 )
                 SettingsStepper(
                     "Max Idle Time: \(draft.value("orgSettings.maximumIdleMinutes", orgSettings.maximumIdleMinutes)) min",
@@ -372,10 +379,9 @@ struct CaltopoSettingsView: View {
                 SettingsToggle("Refresh automatically", isOn: draft.binding("notams.autoRefresh", $notams.autoRefresh))
                     .disabled(!draft.value("notams.enabled", notams.enabled))
                 SettingsStepper(
-                    "NOTAM radius: \(draft.value("notams.radiusStatuteMiles", notams.radiusStatuteMiles)) statute " +
-                        (notams.radiusStatuteMiles == 1 ? "mile" : "miles"),
+                    "NOTAM radius: \(units.miles(Double(draft.value("notams.radiusStatuteMiles", notams.radiusStatuteMiles))))",
                     value: draft.binding("notams.radiusStatuteMiles", $notams.radiusStatuteMiles),
-                    in: 1 ... 100
+                    in: 1 ... 100, units: units, rangeDescription: "\(units.miles(1, decimals: 2))–\(units.miles(100, decimals: 2))"
                 )
                     .disabled(!draft.value("notams.enabled", notams.enabled))
                 SettingsPicker("Refresh interval", selection: draft.binding("notams.refreshIntervalSeconds", $notams.refreshIntervalSeconds)) {
@@ -400,10 +406,9 @@ struct CaltopoSettingsView: View {
                 SettingsToggle("Refresh protected lands automatically", isOn: draft.binding("landRestrictions.autoRefresh", $landRestrictions.autoRefresh))
                     .disabled(!draft.value("landRestrictions.enabled", landRestrictions.enabled))
                 SettingsStepper(
-                    "Boundary query radius: \(draft.value("landRestrictions.radiusStatuteMiles", landRestrictions.radiusStatuteMiles)) statute " +
-                        (landRestrictions.radiusStatuteMiles == 1 ? "mile" : "miles"),
+                    "Boundary query radius: \(units.miles(Double(draft.value("landRestrictions.radiusStatuteMiles", landRestrictions.radiusStatuteMiles))))",
                     value: draft.binding("landRestrictions.radiusStatuteMiles", $landRestrictions.radiusStatuteMiles),
-                    in: 1 ... 50
+                    in: 1 ... 50, units: units, rangeDescription: "\(units.miles(1, decimals: 2))–\(units.miles(50, decimals: 2))"
                 )
                 .disabled(!draft.value("landRestrictions.enabled", landRestrictions.enabled))
                 Text("Checks National Park Service, National Wildlife Refuge, U.S. Forest Service wilderness, and Colorado Parks and Wildlife boundaries. Results distinguish land-use rules from FAA airspace restrictions and include agency follow-up links.")
@@ -517,7 +522,7 @@ struct CaltopoSettingsView: View {
                     showingIncidentSelection = false
                 })
         }
-        .sheet(isPresented: $showingTeamMaps) {
+        .fullScreenCover(isPresented: $showingTeamMaps) {
             CaltopoTeamMapBrowser(settings: settings, onCredentialSelect: { profileID in
                 onSave(settings.disconnectMap())
                 settings.usesPersonalCredentials = profileID == "personal"
@@ -715,13 +720,12 @@ private struct AppleDeveloperToolsView: View {
     @State private var recentDays = 2
     @State private var resubmitting = false
     @State private var showingResetConfirmation = false
+    @State private var showingPersonalBrowser = false
 
     var body: some View {
         Form {
             Section("Experiments") {
-                NavigationLink("Personal CalTopo Login") {
-                    AppleCaltopoPersonalProbeView()
-                }
+                Button("Personal CalTopo Login") { showingPersonalBrowser = true }
             }
             Section("Configuration") {
                 Button("Load Config File", systemImage: "doc.badge.plus") {
@@ -823,6 +827,9 @@ private struct AppleDeveloperToolsView: View {
             }
         }
         .navigationTitle("Developer Tools")
+        .fullScreenCover(isPresented: $showingPersonalBrowser) {
+            NavigationStack { AppleCaltopoPersonalProbeView() }
+        }
         .fileImporter(
             isPresented: $importingConfig,
             allowedContentTypes: [.image, .json, .plainText, .data]
@@ -913,7 +920,7 @@ private struct AppleProximityPairsView: View {
     }
 
     private func feet(_ value: Double) -> String {
-        String(format: "%.1f ft", value)
+        DisplayUnits.current.feet(value, decimals: 1)
     }
 
     private func optionalFeet(_ value: Double?) -> String {
@@ -1041,6 +1048,7 @@ struct CaltopoTeamMapBrowser: View {
     var onCredentialSelect: ((String) -> Void)? = nil
     @ObservedObject private var profiles = AppleCaltopoProfileLifecycle.shared
     @State private var showPersonalLogin = false
+    @State private var personalCatalogAccepted = false
     @State private var showWebsite = false
     let onSelect: (CaltopoTeamMap) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -1070,7 +1078,12 @@ struct CaltopoTeamMapBrowser: View {
 
     private func loadSelectedMaps() async {
         if settings.usesPersonalCredentials {
-            if !(await settings.loadPersonalMaps()) { showPersonalLogin = true }
+            let loaded = await settings.loadPersonalMaps()
+            guard settings.usesPersonalCredentials else { return }
+            if !loaded, settings.personalLoginRequired {
+                personalCatalogAccepted = false
+                showPersonalLogin = true
+            }
         } else { await settings.loadTeamMaps() }
     }
 
@@ -1080,11 +1093,13 @@ struct CaltopoTeamMapBrowser: View {
                 if settings.isLoadingTeamMaps || settings.isLoadingPersonalMaps {
                     ProgressView(settings.isLoadingPersonalMaps ? "Loading personal maps…" : "Loading team maps…")
                 } else if (settings.usesPersonalCredentials ? settings.personalMaps : settings.teamMaps).isEmpty {
-                    ContentUnavailableView(
-                        "Maps Unavailable",
-                        systemImage: "map",
-                        description: Text(settings.usesPersonalCredentials ? settings.personalMapsStatus : settings.status)
-                    )
+                    ContentUnavailableView {
+                        Label("Maps Unavailable", systemImage: "map")
+                    } description: {
+                        Text(settings.usesPersonalCredentials ? settings.personalMapsStatus : settings.status)
+                    } actions: {
+                        Button("Retry") { Task { await loadSelectedMaps() } }
+                    }
                 } else {
                     List {
                         if !navigationStack.isEmpty {
@@ -1148,20 +1163,23 @@ struct CaltopoTeamMapBrowser: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
                 ToolbarItem(placement: .primaryAction) {
                     Button { Task { await loadSelectedMaps() } } label: { Image(systemName: "arrow.clockwise") }
-                        .disabled(settings.isLoadingTeamMaps)
+                        .disabled(settings.isLoadingTeamMaps || settings.isLoadingPersonalMaps)
                 }
             }
-            .sheet(isPresented: $showPersonalLogin, onDismiss: {
-                Task { _ = await settings.loadPersonalMaps() }
+            .fullScreenCover(isPresented: $showPersonalLogin, onDismiss: {
+                // The successful sign-in callback already supplied the catalog.
+                // Close/Back still checks a login completed without that callback.
+                if !personalCatalogAccepted { Task { _ = await settings.loadPersonalMaps() } }
             }) {
                 NavigationStack {
                     AppleCaltopoPersonalProbeView(onCatalog: { username, maps in
                         settings.acceptPersonalCatalog(username, maps: maps)
+                        personalCatalogAccepted = true
                         showPersonalLogin = false
                     })
                 }
             }
-            .sheet(isPresented: $showWebsite, onDismiss: {
+            .fullScreenCover(isPresented: $showWebsite, onDismiss: {
                 Task { _ = await settings.loadPersonalMaps() }
             }) {
                 NavigationStack { AppleCaltopoPersonalProbeView() }
@@ -1215,41 +1233,132 @@ struct AppleStorageManagementView: View {
 struct AppleFlightStorageLimits: View {
     @AppStorage("flight.maximumGB") private var maximumGB = FlightStoragePolicy.defaultGB
     @AppStorage("flight.maximumDays") private var maximumDays = FlightStoragePolicy.defaultDays
-    @State private var size = ""
-    @State private var days = ""
+    @State private var showingEditor = false
     @State private var message = ""
-    @Environment(\.colorScheme) private var colorScheme
-    private var valid: Bool {
-        guard let gb = Double(size), gb.isFinite, (0.1...1000).contains(gb),
-              let age = Int(days), (1...3650).contains(age) else { return false }
-        return true
-    }
-    private var changed: Bool { Double(size) != maximumGB || Int(days) != maximumDays }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SettingsTextField("Max Size (GB)", text: $size).keyboardType(.decimalPad)
-            SettingsTextField("Max Age (days)", text: $days).keyboardType(.numberPad)
-            Button("Save Limits") {
-                guard let gb = Double(size), gb.isFinite, (0.1...1000).contains(gb),
-                      let age = Int(days), (1...3650).contains(age) else {
-                    message = "Enter 0.1–1,000 GB and 1–3,650 days."; return
-                }
-                maximumGB = gb; maximumDays = age
-                AppleFlightStorage.requestCheck()
-                message = String(format: "Saved: %.1f GB, %d days.", maximumGB, maximumDays)
+        Group {
+            LabeledContent("Max Size", value: String(format: "%.1f GB", maximumGB))
+            LabeledContent("Max Age", value: "\(maximumDays) days")
+            Button {
+                showingEditor = true
+            } label: {
+                Label("Edit Flight Storage Limits", systemImage: "pencil")
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.borderedProminent)
-            .tint(colorScheme == .dark ? Color(white: 0.14) : Color(white: 0.94))
-            .foregroundStyle(!valid || !changed ? Color.gray : (colorScheme == .dark ? Color.white : Color.black))
-            .disabled(!valid || !changed)
-            Text(message.isEmpty ? String(format: "Saved limits: %.1f GB, %d days.", maximumGB, maximumDays) : message)
-            if !valid { Text("Enter 0.1–1,000 GB and 1–3,650 days.").font(.footnote) }
+            .buttonStyle(.borderless)
+            // A Group in a List expands into separate rows. Present from this
+            // single, stable button rather than attaching a sheet to every row.
+            .sheet(isPresented: $showingEditor) {
+                AppleFlightStorageLimitsEditor(maximumGB: maximumGB, maximumDays: maximumDays) { gb, age in
+                    maximumGB = gb
+                    maximumDays = age
+                    AppleFlightStorage.requestCheck()
+                    message = String(format: "Saved: %.1f GB, %d days.", gb, age)
+                }
+            }
+            if !message.isEmpty { Text(message) }
             Text("At 90% usage, cleanup removes older eligible folders to restore 10% free. Today and active files stay protected. If that is not possible, increase the allowance.")
                 .font(.footnote).foregroundStyle(.secondary)
         }
-        .onChange(of: size) { _, _ in message = "" }
-        .onChange(of: days) { _, _ in message = "" }
-        .onAppear { size = String(format: "%.1f", maximumGB); days = String(maximumDays) }
+    }
+}
+
+private struct AppleFlightStorageLimitsEditor: View {
+    let maximumGB: Double
+    let maximumDays: Int
+    let onSave: (Double, Int) -> Void
+    @State private var size: String
+    @State private var days: String
+    @FocusState private var focusedField: Field?
+    @Environment(\.dismiss) private var dismiss
+
+    private enum Field: Hashable { case size, days }
+
+    init(maximumGB: Double, maximumDays: Int, onSave: @escaping (Double, Int) -> Void) {
+        self.maximumGB = maximumGB
+        self.maximumDays = maximumDays
+        self.onSave = onSave
+        // Seed once per presentation. List refreshes must not reset drafts or the cursor.
+        _size = State(initialValue: String(maximumGB))
+        _days = State(initialValue: String(maximumDays))
+    }
+
+    private var gigabytes: Double? {
+        Double(size.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: ",", with: "."))
+    }
+    private var age: Int? { Int(days.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    private var valid: Bool {
+        guard let gb = gigabytes, gb.isFinite, (0.1...1000).contains(gb),
+              let age, (1...3650).contains(age) else { return false }
+        return true
+    }
+    private var changed: Bool { gigabytes != maximumGB || age != maximumDays }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Max Size (GB)").font(.subheadline.weight(.semibold))
+                        TextField("Max Size (GB)", text: $size)
+                            .keyboardType(.decimalPad)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(minHeight: 44)
+                            .focused($focusedField, equals: .size)
+                            .accessibilityIdentifier("flightStorage.maximumGB")
+                            .accessibilityLabel("Max Size (GB)")
+                            .submitLabel(.next)
+                            .onSubmit { focusedField = .days }
+                        Text("Enter 0.1–1,000 GB.").font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Max Age (days)").font(.subheadline.weight(.semibold))
+                        TextField("Max Age (days)", text: $days)
+                            // Keep the same iPad numeric layout as Max Size;
+                            // age validation still requires a whole number.
+                            .keyboardType(.decimalPad)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(minHeight: 44)
+                            .focused($focusedField, equals: .days)
+                            .accessibilityIdentifier("flightStorage.maximumDays")
+                            .accessibilityLabel("Max Age (days)")
+                            .submitLabel(.done)
+                            .onSubmit { save() }
+                        Text("Enter 1–3,650 whole days.").font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                if !valid {
+                    Text("Enter 0.1–1,000 GB and 1–3,650 whole days.")
+                        .font(.footnote).foregroundStyle(.red)
+                }
+            }
+            .navigationTitle("Flight Storage Limits")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save Limits", action: save).disabled(!valid || !changed)
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button(focusedField == .size ? "Next" : "Done") {
+                        focusedField = focusedField == .size ? .days : nil
+                    }
+                }
+            }
+            .task { focusedField = .size }
+        }
+    }
+
+    private func save() {
+        guard valid, changed, let gb = gigabytes, let age else { return }
+        focusedField = nil
+        onSave(gb, age)
+        dismiss()
     }
 }
 
@@ -1281,9 +1390,10 @@ struct SettingsHelpLabel: View {
     var detail: String = ""
     var centered = false
     var iconOnly = false
+    var units: DisplayUnits = .current
     @State private var showingHelp = false
-    init(_ title: String, detail: String = "", centered: Bool = false, iconOnly: Bool = false) {
-        self.title = title; self.detail = detail; self.centered = centered; self.iconOnly = iconOnly
+    init(_ title: String, detail: String = "", centered: Bool = false, iconOnly: Bool = false, units: DisplayUnits = .current) {
+        self.title = title; self.detail = detail; self.centered = centered; self.iconOnly = iconOnly; self.units = units
     }
     var body: some View {
         Button { showingHelp = true } label: {
@@ -1302,7 +1412,7 @@ struct SettingsHelpLabel: View {
             NavigationStack {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        Text(SettingsFieldHelp.description(for: title))
+                        Text(SettingsFieldHelp.description(for: title, units: units))
                         if !detail.isEmpty { Text(detail) }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding()
                 }
@@ -1380,14 +1490,15 @@ struct SettingsToggle: View {
 
 struct SettingsPicker<Selection: Hashable, Content: View>: View {
     let title: String
+    let units: DisplayUnits
     @Binding var selection: Selection
     @ViewBuilder let content: () -> Content
-    init(_ title: String, selection: Binding<Selection>, @ViewBuilder content: @escaping () -> Content) {
-        self.title = title; _selection = selection; self.content = content
+    init(_ title: String, selection: Binding<Selection>, units: DisplayUnits = .current, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title; self.units = units; _selection = selection; self.content = content
     }
     var body: some View {
         VStack(spacing: 4) {
-            SettingsHelpLabel(title, centered: true).font(.subheadline.weight(.semibold)).foregroundStyle(.tint)
+            SettingsHelpLabel(title, centered: true, units: units).font(.subheadline.weight(.semibold)).foregroundStyle(.tint)
             Picker(title, selection: $selection, content: content)
                 .labelsHidden().frame(maxWidth: .infinity).modifier(SettingsFieldBox())
         }
@@ -1398,13 +1509,15 @@ struct SettingsStepper<Value: Strideable>: View where Value.Stride: SignedNumeri
     let title: String
     @Binding var value: Value
     let range: ClosedRange<Value>
-    init(_ title: String, value: Binding<Value>, in range: ClosedRange<Value>) {
-        self.title = title; _value = value; self.range = range
+    let units: DisplayUnits
+    let rangeDescription: String?
+    init(_ title: String, value: Binding<Value>, in range: ClosedRange<Value>, units: DisplayUnits = .current, rangeDescription: String? = nil) {
+        self.title = title; _value = value; self.range = range; self.units = units; self.rangeDescription = rangeDescription
     }
     var body: some View {
         VStack(spacing: 4) {
             SettingsHelpLabel(title.components(separatedBy: ":").first ?? title,
-                              detail: "Allowed range: \(range.lowerBound)–\(range.upperBound).", centered: true)
+                              detail: "Allowed range: \(rangeDescription ?? "\(range.lowerBound)–\(range.upperBound)").", centered: true, units: units)
                 .font(.subheadline.weight(.semibold)).foregroundStyle(.tint)
             Stepper(value: $value, in: range) {
                 Text(title.components(separatedBy: ":").dropFirst().joined(separator: ":").trimmingCharacters(in: .whitespaces))
@@ -1604,3 +1717,48 @@ private struct SettingsDismissGuard: UIViewControllerRepresentable {
         func presentationControllerDidAttemptToDismiss(_ presentationController: UIPresentationController) { onAttempt?() }
     }
 }
+
+#if DEBUG && targetEnvironment(simulator)
+/// Component-test host. Never records a launch acknowledgment or starts radios.
+struct AppleSettingsUnitsUIProbe: View {
+    private static var didSeedFixture = false
+    @StateObject private var settings = AppleCaltopoSettings()
+    @StateObject private var organization = AppleOrgConfigSettings()
+    @StateObject private var location = AppleLocationProvider()
+    @StateObject private var importer = AppleOrgConfigImporter()
+    @StateObject private var identities = AppleDroneConfirmationStore()
+    @StateObject private var tracks = RIDTrackViewModel()
+    @StateObject private var proximity = AppleProximityAlertCenter()
+    @StateObject private var bridge = AppleDroneScoutBridgeAlertCenter()
+    @AppStorage(DisplayUnits.storageKey) private var units = "imperial"
+    @State private var showingSettings = false
+
+    init() {
+        // Reset is opt-in and only used on the dedicated qualification Simulator.
+        if ProcessInfo.processInfo.arguments.contains("--reset-units-fixture"), !Self.didSeedFixture {
+            Self.didSeedFixture = true
+            UserDefaults.standard.set("imperial", forKey: DisplayUnits.storageKey)
+            UserDefaults.standard.set(100, forKey: "track.minimumDistanceFeet")
+            UserDefaults.standard.set(100, forKey: "org.proximityFeet")
+            UserDefaults.standard.set(20, forKey: "track.bridgeCheckDistanceFeet")
+        }
+    }
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 20) {
+                Text("Settings units qualification")
+                Text("Stored units: \(units)").accessibilityIdentifier("stored-units")
+                Text("Stored track distance: \(organization.minimumTrackDistanceFeet) ft")
+                    .accessibilityIdentifier("stored-track-distance")
+                Button("Open Settings") { showingSettings = true }
+            }
+            .navigationDestination(isPresented: $showingSettings) {
+                CaltopoSettingsView(settings: settings, orgSettings: organization,
+                    locationProvider: location, importer: importer, identityStore: identities,
+                    trackModel: tracks, proximityAlerts: proximity, bridgeAlerts: bridge,
+                    iCloudBackup: AppleICloudBackupCenter.shared, onSave: { _ in })
+            }
+        }
+    }
+}
+#endif

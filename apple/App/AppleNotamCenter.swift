@@ -210,7 +210,7 @@ final class AppleNotamCenter: ObservableObject {
         lastSuccessfulNotices = [notice]
         state = AppleNotamState(
             visible: true, enabled: true, configured: true, loading: false, stale: false,
-            chipSeverity: .danger, chipLabel: "NOTAMs: RESTRICTED 0.0 mi",
+            chipSeverity: .danger, chipLabel: "NOTAMs: RESTRICTED \(DisplayUnits.current.miles(0))",
             statusLine: "1 nearby NOTAM (simulator).", lastUpdated: Date(),
             queryCoordinate: .init(latitude: 39.7392, longitude: -104.9903),
             radiusStatuteMiles: radiusStatuteMiles,
@@ -305,11 +305,9 @@ final class AppleNotamCenter: ObservableObject {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw AppleNotamError.service("No HTTP NOTAM response") }
         guard (200 ..< 300).contains(http.statusCode) else { throw AppleNotamError.service("NOTAM query failed (HTTP \(http.statusCode)).") }
-        return try OperationalNotamParser.parseResponse(
-            data,
-            pilot: coordinate,
-            operatingRadiusNM: OperationalFacilityMap.operatingRadiusNM
-        )
+        return try await Task.detached(priority: .utility) {
+            try OperationalNotamParser.parseResponse(data, pilot: coordinate, operatingRadiusNM: OperationalFacilityMap.operatingRadiusNM)
+        }.value
     }
 
     private static func validatedProxyURL(
@@ -375,6 +373,7 @@ private enum AppleNotamError: LocalizedError {
 }
 
 struct AppleNotamPanel: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @ObservedObject var center: AppleNotamCenter
     let location: CLLocation?
     @Environment(\.dismiss) private var dismiss
@@ -384,7 +383,7 @@ struct AppleNotamPanel: View {
             List {
                 AppleAirspaceSafetyNotice()
                 Section("Status") {
-                    Text("Query radius: \(center.state.radiusStatuteMiles) statute mile(s)")
+                    Text("Query radius: \(DisplayUnits.current.miles(Double(center.state.radiusStatuteMiles)))")
                     if let coordinate = center.state.queryCoordinate { Text(String(format: "Query location: %.5f, %.5f", coordinate.latitude, coordinate.longitude)).font(.caption) }
                     Label(center.state.chipLabel, systemImage: "airplane.departure")
                         .foregroundStyle(color(center.state.chipSeverity))

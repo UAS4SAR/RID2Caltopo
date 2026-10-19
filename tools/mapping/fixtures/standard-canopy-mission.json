@@ -1,0 +1,79 @@
+{
+  "type": "r2c_mapping_mission",
+  "version": 1,
+  "missionId": "00000000-0000-0000-0000-000000000070",
+  "incidentId": "PARITY",
+  "assignmentId": "A1",
+  "title": "Standard canopy fixture",
+  "profile": "daylight-rgb",
+  "cameraProfileId": "m4td.visible.wide",
+  "cameraSpecifications": {
+    "widthPixels": 4032,
+    "heightPixels": 3024,
+    "diagonalFOVDegrees": 82
+  },
+  "parameters": {
+    "heightMeters": 60,
+    "desiredGroundResolutionCmPerPixel": 2,
+    "speedMetersPerSecond": 4,
+    "planningSurfaceHeightMeters": 20,
+    "forwardOverlapPercent": 80,
+    "sideOverlapPercent": 70,
+    "directionDegrees": 0,
+    "marginMeters": 10,
+    "captureTrigger": "distance-v1",
+    "cameraHeadingPolicy": "aircraft-first-v1"
+  },
+  "captureProfile": {
+    "id": "brush-trees-crossed-70-v1",
+    "passes": [
+      {
+        "gimbalPitchDegrees": -90,
+        "directionDegrees": 0,
+        "forwardOverlapPercent": 85,
+        "sideOverlapPercent": 85
+      },
+      {
+        "gimbalPitchDegrees": -70,
+        "directionDegrees": 90,
+        "forwardOverlapPercent": 85,
+        "sideOverlapPercent": 85
+      }
+    ]
+  },
+  "feature": {
+    "type": "Feature",
+    "id": "A1",
+    "properties": {
+      "class": "Assignment",
+      "title": "Canopy"
+    },
+    "geometry": {
+      "type": "Polygon",
+      "coordinates": [
+        [
+          [
+            -121,
+            39
+          ],
+          [
+            -120.999,
+            39
+          ],
+          [
+            -120.999,
+            39.001
+          ],
+          [
+            -121,
+            39.001
+          ],
+          [
+            -121,
+            39
+          ]
+        ]
+      ]
+    }
+  }
+}

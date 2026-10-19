@@ -90,7 +90,7 @@ final class AppleAirspaceCenter: ObservableObject {
                     throw AirspaceServiceFailure("Controlled-airspace lookup failed (HTTP \(http?.statusCode ?? 0)).",
                         rateLimited: http?.statusCode == 429)
                 }
-                records = try OperationalFacilityMap.parse(data)
+                records = try await Task.detached(priority: .utility) { try OperationalFacilityMap.parse(data) }.value
                 retryPolicy.succeeded()
                 lastCoordinate = location.coordinate
                 lastSuccessfulCheck = Date()
@@ -126,7 +126,7 @@ final class AppleAirspaceCenter: ObservableObject {
 
     var queryLocationText: String {
         guard let lastCoordinate else { return "No successful query location" }
-        return String(format: "%.5f, %.5f • radius: 1 statute mile", lastCoordinate.latitude, lastCoordinate.longitude)
+        return String(format: "%.5f, %.5f", lastCoordinate.latitude, lastCoordinate.longitude) + " • radius: \(DisplayUnits.current.miles(1))"
     }
 
     private func runPendingRefresh() {
@@ -181,6 +181,7 @@ private enum AppleAirspaceError: LocalizedError {
 }
 
 struct AppleAirspacePanel: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @ObservedObject var center: AppleAirspaceCenter
     @ObservedObject var notams: AppleNotamCenter
     let location: CLLocation?
@@ -211,7 +212,7 @@ struct AppleAirspacePanel: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(record.primaryAirportName.isEmpty ? "Controlled airspace" : record.primaryAirportName).fontWeight(.semibold)
                             Text(record.airspaceClasses.map { "Class \($0)" }.joined(separator: ", "))
-                            LabeledContent("FAA grid limit", value: record.ceilingFeet.map { "\($0) ft AGL" } ?? "Not published")
+                            LabeledContent("FAA grid limit", value: record.ceilingFeet.map { "\(DisplayUnits.current.feet(Double($0))) AGL" } ?? "Not published")
                             LabeledContent("LAANC", value: record.laancAvailable ? "Available—authorization required" : "Unavailable—authorization required")
                             if !record.primaryAirportFAAID.isEmpty { LabeledContent("Airport", value: record.primaryAirportFAAID) }
                             if group.gridCount > 1 {
@@ -223,7 +224,7 @@ struct AppleAirspacePanel: View {
                 Section("Nearby NOTAMs") {
                     Label(notams.state.chipLabel, systemImage: "airplane.departure")
                         .foregroundStyle(notamSeverityColor)
-                    Text("Query radius: \(notams.state.radiusStatuteMiles) statute mile(s)").font(.caption)
+                    Text("Query radius: \(DisplayUnits.current.miles(Double(notams.state.radiusStatuteMiles)))").font(.caption)
                     if let coordinate = notams.state.queryCoordinate { Text(String(format: "Query location: %.5f, %.5f", coordinate.latitude, coordinate.longitude)).font(.caption) }
                     Text(notams.state.statusLine)
                         .font(.caption)
@@ -344,6 +345,7 @@ private struct AppleFacilityMapDisplayGroup: Identifiable {
 }
 
 struct AppleAirspaceSafetyNotice: View {
+    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     var body: some View {
         Section("Verify before flight") {
             Text("Not flight authorization. Verify restrictions and operational conditions independently.").fontWeight(.semibold)

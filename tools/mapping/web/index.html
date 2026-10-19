@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>R2C Mapping</title><link rel="stylesheet" href="/style.css">
+<body><main><h1>R2C Mapping</h1><p>Mission settings → original photos → local 2D layer</p>
+<section id="pair"><label>Station pairing code <input id="code" type="password" autocomplete="off"></label><button id="connect">Connect</button></section>
+<p id="error" role="alert"></p>
+<section id="workspace" hidden>
+
+<div class="row"><label>Mission <select id="missions"></select></label><button id="refresh">Refresh</button><details><summary>Import from file</summary><label class="button">Choose mission file<input id="import" type="file" accept=".json" hidden></label></details></div>
+<section id="mission" hidden><h2 id="title"></h2><p id="summary"></p>
+<ol id="journey" class="journey" aria-label="Mapping progress"></ol>
+<section id="handoff"><h2 id="handoffTitle">Configure this mission</h2><p id="handoffDetail" aria-live="polite"></p></section>
+<details id="preflight" open><summary>Mission settings</summary>
+<label>Camera<select id="profile"><option value="daylight-rgb">Daylight RGB</option><option value="thermal">Thermal / low light (experimental)</option></select></label><p id="profileHelp"></p>
+<p id="launchLocationHelp" aria-live="polite"></p>
+<form id="settings"><div class="grid">
+<label>Height above takeoff (m)<input name="heightMeters" type="number" min="5" max="500" step="1" required></label>
+<label>Target ground resolution (cm/px)<input name="desiredGroundResolutionCmPerPixel" type="number" min="0.2" max="100" step="0.1" required></label>
+<label>Flight speed (m/s)<input name="speedMetersPerSecond" type="number" min="1" max="10" step="0.5" required></label>
+</div><details><summary>Overlap and advanced settings</summary><div class="grid">
+<label>Forward overlap (%)<input name="forwardOverlapPercent" type="number" min="60" max="95" step="1" required></label>
+<label>Side overlap (%)<input name="sideOverlapPercent" type="number" min="60" max="95" step="1" required></label>
+<label>Flight direction (°)<input name="directionDegrees" type="number" min="0" max="359" step="1" required></label>
+<label>Boundary margin (m)<input name="marginMeters" type="number" min="0" max="100" step="1" required></label>
+<label>Output resolution (cm/px)<input name="orthophotoResolutionCm" type="number" min="1" max="100" step="1" required></label>
+<label><input name="fastOrthophoto" type="checkbox"> Fast orthophoto (sparse reconstruction)</label></div></details><button>Save settings</button></form>
+<p>Nadir (straight down), single grid. Ground resolution and height are a flat-ground camera estimate; terrain elevation can change the true ground detail and clearance. Height is relative to takeoff. Review actual route parameters and terrain clearance in Pilot 2 before flight. Presets are starting points, subject to a test flight.</p>
+<p>Direct route delivery to Pilot 2 and automatic photo return are not available in this build. This optional local station is a development fallback; the intended workflow configures, transfers and reconstructs on this R2C device.</p>
+<details><summary>Manual boundary export for testing</summary><p>Download the boundary KML and move it to the controller using a transfer method supported by your device. In Pilot 2, import the boundary into the mapping route planner, then review the camera, route, height, speed, overlap and terrain clearance before flight. The template is experimental and requires separate qualification; Pilot 2 must generate and review the route before flight.</p>
+<div class="row"><button data-download="boundary.kml">Download boundary manually</button><button data-download="mapping-template.kmz">Pilot 2 template KMZ</button><button data-download="mission.json">Mission record</button></div></details></details>
+<div id="photoStep">
+<h2>2. Import original photos</h2><p id="photoReturnHelp">Direct transfer from Pilot 2 to this R2C device is not available yet.</p>
+<details><summary>Select original photos</summary><p>Select original photos from this mission. Selecting the same files resumes an interrupted transfer.</p>
+<label class="button">Select JPEGs<input id="photos" type="file" accept=".jpg,.jpeg,image/jpeg" multiple hidden></label><p id="transfer" aria-live="polite"></p>
+<p>If you selected the wrong files, clear their incomplete transfers below. Successfully stored originals are retained.</p><button id="clearPending">Clear incomplete transfers</button></details>
+<p id="photoCount"></p><button id="process">Make 2D map</button><button id="cancelInterrupted" hidden>Cancel interrupted engine task</button></div>
+<section id="result" hidden><h2>Review the 2D layer</h2><p>Check recognizable features, alignment, coverage and transparent gaps. The raster extent can exceed the assignment boundary.</p>
+<label>Zoom <input id="zoom" type="range" min="5" max="23" step="1"></label><canvas id="map" width="1000" height="650" aria-label="Local orthophoto preview; drag to pan"></canvas>
+<p id="layerInfo"></p><div class="row"><button id="layerLink">Get local R2C layer link</button><button id="publish">Share layer with organization</button></div><p id="links"></p><p id="publishInfo"></p>
+<details><summary>Export finished files</summary><button data-download="layer.zip">Download finished layer package</button><p>The package contains the orthophoto, XYZ tiles and a checksum manifest. Original photos stay on this station.</p></details></section>
+</section></section></main>
+<dialog id="processing"><h2 id="modalTitle">Making 2D map</h2><p id="phase"></p><progress id="progress" max="100"></progress><p id="eta"></p><p>Keep this local processing device and engine awake. You can reconnect from this page after a network interruption.</p><button id="cancel">Cancel processing</button></dialog>
+<script src="/app.js"></script></body></html>

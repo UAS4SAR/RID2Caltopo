@@ -48,7 +48,8 @@ data class MapFolderUiState(
 data class MapItemUiState(
     val featureId: String,
     val title: String,
-    val zoomableAssignment: Boolean = false
+    val zoomableAssignment: Boolean = false,
+    val mappableAssignment: Boolean = false
 )
 
 /**
@@ -72,6 +73,7 @@ fun MapFoldersDialog(
     onAllItemsToggled: (itemIds: List<String>, visible: Boolean) -> Unit,
     onZoomToItem: (itemId: String) -> Unit,
     onSurfaceBriefing: (itemId: String) -> Unit,
+    onMapAssignment: (itemId: String) -> Unit,
     onDismiss: () -> Unit
 ) {
     var searchText by remember { mutableStateOf("") }
@@ -152,6 +154,9 @@ fun MapFoldersDialog(
                                             )
                                             if (itemVisible) {
                                                 androidx.compose.material3.TextButton(onClick = { onSurfaceBriefing(item.featureId); onDismiss() }) { Text("AOL") }
+                                            }
+                                            if (item.mappableAssignment) {
+                                                TextButton(onClick = { onMapAssignment(item.featureId); onDismiss() }) { Text("Map") }
                                             }
                                             if (itemVisible && item.zoomableAssignment) {
                                                 IconButton(
