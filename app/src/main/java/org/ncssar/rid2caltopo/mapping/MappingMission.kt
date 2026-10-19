@@ -47,8 +47,8 @@ class MappingMission(private val feature: JSONObject, val incidentId: String, va
     fun json(profile: MappingResolution.Profile, desiredGsdCmPerPixel: Double? = null, capture:MappingCaptureProfile.Profile=MappingCaptureProfile.nadir, canopyHeightMeters:Double=20.0, maximumObstacleHeightMeters:Double?=null, clearanceMeters:Double=15.0, maximumCaptureSpeedMetersPerSecond:Double?=null,transitSpeedMetersPerSecond:Double?=null): JSONObject = JSONObject().apply {
         val camera = profile.sensor
         val thermal = profile.thermal
-        require(capture==MappingCaptureProfile.nadir||profile.id=="m4td.visible.wide"){"Oblique comparisons require the visible-wide camera."}
-        if(profile.id=="m4td.visible.wide")put("captureProfile",capture.json())
+        require(capture==MappingCaptureProfile.nadir||profile.isVisibleWide){"Oblique comparisons require the visible-wide camera."}
+        if(profile.isVisibleWide)put("captureProfile",capture.json())
         val targetGsd = desiredGsdCmPerPixel ?: MappingResolution.gsdCmPerPixel(60.0, camera)!!
         require(targetGsd.isFinite() && targetGsd in 0.2..100.0) { "Ground resolution must be between ${Units.current.resolution(0.2)} and ${Units.current.resolution(100.0)}." }
         val targetHeight = MappingResolution.heightMetersForGsd(targetGsd, camera)
@@ -73,7 +73,7 @@ class MappingMission(private val feature: JSONObject, val incidentId: String, va
         put("cameraSpecifications", JSONObject().apply {
             put("widthPixels", camera.widthPixels); put("heightPixels", camera.heightPixels)
             put("diagonalFOVDegrees", camera.diagonalFovDegrees)
-            if(!thermal)put("captureResolutionMode",if(profile.focalLength35mm==null)"observed-timed-12mp" else "planned-12mp")
+            if(!thermal)put("captureResolutionMode",profile.captureResolutionMode)
         })
         put("parameters", JSONObject().apply {
             require(clearanceMeters.isFinite() && clearanceMeters>0 && clearanceMeters<=500) { "Enter a positive clearance margin no greater than ${Units.current.length(500.0)}." }

@@ -119,7 +119,7 @@
 		100000000000000000000219 /* AppleSpokenWarningCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSpokenWarningCenter.swift; sourceTree = "<group>"; };
 		10000000000000000000021C /* AppleManagedVideoPreflightPeer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleManagedVideoPreflightPeer.swift; sourceTree = "<group>"; };
 		10000000000000000000021D /* AppleManagedVideoMediaPeer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleManagedVideoMediaPeer.swift; sourceTree = "<group>"; };
-		100000000000000000000215 /* whats_new.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = whats_new.txt; path = ../release-notes/2.5.2/whats_new.txt; sourceTree = "<group>"; };
+		100000000000000000000215 /* whats_new.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = whats_new.txt; path = ../release-notes/2.5.3/whats_new.txt; sourceTree = "<group>"; };
 		A73000000000000000000004 /* AppleTrackerDeviceReconciliation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleTrackerDeviceReconciliation.swift; sourceTree = "<group>"; };
 		A73000000000000000000002 /* AppleCaltopoPersonalProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleCaltopoPersonalProbe.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -157,7 +157,7 @@
 		100000000000000000000050 /* RID2CaltopoApple */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 100000000000000000000070 /* Build configuration list for PBXNativeTarget "RID2CaltopoApple" */;
-			buildPhases = (100000000000000000000060 /* Sources */, 100000000000000000000020 /* Frameworks */, 100000000000000000000061 /* Resources */,);
+			buildPhases = (100000000000000000000060 /* Sources */, 100000000000000000000020 /* Frameworks */, 100000000000000000000061 /* Resources */, A77000000000000000000001 /* Protected DJI provisioning */,);
 			buildRules = ();
 			dependencies = ();
 			name = RID2CaltopoApple;
@@ -197,6 +197,21 @@
 		100000000000000000000061 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A76000000000000000000001, A75000000000000000000009, A75000000000000000000007, A75000000000000000000005, 100000000000000000000007 /* mediamtx.yml in Resources */, 100000000000000000000104 /* Assets.xcassets in Resources */, 100000000000000000000105 /* PrivacyInfo.xcprivacy in Resources */, 100000000000000000000117 /* whats_new.txt in Resources */,); runOnlyForDeploymentPostprocessing = 0;};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+        A77000000000000000000001 /* Protected DJI provisioning */ = {
+            isa = PBXShellScriptBuildPhase;
+            alwaysOutOfDate = 1;
+            buildActionMask = 2147483647;
+            files = ();
+            inputPaths = ();
+            name = "Protected DJI provisioning";
+            outputPaths = ();
+            runOnlyForDeploymentPostprocessing = 0;
+            shellPath = /bin/sh;
+            shellScript = "\"${SRCROOT}/prepare-dji-provisioning.sh\"";
+        };
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		100000000000000000000060 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -223,7 +238,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = App/RID2CaltopoApple.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 396;
+				CURRENT_PROJECT_VERSION = 406;
 				DEVELOPMENT_TEAM = 94UV79S6LR;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
@@ -237,7 +252,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				MARKETING_VERSION = 2.5.2;
+				MARKETING_VERSION = 2.5.3;
 				OTHER_LDFLAGS = "$(inherited) -lresolv -framework VideoToolbox -framework CoreMedia -framework CoreVideo";
 				PRODUCT_BUNDLE_IDENTIFIER = org.ncssar.RID2CaltopoApple;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -256,7 +271,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = App/RID2CaltopoApple.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 396;
+				CURRENT_PROJECT_VERSION = 406;
 				DEVELOPMENT_TEAM = 94UV79S6LR;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
@@ -270,7 +285,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				MARKETING_VERSION = 2.5.2;
+				MARKETING_VERSION = 2.5.3;
 				OTHER_LDFLAGS = "$(inherited) -lresolv -framework VideoToolbox -framework CoreMedia -framework CoreVideo";
 				PRODUCT_BUNDLE_IDENTIFIER = org.ncssar.RID2CaltopoApple;
 				PRODUCT_NAME = "$(TARGET_NAME)";

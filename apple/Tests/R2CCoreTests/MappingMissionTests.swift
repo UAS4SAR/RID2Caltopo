@@ -99,7 +99,7 @@ final class MappingMissionTests: XCTestCase {
         XCTAssertEqual((payload["cameraSpecifications"] as? [String:Any])?["diagonalFOVDegrees"] as? Double, 15)
         XCTAssertEqual(payload["profile"] as? String, "daylight-rgb")
         XCTAssertEqual((payload["parameters"] as? [String:Any])?["desiredGroundResolutionCmPerPixel"] as? Double, 1.0)
-        XCTAssertEqual(MappingResolution.profiles.count, 4)
+        XCTAssertEqual(MappingResolution.profiles.filter{$0.aircraft=="DJI Matrice 4TD"}.count, 4)
     }
 
     func testMultipartAndHolesCannotBeFlattened() {

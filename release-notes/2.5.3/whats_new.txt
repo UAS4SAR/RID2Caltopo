@@ -1,0 +1,11 @@
+Latest changes:
+- Plan mapping missions for Matrice 4T, Matrice 30 and Matrice 30T with aircraft-specific camera geometry and flight-route identifiers.
+- Use wide-camera open-ground or brush/tree capture patterns on the newly added aircraft, and 3× or 7× telephoto planning on Matrice 4T.
+- Apply model-specific photo spacing and capture-speed limits while keeping transit speed independent.
+- Select the first available camera when changing aircraft in the mission planner.
+- Recognize equivalent numeric and string Pilot 2 photo-return settings, and show clearer download-owner diagnostics when the controller cannot confirm photo return.
+- Remember the selected aircraft when reopening Define Map Mission, including after restarting the app.
+- Detect an outdated Pilot 2 connection page and explain how to reopen it after an app update.
+- Keep header controls and the menu aligned to the right when they wrap onto a second line on a narrow screen.
+- Explain when Pilot 2 has not reported a connected aircraft while checking photo-download ownership.
+- Include DJI app registration automatically so Pilot 2 connection setup works on fresh installations.

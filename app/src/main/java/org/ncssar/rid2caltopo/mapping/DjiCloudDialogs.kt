@@ -25,7 +25,15 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
 @Composable fun DjiCloudSetupDialog(onDismiss:()->Unit,onSaved:()->Unit) {
     val context=LocalContext.current;val scope=rememberCoroutineScope()
     var appId by remember{mutableStateOf("")};var appKey by remember{mutableStateOf("")};var license by remember{mutableStateOf("")}
-    var hostname by remember{mutableStateOf(DjiCloudTlsStore.importedHost(context))}
+    var hostname by remember{mutableStateOf("")}
+    var configured by remember{mutableStateOf(false)}
+    var loading by remember{mutableStateOf(true)}
+    LaunchedEffect(Unit) {
+        val saved = withContext(Dispatchers.IO) {
+            DjiCloudCredentialStore.configured(context) to DjiCloudTlsStore.importedHost(context)
+        }
+        configured = saved.first; hostname = saved.second; loading = false
+    }
     var error by remember{mutableStateOf<String?>(null)};var status by remember{mutableStateOf("")};var busy by remember{mutableStateOf(false)}
     val certificate=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()){uri->if(uri!=null){busy=true;error=null;scope.launch{
         runCatching{withContext(Dispatchers.IO){
@@ -39,21 +47,21 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
     }}}
     AlertDialog(onDismissRequest={if(!busy)onDismiss()},title={Text("Pilot 2 connection setup")},text={
         Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(10.dp)) {
-            Text("Enter your DJI Cloud API application credentials once. They are encrypted with this tablet's Android Keystore and excluded from backup and mission exports.")
-            if(DjiCloudCredentialStore.configured(context))Text("Cloud API credentials are already saved. Leave these fields empty to retain them.")
-            OutlinedTextField(appId,{appId=it},label={Text("Cloud API app ID")},singleLine=true,enabled=!busy,modifier=Modifier.fillMaxWidth())
-            OutlinedTextField(appKey,{appKey=it},label={Text("Cloud API app key")},singleLine=true,enabled=!busy,visualTransformation=PasswordVisualTransformation(),modifier=Modifier.fillMaxWidth())
-            OutlinedTextField(license,{license=it},label={Text("App basic license")},enabled=!busy,visualTransformation=PasswordVisualTransformation(),modifier=Modifier.fillMaxWidth())
+            Text("DJI app registration is included with R2C. These fields are for administrator overrides, encrypted with this tablet's Android Keystore and excluded from backup and mission exports.")
+            if(configured)Text("Cloud API credentials are already saved. Leave these fields empty to retain them.")
+            OutlinedTextField(appId,{appId=it},label={Text("Cloud API app ID")},singleLine=true,enabled=!busy&&!loading,modifier=Modifier.fillMaxWidth())
+            OutlinedTextField(appKey,{appKey=it},label={Text("Cloud API app key")},singleLine=true,enabled=!busy&&!loading,visualTransformation=PasswordVisualTransformation(),modifier=Modifier.fillMaxWidth())
+            OutlinedTextField(license,{license=it},label={Text("App basic license")},enabled=!busy&&!loading,visualTransformation=PasswordVisualTransformation(),modifier=Modifier.fillMaxWidth())
             Text("Optional: import a dedicated tablet HTTPS certificate. Its hostname must resolve to this tablet on the incident LAN. Native Pilot 2 clients may reject the temporary test certificate.")
-            OutlinedTextField(hostname,{hostname=it},label={Text("Certificate hostname")},singleLine=true,enabled=!busy,modifier=Modifier.fillMaxWidth())
-            TextButton(enabled=!busy&&hostname.isNotBlank(),onClick={certificate.launch(arrayOf("application/x-pem-file","application/octet-stream","text/plain"))}){Text("Import PEM certificate chain + PKCS8 key")}
+            OutlinedTextField(hostname,{hostname=it},label={Text("Certificate hostname")},singleLine=true,enabled=!busy&&!loading,modifier=Modifier.fillMaxWidth())
+            TextButton(enabled=!busy&&!loading&&hostname.isNotBlank(),onClick={certificate.launch(arrayOf("application/x-pem-file","application/octet-stream","text/plain"))}){Text("Import PEM certificate chain + PKCS8 key")}
             Text(status);error?.let{Text(it,color=MaterialTheme.colorScheme.error)}
         }
-    },confirmButton={TextButton(enabled=!busy,onClick={busy=true;error=null;scope.launch{
+    },confirmButton={TextButton(enabled=!busy&&!loading,onClick={busy=true;error=null;scope.launch{
         runCatching{withContext(Dispatchers.IO){if(appId.isNotBlank()||appKey.isNotBlank()||license.isNotBlank())DjiCloudCredentialStore.save(context,DjiCloudCredentials(appId.trim(),appKey.trim(),license.trim()))
             require(DjiCloudCredentialStore.configured(context)){"Enter the DJI Cloud API credentials first."}}}
             .onSuccess{appKey="";license="";onSaved();onDismiss()}.onFailure{error=it.message?:"Could not save protected settings."};busy=false
-    }}){Text(if(busy)"Saving…" else "Save setup")}},dismissButton={TextButton(enabled=!busy,onClick=onDismiss){Text("Cancel")}})
+    }}){Text(if(busy)"Saving…" else "Save setup")}},dismissButton={TextButton(enabled=!busy&&!loading,onClick=onDismiss){Text("Cancel")}})
 }
 
 @Composable fun DjiCloudConnectionDialog(session:DjiCloudSession,onBack:()->Unit) {

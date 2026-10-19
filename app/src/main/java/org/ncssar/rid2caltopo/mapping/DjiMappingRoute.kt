@@ -41,8 +41,11 @@ class DjiMappingRoute(val mission: JSONObject) {
     val groundResolutionCmPerPixel = p.getDouble("desiredGroundResolutionCmPerPixel")
     private val gsd = p.getDouble("desiredGroundResolutionCmPerPixel") / 100
     private val camera = mission.getJSONObject("cameraSpecifications")
-    private val focalLength = MappingResolution.profiles.firstOrNull { it.id == mission.getString("cameraProfileId") }?.focalLength35mm
-    private val lens = if (mission.getString("profile") == "thermal") "ir" else "visable"
+    val cameraProfile = MappingResolution.profiles.firstOrNull { it.id == mission.getString("cameraProfileId") }
+        ?: throw IllegalArgumentException("Select a supported aircraft camera profile.")
+    val aircraft = cameraProfile.aircraftSpec
+    private val focalLength = cameraProfile.focalLength35mm
+    private val lens = cameraProfile.lens
     private val ring = mission.getJSONObject("feature").getJSONObject("geometry").getJSONArray("coordinates").getJSONArray(0)
     private val lat0 = (0 until ring.length()).map { ring.getJSONArray(it).getDouble(1) }.average()
     private val lon0 = (0 until ring.length()).map { ring.getJSONArray(it).getDouble(0) }.average()
@@ -75,7 +78,7 @@ class DjiMappingRoute(val mission: JSONObject) {
     val spacing = passes.minOf{passSpacing(it)}
     // Pilot 2's route checklist requires a longer interval than our old one-second policy.
     // Round down to a controller-friendly tenth so the 7x evidence grid exports 1.0 m/s.
-    val minimumCaptureInterval = if(focalLength != null)1.5 else 1.0
+    val minimumCaptureInterval = cameraProfile.minimumCaptureInterval
     private val captureSpeedLimit = (if(p.has("maximumCaptureSpeedMetersPerSecond"))p.getDouble("maximumCaptureSpeedMetersPerSecond") else p.getDouble("speedMetersPerSecond")).also {
         require(it.isFinite() && it in 1.0..15.0){"Maximum capture speed must be between 1 and 15 m/s."}
     }
@@ -90,12 +93,11 @@ class DjiMappingRoute(val mission: JSONObject) {
 
     init {
         require(mission.getString("cameraProfileId") in MappingResolution.profiles.map { it.id }) {
-            "Select a supported Matrice 4TD camera profile."
+            "Select a supported aircraft camera profile."
         }
-        if(focalLength!=null) {
-            val profile=MappingResolution.profiles.first { it.id==mission.getString("cameraProfileId") }
-            require(camera.getInt("widthPixels")==profile.sensor.widthPixels && camera.getInt("heightPixels")==profile.sensor.heightPixels && abs(camera.getDouble("diagonalFOVDegrees")-profile.sensor.diagonalFovDegrees)<0.01) { "Telephoto mission camera geometry does not match the selected lens. Rebuild this plan." }
-        }
+        require(mission.optString("aircraftModel",cameraProfile.aircraft)==cameraProfile.aircraft) { "Mission aircraft does not match the camera profile. Rebuild this plan." }
+        require(mission.getString("profile")==if(cameraProfile.thermal)"thermal" else "daylight-rgb") { "Mission sensor does not match the camera profile." }
+        require(camera.getInt("widthPixels")==cameraProfile.sensor.widthPixels && camera.getInt("heightPixels")==cameraProfile.sensor.heightPixels && abs(camera.getDouble("diagonalFOVDegrees")-cameraProfile.sensor.diagonalFovDegrees)<0.01) { "Mission camera geometry does not match the selected lens. Rebuild this plan." }
         require(height in 5.0..500.0 && speed in 1.0..15.0 && transitSpeed in 1.0..15.0 && interval.isFinite()) { "Increase ground resolution or height so originals can be captured at least $minimumCaptureInterval seconds apart at the minimum route speed of 1 m/s." }
         val polygon = (0 until ring.length()).map { i ->
             val point = ring.getJSONArray(i)
@@ -251,8 +253,8 @@ class DjiMappingRoute(val mission: JSONObject) {
         append("<wpml:missionConfig>")
         value("flyToWaylineMode", "safely"); value("finishAction", "goHome"); value("exitOnRCLost", "executeLostAction"); value("executeRCLostAction", "goBack")
         value("takeOffSecurityHeight", min(20.0, height)); value("globalTransitionalSpeed", number(transitSpeed)); value("globalRTHHeight", number(returnHomeHeightMeters))
-        append("<wpml:droneInfo>"); value("droneEnumValue", 100); value("droneSubEnumValue", 1); append("</wpml:droneInfo>")
-        append("<wpml:payloadInfo>"); value("payloadEnumValue", 99); value("payloadSubEnumValue", 0); value("payloadPositionIndex", 0); append("</wpml:payloadInfo></wpml:missionConfig><Folder>")
+        append("<wpml:droneInfo>"); value("droneEnumValue", aircraft.droneType); value("droneSubEnumValue", aircraft.droneSubtype); append("</wpml:droneInfo>")
+        append("<wpml:payloadInfo>"); value("payloadEnumValue", aircraft.payloadType); value("payloadSubEnumValue", 0); value("payloadPositionIndex", 0); append("</wpml:payloadInfo></wpml:missionConfig><Folder>")
         value("templateId", 0); value("autoFlightSpeed", number(speed))
         if (template) {
             value("templateType", "waypoint")
@@ -290,7 +292,7 @@ class DjiMappingRoute(val mission: JSONObject) {
                     value("gimbalPitchRotateEnable", 1); value("gimbalPitchRotateAngle", number(passes[legs[index/2].passIndex].pitchDegrees)); value("gimbalRollRotateEnable", 0); value("gimbalRollRotateAngle", 0)
                     value("gimbalYawRotateEnable", if(aircraftFirstHeading||oblique)1 else 0); value("gimbalYawRotateAngle", if(aircraftFirstHeading||oblique)number(yaw) else "0"); value("gimbalRotateTimeEnable", 0); value("gimbalRotateTime", 0)
                 }
-                (focalLength ?: if(mission.getString("cameraProfileId")=="m4td.visible.wide")24.0 else null)?.let { focal -> action(actionId++, "zoom") { value("payloadPositionIndex", 0); value("focalLength", number(focal)) } }
+                (focalLength ?: if(cameraProfile.isVisibleWide && aircraft.droneType != 67)24.0 else null)?.let { focal -> action(actionId++, "zoom") { value("payloadPositionIndex", 0); value("focalLength", number(focal)) } }
                 if (index == 0) action(actionId++, "customDirName") { value("payloadPositionIndex", 0); value("directoryName", photoTag) }
                 if(!distanceCapture)action(actionId, "takePhoto") { photo() }
                 append("</wpml:actionGroup>")

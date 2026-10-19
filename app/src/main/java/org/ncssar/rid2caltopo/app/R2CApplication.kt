@@ -40,10 +40,11 @@ class R2CApplication : Application() {
             android.os.StrictMode.setThreadPolicy(android.os.StrictMode.ThreadPolicy.Builder()
                 .detectDiskReads().detectDiskWrites().detectNetwork().penaltyLog().build())
         }
-        // Only create/export a PUBLIC deployment recipient key here. Credential
-        // decryption stays behind the protected mapping UI, when configured() runs.
-        Thread({runCatching{org.ncssar.rid2caltopo.mapping.DjiCloudProvisioner.enroll(this)}},
-            "Mapping public-key enrollment").apply{isDaemon=true}.start()
+        // Match Apple's startup provisioning: enroll and import an authorized
+        // device-bound bundle on a worker. A locked device retries from mapping
+        // settings later; no KeyStore or filesystem work runs on Main.
+        Thread({runCatching{org.ncssar.rid2caltopo.mapping.DjiCloudProvisioner.provision(this)}},
+            "Mapping protected setup").apply{isDaemon=true}.start()
         PersonRelevanceCoordinator.initialize(this)
 
         // Force IPv4 preference for older stack compatibility

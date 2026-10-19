@@ -14,6 +14,7 @@ public enum PilotCloudProvisioner {
         var folder=try FileManager.default.url(for:.applicationSupportDirectory,in:.userDomainMask,appropriateFor:nil,create:true).appendingPathComponent("PilotCloudProvisioning",isDirectory:true)
         try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
         var values=URLResourceValues();values.isExcludedFromBackup=true;try folder.setResourceValues(values)
+        if try PilotAppRegistration.prepare(in: folder) { return }
         let key=try privateKey(),publicBytes=try enrollment(key)
         let encoded=publicBytes.base64EncodedString(options:[.lineLength64Characters,.endLineWithLineFeed])
         try Data(("-----BEGIN PUBLIC KEY-----\n"+encoded+"\n-----END PUBLIC KEY-----\n").utf8).write(to:folder.appendingPathComponent("enrollment.pem"),options:.atomic)

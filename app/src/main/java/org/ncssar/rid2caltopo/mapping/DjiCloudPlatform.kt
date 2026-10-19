@@ -84,6 +84,8 @@ class DjiCloudPlatform(val mission: JSONObject, val route: DjiMappingRoute, val 
     fun api(request: CloudHttpRequest): CloudHttpResponse {
         val path=request.path
         fun body() = JSONObject(request.readBody(256*1024).toString(Charsets.UTF_8))
+        if(path in setOf("/cloud/bootstrap","/cloud/report") && request.headers["x-r2c-page-revision"]!="2")
+            return failure(409,"This Pilot 2 page does not match the R2C tablet version. Close the Open Platforms page, reopen the R2C tablet address, and enter the current access code.")
         if(path=="/cloud/bootstrap" && request.method=="GET") return success(bootstrap())
         if(path=="/cloud/status" && request.method=="GET") return success(snapshot())
         if(path=="/cloud/report" && request.method=="POST") {
@@ -106,10 +108,10 @@ class DjiCloudPlatform(val mission: JSONObject, val route: DjiMappingRoute, val 
                     val pageSize=request.query["page_size"]?.toIntOrNull()?.coerceIn(1,100) ?: 20
                     val first=route.coordinate(route.legs.first().start)
                     val entry=JSONObject().put("id",workspaceId).put("name",mission.getString("title")+" · "+if(mission.getString("profile")=="thermal") "IR" else "Visible")
-                        .put("drone_model_key","0-100-1").put("payload_model_keys",JSONArray(listOf("1-99-0"))).put("template_types",JSONArray(listOf(0)))
+                        .put("drone_model_key",route.aircraft.droneModelKey).put("payload_model_keys",JSONArray(listOf(route.aircraft.payloadModelKey))).put("template_types",JSONArray(listOf(0)))
                         .put("favorited",favorited).put("action_type",0).put("update_time",routeFile.lastModified()).put("user_name","R2C")
                         .put("start_wayline_point",JSONObject().put("start_latitude",first.second).put("start_lontitude",first.first))
-                    val include=(request.query["favorited"]!="true" || favorited) && request.query["drone_model_keys"]?.let{it.contains("0-100-1")}!=false
+                    val include=(request.query["favorited"]!="true" || favorited) && request.query["drone_model_keys"]?.let{it.contains(route.aircraft.droneModelKey)}!=false
                     return success(JSONObject().put("list",JSONArray(if(page==1&&include) listOf(entry) else emptyList<JSONObject>()))
                         .put("pagination",JSONObject().put("page",page).put("page_size",pageSize).put("total",if(include)1 else 0)))
                 }
@@ -156,7 +158,7 @@ class DjiCloudPlatform(val mission: JSONObject, val route: DjiMappingRoute, val 
         val path=value.optString("path")
         val tagged=name.contains(route.photoTag,true) || path.contains(route.photoTag,true)
         val sensor=DjiOriginalCamera.sensor(file)
-        val expected=if(mission.getString("profile")=="thermal")"thermal" else if(mission.optString("cameraProfileId") in listOf("m4td.visible.medium-tele","m4td.visible.tele"))"visible-zoom" else "visible-wide"
+        val expected=if(mission.getString("profile")=="thermal")"thermal" else if(route.cameraProfile.focalLength35mm != null)"visible-zoom" else "visible-wide"
         val sensorMatches=if(expected=="visible-zoom")DjiOriginalCamera.matches(file,mission) else sensor=="unknown" || DjiOriginalCamera.matches(file,mission)
         val assigned=original && tagged && sensorMatches
         val reason=when{!original->"not_original";!tagged->"mission_tag_missing";!sensorMatches->"camera_mismatch";else->"matched"}
@@ -202,11 +204,11 @@ class DjiCloudPlatform(val mission: JSONObject, val route: DjiMappingRoute, val 
         val method=value.optString("method"); val data=value.optJSONObject("data") ?: JSONObject()
         val gateway=topic.split('/').getOrNull(2) ?: return emptyList()
         if(method=="update_topo" && topic.endsWith("/status")) {
-            val aircraft=data.optJSONArray("sub_devices") ?: JSONArray(); val modelType=data.optInt("type",174); val subtype=data.optInt("sub_type")
+            val aircraft=data.optJSONArray("sub_devices") ?: JSONArray(); val modelType=data.optInt("type",if(route.aircraft.droneType==67)119 else 174); val subtype=data.optInt("sub_type")
             fun device(sn:String,domain:Int,type:Int,sub:Int)=JSONObject().put("sn",sn).put("online_status",true)
                 .put("device_model",JSONObject().put("key","$domain-$type-$sub").put("domain",domain.toString()).put("type",type.toString()).put("sub_type",sub.toString()))
                 .put("device_callsign",if(domain==0) "Mapping aircraft" else "Mapping controller").put("user_id",workspaceId).put("user_callsign","R2C")
-            val hosts=JSONArray((0 until aircraft.length()).map { val a=aircraft.getJSONObject(it); device(a.optString("sn").take(128),0,a.optInt("type",100),a.optInt("sub_type",1)) })
+            val hosts=JSONArray((0 until aircraft.length()).map { val a=aircraft.getJSONObject(it); device(a.optString("sn").take(128),0,a.optInt("type",route.aircraft.droneType),a.optInt("sub_type",route.aircraft.droneSubtype)) })
             topology=JSONArray(listOf(JSONObject().put("hosts",hosts).put("parents",JSONArray(listOf(device(gateway,2,modelType,subtype))))))
             status("Pilot 2 controller registered on the local tablet")
             websocketNotify(JSONObject().put("biz_code","device_update_topo").put("version","1.0").put("timestamp",System.currentTimeMillis()).put("data",JSONObject().put("sn",gateway)))

@@ -8,6 +8,39 @@ import UniformTypeIdentifiers
 import R2CCore
 
 final class PilotCloudTests:XCTestCase,@unchecked Sendable {
+    func testMissionLibraryAdvertisesAndFiltersTheSelectedAircraft() async throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString);defer{try? FileManager.default.removeItem(at:root)}
+        let store=try MappingMissionStore(root:root)
+        for (cameraID,modelKey,payloadKey) in [("m4t.visible.wide","0-99-1","1-89-0"),("m30.visible.wide","0-67-0","1-52-0"),("m30t.visible.wide","0-67-1","1-53-0")] {
+            let profile=try XCTUnwrap(MappingResolution.profiles.first{$0.id==cameraID})
+            let mission=try MappingMission(feature:Data(#"{"id":"test","properties":{"class":"Assignment","title":"MapTest"},"geometry":{"type":"Polygon","coordinates":[[[-121,39],[-120.9995,39],[-120.9995,39.0005],[-121,39.0005],[-121,39]]]}}"#.utf8),incidentID:"TEST")
+            let id=mission.id.uuidString.lowercased()
+            _ = try store.savePlan(mission.json(cameraProfile:profile,desiredGsdCmPerPixel:3,canopyHeightMeters:20),boundary:mission.boundaryKML())
+            let server=try PilotCloudServer(store:store,missionID:id,host:"127.0.0.1",credentials:PilotCloudCredentials(appId:"12345",appKey:String(repeating:"x",count:32),appLicense:String(repeating:"y",count:64)),port:0,assets:{_ in Data()},changed:{_,_ in})
+            server.start();defer{server.close()}
+            _ = try server.platform.mqtt("sys/product/RC/status",JSONSerialization.data(withJSONObject:["method":"update_topo","data":["sub_devices":[["sn":"SYNTHETIC"]]]]),notify:{_ in})
+            let hosts=try XCTUnwrap(server.platform.topology.first?["hosts"] as? [[String:Any]])
+            XCTAssertEqual((hosts.first?["device_model"] as? [String:String])?["key"],modelKey)
+            let parents=try XCTUnwrap(server.platform.topology.first?["parents"] as? [[String:Any]])
+            XCTAssertEqual((parents.first?["device_model"] as? [String:String])?["key"],cameraID.hasPrefix("m30") ? "2-119-0":"2-174-0")
+            func request(_ path:String,body:Data?=nil,token:String="")async throws->[String:Any] {
+                var r=URLRequest(url:URL(string:server.url+path)!);r.httpMethod=body==nil ? "GET":"POST";r.httpBody=body;r.timeoutInterval=10
+                r.setValue(token,forHTTPHeaderField:"X-Auth-Token");r.setValue("application/json",forHTTPHeaderField:"Content-Type")
+                let (data,response)=try await URLSession.shared.data(for:r);XCTAssertEqual((response as? HTTPURLResponse)?.statusCode,200)
+                return try XCTUnwrap((JSONSerialization.jsonObject(with:data) as? [String:Any])?["data"] as? [String:Any])
+            }
+            let login=try await request("/cloud/login",body:JSONSerialization.data(withJSONObject:["code":server.code]))
+            let token=try XCTUnwrap(login["token"] as? String),path="/wayline/api/v1/workspaces/\(id)/waylines"
+            let response=try await request(path+"?drone_model_keys="+modelKey,token:token)
+            let list=try XCTUnwrap(response["list"] as? [[String:Any]])
+            XCTAssertEqual(list.count,1)
+            XCTAssertEqual(list.first?["drone_model_key"] as? String,modelKey)
+            XCTAssertEqual(list.first?["payload_model_keys"] as? [String],[payloadKey])
+            let wrong=try await request(path+"?drone_model_keys=0-100-1",token:token)
+            XCTAssertEqual((wrong["list"] as? [[String:Any]])?.count,0)
+        }
+    }
+
     func testReopeningRecoversWideZoomLabelButKeepsInvalidReceiptsSeparate() throws {
         let root=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString);defer{try? FileManager.default.removeItem(at:root)}
         let store=try MappingMissionStore(root:root)
@@ -58,7 +91,18 @@ final class PilotCloudTests:XCTestCase,@unchecked Sendable {
         let denied=try await request("/cloud/bootstrap");XCTAssertEqual(denied.0,401)
         let cross=try await request("/cloud",headers:["Origin":"http://other.invalid"]);XCTAssertEqual(cross.0,403)
         let login=try await request("/cloud/login",method:"POST",body:JSONSerialization.data(withJSONObject:["code":server.code]));XCTAssertEqual(login.0,200)
-        let token=try XCTUnwrap(value(login.1)["token"] as? String),auth=["X-Auth-Token":token]
+        let token=try XCTUnwrap(value(login.1)["token"] as? String),auth=["X-Auth-Token":token,"X-R2C-Page-Revision":"2"]
+        for revision:String? in [nil,"1","3"] {
+            var staleHeaders=["X-Auth-Token":token]
+            if let revision{staleHeaders["X-R2C-Page-Revision"]=revision}
+            let stale=try await request("/cloud/bootstrap",headers:staleHeaders)
+            XCTAssertEqual(stale.0,409)
+            let error=try XCTUnwrap(JSONSerialization.jsonObject(with:stale.1) as? [String:Any])
+            XCTAssertTrue((error["message"] as? String)?.contains("Close the Open Platforms page")==true)
+            let report=try await request("/cloud/report",method:"POST",body:JSONSerialization.data(withJSONObject:["automaticOriginals":true,"downloadOwner":true]),headers:staleHeaders)
+            XCTAssertEqual(report.0,409)
+        }
+        XCTAssertNotEqual(try server.platform.snapshot()["flags"] as? [String:Bool],["automaticOriginals":true,"downloadOwner":true])
         let bootstrap=try await request("/cloud/bootstrap",headers:auth),config=try value(bootstrap.1);XCTAssertEqual(config["workspaceId"] as? String,id);XCTAssertNotNil(config["thing"]);XCTAssertNotNil(config["license"])
         _ = try await request("/cloud/report",method:"POST",body:JSONSerialization.data(withJSONObject:["missionLoaded":true,"mediaLoaded":true,"automaticOriginals":true,"downloadOwner":true]),headers:auth)
         XCTAssertTrue((try server.platform.snapshot()["status"] as? String)?.contains("return ready")==true)

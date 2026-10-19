@@ -57,6 +57,8 @@ if [[ "$build_number" != <-> && "$build_number" != <->.<-> && "$build_number" !=
 fi
 print -r -- "$marketing_version" | grep -Eq '^[0-9]+(\.[0-9]+){1,2}$' || { echo "Invalid CFBundleShortVersionString: $marketing_version" >&2; exit 2; }
 
+python3 "$repo_root/tools/mapping/verify_dji_provisioning.py" --platform apple
+
 mkdir -p "$script_dir/Build"
 work_dir="$(mktemp -d "$script_dir/Build/release-check.XXXXXX")"
 cleanup() { rm -rf "$work_dir"; }

@@ -1,6 +1,6 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),path=require('node:path');
-const source=fs.readFileSync(path.join(__dirname,'../../../app/src/main/assets/dji-cloud/native.js'),'utf8');
-function setup({rejectLicense=false,licenseFalse=false,verifiedState=true,cached=false,stickyToken=false,delayedUnload=false,connectOnRetry=false,connectAfter=1,refuseReturn=false,delayedReturn=false}={}){
+const source=fs.readFileSync(process.env.R2C_BRIDGE_SOURCE||path.join(__dirname,'../../../app/src/main/assets/dji-cloud/native.js'),'utf8');
+function setup({aircraftSN='test-aircraft-private-sn',aircraftQueryFails=false,pageRejected=false,rejectLicense=false,licenseFalse=false,verifiedState=true,cached=false,stickyToken=false,delayedUnload=false,connectOnRetry=false,connectAfter=1,refuseReturn=false,delayedReturn=false,mediaReply=(_method,value)=>value}={}){
   const elements=new Map(),calls=[],reports=[],saved=[],components=new Map(),timers=new Map(),states={thing:false,ws:false};let timerId=0;
   const mediaSettings={mediaGetDownloadOwner:0,mediaGetUploadPhotoType:0,mediaGetAutoUploadPhoto:true,mediaGetAutoUploadVideo:false};
   if(delayedReturn){mediaSettings.mediaGetDownloadOwner=1;mediaSettings.mediaGetAutoUploadPhoto=false;}
@@ -12,9 +12,11 @@ function setup({rejectLicense=false,licenseFalse=false,verifiedState=true,cached
     thing:{host:'wss://tablet.test/cloud/mqtt',username:'test',password:'session-only',connectCallback:'r2cMqttConnected'},route:{estimatedPhotos:30,estimatedFlightSeconds:240,heightMeters:60,returnHomeHeightMeters:60,groundResolutionCmPerPixel:1}};
   const bridge=new Proxy({}, {get:(_,method)=>(...args)=>{
     calls.push({method,args});
+    if(method==='platformGetAircraftSN'&&aircraftQueryFails)return JSON.stringify({code:42});
     if(method==='platformVerifyLicense'&&rejectLicense)return JSON.stringify({code:42,data:false});
     let data={};
-    if(method==='platformVerifyLicense')data=!licenseFalse;
+    if(method==='platformGetAircraftSN')data=aircraftSN;
+    else if(method==='platformVerifyLicense')data=!licenseFalse;
     else if(method==='platformIsVerified')data=verifiedState;
     else if(method==='platformIsComponentLoaded')data=components.has(args[0]);
     else if(method==='platformUnloadComponent'){if(delayedUnload)setImmediate(()=>components.delete(args[0]));else components.delete(args[0]);}
@@ -31,12 +33,14 @@ function setup({rejectLicense=false,licenseFalse=false,verifiedState=true,cached
     else if(method==='wsGetConnectState')data=states.ws;
     else if(method==='thingConnect'&&connectOnRetry&&calls.filter(x=>x.method==='thingConnect').length>=connectAfter)states.thing=true;
     else if(method==='wsConnect'&&connectOnRetry)states.ws=true;
-    else if(method in mediaSettings)data=mediaSettings[method];
+    else if(method in mediaSettings)data=mediaReply(method,mediaSettings[method]);
     else if(method.startsWith('mediaSet')&&!refuseReturn){const getter=method.replace('Set','Get');if(getter in mediaSettings){if(delayedReturn)setImmediate(()=>{mediaSettings[getter]=args[0];});else mediaSettings[getter]=args[0];}}
     return JSON.stringify({code:0,data});
   }});
   const context=vm.createContext({window:{djiBridge:bridge},document:{getElementById:el},sessionStorage:{getItem:()=>null,setItem:(key,value)=>saved.push([key,value])},
     setTimeout:(fn)=>setImmediate(fn),setInterval:(fn,ms)=>{timers.set(++timerId,{fn,ms});return timerId;},clearInterval:id=>timers.delete(id),fetch:async(url,options)=>{
+      assert.equal(options.headers['X-R2C-Page-Revision'],'2');
+      if(url==='/cloud/bootstrap'&&pageRejected)return {ok:false,json:async()=>({code:1,message:'This Pilot 2 page does not match the R2C tablet version. Close the Open Platforms page, reopen the R2C tablet address, and enter the current access code.'})};
       let data={};if(url==='/cloud/login')data={token:'test-token'};else if(url==='/cloud/bootstrap')data=structuredClone(config);else if(url==='/cloud/report')reports.push(JSON.parse(options.body));
       return {ok:true,json:async()=>({code:0,data})};
     }});
@@ -88,6 +92,63 @@ const drain=async()=>{for(let i=0;i<30;i++)await new Promise(resolve=>setImmedia
   assert.match(delayedPolicy.el('status').textContent,/^Connected/);
   assert.equal(delayedPolicy.saved.length,1,'Asynchronous media settings must finish on one Connect');
   assert.equal(delayedPolicy.el('error').textContent,'');
+  // A successful bridge wrapper can contain scalar strings on another Pilot firmware.
+  // Exercise the complete connection and polling paths, not just a conversion helper.
+  for(const mediaReply of [(name,value)=>name==='mediaGetDownloadOwner'?String(value):value,(_name,value)=>String(value),(_name,value)=>typeof value==='boolean'?Number(value):value,(_name,value)=>typeof value==='boolean'?String(Number(value)):String(value)]){
+    const encoded=setup({delayedReturn:true,mediaReply});await encoded.el('connect').onclick();
+    encoded.callback('ws')(true);encoded.callback('thing')(true);await drain();
+    assert.match(encoded.el('status').textContent,/^Connected/,'Equivalent media setting scalars must not block a connection');
+    assert.equal(encoded.el('error').textContent,'');
+    assert.ok(encoded.reports.some(x=>x.automaticOriginals===true&&x.downloadOwner===true));
+    encoded.mediaSettings.mediaGetDownloadOwner=1;encoded.mediaSettings.mediaGetAutoUploadPhoto=false;
+    await encoded.poll();
+    assert.equal(encoded.mediaSettings.mediaGetDownloadOwner,0);
+    assert.equal(encoded.mediaSettings.mediaGetAutoUploadPhoto,true);
+    assert.equal(encoded.el('mission').hidden,false);
+  }
+  const matches=a.context.mediaSettingMatches;
+  for(const invalid of [null,undefined,false,true,'', ' 0', '0 ', '00', [],{}, {value:0},'unrecognized-private-value'])assert.equal(matches(invalid,0),false);
+  for(const wanted of [true,false]){
+    for(const invalid of [null,undefined,'',[],{}, {value:wanted},2,-1,'yes','no','FALSE','TRUE'])assert.equal(matches(invalid,wanted),false);
+  }
+  for(const reply of [null,undefined,[],{}, {downloadOwner:0},'unrecognized-private-value',1,'1']){
+    const unsupported=setup({mediaReply:(name,value)=>name==='mediaGetDownloadOwner'?reply:value});
+    await unsupported.el('connect').onclick();unsupported.callback('ws')(true);unsupported.callback('thing')(true);await drain();
+    assert.equal(unsupported.el('mission').hidden,true);
+    assert.ok(!unsupported.components.has('mission'));
+    assert.ok(!unsupported.reports.some(x=>x.automaticOriginals===true));
+    assert.match(unsupported.el('error').textContent,/download owner \(reported/);
+    assert.ok(!unsupported.el('error').textContent.includes('unrecognized-private-value'));
+  }
+  // A controller with no aircraft must get a power/link diagnostic, not an
+  // assertion that some other controller owns downloads. Unknown stays unknown.
+  for(const aircraftSN of ['', '   ', null, {}, 'test-aircraft-private-sn']){
+    const absent=setup({aircraftSN,refuseReturn:true});
+    absent.mediaSettings.mediaGetDownloadOwner=1;
+    await absent.el('connect').onclick();absent.callback('ws')(true);absent.callback('thing')(true);await drain();
+    const message=absent.el('error').textContent;
+    if(typeof aircraftSN==='string'&&!aircraftSN.trim())assert.match(message,/not reported a connected aircraft.*Power on and link/);
+    else if(typeof aircraftSN==='string')assert.match(message,/photo-download controller/);
+    else assert.match(message,/could not report whether an aircraft is connected/);
+    assert.ok(!message.includes('test-aircraft-private-sn'));
+    assert.ok(!absent.components.has('mission'));
+    assert.ok(!absent.reports.some(x=>x.automaticOriginals===true||x.downloadOwner===true));
+  }
+  const unknownAircraft=setup({aircraftQueryFails:true,refuseReturn:true});
+  unknownAircraft.mediaSettings.mediaGetDownloadOwner=1;
+  await unknownAircraft.el('connect').onclick();unknownAircraft.callback('ws')(true);unknownAircraft.callback('thing')(true);await drain();
+  assert.match(unknownAircraft.el('error').textContent,/could not report whether an aircraft is connected/);
+  const lostAircraft=setup({aircraftSN:'',refuseReturn:true});
+  await lostAircraft.el('connect').onclick();lostAircraft.callback('ws')(true);lostAircraft.callback('thing')(true);await drain();
+  lostAircraft.mediaSettings.mediaGetDownloadOwner=1;await lostAircraft.poll();
+  assert.match(lostAircraft.el('error').textContent,/not reported a connected aircraft/);
+  assert.equal(lostAircraft.el('mission').hidden,true);
+  assert.ok(lostAircraft.reports.some(x=>x.automaticOriginals===false&&x.downloadOwner===false));
+  const outdated=setup({pageRejected:true});await outdated.el('connect').onclick();
+  assert.match(outdated.el('error').textContent,/Close the Open Platforms page/);
+  assert.equal(outdated.el('connect').disabled,false);
+  assert.ok(!outdated.calls.some(x=>x.method==='platformVerifyLicense'||x.method==='platformLoadComponent'));
+  assert.ok(!outdated.reports.some(x=>x.automaticOriginals===true));
   const b=setup({rejectLicense:true});await b.el('connect').onclick();
   assert.equal(b.calls.length,1);assert.match(b.el('error').textContent,/code 42/);
   assert.ok(!b.el('error').textContent.includes('synthetic-key'));assert.ok(!b.reports.some(x=>x.licenseVerified));
@@ -146,5 +207,5 @@ const drain=async()=>{for(let i=0;i<30;i++)await new Promise(resolve=>setImmedia
   assert.equal(timeout.el('connect').disabled,false);late(true);await drain();
   assert.ok(!timeout.components.has('media'));
   assert.equal(timeout.calls.filter(x=>x.method==='platformLoadComponent'&&x.args[0]==='thing').length,2,'Bounded reload');
-  console.log('Native H5: license gate, retained-module/token replacement, stale-callback isolation, MQTT/WS prerequisites, original-only return, route heights, no flight control, and credential redaction passed.');
+  console.log('Native H5: license gate, retained-module/token replacement, stale-callback isolation, MQTT/WS prerequisites, original-only return across scalar encodings, strict malformed/wrong-owner rejection, route heights, no flight control, and credential redaction passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

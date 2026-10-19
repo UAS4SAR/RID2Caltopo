@@ -50,7 +50,7 @@ object DjiCloudCredentialStore {
         }
     }
     fun load(context: Context): DjiCloudCredentials {
-        require(configured(context)) { "Set up the DJI Cloud API credentials on this tablet first." }
+        require(configured(context)) { "The app’s DJI registration is unavailable. Install a complete app build." }
         val value = JSONObject(loadProtected(context,"dji-cloud-credentials.enc").toString(Charsets.UTF_8))
         return DjiCloudCredentials(value.getString("appId"), value.getString("appKey"), value.getString("appLicense"))
     }

@@ -77,12 +77,12 @@ public struct MappingMission: Identifiable, Sendable {
                 "forwardOverlapPercent":thermal ? 85 : 80, "sideOverlapPercent":thermal ? 80 : 70,
                 "directionDegrees":0, "marginMeters":10, "orthophotoResolutionCm":thermal ? 15 : min(5,targetGsd),
                 "fastOrthophoto":!thermal]]
-        if !thermal { var spec=value["cameraSpecifications"] as! [String:Any]; spec["captureResolutionMode"]=cameraProfile.focalLength35mm == nil ? "observed-timed-12mp":"planned-12mp"; value["cameraSpecifications"]=spec }
-        let capture = captureProfile ?? (cameraProfile.id == "m4td.visible.wide" ? MappingProcessingPolicy.brushTrees : MappingProcessingPolicy.openGround)
-        if cameraProfile.id == "m4td.visible.wide" {
+        if !thermal { var spec=value["cameraSpecifications"] as! [String:Any]; spec["captureResolutionMode"]=cameraProfile.captureResolutionMode; value["cameraSpecifications"]=spec }
+        let capture = captureProfile ?? (cameraProfile.isVisibleWide ? MappingProcessingPolicy.brushTrees : MappingProcessingPolicy.openGround)
+        if cameraProfile.isVisibleWide {
             value["captureProfile"] = try JSONSerialization.jsonObject(with:JSONEncoder().encode(capture))
             var specifications = value["cameraSpecifications"] as! [String:Any]
-            specifications["captureResolutionMode"] = "observed-timed-12mp"
+            specifications["captureResolutionMode"] = cameraProfile.captureResolutionMode
             value["cameraSpecifications"] = specifications
         } else if capture != MappingProcessingPolicy.openGround { throw Failure("Crossed surveys require the visible-wide camera.") }
         var parameters = value["parameters"] as! [String:Any]

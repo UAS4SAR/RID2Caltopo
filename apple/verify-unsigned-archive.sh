@@ -20,6 +20,8 @@ plutil -lint "$info" "$privacy"
 file "$binary" | grep -q "Mach-O 64-bit executable arm64"
 "$(dirname "$0")/verify-webrtc-framework.sh" "$app"
 
+python3 "$(dirname "$0")/../tools/mapping/verify_dji_provisioning.py" --platform apple --artifact "$archive"
+
 actual_bundle=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info")
 actual_build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info")
 actual_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info")

@@ -46,7 +46,7 @@ object MappingCaptureProfile {
         if(capture==null){val p=mission.getJSONObject("parameters");return listOf(Pass(-90.0,p.getDouble("directionDegrees"),p.getDouble("forwardOverlapPercent"),p.getDouble("sideOverlapPercent")))}
         val profile=knownProfiles.firstOrNull{it.id==capture.getString("id")}?:error("Unknown capture profile.")
         require(capture.toString()==profile.json().toString()){"Capture profile parameters do not match a controlled comparison."}
-        require(mission.getString("cameraProfileId")=="m4td.visible.wide"){"Controlled capture profiles require visible-wide originals."}
+        require(MappingResolution.profiles.any { it.id==mission.getString("cameraProfileId") && it.isVisibleWide }){"Controlled capture profiles require visible-wide originals."}
         return profile.passes
     }
 }

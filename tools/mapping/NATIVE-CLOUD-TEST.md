@@ -6,7 +6,7 @@ Android R2C now provides a native Cloud API prototype: a Pilot 2 connection page
 
 1. Put the R2C tablet and RC Plus 2 on the same Wi-Fi, with client isolation disabled.
 2. In R2C, connect the incident map, select a small assignment, and open **Map → Define Map Mission**.
-3. A team deployment build provisions the **Cloud API** app ID, app key, and app basic license automatically from a device-bound encrypted bundle. Ordinary operators do not enter developer credentials. **Pilot 2 connection settings** is for administrator setup/rotation; manual entry remains an administrator fallback. Mobile SDK credentials do not work here.
+3. Every complete app build includes the app-wide **Cloud API** app ID, app key, and basic license. A fresh installation imports it automatically into protected local storage. Ordinary operators do not enroll a tablet or enter developer credentials. **Pilot 2 connection settings** is for administrator setup/rotation; manual entry remains an administrator fallback. Mobile SDK credentials do not work here.
 4. If available, import a dedicated HTTPS certificate chain and its PKCS8 private key. Enter its hostname; LAN DNS must resolve it to the tablet. R2C validates the hostname, dates, and matching private key, then encrypts the bundle. Importing a chain does not prove the controller trusts it.
 
 The default certificate is locally generated for testing. Pilot 2's web page and native API, WebSocket, MQTT, and storage clients may make different trust decisions. If the page opens but native connections fail, qualify HTTPS trust before flight. Do not disable certificate checks. A dedicated hostname and publicly trusted certificate with LAN DNS is the intended field setup; route/photo transfer needs no WAN after provisioning.
@@ -15,15 +15,28 @@ Offline qualification must include WAN disconnected while the tablet and control
 
 DJI credentials and TLS private keys are encrypted with Android Keystore in private no-backup storage. They are absent from mission exports and connection diagnostics. Enter them locally; do not add them to the repository, screenshots, fixtures, or chat.
 
-### Administrator: protected build provisioning
+### Administrator: app registration build input
 
-R2C generates a non-exportable RSA recipient key and exports only its public key as `no_backup/dji-cloud-enrollment.pem`. The deployment builder uses [SealDjiCredentials.java](SealDjiCredentials.java) with a private credential JSON (`appId`, `appKey`, `appLicense`) and that public PEM. It produces a recipient-bound RSA-OAEP/AES-GCM envelope. Set `R2C_DJI_PROVISIONING_BUNDLE` to the sealed JSON path when building. Gradle accepts only the encrypted envelope and writes it into generated build assets; normal builds remove any stale bundle.
+DJI registration is app-based, shared by all installations and both platforms.
+Use the private `.local-deployment/dji-app-registration.json`, or set
+`R2C_DJI_APP_REGISTRATION` to the same FAA-style encoded registration file on a
+build host. Both builders package and verify `dji-registration/registration.json`.
+Release gates reject missing, corrupted, plaintext or old per-device registration
+input. The default private folder is ignored by Git and must be backed up in
+durable administrator storage rather than temporary directories.
 
-Use exact copied developer-portal text, not OCR from screenshots. [provision_dji_build.py](provision_dji_build.py) accepts an exact private registration JSON or masked local administrator input and invokes the sealing tool; it does not display credentials. An OCR-derived basic license was found to differ from the portal and was replaced during qualification. In DJI's bridge, `{code:0,data:false}` means the call completed but license verification failed. R2C now distinguishes this from a bridge error and requires `platformIsVerified()` before loading the API modules.
+`capture_dji_app_registration.py --ipad UDID --output PRIVATE_PATH` captures the
+registration from a configured development iPad using the explicit debug-only
+capture flag. Obtain explicit owner authorization for capture and distribution
+with all app instances first. No plaintext registration file is written by the
+tool. The app package uses the same obfuscated transport as FAA configuration;
+local credentials use Keychain/Keystore. The transport is not a secret from an
+owner of the distributed app.
 
-The matching tablet imports the encrypted envelope into its protected credential store on opening mapping. Other tablets cannot decrypt it. App upgrades preserve its recipient key; uninstalling the app or replacing the device requires enrollment/provisioning again. A new sealed bundle rotates settings; previously imported bundles do not overwrite later manual changes. Keep both private inputs and sealed deployment bundles out of version control. The APK contains ciphertext, not a shared decryption key or plaintext DJI registration values.
-
-An optional `tls` object in the same private deployment input (`host` and certificate-chain/PKCS8-key `pem`) also provisions the endpoint certificate securely. This keeps certificate/key entry out of the operator workflow. The dedicated hostname must resolve to the tablet's LAN address and the controller must trust the issuing chain.
+Legacy per-device provisioning code remains only for compatibility with earlier
+administrator deployments. A sealed bundle for one tablet is not a substitute
+for app-wide registration and cannot pass the release gate. See [the release
+runbook](../../RELEASE.md) for fresh-install and exact-artifact checks.
 
 ## Ground connection check — aircraft can remain off
 

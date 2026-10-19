@@ -11,6 +11,8 @@ public struct MappingFlightRoute: Sendable {
     public let passes:[MappingProcessingPolicy.Pass]
     public let spacings:[Double]
     private let lat0,lon0,scaleX:Double
+    public let cameraProfile: MappingResolution.Profile
+    public var aircraft: MappingResolution.Aircraft { cameraProfile.aircraftSpec }
     private let lens:String
     private let focalLength:Double?
     private let exportQualified:Bool
@@ -28,12 +30,15 @@ public struct MappingFlightRoute: Sendable {
         let capture:MappingProcessingPolicy.CaptureProfile
         if let object=value["captureProfile"] {capture=try JSONDecoder().decode(MappingProcessingPolicy.CaptureProfile.self,from:JSONSerialization.data(withJSONObject:object))}else{capture=MappingProcessingPolicy.openGround}
         guard MappingProcessingPolicy.captureProfiles.contains(capture) else{throw MappingMission.Failure("This capture profile has not been qualified for route export.")}
-        self.focalLength=MappingResolution.profiles.first{$0.id==value["cameraProfileId"] as? String}?.focalLength35mm
-        if focalLength != nil,let profile=MappingResolution.profiles.first(where:{$0.id==value["cameraProfileId"] as? String}) {
-            guard width==profile.sensor.widthPixels,imageHeight==profile.sensor.heightPixels,let fov=camera["diagonalFOVDegrees"] as? Double,abs(fov-profile.sensor.diagonalFOVDegrees)<0.01 else{throw MappingMission.Failure("Telephoto mission camera geometry does not match the selected lens. Rebuild this plan.")}
-        }
+        let profile=MappingResolution.profiles.first{$0.id==value["cameraProfileId"] as? String}!
+        self.cameraProfile=profile
+        guard (value["aircraftModel"] as? String ?? profile.aircraft) == profile.aircraft else { throw MappingMission.Failure("Mission aircraft does not match the camera profile. Rebuild this plan.") }
+        self.focalLength=profile.focalLength35mm
+        guard value["profile"] as? String == (profile.mode == .thermal ? "thermal":"daylight-rgb") else {throw MappingMission.Failure("Mission sensor does not match the camera profile.")}
+        guard width==profile.sensor.widthPixels,imageHeight==profile.sensor.heightPixels,let fov=camera["diagonalFOVDegrees"] as? Double,abs(fov-profile.sensor.diagonalFOVDegrees)<0.01 else{throw MappingMission.Failure("Mission camera geometry does not match the selected lens. Rebuild this plan.")}
+        guard profile.isVisibleWide || capture==MappingProcessingPolicy.openGround else {throw MappingMission.Failure("Crossed surveys require the visible-wide camera.")}
         self.exportQualified=capture.exportQualified
-        self.passes=capture.passes;self.height=height;photoTag="R2C"+id.replacingOccurrences(of:"-",with:"").prefix(12);lens=value["profile"] as? String=="thermal" ? "ir":"visable"
+        self.passes=capture.passes;self.height=height;photoTag="R2C"+id.replacingOccurrences(of:"-",with:"").prefix(12);lens=profile.lens
         lat0=ring.map{$0[1]}.reduce(0,+)/Double(ring.count);lon0=ring.map{$0[0]}.reduce(0,+)/Double(ring.count);scaleX=111319.49079327358*cos(lat0 * .pi/180)
         let brush=capture==MappingProcessingPolicy.brushTrees,canopy=brush ? parameters["planningSurfaceHeightMeters"] as? Double ?? .nan:0
         guard height.isFinite,(5...500).contains(height),canopy.isFinite,canopy>=0,canopy<=height-clearance else{throw MappingMission.Failure("Allow at least \(DisplayUnits.current.length(clearance)) above canopy and terrain.")}
@@ -42,7 +47,7 @@ public struct MappingFlightRoute: Sendable {
         spacings=passes.map{imageHeight*gsd*(1-$0.forwardOverlapPercent/100)*pow(near($0),2)*reference}
         spacing=spacings.min()!;transitSpeed=parameters["transitSpeedMetersPerSecond"] as? Double ?? parameters["speedMetersPerSecond"] as? Double ?? 4
         // Match Pilot 2's capture interval constraint and Android's downward tenth rounding.
-        let minimumCaptureInterval=focalLength != nil ? 1.5:1.0
+        let minimumCaptureInterval=profile.minimumCaptureInterval
         let captureSpeedLimit=parameters["maximumCaptureSpeedMetersPerSecond"] as? Double ?? parameters["speedMetersPerSecond"] as? Double ?? 4
         guard captureSpeedLimit.isFinite,(1...15).contains(captureSpeedLimit) else { throw MappingMission.Failure("Maximum capture speed must be between 1 and 15 m/s.") }
         speed=floor(min(captureSpeedLimit,spacing/minimumCaptureInterval)*10+1e-9)/10
@@ -109,7 +114,7 @@ public struct MappingFlightRoute: Sendable {
         func action(_ id:Int,_ function:String,_ body:()->Void){text+="<wpml:action>";value("actionId",id);value("actionActuatorFunc",function);text+="<wpml:actionActuatorFuncParam>";body();text+="</wpml:actionActuatorFuncParam></wpml:action>"}
         value("author","RID2Caltopo");let now=Int64(Date().timeIntervalSince1970*1000);value("createTime",now);value("updateTime",now)
         text+="<wpml:missionConfig>";value("flyToWaylineMode","safely");value("finishAction","goHome");value("exitOnRCLost","executeLostAction");value("executeRCLostAction","goBack");value("takeOffSecurityHeight",min(20,height));value("globalTransitionalSpeed",number(transitSpeed));value("globalRTHHeight",number(max(30,height)))
-        text+="<wpml:droneInfo>";value("droneEnumValue",100);value("droneSubEnumValue",1);text+="</wpml:droneInfo><wpml:payloadInfo>";value("payloadEnumValue",99);value("payloadSubEnumValue",0);value("payloadPositionIndex",0);text+="</wpml:payloadInfo></wpml:missionConfig><Folder>"
+        text+="<wpml:droneInfo>";value("droneEnumValue",aircraft.droneType);value("droneSubEnumValue",aircraft.droneSubtype);text+="</wpml:droneInfo><wpml:payloadInfo>";value("payloadEnumValue",aircraft.payloadType);value("payloadSubEnumValue",0);value("payloadPositionIndex",0);text+="</wpml:payloadInfo></wpml:missionConfig><Folder>"
         value("templateId",0);value("autoFlightSpeed",number(speed))
         if template {value("templateType","waypoint");text+="<wpml:waylineCoordinateSysParam>";value("coordinateMode","WGS84");value("heightMode","relativeToStartPoint");value("positioningType","GPS");text+="</wpml:waylineCoordinateSysParam>";value("globalHeight",number(height));value("gimbalPitchMode","usePointSetting");value("globalWaypointTurnMode","toPointAndStopWithDiscontinuityCurvature");text+="<wpml:globalWaypointHeadingParam>";value("waypointHeadingMode","followWayline");text+="</wpml:globalWaypointHeadingParam>"}
         else{value("waylineId",0);value("executeHeightMode","relativeToStartPoint")}
@@ -123,7 +128,7 @@ public struct MappingFlightRoute: Sendable {
                 text+="<wpml:actionGroup>";value("actionGroupId",index);value("actionGroupStartIndex",index);value("actionGroupEndIndex",index);value("actionGroupMode","sequence");text+="<wpml:actionTrigger>";value("actionTriggerType","reachPoint");text+="</wpml:actionTrigger>"
                 action(0,"rotateYaw"){let previous=index>0 ? legs[index/2-1]:leg,previousYaw=atan2(previous.end.x-previous.start.x,previous.end.y-previous.start.y)*180 / .pi,turn=(yaw-previousYaw+540).truncatingRemainder(dividingBy:360)-180;value("aircraftHeading",number(yaw));value("aircraftPathMode",turn<0 ? "counterClockwise":"clockwise")}
                 action(1,"gimbalRotate"){value("payloadPositionIndex",0);value("gimbalHeadingYawBase","north");value("gimbalRotateMode","absoluteAngle");value("gimbalPitchRotateEnable",1);value("gimbalPitchRotateAngle",number(pass.gimbalPitchDegrees));value("gimbalRollRotateEnable",0);value("gimbalRollRotateAngle",0);value("gimbalYawRotateEnable",1);value("gimbalYawRotateAngle",number(yaw));value("gimbalRotateTimeEnable",0);value("gimbalRotateTime",0)}
-                if let focalLength = focalLength ?? (lens=="visable" ? 24:nil) {action(2,"zoom"){value("payloadPositionIndex",0);value("focalLength",number(focalLength))}}
+                if let focalLength = focalLength ?? (cameraProfile.isVisibleWide && aircraft.droneType != 67 ? 24:nil) {action(2,"zoom"){value("payloadPositionIndex",0);value("focalLength",number(focalLength))}}
                 if index==0{action(lens=="visable" ? 3:2,"customDirName"){value("payloadPositionIndex",0);value("directoryName",photoTag)}}
                 text+="</wpml:actionGroup><wpml:actionGroup>";value("actionGroupId",index+1);value("actionGroupStartIndex",index);value("actionGroupEndIndex",index+1);value("actionGroupMode","sequence");text+="<wpml:actionTrigger>";value("actionTriggerType","multipleDistance");value("actionTriggerParam",number(spacings[leg.pass]));text+="</wpml:actionTrigger>"
                 action(0,"takePhoto"){value("payloadPositionIndex",0);value("fileSuffix",photoTag);value("payloadLensIndex",lens);value("useGlobalPayloadLensIndex",0)};text+="</wpml:actionGroup>"

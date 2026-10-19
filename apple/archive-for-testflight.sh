@@ -102,6 +102,8 @@ echo "  archive: $archive_path"
 echo "  upload: $upload"
 if $upload; then echo "  internal only: $internal_only"; fi
 
+python3 "$repo_root/tools/mapping/verify_dji_provisioning.py" --platform apple
+
 identity_summary="$(security find-identity -v -p codesigning)"
 if print -r -- "$identity_summary" | grep -Eq '[1-9][0-9]* valid identities found'; then
     print -r -- "$identity_summary"

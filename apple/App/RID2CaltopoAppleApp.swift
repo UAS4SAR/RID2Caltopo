@@ -463,7 +463,17 @@ struct RID2CaltopoAppleApp: App {
             else {LaunchDisclaimerGate()}
             #else
             LaunchDisclaimerGate()
-                .task{_ = try? await Task.detached{try PilotCloudProvisioner.prepare()}.value}
+                .task {
+                    let arguments = ProcessInfo.processInfo.arguments
+                    _ = try? await Task.detached {
+                        try PilotCloudProvisioner.prepare()
+                        #if DEBUG
+                        if let flag = arguments.firstIndex(of: "--export-pilot-app-registration"), flag + 1 < arguments.count {
+                            try PilotCloudDeployment.exportAppRegistration(requestID: arguments[flag + 1])
+                        }
+                        #endif
+                    }.value
+                }
             #endif
         }
     }

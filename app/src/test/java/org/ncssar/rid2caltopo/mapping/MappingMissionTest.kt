@@ -84,8 +84,8 @@ class MappingMissionTest {
         assertEquals(39.0,mission.getJSONObject("launchLocation").getDouble("latitude"),0.001)
     }
 
-    @Test fun verifiedCameraChoiceIsRecordedAndUnverifiedAircraftHaveNoCameraProfiles() {
-        assertEquals(listOf(MappingResolution.MATRICE_4TD), MappingResolution.profiles.map { it.aircraft }.distinct())
+    @Test fun cameraChoiceIsRecordedAndUnconfiguredPayloadsHaveNoCameraProfiles() {
+        assertEquals(MappingResolution.aircraftSpecs.map { it.name }, MappingResolution.profiles.map { it.aircraft }.distinct())
         assertEquals(4, MappingResolution.profilesFor(MappingResolution.MATRICE_4TD).size)
         assertTrue(MappingResolution.profilesFor("DJI Matrice 400").isEmpty())
         val tele=MappingResolution.profiles.first { it.id=="m4td.visible.tele" }

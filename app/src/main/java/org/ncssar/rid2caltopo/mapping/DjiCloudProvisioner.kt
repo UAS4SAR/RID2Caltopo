@@ -36,6 +36,33 @@ object DjiCloudProvisioner {
         return store
     }
     @Synchronized fun provision(context:Context):Boolean {
+        // Prefer the app registration: it needs no enrollment and works on every
+        // installation, including a fresh store install. Retain legacy import
+        // below for older administrator deployment bundles and TLS setup.
+        val shared = try { context.assets.open("dji-registration/registration.json").use { input ->
+            val buffer = java.io.ByteArrayOutputStream(); val block = ByteArray(4096)
+            while (true) {
+                val count = input.read(block); if (count < 0) break
+                require(buffer.size() + count <= 32768) { "The app's DJI registration is too large." }
+                buffer.write(block, 0, count)
+            }
+            buffer.toByteArray()
+        } } catch (_: java.io.FileNotFoundException) { null }
+        if (shared != null) {
+            val receipt = File(context.noBackupFilesDir, "dji-app-registration.sha256")
+            DjiAppRegistration.install(shared, object: DjiAppRegistration.Store {
+                override fun receipt(): String? = if (receipt.isFile) receipt.readText() else null
+                override fun hasCredentials(): Boolean = File(context.noBackupFilesDir, "dji-cloud-credentials.enc").isFile
+                override fun save(credentials: DjiCloudCredentials) = DjiCloudCredentialStore.save(context, credentials)
+                override fun record(hash: String) {
+                    File(context.noBackupFilesDir, "dji-app-registration.sha256.tmp").also { temporary ->
+                        java.io.FileOutputStream(temporary).use { it.write(hash.toByteArray()); it.fd.sync() }
+                        check(temporary.renameTo(receipt)) { "Could not record app registration setup." }
+                    }
+                }
+            })
+            return true
+        }
         val store=enrollment(context)
         val publicKey=store.getCertificate(ALIAS).publicKey.encoded
         val encoded=try{context.assets.open(ASSET).use{input->

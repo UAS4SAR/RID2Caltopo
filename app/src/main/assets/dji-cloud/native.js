@@ -15,12 +15,27 @@ function bridge(method,...args){
   return value.data;
 }
 async function api(path,body){
-  const response=await fetch(path,{method:body===undefined?'GET':'POST',cache:'no-store',headers:{'X-Auth-Token':token,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
+  const response=await fetch(path,{method:body===undefined?'GET':'POST',cache:'no-store',headers:{'X-Auth-Token':token,'Content-Type':'application/json','X-R2C-Page-Revision':'2'},body:body===undefined?undefined:JSON.stringify(body)});
   const value=await response.json();if(!response.ok||value.code!==0)throw Error(value.message||'The R2C tablet could not complete this step.');return value.data;
 }
 function connected(value){if(value===true||value===1)return true;if(typeof value==='string'){try{return connected(JSON.parse(value));}catch(_){return false;}}if(value&&typeof value==='object'){if(value.code===0&&value.data!==undefined)return connected(value.data);return value.connected===true;}return false;}
 function load(name,param){bridge('platformLoadComponent',name,JSON.stringify(param));}
 async function report(value){await api('/cloud/report',value);}
+// Pilot builds can serialize getter data as numbers/booleans or their string
+// equivalents. Accept only the documented values: Number(null), Boolean('false')
+// and other truthy/coercible responses must never mark photo return ready.
+function mediaSettingMatches(value,wanted){
+  if(typeof wanted==='number')return value===wanted||value===String(wanted);
+  return value===wanted||value===(wanted?1:0)||value===(wanted?'1':'0')||value===String(wanted);
+}
+function mediaSettingDescription(value){
+  if(value===null)return 'null';
+  if(value===undefined)return 'missing';
+  if(typeof value==='number')return Number.isFinite(value)?'number '+value:'invalid number';
+  if(typeof value==='boolean')return 'boolean '+value;
+  if(typeof value==='string')return ['0','1','true','false'].includes(value)?'string '+JSON.stringify(value):'unrecognized string';
+  return Array.isArray(value)?'array':'object';
+}
 // The same asset ships on Android and iOS. Reassert return policy if Pilot settings drift.
 async function ensureOriginalReturn(currentAttempt){
   const settings=[
@@ -31,14 +46,30 @@ async function ensureOriginalReturn(currentAttempt){
   ];
   // Pilot acknowledges setters before its asynchronous native state is observable.
   // Set each mismatch once, then allow bounded propagation without resetting it repeatedly.
-  let pending=settings.filter(([get,,wanted])=>bridge(get)!==wanted);
-  for(const [,set,wanted] of pending)bridge(set,wanted);
+  function readPending(){return settings.map(setting=>({setting,value:bridge(setting[0])})).filter(({setting,value})=>!mediaSettingMatches(value,setting[2]));}
+  let pending=readPending();
+  for(const {setting:[,set,wanted]} of pending)bridge(set,wanted);
   for(let retry=0;pending.length&&retry<20;retry++){
     await new Promise(resolve=>setTimeout(resolve,250));
     if(currentAttempt!==attempt)throw Error('Connection was replaced.');
-    pending=settings.filter(([get,,wanted])=>bridge(get)!==wanted);
+    pending=readPending();
   }
-  if(pending.length)throw Error('Pilot 2 has not confirmed '+pending.map(x=>x[3]).join(', ')+'. Reconnect before starting another mission.');
+  if(pending.length){
+    let guidance='Reconnect before starting another mission.';
+    if(pending.some(({setting})=>setting[0]==='mediaGetDownloadOwner')){
+      // An unlinked controller can report owner=1 too. Ask Pilot for aircraft
+      // presence before suggesting a competing download controller. Never expose SNs.
+      let aircraft;
+      try{aircraft=bridge('platformGetAircraftSN');}catch(_){}
+      if(typeof aircraft==='string'&&!aircraft.trim()){
+        throw Error('Pilot 2 has not reported a connected aircraft. Power on and link the aircraft to this controller, then reconnect to the R2C tablet. Photo-download ownership cannot be confirmed yet.');
+      }
+      guidance=typeof aircraft==='string'&&aircraft.trim()
+        ?'Check that this is the photo-download controller, then reconnect before starting another mission.'
+        :'Check that the aircraft is powered on and linked to this controller. Pilot 2 could not report whether an aircraft is connected. Then check the photo-download controller and reconnect before starting another mission.';
+    }
+    throw Error('Pilot 2 has not confirmed '+pending.map(({setting,value})=>setting[3]+' (reported '+mediaSettingDescription(value)+')').join(', ')+'. '+guidance);
+  }
 }
 
 async function finish(){

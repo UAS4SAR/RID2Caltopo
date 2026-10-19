@@ -2295,7 +2295,11 @@ struct RIDTrackMapView: View {
             }
             VStack(alignment: .leading, spacing: 0) {
                 workspaceAboutChip
-                ScrollView(.horizontal) { workspaceTopBarActions }
+                ViewThatFits(in: .horizontal) {
+                    workspaceTopBarActions.frame(maxWidth: .infinity, alignment: .trailing)
+                    ScrollView(.horizontal) { workspaceTopBarActions }
+                        .defaultScrollAnchor(.trailing)
+                }
             }
         }
         .padding(.horizontal, 8)

@@ -8,6 +8,14 @@ import R2CMapping
 private actor AppleMappingMissionPreviewWorker {
     static let shared=AppleMappingMissionPreviewWorker()
     func credentialsAvailable() -> Bool {(try? PilotCloudCredentialStore.load()) != nil}
+    func saveCredentials(appID: String, appKey: String, license: String) throws {
+        _ = try PilotCloudCredentialStore.load()
+        if !appID.isEmpty || !appKey.isEmpty || !license.isEmpty {
+            try PilotCloudCredentialStore.save(PilotCloudCredentials(appId: appID.trimmingCharacters(in: .whitespacesAndNewlines),
+                appKey: appKey.trimmingCharacters(in: .whitespacesAndNewlines), appLicense: license.trimmingCharacters(in: .whitespacesAndNewlines)))
+        }
+        guard try PilotCloudCredentialStore.load() != nil else { throw MappingMission.Failure("The app's DJI registration is unavailable. Install a complete app build.") }
+    }
     func prepare(mission:MappingMission,camera:MappingResolution.Profile,gsd:Double,capture:MappingProcessingPolicy.CaptureProfile,
                  canopy:Double,obstacle:Double?,clearance:Double,captureSpeed:Double,transitSpeed:Double) throws -> (MappingPlanningEstimate,MappingFlightRoute,Int64) {
         try Task.checkCancellation()
@@ -36,6 +44,7 @@ struct AppleMappingMissionView:View {
     @Environment(\.dismiss) private var dismiss
     @State private var selectedAircraft="DJI Matrice 4TD"
     @State private var selectedCamera="m4td.visible.wide"
+    @State private var aircraftPreferenceReady=false
     @State private var captureID=MappingProcessingPolicy.brushTrees.id
     @State private var gsd=DisplayUnits.current.number(DisplayUnits.current.resolutionValue(2), decimals: 4)
     @State private var clearanceText=DisplayUnits.current.number(DisplayUnits.current.lengthValue(15),decimals:2)
@@ -56,7 +65,7 @@ struct AppleMappingMissionView:View {
     @State private var freeBytes:Int64?
     @State private var error:String?
     private var camera:MappingResolution.Profile?{MappingResolution.profiles.first{$0.aircraft==selectedAircraft && $0.id==selectedCamera}}
-    private var capture:MappingProcessingPolicy.CaptureProfile{camera?.id=="m4td.visible.wide" ? MappingProcessingPolicy.captureProfiles.first{$0.id==captureID} ?? MappingProcessingPolicy.brushTrees:MappingProcessingPolicy.openGround}
+    private var capture:MappingProcessingPolicy.CaptureProfile{camera?.isVisibleWide==true ? MappingProcessingPolicy.captureProfiles.first{$0.id==captureID} ?? MappingProcessingPolicy.brushTrees:MappingProcessingPolicy.openGround}
     var body:some View {
         AppleMappingDialog(title:"Define Map Mission") {
             field("Map / incident",value:mapName)
@@ -64,9 +73,8 @@ struct AppleMappingMissionView:View {
             Text("Capture settings").font(.headline)
             Text("Aircraft").font(.caption)
             Picker("Aircraft",selection:$selectedAircraft){
-                Text("DJI Matrice 4TD · Pilot 2 lists M4D → M4TD").tag("DJI Matrice 4TD")
-                ForEach(["DJI Matrice 4T","DJI Matrice 30/30T","DJI Matrice 400"],id:\.self){Text($0+" · camera profile needed").tag($0)}
-            }.pickerStyle(.menu).accessibilityIdentifier("mapping-aircraft")
+                ForEach(MappingResolution.aircraftModels,id:\.self){Text(MappingResolution.aircraftLabel($0)).tag($0)}
+            }.pickerStyle(.menu).disabled(!aircraftPreferenceReady || busy).accessibilityIdentifier("mapping-aircraft")
             if camera != nil {Text("Camera / sensor").font(.caption);Picker("Camera / sensor",selection:$selectedCamera){ForEach(MappingResolution.profiles.filter{$0.aircraft==selectedAircraft}){Text($0.label).tag($0.id)}}.pickerStyle(.menu)}
             else{Text("Camera and sensor profiles for \(selectedAircraft) have not been verified in R2C yet. Mission height/resolution estimates are disabled for this aircraft.")}
             VStack(alignment:.leading){Text("Target ground resolution (\(units.resolutionUnit))").font(.caption);TextField("Target ground resolution (\(units.resolutionUnit))",text:$gsd).keyboardType(.decimalPad).textFieldStyle(.roundedBorder).accessibilityIdentifier("mapping-target-gsd")}.disabled(camera==nil)
@@ -74,15 +82,15 @@ struct AppleMappingMissionView:View {
                 Text("Estimated height above takeoff: \(units.length(height)) · about \(units.number((units == .metric ? 100 : 30.48) / value)) pixels/\(units.lengthUnit)")
                 if showDetails{Text("Height uses level-ground nadir sampling and \(Int(camera.sensor.widthPixels)) × \(Int(camera.sensor.heightPixels)) originals. Pixel sampling is not surveyed accuracy.")}
             }else if camera != nil{Text("Enter a target between \(units.resolution(0.2)) and \(units.resolution(100)).")}
-            if camera?.id=="m4td.visible.wide" {
+            if camera?.isVisibleWide==true {
                 Text("Capture pattern").font(.caption)
                 Picker("Capture pattern",selection:$captureID){ForEach(MappingProcessingPolicy.captureProfiles,id:\.id){Text($0.label).tag($0.id)}}.pickerStyle(.menu).accessibilityIdentifier("mapping-capture-pattern")
                 Text(capture.description)
             }
             if camera?.focalLength35mm != nil {Text("Telephoto survey · nadir −90°.")}
-            if camera?.id.hasPrefix("m4td.visible.")==true {
+            if camera?.mode == .visible {
                 Text("Automatic setup: selected lens, VIS-only capture, and original-photo return when connected to Pilot 2.")
-                Text("Pilot 2 check: Photo Resolution 4K and Image Ratio 4:3 (about 12 MP). R2C cannot yet set or verify these camera settings before capture.")
+                Text((camera?.captureSettings ?? "") + " R2C cannot yet set or verify these camera settings before capture.")
             }
             VStack(alignment:.leading){Text("Maximum speed while capturing (\(units.lengthUnit)/s)").font(.caption);TextField("Maximum speed while capturing (\(units.lengthUnit)/s)",text:$captureSpeedText).keyboardType(.decimalPad).textFieldStyle(.roundedBorder).accessibilityIdentifier("mapping-capture-speed")}
                 .onChange(of:captureSpeedText){_,value in captureSpeedMeters=Double(value).map(units.lengthMeters) ?? .nan}
@@ -126,9 +134,25 @@ struct AppleMappingMissionView:View {
                 if let launch=mission.launchLocation {Text(String(format:"R2C launch reference: %.5f, %.5f",launch.latitude,launch.longitude) + " (±\(units.length(launch.horizontalAccuracyMeters))). Terrain elevation is not included.")}
                 else{Text("No fresh R2C location fix was available for the launch reference.")}
             }
-            if !cloudConfigured{Text("Enter the DJI Cloud API credentials in Pilot 2 connection settings first.").foregroundStyle(.red)}
+            if !cloudConfigured{Text("The app’s DJI registration is unavailable. Install a complete app build.").foregroundStyle(.red)}
             Button("Pilot 2 connection settings"){showSettings=true}
-        } actions:{Button("Close"){close()}.disabled(busy);Button(busy ? "Preparing HTTP…":"Test Pilot 2 using HTTP"){prepare()}.disabled(busy || route==nil || !capture.exportQualified || !cloudConfigured).accessibilityIdentifier("mapping-http-connect")}
+        } actions:{Button("Close"){close()}.disabled(busy);Button(busy ? "Preparing HTTP…":"Test Pilot 2 using HTTP"){prepare()}.disabled(!aircraftPreferenceReady || busy || route==nil || !capture.exportQualified || !cloudConfigured).accessibilityIdentifier("mapping-http-connect")}
+        .task {
+            let model=await MappingAircraftPreference.shared.load()
+            guard !Task.isCancelled else{return}
+            selectedAircraft=model
+            if !MappingResolution.profiles.contains(where:{$0.aircraft==model && $0.id==selectedCamera}) {
+                selectedCamera=MappingResolution.profiles.first{$0.aircraft==model}?.id ?? ""
+            }
+            aircraftPreferenceReady=true
+        }
+        .onChange(of:selectedAircraft){_,model in
+            selectedCamera=MappingResolution.profiles.first{$0.aircraft==model}?.id ?? ""
+            if aircraftPreferenceReady {
+                let revision=DispatchTime.now().uptimeNanoseconds
+                Task {await MappingAircraftPreference.shared.save(model,revision:revision)}
+            }
+        }
         .task(id:"\(selectedAircraft):\(selectedCamera):\(captureID):\(gsd):\(obstacle):\(clearanceMeters):\(captureSpeedMeters):\(transitSpeedMeters)"){await updateEstimate()}
         .task(id:showSettings){
             if !showSettings {
@@ -496,14 +520,35 @@ struct ApplePilotCloudSetupView:View {
     @State private var appID=""
     @State private var appKey=""
     @State private var license=""
+    @State private var configured=false
+    @State private var loading=true
+    @State private var saving=false
     @State private var error:String?
     var body:some View{AppleMappingDialog(title:"Pilot 2 connection setup") {
-        Text("Enter your DJI Cloud API application credentials once. They are protected by this device’s Keychain and excluded from backup and mission exports.")
-        if (try? PilotCloudCredentialStore.load()) != nil{Text("Cloud API credentials are already saved. Leave these fields empty to retain them.")}
-        TextField("Cloud API app ID",text:$appID).textFieldStyle(.roundedBorder).textInputAutocapitalization(.never).autocorrectionDisabled()
-        SecureField("Cloud API app key",text:$appKey).textFieldStyle(.roundedBorder)
-        SecureField("App basic license",text:$license).textFieldStyle(.roundedBorder)
+        Text("DJI app registration is included with R2C. These fields are for administrator overrides, protected by this device’s Keychain and excluded from backup and mission exports.")
+        if configured{Text("Cloud API credentials are already saved. Leave these fields empty to retain them.")}
+        TextField("Cloud API app ID",text:$appID).textFieldStyle(.roundedBorder).textInputAutocapitalization(.never).autocorrectionDisabled().disabled(loading || saving)
+        SecureField("Cloud API app key",text:$appKey).textFieldStyle(.roundedBorder).disabled(loading || saving)
+        SecureField("App basic license",text:$license).textFieldStyle(.roundedBorder).disabled(loading || saving)
         Text("Connect this device and the controller to the same Wi-Fi/LAN. In Pilot 2, use Cloud Services → Open Platforms to load the mission and return original photos automatically.")
         if let error{Text(error).foregroundStyle(.red)}
-    } actions:{Button("Cancel"){dismiss()};Button("Save setup"){do{if !appID.isEmpty || !appKey.isEmpty || !license.isEmpty{try PilotCloudCredentialStore.save(PilotCloudCredentials(appId:appID.trimmingCharacters(in:.whitespacesAndNewlines),appKey:appKey.trimmingCharacters(in:.whitespacesAndNewlines),appLicense:license.trimmingCharacters(in:.whitespacesAndNewlines)))};guard try PilotCloudCredentialStore.load() != nil else{throw MappingMission.Failure("Enter the DJI Cloud API credentials first.")};appKey="";license="";saved()}catch{self.error=error.localizedDescription}}}}
+    } actions:{
+        Button("Cancel"){dismiss()}.disabled(saving)
+        Button(saving ? "Saving…" : "Save setup") {
+            let id=appID, key=appKey, value=license
+            saving=true;error=nil
+            Task {
+                do {
+                    try await AppleMappingMissionPreviewWorker.shared.saveCredentials(appID:id,appKey:key,license:value)
+                    appKey="";license="";saving=false;saved()
+                } catch {saving=false;self.error=error.localizedDescription}
+            }
+        }.disabled(loading || saving)
+    }
+    .interactiveDismissDisabled(saving)
+    .task {
+        let available=await AppleMappingMissionPreviewWorker.shared.credentialsAvailable()
+        guard !Task.isCancelled else{return}
+        configured=available;loading=false
+    }}
 }

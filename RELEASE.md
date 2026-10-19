@@ -74,6 +74,57 @@ check also runs automatically in `apple/AppStore/verify-metadata.sh` (and so in
 `bundleRelease`) depends on. Use neutral wording such as "on all devices", and
 keep platform-specific detail in the parity ledger.
 
+### DJI app registration and fresh installations
+
+DJI Cloud API registration belongs to RID2Caltopo and ships with every instance
+of both mobile apps. Operators do not enroll each tablet or supply developer
+credentials. Each installation imports the shared registration into its own
+Keychain/Android Keystore; device-bound storage must not be confused with the
+scope of DJI registration.
+
+The private release input is `.local-deployment/dji-app-registration.json`, or
+an explicit `R2C_DJI_APP_REGISTRATION` path on CI/another build host. Both builders
+use the same file. It uses the existing FAA configuration obfuscation format,
+with a content-integrity hash. This is client-side transport obfuscation, not
+confidentiality against extraction of a distributed app. Registration values
+must never appear as plaintext source files, logs, command arguments or test
+fixtures. Keep the private build input outside Git and in durable storage.
+
+The authorized debug administrator utility `capture_dji_app_registration.py`
+can capture the working app registration from a configured iPad, without a
+plaintext file on the Mac. It requires a development capture build and explicit
+permission to distribute those registration values to all app instances. This
+is a build-maintenance operation, not an operator installation step.
+
+Release gates reject absent/corrupt shared registration and also reject the old
+per-tablet sealed bundles. Android and Apple package the shared registration at
+`dji-registration/registration.json`. They validate the final APK/AAB/archive/IPA
+and compare the exact packaged bytes to the chosen input. The Xcode Release
+build phase and archive/export checks enforce the same requirement even when
+reusing an archive. Ordinary source-only Debug builds may remain unconfigured;
+private development deployments use the same app-registration input as releases.
+
+```bash
+python3 -m unittest discover -s tools/mapping/tests -p 'test_dji_provisioning_gate.py'
+./gradlew :app:verifyDjiReleaseProvisioning
+python3 tools/mapping/verify_dji_provisioning.py --platform android \
+  --artifact app/build/outputs/bundle/release/app-release.aab
+python3 tools/mapping/verify_dji_provisioning.py --platform apple \
+  --artifact apple/Build/TestFlight-CANDIDATE/RID2CaltopoApple.ipa
+```
+
+Release evidence must include both an upgrade and fresh-install bootstrap on a
+separate qualification installation with no existing registration or enrollment.
+Never uninstall or clear a populated operator tablet. Android/Apple unit tests
+use the same synthetic registration fixture, exercise two empty stores, repair
+missing protected credentials, and ensure failed writes never create a receipt.
+Package checks and these isolated tests do not establish actual Pilot license
+acceptance; qualify that on the exact store candidate before publication.
+
+The hash-matched published 2.5.2 APK, AAB and IPA omitted the registration. Do not
+claim they contain this fix, move their tag, or replace their evidence. Ship a
+forward-fix candidate with a new build number through the normal release process.
+
 ### 3. Review and stabilize the candidate
 
 Before either store upload:
@@ -319,6 +370,8 @@ move a published tag.
 - [ ] Unified notes created, synchronized, rendered, and reviewed
 - [ ] Google Play Test and release findings expanded, investigated, and recorded
 - [ ] Complete diff/untracked-file and secret-hygiene review finished
+- [ ] DJI app-wide registration bootstrap and exact store-candidate import/Pilot connection verified on a separate qualification device
+- [ ] Protected DJI input and exact packaged asset verified on both platforms
 - [ ] Android full gate, AAB signature, and artifact hashes recorded
 - [ ] Apple full gate, IPA signature, and artifact hash recorded
 - [ ] Android release APK physically qualified

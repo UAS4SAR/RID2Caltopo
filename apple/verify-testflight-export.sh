@@ -34,6 +34,8 @@ file "$binary" | grep -q 'Mach-O 64-bit executable arm64'
 "${0:A:h}/verify-webrtc-framework.sh" "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
 
+python3 "${0:A:h}/../tools/mapping/verify_dji_provisioning.py" --platform apple --artifact "$ipa"
+
 signature="$(codesign -dv --verbose=4 "$app" 2>&1)"
 actual_team="$(print -r -- "$signature" | awk -F= '/^TeamIdentifier=/{print $2; exit}')"
 authority="$(print -r -- "$signature" | awk -F= '/^Authority=/{print $2; exit}')"

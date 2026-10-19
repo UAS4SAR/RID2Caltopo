@@ -1006,3 +1006,108 @@ Both planners now expose independent Transit speed in the same ft/s or m/s units
   validation passed. Both candidates use 2.5.2 (396); no upload/publication.
 - Evidence and boundaries: [final verification record](validation/2026-10-19-final-verification/README.md).
   Final physical regression remains with the operator.
+
+### 2.5.3 — multi-aircraft mission planning
+
+- Both panels now enable Matrice 4T, Matrice 30 and Matrice 30T profiles, with
+  matched geometry, pattern/clearance controls, conservative capture cadence,
+  independent transit speed, model-specific WPML/Pilot 2 identifiers and photo
+  lens matching. M30 variable zoom and thermal reconstruction remain outside
+  this change; Matrice 400 remains disabled pending payload configuration.
+- Apple aircraft changes now select an available camera as Android does.
+- Mapping tests, model-filter/topology protocol tests, Android debug build,
+  Apple Simulator app build and canonical notes checks pass. Hardware
+  qualification is pending on the new aircraft; no field or interactive UI
+  parity claim is made. Details: [validation](validation/2026-10-19-multi-aircraft-planning.md).
+
+### 2.5.3 build 398 — Pilot 2 photo-return readback
+
+- Shared controller page accepts equivalent numeric/string enum and boolean
+  scalar responses, preserving strict readback and wrong-owner rejection.
+  Failure messages now expose only safe response type/scalar diagnostics.
+- Bridge regression reproduces the old failure with owner `"0"` and passes
+  after the change. Actual M4T response type and live retest are pending.
+- Both device builds package identical bridge bytes and notes. Details:
+  [validation](validation/2026-10-19-pilot-media-setting-compatibility.md).
+
+### 2.5.3 build 399 — remember mission aircraft
+
+- Both platforms retain the Define Map Mission aircraft across panel closure and
+  restart, using background preference I/O and ordered saves. Camera selection
+  remains compatible with the chosen model; mission connection is disabled until
+  the preference read completes.
+- DataStore reopen and Apple independent-store/stale-write tests pass, along with
+  aircraft-route regressions and both device builds. The M4T owner readback issue
+  reported after build 398 is still under investigation; this change makes no
+  new automatic-photo-return claim.
+- [Validation](validation/2026-10-19-persistent-mapping-aircraft.md).
+
+### 2.5.3 build 400 — retained Pilot connection page
+
+- Both native servers require the shared controller-page revision for bootstrap
+  and readiness reports; old retained pages receive explicit close/reopen steps.
+- New HTTP and H5 regressions pass on both platforms; no download-owner check
+  was relaxed. Exact old wording from the owner's controller indicates an old
+  page, but actual owner readback still needs a fresh-page retest.
+- [Validation](validation/2026-10-19-pilot-page-revision.md).
+
+### 2.5.3 build 401 — narrow workspace header alignment
+
+- Both platforms retain trailing alignment of the fullscreen/PiP/bridge/menu
+  controls when the header wraps below its title. Very narrow control strips
+  remain scrollable with the menu initially at the trailing edge.
+- Wide layout retains leading title/trailing controls; no UI-thread I/O added.
+  Both app builds pass; phone visual qualification/installation remain pending.
+- [Validation](validation/2026-10-19-wrapped-header-alignment.md).
+
+## 2026-10-19 — Pilot aircraft-presence diagnostic (2.5.3 build 402)
+
+- Both platforms ship the same H5 diagnostic: failed download ownership checks
+  distinguish no aircraft reported, aircraft reported, and unavailable query.
+- Empty aircraft serial asks the operator to power on/link an aircraft; no
+  serial is disclosed and automatic-photo readiness is not weakened.
+- Regression and validation details: [aircraft diagnostic](validation/2026-10-19-pilot-aircraft-diagnostic.md).
+
+## 2026-10-19 — Protected Android DJI setup recovery (development build 403)
+
+- Prepared Debug-only iPad-to-Android protected deployment, mirroring the existing
+  Android-to-iPad administrator workflow; shared application registration remains
+  encrypted separately for each installation.
+- iPad 403 installed; Android remains 402 pending explicit credential-transfer
+  authorization required by automatic approval review. No transfer occurred.
+- Details: [protected recovery](validation/2026-10-19-android-pilot-credential-restore.md).
+
+## 2026-10-19 — DJI recovery and release guards (2.5.3 build 404)
+
+- Owner authorized the protected iPad-to-A5 Pro credential transfer; receipt
+  verification confirms the A5 Pro imported the exact recipient-bound envelope.
+- Both devices updated in place. Android now prepares bundled DJI setup on a
+  startup worker; setup status/certificate reads also run off Main.
+- Both release paths reject missing protected input and verify packaged assets;
+  all three hash-matched 2.5.2 artifacts reproduce the missing-asset failure.
+- Public fresh-install provisioning policy remains an owner decision; a sealed
+  bundle for one tablet is not universal store provisioning. No store upload.
+- Evidence: [credential recovery](validation/2026-10-19-android-pilot-credential-restore.md).
+
+## 2026-10-19 — App-wide DJI registration correction (build 406 candidate)
+
+- DJI registration is app-based, as the owner clarified. Both clients now import
+  one shared registration without tablet enrollment, using FAA-style transport
+  obfuscation and protected local Keychain/Keystore storage.
+- Both release gates now reject missing/corrupt shared registration and reject
+  the earlier per-tablet envelopes; they verify exact packaged bytes.
+- Supersedes the policy-choice language and per-device release model above.
+- Real app-wide registration capture requires explicit authorization demanded by
+  automatic approval review; only synthetic candidate packages are prepared.
+- Details: [app-wide registration](validation/2026-10-19-app-wide-dji-registration.md).
+
+## 2026-10-19 — App-wide registration bundled and installed (2.5.3 build 406)
+
+- Owner explicitly selected bundled shared registration for this release and
+  deferred tracker provisioning. Real app-registration capture is authorized
+  and complete; the earlier capture-approval block above is resolved.
+- Both packages contain identical real registration input, distinct from the
+  synthetic fixture, and identical Pilot page bytes.
+- iPad and A5 Pro independently report build 406 and matching registration
+  import status/receipt in protected storage. Installed in place; data preserved.
+- No tracker deployment or store publication. Pilot/controller retest is pending.

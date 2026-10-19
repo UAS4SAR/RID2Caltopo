@@ -9,7 +9,7 @@ internal object MappingMissionPlanning {
     data class Recommendation(val gsdCmPerPixel:Double,val route:DjiMappingRoute)
     fun withinPhotoLimit(mission:MappingMission,camera:MappingResolution.Profile,requestedGsd:Double,
         capture:MappingCaptureProfile.Profile):Recommendation? {
-        if(camera.id!="m4td.visible.wide"||!capture.exportQualified||!requestedGsd.isFinite()||requestedGsd !in .2..100.0)return null
+        if(!camera.isVisibleWide||!capture.exportQualified||!requestedGsd.isFinite()||requestedGsd !in .2..100.0)return null
         fun candidate(gsd:Double):DjiMappingRoute?=runCatching{DjiMappingRoute(mission.json(camera,gsd,capture))}.getOrNull()
         val current=candidate(requestedGsd)?:return null
         if(current.photoEstimate<=200)return null

@@ -476,7 +476,7 @@ private struct AppleSurfaceWebView:UIViewRepresentable{
                 let connection = try await connectionQueue.run {
                     try state.server?.closeAndWait(); state.server = nil
                     state.missionID = id
-                    guard let credentials = try PilotCloudCredentialStore.load() else { throw MappingMission.Failure("Enter the DJI Cloud API credentials in Pilot 2 connection settings first.") }
+                    guard let credentials = try PilotCloudCredentialStore.load() else { throw MappingMission.Failure("The app’s DJI registration is unavailable. Install a complete app build.") }
                     let connection = try PilotCloudServer(store: MappingMissionStore(root: MappingMissionStore.applicationRoot()), missionID: id, host: host, credentials: credentials, assets: { name in
                         guard let file = Bundle.main.url(forResource: name, withExtension: nil, subdirectory: "dji-cloud") else { throw MappingMission.Failure("Pilot 2 connection page unavailable.") }
                         return try Data(contentsOf: file)

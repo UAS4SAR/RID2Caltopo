@@ -376,28 +376,29 @@ fun StreamsScreen(
     ) {
         Column {
             if (fullScreenChrome.showTopBar) {
-                androidx.compose.foundation.layout.FlowRow(
+                org.ncssar.rid2caltopo.ui.WrappingWorkspaceHeader(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    if (workspaceMenu != null) {
-                        androidx.compose.material3.OutlinedButton(onClick = onAbout) {
-                            Text("RID2Caltopo", maxLines = 1)
+                    title = {
+                        if (workspaceMenu != null) {
+                            androidx.compose.material3.OutlinedButton(onClick = onAbout) {
+                                Text("RID2Caltopo", maxLines = 1)
+                            }
+                        }
+                    },
+                    actions = {
+                        Row(Modifier.horizontalScroll(rememberScrollState(Int.MAX_VALUE)), verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { streamsFullScreen = true }) {
+                                Icon(Icons.Default.Fullscreen, "Full screen")
+                            }
+                            IconButton(onClick = { viewModel.setStreamPipEnabled(!streamPipUiState.enabled) }) {
+                                Icon(Icons.Default.PictureInPicture, "Toggle picture in picture", tint = if (streamPipUiState.enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                            }
+                            AlertStatusBell(onClick = { showAlertPanel = true })
+                            BridgeSignalIndicator(rssi = bridgeRssi, onClick = onBluetoothStats, enabled = showNavigation)
+                            workspaceMenu?.invoke()
                         }
                     }
-                    Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = { streamsFullScreen = true }) {
-                            Icon(Icons.Default.Fullscreen, "Full screen")
-                        }
-                        IconButton(onClick = { viewModel.setStreamPipEnabled(!streamPipUiState.enabled) }) {
-                            Icon(Icons.Default.PictureInPicture, "Toggle picture in picture", tint = if (streamPipUiState.enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
-                        }
-                        AlertStatusBell(onClick = { showAlertPanel = true })
-                        BridgeSignalIndicator(rssi = bridgeRssi, onClick = onBluetoothStats, enabled = showNavigation)
-                        workspaceMenu?.invoke()
-                    }
-                }
+                )
             }
                 if (fullScreenChrome.showExitChip) {
                     Row(Modifier.fillMaxWidth().background(Color.Black).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {

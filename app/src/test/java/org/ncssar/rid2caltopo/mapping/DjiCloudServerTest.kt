@@ -20,25 +20,66 @@ class DjiCloudServerTest {
     private data class Environment(val root:File,val certificate:HeldCertificate,val server:DjiCloudServer):AutoCloseable {
         override fun close(){server.close();root.deleteRecursively()}
     }
-    private fun environment(tlsEnabled:Boolean=true,assets:(String)->ByteArray={"page".toByteArray()},changed:(JSONObject)->Unit = {}):Environment {
+    private fun environment(mission:JSONObject=DjiCloudTestFixture.mission(true),tlsEnabled:Boolean=true,assets:(String)->ByteArray={"page".toByteArray()},changed:(JSONObject)->Unit = {}):Environment {
         val root=Files.createTempDirectory("r2c-native-pilot").toFile()
         val held=HeldCertificate.Builder().addSubjectAlternativeName("127.0.0.1").build()
         val password="test".toCharArray()
         val keys=KeyStore.getInstance(KeyStore.getDefaultType()).apply{load(null);setKeyEntry("test",held.keyPair.private,password,arrayOf(held.certificate))}
         val manager=KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply{init(keys,password)}
         val tls=SSLContext.getInstance("TLS").apply{init(manager.keyManagers,null,null)}
-        val server=DjiCloudServer("127.0.0.1","127.0.0.1",if(tlsEnabled)tls.serverSocketFactory else javax.net.ServerSocketFactory.getDefault(),DjiCloudTestFixture.mission(true),DjiCloudTestFixture.credentials(),root,assets,changed=changed,port=0)
+        val server=DjiCloudServer("127.0.0.1","127.0.0.1",if(tlsEnabled)tls.serverSocketFactory else javax.net.ServerSocketFactory.getDefault(),mission,DjiCloudTestFixture.credentials(),root,assets,changed=changed,port=0)
         server.start();return Environment(root,held,server)
     }
-    private fun api(env:Environment,path:String,token:String="",value:JSONObject?=null):Pair<Int,JSONObject> {
+    private fun api(env:Environment,path:String,token:String="",value:JSONObject?=null,pageRevision:String?="2"):Pair<Int,JSONObject> {
         val connection=URL(env.server.baseUrl+path).openConnection() as java.net.HttpURLConnection
         if(connection is HttpsURLConnection)connection.sslSocketFactory=HandshakeCertificates.Builder().addTrustedCertificate(env.certificate.certificate).build().sslSocketFactory()
         connection.connectTimeout=3000;connection.readTimeout=10000
+        pageRevision?.let{connection.setRequestProperty("X-R2C-Page-Revision",it)}
         if(token.isNotEmpty())connection.setRequestProperty("X-Auth-Token",token)
         if(value!=null){connection.requestMethod="POST";connection.setRequestProperty("Content-Type","application/json");connection.doOutput=true;connection.outputStream.use{it.write(value.toString().toByteArray())}}
         return try{val code=connection.responseCode;code to JSONObject((if(code<400)connection.inputStream else connection.errorStream).bufferedReader().use{it.readText()})}finally{connection.disconnect()}
     }
     private fun login(env:Environment)=api(env,"/cloud/login",value=JSONObject().put("code",env.server.code)).second.getJSONObject("data").getString("token")
+
+    @Test fun retainedControllerPageMustReopenBeforeBootstrapOrReadinessReports() {
+        environment(tlsEnabled=false).use { env ->
+            val token=login(env)
+            for(revision in listOf(null,"1","3")) {
+                val old=api(env,"/cloud/bootstrap",token,pageRevision=revision)
+                assertEquals(409,old.first)
+                assertTrue(old.second.getString("message").contains("Close the Open Platforms page"))
+                val report=api(env,"/cloud/report",token,JSONObject().put("automaticOriginals",true).put("downloadOwner",true),pageRevision=revision)
+                assertEquals(409,report.first)
+            }
+            assertFalse(api(env,"/cloud/status",token).second.getJSONObject("data").getJSONObject("flags").optBoolean("downloadOwner"))
+            assertEquals(200,api(env,"/cloud/bootstrap",token).first)
+        }
+    }
+
+    @Test fun missionLibraryAdvertisesAndFiltersTheSelectedAircraft() {
+        val feature=DjiCloudTestFixture.mission().getJSONObject("feature")
+        for((cameraId,modelKey,payloadKey) in listOf(
+            Triple("m4t.visible.wide","0-99-1","1-89-0"),
+            Triple("m30.visible.wide","0-67-0","1-52-0"),
+            Triple("m30t.visible.wide","0-67-1","1-53-0"))) {
+            val camera=MappingResolution.profiles.first{it.id==cameraId}
+            val mission=MappingMission(feature,"MAP").json(camera,3.0,MappingCaptureProfile.brushTrees,20.0)
+            environment(mission=mission,tlsEnabled=false).use { env ->
+                val token=login(env)
+                env.server.platform.mqtt("sys/product/RC/status",JSONObject().put("method","update_topo")
+                    .put("data",JSONObject().put("sub_devices",org.json.JSONArray().put(JSONObject().put("sn","SYNTHETIC")))).toString().toByteArray()) {}
+                val topology=api(env,"/manage/api/v1/workspaces/${env.server.platform.workspaceId}/devices/topologies",token).second.getJSONObject("data").getJSONArray("list").getJSONObject(0)
+                assertEquals(modelKey,topology.getJSONArray("hosts").getJSONObject(0).getJSONObject("device_model").getString("key"))
+                assertEquals(if(cameraId.startsWith("m30"))"2-119-0" else "2-174-0",topology.getJSONArray("parents").getJSONObject(0).getJSONObject("device_model").getString("key"))
+                val path="/wayline/api/v1/workspaces/${env.server.platform.workspaceId}/waylines"
+                val list=api(env,path+"?drone_model_keys=$modelKey",token).second.getJSONObject("data").getJSONArray("list")
+                assertEquals(1,list.length())
+                assertEquals(modelKey,list.getJSONObject(0).getString("drone_model_key"))
+                assertEquals(payloadKey,list.getJSONObject(0).getJSONArray("payload_model_keys").getString(0))
+                assertEquals(0,api(env,path+"?drone_model_keys=0-100-1",token).second.getJSONObject("data").getJSONArray("list").length())
+            }
+        }
+    }
 
     @Test fun deletionWaitsForHandlerEvenAfterSocketCloseAndCanRetryAfterTimeout() {
         val entered=CountDownLatch(1);val release=CountDownLatch(1)

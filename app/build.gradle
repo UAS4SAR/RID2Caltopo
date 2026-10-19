@@ -11,15 +11,29 @@ def generatedReleaseNotesAssetsDir = layout.buildDirectory.dir("generated/releas
 def generatedLegalAssetsDir = layout.buildDirectory.dir("generated/legal/assets/legal")
 def generatedAppConfigProtoDir = layout.buildDirectory.dir("generated/source/proto/main/java")
 def generatedDjiProvisioningAssetsDir = layout.buildDirectory.dir("generated/dji-provisioning/assets")
+def appRegistrationPath = providers.environmentVariable("R2C_DJI_APP_REGISTRATION").orNull
+        ?: rootProject.file(".local-deployment/dji-app-registration.json").absolutePath
 def djiProvisioningBundlePath = providers.environmentVariable("R2C_DJI_PROVISIONING_BUNDLE").orNull
 def generateDjiProvisioningAssets = tasks.register("generateDjiProvisioningAssets") {
     inputs.property("bundlePath", djiProvisioningBundlePath ?: "none")
+    inputs.property("appRegistrationPath", appRegistrationPath)
+    inputs.property("appRegistrationPresent", file(appRegistrationPath).isFile())
+    if (file(appRegistrationPath).isFile()) inputs.file(file(appRegistrationPath))
     if (djiProvisioningBundlePath) inputs.file(file(djiProvisioningBundlePath))
     outputs.dir(generatedDjiProvisioningAssetsDir)
     doLast {
         def output = generatedDjiProvisioningAssetsDir.get().asFile
         delete(output)
         output.mkdirs()
+        if (file(appRegistrationPath).isFile()) {
+            def verify = new ProcessBuilder("python3", rootProject.file("tools/mapping/verify_dji_provisioning.py").absolutePath,
+                    "--platform", "android", "--bundle", appRegistrationPath).directory(rootDir).redirectErrorStream(true).start()
+            def resultText = verify.inputStream.getText("UTF-8")
+            if (verify.waitFor() != 0) throw new GradleException(resultText.trim())
+            def registration = new File(output, "dji-registration/registration.json")
+            registration.parentFile.mkdirs()
+            registration.bytes = file(appRegistrationPath).bytes
+        }
         if (djiProvisioningBundlePath) {
             def bundle = file(djiProvisioningBundlePath)
             def value = new groovy.json.JsonSlurper().parse(bundle)
@@ -36,7 +50,7 @@ def generateDjiProvisioningAssets = tasks.register("generateDjiProvisioningAsset
 tasks.named("preBuild").configure { dependsOn(generateDjiProvisioningAssets) }
 def versionMajor = 2
 def versionMinor = 5
-def versionPatch = 2
+def versionPatch = 3
 def appVersionName = "${versionMajor}.${versionMinor}.${versionPatch}"
 def canonicalReleaseNotesFile = rootProject.file("release-notes/${appVersionName}/whats_new.txt")
 def runProcess = { File workingDirectory, List command, Map environmentOverrides = [:], boolean ignoreExitValue = false ->
@@ -249,7 +263,7 @@ android {
         applicationId "org.ncssar.rid2caltopo"
         minSdk = 29
         targetSdk = 36
-        versionCode = 396
+        versionCode = 406
         versionName appVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
@@ -611,6 +625,13 @@ tasks.register("connectedStreamLifecycleQualification") {
     }
 }
 
+tasks.register("verifyDjiReleaseProvisioning", Exec) {
+    group = "verification"
+    description = "Rejects a release without the shared app-wide DJI registration."
+    workingDir(rootDir)
+    commandLine("python3", "tools/mapping/verify_dji_provisioning.py", "--platform", "android")
+}
+
 tasks.register("releaseVerification") {
     group = "verification"
     description = "Runs all verification required before producing release artifacts."
@@ -623,7 +644,8 @@ tasks.register("releaseVerification") {
             "trackerCoordinationTests",
             "colorRealtimeQualification",
             "personRelevanceQualification",
-            "storeNotesCheck"
+            "storeNotesCheck",
+            "verifyDjiReleaseProvisioning"
     )
     // dependsOn("connectedDebugAndroidTest")
 }
@@ -682,6 +704,12 @@ tasks.matching {
             it.name.startsWith("publishRelease")
 }.configureEach {
     dependsOn("releaseVerification")
+    doLast {
+        if (name == "assembleRelease" || name == "bundleRelease") {
+            def artifact = name == "bundleRelease" ? "app/build/outputs/bundle/release/app-release.aab" : "app/build/outputs/apk/release/app-release.apk"
+            runProcess(rootDir, ["python3", "tools/mapping/verify_dji_provisioning.py", "--platform", "android", "--artifact", artifact])
+        }
+    }
     finalizedBy("uploadReleaseCrashlyticsArtifacts")
 }
 

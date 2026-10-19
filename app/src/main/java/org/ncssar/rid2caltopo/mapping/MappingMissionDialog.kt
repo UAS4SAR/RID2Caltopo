@@ -45,6 +45,13 @@ fun MappingMissionDialog(mission: MappingMission, onLayersChanged: () -> Unit, o
     val context = LocalContext.current
     var selectedAircraft by rememberSaveable { mutableStateOf(MappingResolution.MATRICE_4TD) }
     var selectedProfileId by rememberSaveable { mutableStateOf("m4td.visible.wide") }
+    var aircraftPreferenceReady by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        selectedAircraft=MappingAircraftPreferences.load(context)
+        val profiles=MappingResolution.profilesFor(selectedAircraft)
+        if(profiles.none{it.id==selectedProfileId})selectedProfileId=profiles.firstOrNull()?.id ?: ""
+        aircraftPreferenceReady=true
+    }
     var selectedCaptureId by rememberSaveable { mutableStateOf(MappingCaptureProfile.defaultVisible.id) }
     var targetGsdText by rememberSaveable { mutableStateOf(Units.current.number(Units.current.resolutionValue(2.0), 4)) }
     var clearanceText by rememberSaveable { mutableStateOf(Units.current.number(Units.current.lengthValue(15.0),2)) }
@@ -84,7 +91,7 @@ fun MappingMissionDialog(mission: MappingMission, onLayersChanged: () -> Unit, o
     val activeProfile = cameraProfiles.firstOrNull { it.id == selectedProfileId } ?: cameraProfiles.firstOrNull()
     val profileReady = activeProfile != null
     val estimatedHeight = activeProfile?.let { profile -> targetGsd?.let { MappingResolution.heightMetersForGsd(it,profile.sensor) } }
-    val capture=if(activeProfile?.id=="m4td.visible.wide")MappingCaptureProfile.profiles.first{it.id==selectedCaptureId} else MappingCaptureProfile.nadir
+    val capture=if(activeProfile?.isVisibleWide==true)MappingCaptureProfile.profiles.first{it.id==selectedCaptureId} else MappingCaptureProfile.nadir
     val previewKey=remember(mission,activeProfile,targetGsd,capture,canopyHeight,obstacleMeters,clearanceMeters,captureSpeedMeters,transitSpeedMeters){Any()}
     // Serial execution bounds overlapping calculations while edits cancel stale requests.
     val planningDispatcher=remember {Dispatchers.Default.limitedParallelism(1)}
@@ -108,7 +115,7 @@ fun MappingMissionDialog(mission: MappingMission, onLayersChanged: () -> Unit, o
         "Flight height ${Units.current.length(estimatedHeight)} must be at least ${Units.current.length(canopyHeight+clearanceMeters)} for ${Units.current.length(canopyHeight)} maximum obstacle top plus ${Units.current.length(clearanceMeters)} clearance." +
             (minimumGsd?.let { " This camera needs a coarser ground resolution of at least ${Units.current.resolution(it)}, or select a longer lens to preserve the requested detail." } ?: "")
     } else null
-    val canTransfer = storageReady && capture.exportQualified && route!=null && (route.photoEstimate<=200||card!=null) && route.photoEstimate<=MappingVolume.MAX_PHOTOS && !busy && activeProfile != null && targetGsd != null && targetGsd in 0.2..100.0 && estimatedHeight != null && estimatedHeight in 5.0..500.0
+    val canTransfer = aircraftPreferenceReady && storageReady && capture.exportQualified && route!=null && (route.photoEstimate<=200||card!=null) && route.photoEstimate<=MappingVolume.MAX_PHOTOS && !busy && activeProfile != null && targetGsd != null && targetGsd in 0.2..100.0 && estimatedHeight != null && estimatedHeight in 5.0..500.0
     if(showCloudSetup){DjiCloudSetupDialog({showCloudSetup=false},{cloudConfigured=true});return}
     if(showCloud && cloudSession!=null){DjiCloudConnectionDialog(cloudSession!!){showCloud=false};return}
     AlertDialog(onDismissRequest = { if (!busy) onDismiss() }, title = { Text("Define Map Mission") }, text = {
@@ -119,8 +126,8 @@ fun MappingMissionDialog(mission: MappingMission, onLayersChanged: () -> Unit, o
                 label={Text("Search assignment")},singleLine=true,modifier=Modifier.fillMaxWidth())
             Text("Capture settings",style=MaterialTheme.typography.titleSmall)
             MappingChoiceField("Aircraft", selectedAircraft, MappingResolution.aircraftModels.map { model ->
-                model to if (model == MappingResolution.MATRICE_4TD) "$model · Pilot 2 lists M4D → M4TD" else "$model · camera profile needed"
-            }, !busy) { selectedAircraft=it;MappingResolution.profilesFor(it).firstOrNull()?.let { profile ->
+                model to MappingResolution.aircraftLabel(model)
+            }, !busy && aircraftPreferenceReady) { selectedAircraft=it;MappingAircraftPreferences.select(it);MappingResolution.profilesFor(it).firstOrNull()?.let { profile ->
                 selectedProfileId=profile.id
             } }
             if (cameraProfiles.isNotEmpty() && activeProfile != null) {
@@ -137,14 +144,14 @@ fun MappingMissionDialog(mission: MappingMission, onLayersChanged: () -> Unit, o
                 Text("Estimated height above takeoff: ${Units.current.length(estimatedHeight)} · about ${Units.current.number((if (Units.current == DisplayUnits.METRIC) 100.0 else 30.48) / targetGsd!!)} pixels/${Units.current.lengthUnit}")
                 if(showDetails)Text("Height uses level-ground nadir sampling and ${activeProfile!!.sensor.widthPixels} × ${activeProfile.sensor.heightPixels} originals. Pixel sampling is not surveyed accuracy.")
             } else if (profileReady) Text("Enter a target between ${Units.current.resolution(0.2)} and ${Units.current.resolution(100.0)}.")
-            if(activeProfile?.id=="m4td.visible.wide") {
+            if(activeProfile?.isVisibleWide==true) {
                 MappingChoiceField("Capture pattern",capture.label,MappingCaptureProfile.profiles.map{it.id to it.label},!busy){selectedCaptureId=it}
                 Text(capture.description)
             }
             if(activeProfile?.focalLength35mm!=null)Text("Telephoto survey · nadir −90°.")
-            if(activeProfile?.id?.startsWith("m4td.visible.")==true) {
+            if(activeProfile != null && !activeProfile.thermal) {
                 Text("Automatic setup: selected lens, VIS-only capture, and original-photo return when connected to Pilot 2.")
-                Text("Pilot 2 check: Photo Resolution 4K and Image Ratio 4:3 (about 12 MP). R2C cannot yet set or verify these camera settings before capture.")
+                Text(activeProfile.captureSettings + " R2C cannot yet set or verify these camera settings before capture.")
             }
             OutlinedTextField(captureSpeedText,{captureSpeedText=it;captureSpeedMeters=it.toDoubleOrNull()?.let(Units.current::lengthMeters) ?: Double.NaN},
                 label={Text("Maximum speed while capturing (${Units.current.lengthUnit}/s)")},singleLine=true,enabled=!busy,
@@ -188,7 +195,7 @@ fun MappingMissionDialog(mission: MappingMission, onLayersChanged: () -> Unit, o
             freeBytes?.let { Text("${if(card!=null)"Free microSD mapping storage" else "Free tablet storage"}: ${MappingStorageUsage.format(it)}") }
             if(capture in MappingCaptureProfile.approved60Trials)Text("The aircraft can fly outside the assignment to aim the −60° camera inward. Route-end margins add 10 m; review the full path and image coverage in Pilot 2.")
             if(routePreview.isFailure)Text(clearanceProblem ?: routePreview.exceptionOrNull()?.message ?: "Route cannot be estimated.",color=androidx.compose.material3.MaterialTheme.colorScheme.error)
-            if(!cloudConfigured)Text("Saved DJI credentials are unavailable. Complete Pilot 2 connection settings.",color=androidx.compose.material3.MaterialTheme.colorScheme.error)
+            if(!cloudConfigured)Text("DJI app registration is unavailable. Install a complete app build or check administrator overrides.",color=androidx.compose.material3.MaterialTheme.colorScheme.error)
             if(route!=null&&route.photoEstimate>MappingVolume.MAX_PHOTOS)Text("This route exceeds the 10,000-original intake capacity.")
             TextButton(onClick={showDetails=!showDetails}){Text(if(showDetails)"Hide route details" else "Route details")}
             if(showDetails) {
