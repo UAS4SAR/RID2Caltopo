@@ -43,7 +43,12 @@ internal object OperationalStorage {
     private val startup = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "archive-storage-setup").apply { isDaemon = true } }
     private data class Area(val id: String, val retained: String, val alias: File, val sources: List<File>)
     private data class Store(val uri: String, val work: File, val tree: ArchiveTree, val writer: VerifiedArchiveTree, val areas: List<Area>, val migrated: MutableMap<String, String> = mutableMapOf(), val growingOffsets: MutableMap<String, Long> = mutableMapOf())
-    private fun worker() = check(Looper.myLooper() != Looper.getMainLooper()) { "Operational storage must run on a worker" }
+    private fun worker() {
+        // Plain JVM tests have no Android UI Looper. On a device the main Looper
+        // is present, and its thread must still be rejected before any storage work.
+        val main = Looper.getMainLooper() ?: return
+        check(Looper.myLooper() != main) { "Operational storage must run on a worker" }
+    }
     fun start(context: Context) { startup.execute { runCatching { TemporaryStorage.cleanAbandoned(context); prepare(context.applicationContext) } } }
     fun retry(context: Context) = start(context)
 
