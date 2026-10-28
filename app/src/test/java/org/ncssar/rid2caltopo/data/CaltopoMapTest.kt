@@ -538,6 +538,7 @@ class CaltopoMapTest {
 
     @Before
     fun setUp() {
+        CaltopoRecoveryWork.worker.submit {}.get(3, java.util.concurrent.TimeUnit.SECONDS)
         drainMarkers()
         CaltopoMap::class.java.getDeclaredField("markerJournal").apply { isAccessible = true }.set(null, DeviceMarkerJournal(java.io.File(java.nio.file.Files.createTempDirectory("marker-map-test").toFile(), "journal.json")))
         for (name in listOf("activeMarkerKeys", "deletingMarkerKeys")) {
@@ -658,6 +659,9 @@ class CaltopoMapTest {
     @After
     fun tearDown() {
         drainMarkers()
+        // Recovery callbacks also finish map refreshes. Let them complete before
+        // restoring shared map fields or a later test can receive this completion.
+        CaltopoRecoveryWork.worker.submit {}.get(3, java.util.concurrent.TimeUnit.SECONDS)
         for (name in listOf("MapCheckerDelay", "ProfileExpiryPoll", "InitialMarkerPublishDelay")) {
             (CaltopoMap::class.java.getDeclaredField(name).apply { isAccessible = true }.get(null) as DelayedExec).stop()
         }
