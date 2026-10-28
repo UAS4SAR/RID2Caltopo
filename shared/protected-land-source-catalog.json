@@ -12,7 +12,7 @@
       "scope": "nationwide",
       "jurisdiction": "US",
       "agency": "National Park Service",
-      "boundaryQueryUrl": "https://services.arcgis.com/xOi1kZaI0eWDREZv/ArcGIS/rest/services/NPS_Regional_and_Park_Boundary/FeatureServer/1/query",
+      "boundaryQueryUrl": "https://services1.arcgis.com/fBc8EJBxQRMcHlei/arcgis/rest/services/NPS_Land_Resources_Division_Boundary_and_Tract_Data_Service/FeatureServer/2/query",
       "rulesUrl": "https://www.nps.gov/articles/uncrewed-aircraft-in-the-national-parks.htm",
       "authority": "agency",
       "runtimeStatus": "active"
