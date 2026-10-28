@@ -9,7 +9,7 @@ internal object BlobCacheStoreFactory {
         context: Context, namespace: String, dbName: String, maxBytes: Long,
         defaultTtlMs: Long, forceFileBacked: Boolean = false
     ): BlobCacheStore {
-        val id = "${MapCacheRootResolver.resolveRoot(context)}:$namespace:$dbName:$forceFileBacked"
+        val id = "${MapCacheRootResolver.resolveRoot(context)}:$namespace:$dbName"
         // Opening a reader must not wait for the budget's full SD-card scan.
         return instances.computeIfAbsent(id) {
             val raw = createRaw(context, namespace, dbName, maxBytes, defaultTtlMs, forceFileBacked)
@@ -26,49 +26,12 @@ internal object BlobCacheStoreFactory {
         defaultTtlMs: Long,
         forceFileBacked: Boolean = false
     ): BlobCacheStore {
-        val internalFallbackRoot = context.applicationContext.noBackupFilesDir.resolve("map_cache")
-        if (!internalFallbackRoot.exists()) {
-            internalFallbackRoot.mkdirs()
-        }
-        MapCacheDebug.log(
-            "store create namespace=$namespace db=$dbName maxBytes=$maxBytes ttlMs=$defaultTtlMs forceFile=$forceFileBacked"
-        )
-        if (forceFileBacked) {
-            MapCacheDebug.log("store backend=file(forced) root=${internalFallbackRoot.absolutePath}")
-            return BlobSqlDiskCache(
-                cacheDir = internalFallbackRoot,
-                dbName = dbName,
-                maxBytes = maxBytes,
-                defaultTtlMs = defaultTtlMs
-            )
-        }
-
+        // The file backend is only for an explicitly temporary archive/session.
+        // A document-provider failure must never create an untracked persistent store.
         return when (val root = MapCacheRootResolver.resolveRoot(context.applicationContext)) {
-            is MapCacheRoot.FileBacked -> try {
-                MapCacheDebug.log("store backend=file root=${root.dir.absolutePath}")
-                BlobSqlDiskCache(
-                    cacheDir = root.dir,
-                    dbName = dbName,
-                    maxBytes = maxBytes,
-                    defaultTtlMs = defaultTtlMs
-                )
-            } catch (t: Throwable) {
-                CTWarn(
-                    "SplitMapPane",
-                    "Map cache SQL open failed for ${root.dir.absolutePath}; using internal fallback.",
-                    Exception(t)
-                )
-                MapCacheDebug.log(
-                    "store backend=file-open-failed root=${root.dir.absolutePath} err=${t.javaClass.simpleName}:${t.message}"
-                )
-                MapCacheDebug.log("store backend=file-fallback root=${internalFallbackRoot.absolutePath}")
-                BlobSqlDiskCache(
-                    cacheDir = internalFallbackRoot,
-                    dbName = dbName,
-                    maxBytes = maxBytes,
-                    defaultTtlMs = defaultTtlMs
-                )
-            }
+            is MapCacheRoot.FileBacked -> BlobSqlDiskCache(
+                cacheDir = root.dir, dbName = dbName, maxBytes = maxBytes, defaultTtlMs = defaultTtlMs
+            )
 
             is MapCacheRoot.SafBacked -> {
                 MapCacheDebug.log("store backend=saf root=${root.dir.uri}")

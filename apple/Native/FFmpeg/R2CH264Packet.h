@@ -83,10 +83,14 @@ static inline R2CH264PacketContents R2CH264InspectPacket(
     size_t size,
     int nalLengthSize
 ) {
+    // A valid AVCC length such as 00 00 01 06 also starts like Annex B.
+    // Validate the complete length-prefixed layout before trying start codes.
+    R2CH264PacketContents contents = R2CH264InspectLengthPrefixedPacket(data, size, nalLengthSize);
+    if (contents.recognized) return contents;
     if (R2CH264StartCodeLength(data, size) != 0) {
         return R2CH264InspectAnnexBPacket(data, size);
     }
-    return R2CH264InspectLengthPrefixedPacket(data, size, nalLengthSize);
+    return contents;
 }
 
 static inline bool R2CH264PacketIsSeiOnly(R2CH264PacketContents contents) {

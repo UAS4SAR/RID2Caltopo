@@ -15,6 +15,12 @@ class CaltopoPersonalProbeTest {
         assertNull(probe.mapID("../account/login"))
         assertNull(probe.mapID("https://caltopo.com/group/ABC123/signup/EXAMPLE"))
     }
+    @Test fun accountEndpointUsesOnlyValidatedAccountIDs() {
+        assertEquals("https://caltopo.com/api/v1/acct/USER01/since/0", probe.accountEndpoint("USER01"))
+        for (id in listOf("../USER01", "USER01/other", "", "USER010", "USER01?x=1")) {
+            assertTrue(runCatching { probe.accountEndpoint(id) }.isFailure)
+        }
+    }
     @Test fun htmlLoginAndMalformedSuccessNeverCountAsAccess() {
         assertFalse(probe.result(200, "<html>Log in</html>").readable)
         assertFalse(probe.result(200, "{\"status\":\"error\"}").readable)

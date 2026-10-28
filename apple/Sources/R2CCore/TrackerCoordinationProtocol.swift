@@ -36,13 +36,19 @@ public struct TrackerCoordinationClient: Sendable, Equatable {
 }
 
 public struct TrackerCoordinationPosition: Sendable, Equatable {
-    public let latitude: Double
-    public let longitude: Double
+    public let latitude: Double?
+    public let longitude: Double?
     public let caltopoRTTMilliseconds: Int64
 
-    public init(latitude: Double, longitude: Double, caltopoRTTMilliseconds: Int64 = 2_000) {
-        self.latitude = latitude
-        self.longitude = longitude
+    public init(latitude: Double?, longitude: Double?, caltopoRTTMilliseconds: Int64 = 2_000) {
+        if let latitude, let longitude, latitude.isFinite, longitude.isFinite,
+           abs(latitude) <= 90, abs(longitude) <= 180 {
+            self.latitude = latitude
+            self.longitude = longitude
+        } else {
+            self.latitude = nil
+            self.longitude = nil
+        }
         self.caltopoRTTMilliseconds = caltopoRTTMilliseconds
     }
 }
@@ -462,6 +468,13 @@ public enum TrackerCoordinationWire {
         if let value, value.isFinite { object[key] = value }
     }
 
+    // Null explicitly clears a previously reported position on existing trackers.
+    // Omitting the keys would allow the server to retain the old coordinate.
+    private static func finite(_ value: Double?) -> Any {
+        guard let value, value.isFinite else { return NSNull() }
+        return value
+    }
+
     private static func finite(_ value: Double) -> Double { value.isFinite ? value : 0 }
 
     private static func encode(_ object: [String: Any]) throws -> Data {
@@ -521,6 +534,10 @@ public struct TrackerCoordinationProtocolState: Sendable {
 
     public func isLocalOwner(remoteID: String) -> Bool {
         ownersByRemoteID[remoteID] == localZoneID
+    }
+
+    public func isConfirmedLocally(remoteID: String) -> Bool {
+        locallyConfirmedRemoteIDs.contains(remoteID)
     }
 
     public func isLocalAlertEligible(remoteID: String) -> Bool {

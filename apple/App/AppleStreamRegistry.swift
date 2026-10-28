@@ -1381,9 +1381,21 @@ final class RID2CaltopoAppDelegate: NSObject, UIApplicationDelegate {
             await AppleDiagnosticsCenter.startAtLaunch(launchOptionKeys: launchOptionKeys)
         }
         AppleUserInteractionObserver.install()
+        Task.detached(priority: .utility) { await AppleCredentialBackupProtection.shared.apply() }
+        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: nil) { _ in
+            Task.detached(priority: .utility) { await AppleCredentialBackupProtection.shared.apply() }
+        }
         // Safety net: raw AOL lidar work only lives while Download Map stays open; remove any left by a killed app.
         Task.detached(priority: .background) {
+            do { try TemporaryWorkspace.cleanAbandoned() }
+            catch { AppleLog.warning("Storage", "Abandoned temporary files could not be fully cleared") }
             let removed = OperationalSurfaceSourceReuse.deleteWorkDirectories(in: FileManager.default.temporaryDirectory)
+            let fm = FileManager.default
+            let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            let legacy = ["RID2Caltopo/MapShares", "RID2Caltopo/OriginalPhotoShares", "RID2Caltopo/GeoTIFF", "RID2Caltopo/CapturedVideo", "ClueShares"]
+                .map { fm.temporaryDirectory.appendingPathComponent($0) }
+                + [caches.appendingPathComponent("RID2Caltopo/Exports")]
+            for url in legacy where fm.fileExists(atPath: url.path) { try? fm.removeItem(at: url) }
             if removed > 0 { AppleLog.info("MapOffline", "Removed \(removed) leftover AOL work folder(s)") }
         }
         NotificationCenter.default.addObserver(

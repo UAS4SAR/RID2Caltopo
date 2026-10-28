@@ -58,6 +58,7 @@ internal object MappingRegionProcessor {
                     files.put(JSONObject().put("path",file.relativeTo(block).invariantSeparatorsPath).put("bytes",file.length()).put("sha256",digest));savedBytes+=file.length()
                 }
                 MappingPhotoStore.writeJson(marker,JSONObject().put("fingerprint",fingerprint).put("report",result).put("files",files))
+                org.ncssar.rid2caltopo.storage.OperationalStorage.retainTree(block, check)
                 result
             }
             results.add(report)

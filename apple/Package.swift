@@ -17,9 +17,9 @@ let package = Package(
         .binaryTarget(name: "R2CMappingNative", path: "Build/Mapping/R2CMappingNative.xcframework"),
         .target(name: "R2CMapping", dependencies: ["R2CCore", "R2CMappingNative"], linkerSettings: [.linkedLibrary("c++"), .linkedFramework("Accelerate")]),
         .target(name: "CAOL", exclude: ["README.md", "LAZPERF-LICENSE", "GEOGRAPHICLIB-LICENSE"], publicHeadersPath: "include", cxxSettings: [.define("LAZPERF_VENDORED"), .headerSearchPath("geographiclib/include")]),
-        .target(name: "R2CCore", dependencies: ["CAOL"]),
+        .target(name: "R2CCore", dependencies: ["CAOL"], resources: [.process("Resources")]),
         .target(name: "R2CAppleRadios", dependencies: ["R2CCore"]),
-        .testTarget(name: "R2CCoreTests", dependencies: ["R2CCore"]),
+        .testTarget(name: "R2CCoreTests", dependencies: ["R2CCore"], resources: [.copy("Fixtures")]),
         .testTarget(name: "R2CMappingTests", dependencies: ["R2CMapping"]),
     ],
     cxxLanguageStandard: .cxx17

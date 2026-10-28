@@ -20,43 +20,42 @@ internal object MapCacheSettings {
     internal const val MAX_CACHE_BYTES = 1_000_000_000_000L
     private const val DEFAULT_MAX_CACHE_BYTES = 10 * DECIMAL_GB_BYTES
     private const val DEFAULT_MAX_TILE_AGE_DAYS = 365L
-    private const val MIN_MAX_TILE_AGE_DAYS = 1L
-    private const val MAX_MAX_TILE_AGE_DAYS = 3650L
 
-    fun maxCacheBytes(context: Context): Long {
-        val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        if (!prefs.contains(MAX_CACHE_BYTES_KEY)) {
-            val free = org.ncssar.rid2caltopo.video.queryAvailableCacheBytes(context)
-                ?: context.filesDir.usableSpace
-            val initial = MapCacheBudgetPolicy.defaultLimit(free)
-            prefs.edit().putLong(MAX_CACHE_BYTES_KEY, initial).apply()
-        }
-        return prefs.getLong(MAX_CACHE_BYTES_KEY, DEFAULT_MAX_CACHE_BYTES)
-            .coerceIn(0L, MAX_CACHE_BYTES)
+    private val initialLimitQueued = AtomicBoolean(false)
+    private val initialLimitLock = Any()
+    private val initialLimitWorker = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
+        Thread(task, "map-cache-settings").apply { isDaemon = true }
     }
 
-    fun setMaxCacheBytes(context: Context, bytes: Long) {
-        val normalized = bytes.coerceIn(MIN_CACHE_BYTES, MAX_CACHE_BYTES)
-        context.applicationContext
-            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putLong(MAX_CACHE_BYTES_KEY, normalized)
-            .apply()
+    fun maxCacheBytes(context: Context): Long {
+        val app = context.applicationContext
+        val prefs = app.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        if (!prefs.contains(MAX_CACHE_BYTES_KEY)) {
+            // A UI getter must never resolve SAF roots or query a storage provider.
+            if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+                if (initialLimitQueued.compareAndSet(false, true)) initialLimitWorker.execute { runCatching { maxCacheBytes(app) } }
+                return DEFAULT_MAX_CACHE_BYTES
+            }
+            val free = org.ncssar.rid2caltopo.video.queryAvailableCacheBytes(app) ?: app.filesDir.usableSpace
+            synchronized(initialLimitLock) {
+                if (!prefs.contains(MAX_CACHE_BYTES_KEY)) prefs.edit().putLong(MAX_CACHE_BYTES_KEY, MapCacheBudgetPolicy.defaultLimit(free)).apply()
+            }
+        }
+        return prefs.getLong(MAX_CACHE_BYTES_KEY, DEFAULT_MAX_CACHE_BYTES).coerceIn(0L, MAX_CACHE_BYTES)
+    }
+
+    /** A single durable write; callers must run on a worker. */
+    fun saveLimits(context: Context, bytes: Long, days: Long): Boolean = synchronized(initialLimitLock) {
+        check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) { "Cache settings must be saved on a worker" }
+        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putLong(MAX_CACHE_BYTES_KEY, bytes.coerceIn(MIN_CACHE_BYTES, MAX_CACHE_BYTES))
+            .putLong(MAX_TILE_AGE_DAYS_KEY, MapTileUsagePolicy.cacheAgeDays(days)).commit()
     }
 
     fun maxTileAgeDays(context: Context): Long {
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         return prefs.getLong(MAX_TILE_AGE_DAYS_KEY, DEFAULT_MAX_TILE_AGE_DAYS)
-            .coerceIn(MIN_MAX_TILE_AGE_DAYS, MAX_MAX_TILE_AGE_DAYS)
-    }
-
-    fun setMaxTileAgeDays(context: Context, days: Long) {
-        val normalized = days.coerceIn(MIN_MAX_TILE_AGE_DAYS, MAX_MAX_TILE_AGE_DAYS)
-        context.applicationContext
-            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putLong(MAX_TILE_AGE_DAYS_KEY, normalized)
-            .apply()
+            .let(MapTileUsagePolicy::cacheAgeDays)
     }
 
     fun baseLayer(context: Context): BaseLayerOption {

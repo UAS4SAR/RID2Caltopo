@@ -1,3 +1,4 @@
+import R2CCore
 import Foundation
 
 public struct MappingOriginalPhoto: Identifiable, Sendable {
@@ -28,7 +29,7 @@ public enum MappingOriginalAccess {
     /// Copy bytes unchanged into the OS share/preview area; keep mission originals untouched.
     public static func prepare(_ photos: [MappingOriginalPhoto], cancellation: MappingCancellation? = nil) throws -> [URL] {
         let fm = FileManager.default
-        let root = fm.temporaryDirectory.appendingPathComponent("RID2Caltopo/OriginalPhotoShares")
+        let root = TemporaryWorkspace.root.appendingPathComponent("OriginalPhotoShares")
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
         for old in (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] {
             if let date = try? old.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,

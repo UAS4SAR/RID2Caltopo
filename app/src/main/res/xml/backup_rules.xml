@@ -7,5 +7,5 @@
 -->
 <full-backup-content>
 
-   <include domain="file" path="datastore/app_config.pb" requireFlags="clientSideEncryption"/>
+   <include domain="file" path="datastore/app_config_settings_backup.pb" requireFlags="clientSideEncryption"/>
 </full-backup-content>

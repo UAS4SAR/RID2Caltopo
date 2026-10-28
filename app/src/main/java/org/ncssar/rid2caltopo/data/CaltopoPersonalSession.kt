@@ -6,6 +6,7 @@ import android.os.Bundle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
+import kotlinx.coroutines.launch
 
 /** Opaque grant tokens cross activity results; scoped cookies cross the app-private provider for native HTTPS requests. */
 class PersonalCaltopoLoginRequired : IllegalStateException("Sign in to CalTopo to load personal maps.")
@@ -15,13 +16,27 @@ object CaltopoPersonalSession {
     var loginProtectionRequired by mutableStateOf(true)
         private set
 
+    private val protectionScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate)
+    private val protectionCheck = java.util.concurrent.atomic.AtomicLong()
+
     fun refreshLoginProtection(context: Context) {
-        loginProtectionRequired = runCatching {
-            context.contentResolver.call(
-                Uri.parse("content://org.ncssar.rid2caltopo.personal-session"),
-                "loginProtectionRequired", null, null
-            )?.getBoolean("required", true) ?: true
-        }.getOrDefault(true)
+        val request = protectionCheck.incrementAndGet()
+        val epoch = generation
+        val app = context.applicationContext
+        // Until the private browser replies, keep account protection conservative.
+        loginProtectionRequired = true
+        protectionScope.launch {
+            val required = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    app.contentResolver.call(
+                        Uri.parse("content://org.ncssar.rid2caltopo.personal-session"),
+                        "loginProtectionRequired", null, null
+                    )?.getBoolean("required", true) ?: true
+                }.getOrDefault(true)
+            }
+            if (request == protectionCheck.get() && epoch == generation) loginProtectionRequired = required
+        }
     }
 
     @Volatile var generation = 0L
@@ -56,7 +71,9 @@ object CaltopoPersonalSession {
         if (result?.getBoolean("loginRequired") == true) throw PersonalCaltopoLoginRequired()
         return org.json.JSONObject(result?.getString("catalog") ?: error("Personal maps could not load. Check your connection and retry."))
     }
-    fun acceptCatalog(json: org.json.JSONObject) {
+    data class PreparedCatalog(val accountID: String, val username: String,
+        val mediaOwners: Map<String, String>, val maps: List<CaltopoNode>)
+    fun prepareCatalog(json: org.json.JSONObject): PreparedCatalog {
         val grants = json.getJSONObject("grants")
         fun convert(node: CaltopoNode): CaltopoNode = when (node) {
             is CaltopoNode.MapNode -> node.copy(personalSessionID = grants.getString(node.id))
@@ -66,12 +83,17 @@ object CaltopoPersonalSession {
         val decoded = parseMapHierarchy(json).map(::convert).sortedBy {
             when (it.id) { "virtual_recents" -> 0; accountID -> 1; else -> 2 }
         }
-        loginProtectionRequired = true
-        this.accountID = accountID
         val owners = json.getJSONObject("mediaOwners")
-        mediaOwners = owners.keys().asSequence().associateWith { owners.getString(it) }
-        username = json.getString("username")
-        maps = decoded
+        return PreparedCatalog(accountID, json.getString("username"),
+            owners.keys().asSequence().associateWith { owners.getString(it) }, decoded)
+    }
+    fun acceptCatalog(prepared: PreparedCatalog) {
+        protectionCheck.incrementAndGet()
+        loginProtectionRequired = true
+        accountID = prepared.accountID
+        mediaOwners = prepared.mediaOwners
+        username = prepared.username
+        maps = prepared.maps
         catalogReady = true
     }
     data class Authorization(val token: String, val mapID: String, val accountID: String = "", val mediaOwnerID: String = "") {

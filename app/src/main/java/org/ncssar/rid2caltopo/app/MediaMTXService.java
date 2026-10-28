@@ -80,6 +80,7 @@ public class MediaMTXService extends Service {
     });
     private NativeControlAction activeNativeControlAction;
     private NativeControlAction pendingNativeControlAction;
+    private boolean preparingFreshStart;
     private boolean nativeControlWorkerScheduled = false;
     private boolean serviceDestroying = false;
 
@@ -91,6 +92,10 @@ public class MediaMTXService extends Service {
     public static boolean IsRunning() { return serviceRunning; }
 
     public static int findNativeServerPid() {
+        if (android.os.Looper.getMainLooper() != null
+                && android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            throw new IllegalStateException("Native process discovery must run on a worker");
+        }
         File procDir = new File("/proc");
         File[] entries = procDir.listFiles();
         if (entries == null) return 0;
@@ -166,14 +171,9 @@ public class MediaMTXService extends Service {
     public void onCreate() {
         super.onCreate();
         createNotificationChannel();
-        FlightStorage.observe(getApplicationContext(), () -> {
-            if (isServiceDestroying()) return;
-            boolean blocked = FlightStorage.INSTANCE.getCaptureBlocked();
-            if (storageCaptureBlocked != blocked) {
-                storageCaptureBlocked = blocked;
-                if (CaltopoClient.GetCaptureVideoStreamsFlag()) enqueueNativeControl(NativeControlAction.RESTART);
-            }
-        });
+        SettingsStartup.whenReady(() -> {
+            if (!isServiceDestroying() && !settingsStopRequested) observeStorageAfterSettings();
+        }, error -> { if (!isServiceDestroying()) stopSelf(); });
         Intent launchIntent = new Intent(this, R2CActivity.class);
         launchIntent.setFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
                 | Intent.FLAG_ACTIVITY_NEW_TASK
@@ -205,6 +205,20 @@ public class MediaMTXService extends Service {
         }
     }
 
+    private boolean settingsStopRequested;
+    private boolean settingsWaitRegistered;
+    private final java.util.ArrayList<Runnable> pendingSettingsCommands = new java.util.ArrayList<>();
+    private void observeStorageAfterSettings() {
+        FlightStorage.observe(getApplicationContext(), () -> {
+            if (isServiceDestroying()) return;
+            boolean blocked = FlightStorage.INSTANCE.getCaptureBlocked();
+            if (storageCaptureBlocked != blocked) {
+                storageCaptureBlocked = blocked;
+                if (CaltopoClient.GetCaptureVideoStreamsFlag()) enqueueNativeControl(NativeControlAction.RESTART);
+            }
+        });
+    }
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (foregroundStartBlocked) {
@@ -214,9 +228,25 @@ public class MediaMTXService extends Service {
         }
         String action = intent != null ? intent.getAction() : null;
         if (ACTION_STOP_SERVICE.equals(action)) {
+            settingsStopRequested = true;
+            pendingSettingsCommands.clear();
             CTDebug(TAG, "MediaMTXService shutting down.");
             stopForegroundSafely();
             stopSelf();
+            return START_NOT_STICKY;
+        }
+        if (!SettingsStartup.isReady()) {
+            final Intent savedIntent = intent == null ? null : new Intent(intent);
+            pendingSettingsCommands.add(() -> onStartCommand(savedIntent, flags, startId));
+            if (!settingsWaitRegistered) {
+                settingsWaitRegistered = true;
+                SettingsStartup.whenReady(() -> {
+                    if (isServiceDestroying() || settingsStopRequested) return;
+                    java.util.ArrayList<Runnable> commands = new java.util.ArrayList<>(pendingSettingsCommands);
+                    pendingSettingsCommands.clear();
+                    for (Runnable command : commands) command.run();
+                }, error -> { pendingSettingsCommands.clear(); if (!isServiceDestroying()) stopSelf(); });
+            }
             return START_NOT_STICKY;
         }
         if (ACTION_RESTART_SERVICE.equals(action)) {
@@ -245,6 +275,8 @@ public class MediaMTXService extends Service {
 
     @Override
     public void onDestroy() {
+        settingsStopRequested = true;
+        pendingSettingsCommands.clear();
         org.ncssar.rid2caltopo.video.StreamRegistry.onServerStopped();
         FlightStorage.stopObserving();
         synchronized (nativeControlLock) {
@@ -274,6 +306,10 @@ public class MediaMTXService extends Service {
             }
 
             if (requestedAction == NativeControlAction.RESTART) {
+                if (preparingFreshStart && activeNativeControlAction == NativeControlAction.START) {
+                    CTDebug(TAG, "Coalescing restart with the fresh MediaMTX startup already in progress.");
+                    return;
+                }
                 if (activeNativeControlAction == NativeControlAction.RESTART
                         || pendingNativeControlAction == NativeControlAction.RESTART) {
                     CTDebug(TAG, "Coalescing duplicate MediaMTX restart request.");
@@ -352,8 +388,21 @@ public class MediaMTXService extends Service {
                     MediaMTXEvent.RecordFileCompleted completed =
                             (MediaMTXEvent.RecordFileCompleted) event;
                     CTDebug(TAG, "Recording file complete path=" + completed.getFilePath());
-                    recordingSyncExecutor.execute(
-                            () -> MediaMTXRecordingSync.syncAll(appContext, completed.getPath()));
+                    // Mark queued work before dispatch, including time waiting behind another sync.
+                    org.ncssar.rid2caltopo.data.RecordingFinalizationActivity.Lease finalizing =
+                            org.ncssar.rid2caltopo.data.RecordingFinalizationActivity.shared.begin(completed.getPath());
+                    try {
+                        recordingSyncExecutor.execute(() -> {
+                            try {
+                                MediaMTXRecordingSync.syncAll(appContext, completed.getPath(), completed.getFilePath());
+                            } finally {
+                                finalizing.close();
+                            }
+                        });
+                    } catch (RuntimeException error) {
+                        finalizing.close();
+                        throw error;
+                    }
                 }
                 return Unit.INSTANCE;
             });
@@ -362,7 +411,6 @@ public class MediaMTXService extends Service {
     }
 
     private void restartNativeServer() {
-        MediaMTXRecordingSync.syncAll(getApplicationContext(), null);
         if (isServiceDestroying()) return;
 
         int restartingPid = MediaMTXNative.currentPid();
@@ -403,6 +451,14 @@ public class MediaMTXService extends Service {
     }
 
     private void startNativeServer() {
+        synchronized (nativeControlLock) {
+            preparingFreshStart = true;
+            if (activeNativeControlAction == NativeControlAction.START
+                    && pendingNativeControlAction == NativeControlAction.RESTART) {
+                pendingNativeControlAction = null;
+                CTDebug(TAG, "Fresh MediaMTX startup satisfies the pending restart request.");
+            }
+        }
         try {
             MediaMTXRecordingSync.syncAll(getApplicationContext(), null);
             if (isServiceDestroying()) return;
@@ -412,6 +468,9 @@ public class MediaMTXService extends Service {
             if (isServiceDestroying()) return;
 
             CTDebug(TAG, "Starting MediaMTX Server...");
+            if (CaltopoClient.GetArchiveUri() != null) {
+                org.ncssar.rid2caltopo.storage.OperationalStorage.INSTANCE.requireRecorderReady(getApplicationContext());
+            }
 
             // Shutdown cleanup is queued on this same executor, so it cannot call stop until
             // this start returns. Avoid holding nativeControlLock across the JNI call: onDestroy
@@ -434,6 +493,10 @@ public class MediaMTXService extends Service {
             serviceRunning = false;
             MediaMTXStatus.onServerExited("start exception: " + e.getClass().getSimpleName());
             stopSelf();
+        } finally {
+            synchronized (nativeControlLock) {
+                preparingFreshStart = false;
+            }
         }
     }
 
@@ -617,14 +680,14 @@ public class MediaMTXService extends Service {
         if (!recordingRoot.exists() && !recordingRoot.mkdirs()) {
             CTError(TAG, "Unable to create MediaMTX recording staging dir " + recordingRoot);
         }
-        FlightStorage.Snapshot storage = FlightStorage.maintain(getApplicationContext());
+        FlightStorage.Snapshot storage = FlightStorage.prepareRecordingStart(getApplicationContext());
         storageCaptureBlocked = storage.getBlocked();
         if (storage.getBlocked() && CaltopoClient.GetCaptureVideoStreamsFlag()) {
             CaltopoClient.ShowToast(storage.getMessage());
         }
         String runtimeConfig = MediaMTXConfig.buildRuntimeConfig(
                 baseConfig,
-                CaltopoClient.GetCaptureVideoStreamsFlag() && !FlightStorage.INSTANCE.getCaptureBlocked(),
+                CaltopoClient.GetCaptureVideoStreamsFlag() && !storage.getBlocked(),
                 recordingRoot,
                 org.ncssar.rid2caltopo.data.MediaServerAccessPrefs.isRestricted(getApplicationContext())
         );

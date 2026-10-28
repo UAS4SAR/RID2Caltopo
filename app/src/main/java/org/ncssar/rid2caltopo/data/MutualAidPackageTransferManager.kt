@@ -220,7 +220,7 @@ object MutualAidPackageTransferManager {
         currentImportSessionId.set(config.sessionId)
         ioExecutor.execute {
             val packageName = config.packageName.ifBlank { "map package" }
-            val tempFile = File(appContext.cacheDir.resolve("ma-transfer"), "${config.sessionId}.zip").apply {
+            val tempFile = File(org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(appContext,"map-transfers"), "${config.sessionId}.zip").apply {
                 parentFile?.mkdirs()
                 if (exists()) delete()
             }

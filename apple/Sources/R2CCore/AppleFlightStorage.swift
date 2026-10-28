@@ -64,8 +64,10 @@ public enum FlightFolderProtection: Equatable, Sendable {
 public final class AppleFlightStorage: @unchecked Sendable {
     public static let shared = AppleFlightStorage()
     private let lock = NSRecursiveLock()
+    private let stateLock = NSRecursiveLock()
+    private var observerGeneration = 0
     private var protections: [String: String] = [:]
-    private var recorderRunning = false
+    private var recorderStartedAt: Date?
     private var fileSizes: [String: Int64] = [:]
     private var estimatedUsed: Int64 = 0
     private var sweepUsed: Int64 = 0
@@ -82,28 +84,33 @@ public final class AppleFlightStorage: @unchecked Sendable {
     #endif
 
     public static func observe(_ callback: @escaping @Sendable (Snapshot) -> Void) {
-        shared.lock.lock(); defer { shared.lock.unlock() }
-        shared.callback = callback
+        shared.stateLock.lock()
+        shared.callback = callback; shared.observerGeneration += 1
+        let generation = shared.observerGeneration
+        shared.stateLock.unlock()
         #if canImport(Darwin)
-        if shared.monitor == nil {
+        shared.work.async {
             let roots = [root] + reviewRoots
             for directory in roots { try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) }
-            shared.monitor = FlightStorageFileMonitor(roots: roots) { url, size in fileChanged(url, size: size) }
+            let candidate = FlightStorageFileMonitor(roots: roots) { url, size in fileChanged(url, size: size) }
+            shared.stateLock.lock(); defer { shared.stateLock.unlock() }
+            if shared.observerGeneration == generation && shared.monitor == nil { shared.monitor = candidate }
+            else { candidate.stop() }
         }
         #endif
     }
     public static func stopObserving() {
-        shared.lock.lock(); defer { shared.lock.unlock() }
-        shared.callback = nil
+        shared.stateLock.lock(); defer { shared.stateLock.unlock() }
+        shared.callback = nil; shared.observerGeneration += 1
         #if canImport(Darwin)
         shared.monitor?.stop(); shared.monitor = nil
         #endif
     }
     public static func fileChanged(_ url: URL, size: Int64? = nil) {
         let value = size ?? (((try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?.int64Value ?? 0)
-        shared.lock.lock(); defer { shared.lock.unlock() }
-        guard shared.initialized else { return }
         let key = url.resolvingSymlinksInPath().standardizedFileURL.path
+        shared.stateLock.lock(); defer { shared.stateLock.unlock() }
+        guard shared.initialized else { return }
         let old = shared.fileSizes[key] ?? 0
         guard old != value else { return }
         shared.fileSizes[key] = value > 0 ? value : nil
@@ -119,28 +126,28 @@ public final class AppleFlightStorage: @unchecked Sendable {
     }
     /// Known-size writes can reclaim space before allocating their data.
     public static func prepareWrite(_ incoming: Int64) {
-        shared.lock.lock()
+        shared.stateLock.lock()
         let needed = !shared.initialized || (!shared.blocked && needsDemandCheck(incoming: incoming))
-        shared.lock.unlock()
+        shared.stateLock.unlock()
         guard needed else { return }
         let snapshot = maintain(reserving: max(0, incoming))
-        shared.lock.lock(); let callback = shared.callback; shared.lock.unlock()
+        shared.stateLock.lock(); let callback = shared.callback; shared.stateLock.unlock()
         callback?(snapshot)
     }
     public static func requestCheck(force: Bool = true) {
-        shared.lock.lock(); defer { shared.lock.unlock() }
+        shared.stateLock.lock(); defer { shared.stateLock.unlock() }
         shared.forceQueued = shared.forceQueued || force
         guard !shared.checkQueued else { return }
         shared.checkQueued = true
         shared.work.async {
-            shared.lock.lock()
+            shared.stateLock.lock()
             let force = shared.forceQueued
             shared.forceQueued = false; shared.checkQueued = false
             let shouldRun = force || !shared.initialized || (!shared.blocked && needsDemandCheck())
-            shared.lock.unlock()
+            shared.stateLock.unlock()
             guard shouldRun else { return }
             let result = maintain()
-            shared.lock.lock(); let callback = shared.callback; shared.lock.unlock()
+            shared.stateLock.lock(); let callback = shared.callback; shared.stateLock.unlock()
             callback?(result)
         }
     }
@@ -159,14 +166,22 @@ public final class AppleFlightStorage: @unchecked Sendable {
         return value
     }
     public static func protect(_ name: String, owner: String = "session") {
-        shared.lock.lock(); defer { shared.lock.unlock() }; shared.protections[owner] = name
+        shared.stateLock.lock(); defer { shared.stateLock.unlock() }; shared.protections[owner] = name
     }
     public static func release(owner: String) {
-        shared.lock.lock(); defer { shared.lock.unlock() }; shared.protections[owner] = nil
+        shared.stateLock.lock(); defer { shared.stateLock.unlock() }; shared.protections[owner] = nil
         if shared.blocked { requestCheck() }
     }
-    public static func setRecorderRunning(_ running: Bool) {
-        shared.lock.lock(); defer { shared.lock.unlock() }; shared.recorderRunning = running
+    /// Pass the time captured before starting the native recorder. Repeated
+    /// status updates must not advance the boundary past a live segment.
+    public static func setRecorderRunning(_ running: Bool, startedAt: Date = Date()) {
+        shared.stateLock.lock(); defer { shared.stateLock.unlock() }
+        if running {
+            if shared.recorderStartedAt == nil {
+                // File timestamps can have whole-second resolution.
+                shared.recorderStartedAt = Date(timeIntervalSince1970: floor(startedAt.timeIntervalSince1970))
+            }
+        } else { shared.recorderStartedAt = nil }
     }
     public static func isProtected(_ name: String) -> Bool {
         protectionReason(name) != nil
@@ -176,11 +191,12 @@ public final class AppleFlightStorage: @unchecked Sendable {
     public static func protectionReason(_ name: String, at customRoot: URL? = nil, now: Date = Date()) -> FlightFolderProtection? {
         shared.lock.lock(); defer { shared.lock.unlock() }
         let folder = (customRoot ?? root).appendingPathComponent(name)
+        shared.stateLock.lock(); let owners = shared.protections; shared.stateLock.unlock()
         return FlightFolderProtection.evaluate(
             name: name,
             today: dayName(now),
-            owners: shared.protections,
-            incompleteRecording: hasIncompleteRecording(folder),
+            owners: owners,
+            incompleteRecording: hasIncompleteRecording(folder, now: now),
             clueStates: clueStates(folder)
         )
     }
@@ -196,12 +212,20 @@ public final class AppleFlightStorage: @unchecked Sendable {
         return clues.map(\.uploadState)
     }
 
-    private static func hasIncompleteRecording(_ folder: URL) -> Bool {
-        // MediaMTX uses UTC paths until completion. Protect raw segments across local midnight.
-        guard shared.recorderRunning,
-              let files = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil) else { return false }
+    private static func hasIncompleteRecording(_ folder: URL, now: Date) -> Bool {
+        // MediaMTX uses UTC names until completion, including files abandoned by
+        // an earlier invocation. A raw name alone does not establish activity.
+        // Keep this run's segments protected across local midnight, but do not
+        // pin old folders merely because the media server has started again.
+        shared.stateLock.lock(); let start = shared.recorderStartedAt; shared.stateLock.unlock()
+        guard let startedAt = start,
+              let files = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.contentModificationDateKey]) else { return false }
         for case let url as URL in files where ["mp4", "fmp4"].contains(url.pathExtension.lowercased()) {
-            if !ManagedVideoRecordingIdentity.isCompletedRecordingPath(url.path) { return true }
+            guard !ManagedVideoRecordingIdentity.isCompletedRecordingPath(url.path) else { continue }
+            if let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+               modified < startedAt || now.timeIntervalSince(modified) >= 60 * 60 { continue }
+            // If metadata is unavailable, preserve the conservative protection.
+            return true
         }
         return false
     }
@@ -273,16 +297,18 @@ public final class AppleFlightStorage: @unchecked Sendable {
         let result = Snapshot(used: used, available: free,
                         blocked: used + reserving > maximumBytes * 9 / 10 || (free.map { $0 - reserving < FlightStoragePolicy.reserveBytes } ?? false), allowanceInsufficient: used + reserving > maximumBytes * 9 / 10, failures: failures)
         if purge && customRoot == nil {
-            shared.fileSizes.removeAll()
+            var ledger: [String: Int64] = [:]
             for directory in [root] + reviewRoots {
                 if let files = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]) {
                     for case let url as URL in files {
                         guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]), values.isRegularFile == true, values.isSymbolicLink != true else { continue }
-                        shared.fileSizes[url.resolvingSymlinksInPath().standardizedFileURL.path] = Int64(values.fileSize ?? 0)
+                        ledger[url.resolvingSymlinksInPath().standardizedFileURL.path] = Int64(values.fileSize ?? 0)
                     }
                 }
             }
-            shared.estimatedUsed = shared.fileSizes.values.reduce(0, +)
+            shared.stateLock.lock(); defer { shared.stateLock.unlock() }
+            shared.fileSizes = ledger
+            shared.estimatedUsed = ledger.values.reduce(0, +)
             shared.sweepUsed = shared.estimatedUsed; shared.sweepAvailable = free
             shared.initialized = true; shared.blocked = result.blocked
             shared.lastSweepDay = dayName(now)
@@ -291,6 +317,6 @@ public final class AppleFlightStorage: @unchecked Sendable {
     }
     private static var reviewRoots: [URL] {
         // Temporary review copies are removed by the review player; include them while open.
-        [FileManager.default.temporaryDirectory.appendingPathComponent("RID2Caltopo/CapturedVideo")]
+        [TemporaryWorkspace.root.appendingPathComponent("CapturedVideo")]
     }
 }

@@ -4,8 +4,9 @@
 App Review has rejected a release whose notes mentioned "Android", and the notes
 are shared with Google Play, so Apple device names are excluded too. The canonical
 release-notes/<version>/whats_new.txt ships to both Google Play and the App Store,
-and apple/AppStore/metadata/en-US/*.txt is the App Store Connect mirror, so both
-are scanned. Prints file:line:term for every hit and exits 1 when any are found.
+and public apple/AppStore/metadata/en-US/*.txt fields are scanned. Reviewer-only
+review_notes.txt is excluded: Apple requests device models and OS versions there.
+Prints file:line:term for every hit and exits 1 when any are found.
 """
 
 from __future__ import annotations
@@ -81,7 +82,8 @@ def current_version(build_gradle: Path = REPO_ROOT / "app" / "build.gradle") -> 
 
 def default_targets(version: str) -> List[Path]:
     targets = [REPO_ROOT / "release-notes" / version / "whats_new.txt"]
-    targets += sorted(APP_STORE_METADATA.glob("*/*.txt"))
+    targets += sorted(path for path in APP_STORE_METADATA.glob("*/*.txt")
+                      if path.name != "review_notes.txt")
     return targets
 
 

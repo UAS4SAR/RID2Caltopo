@@ -35,6 +35,7 @@ final class AppleLandRestrictionCenter: ObservableObject {
     private var lastAttempt = Date.distantPast
     private var lastUpdated: Date?
     private var refreshTask: Task<Void, Never>?
+    private var refreshGeneration: UInt = 0
     private var pendingForcedRefresh = false
     private var pendingRefreshLocation: CLLocation?
     private let refreshInterval: TimeInterval = 15 * 60
@@ -68,6 +69,14 @@ final class AppleLandRestrictionCenter: ObservableObject {
     }
 
     func update(location: CLLocation?, force: Bool = false) {
+        if location == nil {
+            refreshGeneration &+= 1
+            refreshTask?.cancel()
+            refreshTask = nil
+            pendingForcedRefresh = false
+            pendingRefreshLocation = nil
+            lastCoordinate = nil
+        }
         guard enabled else {
             state = AppleLandRestrictionState(
                 visible: true,
@@ -100,13 +109,16 @@ final class AppleLandRestrictionCenter: ObservableObject {
             latitude: location.coordinate.latitude,
             longitude: location.coordinate.longitude
         )
+        let generation = refreshGeneration
         refreshTask = Task { [weak self] in
-            guard let self else { return }
-            defer { refreshTask = nil; runPendingRefresh() }
+            guard let self, generation == refreshGeneration, !Task.isCancelled else { return }
+            defer { if generation == refreshGeneration { refreshTask = nil; runPendingRefresh() } }
             var fetched: [OperationalLandArea] = []
             var errors: [String] = []
             for source in OperationalLandRestriction.sources {
                 do {
+                    try Task.checkCancellation()
+                    guard generation == refreshGeneration else { return }
                     guard let url = OperationalLandRestriction.queryURL(
                         source: source,
                         center: coordinate,
@@ -123,12 +135,15 @@ final class AppleLandRestrictionCenter: ObservableObject {
                         try OperationalLandRestriction.parse(data, source: source, center: coordinate, operatingRadiusNM: 1)
                     }.value
                 } catch {
+                    guard generation == refreshGeneration, !Task.isCancelled else { return }
                     errors.append("\(source.agency.name): \(error.localizedDescription)")
                 }
             }
             if !fetched.isEmpty || errors.count < OperationalLandRestriction.sources.count {
                 let values = fetched
-                areas = await Task.detached(priority: .utility) { Self.deduplicated(values) }.value
+                let preparedAreas = await Task.detached(priority: .utility) { Self.deduplicated(values) }.value
+                guard generation == refreshGeneration, !Task.isCancelled else { return }
+                areas = preparedAreas
                 lastCoordinate = location.coordinate
                 lastUpdated = Date()
                 await saveCache()
@@ -198,6 +213,7 @@ final class AppleLandRestrictionCenter: ObservableObject {
     }
 
     private struct Cache: Codable, Sendable {
+        let sourceRevision: Int?
         let updated: Date
         let latitude: Double?
         let longitude: Double?
@@ -206,11 +222,14 @@ final class AppleLandRestrictionCenter: ObservableObject {
 
     private nonisolated static func loadCache(at url: URL?) -> Cache? {
         guard let url, let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(Cache.self, from: data)
+        guard let cache = try? JSONDecoder().decode(Cache.self, from: data),
+              OperationalLandRestriction.acceptsCacheRevision(cache.sourceRevision) else { return nil }
+        return cache
     }
 
     private func saveCache() async {
         let cache = Cache(
+            sourceRevision: OperationalLandRestriction.cacheRevision,
             updated: lastUpdated ?? Date(),
             latitude: lastCoordinate?.latitude,
             longitude: lastCoordinate?.longitude,
@@ -259,7 +278,7 @@ struct AppleLandRestrictionPanel: View {
         NavigationStack {
             List {
                 Section("Verify land access") {
-                    Text("Mapped sources may be incomplete or outdated. No mapped restrictions does not mean permission to launch, land, or fly. Confirm current rules and permissions with the landowner or responsible agency.").fontWeight(.semibold)
+                    Text("Mapped areas may be incomplete or outdated. An empty result does not establish permission to launch, land, or fly. Confirm ownership, current rules and permissions with the landowner or responsible agency.").fontWeight(.semibold)
                 }
                 Section("One-mile operating area") {
                     Label(center.state.chipLabel, systemImage: "leaf.circle")
@@ -297,8 +316,20 @@ struct AppleLandRestrictionPanel: View {
                 }
 
                 Section("How to interpret this check") {
-                    Text("These agency boundaries describe land-management rules. They do not replace FAA airspace, NOTAM, TFR, LAANC, or agency authorization checks.")
-                    Text("A boundary warning does not automatically mean that overflight is prohibited. Confirm the displayed rule with the responsible agency before operating.")
+                    Text("These datasets support advisory checks of mapped land areas. They do not determine legal boundaries, ownership, jurisdiction or current restrictions, and do not replace FAA airspace, NOTAM, TFR, LAANC, or agency authorization checks.")
+                    Text("A mapped-area warning is not a legal determination that operation or overflight is prohibited. Verify current rules and landowner or agency authorization before operating.")
+                }
+
+                Section("Data sources and limitations") {
+                    Text("Agency credits identify the data providers and do not imply endorsement. Federal source data remain original U.S. Government works.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(OperationalLandAgency.allCases, id: \.self) { agency in
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(agency.dataCredit).fontWeight(.semibold)
+                            Text(agency.dataNotice).font(.caption)
+                            Link("Source metadata and use limitations", destination: agency.dataMetadataURL)
+                        }
+                    }
                 }
 
                 if !center.state.sourceErrors.isEmpty {

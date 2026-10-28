@@ -7,6 +7,7 @@ actor AppleTerrainElevationService {
         let latitude: Double
         let longitude: Double
         let radiusMeters: Double
+        let isAllowed: @Sendable () -> Bool
     }
 
     private struct CacheEntry: Codable {
@@ -90,18 +91,21 @@ actor AppleTerrainElevationService {
         }
     }
 
-    func prefetch(latitude: Double, longitude: Double, radiusMeters: Double = 0) {
+    func prefetch(latitude: Double, longitude: Double, radiusMeters: Double = 0,
+                  isAllowed: @escaping @Sendable () -> Bool = { true }) {
         guard latitude.isFinite, longitude.isFinite,
               (-90 ... 90).contains(latitude), (-180 ... 180).contains(longitude)
         else { return }
-        schedulePrefetch(latitude: latitude, longitude: longitude, radiusMeters: radiusMeters)
+        guard isAllowed() else { return }
+        schedulePrefetch(latitude: latitude, longitude: longitude, radiusMeters: radiusMeters, isAllowed: isAllowed)
     }
 
-    private func schedulePrefetch(latitude: Double, longitude: Double, radiusMeters: Double) {
+    private func schedulePrefetch(latitude: Double, longitude: Double, radiusMeters: Double,
+                                  isAllowed: @escaping @Sendable () -> Bool) {
         let cell = OperationalTerrainPrefetch.cellKey(latitude: latitude, longitude: longitude) + ":\(radiusMeters)"
         if let retryAfter = prefetchRetryAfter[cell], retryAfter > Date() { return }
         guard scheduledPrefetchCells.insert(cell).inserted else { return }
-        pendingPrefetchCoordinates.append(.init(cell: cell, latitude: latitude, longitude: longitude, radiusMeters: radiusMeters))
+        pendingPrefetchCoordinates.append(.init(cell: cell, latitude: latitude, longitude: longitude, radiusMeters: radiusMeters, isAllowed: isAllowed))
         guard !prefetchWorkerRunning else { return }
         prefetchWorkerRunning = true
         Task(priority: .utility) { [weak self] in
@@ -112,6 +116,10 @@ actor AppleTerrainElevationService {
     private func drainPrefetchQueue() async {
         while !pendingPrefetchCoordinates.isEmpty {
             let coordinate = pendingPrefetchCoordinates.removeFirst()
+            guard coordinate.isAllowed() else {
+                scheduledPrefetchCells.remove(coordinate.cell)
+                continue
+            }
             let localDEM = self.localDEM
             // Warm persisted terrain before waiting for the catalog or a transfer.
             let localSample = await Task.detached(priority: .utility) {
@@ -124,8 +132,13 @@ actor AppleTerrainElevationService {
             let complete = localS1mReady ? true : await prefetchBestDEM(
                 latitude: coordinate.latitude,
                 longitude: coordinate.longitude,
-                radiusMeters: coordinate.radiusMeters
+                radiusMeters: coordinate.radiusMeters,
+                isAllowed: coordinate.isAllowed
             )
+            guard coordinate.isAllowed() else {
+                scheduledPrefetchCells.remove(coordinate.cell)
+                continue
+            }
             if complete {
                 prefetchFailureCounts[coordinate.cell] = nil
                 prefetchRetryAfter[coordinate.cell] = nil
@@ -141,13 +154,16 @@ actor AppleTerrainElevationService {
         prefetchWorkerRunning = false
     }
 
-    private func prefetchBestDEM(latitude: Double, longitude: Double, radiusMeters: Double) async -> Bool {
+    private func prefetchBestDEM(latitude: Double, longitude: Double, radiusMeters: Double,
+                                 isAllowed: @Sendable () -> Bool) async -> Bool {
         let bounds = OperationalTerrainPrefetch.bounds(
             latitude: latitude, longitude: longitude, radiusMeters: radiusMeters
         )
         var complete = true
         do {
-            let downloads = try await resolveS1M(latitude: latitude, longitude: longitude, bounds: bounds)
+            guard isAllowed() else { return false }
+            let downloads = try await resolveS1M(latitude: latitude, longitude: longitude, bounds: bounds, isAllowed: isAllowed)
+            guard isAllowed() else { return false }
             if radiusMeters > 0 {
                 AppleUnifiedMapCache.protect(downloads.map(\.fileName) +
                     OperationalOfflineMapPlanner.demTileNames(bounds: bounds).map { "USGS_1_\($0).tif" })
@@ -157,6 +173,7 @@ actor AppleTerrainElevationService {
                 AppleLog.info("TerrainPrefetch", "S1M unavailable in catalog; using terrain fallback")
             }
             for download in downloads {
+                guard isAllowed() else { return false }
                 do {
                     try await downloadDEM((download.url, download.fileName, download.expectedBytes), bounds: bounds)
                 } catch is CancellationError { return false }
@@ -168,6 +185,7 @@ actor AppleTerrainElevationService {
             AppleLog.warning("TerrainPrefetch", "S1M preparation failed; will retry")
         }
         for tile in OperationalOfflineMapPlanner.demTileNames(bounds: bounds) {
+            guard isAllowed() else { return false }
             let fileName = "USGS_1_\(tile).tif"
             guard let url = URL(string: "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/\(tile)/\(fileName)") else { return false }
             do { try await downloadDEM((url, fileName, nil)) }
@@ -179,13 +197,15 @@ actor AppleTerrainElevationService {
         return complete
     }
 
-    private func resolveS1M(latitude: Double, longitude: Double, bounds: OperationalMapBounds) async throws
+    private func resolveS1M(latitude: Double, longitude: Double, bounds: OperationalMapBounds,
+                            isAllowed: @Sendable () -> Bool) async throws
         -> [OperationalS1MProduct]
     {
         var downloads: [URL: OperationalS1MProduct] = [:]
         var priority = Set<URL>()
         var offset = 0
         while true {
+            guard isAllowed() else { throw CancellationError() }
             var components = URLComponents(string: "https://tnmaccess.nationalmap.gov/api/v1/products")!
             components.queryItems = [
                 .init(name: "bbox", value: "\(bounds.west),\(bounds.south),\(bounds.east),\(bounds.north)"),

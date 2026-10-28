@@ -21,6 +21,8 @@ record_file_event_patch="$patch_dir/0007-record-file-complete-event.patch"
 avcc_diagnostic_patch="$patch_dir/0008-avcc-failure-diagnostics.patch"
 rtmp_timing_patch="$patch_dir/0009-rtmp-publish-timing.patch"
 socket_timing_patch="$patch_dir/0010-socket-read-and-rtsp-queue-diagnostics.patch"
+normal_timing_patch="$patch_dir/0011-normal-logging-publish-timing.patch"
+handshake_timing_patch="$patch_dir/0012-rtmp-handshake-read-diagnostics.patch"
 media_patch_sha="$(shasum -a 256 "$media_patch" | awk '{print $1}')"
 anet_patch_sha="$(shasum -a 256 "$anet_patch" | awk '{print $1}')"
 gortmplib_patch_sha="$(shasum -a 256 "$gortmplib_patch" | awk '{print $1}')"
@@ -34,6 +36,8 @@ avcc_diagnostic_patch_sha="$(shasum -a 256 "$avcc_diagnostic_patch" | awk '{prin
 rtmp_timing_patch_sha="$(shasum -a 256 "$rtmp_timing_patch" | awk '{print $1}')"
 
 socket_timing_patch_sha="$(shasum -a 256 "$socket_timing_patch" | awk '{print $1}')"
+normal_timing_patch_sha="$(shasum -a 256 "$normal_timing_patch" | awk '{print $1}')"
+handshake_timing_patch_sha="$(shasum -a 256 "$handshake_timing_patch" | awk '{print $1}')"
 
 if [[ -d "$destination" ]]; then
     if [[ -f "$marker" ]] &&
@@ -49,7 +53,9 @@ if [[ -d "$destination" ]]; then
         grep -qx "record_file_event_patch_sha256=$record_file_event_patch_sha" "$marker" &&
         grep -qx "avcc_diagnostic_patch_sha256=$avcc_diagnostic_patch_sha" "$marker" &&
         grep -qx "rtmp_timing_patch_sha256=$rtmp_timing_patch_sha" "$marker" &&
-        grep -qx "socket_timing_patch_sha256=$socket_timing_patch_sha" "$marker"; then
+        grep -qx "socket_timing_patch_sha256=$socket_timing_patch_sha" "$marker" &&
+        grep -qx "normal_timing_patch_sha256=$normal_timing_patch_sha" "$marker" &&
+        grep -qx "handshake_timing_patch_sha256=$handshake_timing_patch_sha" "$marker"; then
         printf '%s\n' "$destination"
         exit 0
     fi
@@ -115,6 +121,10 @@ git -C "$media_source" apply --check "$rtmp_timing_patch"
 git -C "$media_source" apply "$rtmp_timing_patch"
 git -C "$media_source" apply --check "$socket_timing_patch"
 git -C "$media_source" apply "$socket_timing_patch"
+git -C "$media_source" apply --check "$normal_timing_patch"
+git -C "$media_source" apply "$normal_timing_patch"
+git -C "$media_source" apply --check "$handshake_timing_patch"
+git -C "$media_source" apply "$handshake_timing_patch"
 (
     cd "$media_source"
     GOCACHE="$repo_root/.build/go-cache" \
@@ -136,6 +146,8 @@ record_file_event_patch_sha256=$record_file_event_patch_sha
 avcc_diagnostic_patch_sha256=$avcc_diagnostic_patch_sha
 rtmp_timing_patch_sha256=$rtmp_timing_patch_sha
 socket_timing_patch_sha256=$socket_timing_patch_sha
+normal_timing_patch_sha256=$normal_timing_patch_sha
+handshake_timing_patch_sha256=$handshake_timing_patch_sha
 EOF
 
 mv "$media_source" "$destination"

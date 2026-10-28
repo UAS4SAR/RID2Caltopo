@@ -64,4 +64,58 @@ final class CaltopoPersonalMarkerTestTests: XCTestCase {
         }, savePending: { _ in }, clearPending: { cleared = true })
         XCTAssertTrue(cleared)
     }
+    func testFailedDurableSavePreventsPublishing() async throws {
+        var methods: [String] = []
+        do {
+            _ = try await CaltopoPersonalMarkerTest.run(id: id, cleanupOnly: false, send: { method, _, _ in
+                methods.append(method)
+                return self.snapshot()
+            }, savePending: { _ in throw CocoaError(.fileWriteNoPermission) }, clearPending: { XCTFail("No cleanup expected") })
+            XCTFail("Expected persistence failure")
+        } catch {}
+        XCTAssertEqual(methods, ["GET"])
+    }
+
+    func testAsynchronousSaveCompletesBeforePostAndClearAfterVerification() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = CaltopoPendingMarkerStore(location: { url })
+        defer { try? FileManager.default.removeItem(at: url) }
+        var present = false
+        _ = try await CaltopoPersonalMarkerTest.run(id: id, cleanupOnly: false, send: { method, _, _ in
+            if method == "POST" {
+                let saved = try await store.load()
+                XCTAssertEqual(saved, self.id)
+                present = true
+            }
+            if method == "DELETE" { present = false }
+            return self.snapshot(present ? try CaltopoPersonalMarkerTest.payload(self.id) : "")
+        }, savePending: { try await store.save($0) }, clearPending: { try await store.clear() })
+        let pending = try await store.load()
+        XCTAssertNil(pending)
+    }
+
+    func testCancellationDuringDurableSaveKeepsJournalWithoutPosting() async throws {
+        let events = AsyncStream<Void>.makeStream()
+        let saved = AsyncStream<Void>.makeStream()
+        var methods: [String] = []
+        var pending: UUID?
+        let operation = Task {
+            try await CaltopoPersonalMarkerTest.run(id: self.id, cleanupOnly: false, send: { method, _, _ in
+                methods.append(method)
+                return self.snapshot()
+            }, savePending: { marker in
+                events.continuation.yield(())
+                for await _ in saved.stream { break }
+                pending = marker
+            }, clearPending: { XCTFail("Cancelled publishing must retain the saved ownership record") })
+        }
+        for await _ in events.stream { break }
+        operation.cancel()
+        saved.continuation.yield(())
+        do { _ = try await operation.value; XCTFail("Expected cancellation") } catch is CancellationError {} catch { XCTFail("Unexpected error: \(error)") }
+        XCTAssertEqual(pending, id)
+        XCTAssertEqual(methods, ["GET"])
+        events.continuation.finish(); saved.continuation.finish()
+    }
+
 }

@@ -6,8 +6,8 @@ import org.ncssar.rid2caltopo.data.CaltopoClient
 import java.io.File
 import java.io.IOException
 
-internal data class MapCacheUsage(val imagery: Long, val terrain: Long, val decoded: Long, val other: Long, val reserved: Long) {
-    val total: Long get() = imagery + terrain + decoded + other
+internal data class MapCacheUsage(val imagery: Long, val terrain: Long, val decoded: Long, val other: Long, val reserved: Long, val aol: Long = 0) {
+    val total: Long get() = imagery + terrain + decoded + other + aol
 }
 
 /** One disk-content budget, including in-flight writes, for every map cache namespace. */
@@ -65,11 +65,13 @@ internal object UnifiedMapCache {
 
     fun usage(context: Context): MapCacheUsage = synchronized(lock) {
         initialize(context)
+        fun isAol(path: String, entry: Entry) = path.contains("/surface_v1/") || path.contains("surface_v1%2F", true) || entry.name.startsWith("surface_v1/")
         MapCacheUsage(
             stores.values.filter { it.namespace.startsWith("tile_") }.sumOf { it.cache.snapshot().bytesUsed },
-            files.values.filter { it.terrain }.sumOf { it.bytes },
-            files.values.filter { !it.terrain }.sumOf { it.bytes },
-            stores.values.filter { !it.namespace.startsWith("tile_") }.sumOf { it.cache.snapshot().bytesUsed }, reserved
+            files.filter { (path, entry) -> entry.terrain && !isAol(path, entry) }.values.sumOf { it.bytes },
+            files.filter { (path, entry) -> !entry.terrain && !isAol(path, entry) }.values.sumOf { it.bytes },
+            stores.values.filter { !it.namespace.startsWith("tile_") }.sumOf { it.cache.snapshot().bytesUsed }, reserved,
+            files.filter { (path, entry) -> isAol(path, entry) }.values.sumOf { it.bytes }
         )
     }
 
@@ -115,6 +117,31 @@ internal object UnifiedMapCache {
         trim(context, (MapCacheSettings.maxCacheBytes(context) - reserved).coerceAtLeast(0))
     }
 
+    /** Explicit cleanup only. Live reservations and terrain readers remain protected. */
+    fun clearUnused(context: Context, aolOnly: Boolean = false): Long {
+        check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper())
+        val removed = synchronized(lock) {
+            initialize(context)
+            check(reserved == 0L) { "Wait for map downloads or preparation to finish." }
+            var count = 0L
+            if (!aolOnly) for (store in stores.values) {
+                val bytes = store.cache.snapshot().bytesUsed
+                store.cache.clear()
+                count += (bytes - store.cache.snapshot().bytesUsed).coerceAtLeast(0)
+            }
+            val eligible = files.filter { (path, entry) ->
+                val aol = path.contains("/surface_v1/") || path.contains("surface_v1%2F", true) || entry.name.startsWith("surface_v1/")
+                (!aolOnly || aol) && (!entry.terrain || (entry.name !in protectedTerrain && (touched[entry.name] ?: 0) < System.currentTimeMillis() - 60_000))
+            }
+            for ((path, entry) in eligible) if (entry.delete()) { files.remove(path); count += entry.bytes }
+            generation++
+            count
+        }
+        // Surface reads acquire their own lock before the budget lock; never reverse it.
+        org.ncssar.rid2caltopo.video.surface.SurfaceStore.invalidateCatalog()
+        return removed
+    }
+
     fun reserveWithoutEviction(context: Context, bytes: Long): Reservation = synchronized(lock) {
         initialize(context)
         if (!MapCacheBudgetPolicy.fits(usage(context).total, reserved, bytes, MapCacheSettings.maxCacheBytes(context))) {
@@ -145,7 +172,7 @@ internal object UnifiedMapCache {
     }
 
     fun remember(file: File) = synchronized(lock) {
-        files[file.absolutePath] = Entry(file.length(), false, file.name, file.lastModified(), { !file.exists() || file.delete() })
+        files[file.absolutePath] = Entry(file.length(), false, file.name, file.lastModified(), { org.ncssar.rid2caltopo.storage.OperationalStorage.removeIfManaged(file) })
     }
     fun remember(file: DocumentFile) = synchronized(lock) {
         files[file.uri.toString()] = Entry(file.length(), true, file.name.orEmpty(), file.lastModified(), { !file.exists() || file.delete() })

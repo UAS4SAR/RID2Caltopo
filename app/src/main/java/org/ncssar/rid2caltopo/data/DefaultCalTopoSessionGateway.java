@@ -42,6 +42,12 @@ public final class DefaultCalTopoSessionGateway implements CalTopoSessionGateway
         return CaltopoSession.OpenMap(mapNode, lastSyncTimestamp, onComplete);
     }
 
+    @NonNull
+    @Override
+    public CaltopoOp openMapForConnection(@NonNull CaltopoNode.MapNode mapNode, @Nullable Consumer<CaltopoOp> onComplete) {
+        return CaltopoSession.OpenMapForConnection(mapNode, onComplete);
+    }
+
     @Nullable
     @Override
     public CaltopoOp addFolder(@NonNull String folderName, boolean contentsVisible, boolean contentLabelsVisible, @Nullable Consumer<CaltopoOp> onComplete) {
@@ -93,6 +99,16 @@ public final class DefaultCalTopoSessionGateway implements CalTopoSessionGateway
     @Override
     public CaltopoOp editObjectOnMap(String mapId, String type, String id, JSONObject feature, Consumer<CaltopoOp> done) {
         return CaltopoSession.EditObjectOnMap(mapId, type, id, feature, done);
+    }
+
+    @Override
+    public java.util.function.BiFunction<JSONObject, Consumer<CaltopoOp>, CaltopoOp> prepareArchivedTrackUpdate(String mapId, String trackId) {
+        return CaltopoSession.PrepareArchivedTrackUpdate(mapId, trackId);
+    }
+
+    @Override
+    public java.util.function.BiFunction<String, Consumer<CaltopoOp>, CaltopoOp> prepareMarkerCleanup(String mapId) {
+        return CaltopoSession.PrepareMarkerCleanup(mapId);
     }
 
     @Override

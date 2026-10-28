@@ -70,7 +70,7 @@ fun MapFoldersDialog(
     hiddenItemIds: Set<String>,
     onFolderVisibilityChanged: (folderId: String, visible: Boolean) -> Unit,
     onItemVisibilityChanged: (itemId: String, visible: Boolean) -> Unit,
-    onAllItemsToggled: (itemIds: List<String>, visible: Boolean) -> Unit,
+    onAllItemsToggled: (itemIds: Iterable<String>, visible: Boolean) -> Unit,
     onZoomToItem: (itemId: String) -> Unit,
     onSurfaceBriefing: (itemId: String) -> Unit,
     onMapAssignment: (itemId: String) -> Unit,
@@ -123,7 +123,7 @@ fun MapFoldersDialog(
                                     modifier = if (folderVisible && folder.items.isNotEmpty()) {
                                         Modifier.clickable {
                                             onAllItemsToggled(
-                                                folder.items.map { it.featureId },
+                                                folder.items.asSequence().map { it.featureId }.asIterable(),
                                                 !allItemsVisible
                                             )
                                         }

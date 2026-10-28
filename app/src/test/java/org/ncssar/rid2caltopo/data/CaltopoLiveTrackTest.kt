@@ -74,6 +74,7 @@ class CaltopoLiveTrackTest {
 
     @After
     fun tearDown() {
+        CaltopoRecoveryWork.worker.submit {}.get(3, java.util.concurrent.TimeUnit.SECONDS)
         mapNodeField.set(null, previousMapNode)
         CaltopoMap::class.java.getDeclaredField("CurrentRuntime").apply { isAccessible = true; set(null, previousRuntime) }
         CaltopoInterruptedTrackJournal.setFileForTesting(null)
@@ -100,6 +101,50 @@ class CaltopoLiveTrackTest {
         responseCode = if (id == null) 0 else 200
         if (id != null) responseJson = org.json.JSONObject().put("id", id)
         setOperationIsDone(id != null)
+    }
+
+    @Test fun delayedOwnershipGrantCannotUndoALaterRevocation() {
+        val track = startingTrack()
+        val request = CaltopoLiveTrack::class.java.getDeclaredField("ownershipRequest").apply { isAccessible = true }
+            .get(track) as java.util.concurrent.atomic.AtomicReference<*>
+        val oldGrant = request.get()
+        track.setLocalOwner(false)
+        CaltopoLiveTrack::class.java.getDeclaredMethod("setLocalOwnerOnWorker", oldGrant.javaClass)
+            .apply { isAccessible = true }.invoke(track, oldGrant)
+        assertFalse(track.publishingLocally())
+        assertEquals(1, fixture.calTopoSessionGateway.countOperations("startLiveTrack"))
+    }
+
+    @Test fun delayedShutdownArchivesToTheDepartingMapAndFolder() {
+        val track = startingTrack()
+        val gateway = fixture.calTopoSessionGateway
+        val id = gateway.snapshotOperations().first { it.kind == "startLiveTrack" }.payload!!.getString("id")
+        mapNodeField.set(null, CaltopoNode.MapNode("new-map", "Next", 0L))
+        archiveFolderIdField.set(null, null)
+        setPrivateField(track, "shuttingDown", true)
+        CaltopoLiveTrack::class.java.getDeclaredMethod("shutdownOnWorker", java.lang.Long.TYPE,
+            String::class.java, String::class.java).apply { isAccessible = true }
+            .invoke(track, 0L, "map-test", "archive-folder-test")
+        val shape = gateway.snapshotOperations().first { it.kind == "editObject" && it.summary == "Shape:$id" }.payload!!
+        assertEquals("archive-folder-test", shape.getJSONObject("properties").getString("folderId"))
+        assertEquals("map-test", gateway.recoveryMaps.last())
+        assertFalse(gateway.recoveryMaps.contains("new-map"))
+    }
+
+    @Test fun delayedCheckpointCannotOverwriteANewerFinalSnapshot() {
+        val track = startingTrack()
+        val snapshot = CaltopoLiveTrack::class.java.getDeclaredMethod("journalSnapshot", String::class.java)
+            .apply { isAccessible = true }
+        val old = snapshot.invoke(track, "old")
+        track.publishDirect(39.2, -121.2, 510, 2_000)
+        val final = snapshot.invoke(track, "final")
+        val save = CaltopoLiveTrack::class.java.getDeclaredMethod("saveJournalSnapshot", final.javaClass)
+            .apply { isAccessible = true }
+        save.invoke(track, final)
+        save.invoke(track, old)
+        val entry = CaltopoInterruptedTrackJournal.entriesForTesting().getJSONObject(0)
+        assertEquals("final", entry.getString("description"))
+        assertEquals(2, entry.getJSONArray("points").length())
     }
 
     @Test fun endedTrackRestartsOnceBuffersUntilOwnershipAndArchivesAllReturningPoints() {

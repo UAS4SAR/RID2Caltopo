@@ -2,6 +2,7 @@
 #include "../../../../native/R2CLocalPlaybackCadence.h"
 
 #include <assert.h>
+#include <string.h>
 
 int main(void) {
     const uint8_t avccSei[] = {0, 0, 0, 3, 0x06, 0x05, 0x80};
@@ -27,6 +28,16 @@ int main(void) {
     const uint8_t malformed[] = {0, 0, 0, 12, 0x06};
     contents = R2CH264InspectPacket(malformed, sizeof(malformed), 4);
     assert(!contents.recognized && !R2CH264PacketIsSeiOnly(contents));
+
+    // The 262-byte AVCC length must not be mistaken for an Annex-B SEI header.
+    uint8_t ambiguousPicture[266];
+    memset(ambiguousPicture, 0x7f, sizeof(ambiguousPicture));
+    ambiguousPicture[0] = 0; ambiguousPicture[1] = 0;
+    ambiguousPicture[2] = 1; ambiguousPicture[3] = 6;
+    ambiguousPicture[4] = 0x41;
+    contents = R2CH264InspectPacket(ambiguousPicture, sizeof(ambiguousPicture), 4);
+    assert(contents.hasPicture && !contents.hasSei);
+    assert(!R2CH264PacketIsSeiOnly(contents));
 
     R2CLocalPlaybackCadence cadence;
     R2CLocalPlaybackCadenceInit(&cadence);

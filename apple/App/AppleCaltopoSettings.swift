@@ -251,7 +251,7 @@ final class AppleCaltopoSettings: ObservableObject {
         credentialOrigin = Self.originIndependent
         defaults.set(credentialOrigin, forKey: Self.credentialOriginKey)
         _ = save(markCredentialsIndependent: false)
-        status = "Mutual-aid QR loaded for \(profile.displayName)"
+        status = "Organization profile loaded for \(profile.displayName)"
     }
 
     func apply(storedProfile profile: AppleStoredOperationalProfile, connectMap: Bool) throws {
@@ -276,32 +276,16 @@ final class AppleCaltopoSettings: ObservableObject {
     }
 
     func transferSnapshot() -> [String: Any] {
-        [
-            "enabled": enabled,
-            "domain_and_port": domainAndPort,
-            "map_id": mapID,
-            "map_title": mapTitle,
-            "credential_id": credentialID,
-            "credential_secret": credentialSecret,
-            "team_id": teamID,
-            "connect_key": connectKey,
-        ]
+        ["map_id": mapID, "map_title": mapTitle]
     }
 
     func applyTransferSnapshot(_ object: [String: Any]) throws {
-        enabled = (object["enabled"] as? NSNumber)?.boolValue ?? false
-        domainAndPort = object["domain_and_port"] as? String ?? "caltopo.com"
+        // Ignore credential and service fields, including those in older backups.
         mapID = object["map_id"] as? String ?? ""
         mapTitle = object["map_title"] as? String ?? ""
-        credentialID = object["credential_id"] as? String ?? ""
-        credentialSecret = object["credential_secret"] as? String ?? ""
-        teamID = object["team_id"] as? String ?? ""
-        connectKey = object["connect_key"] as? String ?? ""
-        defaults.set(teamID, forKey: "caltopo.teamID")
-        credentialOrigin = Self.originIndependent
-        defaults.set(credentialOrigin, forKey: Self.credentialOriginKey)
-        _ = save(markCredentialsIndependent: false)
-        status = "Configuration restored from local backup"
+        defaults.set(mapID, forKey: "caltopo.mapID")
+        defaults.set(mapTitle, forKey: "caltopo.mapTitle")
+        status = "Map selection restored; device credentials retained"
     }
 
     func loadTeamMaps() async {
@@ -460,7 +444,7 @@ final class AppleCaltopoSettings: ObservableObject {
         let data = Data(secret.utf8)
         let updateStatus = SecItemUpdate(
             key as CFDictionary,
-            [kSecValueData as String: data] as CFDictionary
+            [kSecValueData as String: data, kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly] as CFDictionary
         )
         if updateStatus == errSecSuccess { return }
         guard updateStatus == errSecItemNotFound else {
@@ -468,6 +452,7 @@ final class AppleCaltopoSettings: ObservableObject {
         }
         var insert = key
         insert[kSecValueData as String] = data
+        insert[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         let insertStatus = SecItemAdd(insert as CFDictionary, nil)
         guard insertStatus == errSecSuccess else {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(insertStatus))

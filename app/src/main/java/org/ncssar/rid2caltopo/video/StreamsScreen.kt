@@ -635,13 +635,14 @@ fun StreamsScreen(
                     ClueSubmissionSheet(
                         pendingClue = it,
                         coordinateDisplayFormat = viewModel.coordinateDisplayFormat,
+                        saving = viewModel.clueSaveInProgress,
                         onTitleChanged = viewModel::updateClueTitle,
                         onDescriptionChanged = viewModel::updateClueDescription,
                         onCameraHeadingChanged = viewModel::updateClueCameraHeading,
                         onGimbalAngleChanged = viewModel::updateClueGimbalAngle,
                         onSubmit = viewModel::submitClue,
                         onSubmitLocalMarkerOnly = viewModel::submitLocalMarkerOnly,
-                        onCancel = viewModel::clearPendingClue,
+                        onCancel = viewModel::cancelPendingClue,
                         onIgnoredFlightAnswer = viewModel::answerIgnoredFlightPrompt,
                     )
                 }

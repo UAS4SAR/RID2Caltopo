@@ -27,8 +27,8 @@ public struct OperationalOfflineSheetOptions: Sendable, Equatable {
         viewportBounds: OperationalMapBounds
     ) {
         self.preset = preset
-        self.includeImagery = includeImagery
-        self.includeOSM = includeOSM
+        self.includeImagery = false // Esri imagery is interactive-only.
+        self.includeOSM = false // Public OSM tiles cannot be prefetched for offline use.
         self.includeContours = includeContours
         self.includeDEM = includeDEM
         self.includeAOL = includeAOL
@@ -42,7 +42,7 @@ public struct OperationalOfflineSheetOptions: Sendable, Equatable {
     ///   hidden-and-reopened sheet shows the same selection and Retry after a failure keeps AOL.
     /// - Otherwise the last-used choices stay, except contours follow the map's contour overlay and the
     ///   visible map is captured afresh (Android onDownloadMap resets exactly those).
-    /// - First open of the session: Medium detail, the current base layer, DEM 1 m, no AOL, visible map.
+    /// - First open: Medium detail, no public basemap download, DEM 1 m, no AOL, visible map.
     /// A boundary that no longer exists falls back to the visible map.
     public static func forOpening(
         remembered: Self?,
@@ -58,6 +58,8 @@ public struct OperationalOfflineSheetOptions: Sendable, Equatable {
             includeContours: contoursOverlayOn,
             viewportBounds: viewportBounds
         )
+        options.includeImagery = false
+        options.includeOSM = false // Also discard remembered selections from older builds.
         if remembered == nil || !downloadRunning {
             options.includeContours = contoursOverlayOn
             options.viewportBounds = viewportBounds

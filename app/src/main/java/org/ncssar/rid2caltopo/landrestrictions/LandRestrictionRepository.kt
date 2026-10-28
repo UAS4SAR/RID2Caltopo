@@ -29,11 +29,10 @@ class LandRestrictionRepository(
 ) {
     private val cacheDirectory = File(context.applicationContext.filesDir, "land-restrictions")
 
-    init {
-        cacheDirectory.mkdirs()
-    }
 
     suspend fun fetch(location: Location, radiusStatuteMiles: Int): LandRestrictionFetchResult = withContext(Dispatchers.IO) {
+        org.ncssar.rid2caltopo.storage.OperationalStorage.requireFor(cacheDirectory)
+        cacheDirectory.mkdirs()
         val center = LandCoordinate(location.latitude, location.longitude)
         val areas = mutableListOf<LandRestrictionArea>()
         val errors = mutableListOf<String>()
@@ -95,17 +94,18 @@ class LandRestrictionRepository(
 
     private data class CachedPayload(val payload: String, val updatedEpochMs: Long)
 
-    private fun cacheFile(source: LandRestrictionSource): File = File(cacheDirectory, "${source.id}.geojson")
+    private fun cacheFile(source: LandRestrictionSource): File = File(cacheDirectory, source.cacheFileName)
 
     private fun writeCache(source: LandRestrictionSource, payload: String, updatedEpochMs: Long) {
         val destination = cacheFile(source)
-        val temporary = File(cacheDirectory, "${source.id}.tmp")
+        val temporary = File(cacheDirectory, "${source.cacheFileName}.tmp")
         temporary.writeText(payload)
         if (!temporary.renameTo(destination)) {
             destination.writeText(payload)
             temporary.delete()
         }
         destination.setLastModified(updatedEpochMs)
+        org.ncssar.rid2caltopo.storage.OperationalStorage.retain(destination)
     }
 
     private fun readCache(source: LandRestrictionSource): CachedPayload? {
@@ -118,11 +118,13 @@ class LandRestrictionRepository(
         val sources: List<LandRestrictionSource> = listOf(
             LandRestrictionSource(
                 id = "nps",
-                queryEndpoint = "https://services.arcgis.com/xOi1kZaI0eWDREZv/ArcGIS/rest/services/NPS_Regional_and_Park_Boundary/FeatureServer/1/query",
+                queryEndpoint = "https://services1.arcgis.com/fBc8EJBxQRMcHlei/arcgis/rest/services/NPS_Land_Resources_Division_Boundary_and_Tract_Data_Service/FeatureServer/2/query",
                 agency = LandAgency.NationalParkService,
                 rule = LandRule.LaunchLandOperateRestricted,
                 nameFields = listOf("UNIT_NAME", "PARKNAME"),
-                identifierFields = listOf("UNIT_CODE", "FID")
+                identifierFields = listOf("UNIT_CODE", "GlobalID", "OBJECTID"),
+                detailsUrlFields = listOf("METADATA"),
+                cacheRevision = 2
             ),
             LandRestrictionSource(
                 id = "fws-refuge",
@@ -137,7 +139,7 @@ class LandRestrictionRepository(
                 id = "usfs-wilderness",
                 queryEndpoint = "https://apps.fs.usda.gov/arcx/rest/services/EDW/EDW_Wilderness_01/MapServer/0/query",
                 agency = LandAgency.ForestService,
-                rule = LandRule.LaunchLandOperateRestricted,
+                rule = LandRule.MappedWildernessAdvisory,
                 nameFields = listOf("wildernessname", "WILDERNESSNAME"),
                 identifierFields = listOf("areaid", "AREAID", "objectid", "OBJECTID")
             ),

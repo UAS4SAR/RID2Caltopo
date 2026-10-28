@@ -42,7 +42,7 @@ fun LandRestrictionPanel(
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
             ) {
-                Text("Mapped sources may be incomplete or outdated. No mapped restrictions does not mean permission to launch, land, or fly. Confirm current rules and permissions with the landowner or responsible agency.", fontWeight = FontWeight.SemiBold)
+                Text("Mapped areas may be incomplete or outdated. An empty result does not establish permission to launch, land, or fly. Confirm ownership, current rules and permissions with the landowner or responsible agency.", fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(12.dp))
                 Text(state.chipLabel, fontWeight = FontWeight.SemiBold)
                 Text(state.statusLine, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -86,12 +86,24 @@ fun LandRestrictionPanel(
                 Spacer(Modifier.height(12.dp))
                 Text("How to interpret this check", fontWeight = FontWeight.Bold)
                 Text(
-                    "These agency boundaries describe land-management rules. They do not replace FAA airspace, NOTAM, TFR, LAANC, or agency authorization checks."
+                    "These datasets support advisory checks of mapped land areas. They do not determine legal boundaries, ownership, jurisdiction or current restrictions, and do not replace FAA airspace, NOTAM, TFR, LAANC, or agency authorization checks."
                 )
                 Text(
-                    "A boundary warning does not automatically mean overflight is prohibited. Confirm the displayed rule with the responsible agency before operating.",
+                    "A mapped-area warning is not a legal determination that operation or overflight is prohibited. Verify current rules and landowner or agency authorization before operating.",
                     modifier = Modifier.padding(top = 6.dp)
                 )
+
+                Spacer(Modifier.height(12.dp))
+                Text("Data sources and limitations", fontWeight = FontWeight.Bold)
+                Text("Agency credits identify the data providers and do not imply endorsement. Federal source data remain original U.S. Government works.", style = MaterialTheme.typography.bodySmall)
+                LandAgency.entries.forEach { agency ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(agency.dataCredit, fontWeight = FontWeight.SemiBold)
+                    Text(agency.dataNotice, style = MaterialTheme.typography.bodySmall)
+                    TextButton(onClick = { uriHandler.openUri(agency.dataMetadataUrl) }) {
+                        Text("Source metadata and use limitations")
+                    }
+                }
 
                 if (state.sourceErrors.isNotEmpty()) {
                     Spacer(Modifier.height(12.dp))

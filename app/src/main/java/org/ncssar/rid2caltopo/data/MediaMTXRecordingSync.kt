@@ -22,23 +22,29 @@ import org.ncssar.rid2caltopo.video.ManagedVideoSessionRecordingCatalog
 object MediaMTXRecordingSync {
     private const val TAG = "MediaMTXRecordingSync"
     private const val DEFAULT_SAMPLE_BUFFER_SIZE = 1024 * 1024
-    private const val NORMALIZED_VIDEO_FPS = 30
 
     @JvmStatic
-    fun getRecordingStagingDir(context: Context): File =
-        File(context.filesDir, "mediamtx-recordings")
+    fun getRecordingStagingDir(context: Context): File {
+        if (CaltopoClient.GetArchiveUri() == null) return org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context, "recording-staging")
+        org.ncssar.rid2caltopo.storage.OperationalStorage.requireRecorderReady(context)
+        return File(context.filesDir, "mediamtx-recordings")
+    }
 
     @JvmStatic
-    fun syncAll(context: Context, streamPath: String? = null) {
-        val todaysTrackDir = CaltopoClient.GetTodaysTrackDir()
+    @JvmOverloads
+    @Synchronized
+    fun syncAll(context: Context, streamPath: String? = null, completedFilePath: String? = null) {
         val stagingRoot = getRecordingStagingDir(context)
         if (!stagingRoot.exists()) return
 
         try {
+            check(completedFilePath == null || !streamPath.isNullOrBlank()) { "Recording completion is missing its stream path" }
             if (streamPath.isNullOrBlank()) {
-                syncDirectoryTree(context, todaysTrackDir, stagingRoot, "")
+                syncDirectoryTree(context, stagingRoot, "")
             } else {
-                syncStreamPath(context, todaysTrackDir, File(stagingRoot, streamPath), streamPath)
+                val source = File(stagingRoot, streamPath)
+                check(source.canonicalFile.toPath().startsWith(stagingRoot.canonicalFile.toPath())) { "Invalid recording stream path" }
+                syncStreamPath(context, source, streamPath, completedFilePath)
             }
             deleteEmptyDirectories(stagingRoot)
             CaltopoClient.CTDebug(TAG, "syncAll() completed path=$streamPath")
@@ -49,83 +55,101 @@ object MediaMTXRecordingSync {
 
     private fun syncDirectoryTree(
         context: Context,
-        todaysTrackDir: DocumentFile?,
         root: File,
         relativePath: String,
     ) {
         val children = root.listFiles()?.sortedBy { it.name } ?: return
         val mediaFiles = children.filter { it.isFile && isMediaFragment(it) }
         if (mediaFiles.isNotEmpty()) {
-            syncStreamPath(context, todaysTrackDir, root, relativePath)
+            syncStreamPath(context, root, relativePath)
         }
         children
             .filter { it.isDirectory }
             .forEach { child ->
                 val childRelative = if (relativePath.isBlank()) child.name else "$relativePath/${child.name}"
-                syncDirectoryTree(context, todaysTrackDir, child, childRelative)
+                syncDirectoryTree(context, child, childRelative)
             }
     }
 
     private fun syncStreamPath(
         context: Context,
-        todaysTrackDir: DocumentFile?,
         sourceRoot: File,
         streamPath: String,
+        completedFilePath: String? = null,
     ) {
         if (!sourceRoot.exists()) return
-        val fragments = sourceRoot.listFiles()
-            ?.filter { it.isFile && isMediaFragment(it) }
-            ?.sortedBy { it.name }
-            .orEmpty()
+        val fragments = (completedFilePath?.let { completedRecordingFragment(sourceRoot, it) }
+            ?: sourceRoot.listFiles().orEmpty().toList())
+            .filter { it.isFile && isMediaFragment(it) }.sortedBy { it.name }
         if (fragments.isEmpty()) return
 
-        val mergedFile = tempMergedRecordingFile(context, streamPath, fragments.first())
-
+        // File-age heuristics must not expire a finalizer that is actually running.
+        // The source days are fixed before remuxing; today remains protected separately.
+        val protections = (fragments.map { org.ncssar.rid2caltopo.app.todayArchiveDirectoryName(Date(it.lastModified())) } +
+            org.ncssar.rid2caltopo.app.todayArchiveDirectoryName())
+            .distinct().map { day ->
+                val owner = "finalize-" + java.util.UUID.randomUUID()
+                org.ncssar.rid2caltopo.app.FlightStorage.protect(day, owner)
+                owner
+            }
         try {
-            if (org.ncssar.rid2caltopo.video.ffmpeg.FfmpegBridge.preserveSEIOriginals) {
-                // Retain original MediaMTX bytes before normalized remux/deletion.
-                val researchRoot = File(context.filesDir, "video-sei-originals")
-                val researchDir = File(researchRoot, streamPath.replace(Regex("[^A-Za-z0-9_-]"), "_"))
-                check(researchDir.isDirectory || researchDir.mkdirs()) { "Cannot preserve research originals" }
+            // Preserve the closed file's final tail/header before a catalog operation
+            // can wait for bulk readiness, including when the app is shutting down.
+            if (CaltopoClient.GetArchiveUri() != null) {
+                fragments.forEach { org.ncssar.rid2caltopo.storage.OperationalStorage.retainGrowingRecording(it) }
+            }
+            val todaysTrackDir = CaltopoClient.GetTodaysTrackDir()
+            val mergedFile = tempMergedRecordingFile(context, streamPath, fragments.first())
+
+            try {
+                if (org.ncssar.rid2caltopo.video.ffmpeg.FfmpegBridge.preserveSEIOriginals) {
+                    // Retain original MediaMTX bytes before normalized remux/deletion.
+                    val researchRoot = File(context.filesDir, "video-sei-originals")
+                    val researchDir = File(researchRoot, streamPath.replace(Regex("[^A-Za-z0-9_-]"), "_"))
+                    check(researchDir.isDirectory || researchDir.mkdirs()) { "Cannot preserve research originals" }
+                    fragments.forEach { fragment ->
+                        val original = File(researchDir, fragment.name)
+                        if (!original.exists()) fragment.copyTo(original)
+                        check(original.length() == fragment.length()) { "Incomplete research original" }
+                        org.ncssar.rid2caltopo.storage.OperationalStorage.retain(original)
+                    }
+                    CaltopoClient.CTLog("RESEARCH", "DjiSeiPayload", "Preserved original fragments path=${researchDir.absolutePath}")
+                }
+                remuxMp4Sequence(fragments, mergedFile)
+                if (todaysTrackDir != null) {
+                    val targetDir = ensureTargetDir(todaysTrackDir, streamPath)
+                    val preferredName = archiveRecordingFileName(streamPath, fragments.first())
+                    copyFileInto(
+                        resolver = context.contentResolver,
+                        sourceFile = mergedFile,
+                        targetDir = targetDir,
+                        targetName = availableTargetName(targetDir, preferredName),
+                    )
+                } else {
+                    CaltopoClient.CTWarn(
+                        TAG,
+                        "Track archive unavailable; retaining recording for tracker access only path=$streamPath",
+                    )
+                }
+                check(ManagedVideoSessionRecordingCatalog.retain(
+                    context = context,
+                    mergedFile = mergedFile,
+                    streamPath = streamPath,
+                ) != null) { "The completed recording could not be retained; original fragments were kept." }
                 fragments.forEach { fragment ->
-                    val original = File(researchDir, fragment.name)
-                    if (!original.exists()) fragment.copyTo(original)
-                    check(original.length() == fragment.length()) { "Incomplete research original" }
+                    if (!org.ncssar.rid2caltopo.storage.OperationalStorage.removeIfManaged(fragment)) {
+                        CaltopoClient.CTWarn(TAG, "Unable to delete staged fragment ${fragment.absolutePath}")
+                    }
                 }
-                CaltopoClient.CTLog("RESEARCH", "DjiSeiPayload", "Preserved original fragments path=${researchDir.absolutePath}")
-            }
-            remuxMp4Sequence(fragments, mergedFile)
-            if (todaysTrackDir != null) {
-                val targetDir = ensureTargetDir(todaysTrackDir, streamPath)
-                val preferredName = archiveRecordingFileName(streamPath, fragments.first())
-                copyFileInto(
-                    resolver = context.contentResolver,
-                    sourceFile = mergedFile,
-                    targetDir = targetDir,
-                    targetName = availableTargetName(targetDir, preferredName),
-                )
-            } else {
-                CaltopoClient.CTWarn(
-                    TAG,
-                    "Track archive unavailable; retaining recording for tracker access only path=$streamPath",
-                )
-            }
-            ManagedVideoSessionRecordingCatalog.retain(
-                context = context,
-                mergedFile = mergedFile,
-                streamPath = streamPath,
-            )
-            fragments.forEach { fragment ->
-                if (!fragment.delete()) {
-                    CaltopoClient.CTWarn(TAG, "Unable to delete staged fragment ${fragment.absolutePath}")
+            } finally {
+                if (mergedFile.exists() && !org.ncssar.rid2caltopo.storage.OperationalStorage.removeIfManaged(mergedFile)) {
+                    CaltopoClient.CTWarn(TAG, "Unable to delete temp merged recording ${mergedFile.absolutePath}")
                 }
             }
+            deleteEmptyDirectories(sourceRoot)
         } finally {
-            if (mergedFile.exists() && !mergedFile.delete()) {
-                CaltopoClient.CTWarn(TAG, "Unable to delete temp merged recording ${mergedFile.absolutePath}")
-            }
+            protections.forEach(org.ncssar.rid2caltopo.app.FlightStorage::release)
         }
-        deleteEmptyDirectories(sourceRoot)
     }
 
     private fun remuxMp4Sequence(inputFiles: List<File>, outputFile: File) {
@@ -140,9 +164,6 @@ object MediaMTXRecordingSync {
         val muxerTrackMap = LinkedHashMap<Int, Int>()
         firstLayout.trackIndices.forEach { trackIndex ->
             val format = firstLayout.formats.getValue(trackIndex)
-            if (format.getString(MediaFormat.KEY_MIME) == MediaFormat.MIMETYPE_VIDEO_AVC) {
-                format.setInteger(MediaFormat.KEY_FRAME_RATE, NORMALIZED_VIDEO_FPS)
-            }
             muxerTrackMap[trackIndex] = muxer.addTrack(format)
         }
         muxer.start()
@@ -193,18 +214,22 @@ object MediaMTXRecordingSync {
                     null
                 }
             }.toMap()
-            val h264Cadences = h264Assemblers.keys.associateWith {
-                H264ArchiveCadence(NORMALIZED_VIDEO_FPS)
+            val h264Timings = h264Assemblers.keys.associateWith { trackIndex ->
+                val format = trackFormats.getValue(trackIndex)
+                val nominalFps = if (format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
+                    format.getInteger(MediaFormat.KEY_FRAME_RATE).takeIf { it > 0 } ?: 30
+                } else 30
+                H264ArchiveTiming(nominalFps)
             }
             val bufferInfo = android.media.MediaCodec.BufferInfo()
 
             fun writeSample(trackIndex: Int, sample: H264ArchiveAccessUnitAssembler.Sample) {
                 val muxerTrackIndex = muxerTrackMap.getValue(trackIndex)
-                val cadence = h264Cadences[trackIndex]
+                val timing = h264Timings[trackIndex]
                 val requestedPresentationTimeUs = if (
-                    cadence != null && sample.data.hasVclH264NalUnit()
+                    timing != null && sample.data.hasVclH264NalUnit()
                 ) {
-                    cadence.nextPresentationTimeUs(segmentOffsetUs)
+                    timing.nextPresentationTimeUs(sample.presentationTimeUs)
                 } else {
                     sample.presentationTimeUs
                 }
@@ -264,17 +289,17 @@ object MediaMTXRecordingSync {
                 CaltopoClient.CTDebug(
                     TAG,
                     "Normalized recording segment file=${inputFile.name}" +
-                        " track=$trackIndex frames=${h264Cadences.getValue(trackIndex).pictureCount}" +
+                        " track=$trackIndex frames=${h264Timings.getValue(trackIndex).pictureCount}" +
                         " mergedSei=${assembler.mergedSeiCount}" +
                         " discardedSei=${assembler.discardedSeiCount}" +
-                        " fps=$NORMALIZED_VIDEO_FPS",
+                        " timing=source",
                 )
             }
 
             maxOf(
                 segmentLastWrittenPtsUs + 1L,
-                h264Cadences.values.maxOfOrNull { cadence ->
-                    cadence.endOffsetUs(segmentOffsetUs)
+                h264Timings.values.maxOfOrNull { timing ->
+                    timing.endOffsetUs(segmentOffsetUs)
                 } ?: segmentOffsetUs,
             )
         } finally {
@@ -332,7 +357,8 @@ object MediaMTXRecordingSync {
     }
 
     private fun getMergedRecordingRoot(context: Context): File =
-        File(context.filesDir, "mediamtx-recordings-merged")
+        if (CaltopoClient.GetArchiveUri() == null) org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context, "recording-remux")
+        else File(context.filesDir, "mediamtx-recordings-merged")
 
     private fun archiveRecordingFileName(streamPath: String, firstFragment: File): String {
         val designator = archiveDesignator(streamPath)

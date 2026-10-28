@@ -90,6 +90,7 @@ enum AppleUnifiedMapCache {
         var entries: [URL: Entry] = [:]
         var initialized = false
         var reserved: Int64 = 0
+        var visibleReserved: Int64 = 0
         var protectedTerrain = Set<String>()
         var touched: [String: Date] = [:]
         var generation = 0
@@ -102,6 +103,8 @@ enum AppleUnifiedMapCache {
     private static func setBlocked(_ value: Bool) { statusLock.withLock { state.blocked = value } }
     static var generation: Int { statusLock.withLock { state.generation } }
     static var blocked: Bool { statusLock.withLock { state.blocked } }
+    static var reservedBytes: Int64 { statusLock.withLock { state.visibleReserved } }
+    private static func publishReserved() { statusLock.withLock { state.visibleReserved = state.reserved } }
 
     static var roots: [URL] {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
@@ -163,6 +166,23 @@ enum AppleUnifiedMapCache {
         assert(!Thread.isMainThread, "Map-cache maintenance must run on a worker")
         AppleMapCacheAccess.synchronized { initialize(); trim(to: max(0, maximumBytes - state.reserved)) }
     }
+    static func clearUnused() throws -> Int64 {
+        precondition(!Thread.isMainThread)
+        return try AppleMapCacheAccess.synchronized {
+            initialize()
+            guard state.reserved == 0 else { throw OperationalSurfacePreparationError.invalid("Wait for map downloads or preparation to finish.") }
+            var removed: Int64 = 0
+            for (url, entry) in state.entries {
+                if url.path.hasPrefix(AppleSurfaceStore.root.path + "/") { continue }
+                let terrain = url.path.hasPrefix(AppleMapCachePaths.demRoot.path + "/")
+                if terrain && (state.protectedTerrain.contains(url.lastPathComponent) || (state.touched[url.lastPathComponent] ?? .distantPast).timeIntervalSinceNow > -60) { continue }
+                try FileManager.default.removeItem(at: url)
+                state.entries[url] = nil; removed += entry.bytes
+                if terrain { invalidateTerrain() }
+            }
+            return removed
+        }
+    }
     static func reserveWithoutEviction(_ bytes: Int64) throws -> Reservation {
         try AppleMapCacheAccess.synchronized {
             initialize()
@@ -182,6 +202,7 @@ enum AppleUnifiedMapCache {
             guard OperationalMapCacheBudget.fits(used: usedBytes(), reserved: state.reserved, incoming: amount, limit: limit)
             else { setBlocked(true); throw CocoaError(.fileWriteOutOfSpace) }
             state.reserved += amount
+            publishReserved()
             setBlocked(false)
             return Reservation(bytes: amount)
         }
@@ -190,7 +211,7 @@ enum AppleUnifiedMapCache {
         private let bytes: Int64
         private var closed = false
         init(bytes: Int64) { self.bytes = bytes }
-        func close() { AppleMapCacheAccess.synchronized { if !closed { state.reserved -= bytes; closed = true } } }
+        func close() { AppleMapCacheAccess.synchronized { if !closed { state.reserved -= bytes; publishReserved(); closed = true } } }
         deinit { close() }
     }
 }
@@ -399,9 +420,10 @@ private final class AppleProgressiveDownload: NSObject, URLSessionDownloadDelega
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
-        let destination = FileManager.default.temporaryDirectory
+        let destination = TemporaryWorkspace.root.appendingPathComponent("Downloads")
             .appendingPathComponent("RID2Caltopo-\(UUID().uuidString).download")
         do {
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.moveItem(at: location, to: destination)
             lock.lock()
             stagedURL = destination
@@ -775,6 +797,7 @@ final class AppleMapOfflineManager: ObservableObject {
     @Published var autoRemoveBadTiles: Bool
 
     private let defaults: UserDefaults
+    private var initialLimitTask: Task<Void, Never>?
     private var downloadTask: Task<Void, Never>?
     private var maintenanceTask: Task<(removedFiles: Int, removedBytes: Int64), Never>?
     private var maintenanceCompletionTask: Task<Void, Never>?
@@ -801,11 +824,27 @@ final class AppleMapOfflineManager: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        maximumCacheGB = AppleUnifiedMapCache.configuredGB(defaults: defaults)
-        maximumTileAgeDays = max(1, min(3_650, defaults.object(forKey: "map.maximumTileAgeDays") as? Int ?? 365))
+        // UI construction reads only the saved preference. First-use volume queries
+        // run on the worker below, before publishing the initial computed allowance.
+        maximumCacheGB = max(0, min(1_000, defaults.object(forKey: "map.maximumCacheGB") as? Double ?? 10))
+        maximumTileAgeDays = OperationalMapTilePolicy.cacheAgeDays(defaults.object(forKey: "map.maximumTileAgeDays") as? Int ?? 365)
         autoRemoveBadTiles = defaults.object(forKey: "map.autoRemoveBadTiles") as? Bool ?? true
+        if defaults.object(forKey: "map.maximumCacheGB") == nil {
+            initialLimitTask = Task { [weak self] in
+                let initial = await Task.detached(priority: .utility) {
+                    let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                    let free = (try? base.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage) ?? ((try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory())[.systemFreeSize]) as? NSNumber)?.int64Value ?? 0
+                    return Double(OperationalMapCacheBudget.defaultLimit(free: free)) / 1_000_000_000
+                }.value
+                guard let self else { return }
+                if let saved = self.defaults.object(forKey: "map.maximumCacheGB") as? Double { self.maximumCacheGB = saved }
+                else { self.maximumCacheGB = initial; self.defaults.set(initial, forKey: "map.maximumCacheGB") }
+            }
+        }
         refreshStats()
     }
+
+    func prepareStorageSettings() async { await initialLimitTask?.value }
 
     var badTileCount: Int { badHashes.count }
 
@@ -853,7 +892,8 @@ final class AppleMapOfflineManager: ObservableObject {
         aolPlan: OperationalSurfacePreparationPlan? = nil
     ) {
         guard !isRunning else { return }
-        let baseLayers = selectedBaseLayers ?? [baseLayer]
+        // Public OSM and Esri basemaps are interactive-only, including legacy selections.
+        let baseLayers = (selectedBaseLayers ?? [baseLayer]).filter(OperationalMapTilePolicy.allowsOfflineDownload)
         guard !baseLayers.isEmpty || includeContours || includeDEM || aolPlan != nil else {
             status = "Select at least one map layer or elevation data type."
             return
@@ -1029,7 +1069,7 @@ final class AppleMapOfflineManager: ObservableObject {
 
     func saveSettings() {
         maximumCacheGB = max(0.1, min(1_000, maximumCacheGB))
-        maximumTileAgeDays = max(1, min(3_650, maximumTileAgeDays))
+        maximumTileAgeDays = OperationalMapTilePolicy.cacheAgeDays(maximumTileAgeDays)
         defaults.set(maximumCacheGB, forKey: "map.maximumCacheGB")
         defaults.set(maximumTileAgeDays, forKey: "map.maximumTileAgeDays")
         defaults.set(autoRemoveBadTiles, forKey: "map.autoRemoveBadTiles")
@@ -1205,6 +1245,7 @@ final class AppleMapOfflineManager: ObservableObject {
     }
 
     private func fetchTile(_ tile: OperationalOfflineTile, baseLayer: OperationalMapBaseLayer) async {
+        guard OperationalMapTilePolicy.allowsOfflineDownload(baseLayer) else { return }
         let destination = AppleMapCachePaths.tile(tile, layerKey: baseLayer.cacheKey, fileExtension: baseLayer.fileExtension)
         guard let url = baseLayer.tileURL(zoom: tile.zoom, x: tile.x, y: tile.y) else {
             recordFailure(kind: .tile)
@@ -1498,12 +1539,10 @@ struct AppleOfflineMapPreparationView: View {
     /// Set after a clean run while the sheet shows; it closes itself shortly, like Android.
     @State private var autoClosing = false
     @State private var demResolution = OperationalDEMResolution.maximum1m
-    @State private var cacheLimitInput: String
     @State private var cacheLimitFeedback: String?
     @State private var cacheLimitFeedbackIsError = false
     /// Selection-changed and already-running notices explain why Start did nothing; they are not failures.
     @State private var cacheLimitFeedbackIsNotice = false
-    @FocusState private var cacheLimitFieldFocused: Bool
 
     private let progressSectionID = "offline-map-progress"
 
@@ -1541,7 +1580,6 @@ struct AppleOfflineMapPreparationView: View {
             _aolPlanMessage = State(initialValue: plan.reused ? "AOL already prepared — using cached tiles"
                 : "AOL: \(plan.sources.count) lidar files, \(plan.advertisedBytes / 1_000_000) MB advertised; \(plan.tiles) local 1 m tiles. Source sizes may differ.")
         }
-        _cacheLimitInput = State(initialValue: String(format: "%.1f", manager.maximumCacheGB))
     }
 
     private var bounds: OperationalMapBounds {
@@ -1550,7 +1588,7 @@ struct AppleOfflineMapPreparationView: View {
     }
 
     private var selectedBaseLayers: [OperationalMapBaseLayer] {
-        (includeImagery ? [.imagery] : []) + (includeOSM ? [.openStreetMap] : [])
+        [] // Public basemaps are never offline download inputs.
     }
 
     private var aolWorkingBytes: Int64 { includeAOL ? (aolPlan.map { $0.reused ? 0 : $0.advertisedBytes*3/2+Int64($0.tiles)*16_000_000 } ?? 0) : 0 }
@@ -1568,56 +1606,14 @@ struct AppleOfflineMapPreparationView: View {
             currentDEMCacheBytes: manager.cacheStats.demBytes,
             estimatedTileBytes: estimate.tileBytes+aolWorkingBytes,
             estimatedDEMBytes: estimate.demBytes,
-            maximumTileCacheBytes: Int64((parsedCacheLimitGB ?? manager.maximumCacheGB) * 1_000_000_000),
+            maximumTileCacheBytes: Int64(manager.maximumCacheGB * 1_000_000_000),
             availableVolumeBytes: manager.cacheStats.availableVolumeBytes
         )
     }
 
-    private var parsedCacheLimitGB: Double? {
-        let decimalSeparator = Locale.current.decimalSeparator ?? "."
-        let normalized = cacheLimitInput
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: decimalSeparator, with: ".")
-        guard let value = Double(normalized), value.isFinite, (0.1 ... 1_000).contains(value) else { return nil }
-        return value
-    }
-
-    private var cacheLimitStepperBinding: Binding<Double> {
-        Binding(
-            get: { parsedCacheLimitGB ?? manager.maximumCacheGB },
-            set: { value in
-                manager.maximumCacheGB = value
-                cacheLimitInput = String(format: "%.1f", value)
-                cacheLimitFeedback = nil
-                cacheLimitFeedbackIsNotice = false
-            }
-        )
-    }
-
-    @discardableResult
-    private func saveCacheLimit(showConfirmation: Bool = true) -> Bool {
-        cacheLimitFieldFocused = false
-        guard let value = parsedCacheLimitGB else {
-            cacheLimitFeedback = "Enter a cache limit from 0.1 to 1,000 GB."
-            cacheLimitFeedbackIsNotice = false
-            cacheLimitFeedbackIsError = true
-            return false
-        }
-        manager.maximumCacheGB = value
-        manager.saveSettings()
-        cacheLimitInput = String(format: "%.1f", manager.maximumCacheGB)
-        cacheLimitFeedback = showConfirmation
-            ? "Saved \(cacheLimitInput) GB map cache limit."
-            : nil
-        cacheLimitFeedbackIsError = false
-        cacheLimitFeedbackIsNotice = false
-        return true
-    }
-
     @MainActor
     private func retryDownload() {
-        guard retryTask == nil, !aolCatalogChecking, !startChecking, !manager.isRunning,
-              saveCacheLimit(showConfirmation: false) else { return }
+        guard retryTask == nil, !aolCatalogChecking, !startChecking, !manager.isRunning else { return }
         let requestedBounds = bounds
         let requestedSelection = selectionDescription
         let requestedAOL = includeAOL
@@ -1714,8 +1710,6 @@ struct AppleOfflineMapPreparationView: View {
                     }
                 }.disabled(manager.isRunning)
                 Section("Map layers") {
-                    DownloadMapCheckbox("Imagery", isOn: $includeImagery)
-                    DownloadMapCheckbox("OpenStreetMap (OSM)", isOn: $includeOSM)
                     DownloadMapCheckbox("Contours", isOn: $includeContours)
                 }.disabled(manager.isRunning)
                 Section("Detail") {
@@ -1777,18 +1771,13 @@ struct AppleOfflineMapPreparationView: View {
                         LabeledContent("Current DEM storage", value: AppleMapOfflineManager.formatBytes(capacity.currentDEMCacheBytes))
                         LabeledContent("Configured cache limit", value: AppleMapOfflineManager.formatBytes(Int64(manager.maximumCacheGB * 1_000_000_000)))
                         if let available = capacity.availableVolumeBytes {
-                            LabeledContent("Available on volume", value: AppleMapOfflineManager.formatBytes(available))
+                            LabeledContent("Cache storage free", value: AppleMapOfflineManager.formatBytes(available))
                         }
                         Text("Map layers and elevation data share the configured limit. Estimated usage assumes selected files are not already cached and includes temporary AOL space, before cleanup. Older entries may be removed to stay within the limit or when they exceed the maximum tile age.")
                             .font(.footnote).foregroundStyle(.secondary)
                         if capacity.exceedsCacheLimit {
                             Text("This download is expected to exceed the map-cache limit. Increase the limit or reduce the selection before starting.")
                                 .font(.footnote).foregroundStyle(.red)
-                            Button("Use recommended \(AppleMapOfflineManager.formatBytes(capacity.recommendedMaximumBytes)) limit") {
-                                manager.maximumCacheGB = Double(capacity.recommendedMaximumBytes) / 1_000_000_000
-                                cacheLimitInput = String(format: "%.1f", manager.maximumCacheGB)
-                                saveCacheLimit()
-                            }
                         }
                         if capacity.exceedsAvailableVolume {
                             Text("The estimated download may exceed available storage.")
@@ -1800,27 +1789,8 @@ struct AppleOfflineMapPreparationView: View {
                             Text("Checking current cache and available space…")
                         }
                     }
-                    HStack {
-                        Text("Max cache size")
-                        Spacer()
-                        TextField("GB", text: $cacheLimitInput)
-                            .keyboardType(.decimalPad)
-                            .multilineTextAlignment(.trailing)
-                            .frame(width: 72)
-                            .focused($cacheLimitFieldFocused)
-                            .onChange(of: cacheLimitInput) { _, _ in cacheLimitFeedback = nil }
-                        Text("GB").foregroundStyle(.secondary)
-                        Stepper(
-                            "Adjust cache size",
-                            value: cacheLimitStepperBinding,
-                            in: 0.1 ... 1_000,
-                            step: 0.1
-                        )
-                        .labelsHidden()
-                    }
-                    .disabled(manager.isRunning)
-                    Button("Save cache limit") { saveCacheLimit() }
-                        .disabled(manager.isRunning)
+                    Text("Change cache size and age in Manage Storage > Map Cache Management.")
+                        .font(.footnote).foregroundStyle(.secondary)
                     if let cacheLimitFeedback {
                         Label(
                             cacheLimitFeedback,
@@ -1919,7 +1889,7 @@ struct AppleOfflineMapPreparationView: View {
                             }
                             .disabled(aolCatalogChecking || startChecking || retryTask != nil || !manager.cacheStatsReady
                                 || (selectedBaseLayers.isEmpty && !includeContours && !includeDEM && !includeAOL)
-                                || parsedCacheLimitGB == nil
+                                || manager.maximumCacheGB < 0.1
                                 || estimate.tiles > 250_000)
                         }
                     }
@@ -2029,14 +1999,6 @@ struct AppleMapCacheManagementView: View {
     let onExportMutualAid: () -> Void
     @Environment(\.dismiss) private var dismiss
 
-    @State private var editor: AppleMapCacheSetting?
-
-    private var cacheSizeLabel: String {
-        let size = AppleMapOfflineManager.formatBytes(Int64(manager.maximumCacheGB * 1_000_000_000))
-        let available = manager.cacheStats.availableVolumeBytes.map { "\(AppleMapOfflineManager.formatBytes($0)) available" } ?? "available space unknown"
-        return "Max Cache Size: \(size) (\(available))"
-    }
-
     var body: some View {
         NavigationStack {
             Form {
@@ -2059,36 +2021,12 @@ struct AppleMapCacheManagementView: View {
                     NavigationLink("Bad Tiles…") {
                         AppleBadTileManagementView(manager: manager)
                     }
-                    Button { editor = .cacheSize } label: {
-                        HStack {
-                            Text(cacheSizeLabel).fixedSize(horizontal: false, vertical: true)
-                            Spacer()
-                            Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.secondary)
-                        }
-                    }
-                    Button { editor = .tileAge } label: {
-                        HStack {
-                            Text("Maximum Tile Age: \(AppleMapCacheSetting.ageLabel(manager.maximumTileAgeDays))")
-                            Spacer()
-                            Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.secondary)
-                        }
-                    }
                     Button("Export Map Package…", systemImage: "shippingbox") {
                         dismiss()
                         onExportMutualAid()
                     }
                 }
-                Section("Cache Usage") {
-                    LabeledContent("Cached files", value: manager.cacheStats.files.formatted())
-                    LabeledContent("Total map cache", value: AppleMapOfflineManager.formatBytes(manager.cacheStats.bytes))
-                    LabeledContent("Map imagery", value: AppleMapOfflineManager.formatBytes(manager.cacheStats.tileBytes))
-                    LabeledContent("Terrain", value: AppleMapOfflineManager.formatBytes(manager.cacheStats.demBytes))
-                    LabeledContent("Icons and elevation samples", value: AppleMapOfflineManager.formatBytes(manager.cacheStats.supportBytes))
-                    if let free = manager.cacheStats.availableVolumeBytes {
-                        LabeledContent("Free storage", value: AppleMapOfflineManager.formatBytes(free))
-                    }
-                    Text(manager.status).font(.footnote).foregroundStyle(.secondary)
-                }
+
             }
             .navigationTitle("Map Management")
             .toolbar {
@@ -2096,118 +2034,8 @@ struct AppleMapCacheManagementView: View {
                     Button("Done") { manager.saveSettings(); dismiss() }
                 }
             }
-            .sheet(item: $editor) { setting in
-                AppleMapCacheSettingEditor(manager: manager, setting: setting)
-            }
-            .onAppear { manager.refreshStats() }
+
         }
-    }
-}
-
-private enum AppleMapCacheSetting: String, Identifiable {
-    case cacheSize, tileAge
-    var id: String { rawValue }
-    var title: String { self == .cacheSize ? "Max Cache Size" : "Maximum Tile Age" }
-
-    static func ageLabel(_ days: Int) -> String {
-        if days % 365 == 0 { return "\(days / 365) \(days == 365 ? "year" : "years")" }
-        if days % 30 == 0 { return "\(days / 30) \(days == 30 ? "month" : "months")" }
-        return "\(days) \(days == 1 ? "day" : "days")"
-    }
-}
-
-private struct AppleMapCacheSettingEditor: View {
-    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
-    @ObservedObject var manager: AppleMapOfflineManager
-    let setting: AppleMapCacheSetting
-    @Environment(\.dismiss) private var dismiss
-    @State private var input: String
-    @State private var error: String?
-    @FocusState private var inputFocused: Bool
-
-    init(manager: AppleMapOfflineManager, setting: AppleMapCacheSetting) {
-        self.manager = manager
-        self.setting = setting
-        _input = State(initialValue: setting == .cacheSize
-            ? manager.maximumCacheGB.formatted(.number.grouping(.never).precision(.fractionLength(0...9)))
-            : String(manager.maximumTileAgeDays))
-    }
-
-    private var recommendedBytes: Int64? {
-        guard let free = manager.cacheStats.availableVolumeBytes else { return nil }
-        return min(1_000_000_000_000, manager.cacheStats.bytes + max(0, free) / 5 * 4)
-    }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                if setting == .cacheSize {
-                    Section {
-                        Text("Enter the combined map and terrain cache limit in decimal GB.")
-                        LabeledContent("Total used", value: AppleMapOfflineManager.formatBytes(manager.cacheStats.bytes))
-                        LabeledContent("Map imagery", value: AppleMapOfflineManager.formatBytes(manager.cacheStats.tileBytes))
-                        LabeledContent("Terrain", value: AppleMapOfflineManager.formatBytes(manager.cacheStats.demBytes))
-                        LabeledContent("Icons and elevation samples", value: AppleMapOfflineManager.formatBytes(manager.cacheStats.supportBytes))
-                        LabeledContent("Currently configured", value: AppleMapOfflineManager.formatBytes(Int64(manager.maximumCacheGB * 1_000_000_000)))
-                        LabeledContent("Available storage", value: manager.cacheStats.availableVolumeBytes.map(AppleMapOfflineManager.formatBytes) ?? "Unavailable")
-                        if let recommendedBytes {
-                            LabeledContent("Largest recommended maximum now", value: AppleMapOfflineManager.formatBytes(recommendedBytes))
-                            Button("Allow up to 80% of free space") {
-                                input = (Double(recommendedBytes / 1_000_000) / 1_000)
-                                    .formatted(.number.grouping(.never).precision(.fractionLength(0...3)))
-                                error = nil
-                            }
-                        }
-                    }
-                } else {
-                    Section {
-                        Text("Enter the maximum tile retention age in days.")
-                        LabeledContent("Currently configured", value: "\(manager.maximumTileAgeDays) days")
-                    }
-                }
-                Section {
-                    SettingsTextField(setting == .cacheSize ? "Max Cache Size" : "Maximum Tile Age", text: $input)
-                        .keyboardType(setting == .cacheSize ? .decimalPad : .numberPad)
-                        .focused($inputFocused)
-                        .accessibilityLabel(setting == .cacheSize ? "Cache size in decimal GB" : "Tile age in days")
-                    Text(setting == .cacheSize ? "Enter 0.1–1,000 GB." : "Enter 1–3,650 days.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    if let error { Text(error).foregroundStyle(.red) }
-                }
-            }
-            .navigationTitle(setting.title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button("Save", action: save) }
-            }
-            .task { manager.refreshStats(); inputFocused = true }
-        }
-    }
-
-    private func save() {
-        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        if setting == .cacheSize {
-            guard let value = Double(text.replacingOccurrences(of: ",", with: ".")), value.isFinite,
-                  (0.1...1_000).contains(value) else {
-                error = "Enter a cache size from 0.1 to 1,000 GB."
-                return
-            }
-            if let recommendedBytes, value > Double(recommendedBytes) / 1_000_000_000 {
-                error = "Requested size exceeds the recommended maximum of \(AppleMapOfflineManager.formatBytes(recommendedBytes))."
-                return
-            }
-            manager.maximumCacheGB = value
-        } else {
-            guard let days = Int(text), (1...3_650).contains(days) else {
-                error = "Enter a whole number of days from 1 to 3,650."
-                return
-            }
-            manager.maximumTileAgeDays = days
-        }
-        manager.saveSettings()
-        manager.refreshStats()
-        dismiss()
     }
 }
 
@@ -2343,6 +2171,22 @@ actor AppleSurfaceStore {
     private var regions: [(URL,RegionIndex)]?
     private var cachedTileURL: URL?
     private var cachedTile: OperationalSurfacePackage?
+    func clearPrepared() throws -> Int64 {
+        try AppleMapCacheAccess.synchronized {
+            guard AppleUnifiedMapCache.reservedBytes == 0 else { throw OperationalSurfacePreparationError.invalid("Wait for map downloads or preparation to finish.") }
+            let fm = FileManager.default
+            let files = (fm.enumerator(at: Self.root, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey])?.allObjects as? [URL]) ?? []
+            var removed: Int64 = 0
+            for url in files {
+                let info = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                if info.isRegularFile == true {
+                    try fm.removeItem(at: url); AppleUnifiedMapCache.forget(url); removed += Int64(info.fileSize ?? 0)
+                }
+            }
+            regions = nil; cachedTileURL = nil; cachedTile = nil
+            return removed
+        }
+    }
     private func catalog() -> [(URL,RegionIndex)] {
         if let regions { return regions }
         let root=Self.root.appendingPathComponent("sets")
@@ -2359,7 +2203,7 @@ actor AppleSurfaceStore {
         index.preparedAtEpochMs ?? Int64(dir.lastPathComponent.split(separator:"-").first.map(String.init) ?? "") ?? 0
     }
     func reusable(_ bounds: OperationalMapBounds) -> Bool {
-        let maxAge=Double(max(1,min(3650,UserDefaults.standard.object(forKey:"map.maximumTileAgeDays") as? Int ?? 365)))*86400
+        let maxAge=Double(OperationalMapTilePolicy.cacheAgeDays(UserDefaults.standard.object(forKey:"map.maximumTileAgeDays") as? Int ?? 365))*86400
         return catalog().contains { dir,index in
             let fresh=OperationalPreparedSurfaceSet.fresh(prepared:preparedAt(dir,index),now:Int64(Date().timeIntervalSince1970*1000),maxAge:Int64(maxAge*1000))
             let (west,south)=xy(.init(latitude:bounds.south,longitude:bounds.west),lat:index.originLatitude,lon:index.originLongitude)
@@ -2415,7 +2259,7 @@ actor AppleSurfaceStore {
             }
             let index=try JSONDecoder().decode(RegionIndex.self,from:data)
             guard (1...4000).contains(index.width),(1...4000).contains(index.height),(1...16).contains(index.entries.count),paths.count==index.entries.count+1 else { throw OperationalSurfacePreparationError.invalid("Invalid AOL set") }
-            let scratch=FileManager.default.temporaryDirectory.appendingPathComponent("aol-import-\(UUID().uuidString)")
+            let scratch=TemporaryWorkspace.root.appendingPathComponent("aol-import-\(UUID().uuidString)")
             let staged=scratch.appendingPathComponent(id)
             try FileManager.default.createDirectory(at:staged,withIntermediateDirectories:true)
             defer { try? FileManager.default.removeItem(at:scratch) }
@@ -2600,7 +2444,7 @@ actor AppleSurfacePreparationRunner {
         deleteStale(keepName: keep.map(OperationalSurfaceSourceReuse.workDirectoryName))
     }
     private func deleteStale(keepName: String?) {
-        OperationalSurfaceSourceReuse.deleteWorkDirectories(in:FileManager.default.temporaryDirectory,keepName:keepName)
+        OperationalSurfaceSourceReuse.deleteWorkDirectories(in:TemporaryWorkspace.root,keepName:keepName)
     }
     private static func sha256(_ file: URL) throws -> String {
         let handle=try FileHandle(forReadingFrom:file);defer { try? handle.close() }
@@ -2619,7 +2463,7 @@ actor AppleSurfacePreparationRunner {
         let fm=FileManager.default
         // One work folder per AOL selection keeps verified lidar files for a retry of the same selection.
         let scratchName=OperationalSurfaceSourceReuse.workDirectoryName(plan)
-        let scratch=fm.temporaryDirectory.appendingPathComponent(scratchName)
+        let scratch=TemporaryWorkspace.root.appendingPathComponent(scratchName)
         deleteStale(keepName:scratchName)
         var succeeded=false
         defer { if succeeded { try? fm.removeItem(at:scratch) } }
@@ -2747,21 +2591,140 @@ private final class AppleOfflineTiming {
 }
 
 
+private struct AppleMapStorageSnapshot: Sendable {
+    let cache: [Int64]
+    let local: [Int64]
+    let complete: Bool
+    let reserved: Int64
+    let free: Int64?
+    let flightUsed: Int64
+    let flightMaximum: Int64
+    var cacheBytes: Int64 { cache.reduce(0, +) }
+    var localBytes: Int64 { local.reduce(0, +) }
+}
+
+private actor AppleMapStorageReader {
+    static let shared = AppleMapStorageReader()
+    func read() throws -> AppleMapStorageSnapshot {
+        try Task.checkCancellation()
+        AppleMapCachePaths.prepare()
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let roots = AppleUnifiedMapCache.roots
+        let result = try MapStorageInventory.measure(roots.map { [$0] }, cancelled: { Task.isCancelled })
+        let local = try StorageCategoryReport.measure([
+            (.projects, support.appendingPathComponent("mapping-missions")),
+            (.layers, AppleMappingTileCache.root),
+            (.checkpoints, support.appendingPathComponent("mapping-processing"))
+        ], cancelled: { Task.isCancelled })
+        let free = try? AppleMapCachePaths.root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage
+        let flight = AppleFlightStorage.maintain(purge: false)
+        return AppleMapStorageSnapshot(cache: result.bytes, local: [.projects, .layers, .checkpoints].map { local.bytes[$0, default: 0] }, complete: result.complete && local.complete, reserved: AppleUnifiedMapCache.reservedBytes, free: free, flightUsed: flight.used, flightMaximum: AppleFlightStorage.maximumBytes)
+    }
+}
+
 struct AppleStorageCacheView: View {
-    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @ObservedObject var manager: AppleMapOfflineManager
-    @State private var editor: AppleMapCacheSetting?
+    @Environment(\.dismiss) private var dismiss
+    @State private var snapshot: AppleMapStorageSnapshot?
+    @State private var size = ""
+    @State private var days = ""
+    @State private var error: String?
+    @State private var clearAOLOnly: Bool?
+    @State private var clearing = false
+    private func gb(_ bytes: Int64) -> String { AppleMapOfflineManager.formatBytes(bytes) }
+    private var recommended: Int64? {
+        snapshot?.free.map { min(1_000_000_000_000, (snapshot?.cacheBytes ?? 0) + max(0, $0) / 5 * 4) }
+    }
     var body: some View {
-        List {
-            Text("Used: \(AppleMapOfflineManager.formatBytes(manager.cacheStats.bytes))")
-            Button("Max Size: \(String(format: "%.1f", manager.maximumCacheGB)) GB") { editor = .cacheSize }
-            Button("Max Age: \(manager.maximumTileAgeDays) days") { editor = .tileAge }
-            Text("Includes map imagery, terrain, AOL packages and supporting caches. AOL and active terrain are protected from ordinary trimming.")
-                .font(.footnote).foregroundStyle(.secondary)
+        Form {
+            if let snapshot {
+                Section("Cache usage") {
+                    LabeledContent("Used / maximum", value: "\(gb(snapshot.cacheBytes)) / \(gb(Int64(manager.maximumCacheGB * 1_000_000_000)))")
+                    LabeledContent("Map imagery", value: gb(snapshot.cache[1]))
+                    LabeledContent("Terrain files", value: gb(snapshot.cache[2]))
+                    LabeledContent("Decoded terrain", value: gb(snapshot.cache[3]))
+                    LabeledContent("AOL obstacle tiles", value: gb(snapshot.cache[0]))
+                    LabeledContent("Icons and elevation samples", value: gb(snapshot.cache[4]))
+                    LabeledContent("Total cache used", value: gb(snapshot.cacheBytes))
+                    LabeledContent("Downloads reserved", value: gb(snapshot.reserved))
+                }
+                Section("Local Maps") {
+                    LabeledContent("Projects, originals and project work", value: gb(snapshot.local[0]))
+                    LabeledContent("Map layers and models", value: gb(snapshot.local[1]))
+                    LabeledContent("Processing work", value: gb(snapshot.local[2]))
+                    LabeledContent("Total local maps", value: gb(snapshot.localBytes))
+                    if !snapshot.complete { Text("Some storage is unavailable; these figures are incomplete.") }
+                    LabeledContent("Total map storage", value: gb(snapshot.cacheBytes + snapshot.localBytes))
+                }
+                Section("Storage") {
+                    LabeledContent("Internal storage free", value: snapshot.free.map(gb) ?? "Unavailable")
+                    LabeledContent("Cache location", value: "Internal storage")
+                    LabeledContent("Cache storage free", value: snapshot.free.map(gb) ?? "Unavailable")
+                    LabeledContent("Currently configured", value: "\(gb(Int64(manager.maximumCacheGB * 1_000_000_000))), \(manager.maximumTileAgeDays) days")
+                    AppleStorageAllowanceRows(value: StorageAllocation(freeBytes: snapshot.free, cacheUsed: snapshot.cacheBytes, cacheMaximum: Int64(manager.maximumCacheGB * 1_000_000_000), flightUsed: snapshot.flightUsed, flightMaximum: snapshot.flightMaximum))
+                    if let recommended {
+                        LabeledContent("Largest recommended maximum now", value: gb(recommended))
+                        Button("Allow up to 80% of free space") { size = String(format: "%.2f", floor(Double(recommended) / 10_000_000) / 100); error = nil }
+                    }
+                }
+            } else { Section { if error == nil { ProgressView("Scanning storage…") } else { Text("Storage usage unavailable.") } } }
+            Section("Limits") {
+                TextField("Max Cache Size (GB)", text: $size).keyboardType(.decimalPad).accessibilityLabel("Max Cache Size (GB)")
+                TextField("Max Age (days)", text: $days).keyboardType(.numberPad).accessibilityLabel("Max Age (days)")
+                Text("Size applies to the combined caches. Age applies to downloaded map tiles. AOL and active terrain stay protected. Local Maps are shown separately and are not deleted by cache cleanup.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                if let error { Text(error).foregroundStyle(.red) }
+            }
+            .disabled(snapshot == nil)
+            Section("Cleanup") {
+                Button("Clear Unused Map Caches", role: .destructive) { clearAOLOnly = false }
+                Button("Delete Prepared AOL Data", role: .destructive) { clearAOLOnly = true }
+                if clearing { ProgressView("Clearing…") }
+            }.disabled(snapshot == nil || clearing || manager.isRunning)
         }
-        .navigationTitle("Cache Management")
-        .sheet(item: $editor) { AppleMapCacheSettingEditor(manager: manager, setting: $0) }
-        .onAppear { manager.refreshStats() }
+        .navigationTitle("Map Cache Management")
+        .alert(clearAOLOnly == true ? "Delete prepared AOL data?" : "Clear unused map caches?", isPresented: Binding(get: { clearAOLOnly != nil }, set: { if !$0 { clearAOLOnly = nil } })) {
+            Button("Cancel", role: .cancel) { clearAOLOnly = nil }
+            Button("Clear", role: .destructive) {
+                let onlyAOL = clearAOLOnly == true
+                clearAOLOnly = nil; clearing = true
+                Task {
+                    do {
+                        let job = Task.detached(priority: .utility) {
+                            if !onlyAOL { _ = try AppleUnifiedMapCache.clearUnused() }
+                            _ = try await AppleSurfaceStore.shared.clearPrepared()
+                            return try await AppleMapStorageReader.shared.read()
+                        }
+                        snapshot = try await job.value; manager.refreshStats(); error = nil
+                    } catch { self.error = error.localizedDescription }
+                    clearing = false
+                }
+            }
+        } message: { Text("Removes cached downloads and prepared AOL data. Local Maps, original photos and flight files remain. Active downloads and terrain stay protected.") }
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+            ToolbarItem(placement: .confirmationAction) { Button("Save", action: save).disabled(snapshot == nil) }
+        }
+        .task {
+            await manager.prepareStorageSettings()
+            guard !Task.isCancelled else { return }
+            size = manager.maximumCacheGB.formatted(.number.grouping(.never).precision(.fractionLength(0...3)))
+            days = String(manager.maximumTileAgeDays)
+            let job = Task.detached(priority: .utility) { try await AppleMapStorageReader.shared.read() }
+            do {
+                let result = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
+                guard !Task.isCancelled else { return }
+                snapshot = result
+            } catch is CancellationError {} catch { self.error = "Storage usage could not be read. Close and try again." }
+        }
+    }
+    private func save() {
+        guard let value = Double(size.replacingOccurrences(of: ",", with: ".")), value.isFinite, (0.1...1_000).contains(value),
+              let age = Int(days), (7...3_650).contains(age) else { error = "Enter 0.1–1,000 GB and 7–3,650 days."; return }
+        if let recommended, value > Double(recommended) / 1_000_000_000 { error = "Requested size exceeds the recommended maximum for this cache storage."; return }
+        manager.maximumCacheGB = value; manager.maximumTileAgeDays = age
+        manager.saveSettings(); manager.refreshStats(); dismiss()
     }
 }
 
@@ -2781,3 +2744,20 @@ private struct DownloadMapCheckbox: View {
         .accessibilityLabel(title).accessibilityValue(isOn ? "Selected" : "Not selected")
     }
 }
+
+#if DEBUG && targetEnvironment(simulator)
+struct AppleMapCacheUIProbe: View {
+    @StateObject private var manager = AppleMapOfflineManager()
+    @State private var open = false
+    var body: some View {
+        NavigationStack {
+            VStack {
+                Button("Open Map Cache Management") { open = true }
+                Text("Saved size: \(manager.maximumCacheGB)")
+                Text("Saved age: \(manager.maximumTileAgeDays)")
+            }
+            .navigationDestination(isPresented: $open) { AppleStorageCacheView(manager: manager) }
+        }
+    }
+}
+#endif

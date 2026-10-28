@@ -126,6 +126,7 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
     private long previousStatsAtMs;
     private long lastDiagnosticAtMs;
     private final AtomicBoolean closed = new AtomicBoolean(true);
+    private java.util.function.BooleanSupplier mediaAuthorized = () -> false;
     private Context applicationContext;
     private volatile boolean microphoneRequested;
     private volatile boolean microphoneRecording;
@@ -144,8 +145,11 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
             int height,
             double fps,
             long bitrateBps,
-            boolean deferredRecording) {
+            boolean deferredRecording,
+            @NonNull java.util.function.BooleanSupplier authorization) {
         closePeer();
+        mediaAuthorized = authorization;
+        if (!mediaAuthorized.getAsBoolean()) return false;
         playbackStartGate = new ManagedVideoPlaybackStartGate();
         requestId = offer.requestId;
         ffmpegSessionId = sessionId;
@@ -173,6 +177,7 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
             microphoneFailure = null;
             configureCommunicationAudio(applicationContext);
             initializeFactory(context.getApplicationContext());
+            if (!mediaAuthorized.getAsBoolean()) { closePeer(); return false; }
             PeerConnection.RTCConfiguration configuration =
                     new PeerConnection.RTCConfiguration(parseIceServers(offer.iceServers));
             configuration.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN;
@@ -481,7 +486,7 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
     private void onDecodedFrame(long sessionId, int width, int height, long timestampUs,
                                 @NonNull byte[] packedI420) {
         VideoSource source = videoSource;
-        if (closed.get() || source == null || sessionId != ffmpegSessionId) return;
+        if (closed.get() || !mediaAuthorized.getAsBoolean() || source == null || sessionId != ffmpegSessionId) return;
         int chromaWidth = (width + 1) / 2;
         int chromaHeight = (height + 1) / 2;
         int yBytes = width * height;
@@ -575,7 +580,7 @@ public final class ManagedVideoMediaPeer implements AutoCloseable {
                 + " ice=" + activePeer.iceGatheringState()
                 + " routableCandidate=" + hasRoutableCandidate
                 + " gathered=" + localIceCandidates.size());
-        sink.sendAnswer(requestId, completeDescription);
+        if (mediaAuthorized.getAsBoolean()) sink.sendAnswer(requestId, completeDescription);
     }
 
     private synchronized void failIfAnswerWasNotSent() {

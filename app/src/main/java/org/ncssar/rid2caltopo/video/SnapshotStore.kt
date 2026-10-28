@@ -48,17 +48,19 @@ data class AndroidClueRecord(
  * replaced atomically so a process death cannot leave a partially-written JSON document.
  */
 class AndroidClueStore private constructor(
-    private val root: File,
+    private var root: File,
     private val context: Context? = null,
 ) {
     constructor(context: Context) : this(File(context.applicationContext.filesDir, "clues"), context.applicationContext)
 
-    private val indexFile = File(root, "clues.json")
-    private val records = LinkedHashMap<String, AndroidClueRecord>()
-
-    init {
-        loadIndex()
-    }
+    private val indexFile get() = File(root, "clues.json")
+    private val storedRecords = LinkedHashMap<String, AndroidClueRecord>()
+    private var loaded = false
+    private val records: LinkedHashMap<String, AndroidClueRecord>
+        get() {
+            if (!loaded) try { loadIndex() } catch (error: Exception) { if (context == null) throw error }
+            return storedRecords
+        }
 
     @Synchronized
     fun recordsForMap(mapKey: String): List<AndroidClueRecord> =
@@ -101,8 +103,11 @@ class AndroidClueStore private constructor(
             uploadState = if (publishToCaltopo) "pending" else "local",
             binding = binding,
         )
+        val encodeStarted = System.nanoTime()
         val imageBytes = encodeJpeg(bitmap, 90)
         val thumbnailBytes = encodeJpeg(clueThumbnail(bitmap), 78)
+        if (context != null) org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("ClueStore",
+            "Save id=$id encodedMs=${(System.nanoTime() - encodeStarted) / 1_000_000}")
         saveEncoded(record, imageBytes, thumbnailBytes)
         return record
     }
@@ -113,6 +118,8 @@ class AndroidClueStore private constructor(
         imageBytes: ByteArray,
         thumbnailBytes: ByteArray,
     ) {
+        val started = System.nanoTime()
+        selectRoot()
         require(record.lat.isFinite() && record.lng.isFinite()) { "Clue location is invalid" }
         require(imageBytes.isNotEmpty()) { "Clue image is empty" }
         require(thumbnailBytes.isNotEmpty()) { "Clue thumbnail is empty" }
@@ -120,11 +127,18 @@ class AndroidClueStore private constructor(
         root.mkdirs()
         val imageFile = imageFile(record)
         val thumbnailFile = thumbnailFile(record)
+        val preparedAt = System.nanoTime()
         try {
             replaceFileAtomically(imageFile, imageBytes)
+            val imageAt = System.nanoTime()
             replaceFileAtomically(thumbnailFile, thumbnailBytes)
+            val thumbnailAt = System.nanoTime()
             records[record.id] = record
             persistIndex()
+            if (context != null) org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("ClueStore",
+                "Save id=${record.id} storageCheckMs=${(preparedAt - started) / 1_000_000} " +
+                    "imageMs=${(imageAt - preparedAt) / 1_000_000} thumbnailMs=${(thumbnailAt - imageAt) / 1_000_000} " +
+                    "indexMs=${(System.nanoTime() - thumbnailAt) / 1_000_000}")
         } catch (error: Exception) {
             records.remove(record.id)
             imageFile.delete()
@@ -138,8 +152,13 @@ class AndroidClueStore private constructor(
         val record = records.remove(id) ?: return false
         return try {
             persistIndex()
-            imageFile(record).delete()
-            thumbnailFile(record).delete()
+            if (context != null) {
+                org.ncssar.rid2caltopo.storage.OperationalStorage.remove(imageFile(record))
+                org.ncssar.rid2caltopo.storage.OperationalStorage.remove(thumbnailFile(record))
+            } else {
+                imageFile(record).delete()
+                thumbnailFile(record).delete()
+            }
             true
         } catch (error: Exception) {
             records[id] = record
@@ -222,14 +241,26 @@ class AndroidClueStore private constructor(
 
     @Synchronized
     private fun loadIndex() {
-        records.clear()
+        selectRoot()
+        org.ncssar.rid2caltopo.storage.OperationalStorage.requireFor(root)
+        loaded = true
+        storedRecords.clear()
         val text = runCatching { indexFile.readText() }.getOrNull() ?: return
         val array = runCatching { JSONArray(text) }.getOrNull() ?: return
         for (index in 0 until array.length()) {
             val json = array.optJSONObject(index) ?: continue
             val record = json.toAndroidClueRecord() ?: continue
-            if (imageFile(record).isFile) records[record.id] = record
+            if (imageFile(record).isFile) storedRecords[record.id] = record
         }
+    }
+
+    private fun selectRoot() {
+        val app = context ?: return
+        val next = if (org.ncssar.rid2caltopo.data.CaltopoClient.GetArchiveUri() == null) {
+            check(org.ncssar.rid2caltopo.data.CaltopoClient.HasArchiveDirForCurrentSession()) { "Choose Archive Dir before saving clues." }
+            org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(app, "clues")
+        } else File(app.filesDir, "clues")
+        if (next != root) { root = next; loaded = false }
     }
 
     @Synchronized

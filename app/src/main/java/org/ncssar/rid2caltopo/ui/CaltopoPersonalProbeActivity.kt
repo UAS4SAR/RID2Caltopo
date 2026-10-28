@@ -16,6 +16,7 @@ import okhttp3.Request
 import okhttp3.FormBody
 import org.ncssar.rid2caltopo.data.CaltopoPersonalMarkerTest as MarkerTest
 import org.ncssar.rid2caltopo.data.CaltopoPersonalProbe as Probe
+import org.ncssar.rid2caltopo.data.CaltopoEmbeddedSignInPolicy as SignInPolicy
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -104,12 +105,14 @@ class CaltopoPersonalProbeActivity : Activity() {
                     allowContentAccess = false
                     mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
                 }
-                browser.webViewClient = object : WebViewClient() {
+                browser.webViewClient = object : CaltopoSignInWebViewClient({
+                    Session.status = SignInPolicy.BLOCKED_MESSAGE
+                    loadFailed.set(true)
+                    finished.countDown()
+                }) {
                     override fun onReceivedError(view: WebView, request: WebResourceRequest, error: android.webkit.WebResourceError) {
                         if (request.isForMainFrame) { loadFailed.set(true); finished.countDown() }
                     }
-                    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
-                        request.url.scheme != "https"
                 }
                 browser.loadUrl(Probe.ORIGIN)
                 val discover = object : Runnable {
@@ -145,7 +148,7 @@ class CaltopoPersonalProbeActivity : Activity() {
             val observation = Session.grants.observationTicket()
             val accountID = identity.accountID ?: throw org.ncssar.rid2caltopo.data.PersonalCaltopoLoginRequired()
             require(accountID.matches(Regex("[A-Za-z0-9]+")))
-            val url = "https://caltopo.com/sideload/account/$accountID.json?json=%7Bfull%3A%20true%7D"
+            val url = Probe.accountEndpoint(accountID)
             val cookie = CookieManager.getInstance().getCookie(url).orEmpty()
             if (cookie.isBlank()) throw org.ncssar.rid2caltopo.data.PersonalCaltopoLoginRequired()
             val client = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
@@ -158,9 +161,7 @@ class CaltopoPersonalProbeActivity : Activity() {
                 check(it.isSuccessful) { "Personal maps request returned HTTP ${it.code}." }
                 it.body?.string() ?: error("Empty account response")
             }
-            val username = org.ncssar.rid2caltopo.data.CaltopoPersonalCatalog.account(body).optString("username").trim()
-            check(username.isNotEmpty()) { "CalTopo account response has no username." }
-            val json = org.ncssar.rid2caltopo.data.CaltopoPersonalCatalog.normalize(body, accountID, username)
+            val json = org.ncssar.rid2caltopo.data.CaltopoPersonalCatalog.normalize(body, accountID)
             val features = json.getJSONArray("features")
             val ids = (0 until features.length()).map { features.getJSONObject(it) }
                 .filter { it.getJSONObject("properties").optString("class") == "CollaborativeMap" }
@@ -231,6 +232,15 @@ class CaltopoPersonalProbeActivity : Activity() {
         }
         fun label(text: String) = TextView(this).apply { this.text = text; setTextColor(Color.BLACK); root.addView(this) }
         label("Personal CalTopo login")
+        label("Use CalTopo email/password here. Google sign-in is blocked; saved CalTopo sessions are kept.")
+        root.addView(LinearLayout(this).apply {
+            addView(Button(this@CaltopoPersonalProbeActivity).apply {
+                text = "Email/password setup"; setOnClickListener { showEmailSetup() }
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(Button(this@CaltopoPersonalProbeActivity).apply {
+                text = "Email/password login"; setOnClickListener { openEmailLogin() }
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+        })
         label(if (intent.getBooleanExtra("catalog", false)) "Sign in or open a CalTopo invitation. Load maps or Close continues to your map list after sign-in." else "Sign in or open a CalTopo invitation. Close keeps your login.")
         val linkRow = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL; root.addView(this) }
         val link = object : EditText(this) {
@@ -327,14 +337,18 @@ class CaltopoPersonalProbeActivity : Activity() {
             settings.allowFileAccess = false
             settings.allowContentAccess = false
             settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
-            webViewClient = object : WebViewClient() {
+            webViewClient = object : CaltopoSignInWebViewClient({
+                Session.status = SignInPolicy.BLOCKED_MESSAGE
+                status.text = Session.status
+                showEmailSetup()
+            }) {
                 override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                    if (SignInPolicy.isGoogleSignIn(url)) { view.stopLoading(); return }
                     Session.keyboardRequestedByTouch = false
                     Session.grants.beginObservation()
                 }
-                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
-                    request.url.scheme != "https"
                 override fun onPageFinished(view: WebView, url: String) {
+                    if (SignInPolicy.isGoogleSignIn(url)) return
                     origin.text = runCatching { val u = java.net.URI(url); "${u.scheme}://${u.host ?: ""}" }.getOrDefault("")
                     CookieManager.getInstance().flush()
                     observeAccountChange()
@@ -417,6 +431,32 @@ class CaltopoPersonalProbeActivity : Activity() {
         }
     }
 
+    private var emailSetupDialog: android.app.AlertDialog? = null
+
+    private fun openEmailLogin() {
+        if (publishing || selecting) return
+        Session.status = "Use CalTopo’s email/password option. Your existing saved session is kept."
+        status.text = Session.status
+        web.loadUrl(SignInPolicy.LOGIN_URL)
+    }
+
+    private fun openSystemBrowser(url: String) {
+        try { startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))) }
+        catch (_: android.content.ActivityNotFoundException) { status.text = "No system browser is available. Open caltopo.com/join in your browser." }
+    }
+
+    private fun showEmailSetup() {
+        if (isFinishing || isDestroyed || emailSetupDialog?.isShowing == true) return
+        emailSetupDialog = android.app.AlertDialog.Builder(this)
+            .setTitle("CalTopo email/password")
+            .setMessage(SignInPolicy.SETUP_INSTRUCTIONS)
+            .setPositiveButton("Open setup in browser") { _, _ -> openSystemBrowser(SignInPolicy.SETUP_URL) }
+            .setNeutralButton("Email/password login") { _, _ -> openEmailLogin() }
+            .setNegativeButton("Close", null).show().also { dialog ->
+                dialog.window?.let(org.ncssar.rid2caltopo.app.UserInteractionTracker::observe)
+            }
+    }
+
     @Deprecated("Activity result compatibility with the existing QR scanner")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
         val result = com.google.zxing.integration.android.IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
@@ -485,12 +525,17 @@ class CaltopoPersonalProbeActivity : Activity() {
         val identitySnapshot = Session.grants.snapshot()
         status.text = "Connecting to personal incident map $id…"
         worker.execute {
-            val readable = cookie.isNotBlank() && runCatching { fetch(url, cookie).readable }.getOrDefault(false)
+            // Use the same account-bound catalog grants as the native map picker.
+            // The operational open performs the single initial full-map read.
+            val catalog = if (cookie.isNotBlank()) runCatching { org.json.JSONObject(catalog()) }.getOrNull() else null
+            val grant = catalog?.takeIf { it.optString("accountID") == identitySnapshot.accountID }
+                ?.optJSONObject("grants")?.optString(id)?.takeIf { it.isNotBlank() }
+            val readable = grant != null
             runOnUiThread {
                 if (!isDestroyed && attempt == generation) {
                     if (readable && identitySnapshot.accountID != null && Session.grants.current(identitySnapshot)) {
                         CookieManager.getInstance().flush()
-                        Session.token = Session.grants.publish(identitySnapshot, listOf(id)).getValue(id)
+                        Session.token = requireNotNull(grant)
                         setResult(RESULT_OK, android.content.Intent().putExtra("map", id).putExtra("session", Session.token))
                         finish()
                     } else {
@@ -518,6 +563,7 @@ class CaltopoPersonalProbeActivity : Activity() {
         val cookies = paths.associateWith { CookieManager.getInstance().getCookie(Probe.ORIGIN + it).orEmpty() }
         if (cookies.values.any { it.isBlank() }) { status.text = "Sign in to CalTopo first."; return }
         val attempt = generation
+        val identity = Session.grants.snapshot()
         publishing = true
         check.isEnabled = false
         publish.isEnabled = false
@@ -526,8 +572,17 @@ class CaltopoPersonalProbeActivity : Activity() {
             val message = try {
                 MarkerTest.run(id, cleanup, send = { method, path, payload ->
                     if (attempt != generation || Thread.currentThread().isInterrupted) throw InterruptedException()
+                    val budget = if (org.ncssar.rid2caltopo.data.CaltopoFullMapReads.isFullMapRead(method, path))
+                        org.ncssar.rid2caltopo.data.CaltopoFullMapReads.acquire(applicationContext,
+                            org.ncssar.rid2caltopo.data.CaltopoFullMapReads.mapKey(Probe.ORIGIN, path),
+                            java.util.function.BooleanSupplier { attempt != generation || !Session.grants.current(identity) }) else null
+                    budget.use {
+                    if (attempt != generation || Thread.currentThread().isInterrupted ||
+                        !Session.grants.current(identity) || !verifyBrowserIdentity()) throw InterruptedException()
+                    val freshCookie = CookieManager.getInstance().getCookie(Probe.ORIGIN + path).orEmpty()
+                    kotlin.check(freshCookie.isNotBlank()) { "Personal login expired." }
                     val request = Request.Builder().url(Probe.ORIGIN + path)
-                        .header("Cookie", cookies.getValue(path)).header("Accept", "application/json")
+                        .header("Cookie", freshCookie).header("Accept", "application/json")
                         .header("Cache-Control", "no-store").header("Origin", Probe.ORIGIN)
                         .header("Referer", Probe.ORIGIN + "/m/" + MarkerTest.MAP)
                         .header("User-Agent", "RID2Caltopo-PersonalSession-Experiment")
@@ -535,6 +590,7 @@ class CaltopoPersonalProbeActivity : Activity() {
                     request.method(method, body)
                     client.newCall(request.build()).execute().use { reply ->
                         MarkerTest.Reply(reply.code, reply.body?.string().orEmpty())
+                    }
                     }
                 }, savePending = { markerID ->
                     kotlin.check(pending.edit().putString("markerID", markerID).commit()) { "Unable to save cleanup record; no marker was sent." }
@@ -558,11 +614,23 @@ class CaltopoPersonalProbeActivity : Activity() {
     }
 
     private fun fetch(url: String, cookie: String?): Probe.Result {
-        val request = Request.Builder().url(url).header("Accept", "application/json")
-            .header("Cache-Control", "no-store").header("User-Agent", "RID2Caltopo-PersonalSession-Experiment")
-        cookie?.let { request.header("Cookie", it) }
-        return client.newCall(request.build()).execute().use { response ->
-            Probe.result(response.code, response.body?.string().orEmpty())
+        val identity = Session.grants.snapshot()
+        val attempt = generation
+        return org.ncssar.rid2caltopo.data.CaltopoFullMapReads.acquire(applicationContext,
+            org.ncssar.rid2caltopo.data.CaltopoFullMapReads.mapKey(Probe.ORIGIN, android.net.Uri.parse(url).path!!),
+            java.util.function.BooleanSupplier { attempt != generation }).use {
+            if (attempt != generation || Thread.currentThread().isInterrupted) throw InterruptedException()
+            val request = Request.Builder().url(url).header("Accept", "application/json")
+                .header("Cache-Control", "no-store").header("User-Agent", "RID2Caltopo-PersonalSession-Experiment")
+            if (cookie != null) {
+                kotlin.check(Session.grants.current(identity) && verifyBrowserIdentity()) { "Personal account changed during reload wait." }
+                val fresh = CookieManager.getInstance().getCookie(url).orEmpty()
+                kotlin.check(fresh.isNotBlank()) { "Personal login expired." }
+                request.header("Cookie", fresh)
+            }
+            client.newCall(request.build()).execute().use { response ->
+                Probe.result(response.code, response.body?.string().orEmpty())
+            }
         }
     }
 
@@ -594,6 +662,8 @@ class CaltopoPersonalProbeActivity : Activity() {
     }
 
     override fun onDestroy() {
+        emailSetupDialog?.dismiss()
+        emailSetupDialog = null
         generation++
         client.dispatcher.cancelAll()
         worker.shutdownNow()
@@ -603,7 +673,7 @@ class CaltopoPersonalProbeActivity : Activity() {
         Session.onReady = null
         (web.parent as? ViewGroup)?.removeView(web)
         // Detach every Activity reference, but retain page/JS state and cookies.
-        web.webViewClient = WebViewClient()
+        web.webViewClient = CaltopoSignInWebViewClient { Session.status = SignInPolicy.BLOCKED_MESSAGE }
         web.setOnTouchListener(null)
         Session.context?.baseContext = applicationContext
         super.onDestroy()

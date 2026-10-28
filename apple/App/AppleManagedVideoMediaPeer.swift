@@ -78,6 +78,8 @@ final class AppleManagedVideoMediaPeer: NSObject, @unchecked Sendable {
         self.readySink = readySink
     }
 
+    private var mediaAuthorized: @Sendable () -> Bool = { false }
+
     func start(
         requestID: String,
         offerSDP: String,
@@ -85,9 +87,11 @@ final class AppleManagedVideoMediaPeer: NSObject, @unchecked Sendable {
         width: Int,
         height: Int,
         fps: Double,
-        bitrateBps: Int64
+        bitrateBps: Int64,
+        authorization: @escaping @Sendable () -> Bool
     ) {
         queue.async { [weak self] in
+            guard authorization() else { return }
             self?.startOnQueue(
                 requestID: requestID,
                 offerSDP: offerSDP,
@@ -95,7 +99,8 @@ final class AppleManagedVideoMediaPeer: NSObject, @unchecked Sendable {
                 width: width,
                 height: height,
                 fps: fps,
-                bitrateBps: bitrateBps
+                bitrateBps: bitrateBps,
+                authorization: authorization
             )
         }
     }
@@ -135,6 +140,7 @@ final class AppleManagedVideoMediaPeer: NSObject, @unchecked Sendable {
     }
 
     private func setMicrophoneEnabledOnQueue(_ enabled: Bool) {
+        if enabled && !mediaAuthorized() { closeOnQueue(); return }
         guard audioSender != nil, let audioTrack else {
             microphoneStateSink(requestID, false, "VoIP audio path unavailable")
             return
@@ -155,9 +161,12 @@ final class AppleManagedVideoMediaPeer: NSObject, @unchecked Sendable {
         width: Int,
         height: Int,
         fps: Double,
-        bitrateBps: Int64
+        bitrateBps: Int64,
+        authorization: @escaping @Sendable () -> Bool
     ) {
         closeOnQueue()
+        mediaAuthorized = authorization
+        guard mediaAuthorized() else { return }
         playbackStartGate = ManagedVideoPlaybackStartGate()
         configureWebRTCAudioRoutingOnQueue(microphoneEnabled: false)
         self.requestID = requestID
@@ -216,6 +225,7 @@ final class AppleManagedVideoMediaPeer: NSObject, @unchecked Sendable {
         peer.setRemoteDescription(offer) { [weak self] error in
             guard let self else { return }
             self.queue.async {
+                guard self.mediaAuthorized(), self.peer === peer else { self.closeOnQueue(); return }
                 if let error {
                     self.failOnQueue("Unable to apply the browser media offer: \(Self.describe(error))")
                     return
@@ -258,12 +268,14 @@ final class AppleManagedVideoMediaPeer: NSObject, @unchecked Sendable {
                 }
                 peer.answer(for: constraints) { answer, error in
                     self.queue.async {
+                        guard self.mediaAuthorized(), self.peer === peer else { self.closeOnQueue(); return }
                         guard error == nil, let answer else {
                             self.failOnQueue("Unable to create the media answer\(Self.errorSuffix(error))")
                             return
                         }
                         peer.setLocalDescription(answer) { error in
                             self.queue.async {
+                                guard self.mediaAuthorized(), self.peer === peer else { self.closeOnQueue(); return }
                                 if let error {
                                     self.failOnQueue("Unable to apply the media answer: \(Self.describe(error))")
                                 } else {
@@ -333,6 +345,7 @@ final class AppleManagedVideoMediaPeer: NSObject, @unchecked Sendable {
         let transfer = AppleManagedVideoPixelBuffer(value: pixelBuffer)
         queue.async { [weak self, transfer] in
             guard let self else { return }
+            guard self.mediaAuthorized() else { self.closeOnQueue(); return }
             self.decodedFramesReceived += 1
             guard let capturer, let videoSource, self.videoTrack?.isEnabled == true else {
                 self.framesDroppedBeforeReady += 1
@@ -408,6 +421,7 @@ final class AppleManagedVideoMediaPeer: NSObject, @unchecked Sendable {
     }
 
     private func maybeSendAnswerOnQueue(allowPartialGathering: Bool = false) {
+        guard mediaAuthorized() else { closeOnQueue(); return }
         guard !answerSent,
               let peer,
               allowPartialGathering || peer.iceGatheringState == .complete,
@@ -626,6 +640,7 @@ extension AppleManagedVideoMediaPeer: RTCPeerConnectionDelegate {
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCPeerConnectionState) {
         queue.async { [weak self] in
             guard let self, self.peer === peerConnection else { return }
+            guard self.mediaAuthorized() else { self.closeOnQueue(); return }
             // ICE alone does not establish the DTLS media transport. Start a
             // finite recording only after the whole connection is ready.
             if self.playbackStartGate.shouldStart(connected: newState == .connected) {

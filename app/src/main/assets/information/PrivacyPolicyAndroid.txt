@@ -1,0 +1,105 @@
+RID2Caltopo Privacy Policy
+
+Last updated: October 27, 2026
+
+RID2Caltopo is a drone-centric incident-support application. This policy covers the mobile application's handling of operational data, media, configuration, and diagnostics. It contains no advertising, does not track people across apps or websites for advertising, and does not sell personal data. Local analysis is performed on the device; it does not send images or audio to a third-party AI service for analysis.
+
+Optional CalTopo, tracker, controller, and cloud-backup integrations exchange data as described below. Organizations may use a managed tracker or operate their own tracker; the selected service operator controls that service's access and retention.
+
+The in-app About & Privacy panel summarizes these practices; this policy provides the fuller account of data use, recipients, retention, and deletion.
+
+Data used on the device
+
+• Bluetooth and compatible external-network Remote ID observations are decoded to display nearby aircraft and create local track archives.
+
+• Location permission places the operator relative to aircraft on the map and supports configured tracker coordination. Operating-system settings control access to this device's location. Withdrawing location permission stops the app's use of the device's current and cached operator location. It does not delete information already shared with a service.
+
+• Aircraft positions, flight tracks and geotagged clues can come from Remote ID broadcasts or controller/video telemetry independently of this device's location permission. Disabling device location does not remove coordinates from incoming aircraft observations or existing media. Location is not used for advertising or cross-app tracking.
+
+• Local-network access is used for controller video, mapping missions and original photographs, optional external Remote ID observations, map tile packages, and configured incident coordination services.
+
+• Camera access scans configuration codes and aircraft serial numbers.
+
+• Microphone permission supports optional VoIP with an authorized remote viewer. Sending microphone audio requires its separate operator control and system permission; ordinary Remote ID reception and local video analysis do not require it. Incoming controller media can already contain audio independently of this device's microphone.
+
+• Tracker enrollment QR links let each device obtain its own authorized access. Map-package QR codes transfer map data. Credentials obtained through authorized services remain saved in device-private storage and are reused across app restarts and updates. Excluding credentials from settings backups does not clear them from the device or require reentry for each connection.
+
+• Optional personal CalTopo sign-in uses an embedded browser. Google authorization is blocked inside that browser. Email/password setup opens CalTopo in the system browser; after setup, return and enter the CalTopo credentials on CalTopo’s page inside the app. System-browser login cookies are not transferred into this app. Existing CalTopo sessions are retained until explicitly cleared or expired. Information entered on the sign-in page goes to CalTopo or the sign-in provider you select. The app's persistent, private browser profile retains CalTopo session cookies and identity-provider sign-in state until cleared in the app or expired by the provider. These browser records use operating-system storage protection; they are not a separate application-encrypted credential vault. Clear login removes this app's retained CalTopo browser session on this device. Authorized native requests use the selected account's session to load maps and publish operator-requested tracks or photo clues to CalTopo.
+
+• When tracker peer coordination is configured, the app uses a device identifier and device name to coordinate aircraft ownership with other RID2Caltopo instances.
+
+• Local video recordings, captured clue photographs, annotations, original mapping photographs, reconstructed maps, regional 3D surfaces, and terrain/cache data can be stored on the device. Original photographs and video can contain capture time, coordinates, aircraft identifiers, camera pose, and other embedded metadata. Local mapping and anomaly analysis do not themselves require uploading this material to a reconstruction or AI service.
+
+Network services
+
+CalTopo and tracker coordination
+
+CalTopo publishing is disabled until it is configured and enabled by the operator. When enabled, aircraft positions, track information, and associated telemetry are sent to the operator-selected CalTopo map. Operator-requested photo clues can include the selected image, annotation, time, and coordinates. Track camera links can refer to tracker-hosted preview thumbnails. CalTopo map owners and users with permission to administer a map control its sharing and membership settings. RID2Caltopo publishes to the operator-selected map using the access granted by CalTopo and does not change that map's public/private visibility or membership. A shared or public map can expose its contents to people beyond the local field team.
+
+When tracker peer coordination is configured and enabled, it sends the device identifier, device name, operator position, confirmed drone identity, and aircraft sightings to the configured tracker. Configured team-track uploads can also send completed flight records, including pilot/owner names, callsigns, organization, aircraft details, timestamps, and geographic tracks. These support shared records and prevent duplicate ownership, publication, or warnings. The service may retain device/account identifiers, enrollment state, access decisions, session history, and operational usage records. An organization can configure its flight-record dashboard as restricted or public; check its policy before sending incident or personal information.
+
+Remote video, previews, audio, and recording transfers
+
+When connected to configured tracker coordination, the app can advertise a catalog of available streams and recordings, including incident/device/aircraft labels, session identifiers, times, duration, media size/format, and preview thumbnails. Thumbnails and catalog information can reach the tracker and authorized viewers before approval of a full video session. Associated thumbnails/links can also be used on a configured CalTopo map. Disabling Remote Video Control alone does not disable this catalog and preview exchange.
+
+By default, starting a full remote viewing session requires field-operator approval. If the operator enables Remote Video Control, authorized requesters can start sessions and choose quality without an approval prompt for each request. Recording-file transfers use the request's consent mode and can proceed without a separate prompt under enabled remote control. The app also checks the current local Remote Video Control setting before automatically starting media or a recording transfer. Saving this setting as off revokes automatic grants and cancels the sessions/transfers using them. Requests approved individually remain approved. Turning the setting back on does not reactivate a revoked grant. These controls do not recall data already delivered. The outgoing microphone track starts muted and requires its own operator control and system permission before sending voice. Muting stops outgoing voice while incoming sound can continue. Permission to view video does not itself unmute the outgoing track.
+
+Managed viewing uses WebRTC with tracker signaling and configured connectivity or relay services. Session setup can exchange network addresses, connection candidates, requester identity, authorization decisions, and link-quality estimates before media starts. A link test sends probe data rather than camera or microphone content. Media can pass through a relay. The tracker/service infrastructure can retain request/session records and performance or usage diagnostics, such as route type, estimated bandwidth, and transfer status. These are used to operate, secure, troubleshoot, and manage service capacity, not for advertising.
+
+An approved recording download uploads the selected file to the configured tracker for delivery to the requester when that service enables downloads. The file can include controller-source audio and embedded telemetry. A service may temporarily store it to complete delivery and clean up expired transfers. We do not promise a fixed deletion period for every deployment. Recipients can retain downloaded or independently recorded copies; stopping a session or deleting a local file does not recall them. VoIP microphone audio is separate from the controller-source recording path.
+
+Controller mission and photo transfer
+
+Optional mapping integration uses DJI Pilot 2 Open Platforms / Cloud API interfaces or the app's local browser-transfer page. The app can send mission boundaries, waypoint routes, capture settings, and workspace details to the selected controller and receive device/aircraft identifiers, connection status, telemetry, and original photographs with their metadata. The app hosts local transfer services and stores the returned originals and reconstructed results on the device. Starting this workflow does not itself upload the photographs to a remote reconstruction service.
+
+Controller video and some local transfer modes use unencrypted local-network protocols; use a network appropriate for the sensitivity of the material.
+
+Maps, airspace, land information, and configuration hosts
+
+When nearby NOTAM monitoring is enabled, the app sends the operator's current latitude, longitude, and selected search radius to the configured tracker. The tracker authenticates to the FAA NOTAM service, forwards the geographic query, and returns the FAA response to the app. RID2Caltopo does not send FAA client credentials from the app or request an FAA bearer token. The tracker may cache the FAA response briefly for a small geographic area.
+
+Map layers contact their selected providers, including OpenStreetMap, Esri World Imagery and USGS, to load content for the displayed area. Tile or map requests reveal the requested area and the network address used to contact the provider. Esri contributor credits use a bundled catalog and may refresh a global attribution catalog from static.arcgis.com; that metadata request contains no operator coordinate or viewport. Public OSM and Esri basemap bulk downloads and raw-tile package exports are disabled. Interactive viewing remains available. Selected permitted map-package transfers and settings backup/restore can contact the host or backup service chosen for that transfer.
+
+When protected-land checks are enabled, the app sends a small geographic search area around the operator's current location to public National Park Service, U.S. Fish and Wildlife Service, U.S. Forest Service, and Colorado Parks and Wildlife boundary services. The returned nearby boundaries are cached locally for offline field reference. RID2Caltopo does not send an identity or aircraft track with these boundary requests. Terrain, map, FAA, and land-information coverage varies by provider and region; US-specific datasets are not worldwide flight authorization.
+
+Files and diagnostic sharing
+
+Local recordings, originals, maps, archives, and logs are stored subject to the app's storage/retention settings and available capacity. Capture Streams controls local controller recording and is enabled by default. Captured controller recordings can include source audio; this does not imply that the device's VoIP microphone is being recorded. Disabling capture does not erase existing recordings. Configured team-track upload, catalog previews, remote viewing/download, and explicit export are separate sharing paths.
+
+Restrict media server access is enabled by default. If the operator disables it, other devices on the reachable local network can access the media server's viewing interfaces without the tracker approval flow. This setting is separate from managed remote viewing authorization.
+
+Map-package exports contain permitted cached contour/terrain data, reconstructed mapping results and associated metadata, without credential profiles. Public OSM and Esri basemap tiles are excluded. They are sent through the selected transfer/share workflow. Recipients can retain copies; map packages are not promised to be encrypted. Older packages with credential profiles are rejected rather than installing their access information.
+
+App-created settings backups contain supported settings and aircraft mappings, without CalTopo, tracker or FAA credentials, enrollment links or access profiles. Restoring older settings backups filters out those fields as well. Existing credentials on the receiving installation are preserved; a new device must enroll and sign in. System backup behavior is described under saved credentials and backups below.
+
+When sending diagnostics to the developer, the operator can select log days, create a diagnostic bundle, and choose a recipient through the platform share sheet. Diagnostic log messages are filtered to remove location details. JSON track files, which contain aircraft positions, are excluded unless the operator explicitly chooses to include them. A shared bundle may contain Remote IDs, the device identifier, app events, device and operating-system details, local-network addresses, operational status, timing/frame/drop/connection diagnostics, and selected flight records. If sent to support, the recipient also receives the sender's email/name and any description or attachments they include. The diagnostic bundle selects logs and optional track files, not saved-configuration files. Configuration diagnostic reports omit credential secrets. Settings backups also exclude access credentials; managed enrollment and sign-in establish access. Nothing is transmitted by the log sharing feature until the operator sends the message or chooses a share destination. CalTopo publishing, tracker coordination, and video sharing operate separately according to their own settings.
+
+Retention and deletion
+
+The app retains map cache tiles, diagnostic and track logs, clue pictures, recordings, original mapping photographs and generated mapping results. Manage Storage shows retained storage and offers the controls available for each category, including size and age settings for map cache and flight storage. Automatic cleanup removes eligible files according to those settings; it is not a promise that every file will be removed at a fixed time.
+
+Deleting a local recording, track, photograph or map does not delete a copy already sent to CalTopo, a tracker, a controller, a viewer or another recipient. Those copies follow the recipient's or service operator's retention and deletion process. Ask the operator of the selected service about its stored records. Turning off a sharing feature does not recall data already delivered.
+
+Permissions for location, camera and microphone can be changed in system settings. Microphone transmission also has its own in-app control. Review the separate catalog/preview, full-session, recording-transfer and local media-server controls described above; they govern different sharing paths.
+
+For diagnostic bundles or correspondence received by the developer, contact help@uas4sar.com to ask about retention or request deletion. Identify the correspondence or bundle without sending an additional copy of sensitive operational data unless needed. The developer cannot recall another recipient's copy or delete records controlled by an independently operated service.
+
+Analytics and crash reporting
+
+The app uses Firebase Analytics and Crashlytics. Analytics receives app events and configuration state. Events can include the selected map name, configuration choices, and mapped Remote ID/aircraft identifiers. The app disables advertising-identifier collection; these events are used for operational diagnostics, not advertising. Firebase can also collect app-instance, device, and usage information through its SDK. Crashlytics receives crash reports and device/app diagnostic information, including native crash reports. These service exchanges are separate from the operator-selected log-sharing workflow. Retention and deletion of records held by Firebase services are not controlled by deleting local log files.
+
+Google describes SDK data handling in its Firebase data-disclosure guide (https://firebase.google.com/docs/android/play-data-disclosure) and Firebase privacy information (https://firebase.google.com/support/privacy).
+
+Saved credentials and backups
+
+CalTopo and tracker credentials are stored in the app's private configuration.
+
+Google Drive settings backup uses the selected account. Android system backup and device transfer select only the sanitized settings snapshot, not the live credential-bearing configuration file. That snapshot does not include local recordings, original imagery, map tiles or mission files. Backups held by Google Drive or the system backup service remain until removed from that service; deleting local app files does not remove those copies.
+
+Voice microphone control
+
+When the microphone switch is off, the app mutes outgoing voice and also disables microphone capture for the voice connection. Incoming sound can continue.
+
+Contact
+
+Questions about this policy or deletion of a diagnostic bundle can be sent to help@uas4sar.com (mailto:help@uas4sar.com).

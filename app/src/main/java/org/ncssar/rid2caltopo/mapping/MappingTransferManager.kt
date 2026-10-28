@@ -63,12 +63,14 @@ object MappingTransferManager {
                 }
             }
         }
-        MappingPhotoStore.writeJson(File(directory, "mission.json"), value)
         File(directory, "boundary.kml").writeText(boundary)
+        org.ncssar.rid2caltopo.storage.OperationalStorage.retain(File(directory, "boundary.kml"))
+        MappingPhotoStore.writeJson(File(directory, "mission.json"), value)
         open(app, host, value, boundary, directory)
     }
 
     @Synchronized fun resume(context: Context, id: String) {
+        org.ncssar.rid2caltopo.storage.OperationalStorage.requireReady(context)
         MappingFlightDeletion.requireAvailable()
         require(java.util.UUID.fromString(id).toString() == id) { "Invalid saved mission." }
         val directory = File(context.filesDir, "mapping-missions/$id")

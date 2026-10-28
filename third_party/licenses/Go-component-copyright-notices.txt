@@ -1,0 +1,1719 @@
+Copyright and license comment blocks retained from the actual Go1.25.6 ios/arm64 package source graph used by the reviewed MediaMTX bridge. The standard Go BSD license and module license files apply separately.
+
+Source: MediaMTX/vendor/github.com/matthewhartstonge/argon2/argon2.go, MediaMTX/vendor/github.com/matthewhartstonge/argon2/encoding.go, MediaMTX/vendor/github.com/matthewhartstonge/argon2/error.go
+/*
+ * Copyright 2022. Matthew Hartstonge <matt@mykro.co.nz>
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+Source: MediaMTX/vendor/github.com/gabriel-vasile/mimetype/internal/json/json.go
+// Copyright (c) 2009 The Go Authors. All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are
+// met:
+//
+//    * Redistributions of source code must retain the above copyright
+// notice, this list of conditions and the following disclaimer.
+//    * Redistributions in binary form must reproduce the above
+// copyright notice, this list of conditions and the following disclaimer
+// in the documentation and/or other materials provided with the
+// distribution.
+//    * Neither the name of Google Inc. nor the names of its
+// contributors may be used to endorse or promote products derived from
+// this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Source: MediaMTX/vendor/github.com/ugorji/go/codec/0_importpath.go
+// Copyright (c) 2012-2018 Ugorji Nwoke. All rights reserved.
+// Use of this source code is governed by a MIT license found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/ugorji/go/codec/base.fastpath.generated.go, MediaMTX/vendor/github.com/ugorji/go/codec/binc.base.go, MediaMTX/vendor/github.com/ugorji/go/codec/binc.fastpath.mono.generated.go, MediaMTX/vendor/github.com/ugorji/go/codec/binc.mono.generated.go, MediaMTX/vendor/github.com/ugorji/go/codec/cbor.base.go, MediaMTX/vendor/github.com/ugorji/go/codec/cbor.fastpath.mono.generated.go, MediaMTX/vendor/github.com/ugorji/go/codec/cbor.mono.generated.go, MediaMTX/vendor/github.com/ugorji/go/codec/custom_time.go, MediaMTX/vendor/github.com/ugorji/go/codec/decimal.go, MediaMTX/vendor/github.com/ugorji/go/codec/decode.base.go, MediaMTX/vendor/github.com/ugorji/go/codec/doc.go, MediaMTX/vendor/github.com/ugorji/go/codec/encode.base.go, MediaMTX/vendor/github.com/ugorji/go/codec/goversion_swissmap_unsafe.go, MediaMTX/vendor/github.com/ugorji/go/codec/helper.go, MediaMTX/vendor/github.com/ugorji/go/codec/helper_unsafe.go, MediaMTX/vendor/github.com/ugorji/go/codec/helper_unsafe_compiler_gc.go, MediaMTX/vendor/github.com/ugorji/go/codec/init.mono.go, MediaMTX/vendor/github.com/ugorji/go/codec/json.base.go, MediaMTX/vendor/github.com/ugorji/go/codec/json.fastpath.mono.generated.go, MediaMTX/vendor/github.com/ugorji/go/codec/json.mono.generated.go, MediaMTX/vendor/github.com/ugorji/go/codec/msgpack.base.go, MediaMTX/vendor/github.com/ugorji/go/codec/msgpack.fastpath.mono.generated.go, MediaMTX/vendor/github.com/ugorji/go/codec/msgpack.mono.generated.go, MediaMTX/vendor/github.com/ugorji/go/codec/reader.go, MediaMTX/vendor/github.com/ugorji/go/codec/rpc.go, MediaMTX/vendor/github.com/ugorji/go/codec/simple.base.go, MediaMTX/vendor/github.com/ugorji/go/codec/simple.fastpath.mono.generated.go, MediaMTX/vendor/github.com/ugorji/go/codec/simple.mono.generated.go, MediaMTX/vendor/github.com/ugorji/go/codec/writer.go
+// Copyright (c) 2012-2020 Ugorji Nwoke. All rights reserved.
+// Use of this source code is governed by a MIT license found in the LICENSE file.
+
+Source: Go1.25.6/src/crypto/internal/fips140/edwards25519/scalar.go
+// Copyright (c) 2016 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: Go1.25.6/src/crypto/internal/fips140/edwards25519/edwards25519.go, Go1.25.6/src/crypto/internal/fips140/edwards25519/field/fe.go, Go1.25.6/src/crypto/internal/fips140/edwards25519/field/fe_generic.go
+// Copyright (c) 2017 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: Go1.25.6/src/crypto/internal/fips140/edwards25519/field/fe_amd64_noasm.go, Go1.25.6/src/crypto/internal/fips140/edwards25519/scalarmult.go, Go1.25.6/src/crypto/internal/fips140/edwards25519/tables.go
+// Copyright (c) 2019 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: Go1.25.6/src/crypto/internal/fips140/edwards25519/doc.go
+// Copyright (c) 2021 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: Go1.25.6/src/bufio/bufio.go, Go1.25.6/src/bytes/buffer.go, Go1.25.6/src/bytes/bytes.go, Go1.25.6/src/compress/flate/deflate.go, Go1.25.6/src/compress/flate/huffman_bit_writer.go, Go1.25.6/src/compress/flate/huffman_code.go, Go1.25.6/src/compress/flate/inflate.go, Go1.25.6/src/compress/flate/token.go, Go1.25.6/src/compress/gzip/gunzip.go, Go1.25.6/src/compress/zlib/reader.go, Go1.25.6/src/compress/zlib/writer.go, Go1.25.6/src/container/list/list.go, Go1.25.6/src/crypto/aes/aes.go, Go1.25.6/src/crypto/cipher/cbc.go, Go1.25.6/src/crypto/cipher/ctr.go, Go1.25.6/src/crypto/hmac/hmac.go, Go1.25.6/src/crypto/internal/fips140/aes/aes.go, Go1.25.6/src/crypto/internal/fips140/aes/aes_generic.go, Go1.25.6/src/crypto/internal/fips140/aes/const.go, Go1.25.6/src/crypto/internal/fips140/hmac/hmac.go, Go1.25.6/src/crypto/internal/fips140/rsa/pkcs1v15.go, Go1.25.6/src/crypto/internal/fips140/sha256/sha256.go, Go1.25.6/src/crypto/internal/fips140/sha256/sha256block.go, Go1.25.6/src/crypto/internal/fips140/sha512/sha512.go, Go1.25.6/src/crypto/internal/fips140/sha512/sha512block.go, Go1.25.6/src/crypto/internal/fips140/subtle/constant_time.go, Go1.25.6/src/crypto/md5/md5.go, Go1.25.6/src/crypto/rc4/rc4.go, Go1.25.6/src/crypto/rsa/pkcs1v15.go, Go1.25.6/src/crypto/rsa/rsa.go, Go1.25.6/src/crypto/sha1/sha1.go, Go1.25.6/src/crypto/sha1/sha1block.go, Go1.25.6/src/crypto/sha256/sha256.go, Go1.25.6/src/crypto/sha512/sha512.go, Go1.25.6/src/crypto/subtle/constant_time.go, Go1.25.6/src/crypto/tls/alert.go, Go1.25.6/src/crypto/tls/common.go, Go1.25.6/src/crypto/tls/handshake_client.go, Go1.25.6/src/crypto/tls/handshake_messages.go, Go1.25.6/src/crypto/tls/handshake_server.go, Go1.25.6/src/crypto/tls/prf.go, Go1.25.6/src/crypto/tls/tls.go, Go1.25.6/src/crypto/x509/x509.go, Go1.25.6/src/debug/dwarf/buf.go, Go1.25.6/src/debug/dwarf/const.go, Go1.25.6/src/debug/dwarf/entry.go, Go1.25.6/src/debug/dwarf/open.go, Go1.25.6/src/debug/dwarf/type.go, Go1.25.6/src/debug/dwarf/unit.go, Go1.25.6/src/debug/macho/file.go, Go1.25.6/src/debug/macho/macho.go, Go1.25.6/src/encoding/asn1/asn1.go, Go1.25.6/src/encoding/asn1/common.go, Go1.25.6/src/encoding/asn1/marshal.go, Go1.25.6/src/encoding/base64/base64.go, Go1.25.6/src/encoding/binary/binary.go, Go1.25.6/src/encoding/gob/decode.go, Go1.25.6/src/encoding/gob/decoder.go, Go1.25.6/src/encoding/gob/doc.go, Go1.25.6/src/encoding/gob/encode.go, Go1.25.6/src/encoding/gob/encoder.go, Go1.25.6/src/encoding/gob/error.go, Go1.25.6/src/encoding/gob/type.go, Go1.25.6/src/encoding/hex/hex.go, Go1.25.6/src/encoding/pem/pem.go, Go1.25.6/src/encoding/xml/read.go, Go1.25.6/src/encoding/xml/xml.go, Go1.25.6/src/flag/flag.go, Go1.25.6/src/fmt/doc.go, Go1.25.6/src/fmt/format.go, Go1.25.6/src/fmt/print.go, Go1.25.6/src/go/ast/ast.go, Go1.25.6/src/go/ast/filter.go, Go1.25.6/src/go/ast/scope.go, Go1.25.6/src/go/ast/walk.go, Go1.25.6/src/go/doc/comment.go, Go1.25.6/src/go/doc/doc.go, Go1.25.6/src/go/doc/filter.go, Go1.25.6/src/go/doc/reader.go, Go1.25.6/src/go/scanner/errors.go, Go1.25.6/src/go/scanner/scanner.go, Go1.25.6/src/go/token/token.go, Go1.25.6/src/hash/adler32/adler32.go, Go1.25.6/src/hash/crc32/crc32.go, Go1.25.6/src/hash/hash.go, Go1.25.6/src/internal/poll/fd_posix.go, Go1.25.6/src/internal/poll/sockopt.go, Go1.25.6/src/internal/reflectlite/type.go, Go1.25.6/src/internal/reflectlite/value.go, Go1.25.6/src/io/io.go, Go1.25.6/src/io/ioutil/ioutil.go, Go1.25.6/src/io/pipe.go, Go1.25.6/src/log/log.go, Go1.25.6/src/math/abs.go, Go1.25.6/src/math/asin.go, Go1.25.6/src/math/atan.go, Go1.25.6/src/math/atan2.go, Go1.25.6/src/math/big/arith.go, Go1.25.6/src/math/big/doc.go, Go1.25.6/src/math/big/int.go, Go1.25.6/src/math/big/nat.go, Go1.25.6/src/math/big/natdiv.go, Go1.25.6/src/math/big/natmul.go, Go1.25.6/src/math/bits.go, Go1.25.6/src/math/cbrt.go, Go1.25.6/src/math/const.go, Go1.25.6/src/math/exp.go, Go1.25.6/src/math/floor.go, Go1.25.6/src/math/frexp.go, Go1.25.6/src/math/ldexp.go, Go1.25.6/src/math/log.go, Go1.25.6/src/math/log10.go, Go1.25.6/src/math/modf.go, Go1.25.6/src/math/pow.go, Go1.25.6/src/math/pow10.go, Go1.25.6/src/math/rand/exp.go, Go1.25.6/src/math/rand/normal.go, Go1.25.6/src/math/rand/rand.go, Go1.25.6/src/math/rand/rng.go, Go1.25.6/src/math/rand/v2/exp.go, Go1.25.6/src/math/rand/v2/normal.go, Go1.25.6/src/math/rand/v2/rand.go, Go1.25.6/src/math/rand/v2/zipf.go, Go1.25.6/src/math/rand/zipf.go, Go1.25.6/src/math/sinh.go, Go1.25.6/src/math/sqrt.go, Go1.25.6/src/math/tanh.go, Go1.25.6/src/math/unsafe.go, Go1.25.6/src/net/dnsclient.go, Go1.25.6/src/net/dnsclient_unix.go, Go1.25.6/src/net/dnsconfig_unix.go, Go1.25.6/src/net/fd_unix.go, Go1.25.6/src/net/hosts.go, Go1.25.6/src/net/http/client.go, Go1.25.6/src/net/http/cookie.go, Go1.25.6/src/net/http/fs.go, Go1.25.6/src/net/http/httputil/dump.go, Go1.25.6/src/net/http/httputil/persist.go, Go1.25.6/src/net/http/internal/chunked.go, Go1.25.6/src/net/http/request.go, Go1.25.6/src/net/http/response.go, Go1.25.6/src/net/http/servemux121.go, Go1.25.6/src/net/http/server.go, Go1.25.6/src/net/http/status.go, Go1.25.6/src/net/http/transfer.go, Go1.25.6/src/net/ip.go, Go1.25.6/src/net/ipsock.go, Go1.25.6/src/net/ipsock_posix.go, Go1.25.6/src/net/net.go, Go1.25.6/src/net/parse.go, Go1.25.6/src/net/port_unix.go, Go1.25.6/src/net/rpc/client.go, Go1.25.6/src/net/rpc/debug.go, Go1.25.6/src/net/rpc/server.go, Go1.25.6/src/net/sock_bsd.go, Go1.25.6/src/net/sock_posix.go, Go1.25.6/src/net/sockopt_posix.go, Go1.25.6/src/net/tcpsock.go, Go1.25.6/src/net/tcpsock_posix.go, Go1.25.6/src/net/tcpsockopt_darwin.go, Go1.25.6/src/net/tcpsockopt_posix.go, Go1.25.6/src/net/udpsock.go, Go1.25.6/src/net/udpsock_posix.go, Go1.25.6/src/net/unixsock.go, Go1.25.6/src/net/unixsock_posix.go, Go1.25.6/src/net/url/url.go, Go1.25.6/src/os/dir_darwin.go, Go1.25.6/src/os/error.go, Go1.25.6/src/os/exec.go, Go1.25.6/src/os/exec/exec.go, Go1.25.6/src/os/exec_posix.go, Go1.25.6/src/os/exec_unix.go, Go1.25.6/src/os/file.go, Go1.25.6/src/os/file_posix.go, Go1.25.6/src/os/file_unix.go, Go1.25.6/src/os/getwd.go, Go1.25.6/src/os/path.go, Go1.25.6/src/os/pipe_unix.go, Go1.25.6/src/os/proc.go, Go1.25.6/src/os/stat_darwin.go, Go1.25.6/src/os/sys_bsd.go, Go1.25.6/src/os/types.go, Go1.25.6/src/os/types_unix.go, Go1.25.6/src/path/filepath/path.go, Go1.25.6/src/path/path.go, Go1.25.6/src/reflect/deepequal.go, Go1.25.6/src/reflect/type.go, Go1.25.6/src/reflect/value.go, Go1.25.6/src/regexp/regexp.go, Go1.25.6/src/runtime/atomic_pointer.go, Go1.25.6/src/runtime/cgo/gcc_util.c, Go1.25.6/src/runtime/cgo/libcgo.h, Go1.25.6/src/runtime/cgocall.go, Go1.25.6/src/runtime/debug.go, Go1.25.6/src/runtime/extern.go, Go1.25.6/src/runtime/mbitmap.go, Go1.25.6/src/runtime/mcache.go, Go1.25.6/src/runtime/mcentral.go, Go1.25.6/src/runtime/mfinal.go, Go1.25.6/src/runtime/mfixalloc.go, Go1.25.6/src/runtime/mgc.go, Go1.25.6/src/runtime/mgcmark.go, Go1.25.6/src/runtime/mgcsweep.go, Go1.25.6/src/runtime/mgcwork.go, Go1.25.6/src/runtime/mheap.go, Go1.25.6/src/runtime/mprof.go, Go1.25.6/src/runtime/msize.go, Go1.25.6/src/runtime/mstats.go, Go1.25.6/src/runtime/os_darwin.go, Go1.25.6/src/runtime/print.go, Go1.25.6/src/runtime/runtime.go, Go1.25.6/src/runtime/runtime1.go, Go1.25.6/src/runtime/runtime2.go, Go1.25.6/src/runtime/select.go, Go1.25.6/src/runtime/sema.go, Go1.25.6/src/runtime/signal_darwin.go, Go1.25.6/src/runtime/sigqueue.go, Go1.25.6/src/runtime/slice.go, Go1.25.6/src/runtime/time.go, Go1.25.6/src/runtime/traceback.go, Go1.25.6/src/runtime/type.go, Go1.25.6/src/runtime/write_err.go, Go1.25.6/src/sort/sort.go, Go1.25.6/src/strconv/atob.go, Go1.25.6/src/strconv/atof.go, Go1.25.6/src/strconv/atoi.go, Go1.25.6/src/strconv/bytealg.go, Go1.25.6/src/strconv/decimal.go, Go1.25.6/src/strconv/ftoa.go, Go1.25.6/src/strconv/itoa.go, Go1.25.6/src/strconv/quote.go, Go1.25.6/src/strings/reader.go, Go1.25.6/src/strings/strings.go, Go1.25.6/src/sync/mutex.go, Go1.25.6/src/sync/once.go, Go1.25.6/src/sync/rwmutex.go, Go1.25.6/src/syscall/dirent.go, Go1.25.6/src/syscall/exec_unix.go, Go1.25.6/src/syscall/syscall.go, Go1.25.6/src/syscall/syscall_bsd.go, Go1.25.6/src/syscall/syscall_unix.go, Go1.25.6/src/text/tabwriter/tabwriter.go, Go1.25.6/src/time/sleep.go, Go1.25.6/src/time/tick.go, Go1.25.6/src/time/time.go, Go1.25.6/src/time/zoneinfo_read.go, Go1.25.6/src/unicode/casetables.go, Go1.25.6/src/unicode/digit.go, Go1.25.6/src/unicode/letter.go, Go1.25.6/src/unicode/utf8/utf8.go, Go1.25.6/src/unsafe/unsafe.go, Go1.25.6/src/vendor/golang.org/x/net/dns/dnsmessage/message.go, MediaMTX/vendor/github.com/goccy/go-yaml/stdlib_quote.go, MediaMTX/vendor/github.com/quic-go/quic-go/internal/utils/linkedlist/linkedlist.go, MediaMTX/vendor/golang.org/x/net/dns/dnsmessage/message.go, MediaMTX/vendor/golang.org/x/sys/unix/dirent.go, MediaMTX/vendor/golang.org/x/sys/unix/syscall.go, MediaMTX/vendor/golang.org/x/sys/unix/syscall_bsd.go, MediaMTX/vendor/golang.org/x/sys/unix/syscall_unix.go
+// Copyright 2009 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: Go1.25.6/src/syscall/syscall_darwin.go, MediaMTX/vendor/golang.org/x/sys/unix/syscall_darwin.go
+// Copyright 2009,2010 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: Go1.25.6/src/math/mod.go
+// Copyright 2009-2010 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: Go1.25.6/src/archive/zip/reader.go, Go1.25.6/src/archive/zip/register.go, Go1.25.6/src/archive/zip/struct.go, Go1.25.6/src/compress/gzip/gzip.go, Go1.25.6/src/crypto/cipher/cfb.go, Go1.25.6/src/crypto/cipher/cipher.go, Go1.25.6/src/crypto/cipher/io.go, Go1.25.6/src/crypto/des/const.go, Go1.25.6/src/crypto/elliptic/elliptic.go, Go1.25.6/src/crypto/internal/sysrand/rand.go, Go1.25.6/src/crypto/rand/rand.go, Go1.25.6/src/crypto/tls/cipher_suites.go, Go1.25.6/src/crypto/tls/conn.go, Go1.25.6/src/crypto/tls/key_agreement.go, Go1.25.6/src/encoding/json/decode.go, Go1.25.6/src/encoding/json/encode.go, Go1.25.6/src/encoding/json/indent.go, Go1.25.6/src/encoding/json/scanner.go, Go1.25.6/src/encoding/json/stream.go, Go1.25.6/src/fmt/scan.go, Go1.25.6/src/go/ast/print.go, Go1.25.6/src/go/token/position.go, Go1.25.6/src/html/entity.go, Go1.25.6/src/html/escape.go, Go1.25.6/src/internal/filepathlite/path_unix.go, Go1.25.6/src/io/ioutil/tempfile.go, Go1.25.6/src/io/multi.go, Go1.25.6/src/math/acosh.go, Go1.25.6/src/math/asinh.go, Go1.25.6/src/math/atanh.go, Go1.25.6/src/math/big/arith_decl.go, Go1.25.6/src/math/big/rat.go, Go1.25.6/src/math/copysign.go, Go1.25.6/src/math/dim.go, Go1.25.6/src/math/erf.go, Go1.25.6/src/math/expm1.go, Go1.25.6/src/math/gamma.go, Go1.25.6/src/math/hypot.go, Go1.25.6/src/math/j0.go, Go1.25.6/src/math/j1.go, Go1.25.6/src/math/jn.go, Go1.25.6/src/math/lgamma.go, Go1.25.6/src/math/log1p.go, Go1.25.6/src/math/logb.go, Go1.25.6/src/math/nextafter.go, Go1.25.6/src/math/remainder.go, Go1.25.6/src/math/signbit.go, Go1.25.6/src/math/sincos.go, Go1.25.6/src/mime/grammar.go, Go1.25.6/src/mime/mediatype.go, Go1.25.6/src/mime/type.go, Go1.25.6/src/mime/type_unix.go, Go1.25.6/src/net/dial.go, Go1.25.6/src/net/http/header.go, Go1.25.6/src/net/http/pprof/pprof.go, Go1.25.6/src/net/iprawsock.go, Go1.25.6/src/net/iprawsock_posix.go, Go1.25.6/src/net/pipe.go, Go1.25.6/src/net/textproto/header.go, Go1.25.6/src/net/textproto/pipeline.go, Go1.25.6/src/net/textproto/reader.go, Go1.25.6/src/net/textproto/textproto.go, Go1.25.6/src/net/textproto/writer.go, Go1.25.6/src/os/env.go, Go1.25.6/src/os/exec/lp_unix.go, Go1.25.6/src/os/tempfile.go, Go1.25.6/src/path/filepath/match.go, Go1.25.6/src/path/filepath/path_unix.go, Go1.25.6/src/path/match.go, Go1.25.6/src/runtime/cgo/cgo.go, Go1.25.6/src/runtime/cgo/iscgo.go, Go1.25.6/src/runtime/complex.go, Go1.25.6/src/runtime/error.go, Go1.25.6/src/runtime/pprof/pprof.go, Go1.25.6/src/runtime/softfloat64.go, Go1.25.6/src/sort/search.go, Go1.25.6/src/syscall/env_unix.go, Go1.25.6/src/time/format.go, Go1.25.6/src/unicode/utf16/utf16.go, MediaMTX/vendor/golang.org/x/net/html/doc.go, MediaMTX/vendor/golang.org/x/net/html/entity.go, MediaMTX/vendor/golang.org/x/net/html/escape.go, MediaMTX/vendor/golang.org/x/net/html/parse.go, MediaMTX/vendor/golang.org/x/net/html/token.go, MediaMTX/vendor/golang.org/x/sys/unix/env_unix.go
+// Copyright 2010 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: Go1.25.6/src/mime/multipart/multipart.go
+// Copyright 2010 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+//
+
+Source: Go1.25.6/src/archive/zip/writer.go, Go1.25.6/src/crypto/cipher/ofb.go, Go1.25.6/src/crypto/crypto.go, Go1.25.6/src/crypto/des/block.go, Go1.25.6/src/crypto/des/cipher.go, Go1.25.6/src/crypto/dsa/dsa.go, Go1.25.6/src/crypto/ecdsa/ecdsa.go, Go1.25.6/src/crypto/rand/util.go, Go1.25.6/src/crypto/x509/cert_pool.go, Go1.25.6/src/crypto/x509/pkcs1.go, Go1.25.6/src/crypto/x509/pkcs8.go, Go1.25.6/src/crypto/x509/pkix/pkix.go, Go1.25.6/src/crypto/x509/verify.go, Go1.25.6/src/database/sql/driver/driver.go, Go1.25.6/src/database/sql/driver/types.go, Go1.25.6/src/encoding/base32/base32.go, Go1.25.6/src/encoding/binary/varint.go, Go1.25.6/src/encoding/csv/reader.go, Go1.25.6/src/encoding/csv/writer.go, Go1.25.6/src/encoding/json/tags.go, Go1.25.6/src/encoding/xml/marshal.go, Go1.25.6/src/encoding/xml/typeinfo.go, Go1.25.6/src/errors/errors.go, Go1.25.6/src/go/ast/import.go, Go1.25.6/src/go/ast/resolve.go, Go1.25.6/src/go/doc/example.go, Go1.25.6/src/go/doc/exports.go, Go1.25.6/src/go/token/serialize.go, Go1.25.6/src/hash/crc32/crc32_generic.go, Go1.25.6/src/hash/fnv/fnv.go, Go1.25.6/src/html/template/attr.go, Go1.25.6/src/html/template/content.go, Go1.25.6/src/html/template/context.go, Go1.25.6/src/html/template/css.go, Go1.25.6/src/html/template/doc.go, Go1.25.6/src/html/template/error.go, Go1.25.6/src/html/template/escape.go, Go1.25.6/src/html/template/html.go, Go1.25.6/src/html/template/js.go, Go1.25.6/src/html/template/template.go, Go1.25.6/src/html/template/transition.go, Go1.25.6/src/html/template/url.go, Go1.25.6/src/internal/poll/sockoptip.go, Go1.25.6/src/math/sin.go, Go1.25.6/src/math/tan.go, Go1.25.6/src/mime/multipart/formdata.go, Go1.25.6/src/mime/multipart/writer.go, Go1.25.6/src/net/cgo_unix.go, Go1.25.6/src/net/file_unix.go, Go1.25.6/src/net/http/doc.go, Go1.25.6/src/net/http/filetransport.go, Go1.25.6/src/net/http/httputil/reverseproxy.go, Go1.25.6/src/net/http/jar.go, Go1.25.6/src/net/http/sniff.go, Go1.25.6/src/net/http/transport.go, Go1.25.6/src/net/interface.go, Go1.25.6/src/net/interface_bsd.go, Go1.25.6/src/net/interface_darwin.go, Go1.25.6/src/net/lookup_unix.go, Go1.25.6/src/net/mac.go, Go1.25.6/src/net/mail/message.go, Go1.25.6/src/net/sendfile_stub.go, Go1.25.6/src/net/sockopt_bsd.go, Go1.25.6/src/net/sockoptip4_bsdvar.go, Go1.25.6/src/net/sockoptip4_posix_nonlinux.go, Go1.25.6/src/net/sockoptip6_posix.go, Go1.25.6/src/os/path_unix.go, Go1.25.6/src/os/user/cgo_lookup_syscall.go, Go1.25.6/src/os/user/cgo_lookup_unix.go, Go1.25.6/src/os/user/lookup.go, Go1.25.6/src/os/user/user.go, Go1.25.6/src/regexp/exec.go, Go1.25.6/src/regexp/syntax/compile.go, Go1.25.6/src/regexp/syntax/parse.go, Go1.25.6/src/regexp/syntax/prog.go, Go1.25.6/src/regexp/syntax/regexp.go, Go1.25.6/src/regexp/syntax/simplify.go, Go1.25.6/src/runtime/cgo/callbacks.go, Go1.25.6/src/runtime/cgo/gcc_setenv.c, Go1.25.6/src/runtime/cgo/setenv.go, Go1.25.6/src/runtime/cgocallback.go, Go1.25.6/src/runtime/cpuprof.go, Go1.25.6/src/runtime/debug/stack.go, Go1.25.6/src/runtime/lock_sema.go, Go1.25.6/src/strings/replace.go, Go1.25.6/src/sync/atomic/asm.s, Go1.25.6/src/sync/atomic/doc.go, Go1.25.6/src/sync/cond.go, Go1.25.6/src/sync/waitgroup.go, Go1.25.6/src/syscall/exec_libc2.go, Go1.25.6/src/syscall/forkpipe.go, Go1.25.6/src/syscall/route_bsd.go, Go1.25.6/src/syscall/route_darwin.go, Go1.25.6/src/syscall/sockcmsg_unix.go, Go1.25.6/src/text/template/doc.go, Go1.25.6/src/text/template/exec.go, Go1.25.6/src/text/template/funcs.go, Go1.25.6/src/text/template/helper.go, Go1.25.6/src/text/template/parse/lex.go, Go1.25.6/src/text/template/parse/node.go, Go1.25.6/src/text/template/parse/parse.go, Go1.25.6/src/text/template/template.go, Go1.25.6/src/time/sys_unix.go, Go1.25.6/src/time/zoneinfo.go, Go1.25.6/src/unicode/graphic.go, Go1.25.6/src/vendor/golang.org/x/text/unicode/norm/composition.go, Go1.25.6/src/vendor/golang.org/x/text/unicode/norm/forminfo.go, Go1.25.6/src/vendor/golang.org/x/text/unicode/norm/input.go, Go1.25.6/src/vendor/golang.org/x/text/unicode/norm/iter.go, Go1.25.6/src/vendor/golang.org/x/text/unicode/norm/normalize.go, Go1.25.6/src/vendor/golang.org/x/text/unicode/norm/readwriter.go, Go1.25.6/src/vendor/golang.org/x/text/unicode/norm/trie.go, MediaMTX/vendor/golang.org/x/net/html/const.go, MediaMTX/vendor/golang.org/x/net/html/doctype.go, MediaMTX/vendor/golang.org/x/net/html/foreign.go, MediaMTX/vendor/golang.org/x/net/html/node.go, MediaMTX/vendor/golang.org/x/net/html/render.go, MediaMTX/vendor/golang.org/x/net/proxy/direct.go, MediaMTX/vendor/golang.org/x/net/proxy/per_host.go, MediaMTX/vendor/golang.org/x/net/proxy/proxy.go, MediaMTX/vendor/golang.org/x/net/proxy/socks5.go, MediaMTX/vendor/golang.org/x/sys/unix/sockcmsg_unix.go, MediaMTX/vendor/golang.org/x/term/terminal.go, MediaMTX/vendor/golang.org/x/text/unicode/norm/composition.go, MediaMTX/vendor/golang.org/x/text/unicode/norm/forminfo.go, MediaMTX/vendor/golang.org/x/text/unicode/norm/input.go, MediaMTX/vendor/golang.org/x/text/unicode/norm/iter.go, MediaMTX/vendor/golang.org/x/text/unicode/norm/normalize.go, MediaMTX/vendor/golang.org/x/text/unicode/norm/readwriter.go, MediaMTX/vendor/golang.org/x/text/unicode/norm/trie.go
+// Copyright 2011 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/google/gopacket/layers/enums_generated.go, MediaMTX/vendor/github.com/google/gopacket/layers/iana_ports.go
+// Copyright 2012 Google, Inc. All rights reserved.
+
+Source: MediaMTX/vendor/github.com/google/gopacket/base.go, MediaMTX/vendor/github.com/google/gopacket/decode.go, MediaMTX/vendor/github.com/google/gopacket/doc.go, MediaMTX/vendor/github.com/google/gopacket/flows.go, MediaMTX/vendor/github.com/google/gopacket/layerclass.go, MediaMTX/vendor/github.com/google/gopacket/layers/base.go, MediaMTX/vendor/github.com/google/gopacket/layers/cdp.go, MediaMTX/vendor/github.com/google/gopacket/layers/ctp.go, MediaMTX/vendor/github.com/google/gopacket/layers/doc.go, MediaMTX/vendor/github.com/google/gopacket/layers/eap.go, MediaMTX/vendor/github.com/google/gopacket/layers/eapol.go, MediaMTX/vendor/github.com/google/gopacket/layers/endpoints.go, MediaMTX/vendor/github.com/google/gopacket/layers/etherip.go, MediaMTX/vendor/github.com/google/gopacket/layers/fddi.go, MediaMTX/vendor/github.com/google/gopacket/layers/gre.go, MediaMTX/vendor/github.com/google/gopacket/layers/ipsec.go, MediaMTX/vendor/github.com/google/gopacket/layers/layertypes.go, MediaMTX/vendor/github.com/google/gopacket/layers/linux_sll.go, MediaMTX/vendor/github.com/google/gopacket/layers/llc.go, MediaMTX/vendor/github.com/google/gopacket/layers/lldp.go, MediaMTX/vendor/github.com/google/gopacket/layers/loopback.go, MediaMTX/vendor/github.com/google/gopacket/layers/mpls.go, MediaMTX/vendor/github.com/google/gopacket/layers/ndp.go, MediaMTX/vendor/github.com/google/gopacket/layers/pflog.go, MediaMTX/vendor/github.com/google/gopacket/layers/ports.go, MediaMTX/vendor/github.com/google/gopacket/layers/ppp.go, MediaMTX/vendor/github.com/google/gopacket/layers/pppoe.go, MediaMTX/vendor/github.com/google/gopacket/layers/rudp.go, MediaMTX/vendor/github.com/google/gopacket/layers/sctp.go, MediaMTX/vendor/github.com/google/gopacket/layertype.go, MediaMTX/vendor/github.com/google/gopacket/packet.go, MediaMTX/vendor/github.com/google/gopacket/parser.go, MediaMTX/vendor/github.com/google/gopacket/pcapgo/write.go, MediaMTX/vendor/github.com/google/gopacket/writer.go
+// Copyright 2012 Google, Inc. All rights reserved.
+//
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file in the root of the source
+// tree.
+
+Source: MediaMTX/vendor/github.com/google/gopacket/layers/arp.go, MediaMTX/vendor/github.com/google/gopacket/layers/dot1q.go, MediaMTX/vendor/github.com/google/gopacket/layers/enums.go, MediaMTX/vendor/github.com/google/gopacket/layers/ethernet.go, MediaMTX/vendor/github.com/google/gopacket/layers/icmp4.go, MediaMTX/vendor/github.com/google/gopacket/layers/icmp6.go, MediaMTX/vendor/github.com/google/gopacket/layers/icmp6msg.go, MediaMTX/vendor/github.com/google/gopacket/layers/igmp.go, MediaMTX/vendor/github.com/google/gopacket/layers/ip4.go, MediaMTX/vendor/github.com/google/gopacket/layers/ip6.go, MediaMTX/vendor/github.com/google/gopacket/layers/tcp.go, MediaMTX/vendor/github.com/google/gopacket/layers/tcpip.go, MediaMTX/vendor/github.com/google/gopacket/layers/udp.go, MediaMTX/vendor/github.com/google/gopacket/layers/udplite.go
+// Copyright 2012 Google, Inc. All rights reserved.
+// Copyright 2009-2011 Andreas Krennmair. All rights reserved.
+//
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file in the root of the source
+// tree.
+
+Source: Go1.25.6/src/bytes/reader.go, Go1.25.6/src/crypto/internal/fips140/aes/aes_asm.go, Go1.25.6/src/crypto/internal/fips140/pbkdf2/pbkdf2.go, Go1.25.6/src/crypto/pbkdf2/pbkdf2.go, Go1.25.6/src/crypto/tls/ticket.go, Go1.25.6/src/crypto/x509/pem_decrypt.go, Go1.25.6/src/crypto/x509/root.go, Go1.25.6/src/crypto/x509/sec1.go, Go1.25.6/src/debug/dwarf/typeunit.go, Go1.25.6/src/go/ast/commentmap.go, Go1.25.6/src/go/doc/synopsis.go, Go1.25.6/src/mime/quotedprintable/reader.go, Go1.25.6/src/net/http/cookiejar/jar.go, Go1.25.6/src/net/http/cookiejar/punycode.go, Go1.25.6/src/net/lookup.go, Go1.25.6/src/os/signal/sig.s, Go1.25.6/src/os/signal/signal.go, Go1.25.6/src/os/signal/signal_unix.go, Go1.25.6/src/os/sys.go, Go1.25.6/src/path/filepath/symlink.go, Go1.25.6/src/reflect/asm_arm64.s, Go1.25.6/src/reflect/makefunc.go, Go1.25.6/src/regexp/syntax/doc.go, Go1.25.6/src/runtime/compiler.go, Go1.25.6/src/runtime/env_posix.go, Go1.25.6/src/runtime/lfstack.go, Go1.25.6/src/runtime/signal_unix.go, Go1.25.6/src/strings/search.go, Go1.25.6/src/sync/runtime.go, Go1.25.6/src/vendor/golang.org/x/crypto/internal/poly1305/poly1305.go, MediaMTX/vendor/golang.org/x/crypto/internal/poly1305/poly1305.go, MediaMTX/vendor/golang.org/x/crypto/nacl/secretbox/secretbox.go, MediaMTX/vendor/golang.org/x/crypto/salsa20/salsa/hsalsa20.go, MediaMTX/vendor/golang.org/x/crypto/salsa20/salsa/salsa208.go, MediaMTX/vendor/golang.org/x/crypto/salsa20/salsa/salsa20_ref.go, MediaMTX/vendor/golang.org/x/net/html/atom/atom.go, MediaMTX/vendor/golang.org/x/net/ipv4/control.go, MediaMTX/vendor/golang.org/x/net/ipv4/control_bsd.go, MediaMTX/vendor/golang.org/x/net/ipv4/control_unix.go, MediaMTX/vendor/golang.org/x/net/ipv4/dgramopt.go, MediaMTX/vendor/golang.org/x/net/ipv4/doc.go, MediaMTX/vendor/golang.org/x/net/ipv4/endpoint.go, MediaMTX/vendor/golang.org/x/net/ipv4/genericopt.go, MediaMTX/vendor/golang.org/x/net/ipv4/header.go, MediaMTX/vendor/golang.org/x/net/ipv4/helper.go, MediaMTX/vendor/golang.org/x/net/ipv4/packet.go, MediaMTX/vendor/golang.org/x/net/ipv4/payload.go, MediaMTX/vendor/golang.org/x/net/ipv4/payload_cmsg.go, MediaMTX/vendor/golang.org/x/net/ipv4/sockopt_posix.go, MediaMTX/vendor/golang.org/x/net/ipv4/sys_asmreq.go, MediaMTX/vendor/golang.org/x/sys/unix/race0.go
+// Copyright 2012 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/gin-gonic/gin/path.go
+// Copyright 2013 Julien Schmidt. All rights reserved.
+// Based on the path package, Copyright 2009 The Go Authors.
+// Use of this source code is governed by a BSD-style license that can be found
+// at https://github.com/julienschmidt/httprouter/blob/master/LICENSE.
+
+Source: MediaMTX/vendor/github.com/gin-gonic/gin/tree.go
+// Copyright 2013 Julien Schmidt. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be found
+// at https://github.com/julienschmidt/httprouter/blob/master/LICENSE
+
+Source: Go1.25.6/src/bufio/scan.go, Go1.25.6/src/crypto/elliptic/nistec.go, Go1.25.6/src/crypto/internal/fips140/aes/gcm/gcm.go, Go1.25.6/src/crypto/internal/fips140/bigmod/nat_arm64.s, Go1.25.6/src/crypto/internal/fips140/rsa/pkcs1v22.go, Go1.25.6/src/crypto/md5/md5block.go, Go1.25.6/src/crypto/md5/md5block_decl.go, Go1.25.6/src/encoding/encoding.go, Go1.25.6/src/encoding/json/fold.go, Go1.25.6/src/internal/poll/fd_mutex.go, Go1.25.6/src/internal/poll/fd_poll_runtime.go, Go1.25.6/src/internal/poll/sys_cloexec.go, Go1.25.6/src/internal/singleflight/singleflight.go, Go1.25.6/src/net/sys_cloexec.go, Go1.25.6/src/regexp/syntax/perl_groups.go, Go1.25.6/src/runtime/debug/debug.s, Go1.25.6/src/runtime/debug/garbage.go, Go1.25.6/src/runtime/funcdata.h, Go1.25.6/src/runtime/netpoll.go, Go1.25.6/src/runtime/netpoll_kqueue.go, Go1.25.6/src/runtime/stack.go, Go1.25.6/src/runtime/sys_arm64.go, Go1.25.6/src/runtime/textflag.h, Go1.25.6/src/strconv/isprint.go, Go1.25.6/src/sync/pool.go, Go1.25.6/src/vendor/golang.org/x/text/transform/transform.go, Go1.25.6/src/vendor/golang.org/x/text/unicode/norm/transform.go, MediaMTX/vendor/golang.org/x/net/ipv4/icmp.go, MediaMTX/vendor/golang.org/x/net/ipv6/control.go, MediaMTX/vendor/golang.org/x/net/ipv6/control_rfc2292_unix.go, MediaMTX/vendor/golang.org/x/net/ipv6/control_rfc3542_unix.go, MediaMTX/vendor/golang.org/x/net/ipv6/control_unix.go, MediaMTX/vendor/golang.org/x/net/ipv6/dgramopt.go, MediaMTX/vendor/golang.org/x/net/ipv6/doc.go, MediaMTX/vendor/golang.org/x/net/ipv6/endpoint.go, MediaMTX/vendor/golang.org/x/net/ipv6/genericopt.go, MediaMTX/vendor/golang.org/x/net/ipv6/helper.go, MediaMTX/vendor/golang.org/x/net/ipv6/icmp.go, MediaMTX/vendor/golang.org/x/net/ipv6/icmp_bsd.go, MediaMTX/vendor/golang.org/x/net/ipv6/payload.go, MediaMTX/vendor/golang.org/x/net/ipv6/payload_cmsg.go, MediaMTX/vendor/golang.org/x/net/ipv6/sockopt_posix.go, MediaMTX/vendor/golang.org/x/net/ipv6/sys_asmreq.go, MediaMTX/vendor/golang.org/x/net/ipv6/sys_darwin.go, MediaMTX/vendor/golang.org/x/term/term_unix_bsd.go, MediaMTX/vendor/golang.org/x/text/internal/language/compact/language.go, MediaMTX/vendor/golang.org/x/text/internal/language/compact/tags.go, MediaMTX/vendor/golang.org/x/text/internal/language/language.go, MediaMTX/vendor/golang.org/x/text/internal/language/lookup.go, MediaMTX/vendor/golang.org/x/text/internal/language/match.go, MediaMTX/vendor/golang.org/x/text/internal/language/parse.go, MediaMTX/vendor/golang.org/x/text/internal/language/tags.go, MediaMTX/vendor/golang.org/x/text/language/language.go, MediaMTX/vendor/golang.org/x/text/language/match.go, MediaMTX/vendor/golang.org/x/text/language/parse.go, MediaMTX/vendor/golang.org/x/text/language/tags.go, MediaMTX/vendor/golang.org/x/text/transform/transform.go, MediaMTX/vendor/golang.org/x/text/unicode/norm/transform.go
+// Copyright 2013 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/gorilla/websocket/client.go, MediaMTX/vendor/github.com/gorilla/websocket/conn.go, MediaMTX/vendor/github.com/gorilla/websocket/doc.go, MediaMTX/vendor/github.com/gorilla/websocket/json.go, MediaMTX/vendor/github.com/gorilla/websocket/server.go, MediaMTX/vendor/github.com/gorilla/websocket/util.go
+// Copyright 2013 The Gorilla WebSocket Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/google/gopacket/pcapgo/read.go
+// Copyright 2014 Damjan Cvetko. All rights reserved.
+//
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file in the root of the source
+// tree.
+
+Source: Go1.25.6/src/internal/profile/graph.go
+// Copyright 2014 Google Inc. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+Source: MediaMTX/vendor/github.com/google/gopacket/layers/dot11.go, MediaMTX/vendor/github.com/google/gopacket/layers/radiotap.go, MediaMTX/vendor/github.com/google/gopacket/layers/sflow.go, MediaMTX/vendor/github.com/google/gopacket/layers/usb.go
+// Copyright 2014 Google, Inc. All rights reserved.
+//
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file in the root of the source
+// tree.
+
+Source: MediaMTX/vendor/github.com/gin-contrib/sse/sse-decoder.go, MediaMTX/vendor/github.com/gin-contrib/sse/sse-encoder.go
+// Copyright 2014 Manu Martinez-Almeida.  All rights reserved.
+// Use of this source code is governed by a MIT style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/gin-gonic/gin/auth.go, MediaMTX/vendor/github.com/gin-gonic/gin/binding/binding.go, MediaMTX/vendor/github.com/gin-gonic/gin/binding/form.go, MediaMTX/vendor/github.com/gin-gonic/gin/binding/form_mapping.go, MediaMTX/vendor/github.com/gin-gonic/gin/binding/json.go, MediaMTX/vendor/github.com/gin-gonic/gin/binding/protobuf.go, MediaMTX/vendor/github.com/gin-gonic/gin/binding/xml.go, MediaMTX/vendor/github.com/gin-gonic/gin/context.go, MediaMTX/vendor/github.com/gin-gonic/gin/debug.go, MediaMTX/vendor/github.com/gin-gonic/gin/deprecated.go, MediaMTX/vendor/github.com/gin-gonic/gin/errors.go, MediaMTX/vendor/github.com/gin-gonic/gin/gin.go, MediaMTX/vendor/github.com/gin-gonic/gin/logger.go, MediaMTX/vendor/github.com/gin-gonic/gin/mode.go, MediaMTX/vendor/github.com/gin-gonic/gin/recovery.go, MediaMTX/vendor/github.com/gin-gonic/gin/render/data.go, MediaMTX/vendor/github.com/gin-gonic/gin/render/html.go, MediaMTX/vendor/github.com/gin-gonic/gin/render/json.go, MediaMTX/vendor/github.com/gin-gonic/gin/render/redirect.go, MediaMTX/vendor/github.com/gin-gonic/gin/render/render.go, MediaMTX/vendor/github.com/gin-gonic/gin/render/text.go, MediaMTX/vendor/github.com/gin-gonic/gin/render/xml.go, MediaMTX/vendor/github.com/gin-gonic/gin/render/yaml.go, MediaMTX/vendor/github.com/gin-gonic/gin/response_writer.go, MediaMTX/vendor/github.com/gin-gonic/gin/routergroup.go, MediaMTX/vendor/github.com/gin-gonic/gin/utils.go
+// Copyright 2014 Manu Martinez-Almeida. All rights reserved.
+// Use of this source code is governed by a MIT style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/benburkert/openpgp/aes/keywrap/keywrap.go
+// Copyright 2014 Matthew Endsley
+// All rights reserved
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted providing that the following conditions
+// are met:
+// 1. Redistributions of source code must retain the above copyright
+//    notice, this list of conditions and the following disclaimer.
+// 2. Redistributions in binary form must reproduce the above copyright
+//    notice, this list of conditions and the following disclaimer in the
+//    documentation and/or other materials provided with the distribution.
+//
+// THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+// IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+// WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+// DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+// OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+// HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+// STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+// IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+
+Source: Go1.25.6/src/context/context.go, Go1.25.6/src/crypto/internal/fips140/sha3/hashes.go, Go1.25.6/src/crypto/internal/fips140/sha3/keccakf.go, Go1.25.6/src/crypto/internal/fips140/sha3/sha3.go, Go1.25.6/src/crypto/internal/fips140/sha3/shake.go, Go1.25.6/src/debug/macho/fat.go, Go1.25.6/src/encoding/gob/dec_helpers.go, Go1.25.6/src/encoding/gob/enc_helpers.go, Go1.25.6/src/internal/goarch/goarch_arm64.go, Go1.25.6/src/internal/profile/encode.go, Go1.25.6/src/internal/profile/filter.go, Go1.25.6/src/internal/profile/profile.go, Go1.25.6/src/internal/profile/proto.go, Go1.25.6/src/internal/profile/prune.go, Go1.25.6/src/internal/runtime/atomic/atomic_arm64.s, Go1.25.6/src/internal/runtime/sys/consts.go, Go1.25.6/src/internal/runtime/sys/nih.go, Go1.25.6/src/math/big/float.go, Go1.25.6/src/net/http/httputil/httputil.go, Go1.25.6/src/os/sticky_bsd.go, Go1.25.6/src/os/sys_unix.go, Go1.25.6/src/path/filepath/symlink_unix.go, Go1.25.6/src/regexp/onepass.go, Go1.25.6/src/runtime/alg.go, Go1.25.6/src/runtime/asm.s, Go1.25.6/src/runtime/atomic_arm64.s, Go1.25.6/src/runtime/cgo.go, Go1.25.6/src/runtime/cgo/gcc_darwin_arm64.c, Go1.25.6/src/runtime/chan.go, Go1.25.6/src/runtime/debug/stubs.go, Go1.25.6/src/runtime/go_tls.h, Go1.25.6/src/runtime/hash64.go, Go1.25.6/src/runtime/heapdump.go, Go1.25.6/src/runtime/iface.go, Go1.25.6/src/runtime/malloc.go, Go1.25.6/src/runtime/map_swiss.go, Go1.25.6/src/runtime/memclr_arm64.s, Go1.25.6/src/runtime/memmove_arm64.s, Go1.25.6/src/runtime/os_darwin_arm64.go, Go1.25.6/src/runtime/panic.go, Go1.25.6/src/runtime/pprof/protobuf.go, Go1.25.6/src/runtime/proc.go, Go1.25.6/src/runtime/race0.go, Go1.25.6/src/runtime/rdebug.go, Go1.25.6/src/runtime/signal_arm64.go, Go1.25.6/src/runtime/string.go, Go1.25.6/src/runtime/stubs.go, Go1.25.6/src/runtime/symtab.go, Go1.25.6/src/runtime/tagptr_64bit.go, Go1.25.6/src/runtime/typekind.go, Go1.25.6/src/sync/atomic/value.go, Go1.25.6/src/vendor/golang.org/x/net/http2/hpack/encode.go, Go1.25.6/src/vendor/golang.org/x/net/http2/hpack/hpack.go, Go1.25.6/src/vendor/golang.org/x/net/http2/hpack/huffman.go, Go1.25.6/src/vendor/golang.org/x/net/http2/hpack/tables.go, MediaMTX/vendor/golang.org/x/crypto/hkdf/hkdf.go, MediaMTX/vendor/golang.org/x/crypto/sha3/hashes.go, MediaMTX/vendor/golang.org/x/crypto/sha3/legacy_hash.go, MediaMTX/vendor/golang.org/x/crypto/sha3/legacy_keccakf.go, MediaMTX/vendor/golang.org/x/crypto/sha3/shake.go, MediaMTX/vendor/golang.org/x/net/http2/databuffer.go, MediaMTX/vendor/golang.org/x/net/http2/errors.go, MediaMTX/vendor/golang.org/x/net/http2/flow.go, MediaMTX/vendor/golang.org/x/net/http2/frame.go, MediaMTX/vendor/golang.org/x/net/http2/gotrack.go, MediaMTX/vendor/golang.org/x/net/http2/hpack/encode.go, MediaMTX/vendor/golang.org/x/net/http2/hpack/hpack.go, MediaMTX/vendor/golang.org/x/net/http2/hpack/huffman.go, MediaMTX/vendor/golang.org/x/net/http2/hpack/tables.go, MediaMTX/vendor/golang.org/x/net/http2/http2.go, MediaMTX/vendor/golang.org/x/net/http2/pipe.go, MediaMTX/vendor/golang.org/x/net/http2/server.go, MediaMTX/vendor/golang.org/x/net/http2/write.go, MediaMTX/vendor/golang.org/x/net/http2/writesched.go, MediaMTX/vendor/golang.org/x/net/http2/writesched_random.go, MediaMTX/vendor/golang.org/x/net/ipv4/control_pktinfo.go, MediaMTX/vendor/golang.org/x/net/ipv4/icmp_stub.go, MediaMTX/vendor/golang.org/x/net/ipv4/sockopt.go, MediaMTX/vendor/golang.org/x/net/ipv4/sys_asmreqn.go, MediaMTX/vendor/golang.org/x/net/ipv4/sys_darwin.go, MediaMTX/vendor/golang.org/x/net/ipv4/sys_ssmreq.go, MediaMTX/vendor/golang.org/x/net/ipv6/header.go, MediaMTX/vendor/golang.org/x/net/ipv6/sockopt.go, MediaMTX/vendor/golang.org/x/net/ipv6/sys_ssmreq.go, MediaMTX/vendor/golang.org/x/text/internal/language/coverage.go, MediaMTX/vendor/golang.org/x/text/language/coverage.go
+// Copyright 2014 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/google/gopacket/layers/dns.go
+// Copyright 2014, 2018 GoPacket Authors. All rights reserved.
+//
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file in the root of the source
+// tree.
+
+Source: MediaMTX/vendor/github.com/google/gopacket/layers/prism.go
+// Copyright 2015 Google, Inc. All rights reserved.
+//
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file in the root of the source
+// tree.
+
+Source: Go1.25.6/src/crypto/internal/fips140/aes/gcm/gcm_asm.go, Go1.25.6/src/crypto/internal/fips140/nistec/p256_asm.go, Go1.25.6/src/debug/dwarf/line.go, Go1.25.6/src/internal/goos/goos.go, Go1.25.6/src/internal/race/doc.go, Go1.25.6/src/internal/race/norace.go, Go1.25.6/src/internal/runtime/atomic/atomic_arm64.go, Go1.25.6/src/internal/runtime/atomic/stubs.go, Go1.25.6/src/internal/runtime/sys/sys.go, Go1.25.6/src/math/big/decimal.go, Go1.25.6/src/math/big/floatconv.go, Go1.25.6/src/math/big/floatmarsh.go, Go1.25.6/src/math/big/ftoa.go, Go1.25.6/src/math/big/intconv.go, Go1.25.6/src/math/big/intmarsh.go, Go1.25.6/src/math/big/natconv.go, Go1.25.6/src/math/big/ratconv.go, Go1.25.6/src/math/big/ratmarsh.go, Go1.25.6/src/mime/encodedword.go, Go1.25.6/src/mime/quotedprintable/writer.go, Go1.25.6/src/net/addrselect.go, Go1.25.6/src/net/conf.go, Go1.25.6/src/net/file.go, Go1.25.6/src/net/hook.go, Go1.25.6/src/net/hook_unix.go, Go1.25.6/src/net/http/method.go, Go1.25.6/src/net/nss.go, Go1.25.6/src/os/exec/exec_unix.go, Go1.25.6/src/os/signal/doc.go, Go1.25.6/src/regexp/backtrack.go, Go1.25.6/src/runtime/asm_arm64.s, Go1.25.6/src/runtime/asm_ppc64x.h, Go1.25.6/src/runtime/cgo/asm_arm64.s, Go1.25.6/src/runtime/cgo/gcc_arm64.S, Go1.25.6/src/runtime/cgo/gcc_libinit.c, Go1.25.6/src/runtime/cgo/gcc_signal_ios_nolldb.c, Go1.25.6/src/runtime/cgo/signal_ios_arm64.go, Go1.25.6/src/runtime/cgo/signal_ios_arm64.s, Go1.25.6/src/runtime/cgocheck.go, Go1.25.6/src/runtime/fastlog2.go, Go1.25.6/src/runtime/mbarrier.go, Go1.25.6/src/runtime/msan0.go, Go1.25.6/src/runtime/rt0_darwin_arm64.s, Go1.25.6/src/runtime/signal_darwin_arm64.go, Go1.25.6/src/runtime/sys_darwin_arm64.s, Go1.25.6/src/runtime/sys_nonppc64x.go, Go1.25.6/src/runtime/tls_arm64.h, Go1.25.6/src/runtime/tls_arm64.s, Go1.25.6/src/runtime/trace/trace.go, Go1.25.6/src/strconv/doc.go, Go1.25.6/src/strings/compare.go, Go1.25.6/src/syscall/asm_darwin_arm64.s, Go1.25.6/src/syscall/syscall_darwin_arm64.go, Go1.25.6/src/text/template/option.go, Go1.25.6/src/time/zoneinfo_ios.go, Go1.25.6/src/vendor/golang.org/x/text/unicode/bidi/bidi.go, Go1.25.6/src/vendor/golang.org/x/text/unicode/bidi/bracket.go, Go1.25.6/src/vendor/golang.org/x/text/unicode/bidi/core.go, MediaMTX/vendor/golang.org/x/net/http2/client_conn_pool.go, MediaMTX/vendor/golang.org/x/net/http2/transport.go, MediaMTX/vendor/golang.org/x/sys/unix/constants.go, MediaMTX/vendor/golang.org/x/sys/unix/syscall_darwin_arm64.go, MediaMTX/vendor/golang.org/x/text/internal/tag/tag.go, MediaMTX/vendor/golang.org/x/text/unicode/bidi/bidi.go, MediaMTX/vendor/golang.org/x/text/unicode/bidi/bracket.go, MediaMTX/vendor/golang.org/x/text/unicode/bidi/core.go, MediaMTX/vendor/golang.org/x/time/rate/rate.go
+// Copyright 2015 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/google/uuid/dce.go, MediaMTX/vendor/github.com/google/uuid/doc.go, MediaMTX/vendor/github.com/google/uuid/hash.go, MediaMTX/vendor/github.com/google/uuid/marshal.go, MediaMTX/vendor/github.com/google/uuid/node.go, MediaMTX/vendor/github.com/google/uuid/sql.go, MediaMTX/vendor/github.com/google/uuid/time.go, MediaMTX/vendor/github.com/google/uuid/util.go, MediaMTX/vendor/github.com/google/uuid/version1.go, MediaMTX/vendor/github.com/google/uuid/version4.go
+// Copyright 2016 Google Inc.  All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/google/gopacket/layers/dhcpv4.go, MediaMTX/vendor/github.com/google/gopacket/layers/geneve.go, MediaMTX/vendor/github.com/google/gopacket/layers/vrrp.go, MediaMTX/vendor/github.com/google/gopacket/layers/vxlan.go
+// Copyright 2016 Google, Inc. All rights reserved.
+//
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file in the root of the source
+// tree.
+
+Source: MediaMTX/vendor/github.com/google/gopacket/layers/ntp.go
+// Copyright 2016 Google, Inc. All rights reserved.
+//
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file in the root of the source
+// tree.
+//
+//******************************************************************************
+
+Source: Go1.25.6/src/compress/flate/deflatefast.go, Go1.25.6/src/compress/flate/dict_decoder.go, Go1.25.6/src/crypto/ed25519/ed25519.go, Go1.25.6/src/encoding/json/tables.go, Go1.25.6/src/internal/nettrace/nettrace.go, Go1.25.6/src/internal/poll/writev.go, Go1.25.6/src/internal/reflectlite/swapper.go, Go1.25.6/src/internal/routebsd/address.go, Go1.25.6/src/internal/routebsd/binary.go, Go1.25.6/src/internal/routebsd/interface.go, Go1.25.6/src/internal/routebsd/interface_classic.go, Go1.25.6/src/internal/routebsd/interface_multicast.go, Go1.25.6/src/internal/routebsd/message.go, Go1.25.6/src/internal/routebsd/route.go, Go1.25.6/src/internal/routebsd/sys.go, Go1.25.6/src/internal/routebsd/sys_darwin.go, Go1.25.6/src/internal/runtime/sys/intrinsics.go, Go1.25.6/src/math/big/prime.go, Go1.25.6/src/math/dim_arm64.s, Go1.25.6/src/math/floor_arm64.s, Go1.25.6/src/math/modf_arm64.s, Go1.25.6/src/net/http/http.go, Go1.25.6/src/net/http/httptrace/trace.go, Go1.25.6/src/net/port.go, Go1.25.6/src/net/writev_unix.go, Go1.25.6/src/os/dir.go, Go1.25.6/src/os/executable.go, Go1.25.6/src/os/executable_darwin.go, Go1.25.6/src/os/stat_unix.go, Go1.25.6/src/os/user/cgo_listgroups_unix.go, Go1.25.6/src/os/user/getgrouplist_syscall.go, Go1.25.6/src/os/wait_unimp.go, Go1.25.6/src/reflect/swapper.go, Go1.25.6/src/runtime/cgo/callbacks_traceback.go, Go1.25.6/src/runtime/cgo/gcc_context.c, Go1.25.6/src/runtime/cgo/gcc_traceback.c, Go1.25.6/src/runtime/cgo/libcgo_unix.h, Go1.25.6/src/runtime/plugin.go, Go1.25.6/src/runtime/pprof/label.go, Go1.25.6/src/runtime/pprof/proto.go, Go1.25.6/src/runtime/pprof/protomem.go, Go1.25.6/src/runtime/utf8.go, Go1.25.6/src/syscall/timestruct.go, Go1.25.6/src/vendor/golang.org/x/crypto/chacha20/chacha_generic.go, Go1.25.6/src/vendor/golang.org/x/crypto/chacha20poly1305/chacha20poly1305.go, Go1.25.6/src/vendor/golang.org/x/crypto/chacha20poly1305/chacha20poly1305_generic.go, Go1.25.6/src/vendor/golang.org/x/crypto/chacha20poly1305/chacha20poly1305_noasm.go, Go1.25.6/src/vendor/golang.org/x/net/http/httpguts/httplex.go, Go1.25.6/src/vendor/golang.org/x/net/idna/idna10.0.0.go, Go1.25.6/src/vendor/golang.org/x/net/idna/punycode.go, Go1.25.6/src/vendor/golang.org/x/net/idna/trie.go, Go1.25.6/src/vendor/golang.org/x/net/idna/trie13.0.0.go, Go1.25.6/src/vendor/golang.org/x/text/secure/bidirule/bidirule.go, Go1.25.6/src/vendor/golang.org/x/text/secure/bidirule/bidirule10.0.0.go, Go1.25.6/src/vendor/golang.org/x/text/unicode/bidi/prop.go, MediaMTX/vendor/golang.org/x/crypto/blake2b/blake2b.go, MediaMTX/vendor/golang.org/x/crypto/blake2b/blake2b_generic.go, MediaMTX/vendor/golang.org/x/crypto/blake2b/blake2b_ref.go, MediaMTX/vendor/golang.org/x/crypto/chacha20/chacha_generic.go, MediaMTX/vendor/golang.org/x/crypto/chacha20poly1305/chacha20poly1305.go, MediaMTX/vendor/golang.org/x/crypto/chacha20poly1305/chacha20poly1305_generic.go, MediaMTX/vendor/golang.org/x/crypto/chacha20poly1305/chacha20poly1305_noasm.go, MediaMTX/vendor/golang.org/x/net/bpf/asm.go, MediaMTX/vendor/golang.org/x/net/bpf/constants.go, MediaMTX/vendor/golang.org/x/net/bpf/doc.go, MediaMTX/vendor/golang.org/x/net/bpf/instructions.go, MediaMTX/vendor/golang.org/x/net/bpf/vm.go, MediaMTX/vendor/golang.org/x/net/bpf/vm_instructions.go, MediaMTX/vendor/golang.org/x/net/http/httpguts/httplex.go, MediaMTX/vendor/golang.org/x/net/http2/writesched_priority_rfc7540.go, MediaMTX/vendor/golang.org/x/net/idna/idna10.0.0.go, MediaMTX/vendor/golang.org/x/net/idna/punycode.go, MediaMTX/vendor/golang.org/x/net/idna/trie.go, MediaMTX/vendor/golang.org/x/net/idna/trie13.0.0.go, MediaMTX/vendor/golang.org/x/sys/unix/syscall_unix_gc.go, MediaMTX/vendor/golang.org/x/text/secure/bidirule/bidirule.go, MediaMTX/vendor/golang.org/x/text/unicode/bidi/prop.go
+// Copyright 2016 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/golang.org/x/sys/unix/endian_little.go
+// Copyright 2016 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+//
+//go:build 386 || amd64 || amd64p32 || alpha || arm || arm64 || loong64 || mipsle || mips64le || mips64p32le || nios2 || ppc64le || riscv || riscv64 || sh
+
+Source: MediaMTX/vendor/github.com/gorilla/websocket/mask.go
+// Copyright 2016 The Gorilla WebSocket Authors. All rights reserved.  Use of
+// this source code is governed by a BSD-style license that can be found in the
+// LICENSE file.
+
+Source: MediaMTX/vendor/github.com/google/uuid/node_net.go
+// Copyright 2017 Google Inc.  All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/google/gopacket/layers/ospf.go, MediaMTX/vendor/github.com/google/gopacket/layers/sip.go, MediaMTX/vendor/github.com/google/gopacket/layers/stp.go
+// Copyright 2017 Google, Inc. All rights reserved.
+//
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file in the root of the source
+// tree.
+
+Source: MediaMTX/vendor/github.com/google/gopacket/layers/bfd.go, MediaMTX/vendor/github.com/google/gopacket/layers/gtp.go
+// Copyright 2017 Google, Inc. All rights reserved.
+//
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file in the root of the source
+// tree.
+//
+
+Source: MediaMTX/vendor/github.com/gin-gonic/gin/binding/default_validator.go, MediaMTX/vendor/github.com/gin-gonic/gin/binding/msgpack.go, MediaMTX/vendor/github.com/gin-gonic/gin/binding/query.go, MediaMTX/vendor/github.com/gin-gonic/gin/fs.go, MediaMTX/vendor/github.com/gin-gonic/gin/render/msgpack.go, MediaMTX/vendor/github.com/gin-gonic/gin/test_helpers.go
+// Copyright 2017 Manu Martinez-Almeida. All rights reserved.
+// Use of this source code is governed by a MIT style
+// license that can be found in the LICENSE file.
+
+Source: Go1.25.6/src/crypto/internal/boring/doc.go, Go1.25.6/src/crypto/internal/boring/goboringcrypto.h, Go1.25.6/src/crypto/internal/boring/notboring.go, Go1.25.6/src/crypto/internal/boring/sig/sig.go, Go1.25.6/src/crypto/internal/boring/sig/sig_other.s, Go1.25.6/src/crypto/internal/fips140/aes/aes_arm64.s, Go1.25.6/src/crypto/internal/fips140/sha256/sha256block_arm64.go, Go1.25.6/src/crypto/internal/fips140/sha256/sha256block_arm64.s, Go1.25.6/src/crypto/sha1/sha1block_arm64.go, Go1.25.6/src/crypto/sha1/sha1block_arm64.s, Go1.25.6/src/crypto/tls/auth.go, Go1.25.6/src/debug/macho/reloctype.go, Go1.25.6/src/hash/crc32/crc32_arm64.go, Go1.25.6/src/hash/crc32/crc32_arm64.s, Go1.25.6/src/internal/cpu/cpu.go, Go1.25.6/src/internal/cpu/cpu_arm64.go, Go1.25.6/src/internal/poll/fd.go, Go1.25.6/src/internal/poll/fd_unix.go, Go1.25.6/src/internal/poll/hook_unix.go, Go1.25.6/src/internal/poll/sockopt_unix.go, Go1.25.6/src/internal/testlog/log.go, Go1.25.6/src/math/big/sqrt.go, Go1.25.6/src/math/bits/bits.go, Go1.25.6/src/math/bits/bits_tables.go, Go1.25.6/src/math/erfinv.go, Go1.25.6/src/math/exp_arm64.s, Go1.25.6/src/net/error_posix.go, Go1.25.6/src/net/rawconn.go, Go1.25.6/src/os/stat.go, Go1.25.6/src/runtime/float.go, Go1.25.6/src/runtime/mwbbuf.go, Go1.25.6/src/runtime/nonwindows_stub.go, Go1.25.6/src/runtime/pprof/elf.go, Go1.25.6/src/runtime/pprof/map.go, Go1.25.6/src/runtime/pprof/runtime.go, Go1.25.6/src/runtime/profbuf.go, Go1.25.6/src/runtime/proflabel.go, Go1.25.6/src/runtime/runtime_boring.go, Go1.25.6/src/runtime/rwmutex.go, Go1.25.6/src/runtime/stubs_nonlinux.go, Go1.25.6/src/runtime/timestub.go, Go1.25.6/src/sort/slice.go, Go1.25.6/src/strings/builder.go, Go1.25.6/src/syscall/net.go, Go1.25.6/src/vendor/golang.org/x/crypto/cryptobyte/asn1.go, Go1.25.6/src/vendor/golang.org/x/crypto/cryptobyte/asn1/asn1.go, Go1.25.6/src/vendor/golang.org/x/crypto/cryptobyte/builder.go, Go1.25.6/src/vendor/golang.org/x/crypto/cryptobyte/string.go, Go1.25.6/src/vendor/golang.org/x/net/http/httpproxy/proxy.go, MediaMTX/vendor/golang.org/x/crypto/argon2/argon2.go, MediaMTX/vendor/golang.org/x/crypto/argon2/blake2b.go, MediaMTX/vendor/golang.org/x/crypto/argon2/blamka_generic.go, MediaMTX/vendor/golang.org/x/crypto/argon2/blamka_ref.go, MediaMTX/vendor/golang.org/x/crypto/blake2b/blake2x.go, MediaMTX/vendor/golang.org/x/crypto/blake2b/register.go, MediaMTX/vendor/golang.org/x/crypto/cryptobyte/asn1.go, MediaMTX/vendor/golang.org/x/crypto/cryptobyte/asn1/asn1.go, MediaMTX/vendor/golang.org/x/crypto/cryptobyte/builder.go, MediaMTX/vendor/golang.org/x/crypto/cryptobyte/string.go, MediaMTX/vendor/golang.org/x/net/bpf/setter.go, MediaMTX/vendor/golang.org/x/net/http2/ciphers.go, MediaMTX/vendor/golang.org/x/net/internal/socket/cmsghdr.go, MediaMTX/vendor/golang.org/x/net/internal/socket/cmsghdr_bsd.go, MediaMTX/vendor/golang.org/x/net/internal/socket/error_unix.go, MediaMTX/vendor/golang.org/x/net/internal/socket/iovec_64bit.go, MediaMTX/vendor/golang.org/x/net/internal/socket/mmsghdr_stub.go, MediaMTX/vendor/golang.org/x/net/internal/socket/msghdr_bsd.go, MediaMTX/vendor/golang.org/x/net/internal/socket/msghdr_bsdvar.go, MediaMTX/vendor/golang.org/x/net/internal/socket/rawconn.go, MediaMTX/vendor/golang.org/x/net/internal/socket/rawconn_msg.go, MediaMTX/vendor/golang.org/x/net/internal/socket/rawconn_nommsg.go, MediaMTX/vendor/golang.org/x/net/internal/socket/socket.go, MediaMTX/vendor/golang.org/x/net/internal/socket/sys_bsd.go, MediaMTX/vendor/golang.org/x/net/internal/socket/sys_posix.go, MediaMTX/vendor/golang.org/x/net/internal/socket/sys_unix.go, MediaMTX/vendor/golang.org/x/net/ipv4/batch.go, MediaMTX/vendor/golang.org/x/net/ipv4/sys_bpf_stub.go, MediaMTX/vendor/golang.org/x/net/ipv6/batch.go, MediaMTX/vendor/golang.org/x/net/ipv6/sys_bpf_stub.go, MediaMTX/vendor/golang.org/x/sys/unix/dev_darwin.go, MediaMTX/vendor/golang.org/x/sys/unix/pagesize_unix.go, MediaMTX/vendor/golang.org/x/sys/unix/timestruct.go, MediaMTX/vendor/golang.org/x/text/language/doc.go
+// Copyright 2017 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/gorilla/websocket/compression.go, MediaMTX/vendor/github.com/gorilla/websocket/prepared.go, MediaMTX/vendor/github.com/gorilla/websocket/proxy.go
+// Copyright 2017 The Gorilla WebSocket Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/gin-gonic/gin/binding/uri.go, MediaMTX/vendor/github.com/gin-gonic/gin/binding/yaml.go, MediaMTX/vendor/github.com/gin-gonic/gin/render/protobuf.go, MediaMTX/vendor/github.com/gin-gonic/gin/render/reader.go, MediaMTX/vendor/github.com/gin-gonic/gin/version.go
+// Copyright 2018 Gin Core Team. All rights reserved.
+// Use of this source code is governed by a MIT style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/google/gopacket/layers/mldv1.go, MediaMTX/vendor/github.com/google/gopacket/layers/mldv2.go
+// Copyright 2018 GoPacket Authors. All rights reserved.
+//
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file in the root of the source
+// tree.
+
+Source: MediaMTX/vendor/github.com/google/uuid/uuid.go
+// Copyright 2018 Google Inc.  All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/google/gopacket/layers/dhcpv6.go, MediaMTX/vendor/github.com/google/gopacket/layers/erspan2.go, MediaMTX/vendor/github.com/google/gopacket/layers/lcm.go
+// Copyright 2018 Google, Inc. All rights reserved.
+//
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file in the root of the source
+// tree.
+
+Source: Go1.25.6/src/crypto/internal/fips140/aes/gcm/gcm_arm64.s, Go1.25.6/src/crypto/internal/fips140/alias/alias.go, Go1.25.6/src/crypto/internal/fips140/nistec/p256_asm_arm64.s, Go1.25.6/src/crypto/internal/fips140/subtle/xor_asm.go, Go1.25.6/src/crypto/internal/randutil/randutil.go, Go1.25.6/src/crypto/tls/handshake_client_tls13.go, Go1.25.6/src/crypto/tls/handshake_server_tls13.go, Go1.25.6/src/crypto/tls/key_schedule.go, Go1.25.6/src/errors/wrap.go, Go1.25.6/src/fmt/errors.go, Go1.25.6/src/internal/bytealg/bytealg.go, Go1.25.6/src/internal/bytealg/compare_arm64.s, Go1.25.6/src/internal/bytealg/compare_native.go, Go1.25.6/src/internal/bytealg/count_arm64.s, Go1.25.6/src/internal/bytealg/count_native.go, Go1.25.6/src/internal/bytealg/equal_arm64.s, Go1.25.6/src/internal/bytealg/equal_native.go, Go1.25.6/src/internal/bytealg/index_arm64.go, Go1.25.6/src/internal/bytealg/index_arm64.s, Go1.25.6/src/internal/bytealg/index_native.go, Go1.25.6/src/internal/bytealg/indexbyte_arm64.s, Go1.25.6/src/internal/bytealg/indexbyte_native.go, Go1.25.6/src/internal/fmtsort/sort.go, Go1.25.6/src/internal/lazyregexp/lazyre.go, Go1.25.6/src/internal/poll/fd_fsync_darwin.go, Go1.25.6/src/internal/poll/fd_opendir_darwin.go, Go1.25.6/src/internal/poll/fd_writev_libc.go, Go1.25.6/src/internal/runtime/math/math.go, Go1.25.6/src/internal/syscall/unix/at_libc2.go, Go1.25.6/src/internal/syscall/unix/at_sysnum_darwin.go, Go1.25.6/src/internal/syscall/unix/nonblocking_unix.go, Go1.25.6/src/math/trig_reduce.go, Go1.25.6/src/net/error_unix.go, Go1.25.6/src/net/http/roundtrip.go, Go1.25.6/src/net/sockaddr_posix.go, Go1.25.6/src/net/splice_stub.go, Go1.25.6/src/os/rawconn.go, Go1.25.6/src/os/removeall_at.go, Go1.25.6/src/runtime/cpuflags.go, Go1.25.6/src/runtime/debug/mod.go, Go1.25.6/src/runtime/debugcall.go, Go1.25.6/src/runtime/map_fast32_swiss.go, Go1.25.6/src/runtime/map_fast64_swiss.go, Go1.25.6/src/runtime/map_faststr_swiss.go, Go1.25.6/src/runtime/mem_darwin.go, Go1.25.6/src/runtime/mgcstack.go, Go1.25.6/src/runtime/os_nonopenbsd.go, Go1.25.6/src/runtime/sys_darwin.go, Go1.25.6/src/runtime/sys_libc.go, Go1.25.6/src/runtime/trace/annotation.go, Go1.25.6/src/runtime/vdso_in_none.go, Go1.25.6/src/syscall/bpf_bsd.go, Go1.25.6/src/syscall/flock_bsd.go, Go1.25.6/src/vendor/golang.org/x/crypto/chacha20/chacha_arm64.go, Go1.25.6/src/vendor/golang.org/x/crypto/chacha20/chacha_arm64.s, Go1.25.6/src/vendor/golang.org/x/crypto/chacha20poly1305/xchacha20poly1305.go, Go1.25.6/src/vendor/golang.org/x/crypto/internal/alias/alias.go, Go1.25.6/src/vendor/golang.org/x/crypto/internal/poly1305/mac_noasm.go, Go1.25.6/src/vendor/golang.org/x/crypto/internal/poly1305/sum_generic.go, Go1.25.6/src/vendor/golang.org/x/net/http/httpguts/guts.go, MediaMTX/vendor/golang.org/x/crypto/chacha20/chacha_arm64.go, MediaMTX/vendor/golang.org/x/crypto/chacha20/chacha_arm64.s, MediaMTX/vendor/golang.org/x/crypto/chacha20poly1305/xchacha20poly1305.go, MediaMTX/vendor/golang.org/x/crypto/internal/alias/alias.go, MediaMTX/vendor/golang.org/x/crypto/internal/poly1305/mac_noasm.go, MediaMTX/vendor/golang.org/x/crypto/internal/poly1305/sum_generic.go, MediaMTX/vendor/golang.org/x/net/http/httpguts/guts.go, MediaMTX/vendor/golang.org/x/net/http2/h2c/h2c.go, MediaMTX/vendor/golang.org/x/net/internal/socket/empty.s, MediaMTX/vendor/golang.org/x/net/internal/socks/client.go, MediaMTX/vendor/golang.org/x/net/internal/socks/socks.go, MediaMTX/vendor/golang.org/x/sys/cpu/cpu.go, MediaMTX/vendor/golang.org/x/sys/unix/aliases.go, MediaMTX/vendor/golang.org/x/sys/unix/ioctl_unsigned.go, MediaMTX/vendor/golang.org/x/sys/unix/syscall_darwin_libSystem.go, MediaMTX/vendor/golang.org/x/text/internal/language/compact.go, MediaMTX/vendor/golang.org/x/text/internal/language/compact/compact.go, MediaMTX/vendor/golang.org/x/text/internal/language/compose.go, MediaMTX/vendor/google.golang.org/protobuf/encoding/protowire/wire.go, MediaMTX/vendor/google.golang.org/protobuf/internal/detrand/rand.go, MediaMTX/vendor/google.golang.org/protobuf/internal/errors/errors.go, MediaMTX/vendor/google.golang.org/protobuf/internal/flags/flags.go, MediaMTX/vendor/google.golang.org/protobuf/internal/flags/proto_legacy_disable.go, MediaMTX/vendor/google.golang.org/protobuf/internal/pragma/pragma.go, MediaMTX/vendor/google.golang.org/protobuf/internal/strs/strings_unsafe.go, MediaMTX/vendor/google.golang.org/protobuf/proto/decode.go, MediaMTX/vendor/google.golang.org/protobuf/proto/decode_gen.go, MediaMTX/vendor/google.golang.org/protobuf/proto/encode_gen.go, MediaMTX/vendor/google.golang.org/protobuf/proto/proto.go, MediaMTX/vendor/google.golang.org/protobuf/proto/size_gen.go, MediaMTX/vendor/google.golang.org/protobuf/reflect/protoreflect/proto.go, MediaMTX/vendor/google.golang.org/protobuf/reflect/protoreflect/type.go, MediaMTX/vendor/google.golang.org/protobuf/reflect/protoreflect/value.go, MediaMTX/vendor/google.golang.org/protobuf/reflect/protoreflect/value_union.go, MediaMTX/vendor/google.golang.org/protobuf/reflect/protoreflect/value_unsafe.go, MediaMTX/vendor/google.golang.org/protobuf/reflect/protoregistry/registry.go, MediaMTX/vendor/google.golang.org/protobuf/runtime/protoiface/legacy.go
+// Copyright 2018 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: Go1.25.6/src/crypto/md5/md5block_arm64.s
+// Copyright 2018 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+//
+// ARM64 version of md5block.go
+// derived from crypto/md5/md5block_amd64.s
+
+Source: Go1.25.6/src/vendor/golang.org/x/crypto/chacha20/xor.go, MediaMTX/vendor/golang.org/x/crypto/chacha20/xor.go
+// Copyright 2018 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found src the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/google/gopacket/layers/dhcpv6_options.go, MediaMTX/vendor/github.com/google/gopacket/layers/tls.go, MediaMTX/vendor/github.com/google/gopacket/layers/tls_alert.go, MediaMTX/vendor/github.com/google/gopacket/layers/tls_appdata.go, MediaMTX/vendor/github.com/google/gopacket/layers/tls_cipherspec.go, MediaMTX/vendor/github.com/google/gopacket/layers/tls_handshake.go, MediaMTX/vendor/github.com/google/gopacket/pcapgo/doc.go, MediaMTX/vendor/github.com/google/gopacket/pcapgo/ngread.go, MediaMTX/vendor/github.com/google/gopacket/pcapgo/ngwrite.go, MediaMTX/vendor/github.com/google/gopacket/pcapgo/pcapng.go, MediaMTX/vendor/github.com/google/gopacket/time.go
+// Copyright 2018 The GoPacket Authors. All rights reserved.
+//
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file in the root of the source
+// tree.
+
+Source: MediaMTX/vendor/github.com/google/gopacket/layers/modbustcp.go
+// Copyright 2018, The GoPacket Authors, All rights reserved.
+//
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file in the root of the source
+// tree.
+//
+//******************************************************************************
+
+Source: MediaMTX/vendor/github.com/gin-gonic/gin/binding/multipart_form_mapping.go
+// Copyright 2019 Gin Core Team. All rights reserved.
+// Use of this source code is governed by a MIT style
+// license that can be found in the LICENSE file.
+
+Source: Go1.25.6/src/internal/bytealg/equal_generic.go, Go1.25.6/src/internal/oserror/errors.go, Go1.25.6/src/internal/poll/errno_unix.go, Go1.25.6/src/internal/profile/merge.go, Go1.25.6/src/internal/reflectlite/asm.s, Go1.25.6/src/math/bits/bits_errors.go, Go1.25.6/src/math/fma.go, Go1.25.6/src/net/http/clone.go, Go1.25.6/src/os/error_errno.go, Go1.25.6/src/runtime/checkptr.go, Go1.25.6/src/runtime/debuglog.go, Go1.25.6/src/runtime/debuglog_off.go, Go1.25.6/src/runtime/mgcscavenge.go, Go1.25.6/src/runtime/mpagealloc.go, Go1.25.6/src/runtime/mpagealloc_64bit.go, Go1.25.6/src/runtime/mpagecache.go, Go1.25.6/src/runtime/mpallocbits.go, Go1.25.6/src/runtime/mranges.go, Go1.25.6/src/runtime/nbpipe_pipe.go, Go1.25.6/src/runtime/pprof/pprof_rusage.go, Go1.25.6/src/runtime/preempt.go, Go1.25.6/src/runtime/stubs_arm64.go, Go1.25.6/src/runtime/time_nofake.go, Go1.25.6/src/sync/poolqueue.go, Go1.25.6/src/syscall/sockcmsg_unix_other.go, Go1.25.6/src/syscall/time_nofake.go, MediaMTX/vendor/golang.org/x/crypto/salsa20/salsa/salsa20_noasm.go, MediaMTX/vendor/golang.org/x/net/internal/socket/norace.go, MediaMTX/vendor/golang.org/x/net/internal/socket/sys_const_unix.go, MediaMTX/vendor/golang.org/x/net/proxy/dial.go, MediaMTX/vendor/golang.org/x/sys/cpu/byteorder.go, MediaMTX/vendor/golang.org/x/sys/cpu/cpu_arm64.go, MediaMTX/vendor/golang.org/x/sys/cpu/cpu_arm64.s, MediaMTX/vendor/golang.org/x/sys/cpu/cpu_gc_arm64.go, MediaMTX/vendor/golang.org/x/sys/cpu/cpu_other_arm64.go, MediaMTX/vendor/golang.org/x/sys/unix/fcntl_darwin.go, MediaMTX/vendor/golang.org/x/sys/unix/fdset.go, MediaMTX/vendor/golang.org/x/sys/unix/readdirent_getdirentries.go, MediaMTX/vendor/golang.org/x/sys/unix/sockcmsg_unix_other.go, MediaMTX/vendor/golang.org/x/term/term.go, MediaMTX/vendor/golang.org/x/term/term_unix.go, MediaMTX/vendor/google.golang.org/protobuf/internal/encoding/messageset/messageset.go, MediaMTX/vendor/google.golang.org/protobuf/internal/genid/any_gen.go, MediaMTX/vendor/google.golang.org/protobuf/internal/genid/api_gen.go, MediaMTX/vendor/google.golang.org/protobuf/internal/genid/descriptor_gen.go, MediaMTX/vendor/google.golang.org/protobuf/internal/genid/doc.go, MediaMTX/vendor/google.golang.org/protobuf/internal/genid/duration_gen.go, MediaMTX/vendor/google.golang.org/protobuf/internal/genid/empty_gen.go, MediaMTX/vendor/google.golang.org/protobuf/internal/genid/field_mask_gen.go, MediaMTX/vendor/google.golang.org/protobuf/internal/genid/go_features_gen.go, MediaMTX/vendor/google.golang.org/protobuf/internal/genid/goname.go, MediaMTX/vendor/google.golang.org/protobuf/internal/genid/map_entry.go, MediaMTX/vendor/google.golang.org/protobuf/internal/genid/source_context_gen.go, MediaMTX/vendor/google.golang.org/protobuf/internal/genid/struct_gen.go, MediaMTX/vendor/google.golang.org/protobuf/internal/genid/timestamp_gen.go, MediaMTX/vendor/google.golang.org/protobuf/internal/genid/type_gen.go, MediaMTX/vendor/google.golang.org/protobuf/internal/genid/wrappers.go, MediaMTX/vendor/google.golang.org/protobuf/internal/genid/wrappers_gen.go, MediaMTX/vendor/google.golang.org/protobuf/internal/strs/strings.go, MediaMTX/vendor/google.golang.org/protobuf/proto/checkinit.go, MediaMTX/vendor/google.golang.org/protobuf/proto/doc.go, MediaMTX/vendor/google.golang.org/protobuf/proto/encode.go, MediaMTX/vendor/google.golang.org/protobuf/proto/equal.go, MediaMTX/vendor/google.golang.org/protobuf/proto/extension.go, MediaMTX/vendor/google.golang.org/protobuf/proto/merge.go, MediaMTX/vendor/google.golang.org/protobuf/proto/messageset.go, MediaMTX/vendor/google.golang.org/protobuf/proto/proto_methods.go, MediaMTX/vendor/google.golang.org/protobuf/proto/reset.go, MediaMTX/vendor/google.golang.org/protobuf/proto/size.go, MediaMTX/vendor/google.golang.org/protobuf/proto/wrappers.go, MediaMTX/vendor/google.golang.org/protobuf/reflect/protoreflect/source.go, MediaMTX/vendor/google.golang.org/protobuf/reflect/protoreflect/source_gen.go, MediaMTX/vendor/google.golang.org/protobuf/runtime/protoiface/methods.go
+// Copyright 2019 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/google/gopacket/layers_decoder.go
+// Copyright 2019 The GoPacket Authors. All rights reserved.
+
+Source: MediaMTX/vendor/github.com/google/gopacket/pcapgo/snoop.go
+// Copyright 2019 The GoPacket Authors. All rights reserved.
+//
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file in the root of the source
+// tree.
+
+Source: MediaMTX/vendor/github.com/google/gopacket/layers/asf.go, MediaMTX/vendor/github.com/google/gopacket/layers/asf_presencepong.go, MediaMTX/vendor/github.com/google/gopacket/layers/fuzz_layer.go, MediaMTX/vendor/github.com/google/gopacket/layers/rmcp.go
+// Copyright 2019 The GoPacket Authors. All rights reserved.
+//
+// Use of this source code is governed by a BSD-style license that can be found
+// in the LICENSE file in the root of the source tree.
+
+Source: MediaMTX/vendor/github.com/gorilla/websocket/join.go
+// Copyright 2019 The Gorilla WebSocket Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: Go1.25.6/src/crypto/internal/fips140/ecdsa/ecdsa_noasm.go, Go1.25.6/src/crypto/internal/fips140/subtle/xor_arm64.s, Go1.25.6/src/crypto/x509/internal/macos/corefoundation.go, Go1.25.6/src/crypto/x509/internal/macos/corefoundation.s, Go1.25.6/src/crypto/x509/internal/macos/security.go, Go1.25.6/src/crypto/x509/internal/macos/security.s, Go1.25.6/src/crypto/x509/root_darwin.go, Go1.25.6/src/embed/embed.go, Go1.25.6/src/internal/abi/abi.go, Go1.25.6/src/internal/cpu/cpu.s, Go1.25.6/src/internal/cpu/cpu_arm64.s, Go1.25.6/src/internal/cpu/cpu_arm64_other.go, Go1.25.6/src/internal/cpu/cpu_no_name.go, Go1.25.6/src/internal/poll/iovec_unix.go, Go1.25.6/src/internal/runtime/atomic/unaligned.go, Go1.25.6/src/internal/syscall/execenv/execenv_default.go, Go1.25.6/src/internal/testlog/exit.go, Go1.25.6/src/internal/unsafeheader/unsafeheader.go, Go1.25.6/src/io/fs/fs.go, Go1.25.6/src/io/fs/glob.go, Go1.25.6/src/io/fs/readdir.go, Go1.25.6/src/io/fs/readfile.go, Go1.25.6/src/io/fs/stat.go, Go1.25.6/src/io/fs/sub.go, Go1.25.6/src/io/fs/walk.go, Go1.25.6/src/net/fd_posix.go, Go1.25.6/src/net/netip/netip.go, Go1.25.6/src/net/netip/uint128.go, Go1.25.6/src/os/zero_copy_stub.go, Go1.25.6/src/runtime/cpuflags_arm64.go, Go1.25.6/src/runtime/histogram.go, Go1.25.6/src/runtime/lockrank_off.go, Go1.25.6/src/runtime/mcheckmark.go, Go1.25.6/src/runtime/metrics.go, Go1.25.6/src/runtime/mspanset.go, Go1.25.6/src/runtime/preempt_nonwindows.go, Go1.25.6/src/runtime/rt0_ios_arm64.s, Go1.25.6/src/runtime/sys_darwin_arm64.go, Go1.25.6/src/strconv/atoc.go, Go1.25.6/src/strconv/ctoa.go, Go1.25.6/src/strconv/eisel_lemire.go, Go1.25.6/src/sync/runtime2.go, MediaMTX/vendor/golang.org/x/net/internal/socket/cmsghdr_unix.go, MediaMTX/vendor/golang.org/x/sys/unix/ptrace_ios.go, MediaMTX/vendor/google.golang.org/protobuf/internal/order/order.go, MediaMTX/vendor/google.golang.org/protobuf/internal/order/range.go, MediaMTX/vendor/google.golang.org/protobuf/reflect/protoreflect/methods.go
+// Copyright 2020 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/google/gopacket/layers/radius.go
+// Copyright 2020 The GoPacket Authors. All rights reserved.
+//
+// Use of this source code is governed by a BSD-style license that can be found
+// in the LICENSE file in the root of the source tree.
+
+Source: MediaMTX/vendor/github.com/google/uuid/null.go
+// Copyright 2021 Google Inc.  All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: Go1.25.6/src/crypto/elliptic/params.go, Go1.25.6/src/crypto/internal/fips140/bigmod/nat.go, Go1.25.6/src/crypto/internal/fips140/nistec/fiat/p224.go, Go1.25.6/src/crypto/internal/fips140/nistec/fiat/p224_invert.go, Go1.25.6/src/crypto/internal/fips140/nistec/fiat/p256.go, Go1.25.6/src/crypto/internal/fips140/nistec/fiat/p256_invert.go, Go1.25.6/src/crypto/internal/fips140/nistec/fiat/p384.go, Go1.25.6/src/crypto/internal/fips140/nistec/fiat/p384_invert.go, Go1.25.6/src/crypto/internal/fips140/nistec/fiat/p521.go, Go1.25.6/src/crypto/internal/fips140/nistec/fiat/p521_invert.go, Go1.25.6/src/crypto/x509/parser.go, Go1.25.6/src/internal/abi/abi_arm64.go, Go1.25.6/src/internal/abi/abi_test.s, Go1.25.6/src/internal/goarch/goarch.go, Go1.25.6/src/internal/godebug/godebug.go, Go1.25.6/src/internal/goexperiment/flags.go, Go1.25.6/src/internal/itoa/itoa.go, Go1.25.6/src/internal/runtime/atomic/doc.go, Go1.25.6/src/internal/runtime/atomic/types.go, Go1.25.6/src/internal/runtime/atomic/types_64bit.go, Go1.25.6/src/internal/syscall/unix/asm_darwin.s, Go1.25.6/src/internal/syscall/unix/net.go, Go1.25.6/src/maps/maps.go, Go1.25.6/src/math/dim_asm.go, Go1.25.6/src/math/exp2_asm.go, Go1.25.6/src/math/exp_asm.go, Go1.25.6/src/math/floor_asm.go, Go1.25.6/src/math/hypot_noasm.go, Go1.25.6/src/math/log_stub.go, Go1.25.6/src/math/modf_asm.go, Go1.25.6/src/math/stubs.go, Go1.25.6/src/net/http/internal/ascii/print.go, Go1.25.6/src/net/http/transport_default_other.go, Go1.25.6/src/net/unixsock_readmsg_cloexec.go, Go1.25.6/src/reflect/abi.go, Go1.25.6/src/reflect/float32reg_generic.go, Go1.25.6/src/reflect/visiblefields.go, Go1.25.6/src/runtime/asan0.go, Go1.25.6/src/runtime/cgo/abi_arm64.h, Go1.25.6/src/runtime/cgo/handle.go, Go1.25.6/src/runtime/mgcpacer.go, Go1.25.6/src/runtime/tls_stub.go, Go1.25.6/src/slices/slices.go, Go1.25.6/src/strconv/ftoaryu.go, Go1.25.6/src/strings/clone.go, Go1.25.6/src/vendor/golang.org/x/net/idna/go118.go, MediaMTX/vendor/golang.org/x/net/http2/ascii.go, MediaMTX/vendor/golang.org/x/net/idna/go118.go, MediaMTX/vendor/golang.org/x/net/internal/socket/complete_dontwait.go, MediaMTX/vendor/golang.org/x/sys/unix/asm_bsd_arm64.s
+// Copyright 2021 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/gin-gonic/gin/binding/header.go, MediaMTX/vendor/github.com/gin-gonic/gin/binding/toml.go, MediaMTX/vendor/github.com/gin-gonic/gin/render/toml.go
+// Copyright 2022 Gin Core Team. All rights reserved.
+// Use of this source code is governed by a MIT style
+// license that can be found in the LICENSE file.
+
+Source: Go1.25.6/src/crypto/ecdh/ecdh.go, Go1.25.6/src/crypto/ecdh/nist.go, Go1.25.6/src/crypto/ecdh/x25519.go, Go1.25.6/src/crypto/ecdsa/ecdsa_legacy.go, Go1.25.6/src/crypto/ecdsa/notboring.go, Go1.25.6/src/crypto/internal/boring/bbig/big.go, Go1.25.6/src/crypto/internal/fips140/nistec/nistec.go, Go1.25.6/src/crypto/internal/fips140/nistec/p224.go, Go1.25.6/src/crypto/internal/fips140/nistec/p224_sqrt.go, Go1.25.6/src/crypto/internal/fips140/nistec/p256_ordinv.go, Go1.25.6/src/crypto/internal/fips140/nistec/p384.go, Go1.25.6/src/crypto/internal/fips140/nistec/p521.go, Go1.25.6/src/crypto/internal/fips140/sha3/sha3_arm64.s, Go1.25.6/src/crypto/internal/fips140/sha512/sha512block_arm64.go, Go1.25.6/src/crypto/internal/fips140/sha512/sha512block_arm64.s, Go1.25.6/src/crypto/internal/fips140/subtle/xor.go, Go1.25.6/src/crypto/rsa/notboring.go, Go1.25.6/src/crypto/subtle/xor.go, Go1.25.6/src/crypto/tls/cache.go, Go1.25.6/src/errors/join.go, Go1.25.6/src/go/doc/comment/doc.go, Go1.25.6/src/go/doc/comment/html.go, Go1.25.6/src/go/doc/comment/markdown.go, Go1.25.6/src/go/doc/comment/parse.go, Go1.25.6/src/go/doc/comment/print.go, Go1.25.6/src/go/doc/comment/std.go, Go1.25.6/src/go/doc/comment/text.go, Go1.25.6/src/internal/coverage/rtcov/rtcov.go, Go1.25.6/src/internal/goos/unix.go, Go1.25.6/src/internal/runtime/sys/consts_norace.go, Go1.25.6/src/internal/saferio/io.go, Go1.25.6/src/internal/syscall/unix/constants.go, Go1.25.6/src/internal/syscall/unix/kernel_version_other.go, Go1.25.6/src/internal/syscall/unix/net_darwin.go, Go1.25.6/src/internal/syscall/unix/pty_darwin.go, Go1.25.6/src/internal/syscall/unix/user_darwin.go, Go1.25.6/src/log/slog/attr.go, Go1.25.6/src/log/slog/doc.go, Go1.25.6/src/log/slog/handler.go, Go1.25.6/src/log/slog/internal/buffer/buffer.go, Go1.25.6/src/log/slog/json_handler.go, Go1.25.6/src/log/slog/level.go, Go1.25.6/src/log/slog/logger.go, Go1.25.6/src/log/slog/record.go, Go1.25.6/src/log/slog/text_handler.go, Go1.25.6/src/log/slog/value.go, Go1.25.6/src/net/cgo_darwin.go, Go1.25.6/src/net/cgo_unix_syscall.go, Go1.25.6/src/net/dnsconfig.go, Go1.25.6/src/net/http/h2_error.go, Go1.25.6/src/net/http/responsecontroller.go, Go1.25.6/src/runtime/arena.go, Go1.25.6/src/runtime/covercounter.go, Go1.25.6/src/runtime/covermeta.go, Go1.25.6/src/runtime/create_file_unix.go, Go1.25.6/src/runtime/mem.go, Go1.25.6/src/runtime/mgclimit.go, Go1.25.6/src/runtime/os_unix_nonlinux.go, Go1.25.6/src/runtime/pprof/pe.go, Go1.25.6/src/runtime/retry.go, Go1.25.6/src/runtime/stkframe.go, Go1.25.6/src/runtime/unsafe.go, Go1.25.6/src/slices/zsortanyfunc.go, Go1.25.6/src/slices/zsortordered.go, Go1.25.6/src/sort/zsortfunc.go, Go1.25.6/src/sort/zsortinterface.go, Go1.25.6/src/sync/atomic/type.go, Go1.25.6/src/sync/oncefunc.go, Go1.25.6/src/syscall/rlimit.go, Go1.25.6/src/syscall/rlimit_darwin.go, Go1.25.6/src/time/format_rfc3339.go, MediaMTX/vendor/golang.org/x/sys/cpu/parse.go, MediaMTX/vendor/golang.org/x/time/rate/sometimes.go, MediaMTX/vendor/google.golang.org/protobuf/reflect/protoreflect/value_equal.go
+// Copyright 2022 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/gin-gonic/gin/internal/bytesconv/bytesconv.go
+// Copyright 2023 Gin Core Team. All rights reserved.
+// Use of this source code is governed by a MIT style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/google/uuid/version6.go, MediaMTX/vendor/github.com/google/uuid/version7.go
+// Copyright 2023 Google Inc.  All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: Go1.25.6/src/cmp/cmp.go, Go1.25.6/src/crypto/internal/fips140/aes/ctr.go, Go1.25.6/src/crypto/internal/fips140/bigmod/nat_asm.go, Go1.25.6/src/crypto/internal/fips140/mlkem/mlkem768.go, Go1.25.6/src/crypto/tls/quic.go, Go1.25.6/src/crypto/x509/oid.go, Go1.25.6/src/encoding/binary/native_endian_little.go, Go1.25.6/src/hash/crc32/gen.go, Go1.25.6/src/internal/abi/compiletype.go, Go1.25.6/src/internal/abi/funcpc.go, Go1.25.6/src/internal/abi/iface.go, Go1.25.6/src/internal/abi/map_noswiss.go, Go1.25.6/src/internal/abi/map_swiss.go, Go1.25.6/src/internal/abi/stack.go, Go1.25.6/src/internal/abi/stub.s, Go1.25.6/src/internal/abi/switch.go, Go1.25.6/src/internal/abi/symtab.go, Go1.25.6/src/internal/abi/type.go, Go1.25.6/src/internal/bisect/bisect.go, Go1.25.6/src/internal/bytealg/lastindexbyte_generic.go, Go1.25.6/src/internal/chacha8rand/chacha8.go, Go1.25.6/src/internal/chacha8rand/chacha8_arm64.s, Go1.25.6/src/internal/chacha8rand/chacha8_generic.go, Go1.25.6/src/internal/filepathlite/path_nonwindows.go, Go1.25.6/src/internal/godebugs/table.go, Go1.25.6/src/internal/poll/fd_unixjs.go, Go1.25.6/src/internal/syscall/unix/fcntl_unix.go, Go1.25.6/src/internal/trace/tracev2/events.go, Go1.25.6/src/internal/trace/tracev2/spec.go, Go1.25.6/src/io/fs/format.go, Go1.25.6/src/io/fs/readlink.go, Go1.25.6/src/iter/iter.go, Go1.25.6/src/log/internal/internal.go, Go1.25.6/src/log/slog/internal/ignorepc.go, Go1.25.6/src/math/rand/v2/chacha8.go, Go1.25.6/src/math/rand/v2/pcg.go, Go1.25.6/src/mime/multipart/readmimeheader.go, Go1.25.6/src/net/http/mapping.go, Go1.25.6/src/net/http/pattern.go, Go1.25.6/src/net/http/routing_index.go, Go1.25.6/src/net/http/routing_tree.go, Go1.25.6/src/net/mptcpsock_stub.go, Go1.25.6/src/net/netcgo_off.go, Go1.25.6/src/net/netgo_off.go, Go1.25.6/src/net/rlimit_unix.go, Go1.25.6/src/net/tcpsock_unix.go, Go1.25.6/src/os/file_open_unix.go, Go1.25.6/src/os/pidfd_other.go, Go1.25.6/src/runtime/cgo/abi_ppc64x.h, Go1.25.6/src/runtime/cgo/gcc_stack_darwin.c, Go1.25.6/src/runtime/coro.go, Go1.25.6/src/runtime/fds_unix.go, Go1.25.6/src/runtime/minmax.go, Go1.25.6/src/runtime/os_unix.go, Go1.25.6/src/runtime/pinner.go, Go1.25.6/src/runtime/pprof/proto_darwin.go, Go1.25.6/src/runtime/pprof/vminfo_darwin.go, Go1.25.6/src/runtime/rand.go, Go1.25.6/src/runtime/security_issetugid.go, Go1.25.6/src/runtime/security_unix.go, Go1.25.6/src/runtime/symtabinl.go, Go1.25.6/src/runtime/tagptr.go, Go1.25.6/src/runtime/test_stubs.go, Go1.25.6/src/runtime/trace.go, Go1.25.6/src/runtime/tracebuf.go, Go1.25.6/src/runtime/tracecpu.go, Go1.25.6/src/runtime/traceevent.go, Go1.25.6/src/runtime/tracemap.go, Go1.25.6/src/runtime/traceregion.go, Go1.25.6/src/runtime/traceruntime.go, Go1.25.6/src/runtime/tracestack.go, Go1.25.6/src/runtime/tracestatus.go, Go1.25.6/src/runtime/tracestring.go, Go1.25.6/src/runtime/tracetime.go, Go1.25.6/src/runtime/tracetype.go, Go1.25.6/src/slices/sort.go, Go1.25.6/src/sync/atomic/doc_64.go, MediaMTX/vendor/golang.org/x/net/http2/writesched_roundrobin.go, MediaMTX/vendor/golang.org/x/sys/cpu/endian_little.go, MediaMTX/vendor/golang.org/x/sys/cpu/runtime_auxv.go, MediaMTX/vendor/golang.org/x/sys/cpu/runtime_auxv_go121.go, MediaMTX/vendor/golang.org/x/sys/unix/mmap_nomremap.go
+// Copyright 2023 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: Go1.25.6/src/bytes/iter.go, Go1.25.6/src/crypto/cipher/gcm.go, Go1.25.6/src/crypto/fips140/fips140.go, Go1.25.6/src/crypto/hkdf/hkdf.go, Go1.25.6/src/crypto/internal/entropy/entropy.go, Go1.25.6/src/crypto/internal/fips140/aes/cast.go, Go1.25.6/src/crypto/internal/fips140/aes/cbc.go, Go1.25.6/src/crypto/internal/fips140/aes/cbc_noasm.go, Go1.25.6/src/crypto/internal/fips140/aes/ctr_asm.go, Go1.25.6/src/crypto/internal/fips140/aes/gcm/cast.go, Go1.25.6/src/crypto/internal/fips140/aes/gcm/cmac.go, Go1.25.6/src/crypto/internal/fips140/aes/gcm/ctrkdf.go, Go1.25.6/src/crypto/internal/fips140/aes/gcm/gcm_generic.go, Go1.25.6/src/crypto/internal/fips140/aes/gcm/gcm_nonces.go, Go1.25.6/src/crypto/internal/fips140/aes/gcm/ghash.go, Go1.25.6/src/crypto/internal/fips140/cast.go, Go1.25.6/src/crypto/internal/fips140/check/check.go, Go1.25.6/src/crypto/internal/fips140/drbg/cast.go, Go1.25.6/src/crypto/internal/fips140/drbg/ctrdrbg.go, Go1.25.6/src/crypto/internal/fips140/drbg/rand.go, Go1.25.6/src/crypto/internal/fips140/ecdh/cast.go, Go1.25.6/src/crypto/internal/fips140/ecdh/ecdh.go, Go1.25.6/src/crypto/internal/fips140/ecdsa/cast.go, Go1.25.6/src/crypto/internal/fips140/ecdsa/ecdsa.go, Go1.25.6/src/crypto/internal/fips140/ecdsa/hmacdrbg.go, Go1.25.6/src/crypto/internal/fips140/ed25519/cast.go, Go1.25.6/src/crypto/internal/fips140/ed25519/ed25519.go, Go1.25.6/src/crypto/internal/fips140/fips140.go, Go1.25.6/src/crypto/internal/fips140/hkdf/cast.go, Go1.25.6/src/crypto/internal/fips140/hkdf/hkdf.go, Go1.25.6/src/crypto/internal/fips140/hmac/cast.go, Go1.25.6/src/crypto/internal/fips140/indicator.go, Go1.25.6/src/crypto/internal/fips140/mlkem/cast.go, Go1.25.6/src/crypto/internal/fips140/mlkem/field.go, Go1.25.6/src/crypto/internal/fips140/nistec/fiat/cast.go, Go1.25.6/src/crypto/internal/fips140/nistec/p256_table.go, Go1.25.6/src/crypto/internal/fips140/notasan.go, Go1.25.6/src/crypto/internal/fips140/notboring.go, Go1.25.6/src/crypto/internal/fips140/pbkdf2/cast.go, Go1.25.6/src/crypto/internal/fips140/rsa/cast.go, Go1.25.6/src/crypto/internal/fips140/rsa/keygen.go, Go1.25.6/src/crypto/internal/fips140/rsa/rsa.go, Go1.25.6/src/crypto/internal/fips140/sha256/cast.go, Go1.25.6/src/crypto/internal/fips140/sha3/cast.go, Go1.25.6/src/crypto/internal/fips140/sha512/cast.go, Go1.25.6/src/crypto/internal/fips140/tls12/cast.go, Go1.25.6/src/crypto/internal/fips140/tls12/tls12.go, Go1.25.6/src/crypto/internal/fips140/tls13/cast.go, Go1.25.6/src/crypto/internal/fips140/tls13/tls13.go, Go1.25.6/src/crypto/internal/fips140deps/byteorder/byteorder.go, Go1.25.6/src/crypto/internal/fips140deps/cpu/cpu.go, Go1.25.6/src/crypto/internal/fips140deps/godebug/godebug.go, Go1.25.6/src/crypto/internal/fips140hash/hash.go, Go1.25.6/src/crypto/internal/fips140only/fips140only.go, Go1.25.6/src/crypto/internal/hpke/hpke.go, Go1.25.6/src/crypto/internal/impl/impl.go, Go1.25.6/src/crypto/internal/sysrand/rand_arc4random.go, Go1.25.6/src/crypto/rand/text.go, Go1.25.6/src/crypto/rsa/fips.go, Go1.25.6/src/crypto/sha3/sha3.go, Go1.25.6/src/crypto/subtle/dit.go, Go1.25.6/src/crypto/tls/defaults.go, Go1.25.6/src/crypto/tls/ech.go, Go1.25.6/src/crypto/tls/internal/fips140tls/fipstls.go, Go1.25.6/src/internal/abi/escape.go, Go1.25.6/src/internal/abi/map_select_swiss.go, Go1.25.6/src/internal/abi/rangefuncconsts.go, Go1.25.6/src/internal/abi/runtime.go, Go1.25.6/src/internal/asan/doc.go, Go1.25.6/src/internal/asan/noasan.go, Go1.25.6/src/internal/byteorder/byteorder.go, Go1.25.6/src/internal/filepathlite/path.go, Go1.25.6/src/internal/msan/doc.go, Go1.25.6/src/internal/msan/nomsan.go, Go1.25.6/src/internal/poll/sendfile.go, Go1.25.6/src/internal/poll/sendfile_unix.go, Go1.25.6/src/internal/profilerecord/profilerecord.go, Go1.25.6/src/internal/runtime/exithook/hooks.go, Go1.25.6/src/internal/runtime/maps/group.go, Go1.25.6/src/internal/runtime/maps/map.go, Go1.25.6/src/internal/runtime/maps/runtime.go, Go1.25.6/src/internal/runtime/maps/runtime_fast32_swiss.go, Go1.25.6/src/internal/runtime/maps/runtime_fast64_swiss.go, Go1.25.6/src/internal/runtime/maps/runtime_faststr_swiss.go, Go1.25.6/src/internal/runtime/maps/runtime_swiss.go, Go1.25.6/src/internal/runtime/maps/table.go, Go1.25.6/src/internal/runtime/maps/table_debug.go, Go1.25.6/src/internal/runtime/sys/dit_arm64.go, Go1.25.6/src/internal/runtime/sys/dit_arm64.s, Go1.25.6/src/internal/stringslite/strings.go, Go1.25.6/src/internal/sync/hashtriemap.go, Go1.25.6/src/internal/sync/mutex.go, Go1.25.6/src/internal/sync/runtime.go, Go1.25.6/src/internal/synctest/synctest.go, Go1.25.6/src/internal/syscall/unix/arc4random_darwin.go, Go1.25.6/src/internal/syscall/unix/at_darwin.go, Go1.25.6/src/internal/syscall/unix/eaccess.go, Go1.25.6/src/internal/syscall/unix/faccessat_darwin.go, Go1.25.6/src/internal/syscall/unix/nofollow_posix.go, Go1.25.6/src/internal/syscall/unix/syscall.go, Go1.25.6/src/internal/syscall/unix/tcsetpgrp_bsd.go, Go1.25.6/src/maps/iter.go, Go1.25.6/src/os/eloop_other.go, Go1.25.6/src/os/exec_nohandle.go, Go1.25.6/src/os/root.go, Go1.25.6/src/os/root_nonwindows.go, Go1.25.6/src/os/root_openat.go, Go1.25.6/src/os/root_unix.go, Go1.25.6/src/os/zero_copy_posix.go, Go1.25.6/src/reflect/badlinkname.go, Go1.25.6/src/reflect/iter.go, Go1.25.6/src/reflect/map_swiss.go, Go1.25.6/src/runtime/badlinkname.go, Go1.25.6/src/runtime/ints.s, Go1.25.6/src/runtime/linkname.go, Go1.25.6/src/runtime/linkname_unix.go, Go1.25.6/src/runtime/lock_spinbit.go, Go1.25.6/src/runtime/mcleanup.go, Go1.25.6/src/runtime/mem_nonsbrk.go, Go1.25.6/src/runtime/netpoll_kqueue_event.go, Go1.25.6/src/runtime/note_other.go, Go1.25.6/src/runtime/stubs_nonwasm.go, Go1.25.6/src/runtime/synctest.go, Go1.25.6/src/runtime/traceallocfree.go, Go1.25.6/src/runtime/vgetrandom_unsupported.go, Go1.25.6/src/slices/iter.go, Go1.25.6/src/strings/iter.go, Go1.25.6/src/sync/hashtriemap.go, Go1.25.6/src/syscall/badlinkname_unix.go, Go1.25.6/src/syscall/linkname_bsd.go, Go1.25.6/src/syscall/linkname_darwin.go, Go1.25.6/src/syscall/linkname_libc.go, Go1.25.6/src/syscall/linkname_unix.go, Go1.25.6/src/unique/clone.go, Go1.25.6/src/unique/doc.go, Go1.25.6/src/unique/handle.go, Go1.25.6/src/weak/doc.go, Go1.25.6/src/weak/pointer.go, MediaMTX/vendor/golang.org/x/net/html/iter.go, MediaMTX/vendor/golang.org/x/net/http2/config.go, MediaMTX/vendor/golang.org/x/net/http2/unencrypted.go, MediaMTX/vendor/golang.org/x/sys/unix/vgetrandom_unsupported.go, MediaMTX/vendor/google.golang.org/protobuf/internal/genid/name.go, MediaMTX/vendor/google.golang.org/protobuf/proto/wrapperopaque.go
+// Copyright 2024 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/gin-gonic/gin/codec/json/api.go, MediaMTX/vendor/github.com/gin-gonic/gin/codec/json/json.go
+// Copyright 2025 Gin Core Team. All rights reserved.
+// Use of this source code is governed by a MIT style
+// license that can be found in the LICENSE file.
+
+Source: Go1.25.6/src/crypto/internal/fips140/sha3/sha3_arm64.go, Go1.25.6/src/crypto/internal/fips140cache/cache.go, Go1.25.6/src/crypto/tls/defaults_fips140.go, Go1.25.6/src/go/token/tree.go, Go1.25.6/src/internal/runtime/atomic/xchg8.go, Go1.25.6/src/internal/runtime/gc/malloc.go, Go1.25.6/src/internal/runtime/gc/scan.go, Go1.25.6/src/internal/runtime/strconv/atoi.go, Go1.25.6/src/internal/syscall/unix/utimes.go, Go1.25.6/src/internal/trace/tracev2/doc.go, Go1.25.6/src/math/big/arith_arm64.s, Go1.25.6/src/net/file_posix.go, Go1.25.6/src/net/http/csrf.go, Go1.25.6/src/os/removeall_unix.go, Go1.25.6/src/runtime/cgroup_stubs.go, Go1.25.6/src/runtime/linkname_swiss.go, Go1.25.6/src/runtime/mgcmark_nogreenteagc.go, Go1.25.6/src/runtime/set_vma_name_stub.go, Go1.25.6/src/runtime/trace/batch.go, Go1.25.6/src/runtime/trace/encoding.go, Go1.25.6/src/runtime/trace/flightrecorder.go, Go1.25.6/src/runtime/trace/recorder.go, Go1.25.6/src/runtime/trace/subscribe.go, Go1.25.6/src/runtime/valgrind0.go, Go1.25.6/src/unique/canonmap.go, MediaMTX/vendor/golang.org/x/crypto/blake2b/go125.go, MediaMTX/vendor/golang.org/x/crypto/chacha20poly1305/fips140only_compat.go, MediaMTX/vendor/golang.org/x/net/dns/dnsmessage/svcb.go, MediaMTX/vendor/golang.org/x/net/http2/config_go125.go, MediaMTX/vendor/golang.org/x/net/http2/writesched_priority_rfc9218.go, MediaMTX/vendor/golang.org/x/net/internal/httpcommon/ascii.go, MediaMTX/vendor/golang.org/x/net/internal/httpcommon/headermap.go, MediaMTX/vendor/golang.org/x/net/internal/httpcommon/request.go, MediaMTX/vendor/golang.org/x/net/internal/httpsfv/httpsfv.go, MediaMTX/vendor/golang.org/x/sys/unix/auxv.go
+// Copyright 2025 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/golang.org/x/net/http2/client_priority_go126.go
+// Copyright 2026 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+Source: MediaMTX/vendor/github.com/asticode/go-astits/data_pes.go
+// Copyrighted
+
+Source: Go1.25.6/src/go/doc/synopsis.go
+// IllegalPrefixes is a list of lower-case prefixes that identify
+// a comment as not being a doc comment.
+// This helps to avoid misinterpreting the common mistake
+// of a copyright notice immediately before a package statement
+// as being a doc comment.
+
+Source: Go1.25.6/src/net/http/h2_bundle.go
+// Package http2 implements the HTTP/2 protocol.
+//
+// This package is low-level and intended to be used directly by very
+// few people. Most users will use it indirectly through the automatic
+// use by the net/http package (from Go 1.6 and later).
+// For use in earlier Go versions see ConfigureServer. (Transport support
+// requires Go 1.6 or later)
+//
+// See https://http2.github.io/ for more information on HTTP/2.
+//
+// See https://http2.golang.org/ for a test server running this code.
+//
+// Copyright 2024 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+//
+
+Source: MediaMTX/vendor/github.com/pion/stun/v3/internal/hmac/hmac.go
+// SPDX-FileCopyrightText: 2009 The Go Authors. All rights reserved.
+// SPDX-License-Identifier: BSD-3-Clause
+
+Source: MediaMTX/vendor/github.com/pion/transport/v4/utils/xor/xor_generic.go
+// SPDX-FileCopyrightText: 2013 The Go Authors. All rights reserved.
+// SPDX-License-Identifier: BSD-3-Clause
+// SPDX-FileCopyrightText: 2024 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
+Source: MediaMTX/vendor/github.com/pion/datachannel/datachannel.go, MediaMTX/vendor/github.com/pion/datachannel/errors.go, MediaMTX/vendor/github.com/pion/datachannel/message.go, MediaMTX/vendor/github.com/pion/datachannel/message_channel_ack.go, MediaMTX/vendor/github.com/pion/datachannel/message_channel_open.go, MediaMTX/vendor/github.com/pion/logging/logger.go, MediaMTX/vendor/github.com/pion/logging/scoped.go, MediaMTX/vendor/github.com/pion/mdns/v2/config.go, MediaMTX/vendor/github.com/pion/mdns/v2/conn.go, MediaMTX/vendor/github.com/pion/mdns/v2/errors.go, MediaMTX/vendor/github.com/pion/mdns/v2/mdns.go, MediaMTX/vendor/github.com/pion/rtcp/application_defined.go, MediaMTX/vendor/github.com/pion/rtcp/compound_packet.go, MediaMTX/vendor/github.com/pion/rtcp/doc.go, MediaMTX/vendor/github.com/pion/rtcp/errors.go, MediaMTX/vendor/github.com/pion/rtcp/extended_report.go, MediaMTX/vendor/github.com/pion/rtcp/full_intra_request.go, MediaMTX/vendor/github.com/pion/rtcp/goodbye.go, MediaMTX/vendor/github.com/pion/rtcp/header.go, MediaMTX/vendor/github.com/pion/rtcp/packet.go, MediaMTX/vendor/github.com/pion/rtcp/packet_buffer.go, MediaMTX/vendor/github.com/pion/rtcp/packet_stringifier.go, MediaMTX/vendor/github.com/pion/rtcp/picture_loss_indication.go, MediaMTX/vendor/github.com/pion/rtcp/rapid_resynchronization_request.go, MediaMTX/vendor/github.com/pion/rtcp/raw_packet.go, MediaMTX/vendor/github.com/pion/rtcp/receiver_estimated_maximum_bitrate.go, MediaMTX/vendor/github.com/pion/rtcp/receiver_report.go, MediaMTX/vendor/github.com/pion/rtcp/reception_report.go, MediaMTX/vendor/github.com/pion/rtcp/rfc8888.go, MediaMTX/vendor/github.com/pion/rtcp/sender_report.go, MediaMTX/vendor/github.com/pion/rtcp/slice_loss_indication.go, MediaMTX/vendor/github.com/pion/rtcp/source_description.go, MediaMTX/vendor/github.com/pion/rtcp/transport_layer_cc.go, MediaMTX/vendor/github.com/pion/rtcp/transport_layer_nack.go, MediaMTX/vendor/github.com/pion/rtcp/util.go, MediaMTX/vendor/github.com/pion/sctp/ack_timer.go, MediaMTX/vendor/github.com/pion/sctp/association.go, MediaMTX/vendor/github.com/pion/sctp/association_stats.go, MediaMTX/vendor/github.com/pion/sctp/chunk.go, MediaMTX/vendor/github.com/pion/sctp/chunk_abort.go, MediaMTX/vendor/github.com/pion/sctp/chunk_cookie_ack.go, MediaMTX/vendor/github.com/pion/sctp/chunk_cookie_echo.go, MediaMTX/vendor/github.com/pion/sctp/chunk_error.go, MediaMTX/vendor/github.com/pion/sctp/chunk_forward_tsn.go, MediaMTX/vendor/github.com/pion/sctp/chunk_heartbeat.go, MediaMTX/vendor/github.com/pion/sctp/chunk_heartbeat_ack.go, MediaMTX/vendor/github.com/pion/sctp/chunk_init.go, MediaMTX/vendor/github.com/pion/sctp/chunk_init_ack.go, MediaMTX/vendor/github.com/pion/sctp/chunk_init_common.go, MediaMTX/vendor/github.com/pion/sctp/chunk_payload_data.go, MediaMTX/vendor/github.com/pion/sctp/chunk_reconfig.go, MediaMTX/vendor/github.com/pion/sctp/chunk_selective_ack.go, MediaMTX/vendor/github.com/pion/sctp/chunk_shutdown.go, MediaMTX/vendor/github.com/pion/sctp/chunk_shutdown_ack.go, MediaMTX/vendor/github.com/pion/sctp/chunk_shutdown_complete.go, MediaMTX/vendor/github.com/pion/sctp/chunkheader.go, MediaMTX/vendor/github.com/pion/sctp/chunktype.go, MediaMTX/vendor/github.com/pion/sctp/control_queue.go, MediaMTX/vendor/github.com/pion/sctp/error_cause.go, MediaMTX/vendor/github.com/pion/sctp/error_cause_header.go, MediaMTX/vendor/github.com/pion/sctp/error_cause_invalid_mandatory_parameter.go, MediaMTX/vendor/github.com/pion/sctp/error_cause_protocol_violation.go, MediaMTX/vendor/github.com/pion/sctp/error_cause_unrecognized_chunk_type.go, MediaMTX/vendor/github.com/pion/sctp/error_cause_user_initiated_abort.go, MediaMTX/vendor/github.com/pion/sctp/packet.go, MediaMTX/vendor/github.com/pion/sctp/param.go, MediaMTX/vendor/github.com/pion/sctp/param_chunk_list.go, MediaMTX/vendor/github.com/pion/sctp/param_ecn_capable.go, MediaMTX/vendor/github.com/pion/sctp/param_forward_tsn_supported.go, MediaMTX/vendor/github.com/pion/sctp/param_heartbeat_info.go, MediaMTX/vendor/github.com/pion/sctp/param_outgoing_reset_request.go, MediaMTX/vendor/github.com/pion/sctp/param_random.go, MediaMTX/vendor/github.com/pion/sctp/param_reconfig_response.go, MediaMTX/vendor/github.com/pion/sctp/param_requested_hmac_algorithm.go, MediaMTX/vendor/github.com/pion/sctp/param_state_cookie.go, MediaMTX/vendor/github.com/pion/sctp/param_supported_extensions.go, MediaMTX/vendor/github.com/pion/sctp/param_zero_checksum.go, MediaMTX/vendor/github.com/pion/sctp/paramheader.go, MediaMTX/vendor/github.com/pion/sctp/paramtype.go, MediaMTX/vendor/github.com/pion/sctp/payload_queue.go, MediaMTX/vendor/github.com/pion/sctp/pending_queue.go, MediaMTX/vendor/github.com/pion/sctp/queue.go, MediaMTX/vendor/github.com/pion/sctp/reassembly_queue.go, MediaMTX/vendor/github.com/pion/sctp/receive_payload_queue.go, MediaMTX/vendor/github.com/pion/sctp/rtx_timer.go, MediaMTX/vendor/github.com/pion/sctp/sctp.go, MediaMTX/vendor/github.com/pion/sctp/stream.go, MediaMTX/vendor/github.com/pion/sctp/util.go, MediaMTX/vendor/github.com/pion/sctp/windowedmin.go, MediaMTX/vendor/github.com/pion/srtp/v3/context.go, MediaMTX/vendor/github.com/pion/srtp/v3/crypto.go, MediaMTX/vendor/github.com/pion/srtp/v3/errors.go, MediaMTX/vendor/github.com/pion/srtp/v3/key_derivation.go, MediaMTX/vendor/github.com/pion/srtp/v3/keying.go, MediaMTX/vendor/github.com/pion/srtp/v3/option.go, MediaMTX/vendor/github.com/pion/srtp/v3/protection_profile.go, MediaMTX/vendor/github.com/pion/srtp/v3/protection_profile_with_args.go, MediaMTX/vendor/github.com/pion/srtp/v3/session.go, MediaMTX/vendor/github.com/pion/srtp/v3/session_srtcp.go, MediaMTX/vendor/github.com/pion/srtp/v3/session_srtp.go, MediaMTX/vendor/github.com/pion/srtp/v3/srtcp.go, MediaMTX/vendor/github.com/pion/srtp/v3/srtp.go, MediaMTX/vendor/github.com/pion/srtp/v3/srtp_cipher.go, MediaMTX/vendor/github.com/pion/srtp/v3/srtp_cipher_aead_aes_gcm.go, MediaMTX/vendor/github.com/pion/srtp/v3/srtp_cipher_aes_cm_hmac_sha1.go, MediaMTX/vendor/github.com/pion/srtp/v3/srtp_cryptex.go, MediaMTX/vendor/github.com/pion/srtp/v3/stream.go, MediaMTX/vendor/github.com/pion/srtp/v3/stream_srtcp.go, MediaMTX/vendor/github.com/pion/srtp/v3/stream_srtp.go, MediaMTX/vendor/github.com/pion/srtp/v3/util.go, MediaMTX/vendor/github.com/pion/stun/v3/addr.go, MediaMTX/vendor/github.com/pion/stun/v3/agent.go, MediaMTX/vendor/github.com/pion/stun/v3/attributes.go, MediaMTX/vendor/github.com/pion/stun/v3/checks.go, MediaMTX/vendor/github.com/pion/stun/v3/client.go, MediaMTX/vendor/github.com/pion/stun/v3/errorcode.go, MediaMTX/vendor/github.com/pion/stun/v3/errors.go, MediaMTX/vendor/github.com/pion/stun/v3/fingerprint.go, MediaMTX/vendor/github.com/pion/stun/v3/helpers.go, MediaMTX/vendor/github.com/pion/stun/v3/integrity.go, MediaMTX/vendor/github.com/pion/stun/v3/internal/hmac/pool.go, MediaMTX/vendor/github.com/pion/stun/v3/message.go, MediaMTX/vendor/github.com/pion/stun/v3/stun.go, MediaMTX/vendor/github.com/pion/stun/v3/textattrs.go, MediaMTX/vendor/github.com/pion/stun/v3/uattrs.go, MediaMTX/vendor/github.com/pion/stun/v3/uri.go, MediaMTX/vendor/github.com/pion/stun/v3/xoraddr.go, MediaMTX/vendor/github.com/pion/transport/v4/deadline/deadline.go, MediaMTX/vendor/github.com/pion/transport/v4/deadline/timer.go, MediaMTX/vendor/github.com/pion/transport/v4/deadline/timer_generic.go, MediaMTX/vendor/github.com/pion/transport/v4/net.go, MediaMTX/vendor/github.com/pion/transport/v4/netctx/conn.go, MediaMTX/vendor/github.com/pion/transport/v4/netctx/packetconn.go, MediaMTX/vendor/github.com/pion/transport/v4/netctx/pipe.go, MediaMTX/vendor/github.com/pion/transport/v4/packetio/buffer.go, MediaMTX/vendor/github.com/pion/transport/v4/packetio/errors.go, MediaMTX/vendor/github.com/pion/transport/v4/packetio/no_hardlimit.go, MediaMTX/vendor/github.com/pion/transport/v4/replaydetector/fixedbig.go, MediaMTX/vendor/github.com/pion/transport/v4/replaydetector/replaydetector.go, MediaMTX/vendor/github.com/pion/transport/v4/stdnet/net.go, MediaMTX/vendor/github.com/pion/transport/v4/vnet/chunk.go, MediaMTX/vendor/github.com/pion/transport/v4/vnet/chunk_queue.go, MediaMTX/vendor/github.com/pion/transport/v4/vnet/conn.go, MediaMTX/vendor/github.com/pion/transport/v4/vnet/conn_map.go, MediaMTX/vendor/github.com/pion/transport/v4/vnet/delay_filter.go, MediaMTX/vendor/github.com/pion/transport/v4/vnet/duplication_filter.go, MediaMTX/vendor/github.com/pion/transport/v4/vnet/errors.go, MediaMTX/vendor/github.com/pion/transport/v4/vnet/loss_filter.go, MediaMTX/vendor/github.com/pion/transport/v4/vnet/nat.go, MediaMTX/vendor/github.com/pion/transport/v4/vnet/net.go, MediaMTX/vendor/github.com/pion/transport/v4/vnet/resolver.go, MediaMTX/vendor/github.com/pion/transport/v4/vnet/router.go, MediaMTX/vendor/github.com/pion/transport/v4/vnet/udpproxy.go, MediaMTX/vendor/github.com/pion/transport/v4/vnet/udpproxy_direct.go, MediaMTX/vendor/github.com/pion/transport/v4/vnet/vnet.go, MediaMTX/vendor/github.com/pion/turn/v4/client.go, MediaMTX/vendor/github.com/pion/turn/v4/errors.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/allocation/allocation.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/allocation/allocation_manager.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/allocation/channel_bind.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/allocation/errors.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/allocation/event_handler.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/allocation/five_tuple.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/allocation/permission.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/client/allocation.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/client/binding.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/client/client.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/client/errors.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/client/periodic_timer.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/client/permission.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/client/tcp_alloc.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/client/tcp_conn.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/client/transaction.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/client/trylock.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/client/udp_conn.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/ipnet/util.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/proto/addr.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/proto/chandata.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/proto/chann.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/proto/connection_id.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/proto/data.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/proto/dontfrag.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/proto/evenport.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/proto/lifetime.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/proto/peeraddr.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/proto/proto.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/proto/relayedaddr.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/proto/reqfamily.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/proto/reqtrans.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/proto/rsrvtoken.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/server/base36.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/server/errors.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/server/nonce.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/server/server.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/server/short_nonce.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/server/stun.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/server/turn.go, MediaMTX/vendor/github.com/pion/turn/v4/internal/server/util.go, MediaMTX/vendor/github.com/pion/turn/v4/lt_cred.go, MediaMTX/vendor/github.com/pion/turn/v4/relay_address_generator_none.go, MediaMTX/vendor/github.com/pion/turn/v4/relay_address_generator_range.go, MediaMTX/vendor/github.com/pion/turn/v4/relay_address_generator_static.go, MediaMTX/vendor/github.com/pion/turn/v4/server.go, MediaMTX/vendor/github.com/pion/turn/v4/server_config.go, MediaMTX/vendor/github.com/pion/turn/v4/stun_conn.go
+// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
+Source: MediaMTX/vendor/github.com/pion/transport/v4/vnet/queue.go, MediaMTX/vendor/github.com/pion/transport/v4/vnet/tbf_queue.go
+// SPDX-FileCopyrightText: 2025 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
+Source: MediaMTX/vendor/github.com/pion/dtls/v3/certificate.go, MediaMTX/vendor/github.com/pion/dtls/v3/cipher_suite.go, MediaMTX/vendor/github.com/pion/dtls/v3/cipher_suite_go114.go, MediaMTX/vendor/github.com/pion/dtls/v3/compression_method.go, MediaMTX/vendor/github.com/pion/dtls/v3/config.go, MediaMTX/vendor/github.com/pion/dtls/v3/conn.go, MediaMTX/vendor/github.com/pion/dtls/v3/connection_id.go, MediaMTX/vendor/github.com/pion/dtls/v3/crypto.go, MediaMTX/vendor/github.com/pion/dtls/v3/dtls.go, MediaMTX/vendor/github.com/pion/dtls/v3/errors.go, MediaMTX/vendor/github.com/pion/dtls/v3/errors_errno.go, MediaMTX/vendor/github.com/pion/dtls/v3/flight.go, MediaMTX/vendor/github.com/pion/dtls/v3/flight0handler.go, MediaMTX/vendor/github.com/pion/dtls/v3/flight1handler.go, MediaMTX/vendor/github.com/pion/dtls/v3/flight2handler.go, MediaMTX/vendor/github.com/pion/dtls/v3/flight3handler.go, MediaMTX/vendor/github.com/pion/dtls/v3/flight4bhandler.go, MediaMTX/vendor/github.com/pion/dtls/v3/flight4handler.go, MediaMTX/vendor/github.com/pion/dtls/v3/flight5bhandler.go, MediaMTX/vendor/github.com/pion/dtls/v3/flight5handler.go, MediaMTX/vendor/github.com/pion/dtls/v3/flight6handler.go, MediaMTX/vendor/github.com/pion/dtls/v3/flighthandler.go, MediaMTX/vendor/github.com/pion/dtls/v3/fragment_buffer.go, MediaMTX/vendor/github.com/pion/dtls/v3/handshake_cache.go, MediaMTX/vendor/github.com/pion/dtls/v3/handshaker.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/ciphersuite/aes_128_ccm.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/ciphersuite/aes_256_ccm.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/ciphersuite/aes_ccm.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/ciphersuite/ciphersuite.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/ciphersuite/tls_ecdhe_ecdsa_with_aes_128_ccm.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/ciphersuite/tls_ecdhe_ecdsa_with_aes_128_ccm8.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/ciphersuite/tls_ecdhe_ecdsa_with_aes_128_gcm_sha256.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/ciphersuite/tls_ecdhe_ecdsa_with_aes_256_cbc_sha.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/ciphersuite/tls_ecdhe_ecdsa_with_aes_256_gcm_sha384.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/ciphersuite/tls_ecdhe_psk_with_aes_128_cbc_sha256.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/ciphersuite/tls_ecdhe_rsa_with_aes_128_gcm_sha256.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/ciphersuite/tls_ecdhe_rsa_with_aes_256_cbc_sha.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/ciphersuite/tls_ecdhe_rsa_with_aes_256_gcm_sha384.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/ciphersuite/tls_psk_with_aes_128_cbc_sha256.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/ciphersuite/tls_psk_with_aes_128_ccm.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/ciphersuite/tls_psk_with_aes_128_ccm8.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/ciphersuite/tls_psk_with_aes_128_gcm_sha256.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/ciphersuite/tls_psk_with_aes_256_ccm8.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/ciphersuite/types/authentication_type.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/ciphersuite/types/key_exchange_algorithm.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/closer/closer.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/net/buffer.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/net/udp/packet_conn.go, MediaMTX/vendor/github.com/pion/dtls/v3/internal/util/util.go, MediaMTX/vendor/github.com/pion/dtls/v3/listener.go, MediaMTX/vendor/github.com/pion/dtls/v3/options.go, MediaMTX/vendor/github.com/pion/dtls/v3/packet.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/crypto/ccm/ccm.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/crypto/ciphersuite/cbc.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/crypto/ciphersuite/ccm.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/crypto/ciphersuite/ciphersuite.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/crypto/ciphersuite/gcm.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/crypto/clientcertificate/client_certificate.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/crypto/elliptic/elliptic.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/crypto/fingerprint/fingerprint.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/crypto/fingerprint/hash.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/crypto/hash/hash.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/crypto/prf/prf.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/crypto/signature/signature.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/crypto/signaturehash/errors.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/crypto/signaturehash/select_13.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/crypto/signaturehash/signaturehash.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/crypto/signaturehash/signaturehash_13.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/net/net.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/alert/alert.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/application_data.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/change_cipher_spec.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/compression_method.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/content.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/errors.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/extension/alpn.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/extension/connection_id.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/extension/cookie.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/extension/errors.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/extension/extension.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/extension/generic_signature_hash_extension.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/extension/key_share.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/extension/pre_shared_key.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/extension/psk_key_exchange_modes.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/extension/renegotiation_info.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/extension/server_name.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/extension/signature_algorithms_cert.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/extension/srtp_protection_profile.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/extension/supported_elliptic_curves.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/extension/supported_point_formats.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/extension/supported_signature_algorithms.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/extension/supported_versions.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/extension/use_master_secret.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/extension/use_srtp.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/handshake/cipher_suite.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/handshake/errors.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/handshake/handshake.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/handshake/header.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/handshake/message_certificate.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/handshake/message_certificate_13.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/handshake/message_certificate_request.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/handshake/message_certificate_request_13.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/handshake/message_certificate_verify.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/handshake/message_client_hello.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/handshake/message_client_key_exchange.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/handshake/message_finished.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/handshake/message_hello_verify_request.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/handshake/message_server_hello.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/handshake/message_server_hello_done.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/handshake/message_server_key_exchange.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/handshake/random.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/recordlayer/errors.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/recordlayer/header.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/recordlayer/inner_plaintext.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/recordlayer/recordlayer.go, MediaMTX/vendor/github.com/pion/dtls/v3/pkg/protocol/version.go, MediaMTX/vendor/github.com/pion/dtls/v3/resume.go, MediaMTX/vendor/github.com/pion/dtls/v3/session.go, MediaMTX/vendor/github.com/pion/dtls/v3/srtp_protection_profile.go, MediaMTX/vendor/github.com/pion/dtls/v3/state.go, MediaMTX/vendor/github.com/pion/dtls/v3/util.go, MediaMTX/vendor/github.com/pion/ice/v4/active_tcp.go, MediaMTX/vendor/github.com/pion/ice/v4/addr.go, MediaMTX/vendor/github.com/pion/ice/v4/agent.go, MediaMTX/vendor/github.com/pion/ice/v4/agent_config.go, MediaMTX/vendor/github.com/pion/ice/v4/agent_handlers.go, MediaMTX/vendor/github.com/pion/ice/v4/agent_options.go, MediaMTX/vendor/github.com/pion/ice/v4/agent_stats.go, MediaMTX/vendor/github.com/pion/ice/v4/candidate.go, MediaMTX/vendor/github.com/pion/ice/v4/candidate_base.go, MediaMTX/vendor/github.com/pion/ice/v4/candidate_host.go, MediaMTX/vendor/github.com/pion/ice/v4/candidate_peer_reflexive.go, MediaMTX/vendor/github.com/pion/ice/v4/candidate_relay.go, MediaMTX/vendor/github.com/pion/ice/v4/candidate_server_reflexive.go, MediaMTX/vendor/github.com/pion/ice/v4/candidatepair.go, MediaMTX/vendor/github.com/pion/ice/v4/candidatepair_state.go, MediaMTX/vendor/github.com/pion/ice/v4/candidaterelatedaddress.go, MediaMTX/vendor/github.com/pion/ice/v4/candidatetype.go, MediaMTX/vendor/github.com/pion/ice/v4/errors.go, MediaMTX/vendor/github.com/pion/ice/v4/external_ip_mapper.go, MediaMTX/vendor/github.com/pion/ice/v4/gather.go, MediaMTX/vendor/github.com/pion/ice/v4/ice.go, MediaMTX/vendor/github.com/pion/ice/v4/icecontrol.go, MediaMTX/vendor/github.com/pion/ice/v4/internal/atomic/atomic.go, MediaMTX/vendor/github.com/pion/ice/v4/internal/fakenet/mock_conn.go, MediaMTX/vendor/github.com/pion/ice/v4/internal/fakenet/packet_conn.go, MediaMTX/vendor/github.com/pion/ice/v4/internal/stun/stun.go, MediaMTX/vendor/github.com/pion/ice/v4/internal/taskloop/taskloop.go, MediaMTX/vendor/github.com/pion/ice/v4/mdns.go, MediaMTX/vendor/github.com/pion/ice/v4/net.go, MediaMTX/vendor/github.com/pion/ice/v4/networktype.go, MediaMTX/vendor/github.com/pion/ice/v4/priority.go, MediaMTX/vendor/github.com/pion/ice/v4/rand.go, MediaMTX/vendor/github.com/pion/ice/v4/renomination.go, MediaMTX/vendor/github.com/pion/ice/v4/role.go, MediaMTX/vendor/github.com/pion/ice/v4/selection.go, MediaMTX/vendor/github.com/pion/ice/v4/sped.go, MediaMTX/vendor/github.com/pion/ice/v4/stats.go, MediaMTX/vendor/github.com/pion/ice/v4/tcp_mux.go, MediaMTX/vendor/github.com/pion/ice/v4/tcp_mux_multi.go, MediaMTX/vendor/github.com/pion/ice/v4/tcp_packet_conn.go, MediaMTX/vendor/github.com/pion/ice/v4/tcptype.go, MediaMTX/vendor/github.com/pion/ice/v4/transport.go, MediaMTX/vendor/github.com/pion/ice/v4/udp_mux.go, MediaMTX/vendor/github.com/pion/ice/v4/udp_mux_multi.go, MediaMTX/vendor/github.com/pion/ice/v4/udp_mux_universal.go, MediaMTX/vendor/github.com/pion/ice/v4/udp_muxed_conn.go, MediaMTX/vendor/github.com/pion/ice/v4/url.go, MediaMTX/vendor/github.com/pion/ice/v4/usecandidate.go, MediaMTX/vendor/github.com/pion/interceptor/attributes.go, MediaMTX/vendor/github.com/pion/interceptor/chain.go, MediaMTX/vendor/github.com/pion/interceptor/errors.go, MediaMTX/vendor/github.com/pion/interceptor/interceptor.go, MediaMTX/vendor/github.com/pion/interceptor/internal/ntp/ntp.go, MediaMTX/vendor/github.com/pion/interceptor/internal/rtpbuffer/errors.go, MediaMTX/vendor/github.com/pion/interceptor/internal/rtpbuffer/packet_factory.go, MediaMTX/vendor/github.com/pion/interceptor/internal/rtpbuffer/retainable_packet.go, MediaMTX/vendor/github.com/pion/interceptor/internal/rtpbuffer/rtpbuffer.go, MediaMTX/vendor/github.com/pion/interceptor/internal/sequencenumber/unwrapper.go, MediaMTX/vendor/github.com/pion/interceptor/noop.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/flexfec/encoder_interceptor.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/flexfec/flexfec_coverage.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/flexfec/flexfec_decoder_03.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/flexfec/flexfec_encoder.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/flexfec/flexfec_encoder_03.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/flexfec/option.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/flexfec/util/bitarray.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/flexfec/util/media_packet_iterator.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/nack/errors.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/nack/generator_interceptor.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/nack/generator_option.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/nack/nack.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/nack/receive_log.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/nack/responder_interceptor.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/nack/responder_option.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/report/receiver_interceptor.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/report/receiver_option.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/report/receiver_stream.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/report/report.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/report/sender_interceptor.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/report/sender_option.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/report/sender_stream.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/report/ticker.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/rfc8888/interceptor.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/rfc8888/option.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/rfc8888/recorder.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/rfc8888/stream_log.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/rfc8888/ticker.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/stats/interceptor.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/stats/received_stats.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/stats/sent_stats.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/stats/stats_recorder.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/twcc/arrival_time_map.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/twcc/header_extension_interceptor.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/twcc/sender_interceptor.go, MediaMTX/vendor/github.com/pion/interceptor/pkg/twcc/twcc.go, MediaMTX/vendor/github.com/pion/interceptor/registry.go, MediaMTX/vendor/github.com/pion/interceptor/streaminfo.go, MediaMTX/vendor/github.com/pion/rtp/abscapturetimeextension.go, MediaMTX/vendor/github.com/pion/rtp/abssendtimeextension.go, MediaMTX/vendor/github.com/pion/rtp/audiolevelextension.go, MediaMTX/vendor/github.com/pion/rtp/codecs/av1/obu/errors.go, MediaMTX/vendor/github.com/pion/rtp/codecs/av1/obu/leb128.go, MediaMTX/vendor/github.com/pion/rtp/codecs/av1/obu/obu.go, MediaMTX/vendor/github.com/pion/rtp/codecs/av1_depacketizer.go, MediaMTX/vendor/github.com/pion/rtp/codecs/av1_packet.go, MediaMTX/vendor/github.com/pion/rtp/codecs/codecs.go, MediaMTX/vendor/github.com/pion/rtp/codecs/common.go, MediaMTX/vendor/github.com/pion/rtp/codecs/error.go, MediaMTX/vendor/github.com/pion/rtp/codecs/g711_packet.go, MediaMTX/vendor/github.com/pion/rtp/codecs/g722_packet.go, MediaMTX/vendor/github.com/pion/rtp/codecs/h264_packet.go, MediaMTX/vendor/github.com/pion/rtp/codecs/h265_packet.go, MediaMTX/vendor/github.com/pion/rtp/codecs/h266_packet.go, MediaMTX/vendor/github.com/pion/rtp/codecs/opus_packet.go, MediaMTX/vendor/github.com/pion/rtp/codecs/vp8_packet.go, MediaMTX/vendor/github.com/pion/rtp/codecs/vp9/bits.go, MediaMTX/vendor/github.com/pion/rtp/codecs/vp9/header.go, MediaMTX/vendor/github.com/pion/rtp/codecs/vp9_packet.go, MediaMTX/vendor/github.com/pion/rtp/depacketizer.go, MediaMTX/vendor/github.com/pion/rtp/error.go, MediaMTX/vendor/github.com/pion/rtp/header_extension.go, MediaMTX/vendor/github.com/pion/rtp/packet.go, MediaMTX/vendor/github.com/pion/rtp/packetizer.go, MediaMTX/vendor/github.com/pion/rtp/partitionheadchecker.go, MediaMTX/vendor/github.com/pion/rtp/payload_types.go, MediaMTX/vendor/github.com/pion/rtp/playoutdelayextension.go, MediaMTX/vendor/github.com/pion/rtp/rand.go, MediaMTX/vendor/github.com/pion/rtp/rtp.go, MediaMTX/vendor/github.com/pion/rtp/sequencer.go, MediaMTX/vendor/github.com/pion/rtp/transportccextension.go, MediaMTX/vendor/github.com/pion/rtp/vlaextension.go, MediaMTX/vendor/github.com/pion/sdp/v3/base_lexer.go, MediaMTX/vendor/github.com/pion/sdp/v3/common_description.go, MediaMTX/vendor/github.com/pion/sdp/v3/direction.go, MediaMTX/vendor/github.com/pion/sdp/v3/extmap.go, MediaMTX/vendor/github.com/pion/sdp/v3/jsep.go, MediaMTX/vendor/github.com/pion/sdp/v3/marshal.go, MediaMTX/vendor/github.com/pion/sdp/v3/media_description.go, MediaMTX/vendor/github.com/pion/sdp/v3/sdp.go, MediaMTX/vendor/github.com/pion/sdp/v3/session_description.go, MediaMTX/vendor/github.com/pion/sdp/v3/time_description.go, MediaMTX/vendor/github.com/pion/sdp/v3/unmarshal.go, MediaMTX/vendor/github.com/pion/sdp/v3/unmarshal_cache.go, MediaMTX/vendor/github.com/pion/sdp/v3/util.go, MediaMTX/vendor/github.com/pion/webrtc/v4/api.go, MediaMTX/vendor/github.com/pion/webrtc/v4/bundlepolicy.go, MediaMTX/vendor/github.com/pion/webrtc/v4/certificate.go, MediaMTX/vendor/github.com/pion/webrtc/v4/configuration.go, MediaMTX/vendor/github.com/pion/webrtc/v4/configuration_common.go, MediaMTX/vendor/github.com/pion/webrtc/v4/constants.go, MediaMTX/vendor/github.com/pion/webrtc/v4/datachannel.go, MediaMTX/vendor/github.com/pion/webrtc/v4/datachannelinit.go, MediaMTX/vendor/github.com/pion/webrtc/v4/datachannelmessage.go, MediaMTX/vendor/github.com/pion/webrtc/v4/datachannelparameters.go, MediaMTX/vendor/github.com/pion/webrtc/v4/datachannelstate.go, MediaMTX/vendor/github.com/pion/webrtc/v4/dtlsfingerprint.go, MediaMTX/vendor/github.com/pion/webrtc/v4/dtlsparameters.go, MediaMTX/vendor/github.com/pion/webrtc/v4/dtlsrole.go, MediaMTX/vendor/github.com/pion/webrtc/v4/dtlstransport.go, MediaMTX/vendor/github.com/pion/webrtc/v4/dtlstransportstate.go, MediaMTX/vendor/github.com/pion/webrtc/v4/errors.go, MediaMTX/vendor/github.com/pion/webrtc/v4/gathering_complete_promise.go, MediaMTX/vendor/github.com/pion/webrtc/v4/ice_go.go, MediaMTX/vendor/github.com/pion/webrtc/v4/icecandidate.go, MediaMTX/vendor/github.com/pion/webrtc/v4/icecandidateinit.go, MediaMTX/vendor/github.com/pion/webrtc/v4/icecandidatepair.go, MediaMTX/vendor/github.com/pion/webrtc/v4/icecandidatetype.go, MediaMTX/vendor/github.com/pion/webrtc/v4/icecomponent.go, MediaMTX/vendor/github.com/pion/webrtc/v4/iceconnectionstate.go, MediaMTX/vendor/github.com/pion/webrtc/v4/icecredentialtype.go, MediaMTX/vendor/github.com/pion/webrtc/v4/icegatherer.go, MediaMTX/vendor/github.com/pion/webrtc/v4/icegathererstate.go, MediaMTX/vendor/github.com/pion/webrtc/v4/icegatheringstate.go, MediaMTX/vendor/github.com/pion/webrtc/v4/icegatheroptions.go, MediaMTX/vendor/github.com/pion/webrtc/v4/icemux.go, MediaMTX/vendor/github.com/pion/webrtc/v4/iceparameters.go, MediaMTX/vendor/github.com/pion/webrtc/v4/iceprotocol.go, MediaMTX/vendor/github.com/pion/webrtc/v4/icerole.go, MediaMTX/vendor/github.com/pion/webrtc/v4/iceserver.go, MediaMTX/vendor/github.com/pion/webrtc/v4/icetransport.go, MediaMTX/vendor/github.com/pion/webrtc/v4/icetransportpolicy.go, MediaMTX/vendor/github.com/pion/webrtc/v4/icetransportstate.go, MediaMTX/vendor/github.com/pion/webrtc/v4/interceptor.go, MediaMTX/vendor/github.com/pion/webrtc/v4/interceptor_option.go, MediaMTX/vendor/github.com/pion/webrtc/v4/internal/fmtp/av1.go, MediaMTX/vendor/github.com/pion/webrtc/v4/internal/fmtp/fmtp.go, MediaMTX/vendor/github.com/pion/webrtc/v4/internal/fmtp/h264.go, MediaMTX/vendor/github.com/pion/webrtc/v4/internal/fmtp/vp9.go, MediaMTX/vendor/github.com/pion/webrtc/v4/internal/mux/endpoint.go, MediaMTX/vendor/github.com/pion/webrtc/v4/internal/mux/mux.go, MediaMTX/vendor/github.com/pion/webrtc/v4/internal/mux/muxfunc.go, MediaMTX/vendor/github.com/pion/webrtc/v4/internal/util/util.go, MediaMTX/vendor/github.com/pion/webrtc/v4/mediaengine.go, MediaMTX/vendor/github.com/pion/webrtc/v4/mimetype.go, MediaMTX/vendor/github.com/pion/webrtc/v4/networktype.go, MediaMTX/vendor/github.com/pion/webrtc/v4/oauthcredential.go, MediaMTX/vendor/github.com/pion/webrtc/v4/offeransweroptions.go, MediaMTX/vendor/github.com/pion/webrtc/v4/operations.go, MediaMTX/vendor/github.com/pion/webrtc/v4/peerconnection.go, MediaMTX/vendor/github.com/pion/webrtc/v4/peerconnectionstate.go, MediaMTX/vendor/github.com/pion/webrtc/v4/pkg/media/media.go, MediaMTX/vendor/github.com/pion/webrtc/v4/pkg/rtcerr/errors.go, MediaMTX/vendor/github.com/pion/webrtc/v4/rtcpfeedback.go, MediaMTX/vendor/github.com/pion/webrtc/v4/rtcpmuxpolicy.go, MediaMTX/vendor/github.com/pion/webrtc/v4/rtpcapabilities.go, MediaMTX/vendor/github.com/pion/webrtc/v4/rtpcodec.go, MediaMTX/vendor/github.com/pion/webrtc/v4/rtpcodingparameters.go, MediaMTX/vendor/github.com/pion/webrtc/v4/rtpdecodingparameters.go, MediaMTX/vendor/github.com/pion/webrtc/v4/rtpencodingparameters.go, MediaMTX/vendor/github.com/pion/webrtc/v4/rtpreceiveparameters.go, MediaMTX/vendor/github.com/pion/webrtc/v4/rtpreceiver.go, MediaMTX/vendor/github.com/pion/webrtc/v4/rtpreceiver_go.go, MediaMTX/vendor/github.com/pion/webrtc/v4/rtpsender.go, MediaMTX/vendor/github.com/pion/webrtc/v4/rtpsendparameters.go, MediaMTX/vendor/github.com/pion/webrtc/v4/rtptransceiver.go, MediaMTX/vendor/github.com/pion/webrtc/v4/rtptransceiverdirection.go, MediaMTX/vendor/github.com/pion/webrtc/v4/rtptransceiverinit.go, MediaMTX/vendor/github.com/pion/webrtc/v4/sctpcapabilities.go, MediaMTX/vendor/github.com/pion/webrtc/v4/sctptransport.go, MediaMTX/vendor/github.com/pion/webrtc/v4/sctptransportstate.go, MediaMTX/vendor/github.com/pion/webrtc/v4/sdp.go, MediaMTX/vendor/github.com/pion/webrtc/v4/sdpsemantics.go, MediaMTX/vendor/github.com/pion/webrtc/v4/sdptype.go, MediaMTX/vendor/github.com/pion/webrtc/v4/sessiondescription.go, MediaMTX/vendor/github.com/pion/webrtc/v4/settingengine.go, MediaMTX/vendor/github.com/pion/webrtc/v4/signalingstate.go, MediaMTX/vendor/github.com/pion/webrtc/v4/srtp_writer_future.go, MediaMTX/vendor/github.com/pion/webrtc/v4/stats.go, MediaMTX/vendor/github.com/pion/webrtc/v4/stats_go.go, MediaMTX/vendor/github.com/pion/webrtc/v4/track_local.go, MediaMTX/vendor/github.com/pion/webrtc/v4/track_local_static.go, MediaMTX/vendor/github.com/pion/webrtc/v4/track_remote.go, MediaMTX/vendor/github.com/pion/webrtc/v4/webrtc.go
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
+Source: Go1.25.6/src/go/doc/example.go
+// Strip copyright comment if present.
+
+Source: Go1.25.6/src/crypto/internal/fips140/edwards25519/scalar.go
+// The field implementation in scalar_fiat.go is generated by the fiat-crypto
+// project (https://github.com/mit-plv/fiat-crypto) at version v0.0.9 (23d2dbc)
+// from a formally verified model.
+//
+// fiat-crypto code comes under the following license.
+//
+//     Copyright (c) 2015-2020 The fiat-crypto Authors. All rights reserved.
+//
+//     Redistribution and use in source and binary forms, with or without
+//     modification, are permitted provided that the following conditions are
+//     met:
+//
+//         1. Redistributions of source code must retain the above copyright
+//         notice, this list of conditions and the following disclaimer.
+//
+//     THIS SOFTWARE IS PROVIDED BY the fiat-crypto authors "AS IS"
+//     AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+//     THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+//     PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL Berkeley Software Design,
+//     Inc. BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+//     EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+//     PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+//     PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+//     LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+//     NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+//     SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//
+
+Source: Go1.25.6/src/math/cbrt.go
+// The go code is a modified version of the original C code from
+// http://www.netlib.org/fdlibm/s_cbrt.c and came with this notice.
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunSoft, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+
+Source: Go1.25.6/src/math/remainder.go
+// The original C code and the comment below are from
+// FreeBSD's /usr/src/lib/msun/src/e_remainder.c and came
+// with this notice. The go code is a simplified version of
+// the original C.
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+//
+// __ieee754_remainder(x,y)
+// Return :
+//      returns  x REM y  =  x - [x/y]*y  as if in infinite
+//      precision arithmetic, where [x/y] is the (infinite bit)
+//      integer nearest x/y (in half way cases, choose the even one).
+// Method :
+//      Based on Mod() returning  x - [x/y]chopped * y  exactly.
+
+Source: Go1.25.6/src/math/j0.go
+// The original C code and the long comment below are
+// from FreeBSD's /usr/src/lib/msun/src/e_j0.c and
+// came with this notice. The go code is a simplified
+// version of the original C.
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+//
+// __ieee754_j0(x), __ieee754_y0(x)
+// Bessel function of the first and second kinds of order zero.
+// Method -- j0(x):
+//      1. For tiny x, we use j0(x) = 1 - x**2/4 + x**4/64 - ...
+//      2. Reduce x to |x| since j0(x)=j0(-x),  and
+//         for x in (0,2)
+//              j0(x) = 1-z/4+ z**2*R0/S0,  where z = x*x;
+//         (precision:  |j0-1+z/4-z**2R0/S0 |<2**-63.67 )
+//         for x in (2,inf)
+//              j0(x) = sqrt(2/(pi*x))*(p0(x)*cos(x0)-q0(x)*sin(x0))
+//         where x0 = x-pi/4. It is better to compute sin(x0),cos(x0)
+//         as follow:
+//              cos(x0) = cos(x)cos(pi/4)+sin(x)sin(pi/4)
+//                      = 1/sqrt(2) * (cos(x) + sin(x))
+//              sin(x0) = sin(x)cos(pi/4)-cos(x)sin(pi/4)
+//                      = 1/sqrt(2) * (sin(x) - cos(x))
+//         (To avoid cancellation, use
+//              sin(x) +- cos(x) = -cos(2x)/(sin(x) -+ cos(x))
+//         to compute the worse one.)
+//
+//      3 Special cases
+//              j0(nan)= nan
+//              j0(0) = 1
+//              j0(inf) = 0
+//
+// Method -- y0(x):
+//      1. For x<2.
+//         Since
+//              y0(x) = 2/pi*(j0(x)*(ln(x/2)+Euler) + x**2/4 - ...)
+//         therefore y0(x)-2/pi*j0(x)*ln(x) is an even function.
+//         We use the following function to approximate y0,
+//              y0(x) = U(z)/V(z) + (2/pi)*(j0(x)*ln(x)), z= x**2
+//         where
+//              U(z) = u00 + u01*z + ... + u06*z**6
+//              V(z) = 1  + v01*z + ... + v04*z**4
+//         with absolute approximation error bounded by 2**-72.
+//         Note: For tiny x, U/V = u0 and j0(x)~1, hence
+//              y0(tiny) = u0 + (2/pi)*ln(tiny), (choose tiny<2**-27)
+//      2. For x>=2.
+//              y0(x) = sqrt(2/(pi*x))*(p0(x)*cos(x0)+q0(x)*sin(x0))
+//         where x0 = x-pi/4. It is better to compute sin(x0),cos(x0)
+//         by the method mentioned above.
+//      3. Special cases: y0(0)=-inf, y0(x<0)=NaN, y0(inf)=0.
+//
+
+Source: Go1.25.6/src/math/j1.go
+// The original C code and the long comment below are
+// from FreeBSD's /usr/src/lib/msun/src/e_j1.c and
+// came with this notice. The go code is a simplified
+// version of the original C.
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+//
+// __ieee754_j1(x), __ieee754_y1(x)
+// Bessel function of the first and second kinds of order one.
+// Method -- j1(x):
+//      1. For tiny x, we use j1(x) = x/2 - x**3/16 + x**5/384 - ...
+//      2. Reduce x to |x| since j1(x)=-j1(-x),  and
+//         for x in (0,2)
+//              j1(x) = x/2 + x*z*R0/S0,  where z = x*x;
+//         (precision:  |j1/x - 1/2 - R0/S0 |<2**-61.51 )
+//         for x in (2,inf)
+//              j1(x) = sqrt(2/(pi*x))*(p1(x)*cos(x1)-q1(x)*sin(x1))
+//              y1(x) = sqrt(2/(pi*x))*(p1(x)*sin(x1)+q1(x)*cos(x1))
+//         where x1 = x-3*pi/4. It is better to compute sin(x1),cos(x1)
+//         as follow:
+//              cos(x1) =  cos(x)cos(3pi/4)+sin(x)sin(3pi/4)
+//                      =  1/sqrt(2) * (sin(x) - cos(x))
+//              sin(x1) =  sin(x)cos(3pi/4)-cos(x)sin(3pi/4)
+//                      = -1/sqrt(2) * (sin(x) + cos(x))
+//         (To avoid cancellation, use
+//              sin(x) +- cos(x) = -cos(2x)/(sin(x) -+ cos(x))
+//         to compute the worse one.)
+//
+//      3 Special cases
+//              j1(nan)= nan
+//              j1(0) = 0
+//              j1(inf) = 0
+//
+// Method -- y1(x):
+//      1. screen out x<=0 cases: y1(0)=-inf, y1(x<0)=NaN
+//      2. For x<2.
+//         Since
+//              y1(x) = 2/pi*(j1(x)*(ln(x/2)+Euler)-1/x-x/2+5/64*x**3-...)
+//         therefore y1(x)-2/pi*j1(x)*ln(x)-1/x is an odd function.
+//         We use the following function to approximate y1,
+//              y1(x) = x*U(z)/V(z) + (2/pi)*(j1(x)*ln(x)-1/x), z= x**2
+//         where for x in [0,2] (abs err less than 2**-65.89)
+//              U(z) = U0[0] + U0[1]*z + ... + U0[4]*z**4
+//              V(z) = 1  + v0[0]*z + ... + v0[4]*z**5
+//         Note: For tiny x, 1/x dominate y1 and hence
+//              y1(tiny) = -2/pi/tiny, (choose tiny<2**-54)
+//      3. For x>=2.
+//               y1(x) = sqrt(2/(pi*x))*(p1(x)*sin(x1)+q1(x)*cos(x1))
+//         where x1 = x-3*pi/4. It is better to compute sin(x1),cos(x1)
+//         by method mentioned above.
+
+Source: Go1.25.6/src/math/jn.go
+// The original C code and the long comment below are
+// from FreeBSD's /usr/src/lib/msun/src/e_jn.c and
+// came with this notice. The go code is a simplified
+// version of the original C.
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+//
+// __ieee754_jn(n, x), __ieee754_yn(n, x)
+// floating point Bessel's function of the 1st and 2nd kind
+// of order n
+//
+// Special cases:
+//      y0(0)=y1(0)=yn(n,0) = -inf with division by zero signal;
+//      y0(-ve)=y1(-ve)=yn(n,-ve) are NaN with invalid signal.
+// Note 2. About jn(n,x), yn(n,x)
+//      For n=0, j0(x) is called,
+//      for n=1, j1(x) is called,
+//      for n<x, forward recursion is used starting
+//      from values of j0(x) and j1(x).
+//      for n>x, a continued fraction approximation to
+//      j(n,x)/j(n-1,x) is evaluated and then backward
+//      recursion is used starting from a supposed value
+//      for j(n,x). The resulting value of j(0,x) is
+//      compared with the actual value to correct the
+//      supposed value of j(n,x).
+//
+//      yn(n,x) is similar in all respects, except
+//      that forward recursion is used for all
+//      values of n>1.
+
+Source: Go1.25.6/src/math/lgamma.go
+// The original C code and the long comment below are
+// from FreeBSD's /usr/src/lib/msun/src/e_lgamma_r.c and
+// came with this notice. The go code is a simplified
+// version of the original C.
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+//
+// __ieee754_lgamma_r(x, signgamp)
+// Reentrant version of the logarithm of the Gamma function
+// with user provided pointer for the sign of Gamma(x).
+//
+// Method:
+//   1. Argument Reduction for 0 < x <= 8
+//      Since gamma(1+s)=s*gamma(s), for x in [0,8], we may
+//      reduce x to a number in [1.5,2.5] by
+//              lgamma(1+s) = log(s) + lgamma(s)
+//      for example,
+//              lgamma(7.3) = log(6.3) + lgamma(6.3)
+//                          = log(6.3*5.3) + lgamma(5.3)
+//                          = log(6.3*5.3*4.3*3.3*2.3) + lgamma(2.3)
+//   2. Polynomial approximation of lgamma around its
+//      minimum (ymin=1.461632144968362245) to maintain monotonicity.
+//      On [ymin-0.23, ymin+0.27] (i.e., [1.23164,1.73163]), use
+//              Let z = x-ymin;
+//              lgamma(x) = -1.214862905358496078218 + z**2*poly(z)
+//              poly(z) is a 14 degree polynomial.
+//   2. Rational approximation in the primary interval [2,3]
+//      We use the following approximation:
+//              s = x-2.0;
+//              lgamma(x) = 0.5*s + s*P(s)/Q(s)
+//      with accuracy
+//              |P/Q - (lgamma(x)-0.5s)| < 2**-61.71
+//      Our algorithms are based on the following observation
+//
+//                             zeta(2)-1    2    zeta(3)-1    3
+// lgamma(2+s) = s*(1-Euler) + --------- * s  -  --------- * s  + ...
+//                                 2                 3
+//
+//      where Euler = 0.5772156649... is the Euler constant, which
+//      is very close to 0.5.
+//
+//   3. For x>=8, we have
+//      lgamma(x)~(x-0.5)log(x)-x+0.5*log(2pi)+1/(12x)-1/(360x**3)+....
+//      (better formula:
+//         lgamma(x)~(x-0.5)*(log(x)-1)-.5*(log(2pi)-1) + ...)
+//      Let z = 1/x, then we approximation
+//              f(z) = lgamma(x) - (x-0.5)(log(x)-1)
+//      by
+//                                  3       5             11
+//              w = w0 + w1*z + w2*z  + w3*z  + ... + w6*z
+//      where
+//              |w - f(z)| < 2**-58.74
+//
+//   4. For negative x, since (G is gamma function)
+//              -x*G(-x)*G(x) = pi/sin(pi*x),
+//      we have
+//              G(x) = pi/(sin(pi*x)*(-x)*G(-x))
+//      since G(-x) is positive, sign(G(x)) = sign(sin(pi*x)) for x<0
+//      Hence, for x<0, signgam = sign(sin(pi*x)) and
+//              lgamma(x) = log(|Gamma(x)|)
+//                        = log(pi/(|x*sin(pi*x)|)) - lgamma(-x);
+//      Note: one should avoid computing pi*(-x) directly in the
+//            computation of sin(pi*(-x)).
+//
+//   5. Special Cases
+//              lgamma(2+s) ~ s*(1-Euler) for tiny s
+//              lgamma(1)=lgamma(2)=0
+//              lgamma(x) ~ -log(x) for tiny x
+//              lgamma(0) = lgamma(inf) = inf
+//              lgamma(-integer) = +-inf
+//
+//
+
+Source: Go1.25.6/src/math/sqrt.go
+// The original C code and the long comment below are
+// from FreeBSD's /usr/src/lib/msun/src/e_sqrt.c and
+// came with this notice. The go code is a simplified
+// version of the original C.
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+//
+// __ieee754_sqrt(x)
+// Return correctly rounded sqrt.
+//           -----------------------------------------
+//           | Use the hardware sqrt if you have one |
+//           -----------------------------------------
+// Method:
+//   Bit by bit method using integer arithmetic. (Slow, but portable)
+//   1. Normalization
+//      Scale x to y in [1,4) with even powers of 2:
+//      find an integer k such that  1 <= (y=x*2**(2k)) < 4, then
+//              sqrt(x) = 2**k * sqrt(y)
+//   2. Bit by bit computation
+//      Let q  = sqrt(y) truncated to i bit after binary point (q = 1),
+//           i                                                   0
+//                                     i+1         2
+//          s  = 2*q , and      y  =  2   * ( y - q  ).          (1)
+//           i      i            i                 i
+//
+//      To compute q    from q , one checks whether
+//                  i+1       i
+//
+//                            -(i+1) 2
+//                      (q + 2      )  <= y.                     (2)
+//                        i
+//                                                            -(i+1)
+//      If (2) is false, then q   = q ; otherwise q   = q  + 2      .
+//                             i+1   i             i+1   i
+//
+//      With some algebraic manipulation, it is not difficult to see
+//      that (2) is equivalent to
+//                             -(i+1)
+//                      s  +  2       <= y                       (3)
+//                       i                i
+//
+//      The advantage of (3) is that s  and y  can be computed by
+//                                    i      i
+//      the following recurrence formula:
+//          if (3) is false
+//
+//          s     =  s  ,       y    = y   ;                     (4)
+//           i+1      i          i+1    i
+//
+//      otherwise,
+//                         -i                      -(i+1)
+//          s     =  s  + 2  ,  y    = y  -  s  - 2              (5)
+//           i+1      i          i+1    i     i
+//
+//      One may easily use induction to prove (4) and (5).
+//      Note. Since the left hand side of (3) contain only i+2 bits,
+//            it is not necessary to do a full (53-bit) comparison
+//            in (3).
+//   3. Final rounding
+//      After generating the 53 bits result, we compute one more bit.
+//      Together with the remainder, we can decide whether the
+//      result is exact, bigger than 1/2ulp, or less than 1/2ulp
+//      (it will never equal to 1/2ulp).
+//      The rounding mode can be detected by checking whether
+//      huge + tiny is equal to huge, and whether huge - tiny is
+//      equal to huge for some floating point number "huge" and "tiny".
+//
+//
+// Notes:  Rounding mode detection omitted. The constants "mask", "shift",
+// and "bias" are found in src/math/bits.go
+
+Source: Go1.25.6/src/math/erf.go
+// The original C code and the long comment below are
+// from FreeBSD's /usr/src/lib/msun/src/s_erf.c and
+// came with this notice. The go code is a simplified
+// version of the original C.
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+//
+//
+// double erf(double x)
+// double erfc(double x)
+//                           x
+//                    2      |\
+//     erf(x)  =  ---------  | exp(-t*t)dt
+//                 sqrt(pi) \|
+//                           0
+//
+//     erfc(x) =  1-erf(x)
+//  Note that
+//              erf(-x) = -erf(x)
+//              erfc(-x) = 2 - erfc(x)
+//
+// Method:
+//      1. For |x| in [0, 0.84375]
+//          erf(x)  = x + x*R(x**2)
+//          erfc(x) = 1 - erf(x)           if x in [-.84375,0.25]
+//                  = 0.5 + ((0.5-x)-x*R)  if x in [0.25,0.84375]
+//         where R = P/Q where P is an odd poly of degree 8 and
+//         Q is an odd poly of degree 10.
+//                                               -57.90
+//                      | R - (erf(x)-x)/x | <= 2
+//
+//
+//         Remark. The formula is derived by noting
+//          erf(x) = (2/sqrt(pi))*(x - x**3/3 + x**5/10 - x**7/42 + ....)
+//         and that
+//          2/sqrt(pi) = 1.128379167095512573896158903121545171688
+//         is close to one. The interval is chosen because the fix
+//         point of erf(x) is near 0.6174 (i.e., erf(x)=x when x is
+//         near 0.6174), and by some experiment, 0.84375 is chosen to
+//         guarantee the error is less than one ulp for erf.
+//
+//      2. For |x| in [0.84375,1.25], let s = |x| - 1, and
+//         c = 0.84506291151 rounded to single (24 bits)
+//              erf(x)  = sign(x) * (c  + P1(s)/Q1(s))
+//              erfc(x) = (1-c)  - P1(s)/Q1(s) if x > 0
+//                        1+(c+P1(s)/Q1(s))    if x < 0
+//              |P1/Q1 - (erf(|x|)-c)| <= 2**-59.06
+//         Remark: here we use the taylor series expansion at x=1.
+//              erf(1+s) = erf(1) + s*Poly(s)
+//                       = 0.845.. + P1(s)/Q1(s)
+//         That is, we use rational approximation to approximate
+//                      erf(1+s) - (c = (single)0.84506291151)
+//         Note that |P1/Q1|< 0.078 for x in [0.84375,1.25]
+//         where
+//              P1(s) = degree 6 poly in s
+//              Q1(s) = degree 6 poly in s
+//
+//      3. For x in [1.25,1/0.35(~2.857143)],
+//              erfc(x) = (1/x)*exp(-x*x-0.5625+R1/S1)
+//              erf(x)  = 1 - erfc(x)
+//         where
+//              R1(z) = degree 7 poly in z, (z=1/x**2)
+//              S1(z) = degree 8 poly in z
+//
+//      4. For x in [1/0.35,28]
+//              erfc(x) = (1/x)*exp(-x*x-0.5625+R2/S2) if x > 0
+//                      = 2.0 - (1/x)*exp(-x*x-0.5625+R2/S2) if -6<x<0
+//                      = 2.0 - tiny            (if x <= -6)
+//              erf(x)  = sign(x)*(1.0 - erfc(x)) if x < 6, else
+//              erf(x)  = sign(x)*(1.0 - tiny)
+//         where
+//              R2(z) = degree 6 poly in z, (z=1/x**2)
+//              S2(z) = degree 7 poly in z
+//
+//      Note1:
+//         To compute exp(-x*x-0.5625+R/S), let s be a single
+//         precision number and s := x; then
+//              -x*x = -s*s + (s-x)*(s+x)
+//              exp(-x*x-0.5626+R/S) =
+//                      exp(-s*s-0.5625)*exp((s-x)*(s+x)+R/S);
+//      Note2:
+//         Here 4 and 5 make use of the asymptotic series
+//                        exp(-x*x)
+//              erfc(x) ~ ---------- * ( 1 + Poly(1/x**2) )
+//                        x*sqrt(pi)
+//         We use rational approximation to approximate
+//              g(s)=f(1/x**2) = log(erfc(x)*x) - x*x + 0.5625
+//         Here is the error bound for R1/S1 and R2/S2
+//              |R1/S1 - f(x)|  < 2**(-62.57)
+//              |R2/S2 - f(x)|  < 2**(-61.52)
+//
+//      5. For inf > x >= 28
+//              erf(x)  = sign(x) *(1 - tiny)  (raise inexact)
+//              erfc(x) = tiny*tiny (raise underflow) if x > 0
+//                      = 2 - tiny if x<0
+//
+//      7. Special case:
+//              erf(0)  = 0, erf(inf)  = 1, erf(-inf) = -1,
+//              erfc(0) = 1, erfc(inf) = 0, erfc(-inf) = 2,
+//              erfc/erf(NaN) is NaN
+
+Source: Go1.25.6/src/math/acosh.go
+// The original C code, the long comment, and the constants
+// below are from FreeBSD's /usr/src/lib/msun/src/e_acosh.c
+// and came with this notice. The go code is a simplified
+// version of the original C.
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+//
+//
+// __ieee754_acosh(x)
+// Method :
+//	Based on
+//	        acosh(x) = log [ x + sqrt(x*x-1) ]
+//	we have
+//	        acosh(x) := log(x)+ln2,	if x is large; else
+//	        acosh(x) := log(2x-1/(sqrt(x*x-1)+x)) if x>2; else
+//	        acosh(x) := log1p(t+sqrt(2.0*t+t*t)); where t=x-1.
+//
+// Special cases:
+//	acosh(x) is NaN with signal if x<1.
+//	acosh(NaN) is NaN without signal.
+//
+
+Source: Go1.25.6/src/math/atanh.go
+// The original C code, the long comment, and the constants
+// below are from FreeBSD's /usr/src/lib/msun/src/e_atanh.c
+// and came with this notice. The go code is a simplified
+// version of the original C.
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+//
+//
+// __ieee754_atanh(x)
+// Method :
+//	1. Reduce x to positive by atanh(-x) = -atanh(x)
+//	2. For x>=0.5
+//	            1              2x                          x
+//	atanh(x) = --- * log(1 + -------) = 0.5 * log1p(2 * --------)
+//	            2             1 - x                      1 - x
+//
+//	For x<0.5
+//	atanh(x) = 0.5*log1p(2x+2x*x/(1-x))
+//
+// Special cases:
+//	atanh(x) is NaN if |x| > 1 with signal;
+//	atanh(NaN) is that NaN with no signal;
+//	atanh(+-1) is +-INF with signal.
+//
+
+Source: Go1.25.6/src/math/exp.go
+// The original C code, the long comment, and the constants
+// below are from FreeBSD's /usr/src/lib/msun/src/e_exp.c
+// and came with this notice. The go code is a simplified
+// version of the original C.
+//
+// ====================================================
+// Copyright (C) 2004 by Sun Microsystems, Inc. All rights reserved.
+//
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+//
+//
+// exp(x)
+// Returns the exponential of x.
+//
+// Method
+//   1. Argument reduction:
+//      Reduce x to an r so that |r| <= 0.5*ln2 ~ 0.34658.
+//      Given x, find r and integer k such that
+//
+//               x = k*ln2 + r,  |r| <= 0.5*ln2.
+//
+//      Here r will be represented as r = hi-lo for better
+//      accuracy.
+//
+//   2. Approximation of exp(r) by a special rational function on
+//      the interval [0,0.34658]:
+//      Write
+//          R(r**2) = r*(exp(r)+1)/(exp(r)-1) = 2 + r*r/6 - r**4/360 + ...
+//      We use a special Remez algorithm on [0,0.34658] to generate
+//      a polynomial of degree 5 to approximate R. The maximum error
+//      of this polynomial approximation is bounded by 2**-59. In
+//      other words,
+//          R(z) ~ 2.0 + P1*z + P2*z**2 + P3*z**3 + P4*z**4 + P5*z**5
+//      (where z=r*r, and the values of P1 to P5 are listed below)
+//      and
+//          |                  5          |     -59
+//          | 2.0+P1*z+...+P5*z   -  R(z) | <= 2
+//          |                             |
+//      The computation of exp(r) thus becomes
+//                             2*r
+//              exp(r) = 1 + -------
+//                            R - r
+//                                 r*R1(r)
+//                     = 1 + r + ----------- (for better accuracy)
+//                                2 - R1(r)
+//      where
+//                               2       4             10
+//              R1(r) = r - (P1*r  + P2*r  + ... + P5*r   ).
+//
+//   3. Scale back to obtain exp(x):
+//      From step 1, we have
+//         exp(x) = 2**k * exp(r)
+//
+// Special cases:
+//      exp(INF) is INF, exp(NaN) is NaN;
+//      exp(-INF) is 0, and
+//      for finite argument, only exp(0)=1 is exact.
+//
+// Accuracy:
+//      according to an error analysis, the error is always less than
+//      1 ulp (unit in the last place).
+//
+// Misc. info.
+//      For IEEE double
+//          if x >  7.09782712893383973096e+02 then exp(x) overflow
+//          if x < -7.45133219101941108420e+02 then exp(x) underflow
+//
+// Constants:
+// The hexadecimal values are the intended ones for the following
+// constants. The decimal values may be used, provided that the
+// compiler will convert from decimal to binary accurately enough
+// to produce the hexadecimal values shown.
+
+Source: Go1.25.6/src/math/log.go
+// The original C code, the long comment, and the constants
+// below are from FreeBSD's /usr/src/lib/msun/src/e_log.c
+// and came with this notice. The go code is a simpler
+// version of the original C.
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+//
+// __ieee754_log(x)
+// Return the logarithm of x
+//
+// Method :
+//   1. Argument Reduction: find k and f such that
+//			x = 2**k * (1+f),
+//	   where  sqrt(2)/2 < 1+f < sqrt(2) .
+//
+//   2. Approximation of log(1+f).
+//	Let s = f/(2+f) ; based on log(1+f) = log(1+s) - log(1-s)
+//		 = 2s + 2/3 s**3 + 2/5 s**5 + .....,
+//	     	 = 2s + s*R
+//      We use a special Reme algorithm on [0,0.1716] to generate
+//	a polynomial of degree 14 to approximate R.  The maximum error
+//	of this polynomial approximation is bounded by 2**-58.45. In
+//	other words,
+//		        2      4      6      8      10      12      14
+//	    R(z) ~ L1*s +L2*s +L3*s +L4*s +L5*s  +L6*s  +L7*s
+//	(the values of L1 to L7 are listed in the program) and
+//	    |      2          14          |     -58.45
+//	    | L1*s +...+L7*s    -  R(z) | <= 2
+//	    |                             |
+//	Note that 2s = f - s*f = f - hfsq + s*hfsq, where hfsq = f*f/2.
+//	In order to guarantee error in log below 1ulp, we compute log by
+//		log(1+f) = f - s*(f - R)		(if f is not too large)
+//		log(1+f) = f - (hfsq - s*(hfsq+R)).	(better accuracy)
+//
+//	3. Finally,  log(x) = k*Ln2 + log(1+f).
+//			    = k*Ln2_hi+(f-(hfsq-(s*(hfsq+R)+k*Ln2_lo)))
+//	   Here Ln2 is split into two floating point number:
+//			Ln2_hi + Ln2_lo,
+//	   where n*Ln2_hi is always exact for |n| < 2000.
+//
+// Special cases:
+//	log(x) is NaN with signal if x < 0 (including -INF) ;
+//	log(+INF) is +INF; log(0) is -INF with signal;
+//	log(NaN) is that NaN with no signal.
+//
+// Accuracy:
+//	according to an error analysis, the error is always less than
+//	1 ulp (unit in the last place).
+//
+// Constants:
+// The hexadecimal values are the intended ones for the following
+// constants. The decimal values may be used, provided that the
+// compiler will convert from decimal to binary accurately enough
+// to produce the hexadecimal values shown.
+
+Source: Go1.25.6/src/math/asinh.go
+// The original C code, the long comment, and the constants
+// below are from FreeBSD's /usr/src/lib/msun/src/s_asinh.c
+// and came with this notice. The go code is a simplified
+// version of the original C.
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+//
+//
+// asinh(x)
+// Method :
+//	Based on
+//	        asinh(x) = sign(x) * log [ |x| + sqrt(x*x+1) ]
+//	we have
+//	asinh(x) := x  if  1+x*x=1,
+//	         := sign(x)*(log(x)+ln2) for large |x|, else
+//	         := sign(x)*log(2|x|+1/(|x|+sqrt(x*x+1))) if|x|>2, else
+//	         := sign(x)*log1p(|x| + x**2/(1 + sqrt(1+x**2)))
+//
+
+Source: Go1.25.6/src/math/expm1.go
+// The original C code, the long comment, and the constants
+// below are from FreeBSD's /usr/src/lib/msun/src/s_expm1.c
+// and came with this notice. The go code is a simplified
+// version of the original C.
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+//
+// expm1(x)
+// Returns exp(x)-1, the exponential of x minus 1.
+//
+// Method
+//   1. Argument reduction:
+//      Given x, find r and integer k such that
+//
+//               x = k*ln2 + r,  |r| <= 0.5*ln2 ~ 0.34658
+//
+//      Here a correction term c will be computed to compensate
+//      the error in r when rounded to a floating-point number.
+//
+//   2. Approximating expm1(r) by a special rational function on
+//      the interval [0,0.34658]:
+//      Since
+//          r*(exp(r)+1)/(exp(r)-1) = 2+ r**2/6 - r**4/360 + ...
+//      we define R1(r*r) by
+//          r*(exp(r)+1)/(exp(r)-1) = 2+ r**2/6 * R1(r*r)
+//      That is,
+//          R1(r**2) = 6/r *((exp(r)+1)/(exp(r)-1) - 2/r)
+//                   = 6/r * ( 1 + 2.0*(1/(exp(r)-1) - 1/r))
+//                   = 1 - r**2/60 + r**4/2520 - r**6/100800 + ...
+//      We use a special Reme algorithm on [0,0.347] to generate
+//      a polynomial of degree 5 in r*r to approximate R1. The
+//      maximum error of this polynomial approximation is bounded
+//      by 2**-61. In other words,
+//          R1(z) ~ 1.0 + Q1*z + Q2*z**2 + Q3*z**3 + Q4*z**4 + Q5*z**5
+//      where   Q1  =  -1.6666666666666567384E-2,
+//              Q2  =   3.9682539681370365873E-4,
+//              Q3  =  -9.9206344733435987357E-6,
+//              Q4  =   2.5051361420808517002E-7,
+//              Q5  =  -6.2843505682382617102E-9;
+//      (where z=r*r, and the values of Q1 to Q5 are listed below)
+//      with error bounded by
+//          |                  5           |     -61
+//          | 1.0+Q1*z+...+Q5*z   -  R1(z) | <= 2
+//          |                              |
+//
+//      expm1(r) = exp(r)-1 is then computed by the following
+//      specific way which minimize the accumulation rounding error:
+//                             2     3
+//                            r     r    [ 3 - (R1 + R1*r/2)  ]
+//            expm1(r) = r + --- + --- * [--------------------]
+//                            2     2    [ 6 - r*(3 - R1*r/2) ]
+//
+//      To compensate the error in the argument reduction, we use
+//              expm1(r+c) = expm1(r) + c + expm1(r)*c
+//                         ~ expm1(r) + c + r*c
+//      Thus c+r*c will be added in as the correction terms for
+//      expm1(r+c). Now rearrange the term to avoid optimization
+//      screw up:
+//                      (      2                                    2 )
+//                      ({  ( r    [ R1 -  (3 - R1*r/2) ]  )  }    r  )
+//       expm1(r+c)~r - ({r*(--- * [--------------------]-c)-c} - --- )
+//                      ({  ( 2    [ 6 - r*(3 - R1*r/2) ]  )  }    2  )
+//                      (                                             )
+//
+//                 = r - E
+//   3. Scale back to obtain expm1(x):
+//      From step 1, we have
+//         expm1(x) = either 2**k*[expm1(r)+1] - 1
+//                  = or     2**k*[expm1(r) + (1-2**-k)]
+//   4. Implementation notes:
+//      (A). To save one multiplication, we scale the coefficient Qi
+//           to Qi*2**i, and replace z by (x**2)/2.
+//      (B). To achieve maximum accuracy, we compute expm1(x) by
+//        (i)   if x < -56*ln2, return -1.0, (raise inexact if x!=inf)
+//        (ii)  if k=0, return r-E
+//        (iii) if k=-1, return 0.5*(r-E)-0.5
+//        (iv)  if k=1 if r < -0.25, return 2*((r+0.5)- E)
+//                     else          return  1.0+2.0*(r-E);
+//        (v)   if (k<-2||k>56) return 2**k(1-(E-r)) - 1 (or exp(x)-1)
+//        (vi)  if k <= 20, return 2**k((1-2**-k)-(E-r)), else
+//        (vii) return 2**k(1-((E+2**-k)-r))
+//
+// Special cases:
+//      expm1(INF) is INF, expm1(NaN) is NaN;
+//      expm1(-INF) is -1, and
+//      for finite argument, only expm1(0)=0 is exact.
+//
+// Accuracy:
+//      according to an error analysis, the error is always less than
+//      1 ulp (unit in the last place).
+//
+// Misc. info.
+//      For IEEE double
+//          if x >  7.09782712893383973096e+02 then expm1(x) overflow
+//
+// Constants:
+// The hexadecimal values are the intended ones for the following
+// constants. The decimal values may be used, provided that the
+// compiler will convert from decimal to binary accurately enough
+// to produce the hexadecimal values shown.
+//
+
+Source: Go1.25.6/src/math/log1p.go
+// The original C code, the long comment, and the constants
+// below are from FreeBSD's /usr/src/lib/msun/src/s_log1p.c
+// and came with this notice. The go code is a simplified
+// version of the original C.
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+//
+//
+// double log1p(double x)
+//
+// Method :
+//   1. Argument Reduction: find k and f such that
+//                      1+x = 2**k * (1+f),
+//         where  sqrt(2)/2 < 1+f < sqrt(2) .
+//
+//      Note. If k=0, then f=x is exact. However, if k!=0, then f
+//      may not be representable exactly. In that case, a correction
+//      term is need. Let u=1+x rounded. Let c = (1+x)-u, then
+//      log(1+x) - log(u) ~ c/u. Thus, we proceed to compute log(u),
+//      and add back the correction term c/u.
+//      (Note: when x > 2**53, one can simply return log(x))
+//
+//   2. Approximation of log1p(f).
+//      Let s = f/(2+f) ; based on log(1+f) = log(1+s) - log(1-s)
+//               = 2s + 2/3 s**3 + 2/5 s**5 + .....,
+//               = 2s + s*R
+//      We use a special Reme algorithm on [0,0.1716] to generate
+//      a polynomial of degree 14 to approximate R The maximum error
+//      of this polynomial approximation is bounded by 2**-58.45. In
+//      other words,
+//                      2      4      6      8      10      12      14
+//          R(z) ~ Lp1*s +Lp2*s +Lp3*s +Lp4*s +Lp5*s  +Lp6*s  +Lp7*s
+//      (the values of Lp1 to Lp7 are listed in the program)
+//      and
+//          |      2          14          |     -58.45
+//          | Lp1*s +...+Lp7*s    -  R(z) | <= 2
+//          |                             |
+//      Note that 2s = f - s*f = f - hfsq + s*hfsq, where hfsq = f*f/2.
+//      In order to guarantee error in log below 1ulp, we compute log
+//      by
+//              log1p(f) = f - (hfsq - s*(hfsq+R)).
+//
+//   3. Finally, log1p(x) = k*ln2 + log1p(f).
+//                        = k*ln2_hi+(f-(hfsq-(s*(hfsq+R)+k*ln2_lo)))
+//      Here ln2 is split into two floating point number:
+//                   ln2_hi + ln2_lo,
+//      where n*ln2_hi is always exact for |n| < 2000.
+//
+// Special cases:
+//      log1p(x) is NaN with signal if x < -1 (including -INF) ;
+//      log1p(+INF) is +INF; log1p(-1) is -INF with signal;
+//      log1p(NaN) is that NaN with no signal.
+//
+// Accuracy:
+//      according to an error analysis, the error is always less than
+//      1 ulp (unit in the last place).
+//
+// Constants:
+// The hexadecimal values are the intended ones for the following
+// constants. The decimal values may be used, provided that the
+// compiler will convert from decimal to binary accurately enough
+// to produce the hexadecimal values shown.
+//
+// Note: Assuming log() return accurate answer, the following
+//       algorithm can be used to compute log1p(x) to within a few ULP:
+//
+//              u = 1+x;
+//              if(u==1.0) return x ; else
+//                         return log(u)*(x/(u-1.0));
+//
+//       See HP-15C Advanced Functions Handbook, p.193.
+
+Source: Go1.25.6/src/math/gamma.go
+// The original C code, the long comment, and the constants
+// below are from http://netlib.sandia.gov/cephes/cprob/gamma.c.
+// The go code is a simplified version of the original C.
+//
+//      tgamma.c
+//
+//      Gamma function
+//
+// SYNOPSIS:
+//
+// double x, y, tgamma();
+// extern int signgam;
+//
+// y = tgamma( x );
+//
+// DESCRIPTION:
+//
+// Returns gamma function of the argument. The result is
+// correctly signed, and the sign (+1 or -1) is also
+// returned in a global (extern) variable named signgam.
+// This variable is also filled in by the logarithmic gamma
+// function lgamma().
+//
+// Arguments |x| <= 34 are reduced by recurrence and the function
+// approximated by a rational function of degree 6/7 in the
+// interval (2,3).  Large arguments are handled by Stirling's
+// formula. Large negative arguments are made positive using
+// a reflection formula.
+//
+// ACCURACY:
+//
+//                      Relative error:
+// arithmetic   domain     # trials      peak         rms
+//    DEC      -34, 34      10000       1.3e-16     2.5e-17
+//    IEEE    -170,-33      20000       2.3e-15     3.3e-16
+//    IEEE     -33,  33     20000       9.4e-16     2.2e-16
+//    IEEE      33, 171.6   20000       2.3e-15     3.2e-16
+//
+// Error for arguments outside the test range will be larger
+// owing to error amplification by the exponential function.
+//
+// Cephes Math Library Release 2.8:  June, 2000
+// Copyright 1984, 1987, 1989, 1992, 2000 by Stephen L. Moshier
+//
+// The readme file at http://netlib.sandia.gov/cephes/ says:
+//    Some software in this archive may be from the book _Methods and
+// Programs for Mathematical Functions_ (Prentice-Hall or Simon & Schuster
+// International, 1989) or from the Cephes Mathematical Library, a
+// commercial product. In either event, it is copyrighted by the author.
+// What you see here may be used freely but it comes with no support or
+// guarantee.
+//
+//   The two known misprints in the book are repaired here in the
+// source listings for the gamma function and the incomplete beta
+// integral.
+//
+//   Stephen L. Moshier
+//   moshier@na-net.ornl.gov
+
+Source: Go1.25.6/src/math/sin.go
+// The original C code, the long comment, and the constants
+// below were from http://netlib.sandia.gov/cephes/cmath/sin.c,
+// available from http://www.netlib.org/cephes/cmath.tgz.
+// The go code is a simplified version of the original C.
+//
+//      sin.c
+//
+//      Circular sine
+//
+// SYNOPSIS:
+//
+// double x, y, sin();
+// y = sin( x );
+//
+// DESCRIPTION:
+//
+// Range reduction is into intervals of pi/4.  The reduction error is nearly
+// eliminated by contriving an extended precision modular arithmetic.
+//
+// Two polynomial approximating functions are employed.
+// Between 0 and pi/4 the sine is approximated by
+//      x  +  x**3 P(x**2).
+// Between pi/4 and pi/2 the cosine is represented as
+//      1  -  x**2 Q(x**2).
+//
+// ACCURACY:
+//
+//                      Relative error:
+// arithmetic   domain      # trials      peak         rms
+//    DEC       0, 10       150000       3.0e-17     7.8e-18
+//    IEEE -1.07e9,+1.07e9  130000       2.1e-16     5.4e-17
+//
+// Partial loss of accuracy begins to occur at x = 2**30 = 1.074e9.  The loss
+// is not gradual, but jumps suddenly to about 1 part in 10e7.  Results may
+// be meaningless for x > 2**49 = 5.6e14.
+//
+//      cos.c
+//
+//      Circular cosine
+//
+// SYNOPSIS:
+//
+// double x, y, cos();
+// y = cos( x );
+//
+// DESCRIPTION:
+//
+// Range reduction is into intervals of pi/4.  The reduction error is nearly
+// eliminated by contriving an extended precision modular arithmetic.
+//
+// Two polynomial approximating functions are employed.
+// Between 0 and pi/4 the cosine is approximated by
+//      1  -  x**2 Q(x**2).
+// Between pi/4 and pi/2 the sine is represented as
+//      x  +  x**3 P(x**2).
+//
+// ACCURACY:
+//
+//                      Relative error:
+// arithmetic   domain      # trials      peak         rms
+//    IEEE -1.07e9,+1.07e9  130000       2.1e-16     5.4e-17
+//    DEC        0,+1.07e9   17000       3.0e-17     7.2e-18
+//
+// Cephes Math Library Release 2.8:  June, 2000
+// Copyright 1984, 1987, 1989, 1992, 2000 by Stephen L. Moshier
+//
+// The readme file at http://netlib.sandia.gov/cephes/ says:
+//    Some software in this archive may be from the book _Methods and
+// Programs for Mathematical Functions_ (Prentice-Hall or Simon & Schuster
+// International, 1989) or from the Cephes Mathematical Library, a
+// commercial product. In either event, it is copyrighted by the author.
+// What you see here may be used freely but it comes with no support or
+// guarantee.
+//
+//   The two known misprints in the book are repaired here in the
+// source listings for the gamma function and the incomplete beta
+// integral.
+//
+//   Stephen L. Moshier
+//   moshier@na-net.ornl.gov
+
+Source: Go1.25.6/src/math/tan.go
+// The original C code, the long comment, and the constants
+// below were from http://netlib.sandia.gov/cephes/cmath/sin.c,
+// available from http://www.netlib.org/cephes/cmath.tgz.
+// The go code is a simplified version of the original C.
+//
+//      tan.c
+//
+//      Circular tangent
+//
+// SYNOPSIS:
+//
+// double x, y, tan();
+// y = tan( x );
+//
+// DESCRIPTION:
+//
+// Returns the circular tangent of the radian argument x.
+//
+// Range reduction is modulo pi/4.  A rational function
+//       x + x**3 P(x**2)/Q(x**2)
+// is employed in the basic interval [0, pi/4].
+//
+// ACCURACY:
+//                      Relative error:
+// arithmetic   domain     # trials      peak         rms
+//    DEC      +-1.07e9      44000      4.1e-17     1.0e-17
+//    IEEE     +-1.07e9      30000      2.9e-16     8.1e-17
+//
+// Partial loss of accuracy begins to occur at x = 2**30 = 1.074e9.  The loss
+// is not gradual, but jumps suddenly to about 1 part in 10e7.  Results may
+// be meaningless for x > 2**49 = 5.6e14.
+// [Accuracy loss statement from sin.go comments.]
+//
+// Cephes Math Library Release 2.8:  June, 2000
+// Copyright 1984, 1987, 1989, 1992, 2000 by Stephen L. Moshier
+//
+// The readme file at http://netlib.sandia.gov/cephes/ says:
+//    Some software in this archive may be from the book _Methods and
+// Programs for Mathematical Functions_ (Prentice-Hall or Simon & Schuster
+// International, 1989) or from the Cephes Mathematical Library, a
+// commercial product. In either event, it is copyrighted by the author.
+// What you see here may be used freely but it comes with no support or
+// guarantee.
+//
+//   The two known misprints in the book are repaired here in the
+// source listings for the gamma function and the incomplete beta
+// integral.
+//
+//   Stephen L. Moshier
+//   moshier@na-net.ornl.gov
+
+Source: Go1.25.6/src/math/tanh.go
+// The original C code, the long comment, and the constants
+// below were from http://netlib.sandia.gov/cephes/cmath/sin.c,
+// available from http://www.netlib.org/cephes/cmath.tgz.
+// The go code is a simplified version of the original C.
+//      tanh.c
+//
+//      Hyperbolic tangent
+//
+// SYNOPSIS:
+//
+// double x, y, tanh();
+//
+// y = tanh( x );
+//
+// DESCRIPTION:
+//
+// Returns hyperbolic tangent of argument in the range MINLOG to MAXLOG.
+//      MAXLOG = 8.8029691931113054295988e+01 = log(2**127)
+//      MINLOG = -8.872283911167299960540e+01 = log(2**-128)
+//
+// A rational function is used for |x| < 0.625.  The form
+// x + x**3 P(x)/Q(x) of Cody & Waite is employed.
+// Otherwise,
+//      tanh(x) = sinh(x)/cosh(x) = 1  -  2/(exp(2x) + 1).
+//
+// ACCURACY:
+//
+//                      Relative error:
+// arithmetic   domain     # trials      peak         rms
+//    IEEE      -2,2        30000       2.5e-16     5.8e-17
+//
+// Cephes Math Library Release 2.8:  June, 2000
+// Copyright 1984, 1987, 1989, 1992, 2000 by Stephen L. Moshier
+//
+// The readme file at http://netlib.sandia.gov/cephes/ says:
+//    Some software in this archive may be from the book _Methods and
+// Programs for Mathematical Functions_ (Prentice-Hall or Simon & Schuster
+// International, 1989) or from the Cephes Mathematical Library, a
+// commercial product. In either event, it is copyrighted by the author.
+// What you see here may be used freely but it comes with no support or
+// guarantee.
+//
+//   The two known misprints in the book are repaired here in the
+// source listings for the gamma function and the incomplete beta
+// integral.
+//
+//   Stephen L. Moshier
+//   moshier@na-net.ornl.gov
+//
+
+Source: Go1.25.6/src/math/atan.go
+// The original C code, the long comment, and the constants below were
+// from http://netlib.sandia.gov/cephes/cmath/atan.c, available from
+// http://www.netlib.org/cephes/cmath.tgz.
+// The go code is a version of the original C.
+//
+// atan.c
+// Inverse circular tangent (arctangent)
+//
+// SYNOPSIS:
+// double x, y, atan();
+// y = atan( x );
+//
+// DESCRIPTION:
+// Returns radian angle between -pi/2 and +pi/2 whose tangent is x.
+//
+// Range reduction is from three intervals into the interval from zero to 0.66.
+// The approximant uses a rational function of degree 4/5 of the form
+// x + x**3 P(x)/Q(x).
+//
+// ACCURACY:
+//                      Relative error:
+// arithmetic   domain    # trials  peak     rms
+//    DEC       -10, 10   50000     2.4e-17  8.3e-18
+//    IEEE      -10, 10   10^6      1.8e-16  5.0e-17
+//
+// Cephes Math Library Release 2.8:  June, 2000
+// Copyright 1984, 1987, 1989, 1992, 2000 by Stephen L. Moshier
+//
+// The readme file at http://netlib.sandia.gov/cephes/ says:
+//    Some software in this archive may be from the book _Methods and
+// Programs for Mathematical Functions_ (Prentice-Hall or Simon & Schuster
+// International, 1989) or from the Cephes Mathematical Library, a
+// commercial product. In either event, it is copyrighted by the author.
+// What you see here may be used freely but it comes with no support or
+// guarantee.
+//
+//   The two known misprints in the book are repaired here in the
+// source listings for the gamma function and the incomplete beta
+// integral.
+//
+//   Stephen L. Moshier
+//   moshier@na-net.ornl.gov

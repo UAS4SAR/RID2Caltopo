@@ -88,7 +88,7 @@ class DroneSpecConfirmationLogicTest {
         assertEquals("", state.pilotCallsign)
         assertEquals("DJI Mini 4 Pro", state.droneDescription)
         assertEquals(
-            "New or mutual-aid drone detected. Confirm org, pilot callsign, and drone description before continuing.",
+            "New or visiting organization drone detected. Confirm org, pilot callsign, and drone description before continuing.",
             state.warning
         )
     }

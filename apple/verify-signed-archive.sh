@@ -26,18 +26,13 @@ actual_bundle="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info")
 actual_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info")"
 families="$(/usr/libexec/PlistBuddy -c 'Print :UIDeviceFamily' "$info")"
 schemes="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes' "$info")"
-privacy_types="$(/usr/libexec/PlistBuddy -c 'Print :NSPrivacyCollectedDataTypes' "$privacy")"
+python3 "${0:A:h}/../tools/privacy/check_apple_privacy.py" --app "$app"
+python3 "${0:A:h}/../tools/licenses/prepare_legal.py" --check --artifact "$app"
+python3 "${0:A:h}/../tools/licenses/prepare_apple_relink.py" --verify-app "$app" --require-published
 
 [[ "$families" == *1* && "$families" == *2* ]] || { echo "Archive is not universal for iPhone and iPad" >&2; exit 1; }
-for scheme in r2c2 r2cenroll r2cfaa1 r2cma1; do
+for scheme in r2cmapkg1 r2creauth; do
     [[ "$schemes" == *"$scheme"* ]] || { echo "Missing QR URL scheme: $scheme" >&2; exit 1; }
-done
-for data_type in \
-    NSPrivacyCollectedDataTypePreciseLocation \
-    NSPrivacyCollectedDataTypeDeviceID \
-    NSPrivacyCollectedDataTypeOtherUserContent \
-    NSPrivacyCollectedDataTypeOtherDiagnosticData; do
-    [[ "$privacy_types" == *"$data_type"* ]] || { echo "Missing privacy declaration: $data_type" >&2; exit 1; }
 done
 
 codesign --verify --deep --strict --verbose=2 "$app"

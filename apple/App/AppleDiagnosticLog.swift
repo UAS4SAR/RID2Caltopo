@@ -113,7 +113,7 @@ actor AppleDiagnosticLogStore {
     ) throws -> URL {
         guard let rootURL, !selectedDays.isEmpty else { throw CocoaError(.fileNoSuchFile) }
         try handle?.synchronize()
-        let destination = FileManager.default.temporaryDirectory
+        let destination = try TemporaryWorkspace.directory("Diagnostics")
             .appendingPathComponent("R2C_Logs_\(Self.dayName(for: Date())).zip")
         var entries = [
             OperationalZipArchive.Entry(
@@ -376,7 +376,7 @@ final class AppleDiagnosticsCenter: ObservableObject {
             "time_zone": TimeZone.current.identifier,
             "wifi_ipv4": AppleNetworkAddress.preferredIPv4Address() ?? "unavailable",
             "generated_at": OperationalDiagnosticLogFormat.localTimestamp(Date()),
-            "note": "No CalTopo credential secret is included.",
+            "note": "Contains selected diagnostic logs and optional track files; saved configuration is not attached.",
         ]
         let data = try? JSONSerialization.data(withJSONObject: fields, options: [.prettyPrinted, .sortedKeys])
         return "RID2Caltopo Diagnostic Manifest\n" + String(decoding: data ?? Data(), as: UTF8.self)

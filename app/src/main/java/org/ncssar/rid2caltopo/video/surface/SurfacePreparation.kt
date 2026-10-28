@@ -85,7 +85,7 @@ internal object SurfacePreparation {
         deleteStale(context,keep?.let { SurfaceSourceReuse.workDirectoryName(it) })
     }
     private fun deleteStale(context: Context, keepName: String?) {
-        SurfaceSourceReuse.deleteWorkDirectories(context.cacheDir,keepName)
+        SurfaceSourceReuse.deleteWorkDirectories(org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context,"aol-work"),keepName)
     }
     @Volatile private var preparing=false
     /** [onCounts] reports (lidar files ready, 1 m tiles built, files kept from an earlier attempt) as each completes. */
@@ -94,7 +94,7 @@ internal object SurfacePreparation {
         check(!plan.reused) { "Cached AOL coverage expired or changed. Reopen Download Map to refresh the plan." }
         SurfaceTiming("aol-prepare").use { timing ->
         // One work folder per AOL selection keeps verified lidar files for a retry of the same selection.
-        val scratch=File(context.cacheDir,SurfaceSourceReuse.workDirectoryName(plan))
+        val scratch=File(org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context,"aol-work"),SurfaceSourceReuse.workDirectoryName(plan))
         preparing=true
         deleteStale(context,scratch.name)
         var succeeded=false

@@ -13,7 +13,7 @@ class ManagedVideoRecordingAssociationTest {
         try {
             file.writeBytes(ByteArray(12345))
             val recording = ManagedVideoSessionRecording("id", "Matrice", file, Instant.EPOCH,
-                6100, 1920, 1080, 29.97, "h264", 4_000_000)
+                6100, 1920, 1080, 29.97, "h264", 4_000_000, byteCount = file.length())
             val advertised = ManagedVideoSessionRecordingCatalog.advertisement(recording)
             assertEquals(12345L, advertised.sourceSizeBytes)
             assertEquals(1920, advertised.sourceWidth)
@@ -23,6 +23,15 @@ class ManagedVideoRecordingAssociationTest {
             assertEquals("h264", advertised.sourceCodec)
             assertEquals(6100L, advertised.durationMs)
         } finally { file.delete() }
+    }
+
+    @Test fun advertisementUsesPreparedSizeWithoutTouchingTheFilesystem() {
+        val inaccessibleFile = object : File("/unavailable/recording.mp4") {
+            override fun length(): Long = error("Advertisement must not access storage")
+        }
+        val recording = ManagedVideoSessionRecording("id", "Matrice", inaccessibleFile, Instant.EPOCH,
+            6100, 1920, 1080, 29.97, "h264", byteCount = 12345)
+        assertEquals(12345L, ManagedVideoSessionRecordingCatalog.advertisement(recording).sourceSizeBytes)
     }
 
     @Test

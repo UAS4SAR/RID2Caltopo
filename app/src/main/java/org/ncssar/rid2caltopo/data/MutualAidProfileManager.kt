@@ -48,85 +48,11 @@ object MutualAidProfileManager {
         return cal.timeInMillis
     }
 
-    @JvmStatic
-    fun uploadMutualAidProfile(
-        context: Context,
-        account: GoogleSignInAccount,
-        displayName: String,
-        incident: String,
-        opPeriod: String,
-        targetMapId: String,
-        targetMapTitle: String,
-        expiresAtEpochMs: Long,
-        callback: (Boolean, String, String?) -> Unit
-    ) {
-        val appContext = context.applicationContext
-        executor.execute {
-            val result = try {
-                val sourceOrg = CaltopoClient.GetMutualAidSourceLabel().ifBlank {
-                    throw IllegalStateException("Set the Mutual Aid source organization label in Settings before exporting MA config.")
-                }
-                val template = CaltopoClient.GetMutualAidTemplate()
-                CaltopoClient.CTDebug(
-                    TAG,
-                    "uploadMutualAidProfile(): exporting sourceOrg='$sourceOrg' teamId='${maskId(template.teamId)}' credentialId='${maskId(template.credentialId)}' targetMapId='${targetMapId.ifBlank { CaltopoMap.GetMapId() }}'"
-                )
-                val profile = buildProfile(
-                    sourceOrg = sourceOrg,
-                    displayName = displayName,
-                    incident = incident,
-                    opPeriod = opPeriod,
-                    targetMapId = targetMapId,
-                    targetMapTitle = targetMapTitle,
-                    expiresAtEpochMs = expiresAtEpochMs
-                )
-                val bundleJson = buildBundle(sourceOrg, profile)
-                val fileId = GoogleDriveConfigSync.uploadMutualAidProfileFile(
-                    appContext,
-                    account,
-                    bundleJson,
-                    sanitizeBundleName(displayName.ifBlank { sourceOrg })
-                )
-                val token = MutualAidToken.encode(
-                    MutualAidToken.MutualAidConfig(
-                        sourceOrg = sourceOrg,
-                        driveFileId = fileId,
-                        isPublic = true
-                    )
-                )
-                storeToken(appContext, token)
-                Triple(true, "Mutual aid profile uploaded to Drive.", token)
-            } catch (e: Exception) {
-                CaltopoClient.CTWarn(TAG, "uploadMutualAidProfile() failed.", e)
-                Triple(false, e.message ?: "Mutual aid upload failed.", null)
-            }
-            mainHandler.post { callback(result.first, result.second, result.third) }
-        }
-    }
+
 
     @JvmStatic
     fun applyBundle(context: Context, json: String): Pair<Boolean, String> {
-        return try {
-            val bundle = JSONObject(json)
-            if (bundle.optString("format") != FORMAT) {
-                return false to "Unexpected mutual aid bundle format."
-            }
-            val encryptedProfile = bundle.optJSONObject("profile")
-            if (encryptedProfile == null || encryptedProfile.optString("type") != TYPE_PROFILE_ENC) {
-                return false to "Mutual aid bundle did not contain an encrypted profile."
-            }
-            val plaintext = MutualAidToken.decryptPayload(encryptedProfile.optString("enc"))
-            val profileJson = JSONObject(plaintext)
-            val profile = parseProfile(profileJson)
-            if (profile.profileId.isEmpty()) {
-                return false to "Mutual aid profile is missing a profile ID."
-            }
-            CaltopoClient.UpsertCaltopoProfile(profile, true, true)
-            true to "Mutual aid access installed for ${profile.displayName}."
-        } catch (e: Exception) {
-            CaltopoClient.CTWarn(TAG, "applyBundle() failed.", e)
-            false to (e.message ?: "Failed to apply mutual aid profile.")
-        }
+        return false to "Legacy credential transfers are no longer supported. Scan a tracker enrollment QR."
     }
 
     @JvmStatic
@@ -157,65 +83,11 @@ object MutualAidProfileManager {
         return MutualAidToken.encryptPayload(profileJson.toString())
     }
 
-    @JvmStatic
-    fun buildEncryptedProfilePayloadForCurrentIncident(
-        displayName: String = "",
-        incident: String = CaltopoClient.GetIncident(),
-        opPeriod: String = CaltopoClient.GetOpPeriod(),
-        targetMapId: String = CaltopoMap.GetMapId(),
-        targetMapTitle: String = CaltopoMap.GetMapName(),
-        expiresAtEpochMs: Long = defaultExpiryAtNextMidnight()
-    ): String? {
-        return try {
-            val profile = buildProfile(
-                sourceOrg = CaltopoClient.GetMutualAidSourceLabel(),
-                displayName = displayName,
-                incident = incident,
-                opPeriod = opPeriod,
-                targetMapId = targetMapId,
-                targetMapTitle = targetMapTitle,
-                expiresAtEpochMs = expiresAtEpochMs
-            )
-            val profileJson = JSONObject()
-                .put("profile_id", profile.profileId)
-                .put("display_name", profile.displayName)
-                .put("team_id", profile.credentials.teamId ?: "")
-                .put("credential_id", profile.credentials.credentialId ?: "")
-                .put("credential_secret", profile.credentials.credentialSecret ?: "")
-                .put("domain_and_port", profile.domainAndPort)
-                .put("connect_key", profile.connectKey)
-                .put("track_folder", profile.trackFolder)
-                .put("incident", profile.incident)
-                .put("op_period", profile.opPeriod)
-                .put("tracker_api_key", profile.trackerApiKey)
-                .put("tracker_url_prefix", profile.trackerUrlPfx)
-                .put("auto_connect", profile.autoConnect)
-                .put("expires_at_epoch_ms", profile.expiresAtEpochMs)
-                .put("quiet_remove_on_expiry", profile.quietRemoveOnExpiry)
-                .put("source_label", profile.sourceLabel)
-                .put("target_map_id", profile.targetMapId)
-                .put("target_map_title", profile.targetMapTitle)
-                .put("target_folder_hint", profile.targetFolderHint)
-                .put("imported_at_epoch_ms", profile.importedAtEpochMs)
-                .put("import_dedupe_key", profile.importDedupeKey)
-            MutualAidToken.encryptPayload(profileJson.toString())
-        } catch (e: Exception) {
-            CaltopoClient.CTWarn(TAG, "buildEncryptedProfilePayloadForCurrentIncident() failed.", e)
-            null
-        }
-    }
+
 
     @JvmStatic
     fun installEncryptedProfilePayload(encryptedPayload: String): Pair<Boolean, String> {
-        return try {
-            val profileJson = JSONObject(MutualAidToken.decryptPayload(encryptedPayload))
-            val profile = parseProfile(profileJson)
-            CaltopoClient.UpsertCaltopoProfile(profile, true, true)
-            true to "Mutual aid profile installed."
-        } catch (e: Exception) {
-            CaltopoClient.CTWarn(TAG, "installEncryptedProfilePayload() failed.", e)
-            false to (e.message ?: "Failed to install mutual aid profile.")
-        }
+        return false to "Legacy credential transfers are no longer supported. Scan a tracker enrollment QR."
     }
 
     @JvmStatic
@@ -224,34 +96,13 @@ object MutualAidProfileManager {
         token: String,
         callback: (Boolean, String) -> Unit
     ) {
-        val trimmed = token.trim()
-        val config = MutualAidToken.decode(trimmed)
-        if (config == null) {
-            callback(false, "Invalid mutual aid token.")
-            return
-        }
-        val appContext = context.applicationContext
-        executor.execute {
-            val result = try {
-                val encJson = GoogleDriveConfigSync.downloadMutualAidBundlePublic(config.driveFileId)
-                val applied = applyBundle(appContext, encJson)
-                if (applied.first) {
-                    storeToken(appContext, trimmed)
-                    CaltopoClient.CTDebug(TAG, "joinFromToken(): joined mutual aid source='${config.sourceOrg}'")
-                }
-                applied
-            } catch (e: Exception) {
-                CaltopoClient.CTWarn(TAG, "joinFromToken() failed.", e)
-                false to (e.message ?: "Failed to download mutual aid profile.")
-            }
-            mainHandler.post { callback(result.first, result.second) }
-        }
+        mainHandler.post { callback(false, "Legacy credential transfers are no longer supported. Scan a tracker enrollment QR.") }
     }
 
     private fun parseProfile(json: JSONObject): CaltopoProfileRecord {
         return CaltopoProfileRecord(
             json.optString("profile_id"),
-            json.optString("display_name").ifBlank { "Mutual Aid" },
+            json.optString("display_name").ifBlank { "Organization" },
             "MUTUAL_AID",
             CaltopoCredentials(
                 json.optString("team_id"),
@@ -323,7 +174,7 @@ object MutualAidProfileManager {
         expiresAtEpochMs: Long
     ): CaltopoProfileRecord {
         val template = CaltopoClient.GetMutualAidTemplate()
-        require(CaltopoClient.HasMutualAidTemplate()) { "Configure the Mutual Aid account in Settings before exporting MA config." }
+        require(CaltopoClient.HasMutualAidTemplate()) { "Configure the organization account in Settings before preparing managed access." }
         val templateCreds = CaltopoCredentials(template.teamId, template.credentialId, template.credentialSecret)
         val homeCreds = CaltopoClient.GetCaltopoProfiles()
             .firstOrNull { it.profileType == "HOME" }

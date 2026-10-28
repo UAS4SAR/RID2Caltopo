@@ -4,8 +4,9 @@ import XCTest
 final class SettingsUnitsUITests: XCTestCase {
     private let app = XCUIApplication(bundleIdentifier: "org.ncssar.RID2CaltopoApple")
     override func setUp() { continueAfterFailure = false }
-    private func launch(reset: Bool = false) {
+    private func launch(reset: Bool = false, externalDisplayMode: String? = nil) {
         app.launchArguments = ["--settings-units-ui-qualification"] + (reset ? ["--reset-units-fixture"] : [])
+        if let externalDisplayMode { app.launchArguments.append("--external-display-help-mode=\(externalDisplayMode)") }
         app.launch()
         XCTAssertTrue(app.buttons["Open Settings"].waitForExistence(timeout: 20))
     }
@@ -32,6 +33,40 @@ final class SettingsUnitsUITests: XCTestCase {
     private func capture(_ name: String) {
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = name; shot.lifetime = .keepAlways; add(shot)
+    }
+    func testExternalDisplayContentHelpDone() {
+        checkExternalDisplayHelp(mode: "osMirroring", titles: ["Content", "Allow interaction"])
+    }
+    func testExternalDisplayHelpDoneWhenOff() {
+        checkExternalDisplayHelp(mode: "off", titles: ["Content", "Allow interaction"])
+    }
+    func testExternalDisplayHelpDoneWhenAppManaged() {
+        checkExternalDisplayHelp(mode: "appManaged", titles: ["Mode", "Content", "Alert routing", "Allow interaction"])
+    }
+    private func checkExternalDisplayHelp(mode: String, titles: [String]) {
+        launch(externalDisplayMode: mode)
+        open()
+        for title in titles {
+            let help = app.buttons["Help: " + title]
+            for _ in 0..<18 {
+                if help.exists && help.isHittable { break }
+                app.swipeUp()
+            }
+            XCTAssertTrue(help.isHittable, app.debugDescription)
+            // Reopening catches presentation state that only works on the first visit.
+            for visit in 1...2 {
+                help.tap()
+                let done = app.buttons["Done"]
+                XCTAssertTrue(done.waitForExistence(timeout: 5))
+                XCTAssertTrue(done.isEnabled, "Help's Done must stay enabled: \(mode), \(title)")
+                capture("external-display-\(mode)-\(title)-visit-\(visit)")
+                done.tap()
+                XCTAssertTrue(done.waitForNonExistence(timeout: 5), "Done must dismiss \(title) help in \(mode)")
+                XCTAssertTrue(app.buttons["Save"].isHittable, "Settings must remain open after closing help")
+            }
+        }
+        app.buttons["Cancel"].tap()
+        XCTAssertTrue(app.buttons["Open Settings"].waitForExistence(timeout: 5))
     }
     func testSettingsUnitsSaveCancelAndRelaunch() {
         launch(reset: true)

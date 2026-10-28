@@ -12,6 +12,183 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### In progress — full storage consolidation after 423 (October 25, 2026)
+
+This work is incomplete and must not be installed on the populated tablets yet.
+Both devices still have the verified build 423. The owner requests retained
+Android operational data under Archive Dir and all significant storage categories
+reported and manageable on both platforms. Temporary working files may use any
+appropriate filesystem. A follow-up location-preference question is pending;
+the original Archive Dir requirement remains the working assumption.
+
+Current uninstalled work:
+- Shared StorageAllocation models and tests distinguish physical free bytes from
+  unused cache/flight allowances, without subtracting existing usage twice.
+  Both parent and cache panels now expose used/maximum and the allocation estimate.
+- StorageCategories and metadata-only inventory models cover caches, Local Maps,
+  diagnostics/tracks/clues/video/review annotations, support, indexes, recovery,
+  other retained files and temporary work. Management navigation is not fully wired.
+- Android storage/VerifiedArchiveTree implements verified staged writes and
+  recovery journals; four host fault/cancellation/conflict/path tests pass.
+  DocumentArchiveTree uses batched child-document queries and worker-confined
+  directory indexes to avoid quadratic per-file directory enumeration.
+- OperationalStorage is a prototype: verified migration into Archive Dir,
+  invocation workspace aliases, source-preservation checks, checkpoint generation
+  manifests, upload chunk retention and deletion tombstones. Several writer,
+  reader and deletion integrations still need completion and testing. Application
+  startup is wired to the prototype; do not ship/install until it is qualified.
+
+Outstanding before completion: complete/validate remaining publication and deletion
+hooks (including mapping deletion, cache eviction, recording/review cleanup and
+journals); fix inaccessible-archive/readiness paths; inventory/control parity;
+old osmdroid cache location; full migration/restart/interruption/alias tests on
+isolated emulator; host regressions and UI checks; only then version/package and
+perform backed-up in-place device migrations with preservation checks.
+
+### 2.5.4 (423) — install recording-protection and archive-capacity corrections
+
+- Installed in place and launched on iPad and A5 Pro, superseding the uninstalled
+  source checkpoint below. Both report 2.5.4 (423).
+- Includes the recorder-run and 60-minute staging checks, explicit Android
+  finalization protections, Archive Dir free-space row and populated cache-panel
+  loading behavior. No bulk-data relocation is included; the separate storage
+  placement/accounting audit remains open.
+- The qualified runtime/test sources are unchanged for this version rebuild:
+  19 Swift, 18 Android host and 2 isolated-emulator UI tests passed. Package,
+  metadata, exact release-note, identity, signature and provisioning checks pass.
+- All 15,464 checked iPad and 260 Android operational paths, plus both checked
+  Android external map files, remain. All eight October 9 iPad recordings have
+  unchanged sizes and modification dates. Android map limits are unchanged.
+- A5 Pro awaits normal biometric authentication; it was not accepted by the
+  agent. See [build 423 validation](../release-notes/2.5.4/validation-423.md).
+
+### October 25, 2026 — stale Apple recording protection (source correction)
+
+- Owner reported October 9 protected as "recording in progress" in Delete Flight
+  Storage. Read-only iPad metadata confirms two raw recorder-format MP4s last
+  modified October 9 UTC, unchanged from the earlier build-421 inventory.
+- Cause: starting the media server sets a global recorder flag; any raw filename
+  in any historical day then satisfies the incomplete-recording check. Filename
+  format does not establish that the file is currently being written.
+- The source now tracks the current recorder-run boundary, captured before native
+  startup, and ignores raw files last written before that run. Capture disabled
+  or paused by storage pressure leaves the recorder flag off. Repeated running
+  status updates do not move the boundary past a current segment. Unreadable
+  metadata retains conservative protection. Existing today/review/upload and
+  finalization protections remain in place.
+- Follow-up: both platforms stop inferring an active recording from a staging
+  file untouched for at least 60 minutes. Today and explicit review/upload/
+  finalization owners retain their protections. Android recording sync now owns
+  its source days explicitly during remux/copy, releasing them in finally, so
+  a long-running finalizer cannot age out under the staging heuristic.
+- Android's main Manage Storage capacity row now queries the selected Archive
+  Dir directly. It no longer reports internal free space there or substitutes
+  fallback-cache capacity. Unavailable capacity is labelled accordingly.
+- The regression failed before the correction (.recording for an old raw file)
+  and passed afterward. All 19 focused Swift protection, retention, capacity and
+  file activity tests pass, including local midnight and the exact hour boundary.
+  Eighteen focused Android host tests and both actual-dialog emulator tests pass;
+  the UI tests wait for archive status and verify the old internal-capacity row
+  is absent. Both apps compile; final Xcode verification reports BUILD SUCCEEDED.
+  Archive listing runs on AppleTrackArchiveStore's actor; recorder state changes
+  run on its storage work queue. New metadata reads stay on those workers.
+- These corrections are not installed: iPad remains on 421 and A5 Pro on 422.
+  No device recordings have been renamed, modified, repaired or deleted; only
+  October 9 file metadata was read.
+  Evidence is under apple/Build/FlightStorage-2026-10-25.
+
+### 2.5.4 (422) — Android cache-panel loading transition
+
+- Android keeps Manage Storage visible with a progress indicator while a worker
+  reads the cache inventory. It presents Map Cache Management once the snapshot
+  is ready, with populated fields; the intermediate empty/resizing form is gone.
+- Repeated taps are disabled during loading. Closing Manage Storage cancels the
+  request and prevents late navigation; a failed load leaves a retryable error
+  in the parent. No storage placement or retention behavior changes.
+- Two actual-dialog emulator regressions passed, including the pending-load
+  cancellation case and worker-context assertion. Five focused host tests pass.
+- A5 Pro is updated in place to 422; iPad remains on 421 with its existing correct
+  loading behavior. See [build 422 validation](../release-notes/2.5.4/validation-422.md).
+
+### October 25, 2026 — operational-storage requirement and outstanding gaps
+
+Owner clarification after build 421: every significant app storage resource
+must be reported and managed through Manage Storage. Android retained
+operational data belongs under the Map Tile Cache or application-log/archive
+subdirectories of Archive Dir. True scratch is invocation-scoped. Retained
+originals, recovery recordings and processing checkpoints are not scratch.
+Settings and credentials retain their existing protected persistence.
+
+Source audit of the current implementation:
+
+| Resource | Current Android location/behavior | Manage Storage status and remaining work |
+| --- | --- | --- |
+| Main imagery/terrain/AOL cache | `ArchiveDir/cache`; internal fallbacks remain when archive storage cannot be resolved/opened (`MapCacheRootResolver`, `BlobCacheStoreFactory`) | Cache bins and budget reported. Fallback data needs explicit accounting and a migration/unavailable-archive policy. |
+| Decoded terrain | `noBackupFilesDir/dem_blocks_v2`, retained between runs (`GeoTiffDemSource`) | Included in cache usage/cleanup, but placement violates the Archive Dir requirement. |
+| Local Maps originals, products and checkpoints | Internal `mapping-*` roots with bulk data on independently selected app-owned removable `local-mapping` roots (`MappingVolume`) | 421 reports projects, layers/models and processing under Map Cache Management; management remains in Local Maps. Consolidated access and Archive Dir placement remain incomplete. |
+| Clues and recording copies | Internal `clues`, `mediamtx-recordings`, `mediamtx-recordings-merged`, `managed-video-session-recordings` (`SnapshotStore`, `MediaMTXRecordingSync`, recording catalog) | Included in Flight Storage auxiliary usage and retention. Some copies deliberately survive restart for recovery/playback. Placement remains outside Archive Dir. |
+| Share/export/import scratch and processing scratch | Several cache/private roots; cleanup varies by operation | No complete scratch inventory or invocation-wide abandoned-work cleanup. Surface-source scratch alone is cleaned at startup; mapping processing checkpoints deliberately survive cancellation/process death. |
+| Cache index and support data | Private SAF SQLite index; mapping storage statistics; other downloaded support datasets | Not all filesystem/index/support bytes are represented by the displayed cache and flight totals. Inventory must distinguish shipped assets, retained downloads and bounded private metadata. |
+| Optional retained SEI originals | Internal `video-sei-originals` when research preservation is explicitly enabled (default off) | Outside the Flight Storage auxiliary roots and current map bins; must not become an unreported persistent store. |
+
+Apple must expose the same meaningful categories and management workflows using
+its app-container storage. Its new 421 map panel reports Local Maps but does not
+establish a complete operational/scratch inventory. Native directory mechanics
+do not justify missing categories or cleanup controls.
+
+This audit changes no runtime storage placement or cleanup behavior. Build 421
+is a UI/accounting improvement, not completion of the storage requirement.
+Implementation must reconcile SAF/provider access with code requiring seekable
+files, preserve resumable data and existing references, and verify migrations
+before removing old copies. Apply the UI-worker and physical-data-preservation
+requirements in AGENTS.md throughout.
+
+### 2.5.4 (421) — consolidated map storage controls
+
+- Both platforms use Main menu > Manage Storage > Map Cache Management for
+  cache size and maximum tile age. Removed duplicate editors from Map Management
+  and Download Map; download capacity information remains read-only.
+- The panel itemizes imagery, terrain files, decoded terrain, AOL, other cache
+  data, reserved downloads and Local Maps projects/layers/processing. Local Maps
+  remain outside automatic cache cleanup. Alias paths are counted once.
+- Android labels internal and cache-volume free space separately. Main cache
+  placement still follows Archive Dir; decoded terrain and other app working
+  files can remain internal, and Local Maps retain their existing placement.
+- File/provider scans run on workers; cancellation and serialized scans prevent
+  stale UI results and overlapping inventories. Five Android host tests, two
+  Swift tests and the actual iPad Simulator panel/Cancel test passed.
+- Installed 421 in place on both tablets. See
+  [build 421 validation](../release-notes/2.5.4/validation-421.md) for limits and
+  file-preservation checks and the A5 Pro biometric-screen limitation.
+
+### 2.5.4 (420) — remove manual backup-file workflow
+
+- Removed the Apple-only encrypted settings-file export/import workflow, its
+  Backup & Transfer screen and navigation routes. It no longer appears under
+  Manage Storage. This supersedes the temporary placement recorded for 419.
+- Retained existing cloud settings backup. Its iCloud controls are now under
+  Settings > iCloud Settings Backup; Android keeps its Google Drive flow.
+- Map tile package imports remain under Import Config, and exports remain in the
+  map tools. Shared cloud-backup encoding and credential filtering remain in use.
+- Existing backup-policy tests and the common-menu/stability Simulator regression
+  passed. See [build 420 validation](../release-notes/2.5.4/validation-420.md).
+
+### 2.5.4 (419) — top-level menu alignment
+
+- Both main menus now have the same eight entries in the same source order:
+  Settings, Release Notes, Import Config, Manage Storage..., Send diagnostics to
+  developer..., Terms of Use, About & Privacy, Quit.
+- Apple Backup & Transfer now lives under Manage Storage. Its settings backups,
+  iCloud controls and map-package tools retain their existing behavior.
+- Android Archive Storage... now lives under Manage Storage. The folder-selection
+  workflow is unchanged; Android needs a document-provider location while Apple
+  uses its app container.
+- Removed Android's duplicate conditional External: Streams View main-menu
+  shortcut. Both platforms retain external-display controls in Settings.
+- Source-order comparison and the Simulator menu/stability/action regression
+  passed. Both review packages compile; see
+  [build 419 validation](../release-notes/2.5.4/validation-419.md) for device evidence.
+
 ### 2.5.0rc2
 
 - Both: configurable crosshair (default 5%, minimum 2%), centerpoint MSL/REF readouts, coordinates only with SEI, annotated clue photos, callsign prefill, clue sharing, bearing-line colors, compact stream status/settings row, pairing-only saved/session mapping offers, and tap-to-resume following.
@@ -1111,3 +1288,114 @@ Both planners now expose independent Transit speed in the same ft/s or m/s units
 - iPad and A5 Pro independently report build 406 and matching registration
   import status/receipt in protected storage. Installed in place; data preserved.
 - No tracker deployment or store publication. Pilot/controller retest is pending.
+
+## 2026-10-24 — Apple privacy and review candidate 2.5.4 build 407
+
+- Shared version authority and both Xcode configurations use 2.5.4 (407), with
+  new canonical notes preserving the shipped 2.5.3 source. Apple packaging is
+  qualified; no Android distribution build or store publication is claimed.
+- Public policy covers both clients' media/catalog, voice, controller/photo,
+  identity, diagnostic and deletion paths. Apple purpose strings, About & Privacy,
+  settings, review notes and twelve-category manifest/catalog are aligned.
+- Existing media/approval/worker behavior was preserved. Source wording
+  distinguishes outgoing microphone muting from full-duplex hardware activity,
+  previews from full-session media, and advance remote-control authorization.
+- Full Apple native/Swift/shared gate, fresh Simulator viewer and signed export
+  passed. An independent local S3 SDK test passed after its stale page-revision
+  header was corrected; product behavior did not change for that test repair.
+- Exact-build physical acceptance, privacy-policy publication, live store
+  declarations, reviewer access and owner rights/export decisions remain pending.
+- Evidence: [candidate validation](../release-notes/2.5.4/validation.md).
+- Owner subsequently requested installation on both populated tablets. iPad
+  received a development-signing export of the tested Release archive; A5 Pro
+  received a matching development APK. Both independently report 2.5.4 (407),
+  launched successfully, and retained checked durable files after private backups
+  and in-place updates. No store upload or full hardware acceptance is implied.
+
+## 2026-10-24 — Revised release notes and credential disclosure (build 408)
+
+- Both devices now run 2.5.4 (408), with byte-matched revised release notes and
+  consistent, scoped credential-report wording. Android also has the direct
+  policy link and an explicit disclosure of existing Crashlytics use.
+- Corrected the shared policy's blanket no-analytics claim. Android uses existing
+  Firebase Analytics/Crashlytics; Apple does not bundle them. Collection settings
+  and recording/sharing/approval behavior were not changed.
+- Fresh backups, in-place updates, durable-file checks and normal launches passed.
+  Seventeen focused diagnostic tests and fresh Apple package/signing checks passed.
+  The full gate remains build-407 evidence; field qualification is still pending.
+- Evidence: [build 408 validation](../release-notes/2.5.4/validation-408.md).
+
+## 2026-10-24 — Credential transfer removal and privacy clarification (build 411)
+
+- Both clients reject legacy credential file/QR transfers and credential-bearing
+  map packages. Map-only packages and tracker enrollment remain supported.
+- App settings backups contain allowlisted preferences and aircraft mappings.
+  Existing local CalTopo and organization credentials persist across launches,
+  updates and settings restore; a backup does not enroll a new device.
+- Android system backup stages sanitized settings only. Apple private credential
+  stores are excluded from container backups; Keychain items are device-bound.
+  Apple system backup may recover Keychain items onto the original device. No
+  new passcode requirement or erase-on-passcode-removal policy was enabled.
+- About & Privacy uses map tile package terminology and a camera icon; public
+  metadata no longer advertises retired credential imports. Recording, sharing
+  and microphone behavior are unchanged.
+- Backend validation: 1,614 Android host tests, 140 XCTest and 590 Swift Testing
+  tests passed on 409; 411 adds copy-only compilation/package checks and focused
+  renamed-label tests. See [final validation](../release-notes/2.5.4/validation-411.md).
+
+## 2026-10-24 — Isolated CalTopo browser startup correction (build 412)
+
+- Final 411 device logs exposed a provider/startup race: the isolated browser
+  could initialize cookies before its directory suffix was configured.
+- Configure the existing suffix in attachBaseContext before providers are
+  published. Saved cookies, sign-in data and process isolation are retained.
+- Twenty-five focused session/security host tests passed. Final package,
+  normal-launch and crash-buffer evidence is recorded in
+  [build 412 validation](../release-notes/2.5.4/validation-412.md).
+
+## 2026-10-24 — About & Privacy content parity (build 413)
+
+- Shared section order and 24 paragraphs/permission rows now match exactly.
+  Android gains the omitted video/recording, camera/microphone, controller/photo
+  and deletion explanations. The direct policy link is under Privacy on both.
+- Separate camera/microphone rows use appropriate icons on both native layouts.
+- Only actual service/storage/OS/control differences remain: Firebase, Keychain,
+  Drive/iCloud, system permission indicators, MapKit and Apple reset controls.
+- This is explanatory text and icons only. Recording, sharing, approvals, saved
+  credentials and backup behavior are unchanged. See
+  [build 413 validation](../release-notes/2.5.4/validation-413.md).
+
+## 2026-10-24 — Clear controller/media/microphone disclosures (build 414)
+
+- Both clients now use generic controller/local-browser transfer wording and
+  introduce MediaMTX's existing RTMP ingest role before Capture Streams.
+- Shared microphone text explains outgoing mute and continued incoming audio.
+  Corrected the earlier overbroad common hardware warning: Android already calls
+  setAudioRecording(false); Apple keeps its two-way system audio session active
+  for incoming sound. Separate platform paragraphs disclose those real behaviors.
+- Runtime audio, recording, sharing and credential behavior are unchanged.
+  All 24 common rows still match; the public policy source is corrected locally.
+- Evidence: [build 414 validation](../release-notes/2.5.4/validation-414.md).
+
+## 2026-10-24 — Diagnostic-sharing context (build 415)
+
+- Both clients introduce selected log days as part of sending diagnostics to the
+  developer. Replaced vague service-exchange wording with named CalTopo, tracker
+  and video features controlled by their own settings.
+- All 24 shared privacy rows remain matched. This is static copy only; no runtime
+  data flow, permissions, audio, credentials or backup changes.
+- Reviewed the Terms ending against both local acceptance stores. Existing Terms
+  text and acknowledgment version/fingerprint remain unchanged; it distinguishes
+  individual operational acknowledgment from separate service agreements.
+- Evidence: [build 415 validation](../release-notes/2.5.4/validation-415.md).
+
+## 2026-10-24 — Individual operational acknowledgment (build 416)
+
+- Removed organization-representation qualifications from the notice ending and
+  checkbox. Both checkboxes now say "I have read and understand these operational
+  warnings." Complete notice text remains matched across platforms.
+- Notice version 2026-10-24.1 requires explicit acknowledgment once for the revised
+  text. Existing records are retained; installation tools do not accept for users.
+- Three Android and two Swift existing persistence/change-detection tests passed.
+  Saved credentials, recording/sharing and operational files are unchanged.
+- Evidence: [build 416 validation](../release-notes/2.5.4/validation-416.md).

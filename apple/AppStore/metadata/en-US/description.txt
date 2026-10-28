@@ -1,15 +1,21 @@
 RID2Caltopo helps search-and-rescue and incident teams receive and organize drone Remote ID observations in the field.
 
-The app receives ASTM Remote ID over Bluetooth, including Wi-Fi Beacon and Wi-Fi NAN aircraft bridged by a DS110 wireless relay. Nearby aircraft, tracks, transport details, signal strength, altitude, range, and traffic separation are presented in an operator-focused interface.
+CalTopo and r2c-tracker are optional integrations. Users configure their existing authorized service access when they choose those features. Local Remote ID monitoring, archives and controller-video analysis do not require either account.
 
-Organization, FAA, and mutual-aid QR configurations can be imported by camera or pasted text. Imported Remote ID mappings give team aircraft familiar operational labels.
+The app implements ASTM F3411 Remote ID reception over Bluetooth, including Wi-Fi Beacon and Wi-Fi NAN observations relayed by a DroneScout DS110. It does not directly scan Wi-Fi Remote ID. Compatible direct Bluetooth transmitters need no bridge. Nearby aircraft, tracks, transport details, signal strength, altitude, range, and traffic separation are presented in an operator-focused interface.
+
+Organization access is set up through tracker enrollment links or QR codes and authenticated sign-in. Map tile packages and Remote ID mappings can be imported without transferring credentials. Imported mappings give team aircraft familiar operational labels.
 
 Optional tracker coordination lets multiple field devices coordinate aircraft ownership. Operator-confirmed tracks can be published to a configured CalTopo team map while non-owner devices relay observations instead of publishing duplicates.
 
 RID2Caltopo also embeds MediaMTX for local controller-video ingest. Live video can be viewed with the anomaly detector disabled, or analyzed with visible-light Color Uniqueness and infrared detector modes.
 
-Daily diagnostic logs and GeoJSON track archives remain on the device until the operator explicitly exports or shares them.
+Local Maps organizes flight plans, original photographs, and reconstructed 2D maps and regional 3D surfaces. Mission planning includes supported DJI aircraft and optional Pilot 2 transfer through DJI's Cloud API. Controller transfer requires compatible equipment; local reconstruction requires suitable original photographs.
+
+Core hardware interoperability uses supported broadcast and streaming protocols. Verified examples include DJI and Autel Robotics controller video and BlueMark Innovations / DroneScout relays. These examples do not guarantee compatibility with every product from those manufacturers.
+
+Local diagnostic logs and GeoJSON archives can be exported through the system share sheet. Configured tracker services can receive eligible team tracks and media catalog previews. Full remote viewing and recording transfers use per-request approval by default; enabling Remote Video Control provides advance authorization for supported requests. Microphone use is separately enabled for VoIP.
 
 RID2Caltopo is intended for trained incident personnel. It does not replace visual observation, see-and-avoid responsibilities, or compliance with aviation regulations.
 
-RID2Caltopo is an independent project and is not affiliated with or endorsed by CalTopo. It uses the CalTopo Teams API. The RID2Caltopo developer thanks the CalTopo team for its excellent product and support of the Teams API.
+RID2Caltopo is independently developed and distributed. It is not sponsored, endorsed, or distributed on behalf of CalTopo, DJI, Autel Robotics, BlueMark Innovations, or any other drone hardware manufacturer. Manufacturer and product names identify tested interoperability. CalTopo features use its Teams API and authenticated account/session interfaces, subject to the applicable account permissions and service terms. The RID2Caltopo developer thanks the CalTopo team for its excellent product and support of the Teams API.

@@ -50,6 +50,7 @@ internal object MapCacheRootResolver {
     private fun resolveRootUncached(context: Context): MapCacheRoot {
         val archiveDir = CaltopoClient.GetArchiveDir()
         if (archiveDir != null && archiveDir.isDirectory) {
+            if (CaltopoClient.GetArchiveUri() != null) org.ncssar.rid2caltopo.storage.OperationalStorage.requireReady(context)
             val archiveCacheDir = archiveDir.findFile("cache") ?: archiveDir.createDirectory("cache")
             if (archiveCacheDir != null && archiveCacheDir.isDirectory) {
                 val uri = archiveCacheDir.uri
@@ -67,7 +68,7 @@ internal object MapCacheRootResolver {
             }
         }
 
-        val fallback = context.cacheDir.resolve("map_cache_fallback")
+        val fallback = org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context, "map-cache")
         if (!fallback.exists()) {
             fallback.mkdirs()
         }

@@ -46,7 +46,7 @@ public enum MappingGeoTiff {
         throw ExportFailure.noTiles
     }
     public static func export(root: URL, minZoom: Int, maxZoom: Int, assignmentName: String = "Map", limitForCalTopo: Bool = false) throws -> Result {
-        let shares=FileManager.default.temporaryDirectory.appendingPathComponent("RID2Caltopo/GeoTIFF")
+        let shares=TemporaryWorkspace.root.appendingPathComponent("GeoTIFF")
         try FileManager.default.createDirectory(at:shares,withIntermediateDirectories:true)
         for old in try FileManager.default.contentsOfDirectory(at:shares,includingPropertiesForKeys:[.contentModificationDateKey]) {
             try Task.checkCancellation()

@@ -1,0 +1,67 @@
+RID2Caltopo — Service & data acknowledgments
+
+Optional features use the selected services and datasets. These credits supplement the map/provider notices displayed with each feature.
+
+Apple Maps and iCloud Drive
+MapKit map display and optional encrypted iCloud settings backups.
+https://www.apple.com/
+
+OpenStreetMap
+© OpenStreetMap contributors. OpenStreetMap data is available under the Open Database License. Interactive map credits link to the copyright and license information.
+https://www.openstreetmap.org/copyright
+
+Esri and imagery contributors
+World Imagery and applicable ArcGIS-hosted services. The selected map shows Esri identification and contributor credits for its displayed area and zoom.
+https://www.esri.com/en-us/legal/terms/web-site-service
+
+U.S. Geological Survey
+The National Map, 3D Elevation Program, elevation, contour and lidar products used by selected features. Retain each dataset’s source/date and product-specific notices.
+https://www.usgs.gov/programs/national-geospatial-program/national-map
+
+Federal Aviation Administration
+UAS Facility Map data and NOTAM information obtained through the selected services. These are advisory data, not flight authorization.
+https://www.faa.gov/uas
+
+National Park Service
+Official Land Resources Division boundaries and other identified public land information.
+https://www.nps.gov/subjects/gisandmapping/
+
+U.S. Fish and Wildlife Service
+National Realty Boundaries and identified refuge/land information.
+https://www.fws.gov/
+
+U.S. Forest Service
+National Wilderness Areas and identified land information, subject to the source’s advisory and legal-boundary limitations.
+https://www.fs.usda.gov/
+
+Colorado Parks and Wildlife
+Identified public state park and wildlife-area boundary information.
+https://cpw.state.co.us/
+
+CalTopo
+Optional map access, account sign-in and operator-authorized track/clue/photo publishing. Map sharing and membership are controlled by authorized map owners in CalTopo.
+https://caltopo.com/
+
+DJI
+Optional Pilot 2 Open Platforms / Cloud API mission and original-photo transfer with compatible equipment. Compatibility does not imply endorsement.
+https://developer.dji.com/
+
+Configured organization and service operators
+Selected private map/tracker hosting, coordination, media relays and email delivery, where enabled. Operator identity, access and retention depend on the selected deployment.
+
+Cloudflare
+Optional Realtime TURN/STUN connectivity and media relaying when selected by the configured tracker.
+https://developers.cloudflare.com/realtime/
+
+Google Cloud
+Managed tracker hosting where the selected service is deployed on Google Cloud.
+https://cloud.google.com/
+
+Google and Microsoft identity services
+Optional organization sign-in where enabled by the selected tracker. Embedded Google authorization in the CalTopo browser remains blocked.
+
+GitHub
+The project repository and versioned source/relinking downloads.
+https://github.com/UAS4SAR/RID2Caltopo
+
+Service names and trademarks belong to their respective owners. These acknowledgments do not imply affiliation, sponsorship or endorsement. Applicable service terms and permissions still apply. Software component licenses and the source/relinking offer are available separately in License & Notices.

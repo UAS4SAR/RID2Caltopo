@@ -58,7 +58,7 @@ object MutualAidPackageManager {
         mappingLayers: List<MappingLayer> = emptyList(),
     ): Pair<Boolean, File?> {
         return try {
-            val tempDir = context.cacheDir.resolve("ma-transfer").apply { mkdirs() }
+            val tempDir = org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context,"map-transfers")
             val file = File.createTempFile("${sanitizePath(packageName)}_map_package_", ".zip", tempDir)
             file.outputStream().use { rawOut ->
                 writePackage(
@@ -93,11 +93,7 @@ object MutualAidPackageManager {
                 return false to "Unexpected map package format."
             }
 
-            val profileEnc = manifest.optString("profile_enc")
-            if (profileEnc.isNotBlank()) {
-                val profileResult = MutualAidProfileManager.installEncryptedProfilePayload(profileEnc)
-                if (!profileResult.first) return profileResult
-            }
+            CredentialImportPolicy.requireMapOnlyPackage(manifest)
 
             val tileEntries = manifest.optJSONArray("tile_entries") ?: JSONArray()
             val mappingLayers = manifest.optJSONArray("mapping_layers")?.let { array ->
@@ -176,15 +172,11 @@ object MutualAidPackageManager {
             if (manifest.optString("format") != FORMAT) {
                 return false to null
             }
-            val profileEnc = manifest.optString("profile_enc")
-            val profileJson = if (profileEnc.isNotBlank()) {
-                JSONObject(MutualAidToken.decryptPayload(profileEnc))
-            } else {
-                JSONObject()
-            }
+            CredentialImportPolicy.requireMapOnlyPackage(manifest)
+            val profileJson = JSONObject()
             true to PackagePreview(
                 packageName = manifest.optString("package_name"),
-                includesMapAccess = profileEnc.isNotBlank(),
+                includesMapAccess = false,
                 sourceOrg = profileJson.optString("source_label", manifest.optString("source_org")),
                 displayName = profileJson.optString("display_name"),
                 incident = profileJson.optString("incident"),
@@ -215,7 +207,7 @@ object MutualAidPackageManager {
         override fun close(){try{zip.close()}finally{file.delete()}}
     }
     private fun readPackageEntries(context: Context, srcUri: Uri):PackageEntries {
-        val file=File.createTempFile("map-package-",".zip",context.cacheDir)
+        val file=File.createTempFile("map-package-",".zip",org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context,"map-transfers"))
         try{
             context.contentResolver.openInputStream(srcUri)?.use{input->file.outputStream().buffered().use{output->
                 val block=ByteArray(65536);var total=0L
@@ -276,6 +268,8 @@ object MutualAidPackageManager {
                 }
             }
             for (tileSource in tileSources) {
+                // Enforce export rights even for old selections and existing cached imagery.
+                if (!org.ncssar.rid2caltopo.video.mapcache.MapTileUsagePolicy.allowsPackageExport(tileSource.name())) continue
                 for (tileIndex in tileWriter.cachedTileIndices(tileSource)) {
                     if (!region.includesTile(MapTileIndex.getZoom(tileIndex), MapTileIndex.getX(tileIndex), MapTileIndex.getY(tileIndex))) continue
                     val bytes = tileWriter.readTileBytes(tileSource, tileIndex) ?: continue

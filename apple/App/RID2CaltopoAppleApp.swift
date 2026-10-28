@@ -350,7 +350,7 @@ struct LaunchDisclaimerView: View {
                 } else {
                     VStack(spacing: 12) {
                         Toggle(isOn: $checked) {
-                            Text("I have read and understand this operational acknowledgement. I acknowledge it for myself, not on behalf of my organization.")
+                            Text("I have read and understand these operational warnings.")
                         }
                         .toggleStyle(TermsCheckboxStyle())
                         if let error { Text(error).foregroundStyle(.red) }
@@ -374,9 +374,7 @@ struct LaunchDisclaimerView: View {
         }
         .sheet(isPresented: $showLicense) {
             NavigationStack {
-                ScrollView {
-                    Text(ApplicationSoftwareLicense.text).textSelection(.enabled).padding()
-                }
+                BundledSoftwareLicenseView()
                 .navigationTitle("License & Notices")
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showLicense = false } } }
             }
@@ -457,7 +455,9 @@ struct RID2CaltopoAppleApp: App {
     var body: some Scene {
         WindowGroup {
             #if DEBUG && targetEnvironment(simulator)
-            if ProcessInfo.processInfo.arguments.contains("--settings-units-ui-qualification") {AppleSettingsUnitsUIProbe()}
+            if ProcessInfo.processInfo.arguments.contains("--map-cache-ui-qualification") {AppleMapCacheUIProbe()}
+            else if ProcessInfo.processInfo.arguments.contains("--main-menu-ui-qualification") {AppleMainMenuUIProbe()}
+            else if ProcessInfo.processInfo.arguments.contains("--settings-units-ui-qualification") {AppleSettingsUnitsUIProbe()}
             else if ProcessInfo.processInfo.arguments.contains("--mapping-ui-qualification") {AppleMappingUIProbe()}
             else if ProcessInfo.processInfo.arguments.contains("--mapping-simulator-qualification") {AppleMappingSimulatorProbe()}
             else {LaunchDisclaimerGate()}
@@ -518,4 +518,52 @@ extension UIApplication {
         AppleApplicationCleanupCenter.shared.noteUserInteraction()
         return r2c_sendAction(action, to: target, from: sender, for: event)
     }
+}
+
+
+private struct BundledSoftwareLicenseView: View {
+    @State private var sections: [String] = []
+    @State private var status = "Loading licenses…"
+    @State private var relinkMaterials: URL?
+    @State private var materialsSize = ""
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                if let relinkMaterials {
+                    Link(destination: relinkMaterials) {
+                        Label("Download source & relinking materials", systemImage: "arrow.down.circle")
+                    }
+                    Text("Public GitHub download · \(materialsSize). A free copy is also available by request under the written offer below.")
+                        .font(.footnote).foregroundStyle(.secondary).padding(.bottom)
+                }
+                if sections.isEmpty { Text(status) }
+                ForEach(sections.indices, id: \.self) { index in
+                    Text(sections[index]).textSelection(.enabled)
+                }
+            }.padding()
+        }
+        .task {
+            guard sections.isEmpty else { return }
+            let prepared = await Task.detached(priority: .utility) {
+                let url = Bundle.main.url(forResource: "LICENSES", withExtension: "txt", subdirectory: "legal")
+                let referenceURL = Bundle.main.url(forResource: "relink-materials", withExtension: "json", subdirectory: "legal")
+                let reference = referenceURL.flatMap { try? Data(contentsOf: $0) }
+                    .flatMap { try? JSONDecoder().decode(SoftwareMaterialsDownload.self, from: $0) }
+                let materials = reference.flatMap { URL(string: $0.url) }
+                let size = reference.map { ByteCountFormatter.string(fromByteCount: $0.bytes, countStyle: .file) } ?? ""
+                let text = url.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
+                return (ApplicationSoftwareLicense.sections(from: text), materials, size)
+            }.value
+            sections = prepared.0
+            relinkMaterials = prepared.1
+            materialsSize = prepared.2
+            status = "License resources are unavailable in this build."
+        }
+    }
+}
+
+private struct SoftwareMaterialsDownload: Decodable, Sendable {
+    let url: String
+    let bytes: Int64
 }

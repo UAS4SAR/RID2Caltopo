@@ -150,8 +150,8 @@ public class CaltopoMap {
     private static final DelayedExec MapCheckerDelay = new DelayedExec();
     private static final DelayedExec InitialMarkerPublishDelay = new DelayedExec();
     private static String FolderId;
-    private static String ArchiveFolderId;
-    private static CaltopoNode.MapNode MapNode;
+    private static volatile String ArchiveFolderId;
+    private static volatile CaltopoNode.MapNode MapNode;
     private static String FolderName = "DroneTracks";
     private static MapStatusListener.mapStatus MapStatus = MapStatusListener.mapStatus.down;
     private static String LastStandaloneCoordinationScopeId = "";
@@ -174,7 +174,7 @@ public class CaltopoMap {
     private static boolean MapRefreshPending;
     private static boolean FullMapRefreshPending;
     private static int MapArtifactForegroundConsumers;
-    private static long MapRefreshGeneration;
+    private static volatile long MapRefreshGeneration;
     private static final ArrayList<Runnable> FullMapRefreshCallbacks = new ArrayList<>();
 
     // liveTracks that we are writing into the map keyed by their map ID:
@@ -213,6 +213,38 @@ public class CaltopoMap {
     @NonNull private static R2cRuntime CurrentRuntime = R2cRuntimeRegistry.getDefaultRuntime();
     @Nullable private static RelocationAnchor AutoQuitRelocationAnchor;
     private static volatile boolean IncidentDisplayInactive = false;
+    @Nullable private static MapSelection ActiveMapSelection;
+    @Nullable private static CaltopoOp InitialMapRequest;
+
+    /** Immutable identity of the request, independent of map title/catalog timestamps. */
+    private static final class MapSelection {
+        final String mapId, personalSessionId, domain, teamId, credentialId, credentialSecret;
+        final long personalGeneration;
+
+        MapSelection(CaltopoNode.MapNode node) {
+            mapId = node.getId();
+            personalSessionId = node.getPersonalSessionID();
+            domain = personalSessionId == null ? DomainAndPort : null;
+            CaltopoCredentials credentials = personalSessionId == null ? MyCaltopoCredentials : null;
+            teamId = credentials == null ? null : credentials.teamId;
+            credentialId = credentials == null ? null : credentials.credentialId;
+            credentialSecret = credentials == null ? null : credentials.credentialSecret;
+            personalGeneration = CaltopoPersonalSession.INSTANCE.getGeneration();
+        }
+
+        boolean matches(CaltopoNode.MapNode node) {
+            if (!mapId.equals(node.getId()) ||
+                    !java.util.Objects.equals(personalSessionId, node.getPersonalSessionID())) return false;
+            if (personalSessionId != null) {
+                return personalGeneration == CaltopoPersonalSession.INSTANCE.getGeneration();
+            }
+            CaltopoCredentials credentials = MyCaltopoCredentials;
+            return java.util.Objects.equals(domain, DomainAndPort) &&
+                    java.util.Objects.equals(teamId, credentials == null ? null : credentials.teamId) &&
+                    java.util.Objects.equals(credentialId, credentials == null ? null : credentials.credentialId) &&
+                    java.util.Objects.equals(credentialSecret, credentials == null ? null : credentials.credentialSecret);
+        }
+    }
     public static List<CaltopoNode>GetSessionNodeMap() { return SessionNodeMap;}
 
     static void setTimeSourceForTesting(@NonNull TimeSource testTimeSource) {
@@ -303,7 +335,7 @@ public class CaltopoMap {
                         "pollActiveProfileExpiry(): active profile '%s' expired; deferring disconnect until %d active flight(s) finish.",
                         activeProfile.displayName, activeFlightCount));
                 ShowToast(String.format(Locale.US,
-                        "Mutual aid access expired; waiting for %d active flight(s) to finish before disconnecting.",
+                        "Organization access expired; waiting for %d active flight(s) to finish before disconnecting.",
                         activeFlightCount));
             }
             return;
@@ -425,7 +457,7 @@ public class CaltopoMap {
 
         CaltopoProfileRecord activeProfile = CaltopoClient.GetActiveCaltopoProfile();
         if (activeProfile != null && CaltopoClient.HasExpired(activeProfile, System.currentTimeMillis())) {
-            return "Mutual aid access expired";
+            return "Organization access expired";
         }
         CaltopoCredentials sessionCredentials = CaltopoClient.GetCaltopoCredentials();
         if (!CaltopoCredentials.sniffTest(sessionCredentials)) {
@@ -507,6 +539,13 @@ public class CaltopoMap {
      * @param mapNode  : If null, just reset map connection.
      */
     public static void OpenMap(CaltopoNode.MapNode mapNode) {
+        // Reselecting the active map is navigation, not a full reload. Keep tracks,
+        // artifacts, polling and any pending initial request intact. A manual Reload
+        // remains available when the operator actually wants a fresh full snapshot.
+        if (mapNode != null && MapNode != null && ActiveMapSelection != null &&
+                !ShutdownInProgress && !DisconnectInProgress &&
+                (MapStatus == MapStatusListener.mapStatus.up || MapStatus == MapStatusListener.mapStatus.connecting) &&
+                ActiveMapSelection.matches(mapNode)) return;
         if (mapNode != null && mapNode.getPersonalSessionID() != null) {
             if (!CaltopoClient.CanStartMapSession()) {
                 SetMapStatus(MapStatusListener.mapStatus.down, "App is closing. Reopen it before connecting.");
@@ -541,6 +580,7 @@ public class CaltopoMap {
         }
         CaltopoPersonalSession.activate(mapNode.getPersonalSessionID(), mapNode.getId());
         MapNode = mapNode;
+        ActiveMapSelection = new MapSelection(mapNode);
         OperatingProfiles.setScope(CaltopoClient.GetTrackerCoordinationUrlPfx(), GetMapId());
         DisconnectInProgress = false;
 
@@ -552,8 +592,8 @@ public class CaltopoMap {
             synchronized (MapRefreshLock) {
                 refreshGeneration = MapRefreshGeneration;
             }
-            getCurrentRuntime().getCalTopoSessionGateway()
-                    .openMap(MapNode, 0, op -> OpenMapFinished(op, requestStartedAtMs, refreshGeneration));
+            InitialMapRequest = getCurrentRuntime().getCalTopoSessionGateway()
+                    .openMapForConnection(MapNode, op -> OpenMapFinished(op, requestStartedAtMs, refreshGeneration));
 
         } catch (Exception e) {
             String emsg = "OpenMap(): CaltopoSession.OpenMap() barfed";
@@ -780,6 +820,10 @@ public class CaltopoMap {
 
 
     public static void ResetMapConnection(long maxWaitInMilliseconds) {
+        ActiveMapSelection = null;
+        CaltopoOp initial = InitialMapRequest;
+        InitialMapRequest = null;
+        if (initial != null) initial.cancel(true);
         if (MapStatus == MapStatusListener.mapStatus.down && MapNode == null) {
             stopPeerCoordinationForMapDisconnect();
             return;
@@ -863,6 +907,7 @@ public class CaltopoMap {
         }
         ArchiveFolderId = archiveFolderIdOp.id();
         CTDebug(TAG, String.format(Locale.US, "archive folder id is %s", ArchiveFolderId));
+        FinishInitialMapSetup();
         LookForExistingLiveTracks();
     }
 
@@ -875,6 +920,18 @@ public class CaltopoMap {
         }
         FolderId = folderIdOp.id();
         CTDebug(TAG, String.format(Locale.US, "track folder id is %s", FolderId));
+        FinishInitialMapSetup();
+        LookForExistingLiveTracks();
+    }
+
+    private static void FinishInitialMapSetup() {
+        if (ShutdownInProgress || DisconnectInProgress || MapNode == null ||
+                MapStatus != MapStatusListener.mapStatus.connecting ||
+                FolderId == null || ArchiveFolderId == null) return;
+        // The initial response already established connectivity and loaded artifacts.
+        // Recovery stays on its ordered worker; neither it nor the next 20-second
+        // incremental poll should keep the connection dialog open.
+        SetMapStatus(MapStatusListener.mapStatus.up, null);
     }
 
     /** parseMapUpdate()
@@ -1048,16 +1105,24 @@ public class CaltopoMap {
         if (null == FolderId) {
             CTInfo(TAG, String.format(Locale.US,
                     "parseMap() '%s' folder not found - creating...", FolderName));
+            final String mapId = GetMapId();
+            final long generation = MapRefreshGeneration;
             getCurrentRuntime().getCalTopoSessionGateway()
-                    .addFolder(FolderName, true, true, CaltopoMap::CreateTrackDirFinished);
+                    .addFolder(FolderName, true, true, op -> {
+                        if (recoveryContextIsCurrent(mapId, generation)) CreateTrackDirFinished(op);
+                    });
         }
         // Peer discovery is now MQTT-based; no marker scanning needed.
 
         if (null == ArchiveFolderId) {
             CTInfo(TAG, String.format(Locale.US,
                     "parseMap() '%s' folder not found - creating...", archiveFolderName));
+            final String mapId = GetMapId();
+            final long generation = MapRefreshGeneration;
             getCurrentRuntime().getCalTopoSessionGateway()
-                    .addFolder(archiveFolderName, false, false, CaltopoMap::CreateArchiveDirFinished);
+                    .addFolder(archiveFolderName, false, false, op -> {
+                        if (recoveryContextIsCurrent(mapId, generation)) CreateArchiveDirFinished(op);
+                    });
         } else LookForExistingLiveTracks();
     }
 
@@ -1161,11 +1226,27 @@ public class CaltopoMap {
             publishMyDeviceMarkerIfPossible(GetMyLocation());
         }
         SetMapStatus(MapStatusListener.mapStatus.up, null);
-        if (!DisconnectInProgress && ArchiveFolderId != null) {
-            AwaitingMapFlights.reconcile(GetMapId(), AwaitingMapFlights.selectedPublicationScope());
-            CaltopoInterruptedTrackJournal.recover(GetMapId(), ArchiveFolderId, getCurrentRuntime(), GetArtifactFeatureSnapshot());
-        }
-        FinishMapRefresh(true, fullReconcile, requestStartedAtMs, refreshGeneration);
+        final String archiveFolder = ArchiveFolderId;
+        if (!DisconnectInProgress && archiveFolder != null) {
+            final R2cRuntime runtime = getCurrentRuntime();
+            final String scope = AwaitingMapFlights.selectedPublicationScope();
+            // Keep this refresh in flight until recovery finishes: slow storage cannot
+            // accumulate another recovery job on every polling tick.
+            CaltopoRecoveryWork.execute(() -> {
+                try {
+                    if (!recoveryContextIsCurrent(requestMapId, refreshGeneration)) return;
+                    AwaitingMapFlights.reconcile(requestMapId, scope);
+                    if (!recoveryContextIsCurrent(requestMapId, refreshGeneration)) return;
+                    CaltopoInterruptedTrackJournal.recover(
+                            requestMapId, archiveFolder, runtime, GetArtifactFeatureSnapshot());
+                } catch (Exception error) {
+                    CTError(TAG, "Flight recovery deferred; journal retained for retry.", error);
+                } finally {
+                    CaltopoRecoveryWork.onMain(() -> FinishMapRefresh(
+                            true, fullReconcile, requestStartedAtMs, refreshGeneration));
+                }
+            });
+        } else FinishMapRefresh(true, fullReconcile, requestStartedAtMs, refreshGeneration);
     }
 
     private static void FinishMapRefresh(boolean success,
@@ -1345,6 +1426,7 @@ public class CaltopoMap {
                                         long requestStartedAtMs,
                                         long refreshGeneration) {
         if (null == MapNode || refreshGeneration != MapRefreshGeneration) return;
+        InitialMapRequest = null;
         if (lOpenMapOp.fail()) {
             if (null != lOpenMapOp.response && lOpenMapOp.response.startsWith("<!DOCTYPE html>")) {
                 // Not going to figure this out on our own - write response to a file and open it with a browser:
@@ -1356,6 +1438,7 @@ public class CaltopoMap {
             }
             MapNode = null;
             OperatingProfiles.endAssignment();
+            SetMapStatus(MapStatusListener.mapStatus.down, "Map could not load. Check your connection and map permissions, then retry.");
             return;
         }
         recordCaltopoSessionRtt(lOpenMapOp, "openMap");
@@ -1364,12 +1447,16 @@ public class CaltopoMap {
         JSONObject state = (responseJson != null) ? responseJson.optJSONObject("state") : null;
         if (null == state) {
             CTError(TAG, "OpenMapFinished(): state missing from response. " + lOpenMapOp );
+            SetMapStatus(MapStatusListener.mapStatus.down, "Map response was incomplete. Please try connecting again.");
+            return;
         } else try {
             ParseMap(state);
             synchronized (MapRefreshLock) {
-                LastMapSync = Math.max(LastMapSync, requestStartedAtMs);
+                long snapshotCursor = responseJson.optLong("timestamp", requestStartedAtMs);
+                LastMapSync = Math.max(LastMapSync, snapshotCursor > 500L ? snapshotCursor : requestStartedAtMs);
                 LastMapPollStartedAt = requestStartedAtMs;
             }
+            FinishInitialMapSetup();
         } catch (Exception e) {
             CTError(TAG, "OpenMapFinished(): parseMap() raised:" + " (" + e.getClass().getSimpleName() + ")");
             SetMapStatus(MapStatusListener.mapStatus.down, "Map could not load. Please try connecting again.");
@@ -1682,10 +1769,40 @@ public class CaltopoMap {
         return builder.toString();
     }
 
+    private static boolean recoveryContextIsCurrent(String mapId, long generation) {
+        CaltopoNode.MapNode current = MapNode;
+        return !ShutdownInProgress && !DisconnectInProgress && current != null &&
+                generation == MapRefreshGeneration && mapId.equals(current.getId());
+    }
+
     private static void LookForExistingLiveTracks() {
         if (null == FolderId || null == ArchiveFolderId) return;
-        java.util.Set<String> recoveringTrackIds = CaltopoInterruptedTrackJournal.recover(
-                GetMapId(), ArchiveFolderId, getCurrentRuntime(), GetArtifactFeatureSnapshot());
+        final String mapId = GetMapId();
+        final String archiveFolder = ArchiveFolderId;
+        final long generation = MapRefreshGeneration;
+        final R2cRuntime runtime = getCurrentRuntime();
+        CaltopoRecoveryWork.execute(() -> {
+            if (!recoveryContextIsCurrent(mapId, generation)) return;
+            final java.util.Set<String> recoveringTrackIds;
+            try {
+                recoveringTrackIds = CaltopoInterruptedTrackJournal.recover(
+                        mapId, archiveFolder, runtime, GetArtifactFeatureSnapshot());
+            } catch (Exception error) {
+                CTError(TAG, "Startup flight recovery deferred; journal retained for retry.", error);
+                CaltopoRecoveryWork.onMain(() -> {
+                    if (recoveryContextIsCurrent(mapId, generation)) PollMapUpdates();
+                });
+                return;
+            }
+            CaltopoRecoveryWork.onMain(() -> {
+                if (recoveryContextIsCurrent(mapId, generation)) {
+                    LookForExistingLiveTracksFinished(recoveringTrackIds);
+                }
+            });
+        });
+    }
+
+    private static void LookForExistingLiveTracksFinished(java.util.Set<String> recoveringTrackIds) {
         publishMyDeviceMarkerIfPossible(GetMyLocation());
         long timeNowInMilliseconds = System.currentTimeMillis();
         long maxTrackAgeInMilliseconds = CaltopoClient.GetNewTrackDelayInSeconds() * 1000;
@@ -1729,7 +1846,8 @@ public class CaltopoMap {
                     featureClass, title, (double)trackAgeInMilliseconds/1000.0));
             ArchiveFeature(feature, featureClass, timeNowInMilliseconds, 0);
         }
-        PollMapUpdates();
+        // The initial snapshot is current. Normal polling will pick up subsequent
+        // changes without making another read a prerequisite for connection.
     }
 
     /* feature is the complete feature description.   featureClass is the type of feature
@@ -1745,9 +1863,16 @@ public class CaltopoMap {
     static void ArchiveFeature(@NonNull JSONObject feature, @NonNull String featureClass,
                                long timeNowInMilliseconds, long maxWaitInMilliseconds,
                                @Nullable Consumer<Boolean> onComplete) {
-        final String destinationMapId = GetMapId();
+        ArchiveFeatureOnMap(feature, featureClass, timeNowInMilliseconds, maxWaitInMilliseconds,
+                GetMapId(), ArchiveFolderId, getCurrentRuntime(), onComplete);
+    }
+
+    static void ArchiveFeatureOnMap(@NonNull JSONObject feature, @NonNull String featureClass,
+                               long timeNowInMilliseconds, long maxWaitInMilliseconds,
+                               String destinationMapId, @Nullable String destinationFolderId,
+                               R2cRuntime runtime, @Nullable Consumer<Boolean> onComplete) {
         String timeString = String.valueOf(timeNowInMilliseconds);
-        if (null == ArchiveFolderId) {
+        if (null == destinationFolderId || destinationMapId.isEmpty()) {
             CTError(TAG, "archiveFeature(): can't archive - folder not created yet.");
             if (onComplete != null) onComplete.accept(false);
             return;
@@ -1768,12 +1893,12 @@ public class CaltopoMap {
             prop.put("stroke-width", ArchiveLineProp.width);
             prop.put("stroke-opacity", ArchiveLineProp.opacity);
             prop.put("pattern", ArchiveLineProp.pattern);
-            prop.put("folderId", ArchiveFolderId);
+            prop.put("folderId", destinationFolderId);
             prop.put("updated", timeString);
             prop.put("-updated-on", timeString);
             prop.put("class", "Shape");  // convert from LiveTrack to shape.
             AtomicReference<CaltopoOp> deleteOp = new AtomicReference<>();
-            CaltopoOp op = getCurrentRuntime().getCalTopoSessionGateway()
+            CaltopoOp op = runtime.getCalTopoSessionGateway()
                     .editObjectOnMap(destinationMapId, "Shape", trackId, feature, archiveOp -> {
                         onArchiveFeatureEditFinished(trackId, archiveOp);
                         if (!archiveOp.success()) {
@@ -1781,17 +1906,17 @@ public class CaltopoMap {
                             return;
                         }
                         if (!featureClass.equals("LiveTrack")) {
-                            refreshArtifactsAfterArchiveFinished(trackId, true);
+                            if (destinationMapId.equals(GetMapId())) refreshArtifactsAfterArchiveFinished(trackId, true);
                             if (onComplete != null) onComplete.accept(true);
                             return;
                         }
                         CTInfo(TAG, String.format(Locale.US, "archiveFeature(): Stopping liveTrack %s....", trackId));
-                        deleteOp.set(getCurrentRuntime().getCalTopoSessionGateway()
+                        deleteOp.set(runtime.getCalTopoSessionGateway()
                                 .deleteLiveTrackOnMap(destinationMapId, trackId, finishedDeleteOp -> {
                                     CTInfo(TAG, String.format(Locale.US,
                                             "archiveFeature(): delete liveTrackId=%s success=%s responseCode=%d",
                                             trackId, finishedDeleteOp.success(), finishedDeleteOp.responseCode));
-                                    refreshArtifactsAfterArchiveFinished(
+                                    if (destinationMapId.equals(GetMapId())) refreshArtifactsAfterArchiveFinished(
                                             trackId, finishedDeleteOp.success());
                                     if (onComplete != null) onComplete.accept(finishedDeleteOp.success());
                                 }));
@@ -1924,11 +2049,21 @@ public class CaltopoMap {
     private static DeviceMarkerJournal markerJournal;
     private static final java.util.Set<String> activeMarkerKeys=java.util.concurrent.ConcurrentHashMap.newKeySet();
     private static final java.util.Set<String> deletingMarkerKeys=java.util.concurrent.ConcurrentHashMap.newKeySet();
-    private static synchronized DeviceMarkerJournal markerJournal() {
-        if(markerJournal==null)markerJournal=new DeviceMarkerJournal(new java.io.File(R2CApplication.getAppCtxt().getFilesDir(),"device-marker-cleanup.json"));
+    // Worker-owned, one latest publication per marker while an earlier DELETE is in flight.
+    private static final java.util.Map<String,Runnable> deferredMarkerPublications=new java.util.HashMap<>();
+    private static java.util.function.Supplier<DeviceMarkerJournal> markerJournalFactory = () ->
+            new DeviceMarkerJournal(org.ncssar.rid2caltopo.storage.OperationalStorage.INSTANCE.stateFile(
+                    R2CApplication.getAppCtxt(), "device-marker-cleanup.json"));
+    private static DeviceMarkerJournal markerJournal() {
+        // This worker is the sole owner. Never hold the location/UI class monitor during storage preparation.
+        CaltopoMarkerWork.requireWorker();
+        if (markerJournal == null) markerJournal = markerJournalFactory.get();
         return markerJournal;
     }
     private static void retryMarkerCleanup() {
+        CaltopoMarkerWork.execute(CaltopoMap::retryMarkerCleanupOnWorker);
+    }
+    private static void retryMarkerCleanupOnWorker() {
         try {
             String domain=CaltopoClient.GetCaltopoDomainAndPort();
             for(DeviceMarkerJournal.Entry entry:markerJournal().entries())
@@ -1936,74 +2071,110 @@ public class CaltopoMap {
         }catch(Exception error){CTWarn(TAG,"Marker cleanup journal unavailable; retry retained",error);}
     }
     private static CaltopoOp deleteJournalMarker(DeviceMarkerJournal.Entry entry) {
+        return deleteJournalMarker(entry, getCurrentRuntime().getCalTopoSessionGateway().prepareMarkerCleanup(entry.map));
+    }
+    private static CaltopoOp deleteJournalMarker(DeviceMarkerJournal.Entry entry,
+            java.util.function.BiFunction<String, java.util.function.Consumer<CaltopoOp>, CaltopoOp> cleanup) {
         if(!entry.domain.equals(CaltopoClient.GetCaltopoDomainAndPort())||!deletingMarkerKeys.add(entry.key()))return null;
         try {
-            return getCurrentRuntime().getCalTopoSessionGateway().deleteMarkerOnMap(entry.map,entry.marker,op->{
+            return cleanup.apply(entry.marker,op->CaltopoMarkerWork.execute(()->{
                 try {
                     if(op!=null&&op.success())markerJournal().acknowledge(entry);
                     CTDebug(TAG,"Marker cleanup map="+entry.map+" id="+entry.marker+" success="+(op!=null&&op.success()));
                 }catch(Exception error){CTWarn(TAG,"Marker cleanup acknowledgement not persisted",error);}
-                finally{deletingMarkerKeys.remove(entry.key());}
-            });
+                finally{
+                    deletingMarkerKeys.remove(entry.key());
+                    Runnable publication=deferredMarkerPublications.remove(entry.key());
+                    if(publication!=null)publication.run();
+                }
+            }));
         }catch(Exception error){deletingMarkerKeys.remove(entry.key());CTWarn(TAG,"Marker cleanup deferred",error);return null;}
+    }
+
+    private static boolean markerContextIsCurrent(String domain, String map, String folder, long generation) {
+        return !ShutdownInProgress && !DisconnectInProgress && MapStatus == MapStatusListener.mapStatus.up &&
+                MapNode != null && MyLocation != null && generation == MapRefreshGeneration &&
+                domain.equals(CaltopoClient.GetCaltopoDomainAndPort()) && map.equals(GetMapId()) &&
+                folder.equals(FolderId);
+    }
+
+    private static void publishMarkerAfterCleanup(String key, Runnable publication) {
+        CaltopoMarkerWork.requireWorker();
+        if(deletingMarkerKeys.contains(key)) {
+            deferredMarkerPublications.put(key,publication);
+            CTDebug(TAG,"Device marker publication waiting for earlier cleanup key="+key);
+        } else publication.run();
     }
 
     private static void publishMyDeviceMarkerIfPossible(@Nullable Location location) {
         if (ShutdownInProgress || DisconnectInProgress || MapStatus != MapStatusListener.mapStatus.up ||
-                MapNode == null || FolderId == null || FolderId.isEmpty() || location == null) {
-            return;
-        }
-        String markerId = GetMyUUID();
+                MapNode == null || FolderId == null || FolderId.isEmpty() || location == null) return;
+        final String markerId = GetMyUUID();
         if (markerId.isEmpty()) return;
-        try {
-            String markerDomain=CaltopoClient.GetCaltopoDomainAndPort();
-            String markerMap=GetMapId();
-            String key=markerDomain+"/"+markerMap+"/"+markerId;
-            if(deletingMarkerKeys.contains(key))return;
-            final long markerGeneration=MapRefreshGeneration;
-            final DeviceMarkerJournal.Entry ownership=markerJournal().arm(markerDomain,markerMap,markerId);
-            activeMarkerKeys.add(key);
-            long nowMs = System.currentTimeMillis();
-            JSONObject extraProperties = new JSONObject();
-            extraProperties.put(LOCAL_DEVICE_MARKER_NAME_PROP, R2CActivity.MyDeviceName);
-            extraProperties.put(LOCAL_DEVICE_MARKER_GUID_PROP, markerId);
-            extraProperties.put(LOCAL_DEVICE_MARKER_LAST_SEEN_PROP, nowMs);
-            String markerDescription = buildMyDeviceMarkerDescription();
-            String markerColor = getLocalDeviceMarkerColor();
-            extraProperties.put("description", markerDescription);
-            extraProperties.put("marker-color", markerColor);
-            getCurrentRuntime().getCalTopoSessionGateway().addMarker(
-                    location.getLatitude(),
-                    location.getLongitude(),
-                    LOCAL_DEVICE_MARKER_TITLE_PREFIX + R2CActivity.MyDeviceName,
-                    LOCAL_DEVICE_MARKER_SYMBOL,
-                    FolderId,
-                    markerId,
-                    extraProperties,
-                    markerOp -> {
-                        String resolvedId = (markerOp != null && markerOp.success()) ? markerOp.id() : "";
-                        if (!resolvedId.isEmpty()&&!resolvedId.equals(markerId)) {
-                            try{DeviceMarkerJournal.Entry resolved=markerJournal().arm(markerDomain,markerMap,resolvedId);activeMarkerKeys.add(resolved.key());}catch(Exception error){CTWarn(TAG,"Could not journal resolved marker",error);}
-                        }
-                        if(DisconnectInProgress||ShutdownInProgress||markerGeneration!=MapRefreshGeneration||!markerMap.equals(GetMapId())) {
-                            activeMarkerKeys.remove(ownership.key());
-                            if(!resolvedId.isEmpty())activeMarkerKeys.remove(markerDomain+"/"+markerMap+"/"+resolvedId);
-                            // A POST may finish after shutdown's DELETE. Arm again before compensating deletion.
-                            try{deleteJournalMarker(markerJournal().arm(markerDomain,markerMap,resolvedId.isEmpty()?markerId:resolvedId));}
-                            catch(Exception error){CTWarn(TAG,"Late marker cleanup deferred",error);}
-                            return;
-                        }
-                        if (!resolvedId.isEmpty()) ResolvedMyDeviceMarkerId = resolvedId;
-                        LastPublishedMyDeviceMarkerColor = markerColor;
-                        LastPublishedMyDeviceMarkerDescription = markerDescription;
-                        CTDebug(TAG, String.format(Locale.US,
-                                "publishMyDeviceMarkerIfPossible(): markerId=%s resolvedId=%s success=%s responseCode=%d",
-                                markerId, resolvedId, markerOp != null && markerOp.success(),
-                                markerOp != null ? markerOp.responseCode : -1));
-                    });
-        } catch (Exception e) {
-            CTError(TAG, "publishMyDeviceMarkerIfPossible() raised" + " (" + e.getClass().getSimpleName() + ")");
-        }
+        final String domain = CaltopoClient.GetCaltopoDomainAndPort();
+        final String map = GetMapId(), folder = FolderId, name = R2CActivity.MyDeviceName;
+        final String key = domain + "/" + map + "/" + markerId;
+        final long generation = MapRefreshGeneration;
+        final double latitude = location.getLatitude(), longitude = location.getLongitude();
+        final String description = buildMyDeviceMarkerDescription(), color = getLocalDeviceMarkerColor();
+        final var cleanup = getCurrentRuntime().getCalTopoSessionGateway().prepareMarkerCleanup(map);
+        // Reserve current intent before the worker can retry old journal entries. Otherwise each
+        // poll queues DELETE first and then skips this publication because that DELETE is active.
+        activeMarkerKeys.add(key);
+        CaltopoMarkerWork.execute(() -> publishMarkerAfterCleanup(key, () -> {
+            try {
+                // Durable ownership must exist before any POST is constructed or queued.
+                final DeviceMarkerJournal.Entry ownership = markerJournal().arm(domain, map, markerId);
+                activeMarkerKeys.add(key);
+                final JSONObject properties = new JSONObject()
+                        .put(LOCAL_DEVICE_MARKER_NAME_PROP, name)
+                        .put(LOCAL_DEVICE_MARKER_GUID_PROP, markerId)
+                        .put(LOCAL_DEVICE_MARKER_LAST_SEEN_PROP, System.currentTimeMillis())
+                        .put("description", description).put("marker-color", color);
+                CaltopoMarkerWork.onMain(() -> {
+                    if (!markerContextIsCurrent(domain, map, folder, generation)) {
+                        activeMarkerKeys.remove(key);
+                        CaltopoMarkerWork.execute(() -> deleteJournalMarker(ownership, cleanup));
+                        return;
+                    }
+                    try {
+                        getCurrentRuntime().getCalTopoSessionGateway().addMarker(latitude, longitude,
+                                LOCAL_DEVICE_MARKER_TITLE_PREFIX + name, LOCAL_DEVICE_MARKER_SYMBOL,
+                                folder, markerId, properties, markerOp -> CaltopoMarkerWork.execute(() -> {
+                                    CTDebug(TAG,"Device marker publication map="+map+" success="+
+                                            (markerOp!=null&&markerOp.success())+" responseCode="+
+                                            (markerOp!=null?markerOp.responseCode:-1));
+                                    String resolved = markerOp != null && markerOp.success() ? markerOp.id() : "";
+                                    try {
+                                        if (!resolved.isEmpty() && !resolved.equals(markerId)) {
+                                            DeviceMarkerJournal.Entry entry = markerJournal().arm(domain, map, resolved);
+                                            activeMarkerKeys.add(entry.key());
+                                        }
+                                    } catch (Exception error) { CTWarn(TAG, "Resolved marker journal retained for retry", error); }
+                                    CaltopoMarkerWork.onMain(() -> {
+                                        if (!markerContextIsCurrent(domain, map, folder, generation)) {
+                                            activeMarkerKeys.remove(key);
+                                            if (!resolved.isEmpty()) activeMarkerKeys.remove(domain + "/" + map + "/" + resolved);
+                                            CaltopoMarkerWork.execute(() -> {
+                                                try {
+                                                    // A late POST may follow an earlier DELETE; persist before compensating.
+                                                    deleteJournalMarker(markerJournal().arm(domain, map,
+                                                            resolved.isEmpty() ? markerId : resolved), cleanup);
+                                                } catch (Exception error) { CTWarn(TAG, "Late marker cleanup deferred", error); }
+                                            });
+                                            return;
+                                        }
+                                        if (markerOp != null && markerOp.success()) {
+                                            if (!resolved.isEmpty()) ResolvedMyDeviceMarkerId = resolved;
+                                            LastPublishedMyDeviceMarkerColor = color;
+                                            LastPublishedMyDeviceMarkerDescription = description;
+                                        }
+                                    });
+                                }));
+                    } catch (Exception error) { CTWarn(TAG, "Device marker request deferred; ownership retained", error); }
+                });
+            } catch (Exception error) { CTWarn(TAG, "Device marker journal failed; nothing published", error); }
+        }));
     }
 
     private static void removeStaleMyDeviceMarkers() {
@@ -2055,16 +2226,22 @@ public class CaltopoMap {
         if(MapNode==null)return;
         String map=GetMapId(),domain=CaltopoClient.GetCaltopoDomainAndPort();
         long wait=shouldWaitForMarkerDeleteAck()?Math.min(maxWaitInMilliseconds,MARKER_DELETE_WAIT_MS):0;
+        final String markerID = GetMyUUID();
+        final String resolvedID = ResolvedMyDeviceMarkerId;
+        final var cleanup = getCurrentRuntime().getCalTopoSessionGateway().prepareMarkerCleanup(map);
+        CaltopoMarkerWork.execute(() -> {
         try {
+            if (!domain.equals(CaltopoClient.GetCaltopoDomainAndPort())) return;
             // Also enroll legacy markers published before the durable journal existed.
-            markerJournal().arm(domain,map,GetMyUUID());
-            if(ResolvedMyDeviceMarkerId!=null&&!ResolvedMyDeviceMarkerId.isEmpty())markerJournal().arm(domain,map,ResolvedMyDeviceMarkerId);
+            markerJournal().arm(domain,map,markerID);
+            if(resolvedID!=null&&!resolvedID.isEmpty())markerJournal().arm(domain,map,resolvedID);
             for(DeviceMarkerJournal.Entry entry:markerJournal().entries())if(entry.domain.equals(domain)&&entry.map.equals(map)) {
                 activeMarkerKeys.remove(entry.key());
-                CaltopoOp op=deleteJournalMarker(entry);
+                CaltopoOp op=deleteJournalMarker(entry, cleanup);
                 if(wait>0&&op!=null)try{op.syncOp(wait);}catch(java.util.concurrent.TimeoutException error){CTWarn(TAG,"Marker delete timed out; durable retry retained");}
             }
         }catch(Exception error){CTWarn(TAG,"Marker cleanup deferred",error);}
+        });
     }
 
     private static boolean shouldWaitForMarkerDeleteAck() {

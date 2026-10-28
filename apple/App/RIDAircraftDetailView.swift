@@ -219,6 +219,16 @@ struct RIDAircraftDetailView: View {
 
 }
 
+private enum AircraftMappingBackupWriter {
+    nonisolated private static let queue = DispatchQueue(label: "r2c.mapping-preferences-writer", qos: .utility)
+    nonisolated static func enqueue(_ entries: [[String: String]], completion: @escaping @Sendable () -> Void = {}) {
+        queue.async {
+            UserDefaults.standard.set(entries, forKey: "org.ridMappings")
+            completion()
+        }
+    }
+}
+
 @MainActor
 final class AppleDroneConfirmationStore: ObservableObject {
     @Published private var sessionIdentities: [String: RidAircraftIdentity] = [:]
@@ -231,6 +241,8 @@ final class AppleDroneConfirmationStore: ObservableObject {
     private var peerConfirmationMapID = ""
     private var ignoredRemoteIDs: Set<String> = []
     private let defaults = UserDefaults.standard
+    private var mappingRecords: [[String: String]] = []
+    private var mappingRevision = 0
     private static let ignoredRemoteIDsDefaultsKey = "org.ignoredRemoteIDs"
     private static let preferredPilotCallsignDefaultsKey = "operator.pilotCallsign"
 
@@ -239,6 +251,7 @@ final class AppleDroneConfirmationStore: ObservableObject {
             UserDefaults.standard.string(forKey: Self.preferredPilotCallsignDefaultsKey)
         ) ?? ""
         if let entries = defaults.array(forKey: "org.ridMappings") as? [[String: String]] {
+            mappingRecords = entries
             importedIdentities = Dictionary(uniqueKeysWithValues: entries.compactMap { entry in
                 guard let remoteID = entry["remoteID"], !remoteID.isEmpty else { return nil }
                 let identity = RidAircraftIdentity(
@@ -270,6 +283,9 @@ final class AppleDroneConfirmationStore: ObservableObject {
     func isCurrentFlightConfirmed(_ remoteID: String) -> Bool {
         sessionIdentities[remoteID] != nil || peerIdentities[remoteID] != nil
     }
+
+    /// Active operator approvals only; imported mappings and peer approvals do not grant local consent.
+    var localCurrentFlightIdentities: [RidAircraftIdentity] { Array(sessionIdentities.values) }
 
     func isUnassociated(_ remoteID: String) -> Bool {
         guard let trackIdentity = identity(for: remoteID) else { return true }
@@ -361,6 +377,45 @@ final class AppleDroneConfirmationStore: ObservableObject {
         )
     }
 
+    /// O(1) immutable snapshot; sorting/encoding must happen on a worker.
+    var backupIdentitySnapshot: [String: RidAircraftIdentity] { importedIdentities }
+    var backupRevision: Int { mappingRevision }
+
+    private func persistMappingRecords(_ entries: [[String: String]], completion: @escaping @Sendable () -> Void = {}) {
+        mappingRevision += 1
+        mappingRecords = entries
+        AircraftMappingBackupWriter.enqueue(entries, completion: completion)
+    }
+
+    func restoreBackupMappings(_ mappings: [OrgConfigRIDMapping], applySettings: @MainActor () throws -> Void) async throws {
+        try AppleAircraftOrganizationAccess.requireEdit()
+        let revision = mappingRevision
+        let prepared = await Task.detached(priority: .utility) {
+            var identities: [String: RidAircraftIdentity] = [:]
+            var records: [[String: String]] = []
+            for mapping in mappings {
+                let callsign = mapping.ownerCallsign.isEmpty
+                    ? RidAircraftIdentity.guessPilotCallsign(mappedID: mapping.mappedID, model: mapping.model, remoteID: mapping.remoteID)
+                    : mapping.ownerCallsign
+                identities[mapping.remoteID] = RidAircraftIdentity(remoteID: mapping.remoteID,
+                    organization: mapping.organization, ownerName: mapping.ownerName, pilotCallsign: callsign,
+                    droneDescription: mapping.model, mappedIDOverride: mapping.mappedID, readiness: mapping.readiness)
+                records.append(["remoteID": mapping.remoteID, "mappedID": mapping.mappedID,
+                    "organization": mapping.organization, "model": mapping.model, "owner": mapping.owner,
+                    "ownerName": mapping.ownerName, "ownerCallsign": callsign, "readiness": mapping.readiness.jsonString])
+            }
+            return (identities, records)
+        }.value
+        try Task.checkCancellation()
+        try AppleAircraftOrganizationAccess.requireEdit()
+        guard revision == mappingRevision else { throw CancellationError() }
+        try applySettings()
+        importedIdentities = prepared.0
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            persistMappingRecords(prepared.1) { continuation.resume() }
+        }
+    }
+
     var importedMappings: [RidAircraftIdentity] {
         importedIdentities.values.sorted { $0.remoteID < $1.remoteID }
     }
@@ -370,11 +425,11 @@ final class AppleDroneConfirmationStore: ObservableObject {
         guard importedIdentities[identity.remoteID] == nil,
               !importedIdentities.values.contains(where: { $0.mappedID.caseInsensitiveCompare(identity.mappedID) == .orderedSame }) else { return false }
         importedIdentities[identity.remoteID] = identity
-        var entries = defaults.array(forKey: "org.ridMappings") as? [[String: String]] ?? []
+        var entries = mappingRecords
         entries.append(["remoteID": identity.remoteID, "mappedID": identity.mappedID,
                         "organization": "", "model": identity.droneDescription,
                         "ownerCallsign": identity.pilotCallsign, "ownerName": ""])
-        defaults.set(entries, forKey: "org.ridMappings")
+        persistMappingRecords(entries)
         return true
     }
 
@@ -417,14 +472,13 @@ final class AppleDroneConfirmationStore: ObservableObject {
                 "ownerCallsign": mapping.ownerCallsign.isEmpty ? (managedDownload ? mapping.owner : Self.importedPilotCallsign(mappedID: mapping.mappedID, model: mapping.model, remoteID: mapping.remoteID)) : mapping.ownerCallsign,
             ]
         }
-        defaults.set(persisted, forKey: "org.ridMappings")
+        persistMappingRecords(persisted)
     }
 
     func replacePersistedMappings(_ mappings: [RidAircraftIdentity]) throws {
         try AppleAircraftOrganizationAccess.requireEdit()
         importedIdentities = Dictionary(uniqueKeysWithValues: mappings.map { ($0.remoteID, $0) })
-        defaults.set(
-            mappings.map { identity in
+        let entries = mappings.map { identity in
                 [
                     "remoteID": identity.remoteID,
                     "mappedID": identity.mappedID,
@@ -435,9 +489,8 @@ final class AppleDroneConfirmationStore: ObservableObject {
                     "ownerCallsign": identity.pilotCallsign,
                     "readiness": identity.readiness.jsonString,
                 ]
-            },
-            forKey: "org.ridMappings"
-        )
+            }
+        persistMappingRecords(entries)
     }
 
     func setPeerConfirmationMapID(_ mapID: String) {
@@ -475,7 +528,7 @@ final class AppleDroneConfirmationStore: ObservableObject {
         confirmationLifecycle.reset()
         completedFlightGuard = CompletedFlightConfirmationGuard()
         ignoredRemoteIDs.removeAll()
-        defaults.removeObject(forKey: "org.ridMappings")
+        persistMappingRecords([])
         defaults.removeObject(forKey: Self.ignoredRemoteIDsDefaultsKey)
     }
 

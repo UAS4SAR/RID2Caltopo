@@ -6,7 +6,7 @@ import java.security.MessageDigest
 
 /** Separate from organization configuration: importing settings must never accept terms. */
 internal object ApplicationTerms {
-    const val version = "2026-09-25.1"
+    const val version = "2026-10-24.1"
     val fingerprint: String get() = fingerprint(LAUNCH_DISCLAIMER_TEXT)
     fun fingerprint(text: String): String = MessageDigest.getInstance("SHA-256")
         .digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }

@@ -1,0 +1,28 @@
+RID2Caltopo 2.5.1 (342) — supplemental review information
+
+PURPOSE AND HARDWARE INTEROPERABILITY
+RID2Caltopo is an independently developed, free, open-source incident-support application for search-and-rescue teams. Core hardware interoperability uses established industry protocols: ASTM F3411 Remote ID broadcasts over Bluetooth and operator-configured RTMP video received by the embedded MediaMTX server.
+
+Compatibility depends on protocols and formats, rather than an exclusive relationship with a designated hardware manufacturer. We have verified interoperability with independent implementations including DJI and Autel Robotics controller video and BlueMark Innovations / DroneScout DS110 Remote ID relays. These are examples, not an exhaustive compatibility list. Other implementations can interoperate when their broadcasts or streams use the supported formats.
+
+The DS110 relays Wi-Fi Beacon/NAN Remote ID as Bluetooth broadcasts. Apple devices receive that Bluetooth relay; the app does not directly scan Wi-Fi Remote ID. Compatible direct Bluetooth Remote ID transmitters require no bridge. Hardware-dependent observation requires a transmitter or publisher, but the app remains inspectable without nearby aircraft.
+
+MANUFACTURER RELATIONSHIP
+RID2Caltopo is distributed independently, not on behalf of DJI, Autel Robotics, BlueMark Innovations, or another hardware manufacturer. Product names identify interoperability, not sponsorship, affiliation, or endorsement. If further authorization documentation is needed, please identify the particular integration and authorization required.
+
+CalTopo is an optional software-service integration using its API/session interfaces, separate from ASTM Remote ID and RTMP. RID2Caltopo is independent of and not endorsed by CalTopo, as stated in the store description.
+
+REVIEW ACCESS
+1. Launch and acknowledge the operational notice. Allow Bluetooth for reception; use Status to inspect scanner and permission state. Nearby Aircraft may be empty when no transmitter is nearby. Inspect Live Map, Settings, Status, About & Privacy, local archives, and log-sharing controls without organization enrollment.
+2. For controller video, publish to the displayed RTMP destination on the same local network. Detector Off leaves video visible; Color and Infrared select local analysis.
+3. Optional CalTopo, Tracker, FAA-backed queries, and managed video need dedicated review access and a disposable test map. Coordination can publish catalogs and thumbnails before full-view approval. Full viewing/recording transfers prompt by default; Remote Video Control provides advance authorization. Sending microphone audio needs its separate control and permission; full-duplex audio can stay active for incoming sound while muted. Setup/probes exchange connection data before media.
+
+CHANGES IN THIS BUILD
+Tapping the incident map opens Map Options when connected or the map picker when disconnected; a disconnected map shows No map. Tracker device registration offers an editable name that is retained on reconnect, and Settings offers Rename device. Native DJI Cloud API mapping integration is not included in this build.
+
+BACKGROUND MODES AND LIMITS
+This build declares bluetooth-central, location, and audio modes. An active location session supports operator position and continued incident monitoring with the location indicator visible. Audio supports spoken operational advisories and enabled VoIP. System background limits still apply; continued reception is not guaranteed. Keep the app foreground for interactive video analysis.
+
+The app provides supplemental awareness. It does not grant flight authorization or guarantee detection, accuracy, or safe separation. FAA/land information depends on geographic coverage and service availability.
+
+Contact: kjt@uas4sar.com

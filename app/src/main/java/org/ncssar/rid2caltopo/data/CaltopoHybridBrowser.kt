@@ -1,4 +1,9 @@
-package org.ncssar.rid2caltopo.data;
+package org.ncssar.rid2caltopo.data
+
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive;
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
@@ -24,6 +29,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -69,7 +75,7 @@ fun CaltopoHybridBrowser(
     val (personalBusy, selectPersonal) = org.ncssar.rid2caltopo.ui.rememberPersonalCredentialsAction {
         onUIEvent(UIEvent.BrowseProfileSelected("personal"))
     }
-    val navigationStack = remember(rootNodes) { mutableStateListOf(rootNodes) }
+    val navigationStack = remember(CaltopoCatalogIdentity(rootNodes)) { mutableStateListOf(rootNodes) }
     val currentItems = navigationStack.lastOrNull() ?: rootNodes
     val tag = "CaltopoHybridBrowser"
 
@@ -96,12 +102,20 @@ fun CaltopoHybridBrowser(
             // Filter the current list based on the query
             var searchQuery by remember { mutableStateOf("") }
 
-            fun allMaps(nodes: List<CaltopoNode>): List<CaltopoNode.MapNode> = nodes.flatMap {
-                when (it) { is CaltopoNode.Directory -> allMaps(it.children); is CaltopoNode.MapNode -> listOf(it) }
+            val searchResult by produceState<CaltopoSearchResult?>(null,
+                CaltopoCatalogIdentity(rootNodes), CaltopoCatalogIdentity(currentItems), searchQuery) {
+                value = withContext(Dispatchers.Default) {
+                    val job = currentCoroutineContext()
+                    CaltopoSearchResult(rootNodes, currentItems, searchQuery,
+                        searchCaltopoMaps(rootNodes, currentItems, searchQuery) { job.ensureActive() })
+                }
             }
-            val filteredItems = remember(rootNodes, currentItems, searchQuery) {
-                if (searchQuery.isEmpty()) currentItems
-                else allMaps(rootNodes).distinctBy { it.id }.filter { it.title.contains(searchQuery, ignoreCase = true) }
+            val currentSearch = searchResult?.takeIf {
+                it.root === rootNodes && it.level === currentItems && it.query == searchQuery
+            }
+            val filteredItems = if (searchQuery.isEmpty()) currentItems else currentSearch?.rows ?: emptyList()
+            if (searchQuery.isNotEmpty() && currentSearch == null) {
+                androidx.compose.material3.LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
             val keyboardController = LocalSoftwareKeyboardController.current
             val focusManager = LocalFocusManager.current

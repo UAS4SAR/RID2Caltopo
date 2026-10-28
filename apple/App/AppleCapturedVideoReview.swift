@@ -220,8 +220,7 @@ final class AppleCapturedVideoReviewModel: ObservableObject {
         defer { if access { sourceURL.stopAccessingSecurityScopedResource() } }
         do {
             let destination = try await Task.detached(priority: .utility) {
-                let root = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("RID2Caltopo/CapturedVideo", isDirectory: true)
+                let root = TemporaryWorkspace.root.appendingPathComponent("CapturedVideo", isDirectory: true)
                 try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
                 let suffix = sourceURL.pathExtension.isEmpty ? "mov" : sourceURL.pathExtension
                 let destination = root.appendingPathComponent("review-\(UUID().uuidString).\(suffix)")

@@ -20,6 +20,7 @@ internal object MappingSurfaceCheckpoint {
             JSONObject().put("name",name).put("bytes",f.length()).put("sha256",MappingRegionProcessor.sha(f)) })
         MappingPhotoStore.writeJson(File(out,"geometry-checkpoint.json"),JSONObject().put("key",key(mission,digests))
             .put("geometryKey",key(geometryMission(mission),digests)).put("files",files).put("representation",representation))
+        org.ncssar.rid2caltopo.storage.OperationalStorage.retainTree(out, check)
     }
     fun valid(mission:JSONObject,digests:List<String>,out:File,check:()->Unit):Boolean = runCatching {
         val record=JSONObject(File(out,"geometry-checkpoint.json").readText())

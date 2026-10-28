@@ -71,6 +71,7 @@ internal object MappingLibraryRepository {
         return (good.minOf { it[1] } + good.maxOf { it[1] })/2 to (good.minOf { it[0] } + good.maxOf { it[0] })/2
     }
     fun list(context: Context, live: MappingProcessingState?, includeStorage: Boolean = true): List<MappingLibraryEntry> {
+        org.ncssar.rid2caltopo.storage.OperationalStorage.requireReady(context)
         val flights = MappingFlightRepository.list(context.filesDir, live=live, includeStorage=includeStorage)
         val owned = flights.flatMap { it.resultIds }.toSet()
         val entries = flights.map { flight ->

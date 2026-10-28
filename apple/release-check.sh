@@ -124,6 +124,10 @@ xcrun clang -std=c11 -Wall -Wextra -Werror \
     -o "$work_dir/R2CH264PacketTests"
 "$work_dir/R2CH264PacketTests"
 xcrun clang -std=c11 -Wall -Wextra -Werror \
+    "$repo_root/native/tests/R2CDecodeRecoveryTests.c" \
+    -o "$work_dir/R2CDecodeRecoveryTests"
+"$work_dir/R2CDecodeRecoveryTests"
+xcrun clang -std=c11 -Wall -Wextra -Werror \
     "$repo_root/native/tests/R2CDJICameraTelemetryTests.c" \
     -o "$work_dir/R2CDJICameraTelemetryTests"
 "$work_dir/R2CDJICameraTelemetryTests"

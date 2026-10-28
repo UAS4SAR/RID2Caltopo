@@ -8,10 +8,8 @@ import android.net.Uri
 import androidx.datastore.core.DataStore
 import androidx.datastore.dataStore
 import androidx.documentfile.provider.DocumentFile
-import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
-import java.io.IOException
 import java.util.ArrayList
 import java.util.Hashtable
 import java.util.Locale
@@ -87,18 +85,30 @@ object AppConfigStore {
         }
     )
 
+    private val initializationLock = Any()
+
     @JvmStatic
-    @Synchronized
     fun initialize(context: Context) {
+        // Warm UI lookups must not touch filesDir or the worker's I/O lock.
+        val nextContext = context.applicationContext
+        if (appContext === nextContext && cachedConfig != null) return
+        val main = android.os.Looper.getMainLooper()
+        check(main == null || android.os.Looper.myLooper() != main) {
+            "Cold settings must be loaded through SettingsStartup on a worker"
+        }
+        synchronized(initializationLock) { initializeOnWorker(nextContext) }
+    }
+
+    private fun initializeOnWorker(context: Context) {
         val nextContext = context.applicationContext
         val datastorePath = "${nextContext.filesDir.parent}/files/datastore/app_config.pb"
         if (appContext === nextContext && initializedDatastorePath == datastorePath && cachedConfig != null) return
-        appContext = nextContext
-        initializedDatastorePath = datastorePath
         CaltopoClient.CTDebug(TAG, "initialize(): datastore path=$datastorePath")
         val config = readConfigBlockingFromDataStore(nextContext)
         synchronized(cacheLock) {
             cachedConfig = config
+            initializedDatastorePath = datastorePath
+            appContext = nextContext
         }
     }
 
@@ -116,20 +126,28 @@ object AppConfigStore {
     @JvmStatic
     fun exportConfigBytes(context: Context): ByteArray {
         initialize(context)
-        return currentConfigSnapshot().toByteArray()
+        return SettingsBackupPolicy.settingsOnly(currentConfigSnapshot()).toByteArray()
     }
 
     @JvmStatic
     fun importConfigBytes(context: Context, bytes: ByteArray): Boolean {
         if (!AircraftOrganizationAccess.canEdit()) return false
         initialize(context)
+        val original = currentConfigSnapshot()
         return try {
             val imported = AppConfig.parseFrom(bytes)
             imported.ridMappingsList.forEach { mapping ->
                 val readiness = AircraftReadiness.fromJSON(mapping.readinessJson.takeIf { it.isNotBlank() }?.let { org.json.JSONObject(it) })
                 require(readiness.validationErrors().isEmpty()) { "Invalid aircraft readiness in backup." }
             }
-            replaceCachedConfigAndEnqueueWrite(context, imported, "importConfigBytes")
+            // Parsing/filtering can grow with the backup. Do it before taking
+            // the cache lock, then fail rather than overwrite a newer edit.
+            val restored = SettingsBackupPolicy.restore(original, imported)
+            synchronized(cacheLock) {
+                if (cachedConfig !== original || !AircraftOrganizationAccess.canEdit()) return false
+                cachedConfig = restored
+                enqueueConfigWrite(context, restored, "importConfigBytes")
+            }
             true
         } catch (e: Exception) {
             CaltopoClient.CTWarn(TAG, "importConfigBytes(): unable to parse imported config.", e)
@@ -141,6 +159,25 @@ object AppConfigStore {
     fun hasMeaningfulConfig(context: Context): Boolean {
         initialize(context)
         return hasMeaningfulConfig(currentConfigSnapshot())
+    }
+
+    /** OS callbacks run on binder workers. Serialize with normal durable writes. */
+    internal fun restoreSystemBackup(context: Context, bytes: ByteArray) {
+        check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper())
+        val safe = SettingsBackupPolicy.settingsOnly(AppConfig.parseFrom(bytes))
+        val completed = java.util.concurrent.CompletableFuture<Unit>()
+        persistenceExecutor.execute {
+            try {
+                val restored = runBlocking {
+                    context.applicationContext.appConfigDataStore.updateData { current ->
+                        SettingsBackupPolicy.restore(current, safe)
+                    }
+                }
+                synchronized(cacheLock) { cachedConfig = restored }
+                completed.complete(Unit)
+            } catch (error: Throwable) { completed.completeExceptionally(error) }
+        }
+        completed.get()
     }
 
     @JvmStatic
@@ -219,8 +256,8 @@ object AppConfigStore {
     private fun replaceCachedConfigAndEnqueueWrite(context: Context, config: AppConfig, reason: String): AppConfig {
         synchronized(cacheLock) {
             cachedConfig = config
+            enqueueConfigWrite(context, config, reason)
         }
-        enqueueConfigWrite(context, config, reason)
         return config
     }
 
@@ -231,9 +268,11 @@ object AppConfigStore {
     ): AppConfig {
         val updated = synchronized(cacheLock) {
             val current = cachedConfig ?: throw IllegalStateException("AppConfigStore cache not initialized.")
-            update(current).also { cachedConfig = it }
+            update(current).also {
+                cachedConfig = it
+                enqueueConfigWrite(context, it, reason)
+            }
         }
-        enqueueConfigWrite(context, updated, reason)
         return updated
     }
 
@@ -251,11 +290,7 @@ object AppConfigStore {
         val dataStoreFile = context.filesDir.resolve("datastore/app_config.pb")
         CaltopoClient.CTDebug(TAG, "readConfigBlockingFromDataStore(): exists=${dataStoreFile.exists()} size=${if (dataStoreFile.exists()) dataStoreFile.length() else 0}")
         return runBlocking {
-            context.appConfigDataStore.data
-                .catch { ex ->
-                    if (ex is IOException) emit(AppConfigSerializer.defaultValue) else throw ex
-                }
-                .first()
+            context.appConfigDataStore.data.first()
         }
     }
 

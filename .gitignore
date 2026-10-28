@@ -68,3 +68,7 @@ tools/anomaly_test/build_perf/
 
 # Device-bound administrator deployment envelopes (never commit).
 /.local-deployment/
+
+# Generated Python bytecode
+__pycache__/
+*.py[cod]

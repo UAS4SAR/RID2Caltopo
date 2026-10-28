@@ -373,7 +373,7 @@ final class AppleClueStore: ObservableObject {
             trackFolderName: folderName,
             settleDelay: .milliseconds(500),
             fetchSnapshot: {
-                try await client.fetchMapArtifacts()
+                try await client.fetchMapArtifacts(refresh: true)
             },
             createFolder: { title, visible, labelVisible in
                 try await client.createFolder(

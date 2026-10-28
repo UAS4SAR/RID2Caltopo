@@ -27,6 +27,7 @@ object DjiCloudManager {
     val session=current.asStateFlow()
     @Synchronized fun start(context:Context,mission:MappingMission,profile:MappingResolution.Profile,gsd:Double,httpDiagnostic:Boolean=false,capture:MappingCaptureProfile.Profile=MappingCaptureProfile.nadir,canopyHeightMeters:Double=20.0,maximumObstacleHeightMeters:Double?=null,clearanceMeters:Double=15.0,maximumCaptureSpeedMetersPerSecond:Double?=null,transitSpeedMetersPerSecond:Double?=null) = startRecord(context,mission.json(profile,gsd,capture,canopyHeightMeters,maximumObstacleHeightMeters,clearanceMeters,maximumCaptureSpeedMetersPerSecond,transitSpeedMetersPerSecond).put("processLocally",!profile.thermal),httpDiagnostic)
     @Synchronized fun resume(context:Context,id:String,httpDiagnostic:Boolean?=null) {
+        org.ncssar.rid2caltopo.storage.OperationalStorage.requireReady(context)
         require(UUID.fromString(id).toString()==id)
         val root=File(context.filesDir,"mapping-missions/$id")
         startRecord(context,JSONObject(File(root,"mission.json").readText()),httpDiagnostic ?: savedHttpDiagnostic(root))
@@ -54,9 +55,10 @@ object DjiCloudManager {
                 "This flight already has photos. Reopen the assignment to define a new flight with different settings."
             }
         }
-        MappingPhotoStore.writeJson(saved,record)
         File(root,"mission.kmz").writeBytes(routeBytes)
+        org.ncssar.rid2caltopo.storage.OperationalStorage.retain(File(root,"mission.kmz"))
         MappingPhotoStore.writeJson(File(root,"route-summary.json"),route.summary())
+        MappingPhotoStore.writeJson(saved,record)
         MappingTransferManager.stop();stop();app=application
         val run=UUID.randomUUID().toString();generation=run
         try {

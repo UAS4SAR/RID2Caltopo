@@ -29,11 +29,13 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
     @Published var map = ""
     @Published var status = "Sign in if needed. Your login is retained until you clear it or it expires."
     @Published var origin = CaltopoPersonalProbe.origin
+    @Published var showEmailSetup = false
+    @Published private(set) var signInProtectionReady = false
     @Published var busy = false
     @Published var catalogFailed = false
     @Published var pendingMarker: UUID?
-    private static let pendingURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("personal-probe-pending-marker.txt")
+    @Published private(set) var pendingMarkerLoaded = false
+    private let pendingStore = CaltopoPendingMarkerStore()
     private var accountID: String?
     private var catalogCompletion: ((String, [CaltopoTeamMapNode]) -> Void)?
     private var pickerSelection: ((CaltopoTeamMap) -> Void)?
@@ -45,6 +47,7 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
     private var requestTask: Task<Void, Never>?
     private var browserIdentityRefreshTask: Task<Void, Never>?
     private var browserLoadError: Error?
+    private var googleNavigationWasBlocked = false
 
     private override init() {
         let configuration = WKWebViewConfiguration()
@@ -55,8 +58,15 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
         web = WKWebView(frame: .zero, configuration: configuration)
         web.isInspectable = false
         super.init()
-        if let saved = try? String(contentsOf: Self.pendingURL, encoding: .utf8) {
-            pendingMarker = UUID(uuidString: saved)
+        Task { [weak self, pendingStore] in
+            do {
+                let saved = try await pendingStore.load()
+                guard let self else { return }
+                self.pendingMarker = saved
+                self.pendingMarkerLoaded = true
+            } catch {
+                self?.status = "Pending test-marker recovery could not load. Close and reopen the app to retry. The saved record has been kept."
+            }
         }
         applyStoragePolicy()
         web.navigationDelegate = self
@@ -80,6 +90,19 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
             }
             """, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .defaultClient))
         Task {
+            do {
+                guard let rules = try await WKContentRuleListStore.default().compileContentRuleList(
+                    forIdentifier: "r2c-no-embedded-google-v1",
+                    encodedContentRuleList: CaltopoEmbeddedSignInPolicy.contentRulesJSON) else {
+                    status = "Sign-in protection could not load. Close and reopen the app to retry. Saved sessions are kept."
+                    return
+                }
+                web.configuration.userContentController.add(rules)
+                signInProtectionReady = true
+            } catch {
+                status = "Sign-in protection could not load. Close and reopen the app to retry. Saved sessions are kept."
+                return
+            }
             let cookies = await web.configuration.websiteDataStore.httpCookieStore.allCookies()
             // Existing installs may have cookies without the new durable marker.
             // Treat retained CalTopo cookies conservatively until Clear login.
@@ -182,7 +205,7 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
         let sessionEpoch = sessionGeneration
         let registryEpoch = await CaltopoPersonalSessions.shared.epoch()
         guard accountID == id, sessionGeneration == sessionEpoch else { throw CancellationError() }
-        let url = URL(string: "https://caltopo.com/sideload/account/\(id).json?json=%7Bfull%3A%20true%7D")!
+        guard let url = CaltopoPersonalProbe.accountEndpoint(id) else { throw CaltopoLiveClientError.invalidConfiguration }
         guard let cookie = await boundCookie(url, account: id, epoch: sessionEpoch) else { throw CaltopoLiveClientError.httpStatus(401, "Personal login expired.") }
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil; config.httpShouldSetCookies = false; config.urlCache = nil
@@ -190,24 +213,21 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
         defer { session.finishTasksAndInvalidate() }
         var request = URLRequest(url: url)
         request.httpShouldHandleCookies = false
+        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         request.setValue(cookie, forHTTPHeaderField: "Cookie")
         let (data, response) = try await session.data(for: request)
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
         guard statusCode == 200 else {
             throw CaltopoLiveClientError.httpStatus(statusCode, "Unable to load personal maps.")
         }
-        let account = try CaltopoPersonalCatalog.account(data)
-        guard let username = account["username"] as? String, !username.isEmpty,
-              accountID == id, sessionGeneration == sessionEpoch else { throw CaltopoLiveClientError.invalidConfiguration }
-        let normalized = try CaltopoPersonalCatalog.normalize(data, expectedID: id, username: username)
-        let catalog = try JSONSerialization.jsonObject(with: normalized) as! [String: Any]
-        let mediaOwners = catalog["mediaOwners"] as? [String: String] ?? [:]
-        let decoded = try CaltopoTeamMapDecoder.decode(data: normalized).sorted {
-            func rank(_ node: CaltopoTeamMapNode) -> Int {
-                node.id == "virtual_recents" ? 0 : (node.id == id ? 1 : 2)
-            }
-            return rank($0) < rank($1)
-        }
+        let prepared = try await Task.detached(priority: .userInitiated) {
+            try CaltopoPersonalCatalog.prepare(data, expectedID: id)
+        }.value
+        try Task.checkCancellation()
+        guard accountID == id, sessionGeneration == sessionEpoch else { throw CancellationError() }
+        let username = prepared.username
+        let mediaOwners = prepared.mediaOwners
+        let decoded = prepared.maps
         func grant(_ node: CaltopoTeamMapNode) async -> CaltopoTeamMapNode {
             switch node {
             case let .directory(id, title, children):
@@ -316,17 +336,47 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
         web.load(URLRequest(url: url))
     }
 
+    func openEmailLogin() {
+        guard signInProtectionReady, !busy else { return }
+        status = "Use CalTopo’s email/password option. Your existing saved session is kept."
+        web.load(URLRequest(url: CaltopoEmbeddedSignInPolicy.loginURL))
+    }
+
+    private func blockedGoogleSignIn() {
+        googleNavigationWasBlocked = true
+        status = CaltopoEmbeddedSignInPolicy.blockedMessage
+        showEmailSetup = true
+    }
+
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
-        let url = navigationAction.request.url
-        decisionHandler(url?.scheme == "https" || url?.absoluteString == "about:blank" ? .allow : .cancel)
+        guard let url = navigationAction.request.url else { decisionHandler(.cancel); return }
+        if CaltopoEmbeddedSignInPolicy.isGoogleSignIn(url) {
+            if navigationAction.targetFrame?.isMainFrame != false { blockedGoogleSignIn() }
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(signInProtectionReady && CaltopoEmbeddedSignInPolicy.allowsEmbedded(url) ? .allow : .cancel)
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
+                 decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void) {
+        if let url = navigationResponse.response.url, CaltopoEmbeddedSignInPolicy.isGoogleSignIn(url) {
+            if navigationResponse.isForMainFrame { blockedGoogleSignIn() }
+            decisionHandler(.cancel)
+        } else { decisionHandler(.allow) }
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         browserLoadError = nil
+        googleNavigationWasBlocked = false
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        if googleNavigationWasBlocked && (error as NSError).code == NSURLErrorCancelled {
+            googleNavigationWasBlocked = false
+            return
+        }
         browserLoadError = error
     }
 
@@ -336,7 +386,7 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         applyStoragePolicy()
-        guard let url = webView.url else { return }
+        guard let url = webView.url, !CaltopoEmbeddedSignInPolicy.isGoogleSignIn(url) else { return }
         logBrowserViewport("navigation-finished")
         origin = "\(url.scheme ?? "")://\(url.host ?? "")"
         let observedGeneration = sessionGeneration
@@ -364,7 +414,10 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if navigationAction.targetFrame == nil, navigationAction.request.url?.scheme == "https" {
+        if let url = navigationAction.request.url, CaltopoEmbeddedSignInPolicy.isGoogleSignIn(url) {
+            blockedGoogleSignIn()
+        } else if signInProtectionReady, navigationAction.targetFrame == nil,
+                  let url = navigationAction.request.url, CaltopoEmbeddedSignInPolicy.allowsEmbedded(url) {
             webView.load(navigationAction.request)
         }
         return nil
@@ -432,17 +485,19 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
     }
 
     func testMarker() {
+        guard !busy, pendingMarkerLoaded else { return }
         guard CaltopoPersonalProbe.mapID(map) == CaltopoPersonalMarkerTest.mapID else {
             status = "Enter G00CPSS, the designated test map."; return
         }
         let cleanup = pendingMarker != nil
         let id = pendingMarker ?? UUID()
         let attempt = generation
+        let expectedAccount = accountID
+        let expectedEpoch = sessionGeneration
         busy = true
         status = "Testing marker publishing on G00CPSS…"
         requestTask = Task { [weak self] in
             guard let self else { return }
-            let cookies = await web.configuration.websiteDataStore.httpCookieStore.allCookies()
             guard !Task.isCancelled, generation == attempt else { return }
             let config = URLSessionConfiguration.ephemeral
             config.httpCookieStorage = nil
@@ -454,37 +509,17 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
             defer { session.invalidateAndCancel() }
             do {
                 status = try await CaltopoPersonalMarkerTest.run(id: id, cleanupOnly: cleanup, send: { method, path, payload in
-                    try Task.checkCancellation()
-                    guard self.generation == attempt else { throw CancellationError() }
-                    let url = URL(string: CaltopoPersonalProbe.origin + path)!
-                    guard let cookie = CaltopoPersonalProbe.cookieHeader(cookies, for: url) else {
-                        throw CaltopoPersonalMarkerTest.Failure(message: "Sign in to CalTopo first.")
+                    if CaltopoFullMapReads.isFullMapRead(method: method, path: path) {
+                        return try await CaltopoFullMapReads.shared.perform(mapURL: URL(string: CaltopoPersonalProbe.origin + path)!) {
+                            try await self.sendMarkerTest(session: session, method: method, path: path, payload: payload, attempt: attempt, account: expectedAccount, epoch: expectedEpoch)
+                        }
                     }
-                    var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
-                    request.httpShouldHandleCookies = false
-                    request.httpMethod = method
-                    request.setValue(cookie, forHTTPHeaderField: "Cookie")
-                    request.setValue("application/json", forHTTPHeaderField: "Accept")
-                    request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
-                    request.setValue(CaltopoPersonalProbe.origin, forHTTPHeaderField: "Origin")
-                    request.setValue(CaltopoPersonalProbe.origin + "/m/" + CaltopoPersonalMarkerTest.mapID, forHTTPHeaderField: "Referer")
-                    request.setValue("RID2Caltopo-PersonalSession-Experiment", forHTTPHeaderField: "User-Agent")
-                    if let payload {
-                        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-                        var encoded = URLComponents()
-                        encoded.queryItems = [URLQueryItem(name: "json", value: payload)]
-                        request.httpBody = encoded.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B").data(using: .utf8)
-                    }
-                    let (data, response) = try await session.data(for: request)
-                    return .init(code: (response as? HTTPURLResponse)?.statusCode ?? -1, data: data)
+                    return try await self.sendMarkerTest(session: session, method: method, path: path, payload: payload, attempt: attempt, account: expectedAccount, epoch: expectedEpoch)
                 }, savePending: { markerID in
-                    try FileManager.default.createDirectory(at: Self.pendingURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-                    try Data(markerID.uuidString.utf8).write(to: Self.pendingURL, options: .atomic)
+                    try await self.pendingStore.save(markerID)
                     self.pendingMarker = markerID
                 }, clearPending: {
-                    if FileManager.default.fileExists(atPath: Self.pendingURL.path) {
-                        try FileManager.default.removeItem(at: Self.pendingURL)
-                    }
+                    try await self.pendingStore.clear()
                     self.pendingMarker = nil
                 })
             } catch let error as CaltopoPersonalMarkerTest.Failure {
@@ -498,15 +533,56 @@ final class PersonalProbeModel: NSObject, ObservableObject, WKNavigationDelegate
         }
     }
 
+    private func sendMarkerTest(session: URLSession, method: String, path: String, payload: String?, attempt: Int, account: String?, epoch: UUID) async throws -> CaltopoPersonalMarkerTest.Reply {
+        try Task.checkCancellation()
+        guard generation == attempt, sessionGeneration == epoch, let account else { throw CancellationError() }
+        let url = URL(string: CaltopoPersonalProbe.origin + path)!
+        guard let cookie = await boundCookie(url, account: account, epoch: epoch) else {
+            throw CaltopoPersonalMarkerTest.Failure(message: "Sign in to CalTopo first.")
+        }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        request.httpShouldHandleCookies = false; request.httpMethod = method
+        request.setValue(cookie, forHTTPHeaderField: "Cookie")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        request.setValue(CaltopoPersonalProbe.origin, forHTTPHeaderField: "Origin")
+        request.setValue(CaltopoPersonalProbe.origin + "/m/" + CaltopoPersonalMarkerTest.mapID, forHTTPHeaderField: "Referer")
+        request.setValue("RID2Caltopo-PersonalSession-Experiment", forHTTPHeaderField: "User-Agent")
+        if let payload {
+            request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+            var encoded = URLComponents(); encoded.queryItems = [URLQueryItem(name: "json", value: payload)]
+            request.httpBody = encoded.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B").data(using: .utf8)
+        }
+        let (data, response) = try await session.data(for: request)
+        return .init(code: (response as? HTTPURLResponse)?.statusCode ?? -1, data: data)
+    }
     private func fetch(session: URLSession, url: URL, cookie: String?) async throws -> CaltopoPersonalProbe.Result {
+        let attempt = generation
+        let epoch = sessionGeneration
+        let account = accountID
+        return try await CaltopoFullMapReads.shared.perform(mapURL: url) {
+            try await self.fetchAfterFullReadWait(session: session, url: url, authenticated: cookie != nil,
+                                                  attempt: attempt, account: account, epoch: epoch)
+        }
+    }
+    private func fetchAfterFullReadWait(session: URLSession, url: URL, authenticated: Bool,
+                                        attempt: Int, account: String?, epoch: UUID) async throws -> CaltopoPersonalProbe.Result {
+        try Task.checkCancellation()
+        guard generation == attempt, sessionGeneration == epoch else { throw CancellationError() }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
         request.httpShouldHandleCookies = false
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         request.setValue("RID2Caltopo-PersonalSession-Experiment", forHTTPHeaderField: "User-Agent")
-        request.setValue(cookie, forHTTPHeaderField: "Cookie")
+        if authenticated {
+            guard let account, let freshCookie = await boundCookie(url, account: account, epoch: epoch) else { throw CancellationError() }
+            request.setValue(freshCookie, forHTTPHeaderField: "Cookie")
+        }
         let (data, response) = try await session.data(for: request)
-        return CaltopoPersonalProbe.result(code: (response as? HTTPURLResponse)?.statusCode ?? -1, data: data)
+        let decoded = try await CaltopoDiagnosticResponses.shared.result(
+            code: (response as? HTTPURLResponse)?.statusCode ?? -1, data: data)
+        guard generation == attempt, sessionGeneration == epoch else { throw CancellationError() }
+        return decoded
     }
 }
 
@@ -555,6 +631,14 @@ struct AppleCaltopoPersonalProbeView: View {
     @State private var showLinkEditor = false
     var body: some View {
         VStack(spacing: 8) {
+            HStack {
+                Button("Email/password setup") { model.showEmailSetup = true }
+                Spacer()
+                Button("Email/password login") { model.openEmailLogin() }
+                    .disabled(model.busy || !model.signInProtectionReady)
+            }
+            Text("Google sign-in is blocked here. Saved CalTopo sessions remain available.")
+                .font(.caption)
             DisclosureGroup("Open a CalTopo link", isExpanded: $showLinkEditor) {
                 HStack {
                     TextField("CalTopo HTTPS link", text: $model.link)
@@ -573,7 +657,7 @@ struct AppleCaltopoPersonalProbeView: View {
                 Button("Check personal map access") { model.check() }.disabled(model.busy)
                 Button(model.pendingMarker == nil ? "Test marker publishing on G00CPSS" : "Clean up pending test marker") {
                     confirmMarker = true
-                }.disabled(model.busy)
+                }.disabled(model.busy || !model.pendingMarkerLoaded)
             }
             Text(model.status)
                 .font(.caption)
@@ -594,7 +678,7 @@ struct AppleCaltopoPersonalProbeView: View {
                     .frame(width: viewport.size.width, height: viewport.size.height)
             }
             .clipped()
-            .allowsHitTesting(!model.busy)
+            .allowsHitTesting(!model.busy && model.signInProtectionReady)
         }
         .padding(.horizontal)
         .onAppear {
@@ -613,7 +697,7 @@ struct AppleCaltopoPersonalProbeView: View {
             }
             if let onCatalog { model.beginCatalogLogin(onCatalog) } else if let onSelect { model.beginPicker(onSelect) }
         }
-        .onDisappear { if !showScanner { model.endPicker() } }
+        .onDisappear { if !showScanner && !model.showEmailSetup { model.endPicker() } }
         .sheet(isPresented: $showScanner) {
             NavigationStack {
                 QRCodeScannerView { value in
@@ -625,6 +709,23 @@ struct AppleCaltopoPersonalProbeView: View {
                 }
                 .navigationTitle("Scan CalTopo QR")
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { showScanner = false } } }
+            }
+        }
+        .sheet(isPresented: $model.showEmailSetup) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        Text(CaltopoEmbeddedSignInPolicy.setupInstructions)
+                        Link("Set up in system browser", destination: CaltopoEmbeddedSignInPolicy.setupURL)
+                        Link("CalTopo’s setup instructions", destination: CaltopoEmbeddedSignInPolicy.instructionsURL)
+                        Button("Return to email/password login") {
+                            model.showEmailSetup = false
+                            model.openEmailLogin()
+                        }.disabled(model.busy || !model.signInProtectionReady)
+                    }.padding()
+                }
+                .navigationTitle("CalTopo email/password")
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { model.showEmailSetup = false } } }
             }
         }
         .navigationTitle("Personal CalTopo login")

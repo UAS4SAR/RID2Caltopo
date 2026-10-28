@@ -26,7 +26,7 @@ public struct CaltopoCameraMetadata: Equatable, Sendable {
     }
 }
 
-public struct CaltopoLiveConfiguration: Sendable, Equatable {
+public struct CaltopoLiveConfiguration: Sendable, Equatable, Hashable {
     public let domainAndPort: String
     public let mapID: String
     public let credentialID: String
@@ -163,6 +163,8 @@ public actor CaltopoLiveClient {
     private let configuration: CaltopoLiveConfiguration
     private let session: URLSession
     private let personalTransport: URLSession?
+    private let fullMapReads: CaltopoFullMapReads
+    private let snapshotReads: CaltopoSnapshotReads
     private static let positionReports = LatestPositionReports(intervalProvider: {
         let stored = UserDefaults.standard.object(forKey: OperationalThumbnailRefreshInterval.storageKey) as? Double
         return .seconds(OperationalThumbnailRefreshInterval.normalized(stored))
@@ -171,7 +173,9 @@ public actor CaltopoLiveClient {
 
     public init(
         configuration: CaltopoLiveConfiguration,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        fullMapReads: CaltopoFullMapReads = .shared,
+        snapshotReads: CaltopoSnapshotReads? = nil
     ) throws {
         guard !configuration.domainAndPort.isEmpty,
               !configuration.mapID.isEmpty,
@@ -182,6 +186,8 @@ public actor CaltopoLiveClient {
         }
         self.configuration = configuration
         self.session = session
+        self.fullMapReads = fullMapReads
+        self.snapshotReads = snapshotReads ?? (session === URLSession.shared ? .shared : CaltopoSnapshotReads())
         if configuration.personalSessionID != nil {
             let transport = session.configuration
             transport.httpCookieStorage = nil
@@ -253,19 +259,52 @@ public actor CaltopoLiveClient {
         )
     }
 
-    public func fetchMapArtifacts(now: Date = Date()) async throws -> CaltopoArtifactSnapshot {
-        let request = try makeMapSnapshotRequest(now: now)
-        let data = try await perform(request)
+    public func fetchMapArtifacts(now: Date = Date(), refresh: Bool = false) async throws -> CaltopoArtifactSnapshot {
+        let data = try await mapData(sinceMilliseconds: 0, now: now, refresh: refresh)
         return try CaltopoArtifactDecoder.decode(data: data)
     }
 
     public func fetchMapArtifactChanges(
         sinceMilliseconds: Int64,
-        now: Date = Date()
+        now: Date = Date(),
+        forceFullRead: Bool = false
     ) async throws -> CaltopoArtifactChanges {
-        let request = try makeMapChangesRequest(sinceMilliseconds: sinceMilliseconds, now: now)
-        let data = try await perform(request)
+        let data = try await mapData(sinceMilliseconds: sinceMilliseconds, now: now, forceFullRead: forceFullRead)
         return try CaltopoArtifactDecoder.decodeChanges(data: data)
+    }
+
+    private func mapData(sinceMilliseconds: Int64, now: Date, forceFullRead: Bool = false, refresh: Bool = false) async throws -> Data {
+        if sinceMilliseconds <= 500 {
+            return try await snapshotReads.read(configuration: configuration, forceFull: forceFullRead, refresh: refresh,
+                validate: { try await self.validateSnapshotAccess() }, load: { cursor in
+                    if cursor <= 500 {
+                        let mapURL = try await self.makeMapChangesRequest(sinceMilliseconds: 0, now: Date()).url!
+                        return try await self.fullMapReads.perform(mapURL: mapURL) {
+                            try Task.checkCancellation()
+                            return try await self.sendMapRead(sinceMilliseconds: 0, now: Date())
+                        }
+                    }
+                    return try await self.sendMapRead(sinceMilliseconds: cursor, now: Date())
+                })
+        }
+        return try await sendMapRead(sinceMilliseconds: sinceMilliseconds, now: now)
+    }
+    private func validateSnapshotAccess() async throws {
+        try Task.checkCancellation()
+        if let token = configuration.personalSessionID {
+            let url = try makeMapChangesRequest(sinceMilliseconds: 0, now: Date()).url!
+            _ = try await CaltopoPersonalSessions.shared.cookie(token, url: url)
+        }
+    }
+    public func markerPresence(markerID: String, sinceMilliseconds: Int64) async throws -> (absent: Bool, present: Bool) {
+        guard sinceMilliseconds > 500 else { throw CaltopoLiveClientError.invalidConfiguration }
+        let data = try await sendMapRead(sinceMilliseconds: sinceMilliseconds, now: Date())
+        return (CaltopoMarkerVerification.confirmsAbsent(data: data, markerID: markerID),
+                CaltopoMarkerVerification.confirmsPresent(data: data, markerID: markerID))
+    }
+    private func sendMapRead(sinceMilliseconds: Int64, now: Date) async throws -> Data {
+        // Build signatures and resolve personal authorization after any cooldown.
+        try await perform(makeMapChangesRequest(sinceMilliseconds: sinceMilliseconds, now: now))
     }
 
     public func createFolder(

@@ -30,6 +30,7 @@ public final class CaltopoInterruptedTrackJournal {
                             @NonNull String label,
                             @NonNull String description,
                             @NonNull JSONArray points) {
+        CaltopoRecoveryWork.requireOffMain();
         if (mapId.isEmpty() || liveTrackId.isEmpty()) return false;
         synchronized (LOCK) {
             try {
@@ -108,14 +109,14 @@ public final class CaltopoInterruptedTrackJournal {
                 }
                 JSONObject feature = archiveFeature(entry, archiveFolderId);
                 runtime.getCalTopoSessionGateway().editObjectOnMap(
-                        mapId, "Shape", liveTrackId, feature, editOp -> {
+                        mapId, "Shape", liveTrackId, feature, editOp -> CaltopoRecoveryWork.offMain(() -> {
                             if (!editOp.success()) {
                                 inFlight.remove(liveTrackId);
                                 CaltopoClient.CTWarn(TAG, "Interrupted LiveTrack conversion deferred id=" + liveTrackId);
                                 return;
                             }
                             finishArchiveCleanup(mapId, liveTrackId, runtime);
-                        });
+                        }));
             } catch (Exception error) {
                 inFlight.remove(liveTrackId);
                 CaltopoClient.CTError(TAG, "Interrupted LiveTrack recovery failed id=" + liveTrackId, error);
@@ -161,7 +162,7 @@ public final class CaltopoInterruptedTrackJournal {
                 writeRoot(root);
             }
             AwaitingMapFlights.published(liveTrackId);
-            runtime.getCalTopoSessionGateway().deleteLiveTrackOnMap(mapId, liveTrackId, deleteOp -> {
+            runtime.getCalTopoSessionGateway().deleteLiveTrackOnMap(mapId, liveTrackId, deleteOp -> CaltopoRecoveryWork.offMain(() -> {
                 // Match Apple's already-gone handling. Standalone archives never
                 // created a LiveTrack, for which CalTopo returns 400 (or 404).
                 if (deleteOp.success() || deleteOp.responseCode == 400 || deleteOp.responseCode == 404) {
@@ -171,7 +172,7 @@ public final class CaltopoInterruptedTrackJournal {
                     CaltopoClient.CTWarn(TAG, "Archive uploaded; only LiveTrack cleanup pending id=" + liveTrackId);
                 }
                 inFlight.remove(liveTrackId);
-            });
+            }));
         } catch (Exception error) {
             inFlight.remove(liveTrackId);
             CaltopoClient.CTError(TAG, "Could not finish archive cleanup id=" + liveTrackId, error);
@@ -179,6 +180,7 @@ public final class CaltopoInterruptedTrackJournal {
     }
 
     public static void remove(@NonNull String liveTrackId) {
+        CaltopoRecoveryWork.requireOffMain();
         synchronized (LOCK) {
             try {
                 JSONObject root = readRoot();
@@ -268,13 +270,14 @@ public final class CaltopoInterruptedTrackJournal {
         } catch (Exception ignored) {
             Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
         }
+        org.ncssar.rid2caltopo.storage.OperationalStorage.INSTANCE.retain(file);
     }
 
     @Nullable
     private static File journalFile() {
         if (testFile != null) return testFile;
         R2CApplication context = R2CApplication.getAppCtxt();
-        return context == null ? null : new File(context.getFilesDir(), FILE_NAME);
+        return context == null ? null : org.ncssar.rid2caltopo.storage.OperationalStorage.INSTANCE.stateFile(context, FILE_NAME);
     }
 
     @NonNull

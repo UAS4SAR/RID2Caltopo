@@ -15,13 +15,16 @@ public struct OperationalInitialStreamFocusState: Equatable {
     public let focusedAircraftID: String?
     public let operatorAdjustedViewport: Bool
     public let liveStreamAircraftIDs: [String?]
+    public let liveStreamFlightIDs: [String?]
 
     public init(followEnabled: Bool, focusedAircraftID: String?,
-                operatorAdjustedViewport: Bool, liveStreamAircraftIDs: [String?]) {
+                operatorAdjustedViewport: Bool, liveStreamAircraftIDs: [String?],
+                liveStreamFlightIDs: [String?] = []) {
         self.followEnabled = followEnabled
         self.focusedAircraftID = focusedAircraftID
         self.operatorAdjustedViewport = operatorAdjustedViewport
         self.liveStreamAircraftIDs = liveStreamAircraftIDs
+        self.liveStreamFlightIDs = liveStreamFlightIDs
     }
 
     public var candidate: String? {
@@ -530,7 +533,7 @@ public struct CaltopoArtifactSnapshot: Codable, Sendable, Equatable {
 public enum CaltopoArtifactVisibilityPolicy {
     public static func legacyPersistedSelectionKeys(_ keys: [String]) -> [String] {
         keys.filter {
-            $0.hasPrefix("map.visibility.") && !$0.hasPrefix("map.visibility.v2.")
+            $0.hasPrefix("map.visibility.") && !$0.hasPrefix("map.visibility.v2.") && !$0.hasPrefix("map.visibility.v3.")
         }.sorted()
     }
 
@@ -557,15 +560,18 @@ public struct CaltopoArtifactChanges: Sendable, Equatable {
     public let featuresByID: [String: Data]
     public let deletedFeatureIDs: Set<String>
     public let receivedFeatureCount: Int
+    public let serverTimestampMilliseconds: Int64?
 
     public init(
         featuresByID: [String: Data] = [:],
         deletedFeatureIDs: Set<String> = [],
-        receivedFeatureCount: Int = 0
+        receivedFeatureCount: Int = 0,
+        serverTimestampMilliseconds: Int64? = nil
     ) {
         self.featuresByID = featuresByID
         self.deletedFeatureIDs = deletedFeatureIDs
         self.receivedFeatureCount = receivedFeatureCount
+        self.serverTimestampMilliseconds = serverTimestampMilliseconds
     }
 }
 
@@ -613,7 +619,8 @@ public enum CaltopoArtifactDecoder {
         return CaltopoArtifactChanges(
             featuresByID: featuresByID,
             deletedFeatureIDs: deletedFeatureIDs,
-            receivedFeatureCount: features.count
+            receivedFeatureCount: features.count,
+            serverTimestampMilliseconds: ((dictionary["result"] as? [String: Any] ?? dictionary)["timestamp"] as? NSNumber)?.int64Value
         )
     }
 
@@ -933,15 +940,27 @@ private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 
-/// Focus once when live video first gains matching map telemetry. Retain seen
-/// identities across telemetry loss/reconnect so a later operator pan wins.
+/// Focus once per flight when live video gains matching map telemetry. Retain
+/// the flight through reconnects so a later pan wins within that flight.
 public struct OperationalStreamFocusArrival {
-    private var seen: Set<String> = []
+    private var lastFlightByAircraft: [String: String] = [:]
     public init() {}
-    public mutating func observe(resolvedAircraftIDs: [String?]) -> String? {
-        let resolved = Set(resolvedAircraftIDs.compactMap { $0 }.filter { !$0.isEmpty })
-        let arrivals = resolved.subtracting(seen)
-        seen.formUnion(resolved)
+    public mutating func observe(resolvedAircraftIDs: [String?], flightIDs: [String?] = []) -> String? {
+        var arrivals: Set<String> = []
+        for (index, aircraftID) in resolvedAircraftIDs.enumerated() {
+            guard let aircraftID, !aircraftID.isEmpty else { continue }
+            let flightID = flightIDs.indices.contains(index) ? flightIDs[index] : nil
+            if let previous = lastFlightByAircraft[aircraftID] {
+                if let flightID, !flightID.isEmpty {
+                    lastFlightByAircraft[aircraftID] = flightID
+                    // Learning an initially unavailable ID is still the same flight.
+                    if !previous.isEmpty, previous != flightID { arrivals.insert(aircraftID) }
+                }
+            } else {
+                lastFlightByAircraft[aircraftID] = flightID ?? ""
+                arrivals.insert(aircraftID)
+            }
+        }
         // Simultaneous matches do not provide an unambiguous focus choice.
         return arrivals.count == 1 ? arrivals.first : nil
     }

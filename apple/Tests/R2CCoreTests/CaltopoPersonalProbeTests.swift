@@ -49,6 +49,16 @@ final class CaltopoPersonalProbeTests: XCTestCase {
         XCTAssertTrue(CaltopoPersonalProbe.comparison(personal: valid, anonymous: .init(code: 403, featureCount: nil)).contains("anonymous access was denied"))
         XCTAssertTrue(CaltopoPersonalProbe.comparison(personal: valid, anonymous: .init(code: 500, featureCount: nil)).contains("inconclusive"))
     }
+    func testAccountCookieScopeIsLimitedToExactReadOnlyCatalogRoute() throws {
+        let cookie = try XCTUnwrap(HTTPCookie(properties: [.name: "session", .value: "test-only", .domain: "caltopo.com", .path: "/", .secure: "TRUE"]))
+        let url = try XCTUnwrap(CaltopoPersonalProbe.accountEndpoint("USER01"))
+        XCTAssertEqual(url.path, "/api/v1/acct/USER01/since/0")
+        XCTAssertNotNil(CaltopoPersonalProbe.cookieHeader([cookie], for: url))
+        for path in ["/sideload/account/USER01.json", "/api/v1/acct/USER01/CollaborativeMap", "/api/v1/acct/USER01/since/1", "/api/v1/acct/USER01/since/0?other=1", "/api/v1/acct/USER01/since/0/other"] {
+            XCTAssertNil(CaltopoPersonalProbe.cookieHeader([cookie], for: URL(string: "https://caltopo.com" + path)!))
+        }
+        XCTAssertNil(CaltopoPersonalProbe.accountEndpoint("../USER01"))
+    }
     func testCookieScopeAndExpiry() throws {
         func cookie(_ domain: String, _ path: String = "/", _ expires: Date? = nil) throws -> HTTPCookie {
             var properties: [HTTPCookiePropertyKey: Any] = [.name: "session", .value: "test-only", .domain: domain, .path: path, .secure: "TRUE"]

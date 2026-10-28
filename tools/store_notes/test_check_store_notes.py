@@ -3,6 +3,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 import check_store_notes
 
@@ -58,6 +59,24 @@ class MainTest(unittest.TestCase):
             gradle = Path(directory) / "build.gradle"
             gradle.write_text("def versionMajor = 2\ndef versionMinor = 4\ndef versionPatch = 1\n")
             self.assertEqual(check_store_notes.current_version(gradle), "2.4.1")
+
+    def test_default_scan_allows_reviewer_device_details_but_checks_public_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            release = root / "release-notes/2.5.3/whats_new.txt"
+            locale = root / "apple/AppStore/metadata/en-US"
+            release.parent.mkdir(parents=True)
+            locale.mkdir(parents=True)
+            release.write_text("Latest changes:\n- Faster maps.\n")
+            (locale / "review_notes.txt").write_text("Tested on iPad with iPadOS.\n")
+            description = locale / "description.txt"
+            description.write_text("Incident-support tools.\n")
+            with patch.object(check_store_notes, "REPO_ROOT", root), patch.object(
+                check_store_notes, "APP_STORE_METADATA", locale.parent
+            ), redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                self.assertEqual(check_store_notes.main(["--version", "2.5.3"]), 0)
+                description.write_text("Install it on Android.\n")
+                self.assertEqual(check_store_notes.main(["--version", "2.5.3"]), 1)
 
 
 if __name__ == "__main__":

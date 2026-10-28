@@ -10,6 +10,8 @@ import java.util.function.LongSupplier;
 /** One replaceable pending report per aircraft; cooldown starts after the actual send completes. */
 final class LatestPositionReports<T> {
     static final long INTERVAL_MS = 5_000L;
+    // Enforce the CalTopo position-send floor even with older/faster thumbnail preferences.
+    static final long MIN_INTERVAL_MS = 1_000L;
     private final class Slot {
         T pending;
         boolean scheduled;
@@ -62,7 +64,7 @@ final class LatestPositionReports<T> {
 
     private long remaining(Slot slot) {
         return slot.completedAt == null ? 0L : Math.max(0L,
-                slot.completedAt + intervalMs.getAsLong() - clock.getAsLong());
+                slot.completedAt + Math.max(MIN_INTERVAL_MS, intervalMs.getAsLong()) - clock.getAsLong());
     }
 
     private synchronized void checkReady(Slot slot) {

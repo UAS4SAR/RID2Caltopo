@@ -396,51 +396,7 @@ object OrgConfigManager {
      * Runs on a background thread.  [callback] is called on the main thread with
      * (success, statusMessage, tokenOrNull).
      */
-    @JvmStatic
-    fun uploadOrgConfig(
-        context: Context,
-        account: GoogleSignInAccount,
-        callback: (Boolean, String, String?) -> Unit
-    ) {
-        val appContext = context.applicationContext
-        executor.execute {
-            val result = try {
-                val orgName = CaltopoClient.GetHomeOrgName().ifBlank {
-                    throw IllegalStateException("Set the organization designator in Settings before exporting organization config.")
-                }
-                val enrollmentUrl = CaltopoClient.GetTrackerEnrollmentUrl()
-                if (!CaltopoClient.GetHomeTrackerApiKey().startsWith("r2c_dev_") ||
-                    !TrackerEnrollmentClient.enrollmentOrganization(enrollmentUrl)
-                        .equals(orgName, ignoreCase = true)
-                ) {
-                    throw IllegalStateException(
-                        "Scan a current r2c-tracker device-enrollment QR before exporting R2C2."
-                    )
-                }
-                val rawBundle = CaltopoClient.BuildOrgConfigBundle(orgName)
-                    ?: throw IllegalStateException("Failed to build org config bundle.")
-                val securedBundle = encryptCredentialsInBundle(rawBundle)
-                val fileId = GoogleDriveConfigSync.uploadOrgConfigFile(
-                    appContext, account, securedBundle, orgName
-                )
-                val token = OrgConfigToken.encode(
-                    OrgConfigToken.OrgConfig(
-                        orgName     = orgName,
-                        driveFileId = fileId,
-                        isPublic    = true,
-                        version     = 2
-                    )
-                )
-                storeToken(appContext, token)
-                CaltopoClient.CTDebug(TAG, "uploadOrgConfig(): upload complete, org='$orgName'")
-                Triple(true, "Org config uploaded to Drive.", token)
-            } catch (e: Exception) {
-                CaltopoClient.CTWarn(TAG, "uploadOrgConfig() failed.", e)
-                Triple(false, e.message ?: "Upload failed.", null)
-            }
-            mainHandler.post { callback(result.first, result.second, result.third) }
-        }
-    }
+
 
     // ── Member: download and apply org config ──────────────────────────────────
 
@@ -458,45 +414,6 @@ object OrgConfigManager {
         token: String,
         callback: (Boolean, String) -> Unit
     ) {
-        val trimmed = token.trim()
-        val config = OrgConfigToken.decode(trimmed)
-        if (config == null) {
-            callback(false, "Invalid join token.")
-            return
-        }
-        val appContext = context.applicationContext
-        executor.execute {
-            val result = try {
-                val encJson = GoogleDriveConfigSync.downloadOrgConfigPublic(config.driveFileId)
-                val plainJson = decryptCredentialsInBundle(encJson)
-                val orgName = config.orgName.ifBlank {
-                    JSONObject(plainJson).optString("org_name")
-                }.ifBlank { throw IllegalStateException("R2C2 bundle has no organization name.") }
-                val enrollmentUrl = trackerEnrollmentUrl(plainJson)
-                    ?: throw IllegalStateException("R2C2 bundle has no valid tracker enrollment locator.")
-                if (!TrackerEnrollmentClient.enrollmentOrganization(enrollmentUrl)
-                        .equals(orgName, ignoreCase = true)
-                ) {
-                    throw IllegalStateException("R2C2 tracker enrollment does not belong to $orgName.")
-                }
-                val success = CaltopoClient.ApplyOrgConfigBundle(plainJson)
-                if (success) {
-                    val enrollment = TrackerEnrollmentClient.redeemBlocking(appContext, enrollmentUrl)
-                    if (!enrollment.organization.equals(orgName, ignoreCase = true)) {
-                        throw IllegalStateException("Tracker enrolled a different organization than the R2C2 bundle.")
-                    }
-                    TrackerEnrollmentClient.apply(enrollment)
-                    storeToken(appContext, trimmed)
-                    CaltopoClient.CTDebug(TAG, "joinFromToken(): joined R2C2 org='$orgName' with per-device enrollment")
-                    true to "Joined '$orgName'. Team config applied and device enrolled with r2c-tracker."
-                } else {
-                    false to "Org config downloaded but could not be applied."
-                }
-            } catch (e: Exception) {
-                CaltopoClient.CTWarn(TAG, "joinFromToken() failed.", e)
-                false to (e.message ?: "Failed to download org config.")
-            }
-            mainHandler.post { callback(result.first, result.second) }
-        }
+        mainHandler.post { callback(false, "Legacy credential transfers are no longer supported. Scan a tracker enrollment QR.") }
     }
 }

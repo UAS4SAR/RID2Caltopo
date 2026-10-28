@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "policy_last_updated": "October 27, 2026",
+  "status": "Local current-source disclosure draft; not a live App Store Connect attestation",
+  "tracking": false,
+  "tracking_domains": [],
+  "linked_to_user": true,
+  "purposes": [
+    "NSPrivacyCollectedDataTypePurposeAppFunctionality"
+  ],
+  "collected_data": [
+    {
+      "type": "NSPrivacyCollectedDataTypeName",
+      "label": "Name",
+      "basis": "Named aircraft owners/pilots in shared flight records and operator-sent support correspondence.",
+      "evidence": [
+        "apple/App/RidMappingAdminView.swift",
+        "apple/Sources/R2CCore/TrackerCoordinationProtocol.swift"
+      ]
+    },
+    {
+      "type": "NSPrivacyCollectedDataTypeEmailAddress",
+      "label": "Email Address",
+      "basis": "Provider sign-in through the embedded service browser and email sent by the operator to support; no claim that email is required for local reception.",
+      "evidence": [
+        "apple/App/AppleCaltopoPersonalProbe.swift",
+        "apple/App/DiagnosticLogView.swift"
+      ]
+    },
+    {
+      "type": "NSPrivacyCollectedDataTypePreciseLocation",
+      "label": "Precise Location",
+      "basis": "Configured operator position, aircraft tracks, geotagged clues and embedded media coordinates sent to selected services.",
+      "evidence": [
+        "apple/Sources/R2CCore/TrackerCoordinationProtocol.swift",
+        "apple/App/RIDTrackMapView.swift"
+      ]
+    },
+    {
+      "type": "NSPrivacyCollectedDataTypeUserID",
+      "label": "User ID",
+      "basis": "Account IDs, usernames and pilot callsigns used by optional authenticated services and associated operational records.",
+      "evidence": [
+        "apple/App/AppleCaltopoPersonalProbe.swift",
+        "apple/Sources/R2CCore/TrackerCoordinationProtocol.swift"
+      ]
+    },
+    {
+      "type": "NSPrivacyCollectedDataTypeDeviceID",
+      "label": "Device ID",
+      "basis": "Stable app-install/device-zone identity, enrolled device identity and operational device name.",
+      "evidence": [
+        "apple/App/AppleTrackerCoordinator.swift",
+        "apple/Sources/R2CCore/TrackerCoordinationProtocol.swift"
+      ]
+    },
+    {
+      "type": "NSPrivacyCollectedDataTypePhotosorVideos",
+      "label": "Photos or Videos",
+      "basis": "Tracker catalog thumbnails, selected CalTopo photo clues, authorized remote media and recording-file transfers; not only locally processed imagery.",
+      "evidence": [
+        "apple/App/AppleTrackerCoordinator.swift",
+        "apple/App/RIDTrackMapView.swift"
+      ]
+    },
+    {
+      "type": "NSPrivacyCollectedDataTypeAudioData",
+      "label": "Audio Data",
+      "basis": "Controller-source audio can be retained in a recording file transferred to the tracker/requester. Live-only VoIP transport alone is not the basis for retained-audio disclosure.",
+      "evidence": [
+        "apple/App/AppleTrackerCoordinator.swift",
+        "apple/Sources/R2CCore/MediaMTXRuntimeConfiguration.swift",
+        "apple/Native/FFmpeg/R2CFFmpegMobile.c"
+      ]
+    },
+    {
+      "type": "NSPrivacyCollectedDataTypeOtherUserContent",
+      "label": "Other User Content",
+      "basis": "Operational organization/aircraft descriptions, annotations, selected configuration and other incident records sent through configured sharing.",
+      "evidence": [
+        "apple/Sources/R2CCore/TrackerCoordinationProtocol.swift",
+        "apple/App/AppleConfigurationTransfer.swift"
+      ]
+    },
+    {
+      "type": "NSPrivacyCollectedDataTypeProductInteraction",
+      "label": "Product Interaction",
+      "basis": "Tracker-retained session, viewing/transfer request, approval and operational usage events used for authorization and service operation.",
+      "evidence": [
+        "apple/App/AppleTrackerCoordinator.swift"
+      ]
+    },
+    {
+      "type": "NSPrivacyCollectedDataTypePerformanceData",
+      "label": "Performance Data",
+      "basis": "Link/route/bandwidth estimates retained with service requests and timing/frame/drop/performance measurements in operator-shared diagnostics.",
+      "evidence": [
+        "apple/App/AppleTrackerCoordinator.swift",
+        "apple/App/AppleManagedVideoPreflightPeer.swift",
+        "apple/App/AppleDiagnosticLog.swift"
+      ]
+    },
+    {
+      "type": "NSPrivacyCollectedDataTypeOtherDiagnosticData",
+      "label": "Other Diagnostic Data",
+      "basis": "Selected diagnostic bundles and configured service troubleshooting state, including device/OS/network and operational status.",
+      "evidence": [
+        "apple/App/DiagnosticLogView.swift",
+        "apple/App/AppleDiagnosticLog.swift"
+      ]
+    },
+    {
+      "type": "NSPrivacyCollectedDataTypeCustomerSupport",
+      "label": "Customer Support",
+      "basis": "Operator-sent diagnostic attachments and problem descriptions received by support; conservatively disclosed rather than relying on the optional-feedback exception.",
+      "evidence": [
+        "apple/App/DiagnosticLogView.swift"
+      ]
+    }
+  ],
+  "required_reasons": {
+    "NSPrivacyAccessedAPICategoryUserDefaults": [
+      "CA92.1"
+    ],
+    "NSPrivacyAccessedAPICategoryFileTimestamp": [
+      "C617.1"
+    ],
+    "NSPrivacyAccessedAPICategoryDiskSpace": [
+      "E174.1",
+      "85F4.1"
+    ],
+    "NSPrivacyAccessedAPICategorySystemBootTime": [
+      "35F9.1"
+    ]
+  },
+  "local_processing": "On-device-only decoding, analysis, reconstruction and caching are not independently treated as developer collection. Configured previews, publication, transfers and support sharing are assessed separately.",
+  "references": [
+    "https://developer.apple.com/app-store/app-privacy-details/",
+    "https://developer.apple.com/documentation/bundleresources/app-privacy-configuration/nsprivacycollecteddatatypes/nsprivacycollecteddatatype"
+  ]
+}

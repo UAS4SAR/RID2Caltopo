@@ -9,7 +9,7 @@ class LandRestrictionParserTest {
     @Test
     fun emptyLandQueryIsNotClearanceAndUpdatingStateSurvivesCompactLabel() {
         val label = LandRestrictionPolicy.chipLabel(emptyList(), false, false)
-        assertEquals("No mapped restrictions", label)
+        assertEquals("No mapped protected land", label)
         assertEquals(label, conciseLandStatusLabel(LandRestrictionUiState(
             severity = LandRestrictionSeverity.Normal, chipLabel = label)))
         assertEquals("Land rules updating…", conciseLandStatusLabel(LandRestrictionUiState(
@@ -62,7 +62,7 @@ class LandRestrictionParserTest {
         assertEquals(0.0, areas.single().distanceNm, 0.0001)
         assertEquals("www.nps.gov", java.net.URI(areas.single().agency.rulesUrl).host)
         assertEquals(LandRestrictionSeverity.Danger, LandRestrictionPolicy.severity(areas, false))
-        assertEquals("Land rules: RESTRICTED", LandRestrictionPolicy.chipLabel(areas, false, false))
+        assertEquals("Mapped land: verify rules", LandRestrictionPolicy.chipLabel(areas, false, false))
     }
 
     @Test
@@ -125,4 +125,9 @@ class LandRestrictionParserTest {
     private val longEdgeFixture = """
         {"type":"FeatureCollection","features":[{"type":"Feature","properties":{"UNIT_NAME":"Long Boundary","UNIT_CODE":"LONG"},"geometry":{"type":"Polygon","coordinates":[[[-105.2,39.75],[-104.8,39.75],[-104.8,39.80],[-105.2,39.80],[-105.2,39.75]]]}}]}
     """.trimIndent()
+
+    @Test fun compactInsideBoundaryWarningRemainsAdvisory() {
+        assertEquals("Verify land rules", conciseLandStatusLabel(LandRestrictionUiState(
+            severity=LandRestrictionSeverity.Danger,chipLabel="Mapped land: verify rules")))
+    }
 }

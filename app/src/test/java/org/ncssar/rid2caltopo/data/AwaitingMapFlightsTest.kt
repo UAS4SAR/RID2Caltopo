@@ -14,6 +14,52 @@ class AwaitingMapFlightsTest {
     private fun feature(title: String, type: String = "Point", lat: Double = 39.0) = JSONObject()
         .put("properties", JSONObject().put("title", title))
         .put("geometry", JSONObject().put("type", type).put("coordinates", JSONArray().put(-121.0).put(lat)))
+    @Test fun lateFinalCheckpointDoesNotExpandAnAlreadyPublishedFlight() {
+        val file = File.createTempFile("flight-intent", ".json").also { it.delete() }
+        try {
+            AwaitingMapFlights.useFileForTesting(file)
+            val points = JSONArray().put(JSONArray().put(1).put(2).put(3).put(now))
+                .put(JSONArray().put(2).put(3).put(4).put(now + 1))
+                .put(JSONArray().put(3).put(4).put(5).put(now + 2))
+            AwaitingMapFlights.record("one", "RID", "Aircraft", points, false, "", "team-a")
+            AwaitingMapFlights.decide("one", "map-a", "team-a")
+            AwaitingMapFlights.published("one")
+            AwaitingMapFlights.record("one", "RID", "Aircraft", points, true, "", "team-a")
+            assertEquals(2, AwaitingMapFlights.allEntries().single().getJSONArray("points").length())
+            assertNull(AwaitingMapFlights.publicationId("RID", "map-a", "team-a"))
+        } finally { file.delete() }
+    }
+
+    @Test fun pendingFirstIntentCannotPublishAfterAMapIsSelectedWithoutReview() {
+        val file = File.createTempFile("flight-intent", ".json").also { it.delete() }
+        try {
+            AwaitingMapFlights.useFileForTesting(file)
+            AwaitingMapFlights.reservePublication("RID", "one")
+            assertEquals("", AwaitingMapFlights.publicationId("RID", "new-map", "team-a"))
+            AwaitingMapFlights.record("one", "RID", "Aircraft", flight().getJSONArray("points"), false, "", "team-a")
+            assertEquals("", AwaitingMapFlights.publicationId("RID", "new-map", "team-a"))
+            AwaitingMapFlights.decide("one", "new-map", "team-a")
+            assertEquals("one", AwaitingMapFlights.publicationId("RID", "new-map", "team-a"))
+        } finally { file.delete() }
+    }
+
+    @Test fun publicationDecisionDoesNotWaitForAStorageWriter() {
+        val file = File.createTempFile("flight-intent", ".json").also { it.delete() }
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val workers = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            AwaitingMapFlights.useFileForTesting(file)
+            AwaitingMapFlights.record("one", "RID", "Aircraft", flight().getJSONArray("points"), false, "map-a", "team-a")
+            workers.submit {
+                synchronized(AwaitingMapFlights) { entered.countDown(); release.await(5, java.util.concurrent.TimeUnit.SECONDS) }
+            }
+            assertTrue(entered.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            val decision = workers.submit<String?> { AwaitingMapFlights.publicationId("RID", "map-a", "team-a") }
+            assertNull(decision.get(500, java.util.concurrent.TimeUnit.MILLISECONDS))
+        } finally { release.countDown(); workers.shutdownNow(); file.delete() }
+    }
+
     @Test fun nearbyTravelTracksAndGeneralFeaturesDoNotSuggestPublication() {
         assertFalse(AwaitingMapFlights.suggested(flight(), listOf(feature("Member arrival"), feature("IC", "LineString")), now))
     }

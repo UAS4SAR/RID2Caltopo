@@ -597,7 +597,18 @@ internal fun queryAvailableCacheBytes(context: Context): Long? {
     }
 }
 
+/** Worker-only: capacity of the selected archive, without creating/resolving a fallback cache. */
+internal fun queryAvailableArchiveBytes(context: Context): Long? = try {
+    val uri = CaltopoClient.GetArchiveDir()?.uri
+    when {
+        uri == null -> null
+        uri.scheme.equals("file", ignoreCase = true) -> uri.path?.let { StatFs(it).availableBytes }
+        else -> availableBytesForDocumentTree(context.applicationContext, uri)
+    }
+} catch (_: Exception) { null }
+
 private fun availableBytesForDocumentTree(context: Context, uri: android.net.Uri): Long? {
+    if (uri.authority != "com.android.externalstorage.documents") return null
     val documentId = try {
         DocumentsContract.getTreeDocumentId(uri)
     } catch (_: Exception) {

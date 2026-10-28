@@ -56,6 +56,9 @@ public class CaltopoOp implements Future <CaltopoOp> {
     public JSONObject responseJson; // if receivedTimestampInMsec && goodResponse == true;
 	public boolean goNaked;
     public boolean positionReport;
+    boolean cleanupAuthorizationBound;
+    CaltopoCredentials cleanupCredentials;
+    String cleanupDomain;
     public CaltopoPersonalSession.Authorization personalAuthorization;
 	private boolean isDone;
 	    

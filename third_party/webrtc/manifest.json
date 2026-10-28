@@ -1,0 +1,12 @@
+{
+  "source_url": "https://github.com/webrtc-sdk/webrtc.git",
+  "source_revision": "db3ba7af86dd6d48174ed35387d11c0794f1a21b",
+  "source_branch": "m125_release",
+  "depot_tools_url": "https://chromium.googlesource.com/chromium/tools/depot_tools.git",
+  "depot_tools_revision": "b86fc981b72ab966f8260f73b4eca600b3b12677",
+  "build_dependency_revision": "6978bac6466311e4bee4c7a9fd395faa939e0fcd",
+  "build_tool_patch": "third_party/webrtc/patches/0001-current-xcode-build-tools.patch",
+  "target": "//sdk:framework_objc",
+  "architectures": ["device:arm64", "simulator:arm64"],
+  "minimum_ios": "17.0"
+}

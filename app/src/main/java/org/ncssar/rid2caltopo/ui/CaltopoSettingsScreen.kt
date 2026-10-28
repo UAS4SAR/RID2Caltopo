@@ -277,13 +277,13 @@ fun CaltopoSettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
-                SettingsHelpLabel("Domain and port")
+                SettingsHelpLabel("Domain and Port")
                 OutlinedTextField(
                     value = caltopoUrl,
                     onValueChange = settingsViewModel::onCaltopoDomainAndPortChanged,
 
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Domain and port" }
+                    modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Domain and Port" }
                 )
 
                 Spacer(modifier = Modifier.height(16.dp))
@@ -478,7 +478,7 @@ fun CaltopoSettingsScreen(
                     ),
 
                     supportingText = {
-                        Text("Minimum time between thumbnail refreshes and LiveTrack updates. 0.5–60.0 seconds; default 5.0. Lower values update more often and use more battery and data.")
+                        Text("Thumbnail refresh interval: 0.5–60.0 seconds; default 5.0. CalTopo position updates use at least 1 second per aircraft, even with a lower setting. Lower values use more battery and data.")
                     },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thumbnail & LiveTrack update interval" },

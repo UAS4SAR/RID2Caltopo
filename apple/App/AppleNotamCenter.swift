@@ -105,6 +105,16 @@ final class AppleNotamCenter: ObservableObject {
 
     func update(location: CLLocation?, force: Bool = false) {
         let coordinate = location.map { OperationalNotamCoordinate(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude) }
+        guard location != nil else {
+            refreshGeneration &+= 1
+            refreshTask?.cancel()
+            refreshTask = nil
+            pendingForcedRefresh = false
+            pendingRefreshLocation = nil
+            lastFetchCoordinate = nil
+            rebuildState(loading: false, coordinate: nil, error: nil)
+            return
+        }
         guard enabled else {
             rebuildState(loading: false, coordinate: coordinate, error: nil)
             return
@@ -122,9 +132,9 @@ final class AppleNotamCenter: ObservableObject {
         }
         lastAttempt = Date()
         rebuildState(loading: true, coordinate: coordinate, error: state.errorMessage)
+        let generation = refreshGeneration
         refreshTask = Task { [weak self] in
-            guard let self else { return }
-            let generation = refreshGeneration
+            guard let self, generation == refreshGeneration, !Task.isCancelled else { return }
             defer {
                 if generation == refreshGeneration {
                     refreshTask = nil

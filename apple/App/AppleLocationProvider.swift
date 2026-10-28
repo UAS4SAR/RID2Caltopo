@@ -1,9 +1,34 @@
 import CoreLocation
 import Foundation
+import Combine
+
+/// A bounded in-memory gate shared with background publishers. An old grant cannot
+/// authorize queued work after permission is withdrawn and granted again.
+final class AppleLocationConsent: @unchecked Sendable {
+    private let lock = NSLock()
+    private var authorized = false
+    private var generation: UInt = 0
+
+    func update(authorized value: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        if authorized != value { generation &+= 1 }
+        authorized = value
+    }
+
+    var currentGeneration: UInt? {
+        lock.lock(); defer { lock.unlock() }
+        return authorized ? generation : nil
+    }
+
+    func allows(_ value: UInt) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return authorized && generation == value
+    }
+}
 
 @MainActor
 enum AppleMagneticNorth {
-    private(set) static var declinationDegrees: Double?
+    static var declinationDegrees: Double?
 
     static func update(from heading: CLHeading) {
         guard heading.headingAccuracy >= 0,
@@ -20,7 +45,21 @@ enum AppleMagneticNorth {
 @MainActor
 final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency CLLocationManagerDelegate {
     @Published private(set) var authorizationStatus: CLAuthorizationStatus
-    @Published private(set) var lastLocation: CLLocation?
+    @Published private var publishedLocation: CLLocation?
+    let consent = AppleLocationConsent()
+    var locationUnavailableHandler: (() -> Void)?
+
+    /// Recheck the manager's current status at consumption, including before its
+    /// authorization-change callback has reached downstream observers.
+    var lastLocation: CLLocation? {
+        guard started, hasLocationAuthorization else { return nil }
+        return publishedLocation
+    }
+
+    private var hasLocationAuthorization: Bool {
+        let status = manager?.authorizationStatus ?? authorizationStatus
+        return status == .authorizedAlways || status == .authorizedWhenInUse
+    }
     @Published private(set) var locationOverride: CLLocation?
     @Published private(set) var errorMessage: String?
 
@@ -39,7 +78,7 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
     // last-known position to an application-wide map default while a fresh fix
     // is requested. The status text continues to make the fallback explicit.
     private let maximumProvisionalLocationAge: TimeInterval = 2 * 60 * 60
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
 
     private enum PersistedLocationKey {
         static let latitude = "location.lastPhysical.latitude"
@@ -50,7 +89,8 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
         static let timestamp = "location.lastPhysical.timestamp"
     }
 
-    override init() {
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         authorizationStatus = .notDetermined
         super.init()
     }
@@ -74,13 +114,12 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
         if let manager { applyBackgroundMonitoringConfiguration(to: manager) }
         AppleLog.info("Location", "Background operation enabled for this session")
         guard CLLocationManager.locationServicesEnabled() else {
+            clearLocationUse()
             errorMessage = "Location Services are disabled"
             AppleLog.error("Location", "Location Services are disabled")
             return
         }
         let manager = makeManager()
-        publishProvisionalLocationIfUsable(manager.location, source: "Core Location cache")
-        publishProvisionalLocationIfUsable(persistedPhysicalLocation(), source: "persisted device fix")
         applyAuthorizationStatus(manager.authorizationStatus)
     }
 
@@ -88,6 +127,7 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
         manager?.stopUpdatingLocation()
         manager?.stopUpdatingHeading()
         started = false
+        clearLocationUse(removePersistedFix: false)
         backgroundOperationEnabled = false
         if let manager { applyBackgroundMonitoringConfiguration(to: manager) }
         AppleLog.info("Location", "Background operation disabled")
@@ -101,21 +141,13 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
     }
 
     func requestPermission() {
-        let manager = makeManager()
-        switch manager.authorizationStatus {
-        case .notDetermined:
-            manager.requestWhenInUseAuthorization()
-        case .authorizedAlways, .authorizedWhenInUse:
-            manager.startUpdatingLocation()
-        case .denied, .restricted:
-            errorMessage = "Location permission is unavailable"
-        @unknown default:
-            errorMessage = "Unknown location authorization state"
-        }
+        if !started { start() }
+        else { applyAuthorizationStatus(makeManager().authorizationStatus) }
     }
 
     func setLocationOverride(latitude: Double, longitude: Double) {
-        guard CLLocationCoordinate2DIsValid(.init(latitude: latitude, longitude: longitude)) else { return }
+        guard started, hasLocationAuthorization,
+              CLLocationCoordinate2DIsValid(.init(latitude: latitude, longitude: longitude)) else { return }
         let location = CLLocation(
             coordinate: .init(latitude: latitude, longitude: longitude),
             altitude: physicalLocation?.altitude ?? 0,
@@ -124,7 +156,7 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
             timestamp: Date()
         )
         locationOverride = location
-        lastLocation = location
+        publishedLocation = location
         errorMessage = nil
         AppleLog.info(
             "Location",
@@ -135,7 +167,7 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
     func clearLocationOverride() {
         guard locationOverride != nil else { return }
         locationOverride = nil
-        lastLocation = physicalLocation
+        publishedLocation = hasLocationAuthorization ? physicalLocation : nil
         if physicalLocationIsProvisional, physicalLocation != nil {
             errorMessage = "Using last known location; current fix unavailable"
         }
@@ -160,7 +192,8 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let location = locations.last(where: { $0.horizontalAccuracy >= 0 }) else { return }
+        guard started, hasLocationAuthorization,
+              let location = locations.last(where: { $0.horizontalAccuracy >= 0 }) else { return }
         let age = max(0, -location.timestamp.timeIntervalSinceNow)
         guard age < 30 else {
             publishProvisionalLocationIfUsable(location, source: "location update cache")
@@ -170,6 +203,7 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        guard started, hasLocationAuthorization else { return }
         AppleMagneticNorth.update(from: newHeading)
     }
 
@@ -187,13 +221,17 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
 
     private func applyAuthorizationStatus(_ status: CLAuthorizationStatus) {
         authorizationStatus = status
+        consent.update(authorized: started && hasLocationAuthorization)
         AppleLog.info("Location", "Authorization: \(authorizationDescription(status))")
+        if !hasLocationAuthorization { clearLocationUse() }
         switch status {
         case .notDetermined:
             if started { manager?.requestWhenInUseAuthorization() }
         case .authorizedAlways, .authorizedWhenInUse:
             errorMessage = nil
             if started {
+                publishProvisionalLocationIfUsable(manager?.location, source: "Core Location cache")
+                publishProvisionalLocationIfUsable(persistedPhysicalLocation(), source: "persisted device fix")
                 manager?.startUpdatingLocation()
                 if CLLocationManager.headingAvailable() {
                     manager?.startUpdatingHeading()
@@ -211,6 +249,23 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
         }
     }
 
+    private func clearLocationUse(removePersistedFix: Bool = true) {
+        consent.update(authorized: false)
+        manager?.stopUpdatingLocation()
+        manager?.stopUpdatingHeading()
+        physicalLocation = nil
+        physicalLocationIsProvisional = false
+        locationOverride = nil
+        publishedLocation = nil
+        AppleMagneticNorth.declinationDegrees = nil
+        for key in [PersistedLocationKey.latitude, PersistedLocationKey.longitude,
+                    PersistedLocationKey.altitude, PersistedLocationKey.horizontalAccuracy,
+                    PersistedLocationKey.verticalAccuracy, PersistedLocationKey.timestamp] {
+            if removePersistedFix { defaults.removeObject(forKey: key) }
+        }
+        locationUnavailableHandler?()
+    }
+
     private func applyBackgroundMonitoringConfiguration(to manager: CLLocationManager) {
         manager.allowsBackgroundLocationUpdates = backgroundOperationEnabled
         manager.showsBackgroundLocationIndicator = backgroundOperationEnabled
@@ -218,7 +273,7 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
     }
 
     private func publishProvisionalLocationIfUsable(_ location: CLLocation?, source: String) {
-        guard physicalLocation == nil,
+        guard started, hasLocationAuthorization, physicalLocation == nil,
               let location,
               location.horizontalAccuracy >= 0
         else { return }
@@ -238,13 +293,14 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
         provisional: Bool,
         source: String
     ) {
+        guard started, hasLocationAuthorization else { return }
         physicalLocation = location
         physicalLocationIsProvisional = provisional
         if !provisional {
             persistPhysicalLocation(location)
         }
         if locationOverride == nil {
-            lastLocation = location
+            publishedLocation = location
         }
         errorMessage = provisional
             ? "Using last known location while locating…"

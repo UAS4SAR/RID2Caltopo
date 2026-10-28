@@ -30,6 +30,9 @@ profile="$app/embedded.mobileprovision"
 
 [[ -x "$binary" && -f "$profile" ]] || { echo "IPA is missing its app binary or provisioning profile" >&2; exit 1; }
 plutil -lint "$info" "$privacy"
+python3 "${0:A:h}/../tools/privacy/check_apple_privacy.py" --app "$app"
+python3 "${0:A:h}/../tools/licenses/prepare_legal.py" --check --artifact "$app"
+python3 "${0:A:h}/../tools/licenses/prepare_apple_relink.py" --verify-app "$app" --require-published
 file "$binary" | grep -q 'Mach-O 64-bit executable arm64'
 "${0:A:h}/verify-webrtc-framework.sh" "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
@@ -89,7 +92,7 @@ fi
 families="$(/usr/libexec/PlistBuddy -c 'Print :UIDeviceFamily' "$info")"
 schemes="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes' "$info")"
 [[ "$families" == *1* && "$families" == *2* ]] || { echo "IPA is not universal for iPhone and iPad" >&2; exit 1; }
-for scheme in r2c2 r2cenroll r2cfaa1 r2cma1; do
+for scheme in r2cmapkg1 r2creauth; do
     [[ "$schemes" == *"$scheme"* ]] || { echo "Missing QR URL scheme: $scheme" >&2; exit 1; }
 done
 

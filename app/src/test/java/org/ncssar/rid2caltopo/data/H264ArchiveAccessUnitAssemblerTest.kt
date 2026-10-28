@@ -93,15 +93,22 @@ class H264ArchiveAccessUnitAssemblerTest {
     }
 
     @Test
-    fun cadenceProducesExactThirtyFramesPerSecondWithoutAccumulatedDrift() {
-        val cadence = H264ArchiveCadence()
-        val timestamps = List(31) { cadence.nextPresentationTimeUs(segmentOffsetUs = 500_000L) }
+    fun timingPreservesSixtyFpsAndTransmissionGapInsteadOfStretchingToThirtyFps() {
+        val timing = H264ArchiveTiming(60)
+        val source = List(120) { index -> 500_000L + index * 1_000_000L / 60 + if (index >= 60) 250_000L else 0L }
+        val timestamps = source.map(timing::nextPresentationTimeUs)
 
-        assertEquals(500_000L, timestamps[0])
-        assertEquals(533_333L, timestamps[1])
-        assertEquals(566_666L, timestamps[2])
-        assertEquals(1_500_000L, timestamps[30])
-        assertEquals(1_533_333L, cadence.endOffsetUs(segmentOffsetUs = 500_000L))
+        assertEquals(source, timestamps)
+        assertEquals(120L, timing.pictureCount)
+        assertEquals(2_749_999L, timing.endOffsetUs(segmentOffsetUs = 500_000L))
+    }
+
+    @Test
+    fun timingKeepsThirtyFpsAndRepairsDuplicatePictureTimestampWithoutRecadencing() {
+        val timing = H264ArchiveTiming(30)
+        val source = listOf(0L, 33_333L, 33_333L, 100_000L)
+        assertEquals(listOf(0L, 33_333L, 33_334L, 100_000L), source.map(timing::nextPresentationTimeUs))
+        assertEquals(133_333L, timing.endOffsetUs(0L))
     }
 
     private fun sample(data: ByteArray, ptsUs: Long, flags: Int) =

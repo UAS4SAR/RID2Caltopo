@@ -308,29 +308,18 @@ internal fun MapPaneManagementDialogs(
     showMapFoldersDialog: Boolean,
     onShowMapFoldersDialogChange: (Boolean) -> Unit,
     artifactStoreById: Map<String, JSONObject>,
+    mapFoldersLoading: Boolean,
+    mapFoldersLoadError: String?,
     hiddenFolderIds: MutableSet<String>,
     hiddenItemIds: MutableSet<String>,
     onFolderVisibilityChanged: (String, Boolean) -> Unit,
     onItemVisibilityChanged: (String, Boolean) -> Unit,
-    onAllItemsToggled: (List<String>, Boolean) -> Unit,
+    onAllItemsToggled: (Iterable<String>, Boolean) -> Unit,
     onZoomToItem: (String) -> Unit,
     onSurfaceBriefing: (String) -> Unit,
     onMapAssignment: (String) -> Unit,
     showBadTilesHowToDialog: Boolean,
     onShowBadTilesHowToDialogChange: (Boolean) -> Unit,
-    showMapCacheSizeDialog: Boolean,
-    onShowMapCacheSizeDialogChange: (Boolean) -> Unit,
-    mapCacheSizeInput: String,
-    mapCacheAvailableBytes: Long?,
-    mapCacheCurrentBytes: Long,
-    mapCacheUsage: org.ncssar.rid2caltopo.video.mapcache.MapCacheUsage,
-    onMapCacheSizeInputChange: (String) -> Unit,
-    onMapCacheSizeSaved: (Long) -> Unit,
-    showMapTileAgeDialog: Boolean,
-    onShowMapTileAgeDialogChange: (Boolean) -> Unit,
-    mapTileAgeDaysInput: String,
-    onMapTileAgeDaysInputChange: (String) -> Unit,
-    onMapTileAgeSaved: (Long) -> Unit
 ) {
     badTileDialogState?.let { dlg ->
         AlertDialog(
@@ -361,7 +350,16 @@ internal fun MapPaneManagementDialogs(
         )
     }
 
-    if (showMapFoldersDialog) {
+    if (showMapFoldersDialog && (mapFoldersLoading || mapFoldersLoadError != null)) {
+        AlertDialog(
+            onDismissRequest = { onShowMapFoldersDialogChange(false) },
+            title = { Text("Map Folders") },
+            text = { Text(mapFoldersLoadError ?: "Restoring saved folder settings…") },
+            confirmButton = {
+                TextButton(onClick = { onShowMapFoldersDialogChange(false) }) { Text("Close") }
+            }
+        )
+    } else if (showMapFoldersDialog) {
         MapFoldersDialog(
             folders = buildMapFolderUiStates(artifactStoreById),
             hiddenFolderIds = hiddenFolderIds,
@@ -399,97 +397,5 @@ internal fun MapPaneManagementDialogs(
         )
     }
 
-    if (showMapCacheSizeDialog) {
-        AlertDialog(
-            onDismissRequest = { onShowMapCacheSizeDialogChange(false) },
-            title = { Text("Max Cache Size") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Enter the combined map and terrain cache limit in decimal GB.")
-                    Text("Total used: ${formatStorageBytes(mapCacheCurrentBytes)}")
-                    Text("Map imagery: ${formatStorageBytes(mapCacheUsage.imagery)}")
-                    Text("Terrain files: ${formatStorageBytes(mapCacheUsage.terrain)}")
-                    Text("Decoded terrain: ${formatStorageBytes(mapCacheUsage.decoded)}")
-                    Text("Icons and elevation samples: ${formatStorageBytes(mapCacheUsage.other)}")
-                    Text("Downloads reserved: ${formatStorageBytes(mapCacheUsage.reserved)}")
-                    Text("Currently configured: ${MapCacheSettings.formatDecimalGb(MapCacheSettings.maxCacheBytes(context))}")
-                    Text(
-                        mapCacheAvailableBytes?.let {
-                            "Available on cache volume: ${MapCacheSettings.formatDecimalGb(it)}"
-                        } ?: "Available space on cache volume: unavailable"
-                    )
-                    reasonableCacheMaximumBytes(mapCacheCurrentBytes, mapCacheAvailableBytes)?.let {
-                        Text("Largest recommended maximum now: ${MapCacheSettings.formatDecimalGb(it)}")
-                        TextButton(onClick = { onMapCacheSizeInputChange(String.format(java.util.Locale.US, "%.2f", kotlin.math.floor(it / 10_000_000.0) / 100.0)) }) {
-                            Text("Allow up to 80% of free space")
-                        }
-                    }
-                    PanelSettingLabel("Max Cache Size", centered = true)
-                    OutlinedTextField(
-                        value = mapCacheSizeInput,
-                        onValueChange = onMapCacheSizeInputChange,
-                        label = { Text("Decimal GB") },
-                        singleLine = true
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        val gb = mapCacheSizeInput.toDoubleOrNull()
-                        if (gb == null || gb <= 0.0) {
-                            CaltopoClient.ShowToast("Enter a positive cache size in GB.")
-                            return@TextButton
-                        }
-                        onMapCacheSizeSaved((gb * 1_000_000_000.0).toLong())
-                    }
-                ) {
-                    Text("Save")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { onShowMapCacheSizeDialogChange(false) }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
 
-    if (showMapTileAgeDialog) {
-        AlertDialog(
-            onDismissRequest = { onShowMapTileAgeDialogChange(false) },
-            title = { Text("Maximum Tile Age") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Enter the maximum tile retention age in days.")
-                    PanelSettingLabel("Maximum Tile Age", centered = true)
-                    OutlinedTextField(
-                        value = mapTileAgeDaysInput,
-                        onValueChange = { onMapTileAgeDaysInputChange(it.filter { ch -> ch.isDigit() }) },
-                        label = { Text("Days") },
-                        singleLine = true
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        val days = mapTileAgeDaysInput.toLongOrNull()
-                        if (days == null || days <= 0L) {
-                            CaltopoClient.ShowToast("Enter a positive tile age in days.")
-                            return@TextButton
-                        }
-                        onMapTileAgeSaved(days)
-                    }
-                ) {
-                    Text("Save")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { onShowMapTileAgeDialogChange(false) }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
 }

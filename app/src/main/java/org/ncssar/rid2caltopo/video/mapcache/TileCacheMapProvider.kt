@@ -63,7 +63,7 @@ open class TileCacheMapProvider private constructor(
             tileSource
         )
         cacheProvider = TileCacheStorageProvider(registerReceiver, tileSource, tileWriter)
-        val archiveProvider = MapTileFileArchiveProvider(registerReceiver, tileSource)
+        val archiveProvider = ManagedArchiveTileProvider(context.applicationContext, tileSource)
 
         mTileProviderList.add(assetsProvider)
         mTileProviderList.add(cacheProvider)

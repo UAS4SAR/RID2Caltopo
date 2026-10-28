@@ -62,23 +62,26 @@ internal class H264ArchiveAccessUnitAssembler {
     )
 }
 
-/** Generates the stable 30 fps picture cadence used by both mobile platforms. */
-internal class H264ArchiveCadence(private val framesPerSecond: Int = 30) {
+/** Preserve source picture timestamps, including higher frame rates and transmission gaps. */
+internal class H264ArchiveTiming(private val framesPerSecond: Int = 30) {
     init {
         require(framesPerSecond > 0)
     }
 
     var pictureCount: Long = 0L
         private set
+    private var lastPresentationTimeUs: Long? = null
 
-    fun nextPresentationTimeUs(segmentOffsetUs: Long): Long {
-        val timestamp = segmentOffsetUs + pictureCount * MICROSECONDS_PER_SECOND / framesPerSecond
+    fun nextPresentationTimeUs(sourcePresentationTimeUs: Long): Long {
+        val previous = lastPresentationTimeUs
+        val timestamp = if (previous == null) sourcePresentationTimeUs else maxOf(sourcePresentationTimeUs, previous + 1L)
         pictureCount += 1L
+        lastPresentationTimeUs = timestamp
         return timestamp
     }
 
     fun endOffsetUs(segmentOffsetUs: Long): Long =
-        segmentOffsetUs + pictureCount * MICROSECONDS_PER_SECOND / framesPerSecond
+        lastPresentationTimeUs?.plus(MICROSECONDS_PER_SECOND / framesPerSecond) ?: segmentOffsetUs
 }
 
 internal fun ByteArray.avccNalUnitTypes(): List<Int>? {

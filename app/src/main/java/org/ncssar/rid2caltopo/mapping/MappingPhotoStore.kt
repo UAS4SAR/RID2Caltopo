@@ -9,6 +9,7 @@ import java.security.MessageDigest
 
 /** Byte-preserving mission intake. Filenames supplied by a browser never become storage paths. */
 class MappingPhotoStore(val directory: File) {
+    init { org.ncssar.rid2caltopo.storage.OperationalStorage.requireFor(directory) }
     private val originals = File(directory, "originals").apply { mkdirs() }
     private val pending = File(directory, "pending").apply { mkdirs() }
     private val records = File(directory, "inventory").apply { mkdirs() }
@@ -52,13 +53,16 @@ class MappingPhotoStore(val directory: File) {
         MappingMissionStorage.invalidate(file)
         try { RandomAccessFile(file, "rw").use { it.seek(offset); it.write(bytes); it.fd.sync() } }
         finally { MappingMissionStorage.invalidate(file) }
+        org.ncssar.rid2caltopo.storage.OperationalStorage.retainChunk(file, offset, bytes)
         return progress(digest)
     }
 
     @Synchronized fun commit(digest: String): JSONObject {
         val record = readRecord(digest)
         if (record.optBoolean("complete")) return progress(digest)
-        val file = File(pending, "$digest.part")
+        val retained = File(originals, "$digest.jpg")
+        val pendingFile = File(pending, "$digest.part")
+        val file = if (pendingFile.exists()) pendingFile else retained
         require(file.length() == record.getLong("sizeBytes")) { "Photo is incomplete. Select the files again to resume." }
         val hash = MessageDigest.getInstance("SHA-256")
         file.inputStream().buffered().use { stream ->
@@ -76,7 +80,9 @@ class MappingPhotoStore(val directory: File) {
             file.delete()
             throw IllegalArgumentException("Photo checksum failed. Select it again to retry from the beginning.")
         }
-        require(file.renameTo(File(originals, "$digest.jpg"))) { "Could not retain the original photo." }
+        require(file == retained || file.renameTo(retained)) { "Could not retain the original photo." }
+        org.ncssar.rid2caltopo.storage.OperationalStorage.retain(File(originals, "$digest.jpg"))
+        org.ncssar.rid2caltopo.storage.OperationalStorage.forgetPending(pendingFile)
         writeJson(File(records, "$digest.json"), record.put("complete", true))
         return progress(digest)
     }
@@ -109,6 +115,7 @@ class MappingPhotoStore(val directory: File) {
         if (!destination.exists()) runCatching { java.nio.file.Files.createLink(destination.toPath(),source.toPath()) }
             .getOrElse { source.copyTo(destination,overwrite=false,bufferSize=1024*1024) }
         File(pending,"$digest.part").delete()
+        org.ncssar.rid2caltopo.storage.OperationalStorage.retain(destination)
         writeJson(File(records,"$digest.json"),readRecord(digest).put("complete",true))
         return progress(digest)
     }
@@ -126,10 +133,12 @@ class MappingPhotoStore(val directory: File) {
         const val FREE_SPACE_RESERVE = 256L * 1024 * 1024
         fun checkDigest(value: String) { require(value.matches(Regex("[a-f0-9]{64}"))) { "Invalid photo checksum." } }
         fun writeJson(file: File, value: JSONObject) {
+            org.ncssar.rid2caltopo.storage.OperationalStorage.requireFor(file)
             MappingMissionStorage.invalidate(file)
             val temporary = File(file.parentFile, "${file.name}.tmp")
             FileOutputStream(temporary).use { it.write(value.toString(2).toByteArray()); it.fd.sync() }
             check(temporary.renameTo(file)) { "Could not save the mission inventory." }
+            org.ncssar.rid2caltopo.storage.OperationalStorage.retain(file)
             MappingMissionStorage.invalidate(file)
         }
     }

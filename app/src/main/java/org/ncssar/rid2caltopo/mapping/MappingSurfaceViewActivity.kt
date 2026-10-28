@@ -3,7 +3,11 @@ package org.ncssar.rid2caltopo.mapping
 import org.ncssar.rid2caltopo.data.Units
 import org.ncssar.rid2caltopo.data.DisplayUnits
 
-import android.app.Activity
+import androidx.activity.ComponentActivity
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
 import android.os.Bundle
 import android.view.WindowManager
 import android.webkit.*
@@ -11,14 +15,41 @@ import java.io.File
 import java.util.UUID
 
 /** Internal, protected, offline-only surface inspector. No remote script or network origin. */
-class MappingSurfaceViewActivity:Activity(){
+class MappingSurfaceViewActivity:ComponentActivity(){
     private var browser:WebView?=null
     private var lease:String?=null
+    private var surfaceResumed=false
     @Volatile private var regionPath="surface.glb"
     override fun onCreate(state:Bundle?){super.onCreate(state)
+        org.ncssar.rid2caltopo.app.SettingsStartup.showWhenReady(this) { createReadySurface() }
+    }
+    private fun createReadySurface(){
+        if(surfaceResumed && lease==null)lease=MappingWorkRuntime.begin{runOnUiThread{finish()}}
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val id=intent.getStringExtra("layerId")?:return finish()
         if(runCatching{UUID.fromString(id).toString()==id}.getOrDefault(false).not())return finish()
+        val loading=android.widget.TextView(this).apply {
+            text="Loading 3D surface…";gravity=android.view.Gravity.CENTER
+        }
+        setContentView(loading)
+        val appContext=applicationContext
+        lifecycleScope.launch {
+            val prepared=try {
+                MappingSurfaceStartup.load {
+                    org.ncssar.rid2caltopo.storage.OperationalStorage.requireReady(appContext)
+                    LocalMappingTiles.directory(appContext,id)
+                }
+            } catch (cancelled:CancellationException) { throw cancelled }
+            catch (error:Exception) {
+                if(!isDestroyed && !isFinishing) loading.text="3D surface could not be loaded. Return to processing and try again."
+                org.ncssar.rid2caltopo.data.CaltopoClient.CTError("MappingSurface","Could not load surface metadata",error)
+                return@launch
+            }
+            ensureActive()
+            if(!isDestroyed && !isFinishing) renderSurface(id,prepared)
+        }
+    }
+    private fun renderSurface(id:String,prepared:MappingSurfaceStartup){
         val view=WebView(this);browser=view
         view.settings.cacheMode=WebSettings.LOAD_NO_CACHE;view.settings.javaScriptEnabled=true;view.settings.allowFileAccess=false;view.settings.allowContentAccess=false;view.settings.domStorageEnabled=false
         view.settings.mixedContentMode=WebSettings.MIXED_CONTENT_NEVER_ALLOW
@@ -33,19 +64,19 @@ class MappingSurfaceViewActivity:Activity(){
                     "/viewer/scale.js"->WebResourceResponse("application/javascript","UTF-8",assets.open("mapping-surface/scale.js"))
                     "/viewer/collection.js"->WebResourceResponse("application/javascript","UTF-8",assets.open("mapping-surface/collection.js"))
                     "/viewer/boundary.js"->WebResourceResponse("application/javascript","UTF-8",assets.open("mapping-surface/boundary.js"))
-                    "/model/$id/boundary.json"->{val file=File(LocalMappingTiles.directory(this@MappingSurfaceViewActivity,id),"layer.json")
+                    "/model/$id/boundary.json"->{val file=File(prepared.root,"layer.json")
                         val layer=MappingLayer.parse(org.json.JSONObject(file.readText()))
                         val boundary=MappingBoundary.resolve(filesDir,layer)?:error("No captured assignment boundary")
                         val data=org.json.JSONObject().put("coordinates",org.json.JSONArray(boundary.coordinates)).put("featherMeters",MappingBoundary.FEATHER_METERS)
                             .put("soft",MappingBoundary.soft(this@MappingSurfaceViewActivity,id))
                         WebResourceResponse("application/json","UTF-8",data.toString().byteInputStream())}
-                    "/model/$id/surface.glb"->{val completed=File(LocalMappingTiles.directory(this@MappingSurfaceViewActivity,id),"surface/$regionPath")
+                    "/model/$id/surface.glb"->{val completed=File(prepared.root,"surface/$regionPath")
                         val working=File(filesDir,"mapping-processing/$id/surface/surface.glb");val file=if(completed.isFile)completed else working
                         require(file.isFile&&file.length() in 20..128L*1024*1024);WebResourceResponse("model/gltf-binary",null,file.inputStream())}
                     else->{val prefix="/model/$id/";val name=uri.path?.removePrefix(prefix).orEmpty()
                         require(uri.path?.startsWith(prefix)==true)
                         require(name=="collection.json" || Regex("regions/[0-9]{1,3}/surface\\.(glb|json)").matches(name))
-                        val file=File(LocalMappingTiles.directory(this@MappingSurfaceViewActivity,id),"surface/$name")
+                        val file=File(prepared.root,"surface/$name")
                         require(file.isFile && file.length() in 1..32L*1024*1024)
                         WebResourceResponse(if(name.endsWith("json"))"application/json" else "model/gltf-binary",null,200,"OK",mapOf("Content-Length" to file.length().toString()),file.inputStream())}
                 }}catch(_:Exception){denied()}
@@ -53,11 +84,8 @@ class MappingSurfaceViewActivity:Activity(){
             private fun denied()=WebResourceResponse("text/plain","UTF-8",404,"Not found",emptyMap(),"Local surface unavailable".byteInputStream())
         }
         val layout=android.widget.LinearLayout(this).apply{orientation=android.widget.LinearLayout.VERTICAL;setBackgroundColor(android.graphics.Color.rgb(23,39,48))}
-        val collection=File(LocalMappingTiles.directory(this,id),"surface/collection.json")
-        if(collection.isFile) {
-            val regions=org.json.JSONObject(collection.readText()).getJSONArray("regions")
-            require(regions.length() in 1..200)
-            val paths=(0 until regions.length()).map { i->regions.getJSONObject(i).getString("path").also { require(it=="regions/$i/surface.glb") } }
+        val paths=prepared.paths
+        if(paths.isNotEmpty()) {
             regionPath=""
             layout.addView(android.widget.TextView(this).apply {
                 text="This map contains ${paths.size} 3D regions. View them together or inspect one region."
@@ -85,10 +113,10 @@ class MappingSurfaceViewActivity:Activity(){
             layout.addView(navigation)
         }
         layout.addView(view,android.widget.LinearLayout.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT,0,1f))
-        layout.addView(android.widget.Button(this).apply{text=if(File(LocalMappingTiles.directory(this@MappingSurfaceViewActivity,id),"layer.json").isFile)"View 2D map" else "Return to processing";setOnClickListener{finish()}})
+        layout.addView(android.widget.Button(this).apply{text=if(prepared.hasLayer)"View 2D map" else "Return to processing";setOnClickListener{finish()}})
         setContentView(layout);view.loadUrl("https://appassets.androidplatform.net/viewer/index.html?units=${Units.current.name.lowercase()}#$id")
     }
-    override fun onDestroy(){browser?.destroy();browser=null;super.onDestroy()}
-    override fun onResume(){super.onResume();if(lease==null)lease=MappingWorkRuntime.begin{runOnUiThread{finish()}}}
-    override fun onPause(){lease?.let(MappingWorkRuntime::finish);lease=null;super.onPause()}
+    override fun onDestroy(){browser?.stopLoading();browser?.destroy();browser=null;super.onDestroy()}
+    override fun onResume(){super.onResume();surfaceResumed=true;if(org.ncssar.rid2caltopo.app.SettingsStartup.isReady() && lease==null)lease=MappingWorkRuntime.begin{runOnUiThread{finish()}}}
+    override fun onPause(){surfaceResumed=false;lease?.let(MappingWorkRuntime::finish);lease=null;super.onPause()}
 }

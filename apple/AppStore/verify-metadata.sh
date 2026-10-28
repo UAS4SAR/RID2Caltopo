@@ -45,7 +45,7 @@ check_limit "$locale_dir/promotional_text.txt" 170 "promotional text"
 check_limit "$locale_dir/keywords.txt" 100 "keywords"
 check_limit "$locale_dir/description.txt" 4000 "description"
 check_limit "$locale_dir/whats_new.txt" 4000 "what's new"
-[[ -s "$locale_dir/review_notes.txt" ]] || { echo "Missing review notes" >&2; exit 1; }
+check_limit "$locale_dir/review_notes.txt" 4000 "review notes"
 
 whats_new="$locale_dir/whats_new.txt"
 rg -q '^Latest changes:$' "$whats_new" || {
@@ -91,44 +91,32 @@ if [[ -n "$marketing_version" ]]; then
     echo "  release notes: version $marketing_version"
 fi
 
-privacy="$script_dir/../../PrivacyPolicy.md"
+privacy="$repo_root/PrivacyPolicyApple.md"
+android_privacy="$repo_root/PrivacyPolicyAndroid.md"
 [[ -s "$privacy" ]] || { echo "Missing public privacy policy source: $privacy" >&2; exit 1; }
+[[ -s "$android_privacy" ]] || { echo "Missing public privacy policy source: $android_privacy" >&2; exit 1; }
 rg -q '^Last updated: ' "$privacy"
-rg -q 'does not contain advertising or analytics SDKs' "$privacy"
+rg -Fq 'It contains no advertising' "$privacy"
+rg -Fq 'The app uses Firebase Analytics and Crashlytics' "$android_privacy"
+rg -Fq 'The app does not include analytics SDKs' "$privacy"
 rg -q 'Apple Keychain' "$privacy"
 rg -q 'tracker peer coordination' "$privacy"
 rg -q 'diagnostic bundle' "$privacy"
-
-python3 - "$script_dir/../App/PrivacyInfo.xcprivacy" <<'PY'
-import plistlib
-import sys
-
-with open(sys.argv[1], "rb") as source:
-    manifest = plistlib.load(source)
-
-if manifest.get("NSPrivacyTracking") is not False:
-    raise SystemExit("privacy manifest must declare tracking false")
-if manifest.get("NSPrivacyTrackingDomains") != []:
-    raise SystemExit("privacy manifest must not declare tracking domains")
-
-expected = {
-    "NSPrivacyCollectedDataTypeOtherDiagnosticData",
-    "NSPrivacyCollectedDataTypePreciseLocation",
-    "NSPrivacyCollectedDataTypeDeviceID",
-    "NSPrivacyCollectedDataTypeOtherUserContent",
+rg -Fq 'BundledInformationView(document: .privacyPolicy)' "$script_dir/../App/AboutPrivacyView.swift" || {
+    echo "About & Privacy must open the complete bundled Apple privacy policy." >&2
+    exit 1
 }
-entries = manifest.get("NSPrivacyCollectedDataTypes", [])
-actual = {entry.get("NSPrivacyCollectedDataType") for entry in entries}
-if actual != expected:
-    raise SystemExit(f"unexpected privacy data types: {sorted(actual)}")
-for entry in entries:
-    data_type = entry["NSPrivacyCollectedDataType"]
-    if entry.get("NSPrivacyCollectedDataTypeLinked") is not True:
-        raise SystemExit(f"{data_type} must be disclosed as linked")
-    if entry.get("NSPrivacyCollectedDataTypeTracking") is not False:
-        raise SystemExit(f"{data_type} must declare tracking false")
-    if entry.get("NSPrivacyCollectedDataTypePurposes") != ["NSPrivacyCollectedDataTypePurposeAppFunctionality"]:
-        raise SystemExit(f"{data_type} has unexpected purposes")
-PY
+rg -Fq 'document = AppInformationDocument.PrivacyPolicy' "$repo_root/app/src/main/java/org/ncssar/rid2caltopo/ui/MainScreen.kt" || {
+    echo "About & Privacy must open the complete bundled Android privacy policy." >&2
+    exit 1
+}
+python3 "$repo_root/tools/privacy/prepare_policy_documents.py" --check
+if rg -ni '\b(Android|iOS|Apple) app\b|both platforms|platform-specific|Android-only|iPhone and iPad-only' "$privacy" "$android_privacy"; then
+    echo "Each privacy policy must describe the app on its own." >&2
+    exit 1
+fi
+
+python3 "$repo_root/tools/privacy/check_apple_privacy.py" --check-policy
+python3 -m unittest discover -s "$repo_root/tools/privacy" -p 'test_*.py'
 
 echo "App Store metadata and public privacy-policy source verified."

@@ -30,6 +30,333 @@ class CaltopoMapTest {
         assertTrue(CaltopoMap.fullArtifactRefreshRequired(1_000, true))
     }
 
+    @Test fun selectingActiveMapAgainPreservesConnectionWithoutAnotherRead() {
+        val map = CaltopoNode.MapNode("map-test", "Map Test", 0L)
+        beginSelection(map)
+        mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.up)
+        lastMapSyncField.setLong(null, 1_000L)
+        val generation = mapRefreshGenerationField.getLong(null)
+        repeat(5) { CaltopoMap.OpenMap(map.copy(title = "Updated catalog title", updated = 999L)) }
+        assertEquals(1, fixture.calTopoSessionGateway.countOperations("openMap"))
+        assertEquals(CaltopoMap.MapStatusListener.mapStatus.up, CaltopoMap.GetMapStatus())
+        assertEquals(generation, mapRefreshGenerationField.getLong(null))
+        assertEquals(1_000L, lastMapSyncField.getLong(null))
+        assertEquals("folder-test", CaltopoMap.GetFolderId())
+        assertEquals("archive-folder-test", CaltopoMap.GetArchiveFolderId())
+        assertTrue(map === CaltopoMap.GetMapNode())
+    }
+
+    @Test fun duplicateSelectionWhileConnectingKeepsOriginalRequestAndCompletion() {
+        val map = CaltopoNode.MapNode("map-test", "Map Test", 0L)
+        beginSelection(map)
+        val generation = mapRefreshGenerationField.getLong(null)
+        repeat(5) { CaltopoMap.OpenMap(map.copy(updated = it.toLong())) }
+        assertEquals(1, fixture.calTopoSessionGateway.countOperations("openMap"))
+        assertEquals(generation, mapRefreshGenerationField.getLong(null))
+        assertEquals(CaltopoMap.MapStatusListener.mapStatus.connecting, CaltopoMap.GetMapStatus())
+        invokeInitialMapResponse(successfulMapResponse())
+        assertEquals(CaltopoMap.MapStatusListener.mapStatus.up, CaltopoMap.GetMapStatus())
+        CaltopoRecoveryWork.worker.submit {}.get(3, java.util.concurrent.TimeUnit.SECONDS)
+    }
+
+    @Test fun switchingMapsCancelsTheObsoleteInitialRequest() {
+        val map = CaltopoNode.MapNode("map-test", "Map Test", 0L)
+        beginSelection(map)
+        val pending = initialMapRequestField.get(null) as CaltopoOp
+        val future = java.util.concurrent.FutureTask { pending }
+        pending.asyncFuture = future
+        CaltopoMap.OpenMap(map)
+        assertFalse(future.isCancelled)
+        assertTrue(pending === initialMapRequestField.get(null))
+        CaltopoMap.OpenMap(map.copy(id = "different-map"))
+        assertTrue(future.isCancelled)
+        assertFalse(pending === initialMapRequestField.get(null))
+        assertEquals(2, fixture.calTopoSessionGateway.countOperations("openMap"))
+    }
+
+    @Test fun sameMapWithChangedServerOrCredentialsStartsNewConnection() {
+        val map = CaltopoNode.MapNode("map-test", "Map Test", 0L)
+        val credentials = CaltopoCredentials("team", "key", "secret")
+        sessionCredentialsField.set(null, credentials)
+        sessionDomainField.set(null, "caltopo.com")
+        beginSelection(map)
+        credentials.credentialSecret = "rotated-secret"
+        CaltopoMap.OpenMap(map)
+        assertEquals(2, fixture.calTopoSessionGateway.countOperations("openMap"))
+        sessionDomainField.set(null, "another-server.example")
+        CaltopoMap.OpenMap(map)
+        assertEquals(3, fixture.calTopoSessionGateway.countOperations("openMap"))
+    }
+
+    @Test fun differentMapAndPersonalGrantAreNotReused() {
+        val map = CaltopoNode.MapNode("map-test", "Map Test", 0L, "grant-one")
+        beginSelection(map)
+        CaltopoMap.OpenMap(map.copy(title = "New title"))
+        assertEquals(1, fixture.calTopoSessionGateway.countOperations("openMap"))
+        CaltopoMap.OpenMap(map.copy(personalSessionID = "grant-two"))
+        assertEquals(2, fixture.calTopoSessionGateway.countOperations("openMap"))
+        CaltopoMap.OpenMap(map.copy(id = "another-map", personalSessionID = "grant-two"))
+        assertEquals(3, fixture.calTopoSessionGateway.countOperations("openMap"))
+        CaltopoPersonalSession.activate(null, "")
+    }
+
+    @Test fun sameMapSelectionClosesBrowserWithoutConnectingSpinner() {
+        val map = CaltopoNode.MapNode("map-test", "Map Test", 0L)
+        beginSelection(map)
+        mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.up)
+        val model = org.ncssar.rid2caltopo.ui.R2CViewModel(SimpleTimer())
+        try {
+            model.onUIEvent(org.ncssar.rid2caltopo.ui.UIEvent.SwitchMapRequested)
+            assertEquals(org.ncssar.rid2caltopo.ui.OverlayState.MapBrowser, model.overlay)
+            model.onUIEvent(org.ncssar.rid2caltopo.ui.UIEvent.MapSelected(map))
+            assertEquals(org.ncssar.rid2caltopo.ui.OverlayState.None, model.overlay)
+            assertEquals(org.ncssar.rid2caltopo.ui.CaltopoConnectionState.MapSelected(map), model.connectionState)
+            assertEquals(1, fixture.calTopoSessionGateway.countOperations("openMap"))
+        } finally {
+            org.ncssar.rid2caltopo.ui.R2CViewModel::class.java.getDeclaredMethod("onCleared")
+                .apply { isAccessible = true }.invoke(model)
+        }
+    }
+
+    @Test fun failedAndIncompleteMapResponsesEndTheConnectingState() {
+        mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.connecting)
+        val incomplete = CaltopoOp(null).apply {
+            responseJson = JSONObject()
+            setOperationIsDone(true)
+        }
+        invokeInitialMapResponse(incomplete)
+        assertEquals(CaltopoMap.MapStatusListener.mapStatus.down, CaltopoMap.GetMapStatus())
+        mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.connecting)
+        val failed = CaltopoOp(null).apply {
+            response = "Connection failed"
+            responseCode = 403
+            setOperationIsDone(false)
+        }
+        invokeInitialMapResponse(failed)
+        assertEquals(CaltopoMap.MapStatusListener.mapStatus.down, CaltopoMap.GetMapStatus())
+    }
+
+    private fun beginSelection(map: CaltopoNode.MapNode) {
+        mapNodeField.set(null, null)
+        mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.down)
+        CaltopoMap.OpenMap(map)
+    }
+
+    @Test fun initialMapConnectsWithoutWaitingForPollOrFlightRecovery() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        CaltopoRecoveryWork.execute {
+            entered.countDown()
+            release.await(5, java.util.concurrent.TimeUnit.SECONDS)
+        }
+        try {
+            assertTrue(entered.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.connecting)
+            val op = successfulMapResponse()
+            invokeInitialMapResponse(op)
+            assertEquals(CaltopoMap.MapStatusListener.mapStatus.up, CaltopoMap.GetMapStatus())
+            assertEquals(1_000L, lastMapSyncField.getLong(null))
+            assertTrue(fixture.calTopoSessionGateway.snapshotOperations().none { it.kind == "openMap" })
+        } finally {
+            release.countDown()
+            CaltopoRecoveryWork.worker.submit {}.get(3, java.util.concurrent.TimeUnit.SECONDS)
+        }
+        assertTrue(fixture.calTopoSessionGateway.snapshotOperations().none { it.kind == "openMap" })
+    }
+
+    @Test fun initialMapWaitsForBothFoldersInEitherCompletionOrder() {
+        for (first in listOf("Track", "Archive")) {
+            mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.connecting)
+            folderIdField.set(null, null)
+            archiveFolderIdField.set(null, null)
+            invokeInitialMapResponse(successfulMapResponse())
+            assertEquals(CaltopoMap.MapStatusListener.mapStatus.connecting, CaltopoMap.GetMapStatus())
+
+            fun completeFolder(kind: String) {
+                val op = CaltopoOp(null)
+                op.responseJson = JSONObject().put("id", "$kind-folder")
+                op.setOperationIsDone(true)
+                CaltopoMap::class.java.getDeclaredMethod("Create${kind}DirFinished", CaltopoOp::class.java)
+                    .apply { isAccessible = true }.invoke(null, op)
+            }
+            completeFolder(first)
+            assertEquals(CaltopoMap.MapStatusListener.mapStatus.connecting, CaltopoMap.GetMapStatus())
+            completeFolder(if (first == "Track") "Archive" else "Track")
+            assertEquals(CaltopoMap.MapStatusListener.mapStatus.up, CaltopoMap.GetMapStatus())
+            CaltopoRecoveryWork.worker.submit {}.get(3, java.util.concurrent.TimeUnit.SECONDS)
+        }
+        assertTrue(fixture.calTopoSessionGateway.snapshotOperations().none { it.kind == "openMap" })
+    }
+
+    @Test fun reusedStartupSnapshotKeepsItsCursorForTheNextIncrementalPoll() {
+        mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.connecting)
+        val op = successfulMapResponse()
+        op.responseJson.put("timestamp", 700L)
+        invokeInitialMapResponse(op) // Connection request started later, at 1,000 ms.
+        assertEquals(700L, lastMapSyncField.getLong(null))
+        CaltopoRecoveryWork.worker.submit {}.get(3, java.util.concurrent.TimeUnit.SECONDS)
+    }
+
+    @Test fun staleInitialResponseCannotCompleteAnotherMapsConnection() {
+        mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.connecting)
+        mapRefreshGenerationField.setLong(null, 2L)
+        invokeInitialMapResponse(successfulMapResponse())
+        assertEquals(CaltopoMap.MapStatusListener.mapStatus.connecting, CaltopoMap.GetMapStatus())
+        assertEquals(0L, lastMapSyncField.getLong(null))
+    }
+
+    @Test fun markerJournalRunsOffCallerAndDoesNotBlockMapUI() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        CaltopoMarkerWork.execute { entered.countDown(); release.await(5, java.util.concurrent.TimeUnit.SECONDS) }
+        assertTrue(entered.await(2, java.util.concurrent.TimeUnit.SECONDS))
+        val location = Location("test").apply { latitude = 39.1; longitude = -121.1 }
+        CaltopoMap.MyLocation = location
+        mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.up)
+        val file = java.io.File(java.nio.file.Files.createTempDirectory("marker-thread-test").toFile(), "journal.json")
+        val threads = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val observed = object : java.io.File(file.path) {
+            override fun exists(): Boolean { threads.add(Thread.currentThread().name); return super.exists() }
+        }
+        CaltopoMap::class.java.getDeclaredField("markerJournal").apply { isAccessible = true }
+            .set(null, DeviceMarkerJournal(observed))
+        try {
+            // This must return while the marker worker is deliberately blocked.
+            invokeMarkerPublish(location)
+            assertTrue(threads.isEmpty())
+            assertEquals(0, fixture.calTopoSessionGateway.countOperations("addMarker"))
+            release.countDown()
+            drainMarkers()
+            assertTrue(threads.isNotEmpty())
+            assertTrue(threads.all { it == "caltopo-marker-journal" })
+            assertEquals(1, fixture.calTopoSessionGateway.countOperations("addMarker"))
+            assertTrue(file.isFile)
+        } finally { release.countDown(); drainMarkers(); file.parentFile.deleteRecursively() }
+    }
+
+    @Test fun queuedMarkerCannotPublishAfterMapChanges() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        CaltopoMarkerWork.execute { entered.countDown(); release.await(5, java.util.concurrent.TimeUnit.SECONDS) }
+        assertTrue(entered.await(2, java.util.concurrent.TimeUnit.SECONDS))
+        val location = Location("test").apply { latitude = 39.1; longitude = -121.1 }
+        CaltopoMap.MyLocation = location
+        mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.up)
+        try {
+            invokeMarkerPublish(location)
+            mapRefreshGenerationField.setLong(null, mapRefreshGenerationField.getLong(null) + 1)
+            mapNodeField.set(null, CaltopoNode.MapNode("other-map", "other", 0L))
+            release.countDown()
+            drainMarkers()
+            assertEquals(0, fixture.calTopoSessionGateway.countOperations("addMarker"))
+            assertFalse(fixture.calTopoSessionGateway.markerCleanupMaps.contains("other-map"))
+        } finally { release.countDown(); drainMarkers() }
+    }
+
+    @Test fun corruptMarkerJournalPreventsPostWithoutResettingOwnership() {
+        val file = java.io.File.createTempFile("marker-corrupt", ".json")
+        file.writeText("broken")
+        CaltopoMap::class.java.getDeclaredField("markerJournal").apply { isAccessible = true }
+            .set(null, DeviceMarkerJournal(file))
+        val location = Location("test").apply { latitude = 39.1; longitude = -121.1 }
+        CaltopoMap.MyLocation = location
+        mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.up)
+        invokeMarkerPublish(location)
+        drainMarkers()
+        assertEquals(0, fixture.calTopoSessionGateway.countOperations("addMarker"))
+        assertEquals("broken", file.readText())
+        file.delete()
+    }
+
+    @Test fun coldMarkerJournalCannotBlockLocationCallbacksWhileStoragePrepares() {
+        val factoryField = CaltopoMap::class.java.getDeclaredField("markerJournalFactory").apply { isAccessible = true }
+        val journalField = CaltopoMap::class.java.getDeclaredField("markerJournal").apply { isAccessible = true }
+        val originalFactory = factoryField.get(null)
+        val originalJournal = journalField.get(null)
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val caller = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val file = java.io.File(java.nio.file.Files.createTempDirectory("cold-marker-journal").toFile(), "journal.json")
+        val initializationThread = java.util.concurrent.atomic.AtomicReference<String>()
+        factoryField.set(null, java.util.function.Supplier {
+            initializationThread.set(Thread.currentThread().name)
+            entered.countDown()
+            check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            DeviceMarkerJournal(file)
+        })
+        journalField.set(null, null)
+        try {
+            CaltopoMap::class.java.getDeclaredMethod("retryMarkerCleanup").apply { isAccessible = true }.invoke(null)
+            assertTrue(entered.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            // This is the exact accessor where the tablet's main thread was blocked.
+            caller.submit { CaltopoMap.GetDeviceLocation(); CaltopoMap.GetMyLocation(); CaltopoMap.GetMyLocationOverride() }
+                .get(500, java.util.concurrent.TimeUnit.MILLISECONDS)
+            assertEquals("caltopo-marker-journal", initializationThread.get())
+        } finally {
+            release.countDown()
+            drainMarkers()
+            caller.shutdownNow()
+            factoryField.set(null, originalFactory)
+            journalField.set(null, originalJournal)
+            file.parentFile.deleteRecursively()
+        }
+    }
+
+    private fun invokeMarkerPublish(location: Location) {
+        CaltopoMap::class.java.getDeclaredMethod("publishMyDeviceMarkerIfPossible", Location::class.java)
+            .apply { isAccessible = true }.invoke(null, location)
+    }
+
+    @Test fun currentMarkerIntentSurvivesCleanupQueuedAheadOfItsPublication() {
+        val journal=CaltopoMap::class.java.getDeclaredField("markerJournal").apply{isAccessible=true}.get(null) as DeviceMarkerJournal
+        val key=CaltopoClient.GetCaltopoDomainAndPort()+"/"+CaltopoMap.GetMapId()+"/marker-guid-test"
+        journal.arm(CaltopoClient.GetCaltopoDomainAndPort(),CaltopoMap.GetMapId(),"marker-guid-test")
+        val entered=java.util.concurrent.CountDownLatch(1)
+        val release=java.util.concurrent.CountDownLatch(1)
+        CaltopoMarkerWork.execute{entered.countDown();release.await(5,java.util.concurrent.TimeUnit.SECONDS)}
+        assertTrue(entered.await(2,java.util.concurrent.TimeUnit.SECONDS))
+        try {
+            val location=Location("test")
+            CaltopoMap.MyLocation=location
+            mapStatusField.set(null,CaltopoMap.MapStatusListener.mapStatus.up)
+            CaltopoMap::class.java.getDeclaredMethod("retryMarkerCleanup").apply{isAccessible=true}.invoke(null)
+            invokeMarkerPublish(location)
+            release.countDown();drainMarkers()
+            assertEquals(0,fixture.calTopoSessionGateway.countOperations("deleteMarker"))
+            assertEquals(1,fixture.calTopoSessionGateway.countOperations("addMarker"))
+            assertTrue(journal.entries().any{it.key()==key})
+        } finally {release.countDown();drainMarkers()}
+    }
+
+    @Test fun publicationWaitsForInflightCleanupAndCoalescesToLatestLocation() {
+        val journal=CaltopoMap::class.java.getDeclaredField("markerJournal").apply{isAccessible=true}.get(null) as DeviceMarkerJournal
+        journal.arm(CaltopoClient.GetCaltopoDomainAndPort(),CaltopoMap.GetMapId(),"marker-guid-test")
+        fixture.calTopoSessionGateway.holdMarkerDeletes=true
+        CaltopoMap::class.java.getDeclaredMethod("retryMarkerCleanup").apply{isAccessible=true}.invoke(null)
+        drainMarkers()
+        assertEquals(1,fixture.calTopoSessionGateway.markerDeleteCallbacks.size)
+        CaltopoMap.MyLocation=Location("test")
+        mapStatusField.set(null,CaltopoMap.MapStatusListener.mapStatus.up)
+        repeat(3){invokeMarkerPublish(Location("test"))}
+        drainMarkers()
+        assertEquals(0,fixture.calTopoSessionGateway.countOperations("addMarker"))
+        fixture.calTopoSessionGateway.markerDeleteCallbacks.removeAt(0).accept(CaltopoOp(null).apply{setOperationIsDone(true)})
+        drainMarkers()
+        assertEquals(1,fixture.calTopoSessionGateway.countOperations("addMarker"))
+        assertEquals(1,journal.entries().size)
+    }
+
+    private fun successfulMapResponse() = CaltopoOp(null).apply {
+        responseJson = JSONObject().put("state", JSONObject().put("features", JSONArray()))
+        setOperationIsDone(true)
+    }
+
+    private fun invokeInitialMapResponse(op: CaltopoOp) {
+        CaltopoMap::class.java.getDeclaredMethod(
+            "OpenMapFinished", CaltopoOp::class.java, Long::class.javaPrimitiveType, Long::class.javaPrimitiveType,
+        ).apply { isAccessible = true }.invoke(null, op, 1_000L, 1L)
+    }
+
 
     @Test
     fun archiveFolderName_separatesTrackFolderAndDate() {
@@ -62,7 +389,8 @@ class CaltopoMapTest {
             CaltopoMap.OpenMap(CaltopoNode.MapNode("personal-test", "test", 0L, "session-test"))
             assertFalse(shutdownInProgressField.getBoolean(null))
             assertTrue((folder.get(null) as String).isNotBlank())
-            val operations = fixture.calTopoSessionGateway.snapshotOperations()
+            drainMarkers()
+        val operations = fixture.calTopoSessionGateway.snapshotOperations()
             assertTrue(operations.any { it.kind == "openMap" })
             assertFalse(operations.any { it.kind == "verifyAccount" })
         } finally {
@@ -71,8 +399,84 @@ class CaltopoMapTest {
         }
     }
 
+    @Test fun mapRefreshCallbackDoesNotWaitForFlightStorage() {
+        val storageEntered = java.util.concurrent.CountDownLatch(1)
+        val releaseStorage = java.util.concurrent.CountDownLatch(1)
+        val callers = java.util.concurrent.Executors.newFixedThreadPool(2)
+        val file = java.io.File(java.nio.file.Files.createTempDirectory("recovery-thread-test").toFile(), "awaiting.json")
+        AwaitingMapFlights.useFileForTesting(file)
+        CaltopoInterruptedTrackJournal.setFileForTesting(java.io.File(file.parentFile, "interrupted.json"))
+        try {
+            callers.submit {
+                synchronized(AwaitingMapFlights) {
+                    storageEntered.countDown()
+                    releaseStorage.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                }
+            }
+            assertTrue(storageEntered.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            mapRefreshInFlightField.setBoolean(null, true)
+            // Exercise the same completion handler identified in the fatal crash.
+            callers.submit { invokeSuccessfulMapRefresh() }.get(1, java.util.concurrent.TimeUnit.SECONDS)
+            assertTrue(mapRefreshInFlightField.getBoolean(null))
+            releaseStorage.countDown()
+            CaltopoRecoveryWork.worker.submit {}.get(3, java.util.concurrent.TimeUnit.SECONDS)
+            assertFalse(mapRefreshInFlightField.getBoolean(null))
+        } finally {
+            releaseStorage.countDown()
+            CaltopoRecoveryWork.worker.submit {}.get(3, java.util.concurrent.TimeUnit.SECONDS)
+            callers.shutdownNow()
+            AwaitingMapFlights.useFileForTesting(null)
+            CaltopoInterruptedTrackJournal.setFileForTesting(null)
+            file.parentFile.deleteRecursively()
+        }
+    }
+
+    @Test fun queuedFlightRecoverySkipsStorageAfterMapGenerationChanges() {
+        val workerEntered = java.util.concurrent.CountDownLatch(1)
+        val releaseWorker = java.util.concurrent.CountDownLatch(1)
+        val file = java.io.File(java.nio.file.Files.createTempDirectory("stale-recovery-test").toFile(), "awaiting.json")
+        AwaitingMapFlights.useFileForTesting(file)
+        try {
+            CaltopoRecoveryWork.execute {
+                workerEntered.countDown()
+                releaseWorker.await(5, java.util.concurrent.TimeUnit.SECONDS)
+            }
+            assertTrue(workerEntered.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            mapRefreshInFlightField.setBoolean(null, true)
+            invokeSuccessfulMapRefresh()
+            mapRefreshGenerationField.setLong(null, 2L)
+            mapNodeField.set(null, CaltopoNode.MapNode("different-map", "Other Map", 0L))
+            releaseWorker.countDown()
+            CaltopoRecoveryWork.worker.submit {}.get(3, java.util.concurrent.TimeUnit.SECONDS)
+            val loaded = AwaitingMapFlights::class.java.getDeclaredField("loaded").apply { isAccessible = true }
+            assertFalse(loaded.getBoolean(null))
+            // The old completion cannot clear the new map's in-flight flag either.
+            assertTrue(mapRefreshInFlightField.getBoolean(null))
+        } finally {
+            releaseWorker.countDown()
+            CaltopoRecoveryWork.worker.submit {}.get(3, java.util.concurrent.TimeUnit.SECONDS)
+            AwaitingMapFlights.useFileForTesting(null)
+            file.parentFile.deleteRecursively()
+        }
+    }
+
+    private fun invokeSuccessfulMapRefresh() {
+        val method = CaltopoMap::class.java.getDeclaredMethod(
+            "UpdateMapFinished", CaltopoOp::class.java, Long::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType, Long::class.javaPrimitiveType, String::class.java,
+        ).apply { isAccessible = true }
+        val op = CaltopoOp(null)
+        op.responseJson = JSONObject().put("state", JSONObject().put("features", JSONArray()))
+        op.setOperationIsDone(true)
+        method.invoke(null, op, 1_000L, false, 1L, "map-test")
+    }
+
     private lateinit var fixture: TestR2cRuntimeFactory.Fixture
     private lateinit var mapStatusField: Field
+    private lateinit var mapSelectionField: Field
+    private lateinit var initialMapRequestField: Field
+    private lateinit var sessionCredentialsField: Field
+    private lateinit var sessionDomainField: Field
     private lateinit var mapNodeField: Field
     private lateinit var folderIdField: Field
     private lateinit var archiveFolderIdField: Field
@@ -100,6 +504,10 @@ class CaltopoMapTest {
     private lateinit var resetArtifactStoreMethod: Method
 
     private lateinit var originalMapStatus: CaltopoMap.MapStatusListener.mapStatus
+    private var originalMapSelection: Any? = null
+    private var originalInitialMapRequest: Any? = null
+    private var originalSessionCredentials: Any? = null
+    private var originalSessionDomain: Any? = null
     private var originalMapNode: Any? = null
     private var originalFolderId: String? = null
     private var originalArchiveFolderId: String? = null
@@ -124,16 +532,26 @@ class CaltopoMapTest {
     private var originalFullMapRefreshPending: Boolean = false
     private var originalMapRefreshGeneration: Long = 0L
 
+    private fun drainMarkers() {
+        repeat(3) { CaltopoMarkerWork.worker.submit {}.get(3, java.util.concurrent.TimeUnit.SECONDS) }
+    }
+
     @Before
     fun setUp() {
+        drainMarkers()
         CaltopoMap::class.java.getDeclaredField("markerJournal").apply { isAccessible = true }.set(null, DeviceMarkerJournal(java.io.File(java.nio.file.Files.createTempDirectory("marker-map-test").toFile(), "journal.json")))
         for (name in listOf("activeMarkerKeys", "deletingMarkerKeys")) {
             (CaltopoMap::class.java.getDeclaredField(name).apply { isAccessible = true }.get(null) as MutableSet<*>).clear()
         }
+        (CaltopoMap::class.java.getDeclaredField("deferredMarkerPublications").apply{isAccessible=true}.get(null) as MutableMap<*,*>).clear()
         fixture = TestR2cRuntimeFactory.create("map-test")
         fixture.setAsDefaultRuntime()
 
         mapStatusField = CaltopoMap::class.java.getDeclaredField("MapStatus").apply { isAccessible = true }
+        mapSelectionField = CaltopoMap::class.java.getDeclaredField("ActiveMapSelection").apply { isAccessible = true }
+        initialMapRequestField = CaltopoMap::class.java.getDeclaredField("InitialMapRequest").apply { isAccessible = true }
+        sessionCredentialsField = CaltopoMap::class.java.getDeclaredField("MyCaltopoCredentials").apply { isAccessible = true }
+        sessionDomainField = CaltopoMap::class.java.getDeclaredField("DomainAndPort").apply { isAccessible = true }
         mapNodeField = CaltopoMap::class.java.getDeclaredField("MapNode").apply { isAccessible = true }
         folderIdField = CaltopoMap::class.java.getDeclaredField("FolderId").apply { isAccessible = true }
         archiveFolderIdField = CaltopoMap::class.java.getDeclaredField("ArchiveFolderId").apply { isAccessible = true }
@@ -181,6 +599,12 @@ class CaltopoMapTest {
         ).apply { isAccessible = true }
 
         originalMapStatus = mapStatusField.get(null) as CaltopoMap.MapStatusListener.mapStatus
+        originalMapSelection = mapSelectionField.get(null)
+        originalInitialMapRequest = initialMapRequestField.get(null)
+        initialMapRequestField.set(null, null)
+        originalSessionCredentials = sessionCredentialsField.get(null)
+        originalSessionDomain = sessionDomainField.get(null)
+        mapSelectionField.set(null, null)
         originalMapNode = mapNodeField.get(null)
         originalFolderId = folderIdField.get(null) as String?
         originalArchiveFolderId = archiveFolderIdField.get(null) as String?
@@ -233,7 +657,15 @@ class CaltopoMapTest {
 
     @After
     fun tearDown() {
+        drainMarkers()
+        for (name in listOf("MapCheckerDelay", "ProfileExpiryPoll", "InitialMarkerPublishDelay")) {
+            (CaltopoMap::class.java.getDeclaredField(name).apply { isAccessible = true }.get(null) as DelayedExec).stop()
+        }
         mapStatusField.set(null, originalMapStatus)
+        mapSelectionField.set(null, originalMapSelection)
+        initialMapRequestField.set(null, originalInitialMapRequest)
+        sessionCredentialsField.set(null, originalSessionCredentials)
+        sessionDomainField.set(null, originalSessionDomain)
         mapNodeField.set(null, originalMapNode)
         folderIdField.set(null, originalFolderId)
         archiveFolderIdField.set(null, originalArchiveFolderId)
@@ -271,9 +703,11 @@ class CaltopoMapTest {
         val retry = CaltopoMap::class.java.getDeclaredMethod("retryMarkerCleanup").apply { isAccessible = true }
         fixture.calTopoSessionGateway.markerDeleteSucceeds = false
         retry.invoke(null)
+        drainMarkers()
         assertEquals(1, journal.entries().size)
         fixture.calTopoSessionGateway.markerDeleteSucceeds = true
         retry.invoke(null)
+        drainMarkers()
         assertTrue(journal.entries().isEmpty())
         assertEquals(listOf("previous-map", "previous-map"), fixture.calTopoSessionGateway.markerCleanupMaps)
     }
@@ -282,6 +716,7 @@ class CaltopoMapTest {
     fun resetMapConnection_deletesMyDeviceMarker() {
         CaltopoMap.ResetMapConnection(1_000L)
 
+        drainMarkers()
         val operations = fixture.calTopoSessionGateway.snapshotOperations()
         assertEquals(1, fixture.calTopoSessionGateway.countOperations("deleteMarker"))
         val deleteIndex = operations.indexOfFirst { it.kind == "deleteMarker" }
@@ -329,6 +764,7 @@ class CaltopoMapTest {
 
         CaltopoMap.ArchiveFeature(feature, "LiveTrack", 1_000L, 0L)
 
+        drainMarkers()
         val operations = fixture.calTopoSessionGateway.snapshotOperations()
         val editIndex = operations.indexOfFirst { it.kind == "editObject" }
         val deleteIndex = operations.indexOfFirst { it.kind == "deleteLiveTrack" }

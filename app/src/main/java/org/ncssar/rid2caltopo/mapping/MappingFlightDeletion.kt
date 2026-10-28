@@ -34,11 +34,13 @@ internal object MappingFlightDeletion {
         try {
             connections.forEach { it.closeAndWait() }
             DjiCloudManager.deletionDrained(missionId,connections)
+            org.ncssar.rid2caltopo.storage.OperationalStorage.requireReady(context)
+            val managed = org.ncssar.rid2caltopo.storage.OperationalStorage.ready()
             val volumes = context.getExternalFilesDirs(null).filterNotNull().map { File(it, "local-mapping") }
-            val plan = plan(context.filesDir, volumes, missionId, originals)
+            val plan = plan(context.filesDir, volumes, missionId, originals, managed)
             // Validate every target before changing any files, including a removable card's presence.
-            val targets = plan.roots.flatMap { physicalRoots(context.filesDir, volumes, it) }
-            targets.forEach(::removeTree)
+            val targets = if (managed) plan.roots else plan.roots.flatMap { physicalRoots(context.filesDir, volumes, it) }
+            targets.forEach { if (managed) org.ncssar.rid2caltopo.storage.OperationalStorage.remove(it) else removeTree(it) }
             val preferences = context.getSharedPreferences("mapping_layers", 0)
             val editor = preferences.edit()
             preferences.all.filterKeys { !it.startsWith("hidden:") && !it.startsWith("selected") }
@@ -65,10 +67,10 @@ internal object MappingFlightDeletion {
     }
 
     internal data class Plan(val roots: List<File>, val layerIds: Set<String>)
-    internal fun plan(filesDir: File, volumes: List<File>, id: String, originals: Boolean): Plan {
+    internal fun plan(filesDir: File, volumes: List<File>, id: String, originals: Boolean, managed: Boolean = false): Plan {
         require(UUID.fromString(id).toString() == id)
         val mission = File(filesDir, "mapping-missions/$id")
-        physicalRoots(filesDir, volumes, mission)
+        if (!managed) physicalRoots(filesDir, volumes, mission)
         require(JSONObject(File(mission, "mission.json").readText()).getString("missionId") == id)
         val index = MappingMissionStorage.index(filesDir)
         val results = index.resultRoots(id)

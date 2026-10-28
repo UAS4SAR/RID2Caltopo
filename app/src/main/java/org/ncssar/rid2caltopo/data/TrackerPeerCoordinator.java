@@ -53,6 +53,40 @@ import okio.BufferedSink;
  * the owner over the tracker websocket.
  */
 public final class TrackerPeerCoordinator implements PeerCoordinator {
+    private static volatile Boolean remoteControlOverrideForTesting;
+    private final RemoteMediaConsent mediaConsent = RemoteVideoControlPrefs.getConsent();
+
+    public void remoteVideoControlChanged() {
+        refreshMediaConsent();
+        sendManagedVideoPresence();
+    }
+
+    private void refreshMediaConsent() {
+        mediaConsent.update(remoteControlOverrideForTesting != null
+                ? remoteControlOverrideForTesting
+                : RemoteVideoControlPrefs.isEnabled(R2CApplication.getAppCtxt()));
+    }
+
+    private RemoteMediaConsent.Grant receiveMediaConsent(
+            String key, String resource, boolean serverRequiresConsent) {
+        refreshMediaConsent();
+        RemoteMediaConsent.Grant grant = mediaConsent.receive(key, resource, serverRequiresConsent);
+        if (grant.automatic && grant.isAllowed()) grant.onRevocation(() -> {
+            if (mediaConsent.find(key, resource) != grant) return;
+            String requestId = key.substring(key.indexOf('|') + 1);
+            VideoStreamRequestListener listener = videoStreamRequestListener;
+            if (listener != null) listener.onVideoStreamRequestCancelled(requestId);
+            if (key.startsWith("video|")) sendVideoStreamTerminated(requestId, "consent_withdrawn");
+            else respondToRecordingDownloadRequest(requestId, false);
+        });
+        return grant;
+    }
+
+    static void setRemoteControlForTesting(Boolean enabled) {
+        remoteControlOverrideForTesting = enabled;
+        INSTANCE.refreshMediaConsent();
+    }
+
     private static final String TAG = "TrackerPeerCoord";
     private static final TrackerPeerCoordinator INSTANCE = new TrackerPeerCoordinator();
     interface TimeSource {
@@ -359,6 +393,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
 
     @Override
     public synchronized void stop() {
+        mediaConsent.reset();
         heartbeatTimer.stop();
         reconnectTimer.stop();
         ackWatchdogTimer.stop();
@@ -1680,7 +1715,8 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                         jo.optLong("sourceBitrateBps", 0L),
                         jo.optString("sourceCodec").trim(),
                         jo.optString("expiresAt").trim(),
-                        jo.optBoolean("consentRequired", true)));
+                        !receiveMediaConsent("video|" + requestId, streamSessionId,
+                                jo.optBoolean("consentRequired", true)).isAllowed()));
     }
 
     private void onRecordingDownloadRequest(@NonNull JSONObject jo) {
@@ -1691,7 +1727,10 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                 jo.optString("droneDesignator").trim(),
                 jo.optString("uploadPath").trim(),
                 jo.optString("expiresAt").trim(),
-                jo.optBoolean("consentRequired", true));
+                !receiveMediaConsent(
+                        "recording|" + jo.optString("requestId").trim(),
+                        jo.optString("streamSessionId").trim() + "|" + jo.optString("uploadPath").trim(),
+                        jo.optBoolean("consentRequired", true)).isAllowed());
         if (request.requestId.isEmpty() || request.streamSessionId.isEmpty()
                 || request.uploadPath.isEmpty()) {
             CTWarn(TAG, "Ignoring incomplete recording download request.");
@@ -1755,6 +1794,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
             CTWarn(TAG, "Ignoring incomplete managed video cancellation.");
             return;
         }
+        mediaConsent.cancel("video|" + requestId);
         // A request cancellation retires only this probe. Keep the peer's
         // executor available for the next independently authorized request.
         videoPreflightPeer.cancel();
@@ -1772,6 +1812,12 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         String sdp = jo.optString("sdp").trim();
         if (requestId.isEmpty() || !sdp.startsWith("v=0")) {
             CTWarn(TAG, "Ignoring incomplete managed-video media offer.");
+            return;
+        }
+        refreshMediaConsent();
+        RemoteMediaConsent.Grant grant = mediaConsent.find("video|" + requestId, streamSessionId);
+        if (grant == null || !grant.isAllowed()) {
+            sendVideoStreamTerminated(requestId, "consent_required");
             return;
         }
         beginTrackerInteraction(requestId);
@@ -1833,6 +1879,9 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
             int selectedHeight,
             double selectedFps,
             long selectedBitrateBps) {
+        if (approved) {
+            if (mediaConsent.approve("video|" + requestId) == null) return;
+        } else mediaConsent.cancel("video|" + requestId);
         try {
             JSONObject message = new JSONObject();
             message.put("type", "video_stream_decision");
@@ -1865,6 +1914,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
 
     @Override
     public void sendVideoStreamTerminated(@NonNull String requestId, @NonNull String reason) {
+        mediaConsent.cancel("video|" + requestId);
         sendManagedVideoMessage("video_stream_terminated", requestId, "", reason);
         endTrackerInteraction(requestId);
     }
@@ -1872,6 +1922,9 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
     @Override
     public void respondToRecordingDownloadRequest(
             @NonNull String requestId, boolean approved) {
+        if (approved) {
+            if (mediaConsent.approve("recording|" + requestId) == null) return;
+        } else mediaConsent.cancel("recording|" + requestId);
         try {
             JSONObject message = new JSONObject();
             message.put("type", "recording_download_decision");
@@ -1896,6 +1949,13 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
 
     @Override
     public void uploadRecordingDownload(@NonNull RecordingDownloadRequest request) {
+        refreshMediaConsent();
+        RemoteMediaConsent.Grant grant = mediaConsent.find(
+                "recording|" + request.requestId, request.streamSessionId + "|" + request.uploadPath);
+        if (grant == null || !grant.isAllowed()) {
+            CTWarn(TAG, "Recording transfer lacks current local approval");
+            return;
+        }
         beginTrackerInteraction(request.requestId);
         if (request.consentRequired) {
             approvedRecordingUploads.put(request.requestId, request);
@@ -1922,35 +1982,23 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
             CTWarn(TAG, "Unable to attach requested recording " + request.streamSessionId);
             return;
         }
+        RemoteMediaConsent.Grant grant = mediaConsent.find(
+                "recording|" + request.requestId, request.streamSessionId + "|" + request.uploadPath);
+        if (grant == null || !grant.isAllowed()) return;
         recordingUploadExecutor.execute(() -> {
             final long total = recording.getFile().length();
             final long chunkSize = 8L * 1024L * 1024L;
             try {
                 for (long start = 0; start < total; start += chunkSize) {
+                    refreshMediaConsent();
+                    if (!grant.isAllowed()) throw new IOException("Recording consent revoked");
                     final long chunkStart = start;
                     final long length = Math.min(chunkSize, total - start);
-                    RequestBody body = new RequestBody() {
-                        @Override public MediaType contentType() { return MediaType.get("video/mp4"); }
-                        @Override public long contentLength() { return length; }
-                        @Override public void writeTo(@NonNull BufferedSink sink) throws IOException {
-                            try (FileInputStream input = new FileInputStream(recording.getFile())) {
-                                long skipped = 0;
-                                while (skipped < chunkStart) {
-                                    long step = input.skip(chunkStart - skipped);
-                                    if (step <= 0) throw new EOFException("Unable to seek recording chunk");
-                                    skipped += step;
-                                }
-                                byte[] buffer = new byte[64 * 1024];
-                                long remaining = length;
-                                while (remaining > 0) {
-                                    int count = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
-                                    if (count < 0) throw new EOFException("Recording ended during upload");
-                                    sink.write(buffer, 0, count);
-                                    remaining -= count;
-                                }
-                            }
-                        }
-                    };
+                    RequestBody body = new ConsentedRecordingBody(
+                            recording.getFile(), chunkStart, length, () -> {
+                                refreshMediaConsent();
+                                return grant.isAllowed();
+                            });
                     Request upload = new Request.Builder()
                             .url(origin + request.uploadPath)
                             .header("X-SAR-Token", token)
@@ -1964,7 +2012,11 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                                     + (start + length - 1) + "/" + total)
                             .put(body)
                             .build();
-                    try (Response response = CaltopoSession.MyOkHttpClient.newCall(upload).execute()) {
+                    refreshMediaConsent();
+                    if (!grant.isAllowed()) throw new IOException("Recording consent revoked");
+                    okhttp3.Call call = CaltopoSession.MyOkHttpClient.newCall(upload);
+                    grant.onRevocation(call::cancel);
+                    try (Response response = call.execute()) {
                         if (!response.isSuccessful()) {
                             throw new IOException("HTTP " + response.code());
                         }
@@ -1975,6 +2027,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
             } catch (Exception error) {
                 CTError(TAG, "Recording transfer failed request=" + request.requestId, error);
             } finally {
+                mediaConsent.finish("recording|" + request.requestId, grant);
                 approvedRecordingUploads.remove(request.requestId);
                 endTrackerInteraction(request.requestId);
             }
@@ -2563,6 +2616,8 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
 
     static void resetForTesting() {
         INSTANCE.stop();
+        INSTANCE.mediaConsent.clearForTesting();
+        remoteControlOverrideForTesting = null;
         INSTANCE.mapId = null;
         INSTANCE.myGuid = null;
         INSTANCE.myName = null;

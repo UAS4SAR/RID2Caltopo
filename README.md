@@ -1,6 +1,6 @@
 # RID2Caltopo (Remote ID to Caltopo):  Live Drone Tracking for SAR
 
-This android application monitors Bluetooth and WiFi networks for [ASTM F3411](https://store.astm.org/f3411-22a.html) - 
+This application monitors supported Bluetooth and WiFi interfaces for [ASTM F3411](https://store.astm.org/f3411-22a.html) -
 compatible Remote ID location updates and records the updates as a sequence of track waypoints 
 that are compatible with [Caltopo](https://www.caltopo.com)'s geo-json file format.   
 
@@ -9,7 +9,7 @@ to an existing map that the credentials have write/update permissions for, the a
 real-time* LiveTrack updates into the map.
 
 All drones in service of a SAR organization should be required to emit Remote ID signaling, 
-enabling this drone and manufacturer-agnostic app to close the previously open loop between 
+enabling this protocol-based Remote ID receiver to close the previously open loop between
 search assignments and actual drone coverage.  Together with Caltopo's "Aircraft" layer, the
 ~real-time updates from this app allow an air-boss or supplemental Visual Observers to keep 
 track of all airborne assets.
@@ -36,10 +36,11 @@ Please note: The user of this application must always visually verify that the r
 signal corresponds to an actual drone seen flying in the air, at the position the signal claims it 
 to be.
 
-This app's settings menu option allows the user to quickly change options that are likely to vary 
-from one invocation to the next.  Support for more involved or sensitive configuration information 
-is provided by the app's "load config file" menu option, which currently supports three .json 
-configuration file formats:
+Use Settings for local preferences and saved account credentials. Organization
+access is configured through authenticated tracker enrollment. Local Remote ID
+mapping files and map tile packages remain supported; credential-bearing
+configuration files and legacy organization/FAA/access-profile QR transfers are
+no longer accepted.
 
 ## ridmap.json:
 Use the ridmap configuration file format to map remoteIDs to more friendly track labels:
@@ -86,88 +87,39 @@ Changes to the mapped ID must include the pilot's Callsign of the form [0-9]?[A-
 You can also tack on a brief mnemonic for the drone type and payload. If omitted, then
 this app will attempt to convert the model to mnemonic form by removing spaces and vowels.
 
-## credentials.json:
-Use the credentials configuration file format to specify your team's map information and 
-[Caltopo Credentials](https://training.caltopo.com/all_users/team-accounts/teamapi#keysids) along with [tracker](https://github.com/kjtsar/r2c-tracker)
-website if your team is using that tool to keep track of flights:
+## CalTopo access and tracker enrollment
 
-<blockquote><code>
-{
-    "type" : "ct_credentials",
-    "file_version" : "1.0",
-    "editor" : "admin@kjt.us",
-    "updated" : "Fri Sep 19 08:07:01 PDT 2025",
-    "team_id" : "team_id value",
-    "credential_id" : "credential id value",
-    "credential_secret" : "this is where you enter your credential secret",
-    "map_id" : "AH2JKLM",
-    "use_direct_flag" : true,
-    "connect_key" : "CalTopo-generated Connect Key",
-    "track_folder" : "DroneTracks",
-    "tracker_url_prefix" : "https://tracker.kjt.us",
-    "tracker_api_key" : "SecretTokenToAuthenticateSubmission"
-}
-</code></blockquote>
+CalTopo publishing uses an existing map for which the configured account has
+write/update permission. The user selects that map in RID2Caltopo; creating a new
+personal CalTopo map is not a prerequisite for the Teams API workflow.
 
-The tracker settings are optional. If `tracker_url_prefix` and `tracker_api_key`
-are configured, RID2Caltopo will use tracker-backed multi-zone coordination.
-If they are omitted, the app falls back to MQTT-based peer coordination. The
-legacy `tracker_url_pfx` key is still accepted for backward compatibility.
+For managed access, a tracker administrator configures the appropriate CalTopo
+Teams access on the tracker. Scan the tracker enrollment link/QR and authenticate
+as an authorized user. The tracker provisions the device and loads its permitted
+configuration. Select an existing map from the team-map picker afterward.
+Enrollment and sign-in can complete before a map is selected.
 
-The _team_id_, _credential_id_, and _credential_secret_ tuple comprise the
-CalTopo Teams API credential. Map selection remains in each app.
-The optional _connect_key_ selects the CalTopo Shared Locations namespace used
-for position reports.
+For independently configured Teams access, enter the team ID, credential ID and
+credential secret in Settings -> Credentials. A CalTopo team administrator
+creates the service account described in the
+[Supported API for Teams](https://training.caltopo.com/all_users/team-accounts/teamapi).
+Those credentials remain saved locally across launches and updates. App-created
+settings backups omit them and do not erase credentials already on the device.
 
-The Connect Key is configured separately from the Teams API credential. A
-CalTopo team administrator creates an Access URL under the team's tracking
-configuration, then copies only the resulting Connect Key into RID2Caltopo (do
-not include `FLEET:`, a device ID, or the surrounding URL). RID2Caltopo reports
-the device as `FLEET:<Connect Key>-<Remote ID>` and sends position reports to
-`/api/v1/position/report/<Connect Key>`. CalTopo adds a newly reported device
-to Trackable Devices and Shared Locations; the Shared Locations layer must be
-enabled to see it. If no Connect Key is configured, RID2Caltopo retains the
-legacy `DRONE` value.
+Personal CalTopo browser sign-in is a separate option for the user's own account
+and maps. It is not required to select a map authorized through Teams access.
 
-Managed organizations distribute an `R2C2` configuration containing team
-settings, RID mappings, and a signed r2c-tracker enrollment locator. Android or
-iOS redeems that locator for a unique, revocable device credential; an issued
-device secret is never copied into the organization bundle. The encrypted
-CalTopo settings carried by the managed organization release include the
-Connect Key on both Android and iOS. The enrollment campaign must allow enough
-redemptions for the receiving devices. R2C1 organization tokens are not
-accepted.
+The optional Connect Key selects the CalTopo Shared Locations namespace for
+position reports. A team administrator obtains it from the team's tracking
+configuration. Enter only the Connect Key, without `FLEET:`, a device ID or the
+surrounding URL. Reports identify the aircraft as
+`FLEET:<Connect Key>-<Remote ID>` and use CalTopo's position-report endpoint.
+Enable the Shared Locations layer to display those reports.
 
-## ct_mutual_aid_credentials
-If you can enlist the help of your Caltopo Teams Admin, have them create a subteam account 
-that only has update permissions for a single team folder.  We called ours DroneMa.  When
-your admin finishes, they will provide you with a team_id, credential_id, and credential_secret
-tuple for that account.  Enter those values as follows into your ma_config.json file:
-
-<blockquote><code>
-{
-  "type": "ct_mutual_aid_credentials",
-  "file_version": "1.0",
-  "editor" = "Admin <admin@nasar.org>",
-  "updated" = "Sat Apr 11 15:04:41 PDT 2025",
-  "org_name" : "NASAR_MAI",    
-  "team_id": "ma team id",
-  "credential_id": "ma credential id",
-  "credential_secret": "ma credential secret",
-  "connect_key": "CalTopo-generated Connect Key",
-  "domain_and_port": "caltopo.com",
-  "source_label": "NASAR Mutual Aid",
-  "target_folder_hint": "DroneMA"
-}
-</code></blockquote>
-
-When loaded into RID2Caltopo, this permits your app to publish a Mutual Aid package for visiting
-RID2Caltopo teams to use during a mutual aid search(Ref Menu->Export MA Package).  Just create a 
-bookmark in your team's DroneMA folder that points to the Mutual Aid Incident Map and visiting 
-teams will be able to connect to it and publish their drone tracks.   If the publishing RID2Caltopo
-map already has all the relevant map tiles downloaded they will be pushed out in the MA Package,
-allowing the receiving app to hit the ground running.
-
+Map tile packages transfer map data without credentials. Credential export/import
+files, organization credential QR transfers and the old access-profile sharing
+workflow have been removed. Use tracker-hosted enrollment and authenticated access
+for another tablet instead of copying account secrets.
 
 ## Support for multiple apps writing to same map at the same time:
 Each DroneScout Bridge has a limited detection range.  Many factors contribute to the maximum
@@ -268,9 +220,11 @@ supported by the app. While bluetooth 4 seems to be universally supported, some 
 support one or more of the other capabilities.
 
 ## Privacy Policy
-This app doesn't collect or disseminate any information except in the service of connecting to 
-and updating a caltopo map.  For more specifics, please see the corresponding 
-[Privacy Policy](PrivacyPolicy.md) document.
+The app handles operational data, media, settings, and diagnostics as described
+in the privacy policy for your device:
+
+- [iPhone and iPad privacy policy](PrivacyPolicyApple.md)
+- [Android privacy policy](PrivacyPolicyAndroid.md)
 
 ## License
 

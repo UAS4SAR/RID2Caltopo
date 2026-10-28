@@ -54,9 +54,9 @@ fun LandRestrictionStatusChip(
 internal fun conciseLandStatusLabel(state: LandRestrictionUiState): String =
     if (listOf("updating", "unavailable", "stale", "pending").any { state.chipLabel.contains(it, ignoreCase = true) }) state.chipLabel
     else when (state.severity) {
-        LandRestrictionSeverity.Danger -> "Land restricted"
+        LandRestrictionSeverity.Danger -> "Verify land rules"
         LandRestrictionSeverity.Caution -> "Land rules nearby"
-        LandRestrictionSeverity.Normal -> "No mapped restrictions"
+        LandRestrictionSeverity.Normal -> "No mapped protected land"
         LandRestrictionSeverity.Neutral ->
             state.chipLabel.trim().takeIf { it.length <= 24 } ?: "Land status"
     }

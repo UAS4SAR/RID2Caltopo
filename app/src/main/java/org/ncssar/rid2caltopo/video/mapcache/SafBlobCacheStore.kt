@@ -34,7 +34,7 @@ private object SafCacheIndexDatabaseHolder {
     }
 
     private fun openDatabaseWithRetry(context: Context): SQLiteDatabase {
-        val dbDir = context.noBackupFilesDir.resolve(DB_DIR)
+        val dbDir = org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context, "map-cache-index")
         if (!dbDir.exists()) dbDir.mkdirs()
         val dbFile = File(dbDir, DB_NAME)
         var lastError: SQLiteDatabaseLockedException? = null

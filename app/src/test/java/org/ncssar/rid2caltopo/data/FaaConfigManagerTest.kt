@@ -5,6 +5,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class FaaConfigManagerTest {
@@ -14,27 +15,22 @@ class FaaConfigManagerTest {
     }
 
     @Test
-    fun plaintextImport_appliesOnlyFaaNotamFields() {
+    fun plaintextImportIsRejectedWithoutChangingDeviceAccess() {
         CaltopoClient.ResetPersistedClientState()
-        CaltopoClient.SetCaltopoCredentials(CaltopoCredentials("team", "cred", "secret"))
-        CaltopoClient.SetTrackerApiKey("tracker-key")
-
-        FaaConfigManager.importPlaintextConfig(samplePlaintext())
-
-        assertEquals("team", CaltopoClient.GetCaltopoCredentials().teamId)
-        assertEquals("tracker-key", CaltopoClient.GetTrackerApiKey())
-        assertEquals("client-id", CaltopoClient.GetNotamClientId())
-        assertEquals("client-secret", CaltopoClient.GetNotamClientSecret())
-        assertTrue(CaltopoClient.GetNotamEnabled())
-        assertTrue(CaltopoClient.GetNotamAutoRefresh())
-        assertTrue(CaltopoClient.GetFaaPayloadEnc().contains(FaaConfigManager.TYPE_ENCRYPTED))
-        assertFalse(CaltopoClient.GetFaaPayloadEnc().contains("client-secret"))
+        CaltopoClient.SetCaltopoCredentials(CaltopoCredentials("team", "cred", "current-secret"))
+        CaltopoClient.SetTrackerApiKey("current-device-key")
+        assertThrows(IllegalArgumentException::class.java) { FaaConfigManager.importPlaintextConfig(samplePlaintext()) }
+        assertEquals("current-secret", CaltopoClient.GetCaltopoCredentials().credentialSecret)
+        assertEquals("current-device-key", CaltopoClient.GetTrackerApiKey())
+        assertEquals("", CaltopoClient.GetNotamClientSecret())
+        assertFalse(FaaConfigManager.readConfigObject(samplePlaintext()))
     }
 
     @Test
     fun r2C2OrgBundleExcludesLegacyFaaCredentialsAndBootstrap() {
         CaltopoClient.ResetPersistedClientState()
-        FaaConfigManager.importPlaintextConfig(samplePlaintext())
+        CaltopoClient.SetNotamClientId("client-id")
+        CaltopoClient.SetNotamClientSecret("client-secret")
         CaltopoClient.StoreFaaRemoteConfig(
             FaaConfigToken.encode(FaaConfigToken.FaaConfig("drive-id", "FAA label")),
             "FAA label",
@@ -58,7 +54,10 @@ class FaaConfigManagerTest {
     @Test
     fun authorizationFailure_marksCachedFaaConfigStale() {
         CaltopoClient.ResetPersistedClientState()
-        FaaConfigManager.importPlaintextConfig(samplePlaintext())
+        CaltopoClient.SetNotamClientId("client-id")
+        CaltopoClient.SetNotamClientSecret("client-secret")
+
+        CaltopoClient.StoreFaaRemoteConfig("synthetic-old-locator", "legacy", "", 1L, false, "")
 
         FaaConfigManager.markAuthorizationFailure("NOTAM authentication failed (HTTP 401).")
 

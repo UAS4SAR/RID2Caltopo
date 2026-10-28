@@ -236,10 +236,41 @@ public class WaypointTrack {
         }
     }
 
+    private static final class PublicationScope {
+        final String map, team;
+        PublicationScope(String map, String team) { this.map = map; this.team = team; }
+    }
+    private final java.util.concurrent.atomic.AtomicReference<PublicationScope> publicationIntentScope =
+            new java.util.concurrent.atomic.AtomicReference<>();
+    private final java.util.concurrent.atomic.AtomicBoolean publicationIntentFinished =
+            new java.util.concurrent.atomic.AtomicBoolean();
+
+    private boolean publicationIntentRecorded; // recovery worker only
+
     private void recordPublicationIntent(boolean finished) {
-        try {
-            AwaitingMapFlights.record(deferredPublicationId, droneSpec.getRemoteId(), trackLabel, coordinates, finished);
-        } catch (Exception error) { CTError(TAG, "Could not persist publication intent; local track recording continues", error); }
+        // Capture consent's destination before dispatch, including when no map is selected.
+        if (publicationIntentScope.compareAndSet(null,
+                new PublicationScope(CaltopoMap.GetMapId(), AwaitingMapFlights.selectedPublicationScope()))) {
+            AwaitingMapFlights.reservePublication(droneSpec.getRemoteId(), deferredPublicationId);
+        }
+        if (finished) publicationIntentFinished.set(true);
+        CaltopoRecoveryWork.checkpoint(this, () -> {
+            try {
+                final JSONArray points;
+                synchronized (this) { points = new JSONArray(coordinates.toString()); }
+                PublicationScope scope = publicationIntentScope.get();
+                if (!publicationIntentRecorded) {
+                    // A slow provider may delay the first write until the flight has ended.
+                    AwaitingMapFlights.record(deferredPublicationId, droneSpec.getRemoteId(), trackLabel,
+                            points, false, scope.map, scope.team);
+                    publicationIntentRecorded = true;
+                }
+                AwaitingMapFlights.record(deferredPublicationId, droneSpec.getRemoteId(), trackLabel,
+                        points, publicationIntentFinished.get(), scope.map, scope.team);
+            } catch (Exception error) {
+                CTError(TAG, "Could not persist publication intent; local track recording continues", error);
+            }
+        });
     }
 
     @NonNull

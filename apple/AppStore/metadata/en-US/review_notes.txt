@@ -1,11 +1,27 @@
-RID2Caltopo does not require an account for Bluetooth Remote ID reception, local mapping, track archives, or diagnostic review.
+RID2Caltopo 2.5.4 (431)
 
-Bluetooth Remote ID starts automatically on launch. The app remains useful without nearby Remote ID aircraft; the empty Nearby Aircraft state and all configuration, status, map, video, log, and privacy controls remain inspectable.
+PURPOSE AND ACCESS
+Independent, free, open-source incident-support app for trained adults. No ads or in-app purchases. Bluetooth Remote ID, local archives, controller-video analysis and local mapping need no RID2Caltopo account. Optional CalTopo/tracker integrations require authorized access to the selected external service.
 
-Optional CalTopo and tracker features require organization-supplied credentials or a configuration QR. No review credentials are required to inspect the application. Publishing is disabled by default.
+HARDWARE AND INDEPENDENCE
+Passively receives supported ASTM F3411 Bluetooth Remote ID without pairing with or controlling aircraft. DroneScout DS110 relays can bridge Wi-Fi Beacon/NAN reports over Bluetooth; the app does not directly scan Wi-Fi Remote ID. Embedded MediaMTX receives operator-configured RTMP over the local network.
 
-The embedded MediaMTX server accepts a controller stream at the RTMP target displayed in the Anomaly Detector section. Live decoding requires a publisher on the same local network.
+Development examples include DJI/Autel controller video and BlueMark Innovations/DroneScout DS110 relays. These are interoperability examples, not universal model support or certification. Optional mission/photo transfer uses DJI Cloud API / Pilot 2 Open Platforms and compatible equipment. Transferring a route does not launch an aircraft.
 
-Background execution is requested only for Bluetooth central events. Video and anomaly processing are foreground workflows.
+RID2Caltopo is independently distributed, not on behalf of or endorsed by these manufacturers or CalTopo. CalTopo uses its Teams API and optional account-bound native requests. API use permission is separate from manufacturer representation.
 
+REVIEW STEPS
+1. Launch, acknowledge the operational notice and allow Bluetooth. Reception starts automatically; Nearby Aircraft can be empty without a transmitter. Status shows reception/permissions.
+2. Inspect Live Map, Settings, About & Privacy, archives and diagnostics without enrollment. About & Privacy includes the complete offline privacy policy and service/data acknowledgments. Terms of Use > License & Notices contains software notices and the matching public source/relinking download.
+3. Publish RTMP to the displayed local destination from a compatible publisher on the same network. Detector Off keeps video visible; Color/Infrared enable local analysis. Actual reception needs compatible transmitting equipment.
+4. Local Maps offers mission preparation, controller/original-photo transfer and local reconstruction. The operator reviews and operates missions in the compatible controller.
+5. CalTopo publishing requires authorized account/map access. The authorized CalTopo map owner controls sharing and membership. Native RID2Caltopo publishing uses that access and does not change map visibility or membership. The app has no independent public content feed; clues/photos can be visible under the selected map's sharing settings.
+6. Tracker viewing/recording transfers use local request approvals. Catalogs/previews are separate from full-session approval. Turning Remote Video Control off revokes automatic grants and stops their sessions/transfers; individual approvals remain. Microphone transmission has its own control and system permission.
+
+BACKGROUND AND CURRENT BUILD
+Background monitoring is required to receive Bluetooth Remote ID events and play spoken/audio alerts with the display locked. The app declares bluetooth-central, audio and location modes. Location provides operator-relative aircraft context, nearby advisories and configured coordination, with its background indicator visible. Bluetooth scanning can slow/coalesce; system limits apply. Keep the app foreground for interactive video analysis, controller transfer and reconstruction.
+
+Saved CalTopo sessions persist; email/password setup is available and embedded Google authorization is blocked. Personal catalogs use /api/v1/acct/{accountID}/since/0. Native full-map reads share a 90-second cooldown after each attempt finishes. Public OSM/Esri bulk downloads and raw-tile exports are disabled; interactive maps and linked attribution remain. Device-location withdrawal stops current/cached operator-location use.
+
+Supplemental incident information: no flight authorization, sole-source navigation or guaranteed detection. FAA/land coverage varies.
 Contact: kjt@uas4sar.com

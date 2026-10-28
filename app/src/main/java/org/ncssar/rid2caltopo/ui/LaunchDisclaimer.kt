@@ -21,6 +21,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.layout.Row
 import androidx.compose.runtime.getValue
@@ -42,9 +47,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 
-// Keep identical to docs/legal/IndividualUserTerms.txt and the Apple copy.
+// Keep identical to Apple's ApplicationLaunchDisclaimer.text.
 internal const val LAUNCH_DISCLAIMER_TEXT =
-    "RID2Caltopo provides supplemental situational awareness. Do not use it as your sole source for navigation, flight safety, communications, or incident-command decisions. It does not provide flight authorization.\n\nObservation only — do not pilot using this video.\n\nOperational risks\n\nThe app may contain defects, produce incorrect or misleading results, fail to detect relevant conditions, or fail without warning. Information and automated analysis may be incomplete, inaccurate, delayed, incorrectly associated, or unavailable. The absence of a warning, detection, or displayed hazard does not establish that conditions are safe or that a search or other operation is complete.\n\nUse of or reliance on the app may contribute to operational errors, delayed or misdirected response, disclosure or loss of sensitive information, property damage, personal injury, or death. Exercise independent judgment, verify information appropriate to the consequences of error, and maintain suitable alternative procedures. The app does not replace qualified personnel, required observation, or applicable operating procedures.\n\nSoftware license\n\nRID2Caltopo’s original software is licensed under the Apache License, Version 2.0. Its warranty disclaimer and limitation of liability are in Sections 7 and 8 of that license. Third-party components retain their own licenses. This acknowledgement does not modify those licenses or restrict the rights they grant.\n\nConnected services\n\nCalTopo and other integrations depend on their providers’ availability, permissions, and terms. RID2Caltopo is not affiliated with or endorsed by CalTopo. Access to hosted r2c-tracker services is governed separately by the applicable service agreement. This acknowledgement does not accept service terms or bind your organization."
+    "RID2Caltopo provides supplemental situational awareness. Do not use it as your sole source for navigation, flight safety, communications, or incident-command decisions. It does not provide flight authorization.\n\nObservation only — do not pilot using this video.\n\nOperational risks\n\nThe app may contain defects, produce incorrect or misleading results, fail to detect relevant conditions, or fail without warning. Information and automated analysis may be incomplete, inaccurate, delayed, incorrectly associated, or unavailable. The absence of a warning, detection, or displayed hazard does not establish that conditions are safe or that a search or other operation is complete.\n\nUse of or reliance on the app may contribute to operational errors, delayed or misdirected response, disclosure or loss of sensitive information, property damage, personal injury, or death. Exercise independent judgment, verify information appropriate to the consequences of error, and maintain suitable alternative procedures. The app does not replace qualified personnel, required observation, or applicable operating procedures.\n\nSoftware license\n\nRID2Caltopo’s original software is licensed under the Apache License, Version 2.0. Its warranty disclaimer and limitation of liability are in Sections 7 and 8 of that license. Third-party components retain their own licenses. This acknowledgement does not modify those licenses or restrict the rights they grant.\n\nConnected services\n\nCalTopo and other integrations depend on their providers’ availability, permissions, and terms. RID2Caltopo is not affiliated with or endorsed by CalTopo. Access to hosted r2c-tracker services is governed separately by the applicable service agreement."
 
 @Composable
 fun LaunchDisclaimerScreen(
@@ -107,7 +112,7 @@ fun LaunchDisclaimerScreen(
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = checked, onCheckedChange = { checked = it }, enabled = !saving)
-                        Text("I have read and understand this operational acknowledgement. I acknowledge it for myself, not on behalf of my organization.")
+                        Text("I have read and understand these operational warnings.")
                     }
                     error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                     Button(
@@ -130,9 +135,21 @@ fun LaunchDisclaimerScreen(
 @Composable
 private fun SoftwareLicenseDialog(onClose: () -> Unit) {
     val context = LocalContext.current
-    val content = remember {
-        listOf("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md").joinToString("\n\n") { name ->
-            context.assets.open("legal/$name").bufferedReader().use { it.readText() }
+    var sections by remember { mutableStateOf(listOf("Loading licenses…")) }
+    LaunchedEffect(context) {
+        sections = withContext(Dispatchers.IO) {
+            runCatching {
+                val text = context.assets.open("legal/LICENSES.txt").bufferedReader().use { it.readText() }
+                buildList {
+                    var start = 0
+                    while (start < text.length) {
+                        var end = minOf(start + 8_000, text.length)
+                        if (end < text.length && text[end - 1].isHighSurrogate()) end--
+                        add(text.substring(start, end))
+                        start = end
+                    }
+                }
+            }.getOrElse { listOf("License resources are unavailable in this build.") }
         }
     }
     org.ncssar.rid2caltopo.ui.Dialog(
@@ -142,7 +159,9 @@ private fun SoftwareLicenseDialog(onClose: () -> Unit) {
         Surface(modifier = Modifier.fillMaxSize()) {
             Column(modifier = Modifier.padding(24.dp)) {
                 TextButton(onClick = onClose) { Text("Close license & notices") }
-                Text(content, modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()))
+                LazyColumn(modifier = Modifier.weight(1f)) {
+                    items(sections) { Text(it) }
+                }
             }
         }
     }

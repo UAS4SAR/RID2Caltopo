@@ -372,11 +372,11 @@ class MapPaneArtifactOverlayStateTest {
     @Test
     fun offlinePrepTileSources_addsContoursWhenRequested() {
         assertEquals(
-            listOf(ArcGisWorldImageryTileSource.name()),
+            emptyList<String>(),
             offlinePrepTileSources(BaseLayerOption.Imagery, includeContours = false).map { it.name() }
         )
         assertEquals(
-            listOf(ArcGisWorldImageryTileSource.name(), UsgsContoursTileSource.name()),
+            listOf(UsgsContoursTileSource.name()),
             offlinePrepTileSources(BaseLayerOption.Imagery, includeContours = true).map { it.name() }
         )
     }
@@ -388,8 +388,6 @@ class MapPaneArtifactOverlayStateTest {
             val osm = mask and 2 != 0
             val contours = mask and 4 != 0
             val expected = buildList {
-                if (imagery) add(ArcGisWorldImageryTileSource.name())
-                if (osm) add(OsmStandardTileSource.name())
                 if (contours) add(UsgsContoursTileSource.name())
             }
             val sources = offlinePrepTileSources(imagery, osm, contours)
@@ -400,9 +398,31 @@ class MapPaneArtifactOverlayStateTest {
     }
 
     @Test
+    fun publicOsmIsInteractiveOnlyEvenWithLegacyOfflineSelection() {
+        assertTrue(offlinePrepTileSources(BaseLayerOption.OpenStreetMap, false).isEmpty())
+        assertEquals(listOf(UsgsContoursTileSource.name()),
+            offlinePrepTileSources(BaseLayerOption.OpenStreetMap, true).map { it.name() })
+        val index = MapTileIndex.getTileIndex(8, 40, 80)
+        val url = OsmStandardTileSource.getTileURLString(index)
+        assertTrue(url.startsWith("https://tile.openstreetmap.org/"))
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            buildOfflineTileRequest(OsmStandardTileSource, url)
+        }
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            buildOfflineTileRequest(ArcGisWorldImageryTileSource, ArcGisWorldImageryTileSource.getTileURLString(index))
+        }
+        // A misleading source name must not permit an Esri/OSM endpoint.
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            buildOfflineTileRequest(UsgsContoursTileSource, ArcGisWorldImageryTileSource.getTileURLString(index))
+        }
+        assertTrue(buildOfflineTileRequest(UsgsContoursTileSource,
+            UsgsContoursTileSource.getTileURLString(index)).url.isHttps)
+    }
+
+    @Test
     fun offlinePrepTileOperationCount_countsContourCompanionTiles() {
-        assertEquals(12, offlinePrepTileOperationCount(baseTileCount = 12, includeContours = false))
-        assertEquals(24, offlinePrepTileOperationCount(baseTileCount = 12, includeContours = true))
+        assertEquals(0, offlinePrepTileOperationCount(baseTileCount = 12, includeContours = false))
+        assertEquals(12, offlinePrepTileOperationCount(baseTileCount = 12, includeContours = true))
     }
 
     @Test

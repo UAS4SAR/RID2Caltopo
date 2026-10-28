@@ -1,8 +1,40 @@
 # App Store Connect entry worksheet
 
-This is a reviewable worksheet, not an automated submission. It reflects the
-current application behavior and Apple's July 19, 2026 definitions. Confirm the
-answers against the live questionnaire before saving them.
+This is a reviewable worksheet, not an automated submission. The July 19 entries
+below are historical onboarding records, not current answers or release evidence.
+Use the [October 23 submission audit](SUBMISSION_AUDIT_2026-10-23.md) and confirm
+the live questionnaire before saving any declaration.
+
+Current owner inputs and the formal interoperability statement are in
+[review readiness](INTEROPERABILITY_AND_REVIEW_READINESS.md). The live console
+remains unverified until an authenticated session is available.
+
+## Review preparation for every submission
+
+- [ ] Match the selected version/build to the actual IPA and build-specific notes.
+  The current rejection concerns **2.5.1 (342)**; its supplemental notes are in
+  [review-submissions/2.5.1-342/review_notes.txt](review-submissions/2.5.1-342/review_notes.txt).
+  The main metadata directory describes current **2.5.4 (420)** source, not build 342.
+- [ ] Explain ASTM/Bluetooth and RTMP interoperability, tested DJI/Autel/DroneScout
+  examples, and independent distribution. Keep vendor APIs separate from standards.
+- [ ] Attach a physical-device hardware demonstration and identify the exact app
+  build, Apple device model, OS version, transmitter/controller and network setup.
+- [ ] Explain that CalTopo/tracker are optional, user-configured third-party
+  integrations and identify local workflows reviewable without those accounts.
+  The current rejection does not request service credentials. If App Review
+  requests a protected workflow, agree on a feasible review arrangement; do not
+  presume the developer must purchase CalTopo Teams or hold Teams admin access.
+- [ ] Explain all three background modes: Bluetooth, location and audio. Verify
+  denied permissions, screen lock, stop/cleanup, battery/thermal limits and recovery.
+- [ ] Match the public policy, in-app policy link, App Privacy answers and SDK/app
+  manifests to actual video/audio, location, account and diagnostic data paths.
+- [ ] Resolve service/API rights and content-rights answers; verify encryption
+  classification for bundled libraries as well as Apple framework usage.
+- [ ] Refresh screenshots, descriptions, regional limitations, reviewer contact,
+  support/privacy URLs, business model, seller identity and distribution settings.
+- [ ] Retain completed exact-build physical qualification reports. A blank template
+  or an older development install is not a completed TestFlight qualification.
+- [ ] Record live App Store Connect verification separately from local checks.
 
 ## New App record
 
@@ -32,55 +64,84 @@ is not required while the app remains free with no in-app purchases.
 - Secondary category: Utilities — saved July 19, 2026
 - Support URL: <https://github.com/kjtsar/RID2Caltopo>
 - Privacy Policy URL:
-  <https://github.com/kjtsar/RID2Caltopo/blob/main/PrivacyPolicy.md>
-- Content rights: **No** — saved July 19, 2026. The app does not contain, show,
-  or access third-party content.
-- Encryption: `ITSAppUsesNonExemptEncryption` is `false`; the app uses standard
-  platform HTTPS, HMAC, and Keychain facilities and no proprietary encryption.
+  <https://github.com/kjtsar/RID2Caltopo/blob/main/PrivacyPolicyApple.md>
+- Content rights: **No** was saved July 19, 2026. Reassess against map imagery,
+  external service data and operator-provided media; the old statement that the
+  app never shows third-party content is not a current factual conclusion.
+- Encryption: `ITSAppUsesNonExemptEncryption` is `false` in the current app.
+  Reconfirm classification using the complete native dependency inventory,
+  encrypted backups and WebRTC/MediaMTX; use of standard algorithms alone does
+  not establish exemption. Do not change the declaration without that determination.
 
-The updated root privacy policy was committed and pushed July 19, 2026. Its
-public GitHub URL is saved in App Store Connect.
+The original shared policy URL was saved in App Store Connect on July 19,
+2026. Publish the reviewed `PrivacyPolicyApple.md` and replace that field with
+the URL above before resubmission. The local split is not yet published or saved
+in App Store Connect.
 
 ## App Privacy draft
 
-Answer **Yes** to data collection. Disclose every opt-in network configuration,
-because Apple requires disclosure when collection varies by user choice. None
-of the data is used for tracking, advertising, analytics, or marketing.
-
-The four data types below were configured in App Store Connect on July 19,
-2026 as linked to the user, used for App Functionality, and not used for
-tracking. Kenneth Taylor explicitly confirmed Apple's accuracy/compliance
-attestation, and the disclosure was published July 19, 2026.
+Current source draft updated **October 24, 2026**. Answer **Yes** to collection.
+The [machine-readable catalog](privacy-disclosures.json) records the source basis
+for each category and is checked against the app manifest. These twelve categories
+supersede the four-category July setup; they have not been saved or attested in
+App Store Connect by these local edits. Use **Linked to user: Yes**, **Tracking:
+No**, **Purpose: App Functionality** for every row. No category is used for ads,
+marketing or cross-app tracking; operational usage/diagnostics support the service.
 
 | Data type | Linked to user | Tracking | Purpose | Why |
 | --- | --- | --- | --- | --- |
-| Precise Location | Yes | No | App Functionality | A configured tracker can receive operator coordinates with the app-install zone identity. |
-| Device ID | Yes | No | App Functionality | Tracker coordination uses a random stable app-install zone identifier and device zone name. |
-| Other User Content | Yes | No | App Functionality | Confirmed organization, pilot callsign, drone description, Remote ID, and aircraft telemetry can be sent to the configured tracker or CalTopo map. |
-| Other Diagnostic Data | Yes | No | App Functionality | An operator may explicitly share logs containing the stable coordination identifier, Remote IDs, positions, network addresses, and device/runtime state. |
+| Name | Yes | No | App Functionality | Named pilot/aircraft owners in service records and operator-sent support correspondence. |
+| Email Address | Yes | No | App Functionality | Optional embedded provider sign-in and support email sent by the operator. |
+| Precise Location | Yes | No | App Functionality | Configured operator/aircraft positions, flight tracks, geotagged clues and media metadata. |
+| User ID | Yes | No | App Functionality | Provider account IDs/usernames and operational pilot callsigns. |
+| Device ID | Yes | No | App Functionality | App-install zone identity, enrolled device identity and device name. |
+| Photos or Videos | Yes | No | App Functionality | Tracker thumbnails, selected photo clues, remote media and transferred recordings. |
+| Audio Data | Yes | No | App Functionality | Source audio can be retained in recording files uploaded for requester delivery. Live-only VoIP alone is not the retained-audio basis. |
+| Other User Content | Yes | No | App Functionality | Organization/aircraft descriptions, annotations, configuration and other shared operational records. |
+| Product Interaction | Yes | No | App Functionality | Retained request/approval/session and operational usage events for service access and operation. |
+| Performance Data | Yes | No | App Functionality | Link route/bandwidth estimates and selected timing/frame/drop/connection diagnostics. |
+| Other Diagnostic Data | Yes | No | App Functionality | Operator-shared device/OS/network and operational troubleshooting information. |
+| Customer Support | Yes | No | App Functionality | Operator-sent problem descriptions and diagnostic attachments. |
 
-Apple defines collection as off-device transmission retained beyond servicing a
-real-time request. On-device-only observations, archives, and MapKit's own data
-collection are not developer collection. The checked-in privacy manifest makes
-the conservative disclosures above so optional tracker, CalTopo, and diagnostic
-paths are all covered.
+On-device-only analysis, reconstruction and caching are assessed separately from
+off-device retained data. The app's own media thumbnails and photo/recording
+uploads are explicit retained-image paths. Do not infer collection solely from
+live transport or assume that all media fits Other User Content. Do not claim the
+optional-feedback exception for support without verifying all its conditions.
+Check actual deployment retention before narrowing these conservative declarations.
+Provider browser sign-in is included; this is not a general open-web exception.
+
+The public policy describes preview/catalog exchange, WebRTC setup/probes/relays,
+full-session and recording consent, advance Remote Video Control authorization,
+separate microphone consent, source audio, mapping/controller transfer, public
+organization/map visibility, local retention and separate cloud/service deletion.
+Publish that reviewed revision before presenting it as the live policy.
 
 ## Age Rating draft
 
-The questionnaire below was saved July 19, 2026. Apple calculated a global
-rating of 4+ (with its standard regional equivalents).
+Apple calculated 4+ from the July 19 questionnaire. That historical result is not
+the current rating determination. The October 23 source-based draft is:
 
-- Parental Controls: No
-- Age Assurance: No
-- Unrestricted Web Access: No
-- User-Generated Content: No — incident data is exchanged among configured
-  operational peers, not broadly distributed as an intended content experience.
-- Social Media: No
-- Social Media Disabled for Users Under 13: Not applicable
-- Messaging and Chat: No
-- Advertising: No
-- Every objectionable-content frequency: None
-- Override to Higher Age Rating: No
+- Parental Controls / Age Assurance: No; app access controls are operational roles,
+  not child-age controls.
+- Messaging and Chat: **Yes** for optional direct VoIP communication between
+  authorized participants. The previous No answer omitted this feature.
+- Unrestricted Web Access: **Yes for the current implementation**: the embedded
+  CalTopo browser permits HTTPS navigation to other hosts and follows new-window
+  links. Its entry field accepts CalTopo links, but that is not a host restriction
+  on subsequent browsing. Do not retain No without changing and testing that flow.
+- User-Generated Content: **Requires live questionnaire review**. Private incident
+  exchange is not a public social feed, but organizations can publish flight
+  dashboards and map owners can share maps. Determine whether reachable public
+  content is part of the app's intended experience under Apple's definition;
+  describe the visibility controls rather than assuming all data is private.
+- Social Media / Advertising: No; no social feed or advertising feature identified.
+- Mature-content frequencies: match the current intended experience and reachable
+  content; do not certify blanket None solely from the absence of bundled media.
+- Let App Store Connect recalculate the rating and regional equivalents after the
+  current answers. No rating or live answer was changed locally.
+
+Reference: [Apple's capability definitions](https://developer.apple.com/help/app-store-connect/reference/app-information/age-ratings-values-and-definitions/).
 
 ## Version metadata and review
 

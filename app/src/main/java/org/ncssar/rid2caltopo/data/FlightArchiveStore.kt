@@ -58,8 +58,8 @@ object FlightArchiveStore {
     private val lock = Any()
 
     private fun context(): Context? = R2CApplication.getAppCtxt()
-    private fun journal(context: Context) = SafRewriteJournal(File(context.filesDir, "flight-archive-journal.json"))
-    @JvmStatic fun rewriteQueue(context: Context) = FlightArchiveRewriteQueue(File(context.filesDir, "flight-kmz-rewrites.json"))
+    private fun journal(context: Context) = SafRewriteJournal(org.ncssar.rid2caltopo.storage.OperationalStorage.stateFile(context, "flight-archive-journal.json"))
+    @JvmStatic fun rewriteQueue(context: Context) = FlightArchiveRewriteQueue(org.ncssar.rid2caltopo.storage.OperationalStorage.stateFile(context, "flight-kmz-rewrites.json"))
 
     private fun plainDirectory(dir: DocumentFile): File? =
         dir.uri.takeIf { it.scheme == "file" }?.path?.let { File(it) }

@@ -4,7 +4,65 @@ import Foundation
 import R2CCore
 import Security
 import SwiftUI
-import UniformTypeIdentifiers
+
+/// Runs only on this worker actor. No credential values are requested or copied.
+actor AppleCredentialBackupProtection {
+    static let shared = AppleCredentialBackupProtection()
+    private var lastAttempt = Date.distantPast
+
+    func apply() {
+        guard Date().timeIntervalSince(lastAttempt) > 5 else { return }
+        lastAttempt = Date()
+        let manager = FileManager.default
+        guard var library = manager.urls(for: .libraryDirectory, in: .userDomainMask).first,
+              let documents = manager.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        let privateDirectories = ["Preferences", "WebKit", "Cookies", "HTTPStorages", "Saved Application State", "Application Support/PilotCloudProvisioning"]
+            .map { library.appendingPathComponent($0, isDirectory: true) }
+            + [documents.appendingPathComponent("RID2Caltopo/Exports", isDirectory: true)]
+        var protectedDirectories = true
+        for var url in privateDirectories {
+            do {
+                try manager.createDirectory(at: url, withIntermediateDirectories: true)
+                var values = URLResourceValues(); values.isExcludedFromBackup = true
+                try url.setResourceValues(values)
+            } catch {
+                protectedDirectories = false
+                AppleLog.warning("BackupProtection", "Could not exclude a private app directory from system backup")
+            }
+        }
+        if protectedDirectories {
+            do {
+                // Undo the initial broad exclusion: operational data in Application Support
+                // must remain eligible. Protect private children before lifting the parent flag.
+                var values = URLResourceValues(); values.isExcludedFromBackup = false
+                try library.setResourceValues(values)
+                AppleLog.info("BackupProtection", "Private storage excluded; operational Library data remains backup-eligible")
+            } catch { AppleLog.warning("BackupProtection", "Could not restore operational Library backup eligibility") }
+        }
+        var result: CFTypeRef?
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+            kSecReturnAttributes as String: true, kSecMatchLimit as String: kSecMatchLimitAll]
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let items = result as? [[String: Any]] else { return }
+        var failed = 0
+        for item in items {
+            guard let service = item[kSecAttrService as String] as? String,
+                  service.hasPrefix("org.ncssar."), let account = item[kSecAttrAccount as String] as? String else { continue }
+            let key: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service, kSecAttrAccount as String: account]
+            let existing = item[kSecAttrAccessible as String] as? String
+            if existing == (kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String) ||
+               existing == (kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String) ||
+               existing == (kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly as String) { continue }
+            let protection = existing == (kSecAttrAccessibleAfterFirstUnlock as String)
+                ? kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly : kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            let updated = SecItemUpdate(key as CFDictionary,
+                [kSecAttrAccessible as String: protection] as CFDictionary)
+            if updated != errSecSuccess { failed += 1 }
+        }
+        AppleLog.info("BackupProtection", "Device-bound credential protection checked; pending=\(failed)")
+    }
+}
 
 @MainActor
 final class AppleConfigurationTransferManager: ObservableObject {
@@ -12,51 +70,7 @@ final class AppleConfigurationTransferManager: ObservableObject {
     @Published private(set) var exportURL: URL?
     @Published private(set) var isWorking = false
 
-    private nonisolated static let backupFormat = "rid2caltopo_apple_config_backup"
     private nonisolated static let packageFormat = "rid2caltopo_mutual_aid_package"
-
-    func prepareBackup(
-        passphrase: String,
-        caltopo: AppleCaltopoSettings,
-        organization: AppleOrgConfigSettings,
-        identities: AppleDroneConfirmationStore
-    ) {
-        guard passphrase.count >= 8 else { status = "Use a backup passphrase of at least eight characters."; return }
-        isWorking = true
-        status = "Preparing encrypted configuration backup…"
-        Task {
-        do {
-            let data = try configurationBackupData(
-                passphrase: passphrase, caltopo: caltopo, organization: organization, identities: identities
-            )
-            let filename = "RID2Caltopo_Config_\(stamp()).json"
-            exportURL = try await Task.detached(priority: .utility) { try Self.writeExport(data, name: filename) }.value
-            status = "Encrypted configuration backup ready to share."
-        } catch { status = "Backup failed: \(error.localizedDescription)" }
-        isWorking = false
-        }
-    }
-
-    func importFile(
-        _ url: URL,
-        passphrase: String,
-        caltopo: AppleCaltopoSettings,
-        organization: AppleOrgConfigSettings,
-        identities: AppleDroneConfirmationStore
-    ) async {
-        isWorking = true
-        status = "Inspecting imported file…"
-        let access = url.startAccessingSecurityScopedResource()
-        defer { if access { url.stopAccessingSecurityScopedResource() }; isWorking = false }
-        do {
-            let data = try await Task.detached(priority: .userInitiated) { try Data(contentsOf: url, options: .mappedIfSafe) }.value
-            if url.pathExtension.lowercased() == "zip" || data.starts(with: [0x50, 0x4b]) {
-                _ = try await importMutualAidPackage(data, caltopo: caltopo, organization: organization)
-            } else {
-                try restoreConfigurationBackup(data, passphrase: passphrase, caltopo: caltopo, organization: organization, identities: identities)
-            }
-        } catch { status = "Import failed: \(error.localizedDescription)" }
-    }
 
     func discardPreparedPackage() {
         exportURL = nil
@@ -93,11 +107,9 @@ final class AppleConfigurationTransferManager: ObservableObject {
             var mappingManifest: [[String: Any]] = []
             var mappingSurfaces: [[String: Any]] = []
             let sources: [(label: String, key: String, ext: String, source: String)] = [
-                ("Imagery", OperationalMapBaseLayer.imagery.cacheKey, OperationalMapBaseLayer.imagery.fileExtension, "ArcGIS-WorldImagery"),
-                ("OpenStreetMap", OperationalMapBaseLayer.openStreetMap.cacheKey, OperationalMapBaseLayer.openStreetMap.fileExtension, "OSM-Standard"),
                 ("Contours", "usgsContours", "png", "USGS-Contours"),
             ]
-            for selected in sources where selectedTiles.contains(selected.label) {
+            for selected in sources where selectedTiles.contains(selected.label) && OperationalMapTilePolicy.allowsPackageExport(source: selected.source) {
                 let tiles = try MapPackageRegion.cachedTiles(
                     root: AppleMapCachePaths.root.appendingPathComponent(selected.key),
                     fileExtension: selected.ext, bounds: bounds)
@@ -190,30 +202,21 @@ final class AppleConfigurationTransferManager: ObservableObject {
         caltopo: AppleCaltopoSettings,
         organization: AppleOrgConfigSettings,
         identities: AppleDroneConfirmationStore
-    ) throws -> Data {
-        guard passphrase.count >= 8 else { throw TransferError.shortPassphrase }
-        let mappings = identities.importedMappings.map {
-            ["remote_id": $0.remoteID, "mapped_id": $0.mappedID, "organization": $0.organization,
-             "owner": $0.pilotCallsign, "model": $0.droneDescription,
-             "ownerName": $0.ownerName, "ownerCallsign": $0.pilotCallsign, "readiness": $0.readiness.dictionary] as [String: Any]
-        }
-        let payload: [String: Any] = [
-            "version": 1,
-            "generated": ISO8601DateFormatter().string(from: Date()),
-            "caltopo": caltopo.transferSnapshot(),
-            "organization": organization.transferSnapshot(),
-            "rid_mappings": mappings,
-        ]
-        let plaintext = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
-        let salt = Data((0 ..< 16).map { _ in UInt8.random(in: .min ... .max) })
-        let key = SymmetricKey(data: SHA256.hash(data: salt + Data(passphrase.utf8)))
-        let sealed = try AES.GCM.seal(plaintext, using: key)
-        guard let combined = sealed.combined else { throw CocoaError(.fileWriteUnknown) }
-        let envelope: [String: Any] = [
-            "format": Self.backupFormat, "version": 1,
-            "salt": salt.base64EncodedString(), "sealed": combined.base64EncodedString(),
-        ]
-        return try JSONSerialization.data(withJSONObject: envelope, options: [.prettyPrinted, .sortedKeys])
+    ) async throws -> Data {
+        let mapID = caltopo.mapID, mapTitle = caltopo.mapTitle
+        let preferences = organization.transferSnapshot().compactMapValues { ($0 as? NSNumber)?.intValue }
+        let identitySnapshot = identities.backupIdentitySnapshot
+        let data = try await Task.detached(priority: .utility) {
+            let mappings = identitySnapshot.values.sorted { $0.remoteID < $1.remoteID }.map {
+                OrgConfigRIDMapping(remoteID: $0.remoteID, mappedID: $0.mappedID, organization: $0.organization,
+                    model: $0.droneDescription, owner: $0.pilotCallsign, ownerName: $0.ownerName,
+                    ownerCallsign: $0.pilotCallsign, readiness: $0.readiness)
+            }
+            let input = ConfigurationBackupPolicy.Preferences(mapID: mapID, mapTitle: mapTitle, organization: preferences, mappings: mappings)
+            return try ConfigurationBackupPolicy.encrypted(input, passphrase: passphrase)
+        }.value
+        try Task.checkCancellation()
+        return data
     }
 
     func restoreConfigurationBackup(
@@ -222,39 +225,23 @@ final class AppleConfigurationTransferManager: ObservableObject {
         caltopo: AppleCaltopoSettings,
         organization: AppleOrgConfigSettings,
         identities: AppleDroneConfirmationStore
-    ) throws {
-        guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              envelope["format"] as? String == Self.backupFormat,
-              let saltText = envelope["salt"] as? String,
-              let salt = Data(base64Encoded: saltText),
-              let sealedText = envelope["sealed"] as? String,
-              let combined = Data(base64Encoded: sealedText)
-        else { throw TransferError.invalidBackup }
-        let key = SymmetricKey(data: SHA256.hash(data: salt + Data(passphrase.utf8)))
-        let box = try AES.GCM.SealedBox(combined: combined)
-        let plaintext = try AES.GCM.open(box, using: key)
-        guard let payload = try JSONSerialization.jsonObject(with: plaintext) as? [String: Any],
-              let caltopoObject = payload["caltopo"] as? [String: Any],
-              let orgObject = payload["organization"] as? [String: Any]
-        else { throw TransferError.invalidBackup }
+    ) async throws {
+        let initialMapID = caltopo.mapID, initialMapTitle = caltopo.mapTitle
+        let initialPreferences = organization.transferSnapshot().compactMapValues { ($0 as? NSNumber)?.intValue }
+        let initialMappingRevision = identities.backupRevision
+        let restored = try await Task.detached(priority: .utility) {
+            try ConfigurationBackupPolicy.decrypted(data, passphrase: passphrase)
+        }.value
         try AppleAircraftOrganizationAccess.requireEdit()
-        try organization.applyTransferSnapshot(orgObject)
-        try caltopo.applyTransferSnapshot(caltopoObject)
-        let mappings = (payload["rid_mappings"] as? [[String: Any]] ?? []).compactMap { item -> OrgConfigRIDMapping? in
-            guard let remoteID = item["remote_id"] as? String, !remoteID.isEmpty else { return nil }
-            return OrgConfigRIDMapping(
-                remoteID: remoteID,
-                mappedID: item["mapped_id"] as? String ?? "",
-                organization: item["organization"] as? String ?? "",
-                model: item["model"] as? String ?? "",
-                owner: item["owner"] as? String ?? "",
-                ownerName: item["ownerName"] as? String ?? "",
-                ownerCallsign: item["ownerCallsign"] as? String ?? "",
-                readiness: AircraftReadiness.decode(item["readiness"])
-            )
+        guard identities.backupRevision == initialMappingRevision else { throw CancellationError() }
+        try await identities.restoreBackupMappings(restored.mappings) {
+            guard caltopo.mapID == initialMapID, caltopo.mapTitle == initialMapTitle,
+                  organization.transferSnapshot().compactMapValues({ ($0 as? NSNumber)?.intValue }) == initialPreferences
+            else { throw CancellationError() }
+            try organization.applyTransferSnapshot(restored.organization)
+            try caltopo.applyTransferSnapshot(["map_id": restored.mapID, "map_title": restored.mapTitle])
         }
-        try identities.applyImportedMappings(mappings)
-        status = "Configuration restored. Reconnect tracker and CalTopo services to apply it."
+        status = "Settings restored. Existing device credentials were retained; new devices need tracker enrollment and sign-in."
     }
 
     func importMutualAidPackage(
@@ -265,36 +252,18 @@ final class AppleConfigurationTransferManager: ObservableObject {
     ) async throws -> Bool {
         onProgress("Reading map package…", nil)
         let decoded = try await Task.detached(priority: .userInitiated) {
-            try OperationalZipArchive.decode(data)
+            let entries = try OperationalZipArchive.decode(data)
+            guard let manifest = entries.first(where: { $0.path == "manifest.json" }) else { throw TransferError.invalidPackage }
+            try ConfigurationBackupPolicy.validateMapPackage(manifest.data)
+            return entries
         }.value
-        onProgress("Checking package contents…", 0.03)
-        let lookup = Dictionary(uniqueKeysWithValues: decoded.map { ($0.path, $0.data) })
-        guard let manifestData = lookup["manifest.json"],
-              let manifest = try JSONSerialization.jsonObject(with: manifestData) as? [String: Any],
-              manifest["format"] as? String == Self.packageFormat
-        else { throw TransferError.invalidPackage }
-        if let profileEncrypted = manifest["profile_enc"] as? String, !profileEncrypted.isEmpty {
-            let profile = try AndroidConfigTokenCodec.decryptMutualAidProfile(profileEncrypted)
-            if profile.expiresAtEpochMilliseconds > 0,
-               Date().timeIntervalSince1970 * 1_000 >= Double(profile.expiresAtEpochMilliseconds) {
-                throw TransferError.expiredPackage
-            }
-            let active = try AppleCaltopoProfileLifecycle.shared.install(
-                profile,
-                org: organization,
-                caltopo: caltopo
-            )
-            guard active else { throw TransferError.expiredPackage }
-            try organization.apply(mutualAid: profile, normalizedToken: "local-ma-package")
-            try caltopo.applyImported(mutualAid: profile)
-        }
         let result = try await Task.detached(priority: .userInitiated) {
             try await Self.importMapFiles(decoded, progress: onProgress)
         }.value
         try AppleMappingLayerStore.shared.installShared(result.layers, incidentID: result.layers.first?.incidentId ?? "")
         status = result.summary
         onProgress("Import complete.", 1)
-        return !(manifest["profile_enc"] as? String ?? "").isEmpty
+        return false
     }
 
     private struct ImportedMapFiles: Sendable {
@@ -379,17 +348,11 @@ final class AppleConfigurationTransferManager: ObservableObject {
     }
 
     private nonisolated static func writeExport(_ data: Data, name: String) throws -> URL {
-        let root = (FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory)
-            .appendingPathComponent("RID2Caltopo/Exports", isDirectory: true)
+        let root = TemporaryWorkspace.root.appendingPathComponent("Exports", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let destination = root.appendingPathComponent(name)
         try data.write(to: destination, options: .atomic)
         return destination
-    }
-
-    private func stamp() -> String {
-        let formatter = DateFormatter(); formatter.dateFormat = "yyyyMMdd_HHmmss"
-        return formatter.string(from: Date())
     }
 
     private nonisolated static func sanitize(_ value: String) -> String {
@@ -405,8 +368,8 @@ private enum TransferError: LocalizedError {
         switch self {
         case .shortPassphrase: "Use a backup passphrase of at least eight characters."
         case .invalidBackup: "The selected file is not a RID2Caltopo encrypted configuration backup, or the passphrase is incorrect."
-        case .invalidPackage: "The selected archive is not a compatible mutual-aid package."
-        case .expiredPackage: "The mutual-aid package has expired."
+        case .invalidPackage: "The selected archive is not a compatible map tile package."
+        case .expiredPackage: "The map tile package has expired."
         case .packageTooLarge: "The selected region exceeds the 250,000-tile package safety limit."
         case .packageBytesTooLarge: "The cached data for this package exceeds the 512 MB in-memory export safety limit. Select a smaller region."
         }
@@ -514,7 +477,7 @@ final class AppleICloudBackupCenter: ObservableObject {
         status = "Encrypting configuration for iCloud…"
         do {
             try Self.savePassphrase(passphrase)
-            let data = try transfer.configurationBackupData(
+            let data = try await transfer.configurationBackupData(
                 passphrase: passphrase, caltopo: caltopo, organization: organization, identities: identities
             )
             status = "Saving encrypted configuration to iCloud Drive…"
@@ -543,7 +506,7 @@ final class AppleICloudBackupCenter: ObservableObject {
         status = "Retrieving the encrypted configuration from iCloud Drive…"
         do {
             let data = try await Task.detached(priority: .utility) { try Self.readFromICloud() }.value
-            try transfer.restoreConfigurationBackup(
+            try await transfer.restoreConfigurationBackup(
                 data, passphrase: passphrase, caltopo: caltopo, organization: organization, identities: identities
             )
             try Self.savePassphrase(passphrase)
@@ -633,14 +596,9 @@ private enum ICloudBackupError: LocalizedError {
     }
 }
 
-struct AppleConfigurationTransferView: View {
-    @ObservedObject var caltopo: AppleCaltopoSettings
-    @ObservedObject var organization: AppleOrgConfigSettings
-    @ObservedObject var identities: AppleDroneConfirmationStore
-    @StateObject private var manager = AppleConfigurationTransferManager()
-    @ObservedObject private var iCloud = AppleICloudBackupCenter.shared
+struct AppleICloudSettingsBackupView: View {
+    @ObservedObject var iCloud: AppleICloudBackupCenter
     @State private var passphrase = ""
-    @State private var importing = false
 
     var body: some View {
         Form {
@@ -666,36 +624,8 @@ struct AppleConfigurationTransferView: View {
                 Text("The backup is stored in your iCloud Drive and remains encrypted with this passphrase. The passphrase is saved only in this device's Keychain for automatic backup.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            Section("Encrypted local backup") {
-                SecureField("Backup passphrase", text: $passphrase)
-                Text("The file includes operational configuration, Remote ID mappings, and credentials. It is encrypted with this passphrase; RID2Caltopo cannot recover a forgotten passphrase.")
-                    .font(.footnote).foregroundStyle(.secondary)
-                Button("Prepare Configuration Backup", systemImage: "lock.doc") {
-                    manager.prepareBackup(passphrase: passphrase, caltopo: caltopo, organization: organization, identities: identities)
-                }
-                .disabled(manager.isWorking)
-                if let url = manager.exportURL {
-                    ShareLink(item: url) { Label("Share Prepared File", systemImage: "square.and.arrow.up") }
-                }
-            }
-            Section("Restore or join") {
-                Button("Import Backup or Map Package…", systemImage: "square.and.arrow.down") { importing = true }
-                    .disabled(manager.isWorking)
-                Text("Configuration backups require their passphrase. Mutual-aid packages import cached map and terrain data without a passphrase. Packages with shared map access also install their incident profile.")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            Section("Status") {
-                if manager.isWorking { ProgressView() }
-                Text(manager.status).foregroundStyle(.secondary)
-            }
         }
-        .navigationTitle("Backup & Transfer")
-        .task { iCloud.configure(caltopo: caltopo, organization: organization, identities: identities) }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.json, .zip, .data]) { result in
-            if case let .success(url) = result {
-                Task { await manager.importFile(url, passphrase: passphrase, caltopo: caltopo, organization: organization, identities: identities) }
-            }
-        }
+        .navigationTitle("iCloud Settings Backup")
     }
 }
 
@@ -703,19 +633,19 @@ struct AppleMutualAidExportView: View {
     let bounds: OperationalMapBounds
     let incidentID: String
     @StateObject private var manager = AppleConfigurationTransferManager()
-    @State private var selectedTiles: Set<String> = ["Imagery", "OpenStreetMap", "Contours", "DEM", "AOL"]
+    @State private var selectedTiles: Set<String> = ["Contours", "DEM", "AOL"]
     @State private var packageName = "Map Package"
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    Text("This exports cached tiles only; it does not download anything. For the checked tile types, all cached zoom levels overlapping the current visible map region are included. Tiles are included whole, so their edges may extend beyond the visible region.")
+                    Text("OSM and Esri basemap tiles are excluded. This exports permitted cached data only; it does not download anything. For the checked tile types, all cached zoom levels overlapping the current visible map region are included. Tiles are included whole, so their edges may extend beyond the visible region.")
                         .font(.footnote)
                 }
                 Section("Package") {
                     TextField("Package name", text: $packageName)
-                    ForEach(["Imagery", "OpenStreetMap", "Contours", "DEM", "AOL"] + (AppleMappingLayerStore.shared.layers.contains(where:{$0.incidentId==incidentID}) ? ["R2C Mapping layers"] : []), id: \.self) { tile in
+                    ForEach(["Contours", "DEM", "AOL"] + (AppleMappingLayerStore.shared.layers.contains(where:{$0.incidentId==incidentID}) ? ["R2C Mapping layers"] : []), id: \.self) { tile in
                         Toggle(isOn: Binding(
                             get: { selectedTiles.contains(tile) },
                             set: { checked in

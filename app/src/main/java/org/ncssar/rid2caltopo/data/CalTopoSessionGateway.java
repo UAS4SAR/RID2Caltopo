@@ -13,6 +13,9 @@ public interface CalTopoSessionGateway {
     @NonNull CaltopoOp verifyAccount(@Nullable Consumer<CaltopoOp> onComplete);
     void shutdown();
     @NonNull CaltopoOp openMap(@NonNull CaltopoNode.MapNode mapNode, long lastSyncTimestamp, @Nullable Consumer<CaltopoOp> onComplete);
+    @NonNull default CaltopoOp openMapForConnection(@NonNull CaltopoNode.MapNode mapNode, @Nullable Consumer<CaltopoOp> onComplete) {
+        return openMap(mapNode, 0L, onComplete);
+    }
     @Nullable CaltopoOp addFolder(@NonNull String folderName, boolean contentsVisible, boolean contentLabelsVisible, @Nullable Consumer<CaltopoOp> onComplete);
     @NonNull CaltopoOp addLine(@NonNull JSONArray pointArray, @NonNull String lineLabel, @Nullable String description,
                                @Nullable String existingLineId, @Nullable String folderId,
@@ -32,6 +35,12 @@ public interface CalTopoSessionGateway {
                                       @Nullable CtLineProperty lineProp, @Nullable Consumer<CaltopoOp> onComplete);
     default CaltopoOp editObjectOnMap(String mapId, String type, String id, JSONObject feature, Consumer<CaltopoOp> done) {
         return editObjectWithId(type, id, feature, done);
+    }
+    default java.util.function.BiFunction<JSONObject, Consumer<CaltopoOp>, CaltopoOp> prepareArchivedTrackUpdate(String mapId, String trackId) {
+        return (feature, done) -> editObjectOnMap(mapId, "Shape", trackId, feature, done);
+    }
+    default java.util.function.BiFunction<String, Consumer<CaltopoOp>, CaltopoOp> prepareMarkerCleanup(String mapId) {
+        return (id, done) -> deleteMarkerOnMap(mapId, id, done);
     }
     default CaltopoOp deleteMarkerOnMap(String mapId, String id, Consumer<CaltopoOp> done) {
         return deleteMarkerWithId(id, done);

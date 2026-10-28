@@ -55,14 +55,21 @@ data class MappingLayer(val id: String, val incidentId: String, val title: Strin
             MappingGeometry.longitude(xs.max()+margin),MappingGeometry.latitude(ys.max()+margin))
     }
     companion object {
-        fun allLocal(context:Context):List<MappingLayer> = context.getSharedPreferences("mapping_layers",0).all
+        private fun savedLayers(context:Context):List<MappingLayer> = context.getSharedPreferences("mapping_layers",0).all
             .filterKeys{!it.startsWith("hidden:")&&!it.startsWith("selected")}.values.filterIsInstance<String>().flatMap{text->
                 runCatching{val array=JSONArray(text);(0 until array.length()).map{parse(array.getJSONObject(it))}}.getOrDefault(emptyList())
-            }.filter{MappingLibraryFiles.contains(LocalMappingTiles.directory(context,it.id), "png")}.distinctBy{it.id}
-        fun selectLocal(context:Context,layer:MappingLayer?){context.getSharedPreferences("mapping_layers",0).edit().putString("selectedLocalLayer",layer?.id).apply()}
+            }.distinctBy{it.id}
+        fun allLocal(context:Context):List<MappingLayer> = savedLayers(context)
+            .filter{MappingLibraryFiles.contains(LocalMappingTiles.directory(context,it.id), "png")}
+        fun selectLocal(context:Context,layer:MappingLayer?){
+            context.getSharedPreferences("mapping_layers",0).edit().putString("selectedLocalLayer",layer?.id).apply()
+            org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("MappingLayer", "Selected local layer=${layer?.id ?: "none"}")
+        }
         fun selectedLocal(context:Context):MappingLayer? {
             val id=context.getSharedPreferences("mapping_layers",0).getString("selectedLocalLayer",null)?:return null
-            return allLocal(context).firstOrNull{it.id==id}
+            // Selection is durable metadata. A transiently unavailable imagery directory must
+            // not hide the selected layer; tile availability is handled by the tile workers.
+            return savedLayers(context).firstOrNull{it.id==id}
         }
         fun parse(value: JSONObject) = MappingLayer(value.getString("layerId"),value.getString("incidentId"),value.getString("title"),
             value.getString("tileUrlTemplate"),value.getInt("minZoom"),value.getInt("maxZoom"),

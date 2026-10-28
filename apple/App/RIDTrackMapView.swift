@@ -186,6 +186,7 @@ private final class AppleMapArtifactModel: ObservableObject {
     @Published private(set) var snapshot = CaltopoArtifactSnapshot()
     @Published private(set) var status = "Map artifacts not configured"
     @Published private(set) var isRefreshing = false
+    @Published private(set) var visibilityReady = true
     @Published var hiddenFolderIDs: Set<String> = []
     @Published var hiddenItemIDs: Set<String> = []
     @Published private(set) var zoomRequest: ArtifactZoomRequest?
@@ -193,6 +194,7 @@ private final class AppleMapArtifactModel: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private var configurationFingerprint = ""
     private var configuredMapID = ""
+    private var configuredVisibilityScope: MapFolderVisibilityScope?
     private var configuredSource: AppleCaltopoConfiguration?
     private var visibilityInitialized = false
     private var folderVisibilityOverrides: [String: Bool] = [:]
@@ -207,10 +209,8 @@ private final class AppleMapArtifactModel: ObservableObject {
     private static let minimumPollInterval: TimeInterval = 20
     private static let foregroundPollInterval: Duration = .seconds(20)
     private static let backgroundPollInterval: Duration = .seconds(20)
-
-    init() {
-        Self.removeLegacyPersistedVisibility()
-    }
+    private static let visibilityPreferences = MapFolderVisibilityPreferences(
+        onWriteFailure: { AppleLog.error("Map", "Could not save Map Folders settings: \($0)") })
 
     var visibleSnapshot: CaltopoArtifactSnapshot {
         snapshot.hiding(folderIDs: hiddenFolderIDs, itemIDs: hiddenItemIDs)
@@ -240,18 +240,23 @@ private final class AppleMapArtifactModel: ObservableObject {
             String(configuration.credentialSecret.hashValue),
         ].joined(separator: "|")
         guard fingerprint != configurationFingerprint else { return }
-        let mapSessionChanged = configuredMapID != configuration.mapID
+        let scope = configuration.mapID.isEmpty ? nil : MapFolderVisibilityScope(
+            domainAndPort: configuration.domainAndPort, mapID: configuration.mapID)
+        let mapSessionChanged = configuredVisibilityScope != scope
+        Self.visibilityPreferences.prepareLegacyMigration(domainAndPort: configuration.domainAndPort)
         configurationFingerprint = fingerprint
         configuredMapID = configuration.mapID
+        configuredVisibilityScope = scope
         configuredSource = configuration
         refreshTask?.cancel()
         if mapSessionChanged {
-            let persisted = Self.loadPersistedVisibility(mapID: configuration.mapID)
-            persistedHiddenFolderIDs = persisted.hiddenFolderIDs
-            persistedHiddenItemIDs = persisted.hiddenItemIDs
-            folderVisibilityOverrides = persisted.folderVisibilityOverrides
-            hiddenFolderIDs = persistedHiddenFolderIDs
-            hiddenItemIDs = persistedHiddenItemIDs
+            visibilityReady = scope == nil
+            persistedHiddenFolderIDs = []
+            persistedHiddenItemIDs = []
+            folderVisibilityOverrides = [:]
+            hiddenFolderIDs = []
+            hiddenItemIDs = []
+            snapshot = CaltopoArtifactSnapshot()
             featureStore = CaltopoArtifactFeatureStore()
             lastSuccessfulCursorMilliseconds = 0
             fullReloadRequested = false
@@ -264,10 +269,28 @@ private final class AppleMapArtifactModel: ObservableObject {
             return
         }
         refreshTask = Task { [weak self] in
+            guard let self else { return }
+            if !visibilityReady, let scope {
+                do {
+                    let persisted = try await Self.visibilityPreferences.load(scope)
+                    guard !Task.isCancelled, configurationFingerprint == fingerprint else { return }
+                    persistedHiddenFolderIDs = persisted.hiddenFolderIDs
+                    persistedHiddenItemIDs = persisted.hiddenItemIDs
+                    folderVisibilityOverrides = persisted.folderVisibilityOverrides
+                    hiddenFolderIDs = persistedHiddenFolderIDs
+                    hiddenItemIDs = persistedHiddenItemIDs
+                    visibilityReady = true
+                } catch {
+                    guard !Task.isCancelled, configurationFingerprint == fingerprint else { return }
+                    status = "Could not restore Map Folders settings: \(error.localizedDescription)"
+                    AppleLog.error("Map", status)
+                    return
+                }
+            }
             let cached = await Task.detached(priority: .userInitiated) {
                 Self.loadCachedSnapshot(mapID: configuration.mapID)
             }.value
-            guard let self, !Task.isCancelled else { return }
+            guard !Task.isCancelled, configurationFingerprint == fingerprint else { return }
             if let cached {
                 snapshot = cached
                 initializeVisibility(fallbackFolders: cached.folders)
@@ -310,6 +333,7 @@ private final class AppleMapArtifactModel: ObservableObject {
     }
 
     func toggleFolder(_ folder: CaltopoArtifactFolder) {
+        guard visibilityReady else { return }
         if isFolderEffectivelyVisible(folder) {
             hiddenFolderIDs.insert(folder.id)
             folderVisibilityOverrides[folder.id] = false
@@ -321,6 +345,7 @@ private final class AppleMapArtifactModel: ObservableObject {
     }
 
     func toggleItem(_ item: CaltopoArtifactItem) {
+        guard visibilityReady else { return }
         if isItemEffectivelyVisible(item) {
             hiddenItemIDs.insert(item.id)
             persistedHiddenItemIDs.insert(item.id)
@@ -333,6 +358,7 @@ private final class AppleMapArtifactModel: ObservableObject {
     }
 
     func setItems(_ items: [CaltopoArtifactItem], visible: Bool) {
+        guard visibilityReady else { return }
         let ids = Set(items.map(\.id))
         if visible {
             hiddenItemIDs.subtract(ids)
@@ -413,7 +439,8 @@ private final class AppleMapArtifactModel: ObservableObject {
                 manualReload: fullReloadRequested)
             let changes = try await client.fetchMapArtifactChanges(
                 sinceMilliseconds: fullReconciliation ? 0 : lastSuccessfulCursorMilliseconds,
-                now: requestStartedAt
+                now: requestStartedAt,
+                forceFullRead: fullReloadRequested
             )
             let previousStore = featureStore
             let (updatedStore, value) = try await Task.detached(priority: .userInitiated) {
@@ -426,7 +453,7 @@ private final class AppleMapArtifactModel: ObservableObject {
             snapshot = value
             lastSuccessfulCursorMilliseconds = max(
                 lastSuccessfulCursorMilliseconds,
-                Int64(requestStartedAt.timeIntervalSince1970 * 1_000)
+                changes.serverTimestampMilliseconds ?? Int64(requestStartedAt.timeIntervalSince1970 * 1_000)
             )
             if fullReconciliation { fullReloadRequested = false }
             let serverHiddenFolders = Set(value.folders.filter { !$0.initiallyVisible }.map(\.id))
@@ -477,68 +504,15 @@ private final class AppleMapArtifactModel: ObservableObject {
         )
     }
 
-    private struct PersistedVisibility {
-        let hiddenFolderIDs: Set<String>
-        let hiddenItemIDs: Set<String>
-        let folderVisibilityOverrides: [String: Bool]
-    }
-
     private func persistVisibility() {
-        guard !configuredMapID.isEmpty else { return }
+        guard visibilityReady, let scope = configuredVisibilityScope else { return }
         persistedHiddenFolderIDs = hiddenFolderIDs
         persistedHiddenItemIDs = hiddenItemIDs
-        Self.savePersistedVisibility(
-            mapID: configuredMapID,
+        // Swift collections are copy-on-write: preparation and encoding remain on the worker.
+        Self.visibilityPreferences.save(MapFolderVisibilitySelection(
             hiddenFolderIDs: persistedHiddenFolderIDs,
             hiddenItemIDs: persistedHiddenItemIDs,
-            folderVisibilityOverrides: folderVisibilityOverrides
-        )
-    }
-
-    private static func visibilityStorageKey(mapID: String) -> String {
-        let safeMapID = mapID.filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
-        return "map.visibility.v2.\(safeMapID.isEmpty ? "map" : safeMapID)"
-    }
-
-    private static func loadPersistedVisibility(mapID: String) -> PersistedVisibility {
-        guard let value = UserDefaults.standard.dictionary(forKey: visibilityStorageKey(mapID: mapID)) else {
-            return PersistedVisibility(hiddenFolderIDs: [], hiddenItemIDs: [], folderVisibilityOverrides: [:])
-        }
-        let folders = Set(value["hiddenFolders"] as? [String] ?? [])
-        let items = Set(value["hiddenItems"] as? [String] ?? [])
-        let overrides = value["folderOverrides"] as? [String: Bool] ?? [:]
-        return PersistedVisibility(
-            hiddenFolderIDs: folders,
-            hiddenItemIDs: items,
-            folderVisibilityOverrides: overrides
-        )
-    }
-
-    private static func savePersistedVisibility(
-        mapID: String,
-        hiddenFolderIDs: Set<String>,
-        hiddenItemIDs: Set<String>,
-        folderVisibilityOverrides: [String: Bool]
-    ) {
-        UserDefaults.standard.set(
-            [
-                "hiddenFolders": Array(hiddenFolderIDs).sorted(),
-                "hiddenItems": Array(hiddenItemIDs).sorted(),
-                "folderOverrides": folderVisibilityOverrides,
-            ],
-            forKey: visibilityStorageKey(mapID: mapID)
-        )
-    }
-
-    private static func removeLegacyPersistedVisibility() {
-        let defaults = UserDefaults.standard
-        let keys = CaltopoArtifactVisibilityPolicy.legacyPersistedSelectionKeys(
-            Array(defaults.dictionaryRepresentation().keys)
-        )
-        keys.forEach { defaults.removeObject(forKey: $0) }
-        if !keys.isEmpty {
-            AppleLog.info("Map", "Removed \(keys.count) legacy persisted Map Folders selection keys")
-        }
+            folderVisibilityOverrides: folderVisibilityOverrides), for: scope)
     }
 
     private nonisolated static func loadCachedSnapshot(mapID: String) -> CaltopoArtifactSnapshot? {
@@ -640,6 +614,8 @@ struct RIDTrackMapView: View {
     private var videoPipInsetFraction = OperationalPipSizing.defaultInsetFraction
     @AppStorage("video.coordinateDisplayFormat")
     private var coordinateDisplayFormatRaw = OperationalCoordinateDisplayFormat.decimal.rawValue
+    @State private var imageryViewports: [Bool: EsriImageryViewport] = [:]
+    @State private var imagerySources: [Bool: String] = [:]
     @State private var viewport = unresolvedAppleMapRegion
     @State private var showLocalMapping = false
     @State private var showMapItems = false
@@ -1441,6 +1417,10 @@ struct RIDTrackMapView: View {
                     focusedAircraftID = nil
                     AppleLog.info("MapViewport", "Operator pan released focused drone")
                 },
+                onAttributionViewportChanged: { value in
+                    // MapKit can report during updateUIView; publish on the next UI turn.
+                    DispatchQueue.main.async { imageryViewports[inset] = value }
+                },
                 onLongPressTile: { zoom, x, y in
                     Task {
                         if let selection = await offlineMaps.cachedTileSelection(
@@ -1459,14 +1439,38 @@ struct RIDTrackMapView: View {
             // Only map-content taps expand a split pane. Settings controls must
             // not also change the layout and destroy their presenting view.
             .simultaneousGesture(TapGesture().onEnded { onMapTap?() }, including: onMapTap == nil ? .none : .all)
-            Text(mapAttribution(inset: inset))
-                .font(.system(size: inset ? 8 : 10))
+            Group {
+                if baseLayer == .openStreetMap {
+                    Link(mapAttribution(inset: inset), destination: OperationalMapTilePolicy.openStreetMapCopyrightURL)
+                } else {
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: 8) {
+                            Link("Powered by Esri", destination: EsriImageryAttribution.esriURL)
+                            Link("World Imagery", destination: EsriImageryAttribution.sourceURL)
+                        }
+                        Text("Sources: \(imagerySources[inset] ?? EsriImageryAttribution.fallbackSources)" +
+                             (showContours && !inset ? " · Contours: USGS" : ""))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+                .font(.system(size: inset ? 10 : 11))
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .foregroundStyle(.primary)
                 .padding(.horizontal, 5)
                 .padding(.vertical, 3)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
                 .padding(5)
-                .allowsHitTesting(false)
+                .task(id: baseLayer == .imagery ? imageryViewports[inset] : nil) {
+                    guard baseLayer == .imagery, let region = imageryViewports[inset] else { return }
+                    do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
+                    let bundled = await EsriImageryAttributionProvider.shared.sources(in: region)
+                    guard !Task.isCancelled else { return }
+                    imagerySources[inset] = bundled
+                    let refreshed = await EsriImageryAttributionProvider.shared.sources(in: region, refresh: true)
+                    guard !Task.isCancelled else { return }
+                    imagerySources[inset] = refreshed
+                }
             if !inset {
                 VStack {
                     HStack {
@@ -1505,7 +1509,7 @@ struct RIDTrackMapView: View {
                     selectMapSettingsAction { showOfflinePreparation = true }
                 }
                 Button("Map Folders…") { selectMapSettingsAction { showMapItems = true } }
-                    .disabled(artifacts.snapshot.folders.isEmpty)
+                    .disabled(artifacts.snapshot.folders.isEmpty || !artifacts.visibilityReady)
                 Button("Map Management…") { selectMapSettingsAction { showMapManagement = true } }
             }
             .buttonStyle(.plain)
@@ -1722,7 +1726,8 @@ struct RIDTrackMapView: View {
 
     private func handleInitialStreamFocus(_ state: OperationalInitialStreamFocusState) {
         guard notams.mapFocusRequest == nil else { return }
-        if let arrivingAircraft = viewportMemory.streamFocusArrival.observe(resolvedAircraftIDs: state.liveStreamAircraftIDs) {
+        if let arrivingAircraft = viewportMemory.streamFocusArrival.observe(
+            resolvedAircraftIDs: state.liveStreamAircraftIDs, flightIDs: state.liveStreamFlightIDs) {
             focusedAircraftID = arrivingAircraft
             if state.followEnabled { operatorAdjustedViewport = false }
             AppleLog.info("MapFocus", "Live video gained telemetry aircraft=\(arrivingAircraft)")
@@ -1740,20 +1745,28 @@ struct RIDTrackMapView: View {
     // Resolve from the current rendered view, including preference and binding changes.
     // A long-running task retains the view value from when that task started.
     private var initialStreamFocusState: OperationalInitialStreamFocusState {
-        OperationalInitialStreamFocusState(
+        let tracks = streamRegistry.sessions
+            .filter { $0.id != "demo" && $0.state == .live }
+            .map { aircraftTrack(for: $0.id) }
+        return OperationalInitialStreamFocusState(
             followEnabled: followFocusedDrone,
             focusedAircraftID: focusedAircraftID,
             operatorAdjustedViewport: operatorAdjustedViewport,
-            liveStreamAircraftIDs: streamRegistry.sessions
-                .filter { $0.id != "demo" && $0.state == .live }
-                .map { aircraftID(for: $0.id) }
+            liveStreamAircraftIDs: tracks.map { $0?.aircraftID },
+            liveStreamFlightIDs: tracks.map { track in
+                track.map { RidFlightID.make(aircraftID: $0.aircraftID, startedAt: $0.flightStartedAt) }
+            }
         )
     }
 
     private func aircraftID(for streamID: String) -> String? {
+        aircraftTrack(for: streamID)?.aircraftID
+    }
+
+    private func aircraftTrack(for streamID: String) -> RidAircraftTrack? {
         if let bound = streamRegistry.boundAircraftID(for: streamID),
-           model.tracks.contains(where: { $0.aircraftID == bound }) {
-            return bound
+           let track = model.tracks.first(where: { $0.aircraftID == bound }) {
+            return track
         }
         let normalizedStream = streamID.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         let exact = model.tracks.filter { track in
@@ -1761,7 +1774,7 @@ struct RIDTrackMapView: View {
             return track.aircraftID.uppercased() == normalizedStream
                 || identity?.mappedID.uppercased() == normalizedStream
         }
-        if exact.count == 1 { return exact[0].aircraftID }
+        if exact.count == 1 { return exact[0] }
         return nil
     }
 
@@ -3300,7 +3313,7 @@ private struct ClueDetailView: View {
                         Task {
                             do {
                                 let url = try await Task.detached(priority: .userInitiated) {
-                                    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ClueShares/\(UUID().uuidString)", isDirectory: true)
+                                    let directory = TemporaryWorkspace.root.appendingPathComponent("ClueShares/\(UUID().uuidString)", isDirectory: true)
                                     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                                     let photo = directory.appendingPathComponent("clue-\(id.uuidString).jpg")
                                     try FileManager.default.copyItem(at: source, to: photo)
@@ -4057,6 +4070,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
     let onSelectArtifact: (String, String?, OperationalNotam?) -> Void
     let onSelectAircraft: (String) -> Void
     let onOperatorViewportGesture: () -> Void
+    let onAttributionViewportChanged: (EsriImageryViewport) -> Void
     let onLongPressTile: (Int, Int, Int) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -4068,6 +4082,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
             onSelectArtifact: onSelectArtifact,
             onSelectAircraft: onSelectAircraft,
             onOperatorViewportGesture: onOperatorViewportGesture,
+            onAttributionViewportChanged: onAttributionViewportChanged,
             onLongPressTile: onLongPressTile
         )
     }
@@ -4109,6 +4124,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
         context.coordinator.installArtifactTap(on: map)
         map.onBoundsLayout = { [weak coordinator = context.coordinator] map in
             coordinator?.restoreViewportBoundsIfNeeded(on: map)
+            coordinator?.reportAttributionViewport(map)
         }
         return map
     }
@@ -4125,6 +4141,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
     }
 
     func updateUIView(_ map: MKMapView, context: Context) {
+        context.coordinator.onAttributionViewportChanged = onAttributionViewportChanged
         context.coordinator.updateMappingLayers(on:map,layers:mappingLayers)
         context.coordinator.onSelectAircraft = onSelectAircraft
         if let scale = map.subviews.first(where: { $0.accessibilityIdentifier == "RID2CaltopoMapScale" }) {
@@ -4214,6 +4231,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
             context.coordinator.zoomToNotam(request, on: map)
             DispatchQueue.main.async { onNotamZoomConsumed(request.id) }
         }
+        context.coordinator.reportAttributionViewport(map)
     }
 
     final class Coordinator: NSObject, MKMapViewDelegate, UIGestureRecognizerDelegate {
@@ -4227,6 +4245,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
         private var staticRenderState: StaticMapRenderState?
         private var aircraftRenderState: AircraftMapRenderState?
         private var aircraftAnnotationsByRemoteID: [String: AircraftAnnotation] = [:]
+        private var positionTimingByAircraftID: [String: Date] = [:]
         private var operatorCoordinate: CLLocationCoordinate2D?
         private var operatorCircle: MKCircle?
         private var operatorAnnotation: OperatorDeviceAnnotation?
@@ -4250,6 +4269,8 @@ private struct OperationalMKMapView: UIViewRepresentable {
         var onSelectArtifact: (String, String?, OperationalNotam?) -> Void
         var onSelectAircraft: (String) -> Void
         var onOperatorViewportGesture: () -> Void
+        var onAttributionViewportChanged: (EsriImageryViewport) -> Void
+        private var lastAttributionViewport: EsriImageryViewport?
         var onLongPressTile: (Int, Int, Int) -> Void
 
         init(
@@ -4260,6 +4281,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
             onSelectArtifact: @escaping (String, String?, OperationalNotam?) -> Void,
             onSelectAircraft: @escaping (String) -> Void,
             onOperatorViewportGesture: @escaping () -> Void,
+            onAttributionViewportChanged: @escaping (EsriImageryViewport) -> Void,
             onLongPressTile: @escaping (Int, Int, Int) -> Void
         ) {
             _viewport = viewport
@@ -4273,6 +4295,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
             self.onSelectArtifact = onSelectArtifact
             self.onSelectAircraft = onSelectAircraft
             self.onOperatorViewportGesture = onOperatorViewportGesture
+            self.onAttributionViewportChanged = onAttributionViewportChanged
             self.onLongPressTile = onLongPressTile
         }
 
@@ -4694,12 +4717,19 @@ private struct OperationalMKMapView: UIViewRepresentable {
                     } else if let view = map.view(for: annotation) as? AircraftAnnotationView {
                         view.configure(annotation)
                     }
+                    if let receivedAt = renderedPoints.last?.receivedAt,
+                       positionTimingByAircraftID[track.aircraftID] != receivedAt {
+                        positionTimingByAircraftID[track.aircraftID] = receivedAt
+                        let receivedMs = Int64(receivedAt.timeIntervalSince1970 * 1_000)
+                        AppleLog.info("RIDTiming", "stage=annotation_update aircraft=\(track.aircraftID) inset=\(inset) receivedMs=\(receivedMs) receiveToAnnotationMs=\(Int(Date().timeIntervalSince(receivedAt) * 1_000))")
+                    }
                     renderedAircraftIDs.insert(track.aircraftID)
                 }
             }
             let retiredAircraftIDs = Set(aircraftAnnotationsByRemoteID.keys)
                 .subtracting(renderedAircraftIDs)
             for remoteID in retiredAircraftIDs {
+                positionTimingByAircraftID.removeValue(forKey: remoteID)
                 guard let annotation = aircraftAnnotationsByRemoteID.removeValue(forKey: remoteID) else {
                     continue
                 }
@@ -4890,7 +4920,28 @@ private struct OperationalMKMapView: UIViewRepresentable {
             return coordinate
         }
 
+        func reportAttributionViewport(_ map: MKMapView) {
+            guard map.bounds.width > 0, map.visibleMapRect.width > 0 else { return }
+            let region = map.region
+            let span = region.span.longitudeDelta
+            func wrapped(_ longitude: Double) -> Double {
+                let value = (longitude + 180).truncatingRemainder(dividingBy: 360)
+                return (value < 0 ? value + 360 : value) - 180
+            }
+            let next = EsriImageryViewport(
+                south: max(-90, region.center.latitude - region.span.latitudeDelta / 2),
+                west: span >= 360 ? -180 : wrapped(region.center.longitude - span / 2),
+                north: min(90, region.center.latitude + region.span.latitudeDelta / 2),
+                east: span >= 360 ? 180 : wrapped(region.center.longitude + span / 2),
+                zoom: max(0, min(23, log2(MKMapSize.world.width / map.visibleMapRect.width * Double(map.bounds.width) / 256)))
+            )
+            guard next != lastAttributionViewport else { return }
+            lastAttributionViewport = next
+            onAttributionViewportChanged(next)
+        }
+
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
+            reportAttributionViewport(mapView)
             footprintView.refreshForMapMovement()
             guard !updating else { return }
             persistViewport(from: mapView)
@@ -4898,6 +4949,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
         }
 
         func mapViewDidChangeVisibleRegion(_ mapView: MKMapView) {
+            reportAttributionViewport(mapView)
             (mapView.subviews.first { $0 is UnitMapScaleView } as? UnitMapScaleView)?.refresh(on: mapView)
             footprintView.refreshForMapMovement()
             guard !updating, hasActiveViewportGesture(in: mapView) else { return }
@@ -5703,9 +5755,10 @@ private final class CachedMapTileOverlay: MKTileOverlay {
 
     private nonisolated static func usableCachedTile(at destination: URL) -> Data? {
         AppleMapCacheAccess.synchronized {
-            let maximumAgeDays = max(
-                1,
-                min(3_650, UserDefaults.standard.object(forKey: "map.maximumTileAgeDays") as? Int ?? 365)
+            // The byte cache does not retain HTTP cache headers. Apply OSM's
+            // supported fallback of at least seven days, including old settings.
+            let maximumAgeDays = OperationalMapTilePolicy.cacheAgeDays(
+                UserDefaults.standard.object(forKey: "map.maximumTileAgeDays") as? Int ?? 365
             )
             let cutoff = Date().addingTimeInterval(-Double(maximumAgeDays) * 86_400)
             let modified = try? destination.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate

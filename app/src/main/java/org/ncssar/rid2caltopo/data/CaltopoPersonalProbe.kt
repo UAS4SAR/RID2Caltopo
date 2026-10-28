@@ -37,6 +37,11 @@ object CaltopoPersonalProbe {
         return "$ORIGIN/api/v1/map/$id/since/0"
     }
 
+    fun accountEndpoint(id: String): String {
+        require(id.matches(Regex("[A-Za-z0-9]{6}")))
+        return "$ORIGIN/api/v1/acct/$id/since/0"
+    }
+
     data class Result(val code: Int, val featureCount: Int?) {
         val readable: Boolean get() = code in 200..299 && featureCount != null
         val summary: String get() = when {

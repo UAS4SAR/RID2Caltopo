@@ -51,11 +51,10 @@ or diagnostics before the corresponding controls can be honest.
 
 ## Documented platform differences
 
-- Apple uses iCloud Drive and Files rather than Android's Google Drive workflow.
-  Organization export uploads through the enrolled r2c-tracker device credential
-  and presents an R2C2 QR containing its opaque public download locator. Both
-  platforms can import it; JSON sharing remains available as a backup.
-  Other installed document providers remain available through Files.
+- Cloud settings backup uses iCloud Drive on Apple and Google Drive on Android.
+  Settings backups exclude access credentials. Both platforms retain map tile
+  package imports/exports and tracker-based enrollment. The separate manual
+  encrypted settings-file export/import workflow is removed.
 - iOS does not expose the Wi-Fi RSSI Android uses for controller-strength
   percentage. Apple reports SSID, video health, and telemetry loss instead.
 - iOS may suspend processing while locked or backgrounded. Bluetooth

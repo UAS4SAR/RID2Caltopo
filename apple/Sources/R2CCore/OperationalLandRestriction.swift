@@ -25,6 +25,33 @@ public enum OperationalLandAgency: String, Codable, Sendable, Equatable, CaseIte
         }
     }
 
+    public var dataCredit: String {
+        switch self {
+        case .nationalParkService: "National Park Service, Land Resources Division — park unit boundaries"
+        case .fishAndWildlifeService: "U.S. Fish and Wildlife Service, National Wildlife Refuge System, Division of Realty"
+        case .forestService: "USDA Forest Service, Automated Lands Program (ALP) — National Wilderness Areas"
+        case .coloradoParksAndWildlife: "Colorado Parks and Wildlife — administrative boundaries"
+        }
+    }
+
+    public var dataNotice: String {
+        switch self {
+        case .nationalParkService: "Advisory GIS data, not survey-quality or legal boundary documents. A legislated park boundary does not establish NPS ownership or an interest in every parcel; NPS may also hold interests outside it. Data may change or be incomplete. Verify ownership, current rules and authorization with the responsible agency. NPS provides no accuracy or completeness warranty."
+        case .fishAndWildlifeService: "Simplified mapping boundaries are not legal land descriptions or proof of public access. Consult the refuge and source metadata for current access and data limitations. No accuracy, reliability or completeness warranty is provided."
+        case .forestService: "For general mapping and analysis. These changing geospatial data are not legal documents and must not be used to determine title, ownership, legal descriptions or boundaries, jurisdiction, or restrictions on public or private land. Verify current rules with the responsible agency. No accuracy, reliability, completeness or fitness warranty is provided."
+        case .coloradoParksAndWildlife: "CPW provides these data as is without warranty. Interpret them with accompanying documentation and verify property access and current rules with CPW. The Colorado Department of Natural Resources disclaims liability for their use."
+        }
+    }
+
+    public var dataMetadataURL: URL {
+        switch self {
+        case .nationalParkService: URL(string: "https://www.arcgis.com/home/item.html?id=a2848257cf5541338bab9b656440bd0c")!
+        case .fishAndWildlifeService: URL(string: "https://www.arcgis.com/home/item.html?id=745ed874c1394da3a9aae50267c9e049")!
+        case .forestService: URL(string: "https://data.fs.usda.gov/geodata/edw/edw_resources/meta/S_USA.Wilderness.xml")!
+        case .coloradoParksAndWildlife: URL(string: "https://www.arcgis.com/home/item.html?id=168fccb0583f42f1afe57de6c9ce846d")!
+        }
+    }
+
     public var rulesURL: URL {
         switch self {
         case .nationalParkService:
@@ -41,12 +68,14 @@ public enum OperationalLandAgency: String, Codable, Sendable, Equatable, CaseIte
 
 public enum OperationalLandRule: String, Codable, Sendable, Equatable {
     case launchLandOperateRestricted
+    case mappedWildernessAdvisory
     case wildlifeDisturbanceRestricted
     case propertySpecificRules
 
     public var label: String {
         switch self {
-        case .launchLandOperateRestricted: "Launch, landing, or operation restricted"
+        case .launchLandOperateRestricted: "Mapped protected land—verify current rules"
+        case .mappedWildernessAdvisory: "Mapped wilderness—verify current rules"
         case .wildlifeDisturbanceRestricted: "Launch, landing, and wildlife disturbance restricted"
         case .propertySpecificRules: "Property-specific rules—verify authorization"
         }
@@ -126,14 +155,18 @@ public struct OperationalLandSource: Sendable, Equatable {
 }
 
 public enum OperationalLandRestriction {
+    public static let cacheRevision = 2
+    public static func acceptsCacheRevision(_ revision: Int?) -> Bool { revision == cacheRevision }
+
     public static let sources: [OperationalLandSource] = [
         .init(
             id: "nps",
-            queryEndpoint: URL(string: "https://services.arcgis.com/xOi1kZaI0eWDREZv/ArcGIS/rest/services/NPS_Regional_and_Park_Boundary/FeatureServer/1/query")!,
+            queryEndpoint: URL(string: "https://services1.arcgis.com/fBc8EJBxQRMcHlei/arcgis/rest/services/NPS_Land_Resources_Division_Boundary_and_Tract_Data_Service/FeatureServer/2/query")!,
             agency: .nationalParkService,
             rule: .launchLandOperateRestricted,
             nameFields: ["UNIT_NAME", "PARKNAME"],
-            identifierFields: ["UNIT_CODE", "FID"]
+            identifierFields: ["UNIT_CODE", "GlobalID", "OBJECTID"],
+            detailsURLFields: ["METADATA"]
         ),
         .init(
             id: "fws-refuge",
@@ -148,7 +181,7 @@ public enum OperationalLandRestriction {
             id: "usfs-wilderness",
             queryEndpoint: URL(string: "https://apps.fs.usda.gov/arcx/rest/services/EDW/EDW_Wilderness_01/MapServer/0/query")!,
             agency: .forestService,
-            rule: .launchLandOperateRestricted,
+            rule: .mappedWildernessAdvisory,
             nameFields: ["wildernessname", "WILDERNESSNAME"],
             identifierFields: ["areaid", "AREAID", "objectid", "OBJECTID"]
         ),
@@ -260,12 +293,12 @@ public enum OperationalLandRestriction {
         if waitingForLocation { return "Land rules pending" }
         if loading { return "Land rules updating…" }
         if areas.contains(where: { $0.containsOperator && $0.rule != .propertySpecificRules }) {
-            return "Land rules: RESTRICTED"
+            return "Mapped land: verify rules"
         }
         let nearby = areas.filter(\.intersectsOperatingArea).count
         if nearby > 0 { return "Land rules: \(nearby) nearby" }
         if hasError { return "Land rules unavailable" }
-        return "No mapped restrictions"
+        return "No mapped protected land"
     }
 
     private static func firstString(_ keys: [String], in properties: [String: Any]) -> String? {

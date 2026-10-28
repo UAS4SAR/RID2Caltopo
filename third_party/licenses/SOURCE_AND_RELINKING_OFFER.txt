@@ -1,0 +1,24 @@
+RID2Caltopo Apple app source and relinking materials offer
+
+For each Apple app build distributed with this offer, UAS4SAR offers its
+recipients the complete corresponding FFmpeg source, including any changes,
+and the application object code, non-system link inputs, data and utilities
+needed to modify FFmpeg and relink the application under LGPL 2.1 section 6(c).
+The corresponding Eigen source and applicable license notices are included.
+
+This offer is valid for at least three years after our last distribution of
+the corresponding build. We provide these materials free of charge. Use the
+build-specific GitHub download linked from License & Notices. Downloads are
+public and require no GitHub account. The download identifies the matching
+application code, dependencies and build inputs; later builds may share it
+when those materials are unchanged.
+
+If the download is unavailable or you need another way to receive a copy,
+request the materials from kjt@uas4sar.com. Identify the app version/build and,
+when available, the material identifier shown on its GitHub release page.
+GitHub availability does not limit our obligation to fulfill this offer.
+
+The materials retain their respective open-source licenses and modification
+rights. Apple development tools, SDKs, original signing keys and provisioning
+profiles are not included. Use your own compatible tools and signing setup
+to install a modified executable.

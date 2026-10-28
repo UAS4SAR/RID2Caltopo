@@ -1,0 +1,161 @@
+[
+  {
+    "supplier": "Apple Maps and iCloud Drive",
+    "use": "MapKit map display and optional encrypted iCloud settings backups.",
+    "url": "https://www.apple.com/",
+    "platforms": [
+      "apple"
+    ]
+  },
+  {
+    "supplier": "OpenStreetMap",
+    "use": "© OpenStreetMap contributors. OpenStreetMap data is available under the Open Database License. Interactive map credits link to the copyright and license information.",
+    "url": "https://www.openstreetmap.org/copyright",
+    "platforms": [
+      "apple",
+      "android"
+    ]
+  },
+  {
+    "supplier": "Esri and imagery contributors",
+    "use": "World Imagery and applicable ArcGIS-hosted services. The selected map shows Esri identification and contributor credits for its displayed area and zoom.",
+    "url": "https://www.esri.com/en-us/legal/terms/web-site-service",
+    "platforms": [
+      "apple",
+      "android"
+    ]
+  },
+  {
+    "supplier": "U.S. Geological Survey",
+    "use": "The National Map, 3D Elevation Program, elevation, contour and lidar products used by selected features. Retain each dataset’s source/date and product-specific notices.",
+    "url": "https://www.usgs.gov/programs/national-geospatial-program/national-map",
+    "platforms": [
+      "apple",
+      "android"
+    ]
+  },
+  {
+    "supplier": "Federal Aviation Administration",
+    "use": "UAS Facility Map data and NOTAM information obtained through the selected services. These are advisory data, not flight authorization.",
+    "url": "https://www.faa.gov/uas",
+    "platforms": [
+      "apple",
+      "android"
+    ]
+  },
+  {
+    "supplier": "National Park Service",
+    "use": "Official Land Resources Division boundaries and other identified public land information.",
+    "url": "https://www.nps.gov/subjects/gisandmapping/",
+    "platforms": [
+      "apple",
+      "android"
+    ]
+  },
+  {
+    "supplier": "U.S. Fish and Wildlife Service",
+    "use": "National Realty Boundaries and identified refuge/land information.",
+    "url": "https://www.fws.gov/",
+    "platforms": [
+      "apple",
+      "android"
+    ]
+  },
+  {
+    "supplier": "U.S. Forest Service",
+    "use": "National Wilderness Areas and identified land information, subject to the source’s advisory and legal-boundary limitations.",
+    "url": "https://www.fs.usda.gov/",
+    "platforms": [
+      "apple",
+      "android"
+    ]
+  },
+  {
+    "supplier": "Colorado Parks and Wildlife",
+    "use": "Identified public state park and wildlife-area boundary information.",
+    "url": "https://cpw.state.co.us/",
+    "platforms": [
+      "apple",
+      "android"
+    ]
+  },
+  {
+    "supplier": "CalTopo",
+    "use": "Optional map access, account sign-in and operator-authorized track/clue/photo publishing. Map sharing and membership are controlled by authorized map owners in CalTopo.",
+    "url": "https://caltopo.com/",
+    "platforms": [
+      "apple",
+      "android"
+    ]
+  },
+  {
+    "supplier": "DJI",
+    "use": "Optional Pilot 2 Open Platforms / Cloud API mission and original-photo transfer with compatible equipment. Compatibility does not imply endorsement.",
+    "url": "https://developer.dji.com/",
+    "platforms": [
+      "apple",
+      "android"
+    ]
+  },
+  {
+    "supplier": "Configured organization and service operators",
+    "use": "Selected private map/tracker hosting, coordination, media relays and email delivery, where enabled. Operator identity, access and retention depend on the selected deployment.",
+    "url": "",
+    "platforms": [
+      "apple",
+      "android"
+    ]
+  },
+  {
+    "supplier": "Cloudflare",
+    "use": "Optional Realtime TURN/STUN connectivity and media relaying when selected by the configured tracker.",
+    "url": "https://developers.cloudflare.com/realtime/",
+    "platforms": [
+      "apple",
+      "android"
+    ]
+  },
+  {
+    "supplier": "Google Cloud",
+    "use": "Managed tracker hosting where the selected service is deployed on Google Cloud.",
+    "url": "https://cloud.google.com/",
+    "platforms": [
+      "apple",
+      "android"
+    ]
+  },
+  {
+    "supplier": "Google and Microsoft identity services",
+    "use": "Optional organization sign-in where enabled by the selected tracker. Embedded Google authorization in the CalTopo browser remains blocked.",
+    "url": "",
+    "platforms": [
+      "apple",
+      "android"
+    ]
+  },
+  {
+    "supplier": "Google Firebase",
+    "use": "Firebase Analytics for operational app events and Crashlytics for crash reports. Advertising-identifier collection is disabled.",
+    "url": "https://firebase.google.com/",
+    "platforms": [
+      "android"
+    ]
+  },
+  {
+    "supplier": "Google Drive",
+    "use": "Optional settings-backup storage in the selected Google account.",
+    "url": "https://www.google.com/drive/",
+    "platforms": [
+      "android"
+    ]
+  },
+  {
+    "supplier": "GitHub",
+    "use": "The project repository and versioned source/relinking downloads.",
+    "url": "https://github.com/UAS4SAR/RID2Caltopo",
+    "platforms": [
+      "apple",
+      "android"
+    ]
+  }
+]

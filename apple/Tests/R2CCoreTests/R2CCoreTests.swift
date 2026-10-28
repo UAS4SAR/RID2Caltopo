@@ -1765,7 +1765,7 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
     #expect(areas[0].containsOperator)
     #expect(areas[0].agency.rulesURL.host == "www.nps.gov")
     #expect(OperationalLandRestriction.severity(areas, hasError: false) == .danger)
-    #expect(OperationalLandRestriction.chipLabel(areas, loading: false, hasError: false) == "Land rules: RESTRICTED")
+    #expect(OperationalLandRestriction.chipLabel(areas, loading: false, hasError: false) == "Mapped land: verify rules")
 }
 
 @Test func operationalLandRestrictionQueryRadiusUsesStatuteMiles() throws {
@@ -3436,6 +3436,7 @@ private func proximityDrone(
         "map.visibility.GF7A7ER.items",
         "map.visibility.GF7A7ER.folders",
         "map.visibility.v2.GF7A7ER",
+        "map.visibility.v3.server-and-map",
         "map.pilotDisplay.N1234.active",
         "caltopo.mapID",
     ])
@@ -4027,6 +4028,35 @@ private func proximityDrone(
     )
     #expect(recovered.disposition == .observation)
     #expect(recovered.observation?.aircraftId == "RID2CALTOPO12345")
+}
+
+@Test func assemblerAcceptsValidLocationImmediatelyAfterRepeatedZeroPositions() async throws {
+    let transmitter = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+    let assembler = OpenDroneIDTrackAssembler()
+    let start = Date(timeIntervalSince1970: 1_700_000_000)
+    let identity = try OpenDroneIDParser.parseBluetoothServiceData(
+        bluetoothServiceData(message: basicIDMessage("RID2CALTOPO12345"), counter: 0))
+    _ = await assembler.ingestWithResult(identity, transmitterID: transmitter,
+        source: .bluetoothLegacy, receivedAt: start, signalStrengthDbm: -60)
+    var zeroPosition = locationMessage()
+    zeroPosition.replaceSubrange(5..<13, with: Data(repeating: 0, count: 8))
+    // The field flight produced 22 zero-coordinate reports before its first fix.
+    for index in 1...22 {
+        let advertisement = try OpenDroneIDParser.parseBluetoothServiceData(
+            bluetoothServiceData(message: zeroPosition, counter: UInt8(index)))
+        let result = await assembler.ingestWithResult(advertisement, transmitterID: transmitter,
+            source: .bluetoothLegacy, receivedAt: start.addingTimeInterval(Double(index)), signalStrengthDbm: -60)
+        #expect(result.disposition == .invalidLocation)
+        #expect(result.observation == nil)
+        #expect(result.aircraftID == "RID2CALTOPO12345")
+    }
+    let firstFixAt = start.addingTimeInterval(51)
+    let valid = try OpenDroneIDParser.parseBluetoothServiceData(
+        bluetoothServiceData(message: locationMessage(), counter: 23))
+    let result = await assembler.ingestWithResult(valid, transmitterID: transmitter,
+        source: .bluetoothLegacy, receivedAt: firstFixAt, signalStrengthDbm: -60)
+    #expect(result.disposition == .observation)
+    #expect(result.observation?.receivedAt == firstFixAt)
 }
 
 @Test func nonLocationAircraftMessageRefreshesLifecycleWithoutRefreshingLocationSignal() async {
@@ -6444,7 +6474,7 @@ private func tag10FieldOfView(_ hex: String) -> (horizontal: Double, vertical: D
 
 @Test func landQueryDoesNotImplyPermissionAndKeepsUpdatingLabel() {
     let label = OperationalLandRestriction.chipLabel([], loading: false, hasError: false)
-    #expect(label == "No mapped restrictions")
+    #expect(label == "No mapped protected land")
     #expect(OperationalStatusChipText.land(severity: .normal, detailedLabel: label) == label)
     #expect(OperationalStatusChipText.land(severity: .normal, detailedLabel: "Land rules updating…") == "Land rules updating…")
 }

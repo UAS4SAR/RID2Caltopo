@@ -1,0 +1,11 @@
+--- a/internal/servers/rtmp/conn.go
++++ b/internal/servers/rtmp/conn.go
+@@ -562,7 +562,7 @@
+ 		if window >= 60*time.Second || (slow && window >= 5*time.Second) || err != nil {
+ 			// beforeMedia includes socket wait AND RTMP parsing; afterMedia includes
+ 			// synchronous stream forwarding, not asynchronous RTSP socket delivery.
+-			c.Log(logger.Debug, "RTMP timing path=%s wallMs=%d windowMs=%d reads=%d mediaUnits=%d readMs=%d beforeMediaMs=%d afterMediaMs=%d mediaGapMs=%d maxReadMs=%d maxBeforeMediaMs=%d maxAfterMediaMs=%d maxMediaGapMs=%d ended=%t socketWaitMs=%d nonSocketMs=%d maxSocketWaitMs=%d maxNonSocketMs=%d socketReads=%d socketBytes=%d maxSocketReadMs=%d",
++			c.Log(logger.Info, "RTMP timing path=%s wallMs=%d windowMs=%d reads=%d mediaUnits=%d readMs=%d beforeMediaMs=%d afterMediaMs=%d mediaGapMs=%d maxReadMs=%d maxBeforeMediaMs=%d maxAfterMediaMs=%d maxMediaGapMs=%d ended=%t socketWaitMs=%d nonSocketMs=%d maxSocketWaitMs=%d maxNonSocketMs=%d socketReads=%d socketBytes=%d maxSocketReadMs=%d",
+ 				pathName, readEnded.UnixMilli(), window.Milliseconds(), readCalls, mediaCount,
+ 				readElapsed.Milliseconds(), beforeMedia.Milliseconds(), afterMedia.Milliseconds(), mediaGap.Milliseconds(),
+ 				maxRead.Milliseconds(), maxBeforeMedia.Milliseconds(), maxAfterMedia.Milliseconds(), maxMediaGap.Milliseconds(), err != nil,

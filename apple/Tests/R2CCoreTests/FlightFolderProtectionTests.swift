@@ -2,6 +2,76 @@ import Foundation
 import Testing
 @testable import R2CCore
 
+@Suite(.serialized)
+struct FlightRecorderProtectionTests {
+    @Test func oldRawRecordingIsNotActiveAfterServerRestart() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer {
+            AppleFlightStorage.setRecorderRunning(false)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let day = "2026-10-09"
+        let folder = root.appendingPathComponent(day).appendingPathComponent("drone")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = folder.appendingPathComponent("drone_2026-10-09_01-10-52-961334.mp4")
+        try Data([1, 2, 3]).write(to: file)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1)], ofItemAtPath: file.path)
+        AppleFlightStorage.setRecorderRunning(true)
+        #expect(AppleFlightStorage.protectionReason(day, at: root) == nil)
+        #expect(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    @Test func thisRunsSegmentStaysProtectedAcrossMidnightUntilRecorderStops() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer {
+            AppleFlightStorage.setRecorderRunning(false)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let now = try #require(AppleFlightStorage.date("2026-10-25")).addingTimeInterval(300)
+        let started = now.addingTimeInterval(-600)
+        let previousDay = "2026-10-24"
+        let folder = root.appendingPathComponent(previousDay).appendingPathComponent("drone")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let raw = folder.appendingPathComponent("drone_2026-10-25_06-58-00-123456.mp4")
+        try Data([1, 2, 3]).write(to: raw)
+        try FileManager.default.setAttributes([.modificationDate: started.addingTimeInterval(5)], ofItemAtPath: raw.path)
+        AppleFlightStorage.setRecorderRunning(true, startedAt: started)
+        #expect(AppleFlightStorage.protectionReason(previousDay, at: root, now: now) == .recording)
+        // A repeated status update must not classify a paused writer as stale.
+        AppleFlightStorage.setRecorderRunning(true, startedAt: now)
+        #expect(AppleFlightStorage.protectionReason(previousDay, at: root, now: now) == .recording)
+        let snapshot = AppleFlightStorage.maintain(purge: false, at: root, maximum: 100, days: 1, now: now)
+        #expect(snapshot.used == 3)
+        #expect(FileManager.default.fileExists(atPath: raw.path))
+        AppleFlightStorage.setRecorderRunning(false)
+        #expect(AppleFlightStorage.protectionReason(previousDay, at: root, now: now) == nil)
+    }
+
+    @Test func oneHourWithoutWritesStopsImpliedRecordingProtectionButKeepsExplicitOwners() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let owner = "finalize-inactivity-test"
+        defer {
+            AppleFlightStorage.setRecorderRunning(false)
+            AppleFlightStorage.release(owner: owner)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let now = try #require(AppleFlightStorage.date("2026-10-25")).addingTimeInterval(300)
+        let day = "2026-10-24"
+        let folder = root.appendingPathComponent(day).appendingPathComponent("drone")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let raw = folder.appendingPathComponent("drone_2026-10-25_06-00-00-123456.mp4")
+        try Data([1, 2, 3]).write(to: raw)
+        AppleFlightStorage.setRecorderRunning(true, startedAt: now.addingTimeInterval(-7200))
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-3599)], ofItemAtPath: raw.path)
+        #expect(AppleFlightStorage.protectionReason(day, at: root, now: now) == .recording)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-3600)], ofItemAtPath: raw.path)
+        #expect(AppleFlightStorage.protectionReason(day, at: root, now: now) == nil)
+        AppleFlightStorage.protect(day, owner: owner)
+        #expect(AppleFlightStorage.protectionReason(day, at: root, now: now) == .inUse("recording finalization"))
+        #expect(FileManager.default.fileExists(atPath: raw.path))
+    }
+}
+
 struct FlightFolderProtectionTests {
     @Test func reasonsMatchAndroidWordingAndPriority() {
         #expect(FlightFolderProtection.evaluate(name: "2026-10-04", today: "2026-10-04", owners: ["diagnostic-log": "2026-10-04"],

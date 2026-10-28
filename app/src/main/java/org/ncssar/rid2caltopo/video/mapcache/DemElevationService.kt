@@ -52,6 +52,7 @@ internal class DemElevationService(context: Context) {
     private val demHttpCodeRegex = Regex("""dem http-fail code=(\d{3})""")
     private val networkFailCount = AtomicInteger(0)
     private val localGeoTiff = GeoTiffDemSource(context.applicationContext)
+    private val terrainReads = TerrainReadWorker()
     // Construction occurs on the UI thread; opening the store may wait for cache maintenance.
     private val cache: BlobCacheStore by lazy {
         BlobCacheStoreFactory.create(
@@ -82,7 +83,7 @@ internal class DemElevationService(context: Context) {
         // pixels and has its own decoded-block cache, so this is both cheap and spatially smooth.
         // The point cache retains approximately one-metre keys so EPQS can expose its
         // best-available 3DEP source resolution.
-        val localTiff = localGeoTiff.sample(lat, lng)
+        val localTiff = terrainReads.read { checkCancelled -> localGeoTiff.sample(lat, lng, checkCancelled) }
         if (localTiff != null && localTiff.elevationMeters.isFinite() && localTiff.elevationMeters >= -500.0 && localTiff.elevationMeters <= 10_000.0) {
             val sample = DemElevationSample(
                 elevationMeters = localTiff.elevationMeters,
@@ -171,8 +172,8 @@ internal class DemElevationService(context: Context) {
     }
 
     suspend fun prewarmLocalForLocation(lat: Double, lng: Double) = withContext(Dispatchers.IO) {
-        val sample = localGeoTiff.sample(lat, lng)
-        localGeoTiff.sample(lat + ARC_SEC, lng + ARC_SEC)
+        val sample = terrainReads.read { checkCancelled -> localGeoTiff.sample(lat, lng, checkCancelled) }
+        terrainReads.read { checkCancelled -> localGeoTiff.sample(lat + ARC_SEC, lng + ARC_SEC, checkCancelled) }
         sample != null && sample.elevationMeters.isFinite() && sample.horizontalResolutionMeters <= 1.5
     }
 

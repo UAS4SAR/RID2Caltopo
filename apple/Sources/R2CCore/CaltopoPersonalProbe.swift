@@ -35,6 +35,10 @@ public enum CaltopoPersonalProbe {
         guard matches(id, "^[A-Za-z0-9]{3,16}$") else { return nil }
         return URL(string: "\(origin)/api/v1/map/\(id)/since/0")
     }
+    public static func accountEndpoint(_ id: String) -> URL? {
+        guard matches(id, "^[A-Za-z0-9]{6}$") else { return nil }
+        return URL(string: "\(origin)/api/v1/acct/\(id)/since/0")
+    }
     public static func mediaID(_ path: String) -> String? {
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)
         guard (parts.count == 5 || (parts.count == 6 && ["data", "original"].contains(String(parts[5])))),
@@ -45,7 +49,7 @@ public enum CaltopoPersonalProbe {
     public static func cookieHeader(_ cookies: [HTTPCookie], for url: URL, now: Date = Date()) -> String? {
         guard url.scheme == "https", url.host == "caltopo.com", url.port == nil,
               url.user == nil, url.password == nil,
-              (url.path.hasPrefix("/api/v1/map/") || mediaID(url.path) != nil || url.path.range(of: "^/sideload/account/[A-Za-z0-9]+[.]json$", options: .regularExpression) != nil) else { return nil }
+              (url.path.hasPrefix("/api/v1/map/") || mediaID(url.path) != nil || (url.query == nil && matches(url.path, "^/api/v1/acct/[A-Za-z0-9]{6}/since/0$"))) else { return nil }
         let matching = cookies.filter { cookie in
             let domain = cookie.domain.lowercased()
             let path = cookie.path
@@ -186,48 +190,98 @@ public enum CaltopoPersonalCatalog {
     public static let identityScript = """
     (function(){if(location.origin!=='https://caltopo.com')return null;var s=window.sarsoft;var id=s&&(s.account_id||(s.account&&s.account.id));return id?JSON.stringify({id:String(id)}):null;})()
     """
-    public static func account(_ data: Data) throws -> [String: Any] {
-        guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+    /// Account API objects are processed on a worker before any UI state or grants change.
+    public struct Prepared: Sendable {
+        public let username: String
+        public let mediaOwners: [String: String]
+        public let maps: [CaltopoTeamMapNode]
+    }
+    public static func prepare(_ data: Data, expectedID: String) throws -> Prepared {
+        let normalized = try normalize(data, expectedID: expectedID)
+        let root = try JSONSerialization.jsonObject(with: normalized) as! [String: Any]
+        let maps = try CaltopoTeamMapDecoder.decode(data: normalized).sorted {
+            func rank(_ node: CaltopoTeamMapNode) -> Int {
+                node.id == "virtual_recents" ? 0 : (node.id == expectedID ? 1 : 2)
+            }
+            return rank($0) < rank($1)
+        }
+        return Prepared(username: root["username"] as! String,
+                        mediaOwners: root["mediaOwners"] as! [String: String], maps: maps)
+    }
+    public static func normalize(_ data: Data, expectedID: String) throws -> Data {
+        guard CaltopoPersonalProbe.accountEndpoint(expectedID) != nil,
+              let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               envelope["status"] as? String == "ok", envelope["error"] == nil,
               let result = envelope["result"] as? [String: Any],
-              let account = result["account"] as? [String: Any]
+              let sourceAccounts = result["accounts"] as? [[String: Any]],
+              let sourceFeatures = result["features"] as? [[String: Any]],
+              let personal = sourceAccounts.first(where: { $0["id"] as? String == expectedID }),
+              let personalProperties = personal["properties"] as? [String: Any],
+              personalProperties["class"] as? String == "UserAccount"
         else { throw CaltopoLiveClientError.invalidConfiguration }
-        return account
-    }
-    public static func normalize(_ data: Data, expectedID: String, username: String) throws -> Data {
-        let account = try account(data)
-        guard !username.isEmpty, expectedID.range(of: "^[A-Za-z0-9]+$", options: .regularExpression) != nil,
-              account["id"] as? String == expectedID
-        else { throw CaltopoLiveClientError.invalidConfiguration }
-        var accounts = [[String: Any]](); var features = [[String: Any]](); var mediaOwners = [String: String]()
-        let groups = (account["groupAccounts"] as? [[String: Any]] ?? []).filter { $0["isWorkspace"] as? Bool == true }
-        for a in [account] + groups {
-            guard let id = a["id"] as? String else { continue }
-            accounts.append(["id": id, "properties": ["title": id == expectedID ? username : (a["alias"] as? String ?? id)]])
-            for key in ["folders", "tenants", "bookmarks"] {
-                for var item in a[key] as? [[String: Any]] ?? [] {
-                    guard var props = item["properties"] as? [String: Any] else { continue }
-                    if key == "bookmarks" {
-                        guard let mapID = props["mapId"] as? String, CaltopoPersonalProbe.mapID(mapID) != nil else { continue }
-                        item["id"] = mapID
-                        props["class"] = "CollaborativeMap"
-                        props["updated"] = props["mapUpdated"] ?? 0
-                    }
-                    if key != "folders", CaltopoPersonalProbe.mapID(item["id"] as? String ?? "") == nil { continue }
-                    if key != "folders", let mapID = item["id"] as? String {
-                        let owner = props["accountId"] as? String ?? id
-                        let canOwn = (account["groupAccounts"] as? [[String: Any]] ?? []).contains {
-                            $0["id"] as? String == owner && ($0["type"] as? Int ?? 0) >= 16
-                        }
-                        mediaOwners[mapID] = canOwn ? owner : expectedID
-                    }
-                    props["accountId"] = id
-                    item["properties"] = props
-                    features.append(item)
+        func text(_ value: Any?) -> String? {
+            guard let value = value as? String else { return nil }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        let fullName = [text(personalProperties["firstName"]), text(personalProperties["lastName"])].compactMap { $0 }.joined(separator: " ")
+        let username = text(fullName) ?? text(personalProperties["title"]) ?? text(personalProperties["alias"]) ?? text(personalProperties["email"]) ?? expectedID
+        let relations = result["rels"] as? [[String: Any]] ?? []
+        let groups = result["groups"] as? [[String: Any]] ?? []
+        var membership = [String: Int]()
+        for relation in groups + relations {
+            guard let props = relation["properties"] as? [String: Any],
+                  props["class"] as? String == "UserAccountGroupRel",
+                  props["accountId"] as? String == expectedID,
+                  let id = props["referenceAccountId"] as? String,
+                  CaltopoPersonalProbe.accountEndpoint(id) != nil,
+                  let permission = props["type"] as? Int else { continue }
+            // Conflicting duplicate metadata must never increase photo ownership rights.
+            membership[id] = min(membership[id] ?? permission, permission)
+        }
+        let visible = [personal] + sourceAccounts.filter {
+            guard let id = $0["id"] as? String, id != expectedID, (membership[id] ?? 0) > 0,
+                  let props = $0["properties"] as? [String: Any] else { return false }
+            return props["class"] as? String == "UserAccount"
+        }
+        var mapsByID = [String: [String: Any]]()
+        for feature in sourceFeatures {
+            guard let id = feature["id"] as? String, let props = feature["properties"] as? [String: Any],
+                  props["class"] as? String == "CollaborativeMap", CaltopoPersonalProbe.mapID(id) != nil else { continue }
+            mapsByID[id] = feature
+        }
+        var accounts = [[String: Any]](), features = [[String: Any]](), mediaOwners = [String: String]()
+        for account in visible {
+            let id = account["id"] as! String
+            let props = account["properties"] as? [String: Any] ?? [:]
+            accounts.append(["id": id, "properties": ["title": id == expectedID ? username : (text(props["alias"]) ?? text(props["title"]) ?? id)]])
+            for feature in sourceFeatures {
+                guard let props = feature["properties"] as? [String: Any], props["accountId"] as? String == id,
+                      let kind = props["class"] as? String, let featureID = feature["id"] as? String else { continue }
+                if kind == "UserFolder" { features.append(feature) }
+                else if kind == "CollaborativeMap", CaltopoPersonalProbe.mapID(featureID) != nil {
+                    features.append(feature)
+                    mediaOwners[featureID] = (membership[id] ?? 0) >= 16 ? id : expectedID
                 }
             }
+            for relation in relations {
+                guard let rel = relation["properties"] as? [String: Any], rel["class"] as? String == "UserAccountMapRel",
+                      rel["accountId"] as? String == id, let mapID = rel["mapId"] as? String,
+                      CaltopoPersonalProbe.mapID(mapID) != nil else { continue }
+                let original = mapsByID[mapID]?["properties"] as? [String: Any] ?? [:]
+                let owner = original["accountId"] as? String ?? expectedID
+                mediaOwners[mapID] = (membership[owner] ?? 0) >= 16 ? owner : expectedID
+                var map = original
+                map["class"] = "CollaborativeMap"; map["accountId"] = id
+                map["folderId"] = rel["folderId"] // Bookmark placement belongs to the listing account.
+                map["title"] = text(rel["title"]) ?? original["title"] ?? "Untitled Map"
+                map["updated"] = rel["mapUpdated"] ?? original["updated"] ?? 0
+                map["type"] = rel["type"]
+                features.append(["id": mapID, "type": "Feature", "properties": map])
+            }
         }
-        return try JSONSerialization.data(withJSONObject: ["accounts": accounts, "features": features, "mediaOwners": mediaOwners])
+        return try JSONSerialization.data(withJSONObject: ["username": username, "accountID": expectedID,
+            "accounts": accounts, "features": features, "mediaOwners": mediaOwners])
     }
 }
 

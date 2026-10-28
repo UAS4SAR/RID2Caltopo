@@ -429,7 +429,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     private static ExecutorService LivePublishExecutorPool = null;
     private static ExecutorService GeoJsonStatsExecutorPool = null;
     private static ExecutorService ArchiveScanExecutorPool = null;
-    private static ClientClassState Ccstate = null;
+    private static volatile ClientClassState Ccstate = null;
     private static final String BACKUP_PREFS_NAME = "rid2caltopo_public_state";
     private static final String BACKUP_KEY_ARCHIVE_PATH = "archive_path_uri";
     private static final String BACKUP_KEY_ARCHIVE_HINT = "archive_hint_uri";
@@ -448,7 +448,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     private static final Object DebugLogLock = new Object();
     private static boolean ShutdownInProgress = false;
     private static boolean AppExitRequested = false;
-    private static long DebugLogGeneration = 0L;
+    private static final java.util.concurrent.atomic.AtomicLong DebugLogGeneration = new java.util.concurrent.atomic.AtomicLong();
     private static volatile File TemporaryArchiveRootForSession = null;
 
     private static void ResetDebugOutputStream() {
@@ -462,7 +462,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         DebugLogPath = null;
         LogFilePath = null;
         BytesWrittenToDebugOutputStream = 0;
-        DebugLogGeneration++;
+        DebugLogGeneration.incrementAndGet();
     }
     private static volatile boolean ArchivePermissionMissingFlag = false;
 
@@ -1114,6 +1114,11 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     }
 
     public static void CTLog(String type, String tag, String msg) {
+        final long eventTime = System.currentTimeMillis();
+        DiagnosticLogWork.append(msg, () -> WriteDiagnosticLog(type, tag, msg, eventTime));
+    }
+
+    private static void WriteDiagnosticLog(String type, String tag, String msg, long eventTime) {
         synchronized (DebugLogLock) {
             OutputStream os = DebugOutputStream;
             if (null == os) return;
@@ -1124,7 +1129,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
                     DateTimeFormatter formatter = DateTimeFormatter.ofPattern(
                             "ddLLLHHmmss.SSS z XXX", Locale.US);
                     msg = String.format(Locale.US, "%s %s: %s %s\n  ", type,
-                            ZonedDateTime.now().format(formatter), tag,
+                            java.time.Instant.ofEpochMilli(eventTime).atZone(java.time.ZoneId.systemDefault()).format(formatter), tag,
                             RedactLocationFromDiagnosticMessage(msg));
                 }
                 byte[] bytes = msg.getBytes();
@@ -1427,7 +1432,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             } else if ("MUTUAL_AID".equals(profile.profileType)) {
                 label = (profile.displayName != null && !profile.displayName.isEmpty())
                         ? profile.displayName
-                        : "Mutual Aid";
+                        : "Organization";
             } else {
                 label = (profile.displayName != null && !profile.displayName.isEmpty())
                         ? profile.displayName
@@ -1454,14 +1459,14 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             if (baseLabel.isEmpty() && profile.displayName != null) {
                 baseLabel = profile.displayName.trim();
             }
-            if (baseLabel.isEmpty()) baseLabel = mutualAid ? "Mutual Aid" : "Home";
+            if (baseLabel.isEmpty()) baseLabel = mutualAid ? "Organization" : "Home";
             String credentialLabel = mutualAid && !baseLabel.toUpperCase(Locale.US).endsWith("-MA")
                     ? baseLabel + "-MA"
                     : baseLabel;
             options.add(new String[] {
                     profile.profileId != null ? profile.profileId : "",
                     credentialLabel,
-                    mutualAid ? "Mutual Aid" : "Home organization",
+                    mutualAid ? "Organization" : "Home organization",
                     Long.toString(profile.expiresAtEpochMs),
                     Boolean.toString(mutualAid)
             });
@@ -2499,7 +2504,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         if (!CaltopoCredentials.sniffTest(
                 new CaltopoCredentials(template.teamId, template.credentialId, template.credentialSecret)
         )) {
-            throw new RuntimeException("Mutual aid credentials file is missing required fields.");
+            throw new RuntimeException("Organization credentials file is missing required fields.");
         }
         SetMutualAidTemplate(template);
         NotifySettingsChanged();
@@ -2629,14 +2634,11 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
                 ccs.configFilesLoaded = AppConfigStore.recordLoadedConfigFile(ctxt, type, editor, updated);
             }
 
-            if (type.equals("ct_ridmap")) {
+            if (CredentialImportPolicy.allowsLocalConfig(type)) {
                 readRidmapFileContent(json);
-            } else if (type.equals("ct_credentials")) {
-                readCredentialsFileContent(json);
-            } else if (type.equals("ct_mutual_aid_credentials")) {
-                readMutualAidCredentialsFileContent(json);
-            } else if (FaaConfigManager.readConfigObject(json)) {
-                // handled by FAA config manager
+            } else {
+                ShowToast("Credential file imports are no longer supported. Scan a tracker enrollment QR.");
+                return false;
             }
             NotifySettingsChanged();
             ShowToast(String.format(Locale.US, "%s:%s successfully loaded.", type, fileVersion));
@@ -3166,7 +3168,12 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     private static ClientClassState GetState() {
         InitializeDebugTagRegistry();
         if (null == Ccstate) {
-            reloadPersistedStateInternal(false);
+            android.os.Looper main = android.os.Looper.getMainLooper();
+            if (main != null && android.os.Looper.myLooper() == main)
+                throw new IllegalStateException("Cold client settings must be prepared on a worker");
+            synchronized (StateReloadLock) {
+                if (Ccstate == null) reloadPersistedStateInternal(false);
+            }
             ClientClassState ccs = Ccstate;
             if (ccs != null && !ccs.cachedDroneSpecTable.isEmpty()) {
                 Bundle parameters = new Bundle();
@@ -3181,8 +3188,20 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         return Ccstate;
     }
 
-    public static synchronized boolean ReloadStateFromStore() {
-        return reloadPersistedStateInternal(true);
+    /** Called by the process startup worker before releasing the settings gate. */
+    public static void PrepareSavedSettings() {
+        // Another background entry point may already have published re-entrant
+        // provisional state. Do not release startup until its restore finishes.
+        synchronized (StateReloadLock) { GetState(); }
+    }
+
+    private static final Object StateReloadLock = new Object();
+    public static boolean ReloadStateFromStore() {
+        android.os.Looper main = android.os.Looper.getMainLooper();
+        if (main != null && android.os.Looper.myLooper() == main)
+            throw new IllegalStateException("Persisted settings reload must run on a worker");
+        // Do not hold the class monitor used by UI callbacks while restoring files/DataStore.
+        synchronized (StateReloadLock) { return reloadPersistedStateInternal(true); }
     }
 
     private static boolean reloadPersistedStateInternal(boolean notifySettings) {
@@ -3928,6 +3947,11 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
      * two callers could each create a Log_ file.
      */
     public static void InitArchiveDir() {
+        android.os.Looper main = android.os.Looper.getMainLooper();
+        if (main != null && android.os.Looper.myLooper() == main) {
+            DiagnosticLogWork.writer.execute(CaltopoClient::InitArchiveDir);
+            return;
+        }
         synchronized (InitArchiveDirLock) {
             InitArchiveDirLocked();
         }
@@ -3954,11 +3978,11 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
                         if (fileOutputStream != null && DebugOutputStream instanceof DeferredLogOutputStream) {
                             ((DeferredLogOutputStream) DebugOutputStream).attach(fileOutputStream);
                             DebugLogPath = logPath;
-                            DebugLogGeneration++;
+                            DebugLogGeneration.incrementAndGet();
                         } else if (fileOutputStream != null) {
                             DebugOutputStream = fileOutputStream;
                             DebugLogPath = logPath;
-                            DebugLogGeneration++;
+                            DebugLogGeneration.incrementAndGet();
                         } else {
                             Log.e(TAG, "CTError: InitArchiveDir(): openOutputStream returned null for " + logPath);
                         }
@@ -3996,6 +4020,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         TemporaryArchiveRootForSession = null;
         if (!ccs.archivePath.equals(pathString)) {
             ccs.archivePath = pathString;
+            org.ncssar.rid2caltopo.storage.OperationalStorage.archiveChanged(pathString);
             persistArchivePathBackup(pathString);
             persistArchiveHintBackup(pathString);
             ArchivePermissionMissingFlag = false;
@@ -4009,7 +4034,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     public static boolean UseTemporaryArchiveDirForSession() {
         Context ctxt = R2CApplication.getAppCtxt();
         if (ctxt == null) return false;
-        File root = new File(ctxt.getCacheDir(), "temporary-archive");
+        File root = org.ncssar.rid2caltopo.storage.TemporaryStorage.INSTANCE.directory(ctxt, "session-archive");
         if (!root.exists() && !root.mkdirs()) {
             CTWarn(TAG, "UseTemporaryArchiveDirForSession(): unable to create " + root);
             return false;
@@ -4044,6 +4069,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         if (ccs.archivePath.isEmpty()) return;
         persistArchiveHintBackup(ccs.archivePath);
         ccs.archivePath = "";
+        org.ncssar.rid2caltopo.storage.OperationalStorage.archiveChanged("");
         persistArchivePathBackup("");
         ArchiveState(reason);
     }
@@ -4156,12 +4182,13 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     }
 
     static void InstallDebugOutputStreamForTests(@NonNull OutputStream outputStream) {
+        try { DiagnosticLogWork.drainForTests(); } catch (Exception error) { throw new RuntimeException(error); }
         synchronized (DebugLogLock) {
             DebugOutputStream = outputStream;
             DebugLogPath = null;
             LogFilePath = "test";
             BytesWrittenToDebugOutputStream = 0;
-            DebugLogGeneration++;
+            DebugLogGeneration.incrementAndGet();
         }
     }
 
@@ -4174,17 +4201,19 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     }
 
     private static long CaptureDebugLogGeneration() {
-        synchronized (DebugLogLock) {
-            return DebugLogGeneration;
-        }
+        return DebugLogGeneration.get();
     }
 
     private static void CloseDebugOutputStreamForShutdown(long shutdownDebugLogGeneration) {
+        DiagnosticLogWork.finish(() -> CloseDebugOutputStreamOnWriter(shutdownDebugLogGeneration));
+    }
+
+    private static void CloseDebugOutputStreamOnWriter(long shutdownDebugLogGeneration) {
         synchronized (DebugLogLock) {
-            if (shutdownDebugLogGeneration != DebugLogGeneration) {
+            if (shutdownDebugLogGeneration != DebugLogGeneration.get()) {
                 Log.w(TAG, String.format(Locale.US,
                         "Skipping stale debug log close: shutdownGeneration=%d currentGeneration=%d",
-                        shutdownDebugLogGeneration, DebugLogGeneration));
+                        shutdownDebugLogGeneration, DebugLogGeneration.get()));
                 return;
             }
             if (null != DebugOutputStream) {
@@ -4265,9 +4294,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         synchronized (ShutdownLock) {
             AppExitRequested = false;
         }
-        synchronized (DebugLogLock) {
-            DebugLogGeneration++;
-        }
+        DebugLogGeneration.incrementAndGet();
         AppActiveStartedAtMsec = ApplicationIdleTimeoutPolicy.sessionStartedAtMsec(
                 AppActiveStartedAtMsec,
                 activityRecreated,

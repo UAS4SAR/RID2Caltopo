@@ -6,6 +6,12 @@ import Foundation
 import R2CCore
 import UIKit
 
+private final class AppleRemoteControlPreference: @unchecked Sendable {
+    private let defaults: UserDefaults
+    init(_ defaults: UserDefaults) { self.defaults = defaults }
+    var enabled: Bool { defaults.bool(forKey: "video.remoteControlEnabled") }
+}
+
 enum AppleTrackerCoordinationStatus: String, Sendable {
     case unconfigured = "Not configured"
     case unavailable = "Unavailable"
@@ -420,6 +426,10 @@ final class AppleTrackerCoordinator: ObservableObject {
     @Published private(set) var recommendedUpdateURL: URL?
     @Published private(set) var pendingVideoStreamRequest: AppleVideoStreamViewRequest?
     @Published private(set) var pendingRecordingDownloadRequest: AppleRecordingDownloadRequest?
+    private let remoteMediaConsent = RemoteMediaConsent()
+    private let remoteControlPreference: AppleRemoteControlPreference
+    private var recordingUploadTasks: [String: Task<Void, Never>] = [:]
+    private var recordingUploadGrants: [String: RemoteMediaConsent.Grant] = [:]
     private var approvedRecordingUploadsByRequestID: [String: AppleRecordingDownloadRequest] = [:]
     private var pendingVideoRequestExpiryTask: Task<Void, Never>?
     private var pendingRecordingRequestExpiryTask: Task<Void, Never>?
@@ -501,7 +511,17 @@ final class AppleTrackerCoordinator: ObservableObject {
     private let zoneID: String
     private var zoneName: String
     private var client: TrackerCoordinationClient
-    private var position = TrackerCoordinationPosition(latitude: 0, longitude: 0)
+    private var position = TrackerCoordinationPosition(latitude: nil, longitude: nil)
+    weak var operatorLocationProvider: AppleLocationProvider?
+
+    private var currentPosition: TrackerCoordinationPosition {
+        let location = operatorLocationProvider?.lastLocation
+        return TrackerCoordinationPosition(
+            latitude: location?.coordinate.latitude,
+            longitude: location?.coordinate.longitude,
+            caltopoRTTMilliseconds: position.caltopoRTTMilliseconds
+        )
+    }
     private var protocolState: TrackerCoordinationProtocolState
     private var session: URLSession?
     private var socket: URLSessionWebSocketTask?
@@ -544,6 +564,8 @@ final class AppleTrackerCoordinator: ObservableObject {
     private var managedVideoIncidentStartedAt = Date()
     private var managedVideoRecordingsBySessionID: [String: AppleManagedVideoRecording] = [:]
     private var managedVideoThumbnailTasks: [String: Task<Void, Never>] = [:]
+    private var managedVideoThumbnailAttempts: [String: UUID] = [:]
+    private var recordingThumbnailTaskIDs: Set<String> = []
     private var managedVideoThumbnailPreviewUntil = Date.distantPast
     private var managedVideoThumbnailPreviewTask: Task<Void, Never>?
     private var caltopoThumbnailRefreshTask: Task<Void, Never>?
@@ -587,6 +609,7 @@ final class AppleTrackerCoordinator: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        remoteControlPreference = AppleRemoteControlPreference(defaults)
         let pair = AsyncStream<TrackerCoordinationEvent>.makeStream(bufferingPolicy: .bufferingNewest(256))
         events = pair.stream
         eventContinuation = pair.continuation
@@ -598,6 +621,33 @@ final class AppleTrackerCoordinator: ObservableObject {
 
     deinit {
         eventContinuation.finish()
+    }
+
+    func remoteVideoControlChanged() {
+        refreshRemoteMediaConsent()
+        sendManagedVideoPresence()
+    }
+
+    private func refreshRemoteMediaConsent() {
+        remoteMediaConsent.update(enabled: remoteControlPreference.enabled)
+    }
+
+    private func receiveConsent(key: String, resource: String, requiresConsent: Bool) -> RemoteMediaConsent.Grant {
+        refreshRemoteMediaConsent()
+        return remoteMediaConsent.receive(key: key, resource: resource, serverRequiresConsent: requiresConsent)
+    }
+
+    private func watchAutomaticVideoGrant(_ grant: RemoteMediaConsent.Grant, requestID: String) {
+        guard grant.automatic, grant.isAllowed else { return }
+        grant.onRevocation { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.remoteMediaConsent.find(key: grant.key, resource: grant.resource) === grant
+                else { return }
+                self.remoteControlledVideoRequests.removeValue(forKey: requestID)
+                self.terminateRemoteVideoRequest(requestID: requestID, reason: "consent_withdrawn")
+            }
+        }
     }
 
     var coordinationRequired: Bool {
@@ -806,12 +856,18 @@ final class AppleTrackerCoordinator: ObservableObject {
     }
 
     func updatePosition(_ location: CLLocation?) {
-        guard let location else { return }
+        let hadLocation = position.latitude != nil
         position = TrackerCoordinationPosition(
-            latitude: location.coordinate.latitude,
-            longitude: location.coordinate.longitude,
+            latitude: location?.coordinate.latitude,
+            longitude: location?.coordinate.longitude,
             caltopoRTTMilliseconds: position.caltopoRTTMilliseconds
         )
+        if location == nil, hadLocation, connected {
+            let sequence = protocolState.nextHeartbeatSequence(sentAtMilliseconds: Self.nowMilliseconds)
+            if let data = try? TrackerCoordinationWire.heartbeat(client: client, position: currentPosition, sequence: sequence) {
+                send(data)
+            }
+        }
     }
 
     func updateCaltopoRTT(milliseconds: Int64?) {
@@ -853,14 +909,17 @@ final class AppleTrackerCoordinator: ObservableObject {
             model: "",
             ownerName: ""
         )
-        let range = position.latitude == 0 && position.longitude == 0
-            ? nil
-            : RidGeometry.relativePosition(
-                fromLatitude: position.latitude,
-                longitude: position.longitude,
+        let position = currentPosition
+        let range: Double?
+        if let latitude = position.latitude, let longitude = position.longitude {
+            range = RidGeometry.relativePosition(
+                fromLatitude: latitude, longitude: longitude,
                 toLatitude: track.lastObservation.latitude,
                 longitude: track.lastObservation.longitude
             )?.distanceMeters
+        } else {
+            range = nil
+        }
         let sighting = TrackerCoordinationSighting(
             identity: resolved,
             droneTimestampMilliseconds: Int64(track.lastObservation.receivedAt.timeIntervalSince1970 * 1_000),
@@ -892,6 +951,16 @@ final class AppleTrackerCoordinator: ObservableObject {
             publish(event)
         }
         flushPendingConfirmations()
+    }
+
+    /// Configuration resets transport state. Reapply only approvals that the
+    /// app's current-flight lifecycle still considers valid, never saved history.
+    func restoreCurrentFlightConfirmations(_ identities: [RidAircraftIdentity]) {
+        guard coordinationRequired else { return }
+        for identity in identities where !protocolState.isConfirmedLocally(remoteID: identity.remoteID) {
+            confirm(identity)
+            AppleLog.info("TrackerPeer", "Restored current-flight confirmation remoteId=\(identity.remoteID)")
+        }
     }
 
     func droneLost(remoteID: String) {
@@ -1091,7 +1160,7 @@ final class AppleTrackerCoordinator: ObservableObject {
         firstSightingsSent.removeAll()
         status = .connecting
         statusDetail = "Waiting for tracker hello"
-        if let hello = try? TrackerCoordinationWire.hello(client: client, position: position) {
+        if let hello = try? TrackerCoordinationWire.hello(client: client, position: currentPosition) {
             send(hello)
         }
         replayFirstSightings()
@@ -1291,6 +1360,7 @@ final class AppleTrackerCoordinator: ObservableObject {
                 + "quality=\(choice.width)x\(choice.height)@\(choice.fps) "
                 + "bitrate=\(choice.bitrateBps)"
         )
+        guard remoteMediaConsent.approve(key: "video|" + request.requestId) != nil else { return }
         redirectRemoteVideoStreams(to: request.requesterEmail)
         sendVideoStreamDecision(
             requestID: request.requestId,
@@ -1323,6 +1393,7 @@ final class AppleTrackerCoordinator: ObservableObject {
 
     func approveRecordingDownloadRequest() {
         guard let request = pendingRecordingDownloadRequest else { return }
+        guard remoteMediaConsent.approve(key: "recording|" + request.requestId) != nil else { return }
         approvedRecordingUploadsByRequestID[request.requestId] = request
         sendRecordingDownloadDecision(requestID: request.requestId, approved: true)
         AppleLog.info(
@@ -1340,6 +1411,7 @@ final class AppleTrackerCoordinator: ObservableObject {
 
     func declineRecordingDownloadRequest() {
         guard let request = pendingRecordingDownloadRequest else { return }
+        remoteMediaConsent.cancel(key: "recording|" + request.requestId)
         sendRecordingDownloadDecision(requestID: request.requestId, approved: false)
         pendingRecordingRequestExpiryTask?.cancel()
         pendingRecordingRequestExpiryTask = nil
@@ -1356,6 +1428,15 @@ final class AppleTrackerCoordinator: ObservableObject {
     }
 
     private func uploadRecording(_ request: AppleRecordingDownloadRequest) {
+        refreshRemoteMediaConsent()
+        guard recordingUploadTasks[request.requestId] == nil,
+              let grant = remoteMediaConsent.find(
+                key: "recording|" + request.requestId,
+                resource: request.streamSessionId + "|" + request.uploadPath),
+              grant.isAllowed else {
+            AppleLog.warning("TrackerPeer", "Recording transfer lacks current local approval")
+            return
+        }
         guard let recording = managedVideoRecordingsBySessionID[request.streamSessionId] else {
             approvedRecordingUploadsByRequestID.removeValue(forKey: request.requestId)
             AppleLog.warning("TrackerPeer", "Unable to attach requested recording \(request.streamSessionId)")
@@ -1378,8 +1459,25 @@ final class AppleTrackerCoordinator: ObservableObject {
         let backgroundLease = AppleBackgroundTransferLease(
             name: "Recording transfer \(request.requestId)"
         )
-        Task.detached(priority: .utility) { [weak self] in
+        let consent = remoteMediaConsent, preference = remoteControlPreference
+        let uploadSession = URLSession(configuration: .default)
+        grant.onRevocation { uploadSession.invalidateAndCancel() }
+        if grant.automatic {
+            grant.onRevocation { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.remoteMediaConsent.find(key: grant.key, resource: grant.resource) === grant
+                    else { return }
+                    self.sendRecordingDownloadDecision(requestID: request.requestId, approved: false)
+                }
+            }
+        }
+        recordingUploadGrants[request.requestId] = grant
+        recordingUploadTasks[request.requestId] = Task.detached(priority: .utility) { [weak self] in
+            defer { uploadSession.finishTasksAndInvalidate() }
             do {
+                consent.update(enabled: preference.enabled)
+                guard grant.isAllowed else { throw CancellationError() }
                 let values = try fileURL.resourceValues(forKeys: [.fileSizeKey])
                 let total = Int64(values.fileSize ?? 0)
                 guard total > 0 else { throw CocoaError(.fileReadCorruptFile) }
@@ -1388,6 +1486,9 @@ final class AppleTrackerCoordinator: ObservableObject {
                 let chunkSize: Int64 = 8 * 1024 * 1024
                 var start: Int64 = 0
                 while start < total {
+                    try Task.checkCancellation()
+                    consent.update(enabled: preference.enabled)
+                    guard grant.isAllowed else { throw CancellationError() }
                     try handle.seek(toOffset: UInt64(start))
                     let length = Int(min(chunkSize, total - start))
                     guard let data = try handle.read(upToCount: length), data.count == length else {
@@ -1407,7 +1508,9 @@ final class AppleTrackerCoordinator: ObservableObject {
                         "bytes \(start)-\(start + Int64(length) - 1)/\(total)",
                         forHTTPHeaderField: "Content-Range"
                     )
-                    let (_, response) = try await URLSession.shared.upload(for: upload, from: data)
+                    consent.update(enabled: preference.enabled)
+                    guard grant.isAllowed else { throw CancellationError() }
+                    let (_, response) = try await uploadSession.upload(for: upload, from: data)
                     let code = (response as? HTTPURLResponse)?.statusCode ?? 0
                     guard (200..<300).contains(code) else {
                         throw URLError(.badServerResponse, userInfo: ["status": code])
@@ -1419,7 +1522,12 @@ final class AppleTrackerCoordinator: ObservableObject {
                 AppleLog.error("TrackerPeer", "Recording transfer failed: \(error.localizedDescription)")
             }
             await MainActor.run {
-                self?.approvedRecordingUploadsByRequestID.removeValue(forKey: request.requestId)
+                if let self, self.recordingUploadGrants[request.requestId] === grant {
+                    self.recordingUploadTasks.removeValue(forKey: request.requestId)
+                    self.recordingUploadGrants.removeValue(forKey: request.requestId)
+                    self.approvedRecordingUploadsByRequestID.removeValue(forKey: request.requestId)
+                    self.remoteMediaConsent.finish(key: "recording|" + request.requestId, grant: grant)
+                }
                 backgroundLease.end()
             }
         }
@@ -1704,11 +1812,21 @@ final class AppleTrackerCoordinator: ObservableObject {
     }
 
     private func refreshManagedVideoThumbnails(forceSessionIDs: Set<String> = []) {
+        // Automatic catalog previews must not compete with a live flight for VideoToolbox,
+        // storage or CPU. Existing thumbnails stay usable until idle work can resume.
+        if hasLiveManagedVideoStream {
+            for sessionID in recordingThumbnailTaskIDs {
+                managedVideoThumbnailTasks[sessionID]?.cancel()
+            }
+        }
+        let availableSlots = max(0, 2 - managedVideoThumbnailTasks.count)
+        guard availableSlots > 0 else { return }
         let candidates = managedVideoStreams.filter { advertisement in
             (advertisement.thumbnailRevision.isEmpty ||
              (advertisement.mediaKind == "live" &&
               forceSessionIDs.contains(advertisement.sessionId))) &&
-            managedVideoThumbnailTasks[advertisement.sessionId] == nil
+            managedVideoThumbnailTasks[advertisement.sessionId] == nil &&
+            (advertisement.mediaKind == "live" || !hasLiveManagedVideoStream)
         }.sorted { left, right in
             let leftIsLive = left.mediaKind == "live"
             let rightIsLive = right.mediaKind == "live"
@@ -1716,30 +1834,42 @@ final class AppleTrackerCoordinator: ObservableObject {
             return left.sessionId.localizedCaseInsensitiveCompare(right.sessionId)
                 == .orderedAscending
         }
-        for advertisement in candidates.prefix(8) {
+        for advertisement in candidates.prefix(availableSlots) {
             let sessionID = advertisement.sessionId
+            let attemptID = UUID()
+            managedVideoThumbnailAttempts[sessionID] = attemptID
+            if advertisement.mediaKind != "live" { recordingThumbnailTaskIDs.insert(sessionID) }
             managedVideoThumbnailTasks[sessionID] = Task { @MainActor [weak self] in
                 guard let self else { return }
+                var ownedSource: AppleVideoFrameSource?
+                defer {
+                    ownedSource?.stop()
+                    if self.managedVideoThumbnailAttempts[sessionID] == attemptID {
+                        self.managedVideoThumbnailAttempts.removeValue(forKey: sessionID)
+                        self.recordingThumbnailTaskIDs.remove(sessionID)
+                        self.managedVideoThumbnailTasks.removeValue(forKey: sessionID)
+                    }
+                }
+                guard !Task.isCancelled else { return }
                 let recording = self.managedVideoRecordingsBySessionID[sessionID]
-                let ownedSource: AppleVideoFrameSource?
                 let source: AppleVideoFrameSource?
                 if let recording {
+                    guard !self.hasLiveManagedVideoStream else { return }
                     let playback = AppleVideoFrameSource()
                     playback.startPlayback(url: recording.url)
                     ownedSource = playback
                     source = playback
-                    try? await Task.sleep(for: .milliseconds(900))
+                    do { try await Task.sleep(for: .milliseconds(900)) }
+                    catch { return }
+                    guard !Task.isCancelled, !self.hasLiveManagedVideoStream else { return }
                 } else {
-                    ownedSource = nil
                     source = self.managedVideoSourcesBySessionID[sessionID]
-                }
-                defer {
-                    ownedSource?.stop()
-                    self.managedVideoThumbnailTasks.removeValue(forKey: sessionID)
                 }
                 guard let snapshot = try? await source?.captureSnapshot() else { return }
                 let thumbnail = await Task.detached(priority: .utility) { Self.catalogThumbnailJPEG(snapshot.jpegData) }.value
-                guard let jpeg = thumbnail,
+                guard !Task.isCancelled,
+                      self.managedVideoThumbnailAttempts[sessionID] == attemptID,
+                      let jpeg = thumbnail,
                       jpeg.count <= 256 * 1024,
                       let index = self.managedVideoStreams.firstIndex(where: {
                           $0.sessionId == sessionID
@@ -1931,7 +2061,11 @@ final class AppleTrackerCoordinator: ObservableObject {
                     AppleLog.warning("TrackerPeer", "Requested recording is unavailable")
                     return true
                 }
-                if request.consentRequired {
+                let grant = receiveConsent(
+                    key: "recording|" + request.requestId,
+                    resource: request.streamSessionId + "|" + request.uploadPath,
+                    requiresConsent: request.consentRequired)
+                if !grant.isAllowed {
                     pendingRecordingDownloadRequest = request
                     scheduleRecordingRequestExpiry(request)
                     AppleSpokenWarningCenter.shared.speak(
@@ -1966,6 +2100,7 @@ final class AppleTrackerCoordinator: ObservableObject {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             lastVideoPreflightOfferByRequestID.removeValue(forKey: requestID)
             approvedVideoStreamRequests.removeValue(forKey: requestID)
+            remoteMediaConsent.cancel(key: "video|" + requestID)
             remoteControlledVideoRequests.removeValue(forKey: requestID)
             stopLocalMediaSession(requestID: requestID)
             if pendingVideoStreamRequest?.requestId == requestID {
@@ -2035,7 +2170,11 @@ final class AppleTrackerCoordinator: ObservableObject {
                 )
                 return true
             }
-            if !request.consentRequired {
+            let grant = receiveConsent(
+                key: "video|" + request.requestId, resource: request.streamSessionId,
+                requiresConsent: request.consentRequired)
+            if grant.isAllowed {
+                watchAutomaticVideoGrant(grant, requestID: request.requestId)
                 remoteControlledVideoRequests[request.requestId] = request
                 AppleLog.info(
                     "VideoApproval",
@@ -2106,6 +2245,13 @@ final class AppleTrackerCoordinator: ObservableObject {
                     "TrackerPeer",
                     "Replacing media peer after browser reconnect request=\(offer.requestId)"
                 )
+            }
+            refreshRemoteMediaConsent()
+            guard let consentGrant = remoteMediaConsent.find(
+                key: "video|" + offer.requestId, resource: offer.streamSessionId),
+                  consentGrant.isAllowed else {
+                terminateRemoteVideoRequest(requestID: offer.requestId, reason: "consent_required")
+                return
             }
             let remoteApproval = remoteControlledVideoRequests[offer.requestId].flatMap {
                 request -> AppleApprovedVideoStream? in
@@ -2232,6 +2378,8 @@ final class AppleTrackerCoordinator: ObservableObject {
                 "Now sharing video stream with "
                     + Self.spokenEmailAddress(approval.request.requesterEmail)
             )
+            consentGrant.onRevocation { peer.close() }
+            let consent = remoteMediaConsent, preference = remoteControlPreference
             peer.start(
                 requestID: offer.requestId,
                 offerSDP: offer.sdp,
@@ -2239,7 +2387,11 @@ final class AppleTrackerCoordinator: ObservableObject {
                 width: approval.quality.width,
                 height: approval.quality.height,
                 fps: approval.quality.fps,
-                bitrateBps: approval.quality.bitrateBps
+                bitrateBps: approval.quality.bitrateBps,
+                authorization: {
+                    consent.update(enabled: preference.enabled)
+                    return consentGrant.isAllowed
+                }
             )
             AppleLog.info(
                 "TrackerPeer",
@@ -2328,6 +2480,8 @@ final class AppleTrackerCoordinator: ObservableObject {
     }
 
     private func terminateRemoteVideoRequest(requestID: String, reason: String) {
+        remoteMediaConsent.cancel(key: "video|" + requestID)
+        remoteControlledVideoRequests.removeValue(forKey: requestID)
         stopLocalMediaSession(requestID: requestID)
         approvedVideoStreamRequests.removeValue(forKey: requestID)
         let payload: [String: Any] = [
@@ -2534,7 +2688,7 @@ final class AppleTrackerCoordinator: ObservableObject {
                 let sequence = self.protocolState.nextHeartbeatSequence(sentAtMilliseconds: Self.nowMilliseconds)
                 if let data = try? TrackerCoordinationWire.heartbeat(
                     client: self.client,
-                    position: self.position,
+                    position: self.currentPosition,
                     sequence: sequence
                 ) {
                     self.send(data)
@@ -2804,9 +2958,7 @@ final class AppleTrackerCoordinator: ObservableObject {
         }
         let payload: [String: Any] = [
             "type": "video_stream_advertisement",
-            "remoteControlEnabled": UserDefaults.standard.bool(
-                forKey: "video.remoteControlEnabled"
-            ),
+            "remoteControlEnabled": remoteControlPreference.enabled,
             "incidentName": managedVideoIncidentName,
             "deviceName": AppleDeviceIdentity.displayName,
             "timeZone": TimeZone.current.identifier,
@@ -2975,6 +3127,12 @@ final class AppleTrackerCoordinator: ObservableObject {
     }
 
     private func stopTransport() {
+        remoteMediaConsent.reset()
+        for task in recordingUploadTasks.values { task.cancel() }
+        recordingUploadTasks.removeAll()
+        recordingUploadGrants.removeAll()
+        approvedRecordingUploadsByRequestID.removeAll()
+        remoteControlledVideoRequests.removeAll()
         standbyTask?.cancel()
         standbyTask = nil
         reconnectTask?.cancel()

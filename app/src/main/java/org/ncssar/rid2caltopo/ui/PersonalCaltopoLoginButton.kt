@@ -24,7 +24,7 @@ fun rememberPersonalCredentialsAction(onReady: () -> Unit): Pair<Boolean, () -> 
         busy = true
         val generation = CaltopoPersonalSession.generation
         scope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching { CaltopoPersonalSession.readCatalog() } }
+            val result = withContext(Dispatchers.IO) { runCatching { CaltopoPersonalSession.prepareCatalog(CaltopoPersonalSession.readCatalog()) } }
             busy = false
             if (generation != CaltopoPersonalSession.generation) return@launch
             result.fold(onSuccess = { json ->
@@ -61,7 +61,7 @@ fun rememberPersonalAccountEditor(): () -> Unit {
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         val generation = CaltopoPersonalSession.generation
         scope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching { CaltopoPersonalSession.readCatalog() } }
+            val result = withContext(Dispatchers.IO) { runCatching { CaltopoPersonalSession.prepareCatalog(CaltopoPersonalSession.readCatalog()) } }
             if (generation != CaltopoPersonalSession.generation) return@launch
             result.onSuccess { CaltopoPersonalSession.acceptCatalog(it) }.onFailure {
                 if (it is PersonalCaltopoLoginRequired) {

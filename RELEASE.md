@@ -259,6 +259,12 @@ guidance; store rollback controls do not remove an installed app.
   agreements in a releasable state.
 - Representative physical iPhone/iPad hardware for the required matrix.
 
+Complete the current [App Review preparation checklist](apple/AppStore/APP_STORE_CONNECT_CHECKLIST.md#review-preparation-for-every-submission)
+before submission. Attach exact-build hardware demonstration and protected-service
+review access; use the [submission audit](apple/AppStore/SUBMISSION_AUDIT_2026-10-23.md)
+to resolve remaining questions. Local metadata verification is not verification
+of live App Store Connect declarations or reviewer access.
+
 Store Apple credentials in the Keychain or the supported private
 `~/.appstoreconnect/private_keys` location. Never commit them.
 
@@ -385,3 +391,46 @@ move a published tag.
 - [ ] Final store versions, dates, links, and known issues recorded
 
 Release-note details are in [the unified release-note guide](release-notes/README.md).
+
+## Hosted license and relinking materials
+
+The Apple target uses the pinned source-built WebRTC XCFramework. Prepare it
+with `bash apple/Native/WebRTC/build-xcframework.sh` before building from a clean
+checkout. Its recipe records GN-derived notices for both slices and regenerates
+the shared legal resources.
+
+Apple arm64 device Release builds prepare the corresponding source/object ZIP
+under `apple/Build/ComplianceMaterials/<material-id>/`. The app contains only
+license texts, the LGPL 2.1 section 6(c) written offer and
+`legal/relink-materials.json`. License & Notices opens the public GitHub download.
+The 72 MiB ZIP is not embedded in the app.
+
+The material identity covers the app code UUID, dependency UUID, source,
+compiled objects, native libraries, notices, and build/link scripts. Existing
+verified cache entries are reused without recompressing or uploading them.
+Re-signing or reinstalling alone does not require a new material release. A
+change to relevant source or build inputs requires matching new materials.
+
+Before distributing a new referring app build, publish its prepared artifacts:
+
+```bash
+python3 tools/licenses/publish_apple_relink.py --app /path/to/RID2CaltopoApple.app --target REMOTE_COMMIT
+```
+
+Use an existing remote repository commit for the compliance tag. The command
+creates a draft, uploads the ZIP/manifest/checksum, then publishes it without
+changing the latest application release. Existing published assets are never
+replaced. The attached relinking ZIP is authoritative; GitHub's automatic source
+archives describe the tag commit and may not contain the working-tree materials.
+
+Archive and IPA verification require the public release and matching GitHub
+asset checksums. A local successful build alone is not distribution-ready when
+its corresponding material set has not yet been published. Public downloads
+must work without authentication. Retain every referenced release for at least
+three years after its last referring build is distributed, and fulfill requests
+at kjt@uas4sar.com if GitHub is unavailable. Keep an independent retained copy.
+
+Native dependency changes require a new license review before refreshing the
+reviewed native input hashes. Repeat the recipient replacement/relink test when
+the relinking inputs or procedure change. Final production signing, live store
+fields and device/media qualification remain separate release work.

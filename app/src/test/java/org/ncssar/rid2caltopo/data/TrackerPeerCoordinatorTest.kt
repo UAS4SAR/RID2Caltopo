@@ -397,6 +397,7 @@ class TrackerPeerCoordinatorTest {
 
     @Test
     fun recordingDownloadRequest_preservesRemoteControlConsentPolicy() {
+        TrackerPeerCoordinator.setRemoteControlForTesting(true)
         var received: RecordingDownloadRequest? = null
         coordinator.setVideoStreamRequestListener(object : PeerCoordinator.VideoStreamRequestListener {
             override fun onVideoStreamRequest(request: VideoStreamViewRequest) = Unit
@@ -426,6 +427,70 @@ class TrackerPeerCoordinatorTest {
     }
 
     @Test
+    fun staleAutomaticRecordingRequest_requiresCurrentLocalApproval() {
+        TrackerPeerCoordinator.setRemoteControlForTesting(false)
+        var received: RecordingDownloadRequest? = null
+        coordinator.setVideoStreamRequestListener(object : PeerCoordinator.VideoStreamRequestListener {
+            override fun onVideoStreamRequest(request: VideoStreamViewRequest) = Unit
+            override fun onRecordingDownloadRequest(request: RecordingDownloadRequest) { received = request }
+        })
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+        transport.receive(JSONObject().put("type", "recording_download_request")
+            .put("requestId", "withdrawn-recording").put("requesterEmail", "viewer@example.org")
+            .put("streamSessionId", "recording").put("uploadPath", "/recording-downloads/withdrawn/content")
+            .put("consentRequired", false).put("expiresAt", "2099-01-01T00:00:00Z").toString())
+        assertTrue(received!!.consentRequired)
+        assertFalse(RemoteVideoControlPrefs.consent.find("recording|withdrawn-recording", "recording|/recording-downloads/withdrawn/content")!!.isAllowed)
+        coordinator.respondToRecordingDownloadRequest("withdrawn-recording", true)
+        assertTrue(RemoteVideoControlPrefs.consent.find("recording|withdrawn-recording", "recording|/recording-downloads/withdrawn/content")!!.isAllowed)
+        TrackerPeerCoordinator.setRemoteControlForTesting(false)
+        assertTrue(RemoteVideoControlPrefs.consent.find("recording|withdrawn-recording", "recording|/recording-downloads/withdrawn/content")!!.isAllowed)
+    }
+
+    @Test
+    fun automaticVideoOffer_cannotStartAfterWithdrawalAndReenable() {
+        TrackerPeerCoordinator.setRemoteControlForTesting(true)
+        var request: VideoStreamViewRequest? = null
+        var offers = 0
+        coordinator.setVideoStreamRequestListener(object : PeerCoordinator.VideoStreamRequestListener {
+            override fun onVideoStreamRequest(value: VideoStreamViewRequest) { request = value }
+            override fun onVideoMediaOffer(offer: VideoMediaOffer) { offers++ }
+        })
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+        coordinator.updateManagedVideoStreams("Training", listOf(
+            ManagedVideoStreamAdvertisement("camera", "Drone", 1920, 1080, 30.0, 4000000, "h264")))
+        transport.receive(JSONObject().put("type", "video_stream_request")
+            .put("requestId", "old-auto").put("requesterEmail", "viewer@example.org")
+            .put("streamSessionId", "camera").put("consentRequired", false)
+            .put("expiresAt", "2099-01-01T00:00:00Z").toString())
+        assertFalse(request!!.consentRequired)
+        TrackerPeerCoordinator.setRemoteControlForTesting(false)
+        TrackerPeerCoordinator.setRemoteControlForTesting(true)
+        val offer = JSONObject().put("type", "video_media_offer")
+            .put("requestId", "old-auto").put("streamSessionId", "camera")
+            .put("sdp", "v=0\r\n").toString()
+        transport.receive(offer)
+        assertEquals(0, offers)
+        coordinator.respondToVideoStreamRequest("old-auto", true, 640, 480, 15.0, 500000)
+        transport.receive(offer)
+        assertEquals(1, offers)
+    }
+
+    @Test
+    fun unapprovedOrReplayedMediaOffer_neverReachesMediaListener() {
+        var offers = 0
+        coordinator.setVideoStreamRequestListener(object : PeerCoordinator.VideoStreamRequestListener {
+            override fun onVideoStreamRequest(request: VideoStreamViewRequest) = Unit
+            override fun onVideoMediaOffer(offer: VideoMediaOffer) { offers++ }
+        })
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+        transport.receive(JSONObject().put("type", "video_media_offer")
+            .put("requestId", "never-approved").put("streamSessionId", "camera")
+            .put("sdp", "v=0\r\n").toString())
+        assertEquals(0, offers)
+    }
+
+    @Test
     fun recordingUploadOrigin_convertsWebSocketSchemesToHttp() {
         val method = TrackerPeerCoordinator::class.java.getDeclaredMethod(
             "trackerHttpOrigin",
@@ -451,7 +516,8 @@ class TrackerPeerCoordinatorTest {
         assertTrue(methodStart >= 0 && methodEnd > methodStart)
         val method = coordinatorSource.substring(methodStart, methodEnd)
         assertTrue(method.contains("uploadRecordingDownloadNow(request);"))
-        assertFalse(method.contains("return;"))
+        assertTrue(method.contains("grant.isAllowed()"))
+        assertTrue(method.indexOf("grant.isAllowed()") < method.indexOf("uploadRecordingDownloadNow(request);"))
 
         val activitySource = projectSource(
             "app/src/main/java/org/ncssar/rid2caltopo/app/R2CActivity.kt"
@@ -460,8 +526,8 @@ class TrackerPeerCoordinatorTest {
         val approvalEnd = activitySource.indexOf("dismissButton", startIndex = approvalStart)
         val approval = activitySource.substring(approvalStart, approvalEnd)
         assertTrue(
-            approval.indexOf(".uploadRecordingDownload(request)") <
-                approval.indexOf(".respondToRecordingDownloadRequest(request.requestId, true)")
+            approval.indexOf(".respondToRecordingDownloadRequest(request.requestId, true)") <
+                approval.indexOf(".uploadRecordingDownload(request)")
         )
     }
 

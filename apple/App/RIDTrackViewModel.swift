@@ -5,7 +5,6 @@ import R2CCore
 @MainActor
 final class RIDTrackViewModel: ObservableObject {
     private static let deferredVideoLinkRetryNanoseconds: UInt64 = 2_000_000_000
-    private static let deferredVideoLinkRetryCount = 15
     private static let caltopoFinishRetryNanoseconds: UInt64 = 5_000_000_000
     private static let caltopoFinishRetryCount = 3
     let shortFlightDecisions = ShortFlightRecordingGate()
@@ -173,6 +172,7 @@ final class RIDTrackViewModel: ObservableObject {
     private var ownershipActivationTasks: [String: Task<Void, Never>] = [:]
     private var archiveConfiguration: AppleTrackArchiveConfiguration?
     private var localDeviceMarker: CaltopoDeviceMarker?
+    private var locationConsent = AppleLocationConsent()
     private var localDeviceMarkerPublishingEnabled = true
     private weak var clueStore: AppleClueStore?
     /// Clues saved, changed or deleted after their flight ended whose KMZ rebuild is not queued yet.
@@ -298,6 +298,14 @@ final class RIDTrackViewModel: ObservableObject {
     }
 
     func ingest(_ observation: RidObservation) async {
+        let ingestStartedAt = Date()
+        defer {
+            // Coordinates are deliberately excluded so durable privacy filtering preserves the
+            // receive/apply timing evidence needed to distinguish radio gaps from UI backlog.
+            let receivedMs = Int64(observation.receivedAt.timeIntervalSince1970 * 1_000)
+            let droneMs = observation.droneTimestamp.map { Int64($0.timeIntervalSince1970 * 1_000) } ?? -1
+            AppleLog.info("RIDTiming", "stage=track_ingest aircraft=\(observation.aircraftId) transport=\(observation.source.rawValue) receivedMs=\(receivedMs) droneMs=\(droneMs) receiveToStartMs=\(Int(ingestStartedAt.timeIntervalSince(observation.receivedAt) * 1_000)) processingMs=\(Int(Date().timeIntervalSince(ingestStartedAt) * 1_000))")
+        }
         if observation.source != .djiVideo,
            let accepted = lastAcceptedStreamAt[observation.aircraftId],
            Date().timeIntervalSince(accepted) >= 0, Date().timeIntervalSince(accepted) <= 3,
@@ -578,11 +586,14 @@ final class RIDTrackViewModel: ObservableObject {
     }
 
     func prefetchTerrainForDeviceLocation(latitude: Double, longitude: Double) {
+        let consent = locationConsent
+        guard let generation = consent.currentGeneration else { return }
         let terrainService = self.terrainService
         Task(priority: .utility) {
             await terrainService.prefetch(
                 latitude: latitude, longitude: longitude,
-                radiusMeters: OperationalTerrainPrefetch.operatingRadiusMeters
+                radiusMeters: OperationalTerrainPrefetch.operatingRadiusMeters,
+                isAllowed: { consent.allows(generation) }
             )
         }
     }
@@ -829,25 +840,36 @@ final class RIDTrackViewModel: ObservableObject {
                 trackFolderName: trackFolderName
             )
             await self.queueCompletedDeferredFlights()
-            if let marker = await MainActor.run(body: { self.localDeviceMarker }) {
-                await caltopoPublisher.publishDeviceMarker(marker, force: true)
+            await MainActor.run {
+                if let marker = self.localDeviceMarker { self.publishLocalDeviceMarker(marker, force: true) }
             }
         }
     }
 
+    func configureLocationConsent(_ consent: AppleLocationConsent) {
+        locationConsent = consent
+    }
+
+    func clearLocalDeviceLocation() {
+        localDeviceMarker = nil
+        Task { [caltopoPublisher] in await caltopoPublisher.removeDeviceMarker() }
+    }
+
     func publishLocalDeviceMarker(_ marker: CaltopoDeviceMarker, force: Bool = false) {
+        let consent = locationConsent
+        guard let generation = consent.currentGeneration else { return }
         localDeviceMarker = marker
         guard localDeviceMarkerPublishingEnabled else { return }
         Task { [caltopoPublisher] in
-            await caltopoPublisher.publishDeviceMarker(marker, force: force)
+            await caltopoPublisher.publishDeviceMarker(marker, force: force, consent: consent, consentGeneration: generation)
         }
     }
 
     func setLocalDeviceMarkerPublishingEnabled(_ enabled: Bool) async {
         localDeviceMarkerPublishingEnabled = enabled
         if enabled {
-            if let localDeviceMarker {
-                await caltopoPublisher.publishDeviceMarker(localDeviceMarker, force: true)
+            if let localDeviceMarker, let generation = locationConsent.currentGeneration {
+                await caltopoPublisher.publishDeviceMarker(localDeviceMarker, force: true, consent: locationConsent, consentGeneration: generation)
             }
         } else {
             await caltopoPublisher.removeDeviceMarker()
@@ -1503,9 +1525,16 @@ final class RIDTrackViewModel: ObservableObject {
         trackStartedAt: Date,
         trackEndedAt: Date
     ) async {
-        for _ in 0..<Self.deferredVideoLinkRetryCount {
+        var retryWindow = RecordingLinkRetryWindow(now: ProcessInfo.processInfo.systemUptime)
+        while retryWindow.shouldRetry(
+            now: ProcessInfo.processInfo.systemUptime,
+            finalizing: RecordingFinalizationActivity.shared.isActive(matching: designators)
+        ) {
             guard !Task.isCancelled else { return }
-            try? await Task.sleep(nanoseconds: Self.deferredVideoLinkRetryNanoseconds)
+            guard await caltopoPublisher.acceptsDeferredUpdate(for: archivedTrack) else { return }
+            do {
+                try await Task.sleep(nanoseconds: Self.deferredVideoLinkRetryNanoseconds)
+            } catch { return }
             guard let videoURL = peerCoordinator?.capturedVideoURL(
                 matching: designators,
                 trackStartedAt: trackStartedAt,

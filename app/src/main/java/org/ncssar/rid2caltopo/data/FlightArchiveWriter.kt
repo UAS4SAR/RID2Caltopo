@@ -36,6 +36,7 @@ object PlainFileSafeWriter {
     @JvmOverloads
     @Throws(IOException::class)
     fun replace(target: File, bytes: ByteArray, validator: (ByteArray) -> Boolean = FlightArchiveFiles.validatorFor(target.name)) {
+        org.ncssar.rid2caltopo.storage.OperationalStorage.requireFor(target)
         if (!validator(bytes)) throw IOException("verification failed before write: ${target.name}")
         target.parentFile?.mkdirs()
         val partial = File(target.parentFile, target.name + FlightArchiveFiles.PARTIAL_SUFFIX)
@@ -48,6 +49,7 @@ object PlainFileSafeWriter {
             val readBack = partial.readBytes()
             if (!readBack.contentEquals(bytes) || !validator(readBack)) throw IOException("verification failed: ${partial.name}")
             move(partial, target)
+            org.ncssar.rid2caltopo.storage.OperationalStorage.retain(target)
         } catch (error: Exception) {
             partial.delete()
             throw error as? IOException ?: IOException(error)

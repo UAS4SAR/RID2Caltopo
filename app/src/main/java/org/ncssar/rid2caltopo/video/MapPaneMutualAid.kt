@@ -43,11 +43,11 @@ internal fun MapPaneMutualAidDialogs(
                         .verticalScroll(rememberScrollState())
                 ) {
                     Text(
-                        "This exports cached tiles only; it does not download anything. For the checked tile types, all cached zoom levels overlapping the current visible map region are included. R2C mapping layers are copied for offline use on the receiving device.",
+                        "OSM and Esri basemap tiles are excluded. This exports permitted cached data only; it does not download anything. For the checked tile types, all cached zoom levels overlapping the current visible map region are included. R2C mapping layers are copied for offline use on the receiving device.",
                         fontSize = 12.sp
                     )
                     Spacer(Modifier.height(12.dp))
-                    (listOf("Imagery", "OpenStreetMap", "Contours", "DEM", "AOL") +
+                    (listOf("Contours", "DEM", "AOL") +
                         if (availableMappingLayers > 0) listOf("R2C Mapping layers") else emptyList()).forEach { tile ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(checked = tile in selectedTiles, onCheckedChange = { checked ->

@@ -23,7 +23,11 @@ public final class AppIdleAlarmReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        CaltopoClient.CheckIdle();
+        if (SettingsStartup.isReady()) CaltopoClient.CheckIdle();
+        else {
+            // Reschedule without holding a broadcast alive or inspecting unloaded settings.
+            schedule(context, 30_000L);
+        }
     }
 
     public static void schedule(@NonNull Context context, long delayMsec) {

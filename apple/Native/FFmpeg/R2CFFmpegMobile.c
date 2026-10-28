@@ -1,5 +1,7 @@
 #include "R2CFFmpegMobile.h"
 #include "R2CH264Packet.h"
+#include "R2CArchiveTimestamp.h"
+#include "R2CDecodeRecovery.h"
 #include "R2CLiveFrameQueue.h"
 #include "../../../native/R2CDJICameraTelemetry.h"
 #include "../../../native/R2CSEIDiscovery.h"
@@ -88,9 +90,14 @@ struct R2CFFmpegSession {
     R2CLiveFrameQueue liveQueue;
     int64_t renderedFrameEnqueuedAt;
     char lastFFmpegLog[256];
+    char lastHardwareError[256];
+    uint64_t decodeRecoveries;
+    char lastDecodeRecovery[160];
 };
 
-static _Atomic(R2CFFmpegSession *) activeLogSession = NULL;
+/* Each decoder has one FFmpeg worker (codec->thread_count = 1). Recording thumbnail
+ * decoders must never overwrite the live decoder's diagnostic or borrow its lifetime. */
+static _Thread_local R2CFFmpegSession *activeLogSession = NULL;
 
 static void set_operation_detail(char *detail, int detailCapacity, const char *format, ...) {
     if (detail == NULL || detailCapacity <= 0 || format == NULL) {
@@ -131,7 +138,7 @@ static void capture_ffmpeg_log(void *context, int level, const char *format, va_
     if (level > AV_LOG_VERBOSE) {
         return;
     }
-    R2CFFmpegSession *session = atomic_load_explicit(&activeLogSession, memory_order_acquire);
+    R2CFFmpegSession *session = activeLogSession;
     if (session == NULL) {
         return;
     }
@@ -148,6 +155,10 @@ static void capture_ffmpeg_log(void *context, int level, const char *format, va_
         strstr(line, "videotoolbox") != NULL) {
         pthread_mutex_lock(&session->lock);
         snprintf(session->lastFFmpegLog, sizeof(session->lastFFmpegLog), "%s", line);
+        // FFmpeg follows the numeric VideoToolbox failure with a generic H.264
+        // failure; keep the underlying OSStatus for the same packet.
+        if (strstr(line, "Failed to decode frame (") != NULL)
+            snprintf(session->lastHardwareError, sizeof(session->lastHardwareError), "%s", line);
         pthread_mutex_unlock(&session->lock);
     }
 }
@@ -173,7 +184,8 @@ static void set_ffmpeg_error(
     char ffmpegDetail[256] = {0};
     av_strerror(error, message, sizeof(message));
     pthread_mutex_lock(&session->lock);
-    snprintf(ffmpegDetail, sizeof(ffmpegDetail), "%s", session->lastFFmpegLog);
+    snprintf(ffmpegDetail, sizeof(ffmpegDetail), "%s",
+        session->lastHardwareError[0] ? session->lastHardwareError : session->lastFFmpegLog);
     pthread_mutex_unlock(&session->lock);
     snprintf(
         detail,
@@ -186,6 +198,22 @@ static void set_ffmpeg_error(
         ffmpegDetail
     );
     set_status(session, R2C_FFMPEG_STATUS_FAILED, detail);
+}
+
+static bool retry_live_decode(R2CFFmpegSession *session, R2CDecodeRecovery *recovery, int error) {
+    if (!R2CDecodeRecoveryRetry(recovery, !session->localPlayback,
+            R2CFFmpegSessionDecodedFrameCount(session) > 0,
+            error == AVERROR_UNKNOWN || error == AVERROR_INVALIDDATA,
+            av_gettime_relative() / 1000)) return false;
+    /* VideoToolbox marks a malfunction/invalid session for reconfiguration on
+     * the next packet. Keep consuming the existing RTSP connection so it can do
+     * so, rather than adding reconnect, keyframe and buffer-start delays. */
+    pthread_mutex_lock(&session->lock);
+    session->decodeRecoveries += 1;
+    snprintf(session->lastDecodeRecovery, sizeof(session->lastDecodeRecovery), "%s",
+        session->lastHardwareError[0] ? session->lastHardwareError : session->lastFFmpegLog);
+    pthread_mutex_unlock(&session->lock);
+    return true;
 }
 
 static int interrupt_callback(void *opaque) {
@@ -324,6 +352,7 @@ static void *decode_worker(void *opaque) {
     int videoStreamIndex = -1;
     int result = 0;
     int startupPacketErrors = 0;
+    R2CDecodeRecovery decodeRecovery = {0};
     int nalLengthSize = 4;
     int64_t playbackStartedAtMicroseconds = 0;
     int64_t playbackDueElapsedMicroseconds = 0;
@@ -331,7 +360,7 @@ static void *decode_worker(void *opaque) {
     R2CLocalPlaybackCadenceInit(&playbackCadence);
 
     avformat_network_init();
-    atomic_store_explicit(&activeLogSession, session, memory_order_release);
+    activeLogSession = session;
     av_log_set_level(AV_LOG_VERBOSE);
     av_log_set_callback(capture_ffmpeg_log);
     format = avformat_alloc_context();
@@ -590,6 +619,9 @@ static void *decode_worker(void *opaque) {
         }
         int packetFlags = packet->flags;
         int packetSize = packet->size;
+        pthread_mutex_lock(&session->lock);
+        session->lastHardwareError[0] = '\0';
+        pthread_mutex_unlock(&session->lock);
         result = avcodec_send_packet(codec, packet);
         av_packet_unref(packet);
         if (result < 0 && result != AVERROR(EAGAIN)) {
@@ -611,6 +643,7 @@ static void *decode_worker(void *opaque) {
                 set_status(session, R2C_FFMPEG_STATUS_CONNECTING, detail);
                 continue;
             }
+            if (retry_live_decode(session, &decodeRecovery, result)) continue;
             set_ffmpeg_error(session, "H.264 packet rejected", result);
             break;
         }
@@ -621,6 +654,7 @@ static void *decode_worker(void *opaque) {
                 break;
             }
             if (result < 0) {
+                if (retry_live_decode(session, &decodeRecovery, result)) break;
                 set_ffmpeg_error(session, "VideoToolbox decode failed", result);
                 goto finished;
             }
@@ -629,6 +663,7 @@ static void *decode_worker(void *opaque) {
                 goto finished;
             }
             ingest_telemetry_metadata(session, frame->metadata);
+            R2CDecodeRecoveryFrameDecoded(&decodeRecovery);
             int64_t ptsMicroseconds = AV_NOPTS_VALUE;
             if (frame->best_effort_timestamp != AV_NOPTS_VALUE) {
                 ptsMicroseconds = av_rescale_q(
@@ -648,14 +683,6 @@ static void *decode_worker(void *opaque) {
 
 finished:
     ;
-    R2CFFmpegSession *expectedLogSession = session;
-    atomic_compare_exchange_strong_explicit(
-        &activeLogSession,
-        &expectedLogSession,
-        NULL,
-        memory_order_acq_rel,
-        memory_order_acquire
-    );
     av_dict_free(&options);
     av_packet_free(&packet);
     av_frame_free(&frame);
@@ -667,6 +694,7 @@ finished:
     if (!atomic_load(&session->running)) {
         set_status(session, R2C_FFMPEG_STATUS_STOPPED, "Stopped");
     }
+    activeLogSession = NULL;
     return NULL;
 }
 
@@ -724,12 +752,14 @@ int R2CFFmpegNormalizeRecording(
     uint8_t *pendingSei = NULL;
     size_t pendingSeiSize = 0;
     int *outputStreamIndexes = NULL;
+    R2CArchiveTimestamp *timestampStates = NULL;
     int videoStreamIndex = -1;
     int nalLengthSize = 4;
     int result = 0;
     int64_t pictureCount = 0;
     int64_t mergedSeiCount = 0;
     int64_t discardedSeiCount = 0;
+    int64_t timestampRepairCount = 0;
     bool wroteHeader = false;
 
     if (sourcePath == NULL || destinationPath == NULL || sourcePath[0] == '\0' ||
@@ -769,7 +799,8 @@ int R2CFFmpegNormalizeRecording(
         goto finished;
     }
     outputStreamIndexes = av_calloc(input->nb_streams, sizeof(*outputStreamIndexes));
-    if (outputStreamIndexes == NULL) {
+    timestampStates = av_calloc(input->nb_streams, sizeof(*timestampStates));
+    if (outputStreamIndexes == NULL || timestampStates == NULL) {
         result = AVERROR(ENOMEM);
         set_operation_detail(detail, detailCapacity, "Stream map allocation failed");
         goto finished;
@@ -789,9 +820,8 @@ int R2CFFmpegNormalizeRecording(
             goto finished;
         }
         outputStream->codecpar->codec_tag = 0;
-        outputStream->time_base = index == (unsigned int) videoStreamIndex
-            ? (AVRational) {1, 30000}
-            : inputStream->time_base;
+        outputStream->time_base = inputStream->time_base;
+        outputStream->avg_frame_rate = inputStream->avg_frame_rate;
         av_dict_copy(&outputStream->metadata, inputStream->metadata, 0);
     }
     av_dict_copy(&output->metadata, input->metadata, 0);
@@ -858,12 +888,20 @@ int R2CFFmpegNormalizeRecording(
                     goto finished;
                 }
             }
-            packet->pts = pictureCount * 1000;
-            packet->dts = packet->pts;
-            packet->duration = 1000;
             pictureCount += 1;
-        } else {
-            av_packet_rescale_ts(packet, inputStream->time_base, outputStream->time_base);
+        }
+        // SEI-only packets are untimed metadata. Once merged, retain the picture's
+        // original PTS/DTS and duration instead of forcing all sources to 30 fps.
+        av_packet_rescale_ts(packet, inputStream->time_base, outputStream->time_base);
+        if (packet->dts != AV_NOPTS_VALUE && packet->pts != AV_NOPTS_VALUE) {
+            int64_t originalDts = packet->dts;
+            if (!R2CArchiveTimestampApply(&timestampStates[inputStreamIndex], &packet->pts, &packet->dts)) {
+                result = AVERROR_INVALIDDATA;
+                set_operation_detail(detail, detailCapacity, "Recording timestamp clock reversed");
+                av_packet_unref(packet);
+                goto finished;
+            }
+            if (packet->dts != originalDts) timestampRepairCount += 1;
         }
         packet->stream_index = outputStream->index;
         packet->pos = -1;
@@ -882,10 +920,11 @@ int R2CFFmpegNormalizeRecording(
             set_operation_detail(
                 detail,
                 detailCapacity,
-                "frames=%lld mergedSei=%lld discardedSei=%lld fps=30",
+                "frames=%lld mergedSei=%lld discardedSei=%lld timestampRepairs=%lld timing=source",
                 (long long) pictureCount,
                 (long long) mergedSeiCount,
-                (long long) discardedSeiCount
+                (long long) discardedSeiCount,
+                (long long) timestampRepairCount
             );
         } else {
             set_operation_detail(detail, detailCapacity, "MP4 trailer write failed error=%d", result);
@@ -898,6 +937,7 @@ finished:
     }
     av_freep(&pendingSei);
     av_freep(&outputStreamIndexes);
+    av_freep(&timestampStates);
     av_packet_free(&packet);
     if (output != NULL && (output->oformat->flags & AVFMT_NOFILE) == 0 && output->pb != NULL) {
         avio_closep(&output->pb);
@@ -997,12 +1037,13 @@ bool R2CFFmpegSessionCopyRenderDiagnostics(R2CFFmpegSession *session, char *deta
     pthread_mutex_lock(&session->lock);
     R2CLiveFrameQueue *q = &session->liveQueue;
     snprintf(detail, (size_t)capacity,
-        "decoded=%llu dequeued=%llu queueDepth=%d bufferedSpanMs=%lld targetMs=%lld sourceIntervalMs=%lld renderIntervalMs=%lld underruns=%llu dropped=%llu resets=%llu presentationSkipped=%llu queueBytes=%zu",
+        "decoded=%llu dequeued=%llu queueDepth=%d bufferedSpanMs=%lld targetMs=%lld sourceIntervalMs=%lld renderIntervalMs=%lld underruns=%llu dropped=%llu resets=%llu presentationSkipped=%llu queueBytes=%zu decodeRecoveries=%llu lastDecodeRecovery=%s",
         (unsigned long long)session->decodedFrameCount, (unsigned long long)q->rendered,
         q->count, (long long)R2CLiveQueueSpan(q), (long long)q->target,
         (long long)q->sourceInterval, (long long)q->renderInterval,
         (unsigned long long)q->underruns, (unsigned long long)q->dropped,
-        (unsigned long long)q->resets, (unsigned long long)q->presentationSkipped, q->bytes);
+        (unsigned long long)q->resets, (unsigned long long)q->presentationSkipped, q->bytes,
+        (unsigned long long)session->decodeRecoveries, session->lastDecodeRecovery);
     pthread_mutex_unlock(&session->lock);
     return true;
 }

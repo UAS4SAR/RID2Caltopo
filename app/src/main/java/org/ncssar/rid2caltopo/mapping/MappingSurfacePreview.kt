@@ -19,6 +19,7 @@ import java.util.zip.ZipOutputStream
 /** Re-export a saved surface with its original calibrated color projection, without reconstructing. */
 internal object MappingSurfacePreview {
     @Synchronized fun rebuild(context:Context,id:String,progress:(String,Double)->Unit,check:()->Unit):MappingLayer {
+        org.ncssar.rid2caltopo.storage.OperationalStorage.requireReady(context)
         require(MappingProcessingManager.state.value?.active!=true){"Wait for reconstruction to finish."}
         MappingSurfaceNative.requireAvailable()
         val root=LocalMappingTiles.directory(context,id);val report=JSONObject(File(root,"layer.json").readText())
@@ -37,7 +38,7 @@ internal object MappingSurfacePreview {
         val imageWidth=calibration.getInt("width");val imageHeight=calibration.getInt("height")
         require(imageWidth>0&&imageHeight>0&&imageWidth.toLong()*imageHeight<=24_000_000)
         require(root.usableSpace>digests.size*imageWidth.toLong()*imageHeight*4+MappingPhotoStore.FREE_SPACE_RESERVE+512L*1024*1024){"Not enough space for temporary preview colors."}
-        val work=File(context.filesDir,"mapping-preview-${UUID.randomUUID()}").apply{mkdirs()}
+        val work=File(org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context,"mapping-preview"),UUID.randomUUID().toString()).apply{mkdirs()}
         val originals=digests.map{File(mission,"originals/$it.jpg")}
         val replacement=linkedMapOf<File,File>()
         val backups=linkedMapOf<File,File>()
@@ -80,6 +81,7 @@ internal object MappingSurfacePreview {
                 require(destination.renameTo(backup)){"Cannot retain previous preview."};backups[destination]=backup
                 require(source.renameTo(destination)){"Cannot publish regenerated preview."}}
             MappingLayer.save(context,layer.incidentId,MappingLayer.load(context,layer.incidentId).map{if(it.id==id)layer else it})
+            org.ncssar.rid2caltopo.storage.OperationalStorage.retainTree(root, check)
             committed=true;MappingWorkspaceState.layersChanged();progress("${Units.current.length(model.getDouble("meshSpacingMeters"))} preview ready",1.0)
             return layer
         } finally {

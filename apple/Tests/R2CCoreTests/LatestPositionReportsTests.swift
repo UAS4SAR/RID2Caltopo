@@ -35,7 +35,8 @@ private actor PositionRecorder {
     #expect(try await newest.value)
     #expect(await recorder.values == [1, 3])
     let times = await recorder.times
-    #expect(releasedAt.duration(to: times[1]) >= .milliseconds(50))
+    // Even a custom subsecond interval must obey the hard send floor.
+    #expect(releasedAt.duration(to: times[1]) >= .seconds(1))
 }
 
 @Test func latestPositionReportsCancelPendingBeforeFinalShape() async throws {
@@ -66,7 +67,28 @@ private actor PositionRecorder {
     defaults.set(0.5, forKey: key)
     #expect(try await pending.value)
     let times = await recorder.times
-    #expect(times[0].duration(to: times[1]) >= .milliseconds(500))
+    // The saved 0.5-second thumbnail preference cannot accelerate position sends.
+    #expect(times[0].duration(to: times[1]) >= .seconds(1))
     #expect(times[0].duration(to: times[1]) < .seconds(5))
     #expect(await recorder.values == [1, 2])
+}
+
+@Test func failedPositionSendStillEnforcesOneSecondFloor() async throws {
+    struct SimulatedFailure: Error {}
+    let queue = LatestPositionReports(interval: .zero)
+    let recorder = PositionRecorder()
+    do {
+        _ = try await queue.submit(key: "a") {
+            await recorder.record(1)
+            throw SimulatedFailure()
+        }
+        Issue.record("Expected simulated failure")
+    } catch is SimulatedFailure { }
+    let failedAt = ContinuousClock.now
+    #expect(try await queue.submit(key: "a") { await recorder.record(2) })
+    #expect(await recorder.values == [1, 2])
+    let times = await recorder.times
+    #expect(times[0].duration(to: times[1]) >= .seconds(1))
+    // The timing above uses the actual attempt, including the failed attempt.
+    #expect(failedAt.duration(to: times[1]) < .seconds(5))
 }

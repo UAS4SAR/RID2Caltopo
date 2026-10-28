@@ -18,6 +18,7 @@ final class AppleAirspaceCenter: ObservableObject {
     @Published private(set) var lastSuccessfulCheck: Date?
     private var lastCoordinate: CLLocationCoordinate2D?
     private var refreshTask: Task<Void, Never>?
+    private var refreshGeneration: UInt = 0
     private var pendingForcedRefresh = false
     private var pendingRefreshLocation: CLLocation?
     private var hasCompletedRefresh = false
@@ -29,6 +30,14 @@ final class AppleAirspaceCenter: ObservableObject {
     }
 
     func update(location: CLLocation?, force: Bool = false) {
+        if location == nil {
+            refreshGeneration &+= 1
+            refreshTask?.cancel()
+            refreshTask = nil
+            pendingForcedRefresh = false
+            pendingRefreshLocation = nil
+            lastCoordinate = nil
+        }
         guard enabled else {
             records = []
             lastCoordinate = nil
@@ -71,9 +80,10 @@ final class AppleAirspaceCenter: ObservableObject {
                 )
             ))
         }
+        let generation = refreshGeneration
         refreshTask = Task { [weak self] in
-            guard let self else { return }
-            defer { refreshTask = nil; runPendingRefresh() }
+            guard let self, generation == refreshGeneration, !Task.isCancelled else { return }
+            defer { if generation == refreshGeneration { refreshTask = nil; runPendingRefresh() } }
             var retryAfter: String?
             do {
                 guard let url = OperationalFacilityMap.queryURL(
@@ -90,7 +100,9 @@ final class AppleAirspaceCenter: ObservableObject {
                     throw AirspaceServiceFailure("Controlled-airspace lookup failed (HTTP \(http?.statusCode ?? 0)).",
                         rateLimited: http?.statusCode == 429)
                 }
-                records = try await Task.detached(priority: .utility) { try OperationalFacilityMap.parse(data) }.value
+                let fetched = try await Task.detached(priority: .utility) { try OperationalFacilityMap.parse(data) }.value
+                guard generation == refreshGeneration, !Task.isCancelled else { return }
+                records = fetched
                 retryPolicy.succeeded()
                 lastCoordinate = location.coordinate
                 lastSuccessfulCheck = Date()
@@ -106,6 +118,7 @@ final class AppleAirspaceCenter: ObservableObject {
                 ))
                 AppleLog.info("Airspace", "FAA Facility Map returned \(records.count) record(s)")
             } catch {
+                guard generation == refreshGeneration, !Task.isCancelled else { return }
                 let wait = retryPolicy.failed(rateLimited: (error as? AirspaceServiceFailure)?.rateLimited == true,
                     retryAfter: retryAfter)
                 let message = "\(error.localizedDescription) Retrying in \(Int(ceil(wait))) seconds."

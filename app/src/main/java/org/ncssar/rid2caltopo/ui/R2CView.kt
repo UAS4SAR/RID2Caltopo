@@ -639,7 +639,7 @@ fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
                         modifier = Modifier.fillMaxSize(),
                         color = MaterialTheme.colorScheme.surface
                     ) {
-                        key(nodes) {
+                        key(org.ncssar.rid2caltopo.data.CaltopoCatalogIdentity(nodes)) {
                             CaltopoHybridBrowser(
                                 rootNodes = nodes,
                                 profileOptions = viewModel.mapBrowserProfiles,

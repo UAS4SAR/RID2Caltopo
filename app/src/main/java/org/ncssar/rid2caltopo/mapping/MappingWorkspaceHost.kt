@@ -5,6 +5,7 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 /** Dialog ownership is independent of the adaptive map/video layout. No disk credentials or imagery. */
 object MappingWorkspaceState {
@@ -22,8 +23,8 @@ object MappingWorkspaceState {
     val displayChanges = display.asStateFlow()
     fun open(mission: MappingMission) { current.value = mission }
     fun close() { current.value = null; library.value=false }
-    fun layersChanged() { changes.value += 1 }
-    fun displayChanged() { display.value += 1 }
+    fun layersChanged() { changes.update { it+1 } }
+    fun displayChanged() { display.update { it+1 } }
 }
 
 @Composable

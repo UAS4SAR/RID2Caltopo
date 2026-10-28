@@ -171,6 +171,11 @@ public class CaltopoSession {
     private static final long RETRY_JITTER_MAX_MS = 500;
     private static ExecutorService MainExecutorPool = null;
     private static ExecutorService PhotoWaypointExecutorPool = null;
+    private static ExecutorService FullMapReadExecutorPool = null;
+    private static final ExecutorService StartupMapExecutorPool = Executors.newSingleThreadExecutor(
+            task -> new Thread(task, "caltopo-map-snapshots"));
+    // Accessed only on StartupMapExecutorPool, so no UI caller waits on a cache lock.
+    private static final CaltopoMapSnapshots StartupMapSnapshots = new CaltopoMapSnapshots();
 	private static final CtLineProperty CtLinePropertyDefault = new CtLineProperty();
     private static final String CALTOPO_MAP_API_V1 = "/api/v1/map/";
     private static final String CALTOPO_MEDIA_API_V1 = "/api/v1/media/";
@@ -222,6 +227,14 @@ public class CaltopoSession {
             MainExecutorPool = Executors.newFixedThreadPool(1);
         }
         return MainExecutorPool;
+    }
+
+    @NonNull
+    private static synchronized ExecutorService GetFullMapReadExecutorPool() {
+        if (FullMapReadExecutorPool == null || FullMapReadExecutorPool.isShutdown()) {
+            FullMapReadExecutorPool = Executors.newSingleThreadExecutor();
+        }
+        return FullMapReadExecutorPool;
     }
 
     @NonNull
@@ -295,6 +308,21 @@ public class CaltopoSession {
     }
 
     private static void SubmitRequest(@NonNull CaltopoOp op) {
+        if (CaltopoFullMapReads.isFullMapRead(op.method.toString(), op.url)) {
+            // Captured authorization is validated after waiting. Do not replay a
+            // queued Team request against a newly selected server or credentials.
+            final CaltopoCredentials credentials = Cred;
+            final String domain = DomainAndPort;
+            op.asyncFuture = GetFullMapReadExecutorPool().submit(() -> {
+                if (op.personalAuthorization == null && (credentials != Cred || !java.util.Objects.equals(domain, DomainAndPort))) {
+                    op.response = "Full map reload cancelled because the connection changed.";
+                    op.setOperationIsDone(false);
+                    return op;
+                }
+                return BgSendRequest(op);
+            });
+            return;
+        }
         try {
             op.asyncFuture = GetMainExecutorPool().submit(() -> BgSendRequest(op));
         } catch (RejectedExecutionException e) {
@@ -320,7 +348,7 @@ public class CaltopoSession {
     }
 
     private static String Sign(CtsMethod_t method, String url, long expiresMsec,
-                               String payload) {
+                               String payload, CaltopoCredentials credentials) {
         try {
             // Construct the message
             String message = method + " " + url + "\n" + expiresMsec + "\n";
@@ -330,7 +358,7 @@ public class CaltopoSession {
 
             // Use android.util.Base64 for maximum compatibility across all Android versions
             // and to avoid Java 8 compatibility issues on older tablets.
-            byte[] secretKey = android.util.Base64.decode(Cred.credentialSecret, android.util.Base64.DEFAULT);
+            byte[] secretKey = android.util.Base64.decode(credentials.credentialSecret, android.util.Base64.DEFAULT);
 
             // Create a Mac instance with the HMAC-SHA256 algorithm
             Mac hmac = Mac.getInstance("HmacSHA256");
@@ -370,8 +398,24 @@ public class CaltopoSession {
 	// this needs to be run in background thread to prevent blocking the app thread.
 	private static CaltopoOp BgSendRequest(CaltopoOp op) {
         boolean goodResponse = false;
+        final boolean fullMapRead = CaltopoFullMapReads.isFullMapRead(op.method.toString(), op.url);
+        final CaltopoCredentials fullReadCredentials = Cred;
+        final String fullReadDomain = DomainAndPort;
         for (int attemptNum = 1; attemptNum <= (op.positionReport ? 1 : MAX_RETRY_ATTEMPTS); attemptNum++) {
-            try {
+            try (AutoCloseable fullRead = fullMapRead ? CaltopoFullMapReads.acquire(R2CApplication.getAppCtxt(), CaltopoFullMapReads.mapKey(op.personalAuthorization != null ? "https://caltopo.com" : "https://" + fullReadDomain, op.url), () -> op.asyncFuture != null && op.asyncFuture.isCancelled()) : null) {
+                if (Thread.currentThread().isInterrupted() || (op.asyncFuture != null && op.asyncFuture.isCancelled())) throw new InterruptedException();
+                if (fullMapRead && op.personalAuthorization == null &&
+                        (fullReadCredentials != Cred || !java.util.Objects.equals(fullReadDomain, DomainAndPort))) {
+                    op.response = "Full map reload cancelled because the connection changed.";
+                    break;
+                }
+                if (op.cleanupAuthorizationBound && (!java.util.Objects.equals(op.cleanupDomain, DomainAndPort) ||
+                        (op.personalAuthorization == null && op.cleanupCredentials != Cred))) {
+                    op.response = "Marker cleanup retained because the connection changed.";
+                    break;
+                }
+                final CaltopoCredentials requestCredentials = op.cleanupAuthorizationBound ? op.cleanupCredentials : Cred;
+                final String requestDomain = op.cleanupAuthorizationBound ? op.cleanupDomain : DomainAndPort;
                 op.sentTimestampMsec = System.currentTimeMillis();
                 long expires = op.sentTimestampMsec + DEFAULT_TIMEOUT_MS;
                 String payloadString = (null == op.payload) ? "" : op.payload.toString();
@@ -379,8 +423,8 @@ public class CaltopoSession {
                 // 1. Prepare Base Parameters
                 Map<String, String> params = new HashMap<>();
                 if (!op.goNaked && op.personalAuthorization == null) {
-                    String signature = Sign(op.method, op.url, expires, payloadString);
-                    params.put("id", Cred.credentialId);
+                    String signature = Sign(op.method, op.url, expires, payloadString, requestCredentials);
+                    params.put("id", requestCredentials.credentialId);
                     params.put("expires", String.valueOf(expires));
                     params.put("signature", signature);
                 }
@@ -392,12 +436,12 @@ public class CaltopoSession {
                 } else {
                     urlBuilder = new HttpUrl.Builder()
                             .scheme("https")
-                            .host(op.personalAuthorization != null ? "caltopo.com" : DomainAndPort.split(":")[0]) // Handle domain vs domain:port
+                            .host(op.personalAuthorization != null ? "caltopo.com" : requestDomain.split(":")[0]) // Handle domain vs domain:port
                             .addPathSegments(op.url.startsWith("/") ? op.url.substring(1) : op.url);
 
                     // Port handling if present in DomainAndPort
-                    if (op.personalAuthorization == null && DomainAndPort.contains(":")) {
-                        urlBuilder.port(Integer.parseInt(DomainAndPort.split(":")[1]));
+                    if (op.personalAuthorization == null && requestDomain.contains(":")) {
+                        urlBuilder.port(Integer.parseInt(requestDomain.split(":")[1]));
                     }
                 }
 
@@ -448,6 +492,7 @@ public class CaltopoSession {
                                 return kotlin.Unit.INSTANCE;
                             })).build();
                 }
+                if (Thread.currentThread().isInterrupted() || (op.asyncFuture != null && op.asyncFuture.isCancelled())) throw new InterruptedException();
                 try (Response response = requestClient.newCall(requestBuilder.build()).execute()) {
                     op.responseCode = response.code();
                     op.receivedTimestampMsec = System.currentTimeMillis();
@@ -495,6 +540,10 @@ public class CaltopoSession {
                     break;
                 }
 
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                op.response = "Full map reload cancelled.";
+                break;
             } catch (UnknownHostException e) {
                 op.response = "CalTopo hostname could not be resolved.";
                 if (op.positionReport || !RetryAfterDelay("DNS lookup failure", attemptNum)) {
@@ -600,6 +649,66 @@ public class CaltopoSession {
 
         CaltopoOp op = new CaltopoOp(onComplete);
         return SendRequest(op, CtsMethod_t.GET, urlEnd, null, false);
+    }
+
+    /** Connection navigation may reuse a recent snapshot; explicit reloads still call OpenMap(..., 0). */
+    @NonNull
+    static public CaltopoOp OpenMapForConnection(@NonNull CaltopoNode.MapNode mapNode, @Nullable Consumer<CaltopoOp> onComplete) {
+        MapId = mapNode.getId();
+        final String path = CALTOPO_MAP_API_V1 + mapNode.getId() + "/since/0";
+        final CaltopoCredentials credentials = Cred;
+        final String domain = DomainAndPort;
+        final CaltopoOp outer = new CaltopoOp(onComplete);
+        outer.method = CtsMethod_t.GET;
+        outer.url = path;
+        outer.personalAuthorization = CaltopoPersonalSession.capture(path);
+        final boolean personal = outer.personalAuthorization != null;
+        final CaltopoMapSnapshots.Scope scope = new CaltopoMapSnapshots.Scope(
+                personal ? "https://caltopo.com" : "https://" + domain, mapNode.getId(),
+                personal || credentials == null ? null : credentials.teamId,
+                personal || credentials == null ? null : credentials.credentialId,
+                personal || credentials == null ? null : credentials.credentialSecret,
+                personal ? outer.personalAuthorization.getToken() : null,
+                personal ? CaltopoPersonalSession.INSTANCE.getGeneration() : 0L);
+        outer.asyncFuture = StartupMapExecutorPool.submit(() -> {
+            Runnable validate = () -> {
+                if (Thread.currentThread().isInterrupted() || outer.isCancelled()) throw new java.util.concurrent.CancellationException();
+                if (personal) CaltopoPersonalSession.requireValid(outer.personalAuthorization, path);
+                else if (credentials != Cred || !java.util.Objects.equals(domain, DomainAndPort))
+                    throw new IllegalStateException("Map connection changed.");
+            };
+            try {
+                outer.responseJson = StartupMapSnapshots.read(scope, validate, cursor -> {
+                    CaltopoOp read = new CaltopoOp(null);
+                    read.method = CtsMethod_t.GET;
+                    read.url = CALTOPO_MAP_API_V1 + mapNode.getId() + "/since/" + Math.max(0L, cursor - 500L);
+                    read.personalAuthorization = outer.personalAuthorization;
+                    read.asyncFuture = outer.asyncFuture;
+                    if (!personal) {
+                        // Bind the actual transport too: a server/profile switch
+                        // between validation and dispatch cannot change its authority.
+                        read.cleanupAuthorizationBound = true;
+                        read.cleanupCredentials = credentials;
+                        read.cleanupDomain = domain;
+                    }
+                    BgSendRequest(read);
+                    outer.responseCode = read.responseCode;
+                    outer.response = read.response;
+                    outer.sentTimestampMsec = read.sentTimestampMsec;
+                    outer.receivedTimestampMsec = read.receivedTimestampMsec;
+                    if (!read.success() || read.responseJson == null) throw new IllegalStateException("Map request failed.");
+                    return read.responseJson;
+                });
+                validate.run();
+                outer.receivedTimestampMsec = System.currentTimeMillis();
+                outer.setOperationIsDone(true);
+            } catch (Exception error) {
+                outer.response = "Map could not load. Check your connection and map permissions, then retry.";
+                outer.setOperationIsDone(false);
+            }
+            return outer;
+        });
+        return outer;
     }
 
     /** Add a folder.
@@ -807,26 +916,55 @@ public class CaltopoSession {
         return op;
     }
 
+    public static java.util.function.BiFunction<String, Consumer<CaltopoOp>, CaltopoOp> PrepareMarkerCleanup(String mapId) {
+        final String domain = DomainAndPort;
+        final CaltopoCredentials credentials = Cred;
+        final CaltopoPersonalSession.Authorization personal = CaltopoPersonalSession.capture(CALTOPO_MAP_API_V1 + mapId + "/");
+        return (id, done) -> DeleteMarkerOnMap(mapId, id, done, domain, credentials, personal);
+    }
+
+    /** Capture the archive destination and its authorization before deferred work begins. */
+    public static java.util.function.BiFunction<JSONObject, Consumer<CaltopoOp>, CaltopoOp> PrepareArchivedTrackUpdate(String mapId, String trackId) {
+        final String path = CALTOPO_MAP_API_V1 + mapId + "/Shape/" + trackId;
+        final String domain = DomainAndPort;
+        final CaltopoCredentials credentials = Cred;
+        final CaltopoPersonalSession.Authorization personal = CaltopoPersonalSession.capture(path);
+        return (feature, done) -> {
+            CaltopoOp op = new CaltopoOp(done);
+            op.payload = feature;
+            SendCleanupRequest(op, CtsMethod_t.POST, path, domain, credentials, personal);
+            return op;
+        };
+    }
+
     public static CaltopoOp DeleteMarkerOnMap(String mapId, String id, Consumer<CaltopoOp> done) {
+        return PrepareMarkerCleanup(mapId).apply(id, done);
+    }
+
+    private static void SendCleanupRequest(CaltopoOp op, CtsMethod_t method, String path,
+            String domain, CaltopoCredentials credentials, CaltopoPersonalSession.Authorization personal) {
+        op.cleanupAuthorizationBound = true; op.cleanupDomain = domain; op.cleanupCredentials = credentials;
+        op.personalAuthorization = personal; op.method = method; op.url = path;
+        SubmitRequest(op);
+    }
+
+    private static CaltopoOp DeleteMarkerOnMap(String mapId, String id, Consumer<CaltopoOp> done,
+            String domain, CaltopoCredentials credentials, CaltopoPersonalSession.Authorization personal) {
         if(!mapId.matches("[A-Za-z0-9_-]+") || !id.matches("[A-Za-z0-9_-]+"))throw new IllegalArgumentException("Invalid marker cleanup target");
+        final long beforeDelete = System.currentTimeMillis();
+        if (beforeDelete <= 500L) throw new IllegalStateException("Clock unavailable; marker cleanup retained");
         CaltopoOp op=new CaltopoOp(deleted -> {
             if (!deleted.success()) { if (done != null) done.accept(deleted); return; }
-            // An accepted DELETE alone does not prove that all occurrences disappeared.
+            // Require explicit absence evidence; an empty delta or accepted DELETE is inconclusive.
             CaltopoOp verification = new CaltopoOp(snapshot -> {
-                JSONObject state = snapshot.responseJson == null ? null : snapshot.responseJson.optJSONObject("state");
-                org.json.JSONArray features = state == null ? null : state.optJSONArray("features");
-                boolean absent = snapshot.success() && features != null;
-                if (features != null) for (int i=0; i<features.length(); i++) {
-                    JSONObject feature = features.optJSONObject(i);
-                    if (feature != null && id.equalsIgnoreCase(feature.optString("id"))) absent = false;
-                }
+                boolean absent = snapshot.success() && CaltopoMarkerVerification.confirmsAbsent(snapshot.responseJson, id);
                 snapshot.goodResponse = absent;
                 if (done != null) done.accept(snapshot);
             });
-            SendRequest(verification,CtsMethod_t.GET,CALTOPO_MAP_API_V1+mapId+"/since/0",null,false);
+            SendCleanupRequest(verification,CtsMethod_t.GET,CALTOPO_MAP_API_V1+mapId+"/since/"+(beforeDelete-500L),domain,credentials,personal);
         });
         op.acceptedErrorCodes=new int[]{400,404};
-        SendRequest(op,CtsMethod_t.DELETE,CALTOPO_MAP_API_V1+mapId+"/Marker/"+id,null,false);
+        SendCleanupRequest(op,CtsMethod_t.DELETE,CALTOPO_MAP_API_V1+mapId+"/Marker/"+id,domain,credentials,personal);
         return op;
     }
 

@@ -3,6 +3,14 @@ package org.ncssar.rid2caltopo.data
 import android.content.Context
 
 object RemoteVideoControlPrefs {
+    @get:JvmStatic val consent = RemoteMediaConsent()
+
+    @JvmStatic
+    fun refresh(context: Context?): RemoteMediaConsent {
+        consent.update(isEnabled(context))
+        return consent
+    }
+
     private const val PREFS = "remote_video_control"
     private const val ENABLED = "enabled"
 
@@ -17,5 +25,7 @@ object RemoteVideoControlPrefs {
             ?.edit()
             ?.putBoolean(ENABLED, enabled)
             ?.apply()
+        consent.update(enabled)
+        TrackerPeerCoordinator.getInstance().remoteVideoControlChanged()
     }
 }

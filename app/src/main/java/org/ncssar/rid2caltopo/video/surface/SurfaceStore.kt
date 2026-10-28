@@ -27,6 +27,7 @@ internal object SurfaceStore {
             .sortedByDescending { it.name }.firstOrNull()?.child("active.aol") ?: root.child("active.aol")
     }
     @Synchronized fun releaseMemory() { loaded = null; loadedPath = null }
+    @Synchronized fun invalidateCatalog() { regions = null; releaseMemory(); generation++ }
     @Synchronized fun current(context:Context):SurfacePackage? {
         val f=file(context)
         if(loadedPath!=f.path) {
@@ -100,7 +101,7 @@ internal object SurfaceStore {
             val index=org.json.JSONObject(String(files["aol/$id/index.json"] ?: error("Missing AOL index"),Charsets.UTF_8))
             SurfacePreparedSet.validate(index, allowPartial = true) { name -> files["aol/$id/$name"] ?: error("Missing AOL tile") }
             val list=index.getJSONArray("entries");require(list.length() in 1..16)
-            val staged=File(context.cacheDir,"aol-import-${java.util.UUID.randomUUID()}");staged.mkdirs()
+            val staged=File(org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context,"aol-import"),java.util.UUID.randomUUID().toString());staged.mkdirs()
             try {
                 for(i in 0 until list.length()) {
                     val entry=list.getJSONObject(i);val name=entry.getString("file")

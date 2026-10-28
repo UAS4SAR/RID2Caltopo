@@ -10,6 +10,18 @@ class FlightFolderProtectionTest {
     private val today = "R2C_2026-10-04"
     private val old = "R2C_2026-10-01"
 
+    @Test fun oneHourWithoutWritesStopsImpliedRecordingProtection() {
+        val now = 10_000_000L
+        assertTrue(RecordingStagingPolicy.mayBeActive(now - 3_599_999, now))
+        assertFalse(RecordingStagingPolicy.mayBeActive(now - 3_600_000, now))
+        assertFalse(RecordingStagingPolicy.mayBeActive(now - 7_200_000, now))
+        val stale = RecordingStagingPolicy.mayBeActive(now - 3_600_000, now)
+        assertNull(FlightFolderProtection.evaluate(old, today, emptyMap(), stale, emptyList()))
+        assertEquals("in use by recording finalization", FlightFolderProtection.evaluate(old, today,
+            mapOf("finalize-1" to old), stale, emptyList())?.label)
+        assertEquals("today", FlightFolderProtection.evaluate(today, today, emptyMap(), stale, emptyList())?.label)
+    }
+
     @Test
     fun reasonsMatchIosWordingAndPriority() {
         assertEquals("today", FlightFolderProtection.evaluate(today, today, mapOf("diagnostic-log" to today), true, listOf("uploading"))?.label)

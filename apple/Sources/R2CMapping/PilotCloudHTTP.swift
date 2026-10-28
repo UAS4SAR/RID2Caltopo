@@ -9,7 +9,7 @@ struct PilotRequest {
     let query:[String:String],headers:[String:String]
     let peer:PilotPeer
     func bodyFile(limit:Int=128*1024*1024)throws->URL {
-        let file=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let file=try TemporaryWorkspace.directory("HTTP").appendingPathComponent(UUID().uuidString)
         FileManager.default.createFile(atPath:file.path,contents:nil)
         let output=try FileHandle(forWritingTo:file);var size=0
         do {

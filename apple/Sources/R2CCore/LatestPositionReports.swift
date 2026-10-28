@@ -2,6 +2,8 @@ import Foundation
 
 /// Keeps one replaceable pending report per aircraft, with no historical replay.
 actor LatestPositionReports {
+    /// Hard CalTopo position-send floor, independent of faster thumbnail settings.
+    static let minimumInterval: Duration = .seconds(1)
     private struct Pending {
         let send: @Sendable () async throws -> Void
         let completion: CheckedContinuation<Bool, Error>
@@ -53,7 +55,7 @@ actor LatestPositionReports {
         defer { if workers[key]?.id == id { workers.removeValue(forKey: key) } }
         while pending[key] != nil && !Task.isCancelled {
             if let completed = completedAt[key] {
-                let deadline = completed.advanced(by: interval())
+                let deadline = completed.advanced(by: max(Self.minimumInterval, interval()))
                 if clock.now < deadline {
                     // Re-read settings during the cooldown, including when the interval is reduced.
                     do { try await clock.sleep(until: min(deadline, clock.now.advanced(by: .milliseconds(500)))) }

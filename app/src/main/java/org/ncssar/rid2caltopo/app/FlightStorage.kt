@@ -3,6 +3,8 @@ package org.ncssar.rid2caltopo.app
 import android.content.Context
 import androidx.documentfile.provider.DocumentFile
 import org.ncssar.rid2caltopo.data.CaltopoClient
+import org.ncssar.rid2caltopo.storage.DocumentArchiveTree
+import org.ncssar.rid2caltopo.storage.OperationalStorage
 import java.io.File
 import java.time.LocalDate
 import java.time.ZoneId
@@ -21,6 +23,13 @@ internal object FlightRetentionPolicy {
             } else false
         }.map { it.name }
     }
+}
+
+/** File presence implies recording only while staging has been written within an hour. */
+internal object RecordingStagingPolicy {
+    const val INACTIVE_AFTER_MS = 60 * 60 * 1000L
+    fun mayBeActive(modifiedMs: Long, nowMs: Long): Boolean =
+        modifiedMs <= 0 || modifiedMs > nowMs - INACTIVE_AFTER_MS
 }
 
 /**
@@ -71,14 +80,16 @@ sealed class FlightFolderProtection(val label: String) {
 
 enum class FlightStorageIssue(val message: String) {
     ARCHIVE_REQUIRED("Choose or reconnect your archive folder to check its usage and enable flight recording. The previous folder may be suggested, but access must be granted again."),
+    ARCHIVE_WRITE("Recording stopped because Archive Dir could not save recording data. Reconnect the archive storage and retry."),
     DEVICE_LOW("Device storage is low. Free device space in Manage Storage or Android Settings. Increasing the allowance will not create free device space."),
     ALLOWANCE("Cleanup could not restore 10% free within the Flight Storage allowance. Today and active files stay protected. Please increase the allowance.");
 
     val shouldNotify: Boolean get() = this != ARCHIVE_REQUIRED
 }
 
-internal fun flightStorageIssue(archiveReady: Boolean, deviceLow: Boolean, allowanceInsufficient: Boolean): FlightStorageIssue? = when {
+internal fun flightStorageIssue(archiveReady: Boolean, deviceLow: Boolean, allowanceInsufficient: Boolean, archiveWriteFailed: Boolean = false): FlightStorageIssue? = when {
     !archiveReady -> FlightStorageIssue.ARCHIVE_REQUIRED
+    archiveWriteFailed -> FlightStorageIssue.ARCHIVE_WRITE
     deviceLow -> FlightStorageIssue.DEVICE_LOW
     allowanceInsufficient -> FlightStorageIssue.ALLOWANCE
     else -> null
@@ -89,14 +100,17 @@ object FlightStorage {
     const val DEFAULT_MAX_BYTES = 10_000_000_000L
     const val DEFAULT_MAX_DAYS = 30L
     private val lock = Any()
+    private val stateLock = Any()
     private val protectedDays = mutableMapOf<String, String>()
     val changes = kotlinx.coroutines.flow.MutableStateFlow(0L)
     private val worker = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()
     private val pendingDocuments = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val documentDrainQueued = java.util.concurrent.atomic.AtomicBoolean(false)
     private var monitor: FlightStorageFileMonitor? = null
+    private var recorderMonitor: FlightStorageFileMonitor? = null
     private var listener: Runnable? = null
     private var initialized = false
+    @Volatile private var recordingArchiveWriteFailed = false
     private var estimatedUsed = 0L
     private var sweepUsed = 0L
     private var sweepAvailable: Long? = null
@@ -104,13 +118,42 @@ object FlightStorage {
     private var lastIssue: FlightStorageIssue? = null
     private var checkQueued = false
     private var forceQueued = false
-    private val fileSizes = mutableMapOf<String, Long>()
+    private var fileSizes = mutableMapOf<String, Long>()
     val pressure = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
-    @JvmStatic fun observe(context: Context, callback: Runnable) = synchronized(lock) {
-        listener = callback
-        if (monitor == null) monitor = FlightStorageFileMonitor(auxiliaryRoots(context)) { file -> fileChanged(context, file.path, file.length()) }
+    @JvmStatic fun observe(context: Context, callback: Runnable) {
+        synchronized(stateLock) { listener = callback }
+        worker.execute {
+            if (CaltopoClient.GetArchiveUri() != null) runCatching { OperationalStorage.requireRecorderReady(context) }.getOrElse { return@execute }
+            val recorder = FlightStorageFileMonitor(listOf(File(context.filesDir, "mediamtx-recordings"))) { file ->
+                if (file.isFile && file.path.startsWith(File(context.filesDir, "mediamtx-recordings").path + "/") && file.extension.lowercase() in setOf("mp4", "fmp4")) {
+                    runCatching { org.ncssar.rid2caltopo.storage.OperationalStorage.retainGrowingRecording(file) }
+                        .onSuccess { recordingArchiveWriteFailed = false }
+                        .onFailure {
+                            recordingArchiveWriteFailed = true; captureBlocked = true
+                            pressure.value = FlightStorageIssue.ARCHIVE_WRITE.message
+                            CaltopoClient.CTError("FlightStorage", "Recording checkpoint could not be retained", it as? Exception ?: Exception(it))
+                            synchronized(stateLock) { listener }?.run()
+                        }
+                }
+                fileChanged(context, file.path, file.length())
+            }
+            synchronized(stateLock) {
+                if (listener === callback && recorderMonitor == null) recorderMonitor = recorder else recorder.stop()
+            }
+            // The recorder watcher is already checkpointing on its own executor while
+            // other operational roots finish migration and projection preparation.
+            if (CaltopoClient.GetArchiveUri() != null) runCatching { OperationalStorage.requireReady(context) }.getOrElse { return@execute }
+            val candidate = FlightStorageFileMonitor(auxiliaryRoots(context).filterNot { it.name == "mediamtx-recordings" }) { file ->
+                fileChanged(context, file.path, file.length())
+            }
+            synchronized(stateLock) {
+                if (listener === callback && monitor == null) monitor = candidate else candidate.stop()
+            }
+        }
     }
-    @JvmStatic fun stopObserving() = synchronized(lock) { listener = null; monitor?.stop(); monitor = null }
+    @JvmStatic fun stopObserving() = synchronized(stateLock) {
+        listener = null; monitor?.stop(); monitor = null; recorderMonitor?.stop(); recorderMonitor = null
+    }
     @JvmStatic fun documentChanged(context: Context, document: DocumentFile) {
         fileChanged(context, document.uri.toString(), document.length())
     }
@@ -130,34 +173,47 @@ object FlightStorage {
             }
         }, 250, java.util.concurrent.TimeUnit.MILLISECONDS)
     }
-    private fun fileChanged(context: Context, key: String, bytes: Long) = synchronized(lock) {
+    private fun fileChanged(context: Context, key: String, bytes: Long) {
+      var notify: Runnable? = null
+      synchronized(stateLock) {
         if (!initialized) return@synchronized
         val old = fileSizes[key] ?: 0L
         if (old == bytes) return@synchronized
         fileSizes[key] = bytes
         estimatedUsed = (estimatedUsed + bytes - old).coerceAtLeast(0)
         val newDay = lastSweepDay != todayArchiveDirectoryName()
-        if (newDay || (captureBlocked && bytes < old) || (!captureBlocked && needsDemandCheck(context))) {
+        // Cleanup cannot run through an unprepared projection. Pause capture at the
+        // existing allowance/reserve boundary while bulk startup is still in progress.
+        if (!OperationalStorage.ready() && !captureBlocked && needsDemandCheck(context)) {
+            captureBlocked = true
+            val low = sweepAvailable?.let { it - (estimatedUsed - sweepUsed) < RESERVE } == true
+            val issue = if (low) FlightStorageIssue.DEVICE_LOW else FlightStorageIssue.ALLOWANCE
+            pressure.value = issue.message
+            notify = listener
+        }
+        if (notify != null || newDay || (captureBlocked && bytes < old) || (!captureBlocked && needsDemandCheck(context))) {
             requestCheck(context, newDay || bytes < old)
         }
+      }
+      notify?.run()
     }
     private fun needsDemandCheck(context: Context, incoming: Long = 0): Boolean =
         FlightRetentionPolicy.needsCleanup(estimatedUsed, incoming, maximumBytes(context)) ||
             (sweepAvailable?.let { it - (estimatedUsed - sweepUsed) - incoming < RESERVE } ?: false)
     @JvmStatic fun prepareWrite(context: Context, incoming: Long) {
-        val needed = synchronized(lock) { !initialized || (!captureBlocked && needsDemandCheck(context, incoming)) }
+        val needed = synchronized(stateLock) { !initialized || (!captureBlocked && needsDemandCheck(context, incoming)) }
         if (needed) {
             scan(context, true, incoming.coerceAtLeast(0))
-            val callback = synchronized(lock) { listener }
+            val callback = synchronized(stateLock) { listener }
             callback?.run()
         }
     }
-    @JvmStatic @JvmOverloads fun requestCheck(context: Context, force: Boolean = true) = synchronized(lock) {
+    @JvmStatic @JvmOverloads fun requestCheck(context: Context, force: Boolean = true) = synchronized(stateLock) {
         forceQueued = forceQueued || force
         if (checkQueued) return@synchronized
         checkQueued = true
         worker.execute {
-            val run = synchronized(lock) {
+            val run = synchronized(stateLock) {
                 val force = forceQueued
                 forceQueued = false; checkQueued = false
                 force || !initialized || (!captureBlocked && needsDemandCheck(context))
@@ -169,7 +225,7 @@ object FlightStorage {
                     pressure.value = "Storage could not be checked. Restore archive access or free device space in Manage Storage."
                     CaltopoClient.CTError("FlightStorage", "Demand cleanup failed", error)
                 }
-                val callback = synchronized(lock) { listener }
+                val callback = synchronized(stateLock) { listener }
                 callback?.run()
             }
         }
@@ -177,7 +233,8 @@ object FlightStorage {
     private const val RESERVE = 1_000_000_000L
     @Volatile var captureBlocked = false; private set
     data class Snapshot(val used: Long, val auxiliary: Long, val failures: List<String>,
-                        val issue: FlightStorageIssue?, val archiveReady: Boolean, val deviceAvailable: Long) {
+                        val issue: FlightStorageIssue?, val archiveReady: Boolean, val deviceAvailable: Long,
+                        val preparingWorkingCopies: Boolean = false) {
         val blocked: Boolean get() = issue != null
         val allowanceInsufficient: Boolean get() = issue == FlightStorageIssue.ALLOWANCE
         val message: String get() = issue?.message.orEmpty()
@@ -193,66 +250,78 @@ object FlightStorage {
         requestCheck(context)
         return true
     }
-    @JvmStatic @JvmOverloads fun protect(name: String, owner: String = name) = synchronized(lock) { protectedDays[owner] = name; Unit }
-    @JvmStatic fun release(owner: String) = synchronized(lock) {
+    @JvmStatic @JvmOverloads fun protect(name: String, owner: String = name) = synchronized(stateLock) { protectedDays[owner] = name; Unit }
+    @JvmStatic fun release(owner: String) = synchronized(stateLock) {
         val released = protectedDays.remove(owner)
         if (released != null && captureBlocked) R2CApplication.getAppCtxt()?.let { requestCheck(it) }
         Unit
     }
-    @JvmStatic fun isProtected(name: String): Boolean = synchronized(lock) {
+    @JvmStatic fun isProtected(name: String): Boolean = synchronized(stateLock) {
         name == todayArchiveDirectoryName() || name in protectedDays.values
     }
     /** Why manual deletion of this day is blocked, or null when it may be deleted. */
-    fun protectionReason(context: Context, name: String): FlightFolderProtection? = synchronized(lock) {
+    fun protectionReason(context: Context, name: String): FlightFolderProtection? = storageIo(context) {
         val auxiliary = auxiliaryFiles(context)
         FlightFolderProtection.evaluate(
             name = name,
             today = todayArchiveDirectoryName(),
-            owners = protectedDays.toMap(),
+            owners = synchronized(stateLock) { protectedDays.toMap() },
             recorderStaging = auxiliary.any { fileDay(it) == name && isRecorderStaging(context, it) },
             clueStates = clueStates(context, name, auxiliary),
         )
     }
-    fun unuploadedClueCount(context: Context, name: String): Int = synchronized(lock) {
+    fun unuploadedClueCount(context: Context, name: String): Int = storageIo(context) {
         FlightFolderProtection.unuploadedClueCount(clueStates(context, name, auxiliaryFiles(context)))
     }
-    private fun size(file: DocumentFile, ledger: MutableMap<String, Long>? = null): Long =
-        if (file.isDirectory) file.listFiles().sumOf { size(it, ledger) }
-        else file.length().coerceAtLeast(0).also { ledger?.put(file.uri.toString(), it) }
     private fun auxiliaryRoots(context: Context) = listOf(
         File(context.filesDir, "mediamtx-recordings"),
         File(context.filesDir, "managed-video-session-recordings"),
         File(context.filesDir, "mediamtx-recordings-merged"),
-        File(context.filesDir, "clues")
+        File(context.filesDir, "clues"),
+        File(context.filesDir, "anr-traces"),
+        File(context.filesDir, "review-annotations"),
+        File(context.filesDir, "video-sei-originals")
     )
-    private fun auxiliaryFiles(context: Context) = auxiliaryRoots(context).flatMap { root ->
-        if (root.exists()) root.walkTopDown().filter { it.isFile }.toList() else emptyList()
+    private fun auxiliaryFiles(context: Context, cancelled: () -> Unit = {}) = auxiliaryRoots(context).flatMap { root ->
+        cancelled()
+        if (root.exists()) root.walkTopDown().onEnter { cancelled(); true }.filter { cancelled(); it.isFile }.toList() else emptyList()
     }
     private fun fileDay(file: File) = if (file.name == "clues.json") todayArchiveDirectoryName()
         else todayArchiveDirectoryName(Date(file.lastModified()))
-    fun documentsForDay(context: Context, name: String): List<DocumentFile> = synchronized(lock) {
+    fun documentsForDay(context: Context, name: String): List<DocumentFile> = storageIo(context) {
         CaltopoClient.GetArchiveDir()?.findFile(name)?.listFiles().orEmpty().toList() +
             auxiliaryFiles(context).filter { fileDay(it) == name }.map(DocumentFile::fromFile)
     }
-    fun directories(context: Context): List<ArchiveCleanupDirectoryOption> = synchronized(lock) {
-        val folders = CaltopoClient.GetArchiveDir()?.listFiles()?.filter { it.isDirectory && isDatedArchiveDirectoryName(it.name) }.orEmpty()
-        val auxiliary = auxiliaryFiles(context).groupBy(::fileDay)
-        (folders.mapNotNull { it.name } + auxiliary.keys).distinct().mapNotNull { name ->
+    fun directories(context: Context, cancelled: () -> Unit = {}): List<ArchiveCleanupDirectoryOption> = storageMetadata(context) {
+        val started = android.os.SystemClock.elapsedRealtime()
+        val preparing = CaltopoClient.GetArchiveUri() != null && !OperationalStorage.ready()
+        val folders = CaltopoClient.GetArchiveDir()?.let { readFlightArchiveInventory(DocumentArchiveTree(context, it, requireKnownFileSizes = true), cancelled) }.orEmpty()
+        val auxiliary = auxiliaryFiles(context, cancelled).groupBy(::fileDay)
+        val owners = synchronized(stateLock) { protectedDays.toMap() }
+        val result = (folders.map { it.name } + auxiliary.keys).distinct().mapNotNull { name ->
+            cancelled()
             val folder = folders.firstOrNull { it.name == name }
-            val entries = folder?.listFiles().orEmpty().map(::documentFileToArchiveEntry) +
+            val dayFiles = auxiliary[name].orEmpty()
+            val entries = folder?.entries.orEmpty() +
                 auxiliary[name].orEmpty().map { ArchiveCleanupFileEntry(it.name, null, false, it.length()) }
-            buildArchiveCleanupOption(name, 0, entries)?.let { option ->
-                val reason = protectionReason(context, name)
+            val states = if (preparing) emptyList() else clueStates(context, name, dayFiles)
+            buildArchiveCleanupOption(name, folder?.modified ?: 0, entries)?.let { option ->
+                val reason = if (preparing) FlightFolderProtection.InUse("storage preparation") else FlightFolderProtection.evaluate(
+                    name, todayArchiveDirectoryName(), owners,
+                    dayFiles.any { isRecorderStaging(context, it) }, states)
                 option.copy(
                     isToday = reason != null,
                     protectionReason = reason?.label,
-                    unuploadedClueCount = unuploadedClueCount(context, name),
+                    unuploadedClueCount = FlightFolderProtection.unuploadedClueCount(states),
                 )
             }
         }.sortedByDescending { it.ageMs }
+        CaltopoClient.CTDebug("FlightStorage", "Listed flight days count=${result.size} preparing=$preparing elapsedMs=${android.os.SystemClock.elapsedRealtime() - started}")
+        result
     }
     private fun isRecorderStaging(context: Context, file: File): Boolean =
-        listOf(auxiliaryRoots(context)[0], auxiliaryRoots(context)[2]).any { file.path.startsWith(it.path + "/") }
+        listOf(auxiliaryRoots(context)[0], auxiliaryRoots(context)[2]).any { file.path.startsWith(it.path + "/") } &&
+            RecordingStagingPolicy.mayBeActive(file.lastModified(), System.currentTimeMillis())
 
     /** Upload states of CalTopo-bound clues whose image files belong to this day. */
     private fun clueStates(context: Context, name: String, auxiliary: List<File>): List<String> {
@@ -271,7 +340,7 @@ object FlightStorage {
         }
     }
 
-    fun deleteDays(context: Context, names: List<String>): ArchiveCleanupDeleteResult = synchronized(lock) {
+    fun deleteDays(context: Context, names: List<String>): ArchiveCleanupDeleteResult = storageIo(context) {
         val failures = mutableListOf<String>()
         var deleted = 0
         val auxiliary = auxiliaryFiles(context)
@@ -283,7 +352,7 @@ object FlightStorage {
             }
             val folder = CaltopoClient.GetArchiveDir()?.findFile(name)
             var ok = folder == null || folder.delete()
-            if (ok) auxiliary.filter { fileDay(it) == name }.forEach { if (!it.delete()) ok = false }
+            if (ok) auxiliary.filter { fileDay(it) == name }.forEach { if (!org.ncssar.rid2caltopo.storage.OperationalStorage.removeIfManaged(it)) ok = false }
             if (ok) deleted++ else failures.add(name)
         }
         if (deleted > 0 || failures.isNotEmpty()) changes.value++
@@ -291,17 +360,37 @@ object FlightStorage {
         ArchiveCleanupDeleteResult(deleted, failures)
     }
     @JvmStatic fun maintain(context: Context): Snapshot = scan(context, true)
-    fun snapshot(context: Context): Snapshot = scan(context, false)
-    private fun scan(context: Context, purge: Boolean, reserving: Long = 0): Snapshot = synchronized(lock) {
+    /** A metadata-only allowance check; bulk cleanup is queued without delaying RTMP. */
+    @JvmStatic fun prepareRecordingStart(context: Context): Snapshot = storageMetadata(context) {
+        // Serialize allowance initialization with actual retention cleanup, without
+        // entering the unrelated operational-storage preparation barrier.
+        val snapshot = synchronized(lock) { scanOnWorker(context, false, 0, seedEstimate = true) }
+        requestCheck(context)
+        snapshot
+    }
+    fun snapshot(context: Context, cancelled: () -> Unit = {}): Snapshot = storageMetadata(context) {
+        scanOnWorker(context, false, 0, cancelled)
+    }
+    private fun scan(context: Context, purge: Boolean, reserving: Long = 0): Snapshot = storageIo(context) {
+        scanOnWorker(context, purge, reserving)
+    }
+    private fun scanOnWorker(context: Context, purge: Boolean, reserving: Long, cancelled: () -> Unit = {}, seedEstimate: Boolean = false): Snapshot {
+        val started = android.os.SystemClock.elapsedRealtime()
+        val preparing = CaltopoClient.GetArchiveUri() != null && !OperationalStorage.ready()
         val archive = CaltopoClient.GetArchiveDir()
-        val folders = archive?.listFiles()?.filter { it.isDirectory && isDatedArchiveDirectoryName(it.name) }.orEmpty()
-        val auxiliary = auxiliaryFiles(context)
+        val tree = archive?.let { DocumentArchiveTree(context, it, requireKnownFileSizes = true) }
+        val folders = tree?.let { readFlightArchiveInventory(it, cancelled) }.orEmpty()
+        val auxiliary = auxiliaryFiles(context, cancelled)
         val ledger = mutableMapOf<String, Long>()
-        val sizes = folders.associate { it.name!! to size(it, ledger) }.toMutableMap()
+        val sizes = folders.associate { it.name to it.bytes }.toMutableMap()
+        if (purge || seedEstimate) for (folder in folders) for ((path, bytes) in folder.fileSizes) {
+            cancelled()
+            ledger[requireNotNull(tree).uri(path).toString()] = bytes
+        }
         auxiliary.forEach { sizes.merge(fileDay(it), it.length(), Long::plus); ledger[it.path] = it.length() }
         var used = sizes.values.sum()
         val today = LocalDate.now()
-        val days = sizes.map { (name, bytes) ->
+        val days = if (!purge) emptyList() else sizes.map { (name, bytes) ->
             val date = java.time.Instant.ofEpochMilli(parseArchiveDirectoryDateMs(name)!!).atZone(ZoneId.systemDefault()).toLocalDate()
             // Native recorder staging remains protected until its completion/sync path releases it.
             // Queued (pending/uploading) clues are kept; failed uploads no longer pin a day forever.
@@ -314,39 +403,56 @@ object FlightStorage {
         val failures = mutableListOf<String>()
         if (purge) for (name in FlightRetentionPolicy.candidates(days, used, target, maximumDays(context), today)) {
             val folder = folders.firstOrNull { it.name == name }
-            val ok = (folder == null || folder.delete())
+            val ledgerKeys = folder?.fileSizes?.keys?.map { requireNotNull(tree).uri(it).toString() }.orEmpty()
+            val ok = folder == null || runCatching { requireNotNull(tree).delete(name); true }.getOrDefault(false)
             var allDeleted = ok
-            if (ok) auxiliary.filter { fileDay(it) == name }.forEach { if (!it.delete()) allDeleted = false }
+            if (ok) auxiliary.filter { fileDay(it) == name }.forEach { if (!org.ncssar.rid2caltopo.storage.OperationalStorage.removeIfManaged(it)) allDeleted = false }
             if (allDeleted) {
                 used -= sizes.getValue(name)
-                folder?.uri?.toString()?.let { prefix -> ledger.keys.removeAll { it.startsWith(prefix) } }
+                ledgerKeys.forEach { ledger.remove(it) }
                 auxiliary.filter { fileDay(it) == name }.forEach { ledger.remove(it.path) }
             } else failures.add(name)
         }
         if (purge && used != sizes.values.sum()) changes.value++
         // Local staging and provider storage can be on different volumes: check both.
-        val free = availableBytes(context, archive)
-        val archiveReady = archive != null && archive.isDirectory && archive.canRead() && archive.canWrite()
+        val free = if (purge && used != sizes.values.sum()) availableBytes(context, archive) else freeArchive
+        val archiveReady = archive != null && archive.isDirectory && archive.canRead() && archive.canWrite() &&
+            (!seedEstimate || CaltopoClient.GetArchiveUri() != null)
         val deviceAvailable = context.filesDir.usableSpace
         val issue = flightStorageIssue(
             archiveReady = archiveReady,
             deviceLow = deviceAvailable - reserving < RESERVE || (free != null && free - reserving < RESERVE),
             allowanceInsufficient = used + reserving > maximumBytes(context) * 9 / 10,
+            archiveWriteFailed = recordingArchiveWriteFailed,
         )
-        val result = Snapshot(used, auxiliary.filter { it.exists() }.sumOf { it.length() }, failures, issue, archiveReady, deviceAvailable)
+        val result = Snapshot(used, auxiliary.filter { it.exists() }.sumOf { it.length() }, failures, issue, archiveReady, deviceAvailable, preparing)
         val blocked = result.blocked
-        if (purge) {
+        if (purge || seedEstimate) synchronized(stateLock) {
             val wasBlocked = captureBlocked
             captureBlocked = blocked
-            sweepUsed = used; sweepAvailable = minOf(context.filesDir.usableSpace, free ?: Long.MAX_VALUE)
+            sweepUsed = used; sweepAvailable = minOf(deviceAvailable, free ?: Long.MAX_VALUE)
             initialized = true; estimatedUsed = used; lastSweepDay = todayArchiveDirectoryName()
-            fileSizes.clear(); fileSizes.putAll(ledger)
+            fileSizes = ledger
             if (issue?.shouldNotify == true) {
                 if (!wasBlocked || lastIssue != issue) pressure.value = result.message
             } else pressure.value = null
             lastIssue = issue
         }
-        result
+        CaltopoClient.CTDebug("FlightStorage", "Sized flights purge=$purge days=${folders.size} files=${folders.sumOf { it.fileSizes.size }} preparing=$preparing elapsedMs=${android.os.SystemClock.elapsedRealtime() - started}")
+        return result
+    }
+    /** Read-only sizing must not queue behind migration, hashing, hydration or retention cleanup. */
+    private inline fun <T> storageMetadata(context: Context, action: () -> T): T {
+        check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) { "Flight storage must run on a worker" }
+        val archive = CaltopoClient.GetArchiveUri()
+        val result = action()
+        check(archive == CaltopoClient.GetArchiveUri()) { "Archive Dir changed while sizing storage. Retry the scan." }
+        return result
+    }
+    private inline fun <T> storageIo(context: Context, action: () -> T): T {
+        check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) { "Flight storage must run on a worker" }
+        if (CaltopoClient.GetArchiveUri() != null) org.ncssar.rid2caltopo.storage.OperationalStorage.requireReady(context)
+        return synchronized(lock, action)
     }
     private fun availableBytes(context: Context, archive: DocumentFile?): Long? = try {
         if (archive == null) null

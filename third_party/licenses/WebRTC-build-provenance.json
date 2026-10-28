@@ -1,0 +1,259 @@
+{
+  "source_revision": "db3ba7af86dd6d48174ed35387d11c0794f1a21b",
+  "source_url": "https://github.com/webrtc-sdk/webrtc.git",
+  "target": "//sdk:framework_objc",
+  "components": [
+    "webrtc",
+    "abseil-cpp",
+    "base64",
+    "boringssl",
+    "crc32c",
+    "dav1d",
+    "fft",
+    "fiat",
+    "g711",
+    "g722",
+    "libaom",
+    "libsrtp",
+    "libvpx",
+    "libyuv",
+    "ooura",
+    "opus",
+    "pffft",
+    "protobuf",
+    "protobuf-javascript",
+    "rnnoise",
+    "sigslot",
+    "spl_sqrt_floor",
+    "zlib"
+  ],
+  "slices": {
+    "ios-arm64-simulator": {
+      "sha256": "447bf074b0b4ba1bdd646bc95af4d41a5445ad78d7d7487f781bf1ab2ffce03e",
+      "bytes": 11145480
+    },
+    "ios-arm64": {
+      "sha256": "6590e23add622fe08a6a146e74bae404104827ce223eabe745a146584e736bf0",
+      "bytes": 10960696
+    }
+  },
+  "notice_files": [
+    {
+      "file": "WebRTC-dependencies/webrtc/LICENSE",
+      "component": "WebRTC webrtc",
+      "sha256": "ab00a482b6a3902e40211b43c5d0441962ea99b6cc7c25c0f243fa270b78d482",
+      "origin": "WebRTC M125 source build; LICENSE; repository revision db3ba7af86dd6d48174ed35387d11c0794f1a21b"
+    },
+    {
+      "file": "WebRTC-dependencies/webrtc/NOTICE",
+      "component": "WebRTC webrtc",
+      "sha256": "bbb552de7d714ac2b6edb539fcac921e2d2f4b92e41d20415464917542c4b87c",
+      "origin": "WebRTC M125 source build; NOTICE; repository revision db3ba7af86dd6d48174ed35387d11c0794f1a21b"
+    },
+    {
+      "file": "WebRTC-dependencies/webrtc/PATENTS",
+      "component": "WebRTC webrtc",
+      "sha256": "01462e2068d1a04c2274f3389773014c14ed9bc3446b28303543bd3e3c064145",
+      "origin": "WebRTC M125 source build; PATENTS; repository revision db3ba7af86dd6d48174ed35387d11c0794f1a21b"
+    },
+    {
+      "file": "WebRTC-dependencies/webrtc/AUTHORS",
+      "component": "WebRTC webrtc",
+      "sha256": "88ea42c4b0d32d8197be8f54cd76ad5588fbf2208a392a15d073ad4248078550",
+      "origin": "WebRTC M125 source build; AUTHORS; repository revision db3ba7af86dd6d48174ed35387d11c0794f1a21b"
+    },
+    {
+      "file": "WebRTC-dependencies/abseil-cpp/LICENSE",
+      "component": "WebRTC abseil-cpp",
+      "sha256": "c79a7fea0e3cac04cd43f20e7b648e5a0ff8fa5344e644b0ee09ca1162b62747",
+      "origin": "WebRTC M125 source build; third_party/abseil-cpp/LICENSE; repository revision f36c4b6e56aaa94606c87fa0c3f7cbdbb5c70546"
+    },
+    {
+      "file": "WebRTC-dependencies/abseil-cpp/AUTHORS",
+      "component": "WebRTC abseil-cpp",
+      "sha256": "1fd39030c119b4c97014f59e0ad0ed65f23475bbdf55a52740f31eb82b34b4ee",
+      "origin": "WebRTC M125 source build; third_party/abseil-cpp/AUTHORS; repository revision f36c4b6e56aaa94606c87fa0c3f7cbdbb5c70546"
+    },
+    {
+      "file": "WebRTC-dependencies/base64/LICENSE",
+      "component": "WebRTC base64",
+      "sha256": "a508773ebf00f8c777a910e941e5fd0072195843e1b72a90eb8787d26d4ab1d7",
+      "origin": "WebRTC M125 source build; rtc_base/third_party/base64/LICENSE; repository revision db3ba7af86dd6d48174ed35387d11c0794f1a21b"
+    },
+    {
+      "file": "WebRTC-dependencies/boringssl/LICENSE",
+      "component": "WebRTC boringssl",
+      "sha256": "a78d37138db9a43843736b2973284b61af19cd5384cf3c752e922171b0d4fc56",
+      "origin": "WebRTC M125 source build; third_party/boringssl/src/LICENSE; repository revision 12391e648d3c6f04a718721568cc89208b780654"
+    },
+    {
+      "file": "WebRTC-dependencies/crc32c/LICENSE",
+      "component": "WebRTC crc32c",
+      "sha256": "a1f30b77c01e0995fa32a00119e00749e8731ee8a3c4c3549bce74083c72b0b6",
+      "origin": "WebRTC M125 source build; third_party/crc32c/src/LICENSE; repository revision fa5ade41ee480003d9c5af6f43567ba22e4e17e6"
+    },
+    {
+      "file": "WebRTC-dependencies/crc32c/AUTHORS",
+      "component": "WebRTC crc32c",
+      "sha256": "6c96b5e2a101ab9a629d8623be73f69e2346ef02e8ddd7096abe030c452252d2",
+      "origin": "WebRTC M125 source build; third_party/crc32c/src/AUTHORS; repository revision fa5ade41ee480003d9c5af6f43567ba22e4e17e6"
+    },
+    {
+      "file": "WebRTC-dependencies/dav1d/LICENSE",
+      "component": "WebRTC dav1d",
+      "sha256": "2da4494d2a8b5c742afbb905b10621e40129284c977ac138e3081ed0d9d83aed",
+      "origin": "WebRTC M125 source build; third_party/dav1d/LICENSE; repository revision f36c4b6e56aaa94606c87fa0c3f7cbdbb5c70546"
+    },
+    {
+      "file": "WebRTC-dependencies/fft/LICENSE",
+      "component": "WebRTC fft",
+      "sha256": "6fdbabd2c95c5efc6f1e46175278239afb9343120a3022ed0e0cb04267a6aeb3",
+      "origin": "WebRTC M125 source build; modules/third_party/fft/LICENSE; repository revision db3ba7af86dd6d48174ed35387d11c0794f1a21b"
+    },
+    {
+      "file": "WebRTC-dependencies/fiat/LICENSE",
+      "component": "WebRTC fiat",
+      "sha256": "43e358d7b6eb109d0f51f7b3a090fd82607965767c25fadee39e922475de2061",
+      "origin": "WebRTC M125 source build; third_party/boringssl/src/third_party/fiat/LICENSE; repository revision 12391e648d3c6f04a718721568cc89208b780654"
+    },
+    {
+      "file": "WebRTC-dependencies/g711/LICENSE",
+      "component": "WebRTC g711",
+      "sha256": "b29c8f13f91feb2dab7d6655444369fa9f29c0d7121a52dab90ff97e40343a85",
+      "origin": "WebRTC M125 source build; modules/third_party/g711/LICENSE; repository revision db3ba7af86dd6d48174ed35387d11c0794f1a21b"
+    },
+    {
+      "file": "WebRTC-dependencies/g722/LICENSE",
+      "component": "WebRTC g722",
+      "sha256": "61862327fd00d6a4deb2c1276577782c2500f4fe103e072018fc369d8e37e876",
+      "origin": "WebRTC M125 source build; modules/third_party/g722/LICENSE; repository revision db3ba7af86dd6d48174ed35387d11c0794f1a21b"
+    },
+    {
+      "file": "WebRTC-dependencies/libaom/LICENSE",
+      "component": "WebRTC libaom",
+      "sha256": "4764a286d8b2faeaf42f4418e7d7a28d58fc8fd4d00a3d0a7f44b0a4099de7f2",
+      "origin": "WebRTC M125 source build; third_party/libaom/source/libaom/LICENSE; repository revision eefd5585a0c4c204fcf7d30065f8c2ca35c38a82"
+    },
+    {
+      "file": "WebRTC-dependencies/libaom/PATENTS",
+      "component": "WebRTC libaom",
+      "sha256": "661fb8e504744e95587b556b94a58343448300606a41bea8c7a9b97125696e61",
+      "origin": "WebRTC M125 source build; third_party/libaom/source/libaom/PATENTS; repository revision eefd5585a0c4c204fcf7d30065f8c2ca35c38a82"
+    },
+    {
+      "file": "WebRTC-dependencies/libaom/AUTHORS",
+      "component": "WebRTC libaom",
+      "sha256": "89a05d564a544ebeec6f8b7b054f84998ab92332a1fbd9f2c123361881f0951f",
+      "origin": "WebRTC M125 source build; third_party/libaom/source/libaom/AUTHORS; repository revision eefd5585a0c4c204fcf7d30065f8c2ca35c38a82"
+    },
+    {
+      "file": "WebRTC-dependencies/libsrtp/LICENSE",
+      "component": "WebRTC libsrtp",
+      "sha256": "8e19d42a1eec9561f3f347253ddf2e385c55f392f025bb0fd41b88dbf38db5ae",
+      "origin": "WebRTC M125 source build; third_party/libsrtp/LICENSE; repository revision 7a7e64c8b5a632f55929cb3bb7d3e6fb48c3205a"
+    },
+    {
+      "file": "WebRTC-dependencies/libvpx/LICENSE",
+      "component": "WebRTC libvpx",
+      "sha256": "8267348d5af1262c11d1a08de2f5afc77457755f1ac658627dd9acf71011d615",
+      "origin": "WebRTC M125 source build; third_party/libvpx/source/libvpx/LICENSE; repository revision 8762f5efb2917765316a198e6713f0bc93b07c9b"
+    },
+    {
+      "file": "WebRTC-dependencies/libvpx/PATENTS",
+      "component": "WebRTC libvpx",
+      "sha256": "cc3273e0694ea5896145e0677699b53471b03ea43021ddc50e7923fbb9f5023c",
+      "origin": "WebRTC M125 source build; third_party/libvpx/source/libvpx/PATENTS; repository revision 8762f5efb2917765316a198e6713f0bc93b07c9b"
+    },
+    {
+      "file": "WebRTC-dependencies/libvpx/AUTHORS",
+      "component": "WebRTC libvpx",
+      "sha256": "e038e68f758d11a16fa6eec7c167e3de66d185e3ab6ea20c8666d0ecbeb1bdb4",
+      "origin": "WebRTC M125 source build; third_party/libvpx/source/libvpx/AUTHORS; repository revision 8762f5efb2917765316a198e6713f0bc93b07c9b"
+    },
+    {
+      "file": "WebRTC-dependencies/libyuv/LICENSE",
+      "component": "WebRTC libyuv",
+      "sha256": "2b2cc1180c7e6988328ad2033b04b80117419db9c4c584918bbb3cfec7e9364f",
+      "origin": "WebRTC M125 source build; third_party/libyuv/LICENSE; repository revision a6a2ec654b1be1166b376476a7555c89eca0c275"
+    },
+    {
+      "file": "WebRTC-dependencies/libyuv/PATENTS",
+      "component": "WebRTC libyuv",
+      "sha256": "4da84211f947c6f9f7dd8fbce513e1522e01833407ae732b8c9a2bbb75fed495",
+      "origin": "WebRTC M125 source build; third_party/libyuv/PATENTS; repository revision a6a2ec654b1be1166b376476a7555c89eca0c275"
+    },
+    {
+      "file": "WebRTC-dependencies/libyuv/AUTHORS",
+      "component": "WebRTC libyuv",
+      "sha256": "406e9dee7651ff7a415ef126fe6f649b29312ea3f2b28f11bb7f0bf458edb3bd",
+      "origin": "WebRTC M125 source build; third_party/libyuv/AUTHORS; repository revision a6a2ec654b1be1166b376476a7555c89eca0c275"
+    },
+    {
+      "file": "WebRTC-dependencies/ooura/LICENSE",
+      "component": "WebRTC ooura",
+      "sha256": "25b7731b70c77ecd5f3bb19303fbaa99be18860f81d44f71da670fdcd04829db",
+      "origin": "WebRTC M125 source build; common_audio/third_party/ooura/LICENSE; repository revision db3ba7af86dd6d48174ed35387d11c0794f1a21b"
+    },
+    {
+      "file": "WebRTC-dependencies/opus/COPYING",
+      "component": "WebRTC opus",
+      "sha256": "8338ce8d922bb4416ce3dd1e5680173332435e3f0755007ac7801ccd674fe682",
+      "origin": "WebRTC M125 source build; third_party/opus/src/COPYING; repository revision f36c4b6e56aaa94606c87fa0c3f7cbdbb5c70546"
+    },
+    {
+      "file": "WebRTC-dependencies/opus/AUTHORS",
+      "component": "WebRTC opus",
+      "sha256": "f9fd849e652219ce98e008303370b352d37663d0ffb27b8dc514ad93c9c7438b",
+      "origin": "WebRTC M125 source build; third_party/opus/src/AUTHORS; repository revision f36c4b6e56aaa94606c87fa0c3f7cbdbb5c70546"
+    },
+    {
+      "file": "WebRTC-dependencies/pffft/LICENSE",
+      "component": "WebRTC pffft",
+      "sha256": "a46200592eb193853527250da098e6bb0c75424e7a2c7db8da526c4f301c3d88",
+      "origin": "WebRTC M125 source build; third_party/pffft/LICENSE; repository revision f36c4b6e56aaa94606c87fa0c3f7cbdbb5c70546"
+    },
+    {
+      "file": "WebRTC-dependencies/protobuf/LICENSE",
+      "component": "WebRTC protobuf",
+      "sha256": "6e5e117324afd944dcf67f36cf329843bc1a92229a8cd9bb573d7a83130fea7d",
+      "origin": "WebRTC M125 source build; third_party/protobuf/LICENSE; repository revision f36c4b6e56aaa94606c87fa0c3f7cbdbb5c70546"
+    },
+    {
+      "file": "WebRTC-dependencies/protobuf-javascript/LICENSE",
+      "component": "WebRTC protobuf-javascript",
+      "sha256": "103441a2584cb720426c60320bcba53807024aab3080b00e0da841c305757a34",
+      "origin": "WebRTC M125 source build; third_party/protobuf-javascript/LICENSE; repository revision f36c4b6e56aaa94606c87fa0c3f7cbdbb5c70546"
+    },
+    {
+      "file": "WebRTC-dependencies/rnnoise/COPYING",
+      "component": "WebRTC rnnoise",
+      "sha256": "e2f59ff41d9d03adc3dcf3deff170f8c8cf4a6eb4a9b174762a7656d23200ffa",
+      "origin": "WebRTC M125 source build; third_party/rnnoise/COPYING; repository revision f36c4b6e56aaa94606c87fa0c3f7cbdbb5c70546"
+    },
+    {
+      "file": "WebRTC-dependencies/sigslot/LICENSE",
+      "component": "WebRTC sigslot",
+      "sha256": "905bc5ab1c66eea2669aee6cb5185488508264df6492f71ae1a6595180ff8c2b",
+      "origin": "WebRTC M125 source build; rtc_base/third_party/sigslot/LICENSE; repository revision db3ba7af86dd6d48174ed35387d11c0794f1a21b"
+    },
+    {
+      "file": "WebRTC-dependencies/spl_sqrt_floor/LICENSE",
+      "component": "WebRTC spl_sqrt_floor",
+      "sha256": "41d791701e3e1c1073470403de7e342442d1e6a2af72681023b13a2f45f2125c",
+      "origin": "WebRTC M125 source build; common_audio/third_party/spl_sqrt_floor/LICENSE; repository revision db3ba7af86dd6d48174ed35387d11c0794f1a21b"
+    },
+    {
+      "file": "WebRTC-dependencies/zlib/LICENSE",
+      "component": "WebRTC zlib",
+      "sha256": "e1cfcc55c325b3f78cf55df9664abaa066e2271dffe8213347d9fccdfbac8f2c",
+      "origin": "WebRTC M125 source build; third_party/zlib/LICENSE; repository revision f36c4b6e56aaa94606c87fa0c3f7cbdbb5c70546"
+    },
+    {
+      "file": "WebRTC-THIRD-PARTY-LICENSES.txt",
+      "component": "WebRTC generated dependency notices",
+      "sha256": "dc9a849df15429f9963e1f4bef72c97b4fe9cd2e83cca19e7c95221ccda74214",
+      "origin": "WebRTC M125 source build; generated GN build LICENSE.md; repository revision db3ba7af86dd6d48174ed35387d11c0794f1a21b"
+    }
+  ],
+  "build_tool_patch_sha256": "034278f633bde64264201816edbebd3c15aed03e95a9855b51188961cd18e962"
+}

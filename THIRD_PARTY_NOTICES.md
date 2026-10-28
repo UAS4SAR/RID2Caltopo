@@ -38,16 +38,27 @@ the MediaMTX license; they are not covered by RID2Caltopo's Apache-2.0 grant.
 - License information: <https://ffmpeg.org/legal.html>
 - LGPL-2.1 text: [FFmpeg-LGPL-2.1.txt](third_party/licenses/FFmpeg-LGPL-2.1.txt)
 
-RID2Caltopo supports optional drop-in FFmpeg shared libraries. FFmpeg is
+The Apple runtime statically links FFmpeg; the Android runtime uses FFmpeg shared libraries. The current source build pins n7.0 at revision `083443d67cb159ce469e5d902346b8d0c2cd1c93`. FFmpeg is
 generally licensed under LGPL-2.1-or-later, but builds that enable GPL
 components are governed by the applicable GPL, and builds using nonfree
 components may not be redistributable. The exact license depends on the
 configuration and external libraries used to produce the included binaries.
 
-Before distributing a build that includes FFmpeg, verify its configure flags
-and linked libraries and satisfy the corresponding source, relinking,
-attribution, notice, and other distribution requirements. The FFmpeg binaries
-and headers are not covered by RID2Caltopo's Apache-2.0 grant.
+Apple device Release builds include a written source/relinking offer under
+LGPL 2.1 section 6(c). License & Notices links to the matching public GitHub
+release containing `RID2Caltopo-relink.zip`. That ZIP provides the library
+source, application objects, non-system link inputs, Eigen source, build/link
+scripts and notices. Downloads require no account and are free of charge.
+
+The offer remains valid for at least three years after our last distribution
+of the corresponding build. If the download is unavailable, contact
+kjt@uas4sar.com for a free copy. The full offer is in
+`third_party/licenses/SOURCE_AND_RELINKING_OFFER.txt`. Original developer signing
+credentials are not required to produce an unsigned replacement executable.
+
+The FFmpeg binaries and headers retain their own license; RID2Caltopo's
+Apache-2.0 grant does not relicense them. Android uses shared libraries and has
+its own platform build/distribution requirements.
 
 ## Android and Java dependencies
 
@@ -98,8 +109,82 @@ decoding and selected GeographicLib 2.7 components for coordinate conversion.
 Upstream copyright notices are retained in the vendored source.
 
 - laz-perf: https://github.com/hobuinc/laz-perf, Apache License 2.0.
-  [License](apple/Sources/CAOL/LAZPERF-LICENSE).
+  [License](third_party/licenses/LAZPERF-LICENSE).
 - GeographicLib: https://github.com/geographiclib/geographiclib, MIT License.
-  [License](apple/Sources/CAOL/GEOGRAPHICLIB-LICENSE).
+  [License](third_party/licenses/GEOGRAPHICLIB-LICENSE).
 - Pinned source provenance and build configuration:
-  [CAOL README](apple/Sources/CAOL/README.md).
+  [CAOL provenance](third_party/licenses/CAOL-README.txt).
+
+
+## WebRTC native framework
+
+The Apple target builds the M125 source branch at revision
+`db3ba7af86dd6d48174ed35387d11c0794f1a21b` from
+https://github.com/webrtc-sdk/webrtc. The local XCFramework includes device and
+Simulator slices. The pinned recipe and build-tool-only compatibility patch
+are under `apple/Native/WebRTC` and `third_party/webrtc`.
+
+- [WebRTC BSD license](third_party/licenses/WebRTC-BSD.txt).
+- [Full GN-generated component notices](third_party/licenses/WebRTC-THIRD-PARTY-LICENSES.txt).
+- Individual copyright, license, patent and author notices are retained under
+  `third_party/licenses/WebRTC-dependencies` for all 23 components identified by
+  the successful upstream license generator.
+- `WebRTC-build-provenance.json` records source identity, slice hashes and notice
+  inputs. The previous Specs wrapper's MIT notice is retained conservatively;
+  the current Apple target does not depend on that prebuilt package.
+
+## MediaMTX dependencies and Go runtime
+
+The native MediaMTX build uses Go 1.25.6. Its vendored module versions and retained
+license, copyright and patent notices are included under
+`third_party/licenses/MediaMTX-dependencies`. This conservative collection may
+include notices for upstream code that the final linker does not retain.
+The [Go runtime license](third_party/licenses/Go-BSD.txt) applies separately.
+The reviewed ios/arm64 package graph contains 559 packages (225 standard-library
+packages). Copyright and license comment blocks from all 3,455 selected source
+files are retained in `Go-component-copyright-notices.txt`, with Go patent
+notices and source hashes. This preserves per-file attributions as well as the
+module-level license texts.
+The embedded HLS web player uses hls.js v1.6.15; its [notice](third_party/licenses/HLS.js-LICENSE.txt) retains Dailymotion and Brightcove attribution under Apache 2.0.
+The actual player was matched to the SHA-verified release. All 89 bundled npm
+source-map files match eventemitter3 5.0.1, url-toolkit 2.2.5 and SVTA Common
+Media Library 0.17.1. Their license and inherited notices are under
+`third_party/licenses/HLS-dependencies`. The release executable's 60 linked Go
+module versions and retained notice paths are recorded in
+`MediaMTX-dependencies/linked-modules.json`, including the separate BSD keywrap
+copyright header.
+
+## Local mapping dependencies
+
+The native mapping build selects OpenCV 4.12.0 core, imgproc, features2d,
+calib3d and flann, plus Ceres Solver and Eigen from OpenMVG revision
+`01193a245ee3c36458e650b1cf4402caad8983ef`.
+
+- [OpenCV license](third_party/licenses/OpenCV/LICENSE) and retained module
+  copyright banners cover OpenCV and separately attributed portions such as FLANN.
+- The build's dependency archives include ADE, libjpeg-turbo, libpng, libwebp and
+  zlib; their retained texts are under `third_party/licenses/OpenCV`.
+- [Ceres Solver BSD license](third_party/licenses/CERES-LICENSE.txt).
+- [Eigen license overview](third_party/licenses/Eigen/COPYING.README) and
+  [MPL 2.0](third_party/licenses/Eigen/COPYING.MPL2). The source tree's additional
+  COPYING files are retained because some optional Eigen code has other licenses.
+  The matching source is included in the linked Apple relink ZIP, together
+  with the relevant COPYING texts. Upstream source:
+  https://github.com/openMVG/openMVG/tree/01193a245ee3c36458e650b1cf4402caad8983ef/src/third_party/eigen.
+
+This software is based in part on the work of the Independent JPEG Group.
+
+## Rights and distribution materials
+
+The Apache license for original RID2Caltopo source does not replace third-party
+licenses. Their rights to modification and reverse engineering for debugging modifications
+remain governed by those licenses. Apple releases retain the written offer,
+full license texts and a small build-matched download reference. The large ZIP
+is hosted on GitHub rather than included in the installed app. Release
+verification checks the public asset checksums before distribution. Existing
+material sets are reused when the corresponding source, compiled objects,
+notices and build/link inputs are unchanged.
+
+The in-app License & Notices view contains the bundled full texts. The generated
+legal manifest verifies that those resources match the reviewed inputs. It does
+not certify fulfillment of source distribution, relinking or other obligations.

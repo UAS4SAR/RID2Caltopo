@@ -76,7 +76,7 @@ Before upload or release:
    understood worktree; the gate verifies the versioned release notes and the
    shared protected-land source catalog. Catalog network verification is
    limited to one attempt per seven days unless explicitly forced.
-3. Publish the reviewed `PrivacyPolicy.md` and verify the public URL.
+3. Publish the reviewed `PrivacyPolicyApple.md` and verify the public URL.
 4. Complete category, age rating, App Privacy, review contact/instructions,
    screenshots, territories, price, export compliance, and DSA status in App
    Store Connect.

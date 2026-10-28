@@ -127,15 +127,14 @@ use OS mirroring or
 an app-managed attached display with streams, map, split, or observer content
 and configurable alert routing.
 
-Backup & Transfer creates a passphrase-encrypted local configuration file and
-restores it through the document picker. It can also maintain an encrypted
-latest backup in the app's iCloud Drive container; automatic updates are
-debounced, and the passphrase is retained only in that device's Keychain.
-Files import/export remains available for iCloud-only, local, removable, or
-installed third-party document providers. The map menu's Export MA Package
-workflow produces Android-compatible ZIP packages from cached viewport tiles
-and DEM data; importing one installs its expiring incident profile and offline
-map content after validating archive paths and package format.
+Settings > iCloud Settings Backup manages an encrypted latest settings backup
+in the app's iCloud Drive container. Automatic updates are debounced, and the
+passphrase is retained only in that device's Keychain. Settings backups exclude
+access credentials. Manual settings-backup file export/import is removed.
+The map tools export map tile packages from cached maps, terrain and mapping
+results. Import Config imports those packages after validating their format and
+archive paths. Map packages contain map data; tracker enrollment establishes
+authorized access separately.
 Captured Video Review opens one movie at a time with replacement-safe local
 staging, Back/Run/Pause/Step/scrub controls, optional pause-on-open, local
 detector guide boxes, verdict summaries, and clearable paused-frame annotations.

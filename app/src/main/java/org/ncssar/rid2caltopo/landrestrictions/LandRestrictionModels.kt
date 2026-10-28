@@ -24,11 +24,33 @@ enum class LandAgency(
     ColoradoParksAndWildlife(
         "Colorado Parks and Wildlife",
         "https://cpw.state.co.us/rules-and-regulations"
-    )
+    );
+
+    val dataCredit: String get() = when (this) {
+        NationalParkService -> "National Park Service, Land Resources Division — park unit boundaries"
+        FishAndWildlifeService -> "U.S. Fish and Wildlife Service, National Wildlife Refuge System, Division of Realty"
+        ForestService -> "USDA Forest Service, Automated Lands Program (ALP) — National Wilderness Areas"
+        ColoradoParksAndWildlife -> "Colorado Parks and Wildlife — administrative boundaries"
+    }
+
+    val dataNotice: String get() = when (this) {
+        NationalParkService -> "Advisory GIS data, not survey-quality or legal boundary documents. A legislated park boundary does not establish NPS ownership or an interest in every parcel; NPS may also hold interests outside it. Data may change or be incomplete. Verify ownership, current rules and authorization with the responsible agency. NPS provides no accuracy or completeness warranty."
+        FishAndWildlifeService -> "Simplified mapping boundaries are not legal land descriptions or proof of public access. Consult the refuge and source metadata for current access and data limitations. No accuracy, reliability or completeness warranty is provided."
+        ForestService -> "For general mapping and analysis. These changing geospatial data are not legal documents and must not be used to determine title, ownership, legal descriptions or boundaries, jurisdiction, or restrictions on public or private land. Verify current rules with the responsible agency. No accuracy, reliability, completeness or fitness warranty is provided."
+        ColoradoParksAndWildlife -> "CPW provides these data as is without warranty. Interpret them with accompanying documentation and verify property access and current rules with CPW. The Colorado Department of Natural Resources disclaims liability for their use."
+    }
+
+    val dataMetadataUrl: String get() = when (this) {
+        NationalParkService -> "https://www.arcgis.com/home/item.html?id=a2848257cf5541338bab9b656440bd0c"
+        FishAndWildlifeService -> "https://www.arcgis.com/home/item.html?id=745ed874c1394da3a9aae50267c9e049"
+        ForestService -> "https://data.fs.usda.gov/geodata/edw/edw_resources/meta/S_USA.Wilderness.xml"
+        ColoradoParksAndWildlife -> "https://www.arcgis.com/home/item.html?id=168fccb0583f42f1afe57de6c9ce846d"
+    }
 }
 
 enum class LandRule(val label: String) {
-    LaunchLandOperateRestricted("Launch, landing, or operation restricted"),
+    LaunchLandOperateRestricted("Mapped protected land—verify current rules"),
+    MappedWildernessAdvisory("Mapped wilderness—verify current rules"),
     WildlifeDisturbanceRestricted("Launch, landing, and wildlife disturbance restricted"),
     PropertySpecificRules("Property-specific rules—verify authorization")
 }
@@ -60,8 +82,11 @@ data class LandRestrictionSource(
     val nameFields: List<String>,
     val identifierFields: List<String>,
     val detailsUrlFields: List<String> = emptyList(),
-    val whereClause: String = "1=1"
-)
+    val whereClause: String = "1=1",
+    val cacheRevision: Int = 1
+) {
+    val cacheFileName: String get() = if (cacheRevision == 1) "$id.geojson" else "$id-v$cacheRevision.geojson"
+}
 
 data class LandRestrictionUiState(
     val visible: Boolean = false,
@@ -107,10 +132,10 @@ object LandRestrictionPolicy {
         loading -> "Land rules updating…"
         waitingForLocation -> "Land rules pending"
         areas.any { it.containsOperator && it.rule != LandRule.PropertySpecificRules } ->
-            "Land rules: RESTRICTED"
+            "Mapped land: verify rules"
         areas.count { it.intersectsOperatingArea } > 0 ->
             "Land rules: ${areas.count { it.intersectsOperatingArea }} nearby"
         hasError -> "Land rules unavailable"
-        else -> "No mapped restrictions"
+        else -> "No mapped protected land"
     }
 }

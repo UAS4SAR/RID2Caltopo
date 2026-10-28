@@ -15,6 +15,7 @@ struct AppleArchivedCaltopoTrack: Sendable {
     let label: String
     let observations: [RidObservation]
     let folderID: String
+    let configurationGeneration: Int
 }
 
 actor AppleCaltopoPublisher {
@@ -42,7 +43,7 @@ actor AppleCaltopoPublisher {
     private var deviceMarkerGeneration = 0
     private var deviceMarkerPublishingSuspended = false
     private var deviceMarkerPublishInFlight = false
-    private var pendingDeviceMarkerPublication: (marker: CaltopoDeviceMarker, force: Bool)?
+    private var pendingDeviceMarkerPublication: (marker: CaltopoDeviceMarker, force: Bool, consent: AppleLocationConsent, consentGeneration: UInt)?
     private var deviceMarkerIdleWaiters: [CheckedContinuation<Void, Never>] = []
     private var lastInterruptedJournalWriteAt: [String: Date] = [:]
     private var pendingInterruptedRecoveries: [CaltopoInterruptedPublication] = []
@@ -176,18 +177,18 @@ actor AppleCaltopoPublisher {
         }
     }
 
-    func publishDeviceMarker(_ marker: CaltopoDeviceMarker, force: Bool = false) async {
-        guard !deviceMarkerPublishingSuspended, client != nil else { return }
+    func publishDeviceMarker(_ marker: CaltopoDeviceMarker, force: Bool = false, consent: AppleLocationConsent, consentGeneration: UInt) async {
+        guard consent.allows(consentGeneration), !deviceMarkerPublishingSuspended, client != nil else { return }
         if deviceMarkerPublishInFlight {
             let pendingForce = pendingDeviceMarkerPublication?.force ?? false
-            pendingDeviceMarkerPublication = (marker, force || pendingForce)
+            pendingDeviceMarkerPublication = (marker, force || pendingForce, consent, consentGeneration)
             return
         }
         deviceMarkerPublishInFlight = true
-        var publication: (marker: CaltopoDeviceMarker, force: Bool)? = (marker, force)
+        var publication: (marker: CaltopoDeviceMarker, force: Bool, consent: AppleLocationConsent, consentGeneration: UInt)? = (marker, force, consent, consentGeneration)
         while let current = publication {
             pendingDeviceMarkerPublication = nil
-            await performDeviceMarkerPublication(current.marker, force: current.force)
+            await performDeviceMarkerPublication(current.marker, force: current.force, consent: current.consent, consentGeneration: current.consentGeneration)
             publication = pendingDeviceMarkerPublication
         }
         deviceMarkerPublishInFlight = false
@@ -196,8 +197,8 @@ actor AppleCaltopoPublisher {
         waiters.forEach { $0.resume() }
     }
 
-    private func performDeviceMarkerPublication(_ marker: CaltopoDeviceMarker, force: Bool) async {
-        guard !deviceMarkerPublishingSuspended, !markerCleanupInFlight, let client,
+    private func performDeviceMarkerPublication(_ marker: CaltopoDeviceMarker, force: Bool, consent: AppleLocationConsent, consentGeneration: UInt) async {
+        guard consent.allows(consentGeneration), !deviceMarkerPublishingSuspended, !markerCleanupInFlight, let client,
               let markerConfiguration = configuredConfiguration?.liveConfiguration else { return }
         let generation = deviceMarkerGeneration
         let now = Date()
@@ -209,11 +210,11 @@ actor AppleCaltopoPublisher {
             try await ensureFolders(client: client)
             await recoverInterruptedPublications(client: client)
             await retryMarkerCleanup()
-            guard generation == deviceMarkerGeneration, !deviceMarkerPublishingSuspended else { return }
+            guard consent.allows(consentGeneration), generation == deviceMarkerGeneration, !deviceMarkerPublishingSuspended else { return }
             let ownership = try markerJournal.arm(domain: markerConfiguration.domainAndPort, map: markerConfiguration.mapID, marker: marker.id)
             publishedMarkerOwnership = ownership
             try await client.publishDeviceMarker(marker, folderID: trackFolderID, now: now)
-            guard generation == deviceMarkerGeneration, !deviceMarkerPublishingSuspended else {
+            guard consent.allows(consentGeneration), generation == deviceMarkerGeneration, !deviceMarkerPublishingSuspended else {
                 if await deleteAllDeviceMarkerOccurrences(client: client, markerID: marker.id) { try markerJournal.acknowledge(ownership) }
                 return
             }
@@ -291,6 +292,7 @@ actor AppleCaltopoPublisher {
         guard !normalizedID.isEmpty else { return false }
         let maximumAttempts = 8
         for attempt in 1...maximumAttempts {
+            let beforeDelete = Int64(Date().timeIntervalSince1970 * 1_000)
             do {
                 try await client.deleteMarker(markerID: normalizedID)
             } catch {
@@ -301,9 +303,8 @@ actor AppleCaltopoPublisher {
                 return false
             }
             do {
-                let snapshot = try await client.fetchMapArtifacts()
-                let remaining = snapshot.occurrenceCount(ofItemID: normalizedID)
-                if remaining == 0 {
+                let evidence = try await client.markerPresence(markerID: normalizedID, sinceMilliseconds: beforeDelete)
+                if evidence.absent {
                     AppleLog.info(
                         "CalTopo",
                         "Removed local device marker id=\(normalizedID) attempts=\(attempt)"
@@ -312,8 +313,9 @@ actor AppleCaltopoPublisher {
                 }
                 AppleLog.warning(
                     "CalTopo",
-                    "Local device marker id=\(normalizedID) still has \(remaining) occurrence(s) after delete attempt \(attempt)"
+                    "Marker removal is not yet confirmed; durable retry retained id=\(normalizedID)"
                 )
+                if !evidence.present { return false }
             } catch {
                 AppleLog.info(
                     "CalTopo",
@@ -550,7 +552,8 @@ actor AppleCaltopoPublisher {
             try await interruptedJournal.remove(liveTrackID: id)
             continuation.yield(.trackStopped(remoteID))
             return AppleArchivedCaltopoTrack(
-                liveTrackID: id, label: label, observations: saved, folderID: archiveFolderID)
+                liveTrackID: id, label: label, observations: saved, folderID: archiveFolderID,
+                configurationGeneration: generation)
         } catch {
             if generation == configurationGeneration {
                 pendingInterruptedRecoveries.removeAll { $0.liveTrackID == id }
@@ -565,7 +568,7 @@ actor AppleCaltopoPublisher {
         _ archivedTrack: AppleArchivedCaltopoTrack,
         description: String
     ) async -> Bool {
-        guard let client else { return false }
+        guard archivedTrack.configurationGeneration == configurationGeneration, let client else { return false }
         do {
             try await client.updateArchivedTrack(
                 liveTrackID: archivedTrack.liveTrackID,
@@ -586,6 +589,10 @@ actor AppleCaltopoPublisher {
             )
             return false
         }
+    }
+
+    func acceptsDeferredUpdate(for archivedTrack: AppleArchivedCaltopoTrack) -> Bool {
+        archivedTrack.configurationGeneration == configurationGeneration && client != nil
     }
 
     /// Stops an ignored aircraft's live track without converting it to an archived Shape.
@@ -630,7 +637,8 @@ actor AppleCaltopoPublisher {
             trackFolderName: folderName,
             settleDelay: .milliseconds(500),
             fetchSnapshot: {
-                try await client.fetchMapArtifacts()
+                // A second folder/race inspection refreshes the existing snapshot with a delta.
+                try await client.fetchMapArtifacts(refresh: true)
             },
             createFolder: { title, visible, labelVisible in
                 try await client.createFolder(

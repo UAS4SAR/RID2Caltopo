@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>R2CVersionReleaseDate</key>
-	<string>2026-10-19</string>
+	<string>2026-10-24</string>
     <key>CFBundleDisplayName</key>
     <string>RID2Caltopo</string>
     <key>CFBundleExecutable</key>
@@ -50,11 +50,8 @@
 			<string>org.ncssar.RID2CaltopoApple.org-config</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>r2c2</string>
 				<string>r2cenroll</string>
 				<string>r2creauth</string>
-				<string>r2cfaa1</string>
-				<string>r2cma1</string>
 				<string>r2cmapkg1</string>
 			</array>
 		</dict>
@@ -79,11 +76,11 @@
     <key>NSLocalNetworkUsageDescription</key>
     <string>RID2Caltopo exchanges mapping missions and imagery, drone telemetry, video streams, and shared MA map packages over the local network.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>RID2Caltopo uses location to map Remote ID observations relative to this device and to keep Remote ID tracking, video ingest, and spoken advisories running while the display is locked. The location indicator shows while it continues in the background.</string>
+	<string>RID2Caltopo uses location to show your position relative to aircraft and share it with configured incident coordination. During active monitoring, location updates can continue while the display is locked, with the location indicator visible.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Use Face ID to protect organization CalTopo maps and settings.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>RID2Caltopo uses the microphone only when the operator enables VoIP for an authorized remote viewer.</string>
+	<string>RID2Caltopo uses microphone permission for an optional voice session with an authorized remote viewer. Sending your microphone audio remains off until you enable its control.</string>
     <key>UILaunchScreen</key>
     <dict/>
     <key>UIFileSharingEnabled</key>

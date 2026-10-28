@@ -43,17 +43,12 @@ echo "$families" | grep -q "1"
 echo "$families" | grep -q "2"
 
 schemes=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes' "$info")
-echo "$schemes" | grep -q "r2c2"
-echo "$schemes" | grep -q "r2cenroll"
-echo "$schemes" | grep -q "r2cfaa1"
-echo "$schemes" | grep -q "r2cma1"
+echo "$schemes" | grep -q "r2creauth"
 echo "$schemes" | grep -q "r2cmapkg1"
 
-privacy_types=$(/usr/libexec/PlistBuddy -c 'Print :NSPrivacyCollectedDataTypes' "$privacy")
-echo "$privacy_types" | grep -q "NSPrivacyCollectedDataTypePreciseLocation"
-echo "$privacy_types" | grep -q "NSPrivacyCollectedDataTypeDeviceID"
-echo "$privacy_types" | grep -q "NSPrivacyCollectedDataTypeOtherUserContent"
-echo "$privacy_types" | grep -q "NSPrivacyCollectedDataTypeOtherDiagnosticData"
+python3 "$(dirname "$0")/../tools/privacy/check_apple_privacy.py" --app "$app"
+python3 "$(dirname "$0")/../tools/licenses/prepare_legal.py" --check --artifact "$app"
+python3 "$(dirname "$0")/../tools/licenses/prepare_apple_relink.py" --verify-app "$app" --require-published
 
 if codesign -dv "$app" >/dev/null 2>&1; then
     echo "expected an unsigned archive, but the app is signed" >&2

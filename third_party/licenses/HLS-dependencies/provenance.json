@@ -1,0 +1,73 @@
+[
+  {
+    "package": "eventemitter3",
+    "version": "5.0.1",
+    "tarball": "https://registry.npmjs.org/eventemitter3/-/eventemitter3-5.0.1.tgz",
+    "integrity": "sha512-GWkBvjiSZK87ELrYOSESUYeVIc9mvLLf/nXalMOS5dYrgZq9o5OVkbZAVM06CVxYsCwH9BDZFPlQTlPA1j4ahA==",
+    "license": "MIT",
+    "notices": [
+      "package/LICENSE"
+    ]
+  },
+  {
+    "package": "url-toolkit",
+    "version": "2.2.5",
+    "tarball": "https://registry.npmjs.org/url-toolkit/-/url-toolkit-2.2.5.tgz",
+    "integrity": "sha512-mtN6xk+Nac+oyJ/PrI7tzfmomRVNFIWKUbG8jdYFt52hxbiReFAXIjYskvu64/dvuW71IcB7lV8l0HvZMac6Jg==",
+    "license": "Apache-2.0",
+    "notices": [
+      "package/LICENSE"
+    ]
+  },
+  {
+    "package": "@svta/common-media-library",
+    "version": "0.17.1",
+    "tarball": "https://registry.npmjs.org/@svta/common-media-library/-/common-media-library-0.17.1.tgz",
+    "integrity": "sha512-UcmqRe1cJ/OloNEeXqKJjbw6MAKPaGZUk4yLsy1QOwtzUmo7hDVvZeIoqXlmoXZNQRQ/P1MsNuboKirsTw9e7w==",
+    "license": "Apache-2.0",
+    "notices": [
+      "package/LICENSE",
+      "package/NOTICE",
+      "package/dist/cjs/drm/common/LICENSE_ACQUISITION.js",
+      "package/dist/drm/common/LICENSE_ACQUISITION.js",
+      "package/dist/cjs/drm/common/LICENSE_RELEASE.js",
+      "package/dist/drm/common/LICENSE_RELEASE.js",
+      "package/dist/cjs/drm/common/LICENSE_RENEWAL.js",
+      "package/dist/drm/common/LICENSE_RENEWAL.js",
+      "package/dist/cjs/drm/common/LICENSE_REQUEST.js",
+      "package/dist/drm/common/LICENSE_REQUEST.js",
+      "package/dist/cjs/drm/common/LicenseRequest.js",
+      "package/dist/drm/common/LicenseRequest.js",
+      "package/dist/cjs/drm/common/LICENSE_ACQUISITION.d.ts.map",
+      "package/dist/drm/common/LICENSE_ACQUISITION.d.ts.map",
+      "package/dist/cjs/drm/common/LICENSE_ACQUISITION.js.map",
+      "package/dist/drm/common/LICENSE_ACQUISITION.js.map",
+      "package/dist/cjs/drm/common/LICENSE_RELEASE.d.ts.map",
+      "package/dist/drm/common/LICENSE_RELEASE.d.ts.map",
+      "package/dist/cjs/drm/common/LICENSE_RELEASE.js.map",
+      "package/dist/drm/common/LICENSE_RELEASE.js.map",
+      "package/dist/cjs/drm/common/LICENSE_RENEWAL.d.ts.map",
+      "package/dist/drm/common/LICENSE_RENEWAL.d.ts.map",
+      "package/dist/cjs/drm/common/LICENSE_RENEWAL.js.map",
+      "package/dist/drm/common/LICENSE_RENEWAL.js.map",
+      "package/dist/cjs/drm/common/LICENSE_REQUEST.d.ts.map",
+      "package/dist/drm/common/LICENSE_REQUEST.d.ts.map",
+      "package/dist/cjs/drm/common/LICENSE_REQUEST.js.map",
+      "package/dist/drm/common/LICENSE_REQUEST.js.map",
+      "package/dist/cjs/drm/common/LicenseRequest.d.ts.map",
+      "package/dist/drm/common/LicenseRequest.d.ts.map",
+      "package/dist/cjs/drm/common/LicenseRequest.js.map",
+      "package/dist/drm/common/LicenseRequest.js.map",
+      "package/dist/cjs/drm/common/LICENSE_ACQUISITION.d.ts",
+      "package/dist/drm/common/LICENSE_ACQUISITION.d.ts",
+      "package/dist/cjs/drm/common/LICENSE_RELEASE.d.ts",
+      "package/dist/drm/common/LICENSE_RELEASE.d.ts",
+      "package/dist/cjs/drm/common/LICENSE_RENEWAL.d.ts",
+      "package/dist/drm/common/LICENSE_RENEWAL.d.ts",
+      "package/dist/cjs/drm/common/LICENSE_REQUEST.d.ts",
+      "package/dist/drm/common/LICENSE_REQUEST.d.ts",
+      "package/dist/cjs/drm/common/LicenseRequest.d.ts",
+      "package/dist/drm/common/LicenseRequest.d.ts"
+    ]
+  }
+]

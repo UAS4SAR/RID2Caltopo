@@ -98,6 +98,7 @@ private struct TrackerReauthenticationPromptModifier: ViewModifier {
 }
 
 struct ContentView: View {
+    @AppStorage("video.remoteControlEnabled") private var remoteVideoControlEnabled = false
     @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     private let endpoint = MediaStreamEndpoint(designator: "demo")
     @Environment(\.scenePhase) private var scenePhase
@@ -150,7 +151,6 @@ struct ContentView: View {
     @State private var showImportConfig = false
     @State private var importConfigNotice: ConfigImportNotice?
     @State private var pendingImportConfigNotice: ConfigImportNotice?
-    @State private var showConfigurationTransfer = false
     @State private var showStorageManagement = false
     @State private var showPersonalAccountEditor = false
     @State private var showIncidentSelection = false
@@ -297,6 +297,7 @@ struct ContentView: View {
                         proximityAlerts: proximityAlerts, bridgeAlerts: bridgeAlerts,
                         iCloudBackup: iCloudBackup, startAtProximity: true
                     ) { configuration in
+                    peerCoordinator.remoteVideoControlChanged()
                         ridTracks.configureCaltopo(configuration, trackFolderName: orgConfigSettings.trackFolder)
                         clueStore.configure(configuration, trackFolderName: orgConfigSettings.trackFolder)
                     }
@@ -315,23 +316,13 @@ struct ContentView: View {
                     bridgeAlerts: bridgeAlerts,
                     iCloudBackup: iCloudBackup
                 ) { configuration in
+                    peerCoordinator.remoteVideoControlChanged()
                     ridTracks.configureCaltopo(configuration, trackFolderName: orgConfigSettings.trackFolder)
                     clueStore.configure(configuration, trackFolderName: orgConfigSettings.trackFolder)
                 }
                 }
                 .toolbar(.visible, for: .navigationBar)
                 .navigationBarBackButtonHidden(true)
-            }
-            .navigationDestination(isPresented: $showConfigurationTransfer) {
-                Group {
-                AppleConfigurationTransferView(
-                    caltopo: caltopoSettings,
-                    organization: orgConfigSettings,
-                    identities: droneConfirmations
-                )
-                }
-                .toolbar(.visible, for: .navigationBar)
-                .navigationBarBackButtonHidden(false)
             }
             .navigationDestination(isPresented: $showStorageManagement) {
                 Group {
@@ -705,6 +696,7 @@ struct ContentView: View {
                 await diagnostics.start()
                 AppleLog.info("App", "Application UI started")
                 networkDiagnostics.start()
+                configureLocationConsentHandling()
                 if !ProcessInfo.processInfo.arguments.contains("--no-location") {
                     locationProvider.start()
                 }
@@ -882,10 +874,6 @@ struct ContentView: View {
                     UserDefaults.standard.set(OperationalMapVideoLayout.video.rawValue, forKey: "map.videoLayout")
                     showTrackMap = true
                 }
-                if ProcessInfo.processInfo.arguments.contains("--show-transfer") {
-                    try? await Task.sleep(for: .milliseconds(500))
-                    showConfigurationTransfer = true
-                }
                 if ProcessInfo.processInfo.arguments.contains("--show-logs") {
                     try? await Task.sleep(for: .milliseconds(500))
                     showDiagnosticLogs = true
@@ -912,6 +900,9 @@ struct ContentView: View {
                     try? await Task.sleep(for: .milliseconds(500))
                     showImportConfig = true
                 }
+            }
+            .onChange(of: remoteVideoControlEnabled, initial: true) { _, _ in
+                peerCoordinator.remoteVideoControlChanged()
             }
             .onChange(of: managedVideoPresenceFingerprint, initial: true) {
                 peerCoordinator.updateManagedVideoStreams(
@@ -1782,9 +1773,6 @@ struct ContentView: View {
             if !peerCoordinator.peers.isEmpty { LabeledContent("Peer zones", value: String(peerCoordinator.peers.count)) }
             LabeledContent("Team drones", value: String(droneConfirmations.importedMappingCount))
             Button("Import Config", systemImage: "qrcode.viewfinder") { showImportConfig = true }
-            NavigationLink {
-                AppleConfigurationTransferView(caltopo: caltopoSettings, organization: orgConfigSettings, identities: droneConfirmations)
-            } label: { Label("Backup & Transfer", systemImage: "shippingbox") }
         }
     }
 
@@ -2361,6 +2349,7 @@ struct ContentView: View {
                     bridgeAlerts: bridgeAlerts,
                     iCloudBackup: iCloudBackup
                 ) { configuration in
+                    peerCoordinator.remoteVideoControlChanged()
                     ridTracks.configureCaltopo(configuration, trackFolderName: orgConfigSettings.trackFolder)
                     clueStore.configure(configuration, trackFolderName: orgConfigSettings.trackFolder)
                 }
@@ -2431,7 +2420,7 @@ struct ContentView: View {
 
     private var operationalNotesSection: some View {
         Section {
-            Text("Bluetooth Remote ID starts automatically, including Wi-Fi reports bridged by the DS110. iOS can discover Bluetooth devices in the background, but scans slow down and duplicate advertisements are coalesced. Video and anomaly processing require the app in the foreground.")
+            Text("Bluetooth Remote ID starts automatically, including Wi-Fi reports bridged by the DS110. Background scans can slow down and coalesce reports. An active monitoring session can continue location updates with the location indicator visible and play spoken advisories. System limits still apply; keep the app foreground for interactive video analysis, mapping transfer, and reconstruction.")
                 .font(.footnote).foregroundStyle(.secondary)
             Text("The Simulator validates the UI and shared logic. Bluetooth, DS110 bridging, background behavior, and live camera streaming require the iPad or iPhone hardware gate.")
                 .font(.footnote).foregroundStyle(.secondary)
@@ -2494,14 +2483,12 @@ struct ContentView: View {
                 mediaMTX.restart(captureStreams: captureStreams)
             },
             viewportMemory: mapViewportMemory,
-            workspaceMenu: AnyView(Menu {
-                MainScreenMenuItems(
-                    showDiagnosticLogs: $showDiagnosticLogs,
-                    showReleaseNotes: $showReleaseNotes, showImportConfig: $showImportConfig,
-                    showConfigurationTransfer: $showConfigurationTransfer, showStorageManagement: $showStorageManagement,
-                    showCaltopoSettings: $showCaltopoSettings, showAboutPrivacy: $showAboutPrivacy,
-                    showTerms: $showTerms, showConfirmExit: $showConfirmExit)
-            } label: { Image(systemName: "ellipsis").frame(minWidth: 44, minHeight: 44) }.accessibilityLabel("Main menu")),
+            workspaceMenu: AnyView(MainScreenMenu(
+                showDiagnosticLogs: $showDiagnosticLogs, showWorkspaceStats: $showWorkspaceStats,
+                showReleaseNotes: $showReleaseNotes, showImportConfig: $showImportConfig,
+                showStorageManagement: $showStorageManagement,
+                showCaltopoSettings: $showCaltopoSettings, showAboutPrivacy: $showAboutPrivacy,
+                showTerms: $showTerms, showConfirmExit: $showConfirmExit).equatable()),
             onAbout: { showWorkspaceAbout = true },
             onDroneAction: { remoteID in
                 if droneConfirmations.isUnassociated(remoteID) { addRidMapRemoteID = remoteID }
@@ -2524,7 +2511,6 @@ struct ContentView: View {
               !showReleaseNotes,
               !showAboutPrivacy,
               !showTerms,
-              !showConfigurationTransfer,
               !showStorageManagement,
               selectedAircraftID == nil
         else { return }
@@ -2790,6 +2776,20 @@ struct ContentView: View {
         return "\(currentIncidentKey)|\(currentIncidentName)|\(streamRegistry.managedPresenceRevision)|\(streams)"
     }
 
+    private func configureLocationConsentHandling() {
+        peerCoordinator.operatorLocationProvider = locationProvider
+        ridTracks.configureLocationConsent(locationProvider.consent)
+        let coordinator = peerCoordinator, tracks = ridTracks
+        let notamCenter = notams, airspaceCenter = airspace, landCenter = landRestrictions
+        locationProvider.locationUnavailableHandler = { [weak coordinator, weak tracks, weak notamCenter, weak airspaceCenter, weak landCenter] in
+            coordinator?.updatePosition(nil)
+            tracks?.clearLocalDeviceLocation()
+            notamCenter?.update(location: nil)
+            airspaceCenter?.update(location: nil)
+            landCenter?.update(location: nil)
+        }
+    }
+
     private func configurePeerCoordinator(forceReconnect: Bool = false) {
         guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
         let arguments = ProcessInfo.processInfo.arguments
@@ -2824,6 +2824,7 @@ struct ContentView: View {
             mapID: argumentValue("--tracker-map") ?? caltopoSettings.mapID,
             forceReconnect: forceReconnect
         )
+        peerCoordinator.restoreCurrentFlightConfirmations(droneConfirmations.localCurrentFlightIdentities)
         publishLocalDeviceMarker(force: true)
     }
 
@@ -3330,6 +3331,7 @@ private struct RecordingDownloadApprovalModifier: ViewModifier {
 
 
 private struct ShortFlightRecordingPanel: View {
+    @AppStorage("video.remoteControlEnabled") private var remoteVideoControlEnabled = false
     @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @ObservedObject var gate: ShortFlightRecordingGate
     @Environment(\.scenePhase) private var phase
@@ -3358,28 +3360,34 @@ private struct ShortFlightRecordingPanel: View {
 
 // The menu has static contents and stable presentation bindings. Telemetry and
 // one-second status updates must not rebuild an already presented native menu.
-private struct MainScreenMenuItems: View {
-    @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
+private struct MainScreenMenu: View, Equatable {
     @Binding var showDiagnosticLogs: Bool
+    @Binding var showWorkspaceStats: Bool
     @Binding var showReleaseNotes: Bool
     @Binding var showImportConfig: Bool
-    @Binding var showConfigurationTransfer: Bool
     @Binding var showStorageManagement: Bool
     @Binding var showCaltopoSettings: Bool
     @Binding var showAboutPrivacy: Bool
     @Binding var showTerms: Bool
     @Binding var showConfirmExit: Bool
 
+    // Labels and enabled states are constant. Bindings are used only by actions
+    // and keep the same SwiftUI state locations for this menu's lifetime. Ignore
+    // parent telemetry refreshes so SwiftUI leaves the presented native menu intact.
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { true }
 
     var body: some View {
-        Group {
+        #if DEBUG && targetEnvironment(simulator)
+        let _ = MainMenuUIProbeMetrics.recordMenuBody()
+        #endif
+        Menu {
+            Button("Aircraft and Reception", systemImage: "antenna.radiowaves.left.and.right") { showWorkspaceStats = true }
             Button("Settings", systemImage: "gearshape") { showCaltopoSettings = true }
             Button("Release Notes", systemImage: "doc.text") { showReleaseNotes = true }
             Divider()
             Button("Import Config", systemImage: "qrcode.viewfinder") { showImportConfig = true }
-            Button("Backup & Transfer", systemImage: "shippingbox") { showConfigurationTransfer = true }
             Button("Manage Storage...", systemImage: "externaldrive") { showStorageManagement = true }
-            Button("Send diagnostics to developer…", systemImage: "square.and.arrow.up") {
+            Button("Send diagnostics to developer...", systemImage: "square.and.arrow.up") {
                 showDiagnosticLogs = true
             }
             Button("Terms of Use", systemImage: "doc.text") { showTerms = true }
@@ -3391,11 +3399,15 @@ private struct MainScreenMenuItems: View {
                 AppleLog.info("Lifecycle", "Quit menu selected")
                 showConfirmExit = true
             }
+        } label: {
+            Image(systemName: "ellipsis").frame(minWidth: 44, minHeight: 44)
         }
+        .accessibilityLabel("Main menu")
     }
 }
 
 private struct AwaitingMapPublicationPanel: View {
+    @AppStorage("video.remoteControlEnabled") private var remoteVideoControlEnabled = false
     @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @ObservedObject var tracks: RIDTrackViewModel
     @ObservedObject var settings: AppleCaltopoSettings
@@ -3416,7 +3428,7 @@ private struct AwaitingMapPublicationPanel: View {
     }
     var body: some View {
         if !tracks.awaitingMapFlights.isEmpty {
-            Button("\(tracks.awaitingMapFlights.count) flight(s) awaiting a map — Review") { reviewing = true }
+            Button("\(tracks.awaitingMapFlights.count) flight(s) awaiting publication — Review") { reviewing = true }
                 .font(.caption).padding(4).background(.regularMaterial)
                 .task(id: reminderFlightIDs) {
                     if reminder.shouldPresent(eligibleFlightIDs: Set(reminderFlightIDs), hasMap: !settings.mapID.isEmpty) {
@@ -3628,6 +3640,7 @@ private struct AwaitingMapPublicationPanel: View {
 }
 
 private struct AwaitingMapFlightRow: View {
+    @AppStorage("video.remoteControlEnabled") private var remoteVideoControlEnabled = false
     @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let flight: AwaitingMapFlight
     let proximity: AwaitingMapFlightProximity?
@@ -3759,6 +3772,7 @@ private struct AwaitingMapFlightRow: View {
 }
 
 private struct AwaitingMapCompassChip: View {
+    @AppStorage("video.remoteControlEnabled") private var remoteVideoControlEnabled = false
     @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let proximity: AwaitingMapFlightProximity?
 
@@ -3820,6 +3834,7 @@ private struct AwaitingMapWideSheetSizing: PresentationSizing {
 
 /// Measures the complete header instead of squeezing three identity lines into a navigation bar.
 struct AdaptiveOperatorHeader<Title: View, Actions: View>: View {
+    @AppStorage("video.remoteControlEnabled") private var remoteVideoControlEnabled = false
     @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @ViewBuilder var title: (Bool) -> Title
     @ViewBuilder var actions: () -> Actions
@@ -3845,6 +3860,7 @@ struct AdaptiveOperatorHeader<Title: View, Actions: View>: View {
 }
 
 struct AppleProximityStatusChip: View {
+    @AppStorage("video.remoteControlEnabled") private var remoteVideoControlEnabled = false
     @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     @ObservedObject var center: AppleProximityAlertCenter
     var onSettings: (() -> Void)? = nil
@@ -3860,6 +3876,7 @@ struct AppleProximityStatusChip: View {
 
 
 private struct WorkspaceResizablePane<Content: View>: View {
+    @AppStorage("video.remoteControlEnabled") private var remoteVideoControlEnabled = false
     @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let title: String
     let onClose: () -> Void
@@ -3903,6 +3920,7 @@ private struct WorkspaceResizablePane<Content: View>: View {
 }
 
 private struct WorkspaceAboutContactLink: View {
+    @AppStorage("video.remoteControlEnabled") private var remoteVideoControlEnabled = false
     @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     let title: String
     let url: URL
@@ -3923,3 +3941,43 @@ private struct WorkspaceAboutContactLink: View {
         .tint(ink)
     }
 }
+
+#if DEBUG && targetEnvironment(simulator)
+@MainActor
+private enum MainMenuUIProbeMetrics {
+    static var menuBodies = 0
+    static func recordMenuBody() {
+        if ProcessInfo.processInfo.arguments.contains("--main-menu-ui-qualification") {
+            menuBodies += 1
+        }
+    }
+}
+
+/// Exercises the production menu with continuous parent updates, without accounts,
+/// radio sessions, stored operational files or acknowledgment actions.
+struct AppleMainMenuUIProbe: View {
+    @State private var tick = 0
+    @State private var selected = ""
+    private func selection(_ name: String) -> Binding<Bool> {
+        Binding(get: { selected == name }, set: { if $0 { selected = name } })
+    }
+    var body: some View {
+        VStack(spacing: 20) {
+            Text("Refresh: \(tick)").accessibilityIdentifier("menu-refresh-tick")
+            Text("Menu builds: \(MainMenuUIProbeMetrics.menuBodies)").accessibilityIdentifier("menu-body-count")
+            MainScreenMenu(
+                showDiagnosticLogs: selection("diagnostics"), showWorkspaceStats: selection("aircraft-reception"), showReleaseNotes: selection("release-notes"),
+                showImportConfig: selection("import"),
+                showStorageManagement: selection("storage"), showCaltopoSettings: selection("settings"),
+                showAboutPrivacy: selection("privacy"), showTerms: selection("terms"), showConfirmExit: selection("quit")).equatable()
+            Text("Selected: \(selected)").accessibilityIdentifier("menu-selection")
+        }
+        .task {
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                tick += 1
+            }
+        }
+    }
+}
+#endif

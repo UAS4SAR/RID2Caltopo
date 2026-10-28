@@ -21,7 +21,7 @@ public class CaltopoClientLogFileTest {
     }
 
     @Test
-    public void staleShutdown_doesNotCloseLoggerAfterAppRestart() {
+    public void staleShutdown_doesNotCloseLoggerAfterAppRestart() throws Exception {
         CloseTrackingOutputStream stream = new CloseTrackingOutputStream();
         CaltopoClient.InstallDebugOutputStreamForTests(stream);
         long staleShutdownGeneration = CaltopoClient.CaptureDebugLogGenerationForTests();
@@ -32,6 +32,7 @@ public class CaltopoClientLogFileTest {
         assertFalse(stream.closed);
 
         CaltopoClient.CTDebug("CaltopoClientLogFileTest", "after stale shutdown");
+        DiagnosticLogWork.drainForTests();
         assertTrue(stream.toString().contains("after stale shutdown"));
     }
 
@@ -44,6 +45,33 @@ public class CaltopoClientLogFileTest {
         CaltopoClient.CloseDebugOutputStreamForShutdownForTests(shutdownGeneration);
 
         assertTrue(stream.closed);
+    }
+
+    @Test
+    public void blockedLogProviderDoesNotBlockProducersOrLifecycleReads() throws Exception {
+        java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.ExecutorService caller = java.util.concurrent.Executors.newSingleThreadExecutor();
+        OutputStream blocked = new OutputStream() {
+            @Override public void write(int value) throws IOException {
+                entered.countDown();
+                try { if (!release.await(5, java.util.concurrent.TimeUnit.SECONDS)) throw new IOException("test timeout"); }
+                catch (InterruptedException error) { Thread.currentThread().interrupt(); throw new IOException(error); }
+            }
+        };
+        CaltopoClient.InstallDebugOutputStreamForTests(blocked);
+        try {
+            CaltopoClient.CTLog("TEST","logger","blocked provider");
+            assertTrue(entered.await(2,java.util.concurrent.TimeUnit.SECONDS));
+            caller.submit(() -> {
+                CaltopoClient.CTLog("TEST","logger","another UI message");
+                CaltopoClient.CaptureDebugLogGenerationForTests();
+                CaltopoClient.MarkAppActive();
+            }).get(500,java.util.concurrent.TimeUnit.MILLISECONDS);
+        } finally {
+            release.countDown(); DiagnosticLogWork.drainForTests(); caller.shutdownNow();
+            CaltopoClient.InstallDebugOutputStreamForTests(new ByteArrayOutputStream());
+        }
     }
 
     private static final class CloseTrackingOutputStream extends OutputStream {

@@ -44,7 +44,7 @@ public struct MappingResultFiles: Sendable {
             ?? (plan?["title"] as? String)
             ?? layer.resultTitle.components(separatedBy: " · Visible").first ?? "Map"
         if fm.fileExists(atPath: archive.path) {
-            let shares = fm.temporaryDirectory.appendingPathComponent("RID2Caltopo/MapShares")
+            let shares = TemporaryWorkspace.root.appendingPathComponent("MapShares")
             try fm.createDirectory(at: shares, withIntermediateDirectories: true)
             for old in (try? fm.contentsOfDirectory(at: shares, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] {
                 if let date = try? old.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,

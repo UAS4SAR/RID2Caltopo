@@ -8,7 +8,7 @@ public enum CaltopoPersonalMarkerTest {
         public let data: Data
         public init(code: Int, data: Data) { self.code = code; self.data = data }
     }
-    public enum Presence { case absent, own, conflict }
+    public enum Presence: Sendable { case absent, own, conflict }
     public struct Failure: Error, LocalizedError {
         public let message: String
         public init(message: String) { self.message = message }
@@ -25,8 +25,9 @@ public enum CaltopoPersonalMarkerTest {
         return String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
     }
     public static func presence(_ reply: Reply, id: UUID) throws -> Presence {
-        guard CaltopoPersonalProbe.result(code: reply.code, data: reply.data).readable,
+        guard (200...299).contains(reply.code),
               let json = try JSONSerialization.jsonObject(with: reply.data) as? [String: Any],
+              json["status"] as? String == "ok",
               let result = json["result"] as? [String: Any], let state = result["state"] as? [String: Any],
               let features = state["features"] as? [[String: Any]] else {
             throw Failure(message: "Map read failed (HTTP \(reply.code)).")
@@ -39,33 +40,35 @@ public enum CaltopoPersonalMarkerTest {
     }
     @MainActor
     public static func run(id: UUID, cleanupOnly: Bool,
+                           responses: CaltopoDiagnosticResponses = .shared,
                            send: (String, String, String?) async throws -> Reply,
-                           savePending: (UUID) throws -> Void, clearPending: () throws -> Void) async throws -> String {
+                           savePending: (UUID) async throws -> Void, clearPending: () async throws -> Void) async throws -> String {
         let path = markerPath(id)
-        let before = try presence(await send("GET", readPath, nil), id: id)
+        let before = try await responses.presence(send("GET", readPath, nil), id: id)
         guard before != .conflict else { throw Failure(message: "Marker identity does not match. Nothing was removed.") }
         if !cleanupOnly {
             guard before == .absent else { throw Failure(message: "Test marker already exists. Use cleanup.") }
-            try savePending(id)
+            try await savePending(id)
+            try Task.checkCancellation()
             let created = try await send("POST", path, payload(id))
             guard (200...299).contains(created.code) else {
                 throw Failure(message: "Create returned HTTP \(created.code). Use cleanup to check for a possible leftover.")
             }
-            guard try presence(await send("GET", readPath, nil), id: id) == .own else {
+            guard try await responses.presence(send("GET", readPath, nil), id: id) == .own else {
                 throw Failure(message: "Created marker was not verified. Use cleanup.")
             }
         } else if before == .absent {
-            try clearPending()
+            try await clearPending()
             return "Cleanup verified: the pending test marker is absent."
         }
         let deleted = try await send("DELETE", path, nil)
         guard (200...299).contains(deleted.code) else {
             throw Failure(message: "Remove returned HTTP \(deleted.code). Test marker cleanup is still pending.")
         }
-        guard try presence(await send("GET", readPath, nil), id: id) == .absent else {
+        guard try await responses.presence(send("GET", readPath, nil), id: id) == .absent else {
             throw Failure(message: "Test marker is still present. Cleanup remains pending.")
         }
-        try clearPending()
+        try await clearPending()
         return cleanupOnly ? "Cleanup verified: test marker removed." : "Publishing succeeded: created, read back, removed, and verified absent on \(mapID)."
     }
 }

@@ -1,0 +1,11 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity android:name="org.ncssar.rid2caltopo.storage.QualificationArchiveGrantActivity" android:exported="true" />
+        <provider android:name="org.ncssar.rid2caltopo.storage.QualificationDocumentsProvider"
+            android:authorities="org.ncssar.rid2caltopo.test.storage"
+            android:permission="android.permission.MANAGE_DOCUMENTS"
+            android:exported="true" android:grantUriPermissions="true">
+            <intent-filter><action android:name="android.content.action.DOCUMENTS_PROVIDER" /></intent-filter>
+        </provider>
+    </application>
+</manifest>

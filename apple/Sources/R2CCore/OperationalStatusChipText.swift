@@ -35,9 +35,9 @@ public enum OperationalStatusChipText {
     ) -> String {
         if ["updating", "unavailable", "stale", "pending"].contains(where: { detailedLabel.lowercased().contains($0) }) { return detailedLabel }
         return switch severity {
-        case .danger: "Land restricted"
+        case .danger: "Verify land rules"
         case .caution: "Land rules nearby"
-        case .normal: "No mapped restrictions"
+        case .normal: "No mapped protected land"
         case .neutral: conciseNeutral(detailedLabel, fallback: "Land status")
         }
     }

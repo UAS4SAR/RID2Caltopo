@@ -36,7 +36,6 @@ internal fun BoxScope.MapPaneSettingsMenus(
     baseLayer: BaseLayerOption,
     followFocusedDroneEnabled: Boolean,
     mapReloadInFlight: Boolean,
-    mapCacheAvailableBytes: Long?,
     downloadMapStatus: String?,
     mapName: String?,
     autoRemoveBadTiles: Boolean,
@@ -49,8 +48,6 @@ internal fun BoxScope.MapPaneSettingsMenus(
     onReloadMap: () -> Unit,
     onOpenBadTiles: () -> Unit,
     onOpenBadTilesHowTo: () -> Unit,
-    onOpenCacheSize: () -> Unit,
-    onOpenTileAge: () -> Unit,
     onOpenMutualAidPackage: () -> Unit,
     onToggleAutoRemoveBadTiles: () -> Unit,
     onClearBadTileFlags: () -> Unit,
@@ -127,21 +124,6 @@ internal fun BoxScope.MapPaneSettingsMenus(
             DropdownMenuItem(
                 text = { Text("Bad Tiles...") },
                 onClick = onOpenBadTiles
-            )
-            DropdownMenuItem(
-                trailingIcon = { PanelSettingHelpButton("Max Cache Size") },
-                text = {
-                    Text(
-                        "Max Cache Size: ${MapCacheSettings.formatDecimalGb(MapCacheSettings.maxCacheBytes(context))}" +
-                            (mapCacheAvailableBytes?.let { " (${MapCacheSettings.formatDecimalGb(it)} available)" } ?: "")
-                    )
-                },
-                onClick = onOpenCacheSize
-            )
-            DropdownMenuItem(
-                trailingIcon = { PanelSettingHelpButton("Maximum Tile Age") },
-                text = { Text("Maximum Tile Age: ${MapCacheSettings.formatTileAge(MapCacheSettings.maxTileAgeDays(context))}") },
-                onClick = onOpenTileAge
             )
             DropdownMenuItem(
                 text = { Text("Export Map Package...") },

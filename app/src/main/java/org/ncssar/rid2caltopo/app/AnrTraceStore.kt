@@ -44,6 +44,7 @@ internal object AnrTraceStore {
         val traceInput = info.traceInputStream ?: return null
         val filename = anrTraceFilename(info.timestamp, info.pid)
         val traceDir = File(context.filesDir, ANR_TRACE_DIRECTORY)
+        org.ncssar.rid2caltopo.storage.OperationalStorage.requireFor(traceDir)
         if (!traceDir.exists() && !traceDir.mkdirs()) return null
         val traceFile = File(traceDir, filename)
 
@@ -52,6 +53,7 @@ internal object AnrTraceStore {
                 copyAtMost(input, output, MAX_ANR_TRACE_BYTES)
             }
         }
+        org.ncssar.rid2caltopo.storage.OperationalStorage.retain(traceFile)
         prefs.edit().putBoolean(captureKey, true).apply()
 
         val archiveResult = runCatching {

@@ -5,6 +5,7 @@ import org.ncssar.rid2caltopo.data.DisplayUnits
 
 import PendingClue
 import formatClueHeading
+import projectionIssue
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -25,6 +26,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -78,6 +80,7 @@ fun ClueSubmissionSheet(
     onSubmitLocalMarkerOnly: () -> Unit,
     onSubmit: () -> Unit,
     onIgnoredFlightAnswer: (Boolean) -> Unit = {},
+    saving: Boolean = false,
 ) {
     val sheetState = rememberModalBottomSheetState(
         skipPartiallyExpanded = true,
@@ -90,7 +93,7 @@ fun ClueSubmissionSheet(
 
     ModalBottomSheet(
         modifier = Modifier.observeUserInput(),
-        onDismissRequest = onCancel,
+        onDismissRequest = { if (!saving) onCancel() },
         sheetState = sheetState,
         dragHandle = null
     ) {
@@ -104,7 +107,8 @@ fun ClueSubmissionSheet(
             onGimbalAngleChange = onGimbalAngleChanged,
             onSubmitLocalMarkerOnly = onSubmitLocalMarkerOnly,
             onSubmit = onSubmit,
-            onCancel = onCancel
+            onCancel = onCancel,
+            saving = saving,
         )
         if (pendingClue.ignoredFlightPrompt) {
             // Over the clue form; Yes opens the Drone Confirmation Panel, No returns to the form.
@@ -132,7 +136,8 @@ fun ClueSheetContent (
     onGimbalAngleChange: (Double) -> Unit,
     onSubmitLocalMarkerOnly: () -> Unit,
     onSubmit: () -> Unit,
-    onCancel: () -> Unit
+    onCancel: () -> Unit,
+    saving: Boolean = false,
 ) {
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -151,14 +156,15 @@ fun ClueSheetContent (
     var submissionFeedback by remember(clue.designator) { mutableStateOf<String?>(null) }
 
     fun submitWhenValid(action: () -> Unit) {
+        if (saving) return
         if (clue.title.isBlank()) {
             submissionFeedback = "Title required."
             titleFocusRequester.requestFocus()
             keyboardController?.show()
             return
         }
-        if (clue.projectionHeightMeters == null) {
-            submissionFeedback = "Clue projection needs fresh AGL or a valid relative altitude."
+        clue.projectionIssue?.let { issue ->
+            submissionFeedback = issue
             return
         }
         submissionFeedback = null
@@ -246,13 +252,14 @@ fun ClueSheetContent (
                 style = MaterialTheme.typography.bodySmall
             )
 
-            if (clue.projectionHeightMeters == null) {
+            clue.projectionIssue?.let { issue ->
                 Text(
-                    text = "Clue projection unavailable: no fresh AGL or relative altitude.",
+                    text = issue,
                     color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodySmall,
                 )
-            } else {
+            }
+            if (clue.projectionHeightMeters != null) {
                 Text(
                     text = String.format(
                         Locale.US,
@@ -323,10 +330,11 @@ fun ClueSheetContent (
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
-                    text = "Camera heading: ${formatClueHeading(clue.headingDeg) ?: "0.0"}°",
+                    text = formatClueHeading(clue.headingDeg)?.let { "Camera heading: $it°" } ?: "Camera heading unavailable",
                     style = MaterialTheme.typography.bodyLarge
                 )
                 Slider(
+                    enabled = !saving,
                     value = (clue.headingDeg ?: 0.0).toFloat(),
                     onValueChange = { onCameraHeadingChange(it.toDouble()) },
                     valueRange = 0f..359f,
@@ -338,6 +346,7 @@ fun ClueSheetContent (
                     style = MaterialTheme.typography.bodyLarge
                 )
                 Slider(
+                    enabled = !saving,
                     value = clue.gimbalAngleDeg.toFloat(),
                     onValueChange = { onGimbalAngleChange(it.toDouble()) },
                     valueRange = -90f..90f,
@@ -352,6 +361,7 @@ fun ClueSheetContent (
 
             // Title
             OutlinedTextField(
+                enabled = !saving,
                 value = clue.title,
                 onValueChange = {
                     if (it.isNotBlank()) submissionFeedback = null
@@ -374,6 +384,7 @@ fun ClueSheetContent (
 
             // Description
             OutlinedTextField(
+                enabled = !saving,
                 value = descriptionFieldValue,
                 onValueChange = {
                     descriptionFieldValue = it
@@ -399,6 +410,7 @@ fun ClueSheetContent (
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 TextButton(
+                    enabled = !saving,
                     onClick = {
                         val current = descriptionFieldValue
                         val start = current.selection.min
@@ -450,20 +462,25 @@ fun ClueSheetContent (
                 }
                 OutlinedButton(
                     modifier = Modifier.fillMaxWidth(),
+                    enabled = !saving,
                     onClick = onCancel
                 ) {
                     Text("Close")
                 }
                 Button(
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = clue.projectionHeightMeters != null,
+                    enabled = !saving && clue.projectionIssue == null,
                     onClick = { submitWhenValid(onSubmit) }
                 ) {
-                    Text("Submit")
+                    Text(if (saving) "Saving…" else "Submit")
+                }
+                if (saving) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth().testTag("clue-save-progress"))
+                    Text("Saving clue on this device…", style = MaterialTheme.typography.bodySmall)
                 }
                 OutlinedButton(
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = clue.projectionHeightMeters != null,
+                    enabled = !saving && clue.projectionIssue == null,
                     onClick = { submitWhenValid(onSubmitLocalMarkerOnly) }
                 ) {
                     Text("Mark Local Only")

@@ -1,0 +1,133 @@
+{
+  "status": "ok",
+  "result": {
+    "accounts": [
+      {
+        "id": "USER01",
+        "type": "Feature",
+        "properties": {
+          "class": "UserAccount",
+          "firstName": "Test",
+          "lastName": "Pilot"
+        }
+      },
+      {
+        "id": "WORK01",
+        "type": "Feature",
+        "properties": {
+          "class": "UserAccount",
+          "alias": "Incident Workspace"
+        }
+      },
+      {
+        "id": "OTHER1",
+        "type": "Feature",
+        "properties": {
+          "class": "UserAccount",
+          "alias": "Unrelated"
+        }
+      }
+    ],
+    "features": [
+      {
+        "id": "FOLDER1",
+        "type": "Feature",
+        "properties": {
+          "class": "UserFolder",
+          "accountId": "USER01",
+          "label": "Searches"
+        }
+      },
+      {
+        "id": "ABC123",
+        "type": "Feature",
+        "properties": {
+          "class": "CollaborativeMap",
+          "accountId": "USER01",
+          "title": "Private test",
+          "folderId": "FOLDER1",
+          "updated": 123
+        }
+      },
+      {
+        "id": "WFOLD1",
+        "type": "Feature",
+        "properties": {
+          "class": "UserFolder",
+          "accountId": "WORK01",
+          "label": "Workspace folder"
+        }
+      },
+      {
+        "id": "GHI789",
+        "type": "Feature",
+        "properties": {
+          "class": "CollaborativeMap",
+          "accountId": "WORK01",
+          "title": "Incident",
+          "updated": 234,
+          "folderId": "WFOLD1"
+        }
+      },
+      {
+        "id": "DEF456",
+        "type": "Feature",
+        "properties": {
+          "class": "CollaborativeMap",
+          "accountId": "EXTERN",
+          "title": "Shared source",
+          "folderId": "EXTFLD",
+          "updated": 1
+        }
+      },
+      {
+        "id": "JKL123",
+        "type": "Feature",
+        "properties": {
+          "class": "CollaborativeMap",
+          "accountId": "OTHER1",
+          "title": "Excluded"
+        }
+      }
+    ],
+    "groups": [
+      {
+        "id": "MEM001",
+        "type": "Feature",
+        "properties": {
+          "class": "UserAccountGroupRel",
+          "accountId": "USER01",
+          "referenceAccountId": "WORK01",
+          "type": 16
+        }
+      }
+    ],
+    "rels": [
+      {
+        "id": "MEMREL",
+        "type": "Feature",
+        "properties": {
+          "class": "UserAccountGroupRel",
+          "accountId": "USER01",
+          "referenceAccountId": "WORK01",
+          "type": 16
+        }
+      },
+      {
+        "id": "REL001",
+        "type": "Feature",
+        "properties": {
+          "class": "UserAccountMapRel",
+          "accountId": "USER01",
+          "mapId": "DEF456",
+          "title": "Shared map",
+          "mapUpdated": 456,
+          "type": 10,
+          "folderId": "FOLDER1"
+        }
+      }
+    ],
+    "ids": {},
+    "timestamp": 1
+  }
+}

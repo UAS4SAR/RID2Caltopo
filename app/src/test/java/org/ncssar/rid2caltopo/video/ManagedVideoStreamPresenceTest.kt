@@ -12,6 +12,32 @@ class ManagedVideoStreamPresenceTest {
         ManagedVideoStreamPresence.resetForTests()
     }
 
+    @Test fun slowMetadataProviderDoesNotBlockLiveStatusLookups() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val workers = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val snapshot = workers.submit {
+                ManagedVideoStreamPresence.snapshot(
+                    streams = mapOf("camera" to StreamInfo("camera", sourcePath = "camera", state = StreamState.LIVE)),
+                    sourceInfoProvider = {
+                        entered.countDown()
+                        check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                        null
+                    },
+                )
+            }
+            assertTrue(entered.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            workers.submit<Boolean> { ManagedVideoStreamPresence.hasLiveDesignator("camera") }
+                .get(500, java.util.concurrent.TimeUnit.MILLISECONDS)
+            release.countDown()
+            snapshot.get(2, java.util.concurrent.TimeUnit.SECONDS)
+        } finally {
+            release.countDown()
+            workers.shutdownNow()
+        }
+    }
+
     @Test
     fun `live stream is advertised before any telemetry association exists`() {
         val advertisements = ManagedVideoStreamPresence.snapshot(

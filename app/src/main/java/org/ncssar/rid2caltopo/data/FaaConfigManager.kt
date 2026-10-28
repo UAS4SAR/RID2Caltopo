@@ -23,82 +23,22 @@ object FaaConfigManager {
 
     @JvmStatic
     fun tryHandleRawConfigText(context: Context?, text: String): Boolean {
-        val trimmed = text.trim()
-        if (trimmed.isBlank()) return false
-        if (isFaaTokenText(trimmed)) {
-            importToken(context, trimmed) { _, message ->
-                CaltopoClient.ShowToast(message)
-            }
-            return true
-        }
-        return try {
-            val json = JSONObject(trimmed)
-            when (json.optString("type").trim().lowercase()) {
-                TYPE_REMOTE -> {
-                    readRemoteConfigObject(json)
-                    true
-                }
-                TYPE_ENCRYPTED -> {
-                    applyEncryptedPayload(json.toString(), remoteToken = "", validate = false)
-                    true
-                }
-                else -> false
-            }
-        } catch (_: Exception) {
-            false
-        }
+        return false
     }
 
     @JvmStatic
     fun readConfigObject(json: JSONObject): Boolean {
-        return when (json.optString("type").trim().lowercase()) {
-            TYPE_PLAINTEXT -> {
-                importPlaintextConfig(json)
-                true
-            }
-            TYPE_REMOTE -> {
-                readRemoteConfigObject(json)
-                true
-            }
-            TYPE_ENCRYPTED -> {
-                applyEncryptedPayload(json.toString(), remoteToken = "", validate = false)
-                true
-            }
-            else -> false
-        }
+        return false
     }
 
     @JvmStatic
     fun importPlaintextConfig(json: JSONObject) {
-        val normalized = normalizePlaintextConfig(json)
-        val encrypted = encryptedPayloadForPlaintext(normalized)
-        CaltopoClient.StoreFaaRemoteConfig(
-            CaltopoClient.GetFaaRemoteToken(),
-            normalized.optString("source_label", normalized.optString("label", "FAA NOTAM credentials")),
-            encrypted,
-            System.currentTimeMillis(),
-            false,
-            ""
-        )
-        applyPlaintextConfig(normalized)
-        CaltopoClient.CTDebug(TAG, "importPlaintextConfig(): FAA credentials loaded into local cache.")
+        throw IllegalArgumentException("Legacy credential transfers are no longer supported. Scan a tracker enrollment QR.")
     }
 
     @JvmStatic
     fun importLegacyCredentialsFromJson(json: JSONObject) {
-        val clientId = json.optString("notam_client_id")
-        val clientSecret = json.optString("notam_client_secret")
-        if (clientId.isBlank() || clientSecret.isBlank()) return
-        val faaJson = JSONObject()
-            .put("type", TYPE_PLAINTEXT)
-            .put("file_version", "1.0")
-            .put("source_label", json.optString("source_label", json.optString("org_name", "Legacy FAA NOTAM credentials")))
-            .put("notam_api_base_url", json.optString("notam_api_base_url"))
-            .put("notam_token_url", json.optString("notam_token_url"))
-            .put("notam_client_id", clientId)
-            .put("notam_client_secret", clientSecret)
-            .put("notam_scope", json.optString("notam_scope"))
-        importPlaintextConfig(faaJson)
+        // Legacy credential files are not accepted.
     }
 
     @JvmStatic
@@ -114,22 +54,7 @@ object FaaConfigManager {
 
     @JvmStatic
     fun readRemoteConfigObject(json: JSONObject) {
-        val token = json.optString("faa_token")
-        val label = json.optString("label")
-        val encrypted = json.optString("faa_payload_enc")
-        val lastValidated = json.optLong("last_validated_epoch_ms", 0L)
-        val stale = json.optBoolean("stale", encrypted.isBlank())
-        CaltopoClient.StoreFaaRemoteConfig(
-            token,
-            label,
-            encrypted,
-            lastValidated,
-            stale,
-            json.optString("last_failure_reason")
-        )
-        if (encrypted.isNotBlank()) {
-            applyEncryptedPayload(encrypted, remoteToken = token, validate = false)
-        }
+        throw IllegalArgumentException("Legacy credential transfers are no longer supported. Scan a tracker enrollment QR.")
     }
 
     @JvmStatic
@@ -161,17 +86,7 @@ object FaaConfigManager {
 
     @JvmStatic
     fun refreshIfNeededOnStartup(context: Context) {
-        val token = CaltopoClient.GetFaaRemoteToken()
-        if (token.isBlank()) return
-        val needsRefresh = CaltopoClient.GetFaaPayloadEnc().isBlank() || CaltopoClient.GetFaaConfigStale()
-        if (!needsRefresh) return
-        importToken(context.applicationContext, token) { success, message ->
-            if (success) {
-                CaltopoClient.CTDebug(TAG, "refreshIfNeededOnStartup(): $message")
-            } else {
-                CaltopoClient.CTWarn(TAG, "refreshIfNeededOnStartup(): $message")
-            }
-        }
+        // Tracker provisioning replaces legacy Drive refresh.
     }
 
     @JvmStatic
@@ -180,54 +95,10 @@ object FaaConfigManager {
         token: String,
         callback: (Boolean, String) -> Unit
     ) {
-        val trimmed = token.trim()
-        val config = FaaConfigToken.decode(trimmed)
-        if (config == null) {
-            callback(false, "Invalid FAA config token.")
-            return
-        }
-        CaltopoClient.StoreFaaRemoteConfig(trimmed, config.label, CaltopoClient.GetFaaPayloadEnc(), 0L, true, "Refresh pending.")
-        if (context == null) {
-            callback(true, "FAA config token saved; refresh will run on next app start.")
-            return
-        }
-        executor.execute {
-            val result = try {
-                val encrypted = GoogleDriveConfigSync.downloadFaaConfigPublic(config.driveFileId)
-                applyEncryptedPayload(encrypted, remoteToken = trimmed, validate = true)
-                true to "FAA config imported."
-            } catch (e: Exception) {
-                CaltopoClient.MarkFaaConfigStale(e.message ?: "FAA config refresh failed.")
-                false to (e.message ?: "FAA config refresh failed.")
-            }
-            mainHandler.post { callback(result.first, result.second) }
-        }
+        mainHandler.post { callback(false, "Legacy credential transfers are no longer supported. Scan a tracker enrollment QR.") }
     }
 
-    @JvmStatic
-    fun uploadFaaConfig(
-        context: Context,
-        account: GoogleSignInAccount,
-        callback: (Boolean, String, String?) -> Unit
-    ) {
-        val appContext = context.applicationContext
-        executor.execute {
-            val result = try {
-                val plaintext = buildPlaintextFromCurrent()
-                    ?: throw IllegalStateException("No legacy FAA credential configuration is available to publish.")
-                val encrypted = encryptedPayloadForPlaintext(plaintext)
-                val label = plaintext.optString("source_label", "RID2Caltopo FAA NOTAM credentials")
-                val fileId = GoogleDriveConfigSync.uploadFaaConfigFile(appContext, account, encrypted, label)
-                val token = FaaConfigToken.encode(FaaConfigToken.FaaConfig(fileId, label))
-                CaltopoClient.StoreFaaRemoteConfig(token, label, encrypted, System.currentTimeMillis(), false, "")
-                Triple(true, "FAA config uploaded to Drive.", token)
-            } catch (e: Exception) {
-                CaltopoClient.CTWarn(TAG, "uploadFaaConfig() failed.", e)
-                Triple(false, e.message ?: "FAA config upload failed.", null)
-            }
-            mainHandler.post { callback(result.first, result.second, result.third) }
-        }
-    }
+
 
     @JvmStatic
     fun markAuthorizationFailure(reason: String) {

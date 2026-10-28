@@ -77,12 +77,10 @@ internal fun buildOfflineTileRequest(
     tileSource: OnlineTileSourceBase,
     url: String
 ): Request {
-    val builder = Request.Builder().url(url)
-    if (tileSource.name() == OsmStandardTileSource.name()) {
-        val cfg = Configuration.getInstance()
-        builder.header(cfg.userAgentHttpHeader, cfg.userAgentValue)
+    require(org.ncssar.rid2caltopo.video.mapcache.MapTileUsagePolicy.allowsOfflineDownload(tileSource.name(), url)) {
+        "Offline downloads of public OSM and Esri basemap tiles are disabled."
     }
-    return builder.build()
+    return Request.Builder().url(url).build()
 }
 
 internal fun tileSourceForBaseLayer(baseLayer: BaseLayerOption): OnlineTileSourceBase =
@@ -95,14 +93,14 @@ internal fun offlinePrepTileSources(
     baseLayer: BaseLayerOption,
     includeContours: Boolean
 ): List<OnlineTileSourceBase> {
-    val sources = mutableListOf<OnlineTileSourceBase>(tileSourceForBaseLayer(baseLayer))
+    val sources = mutableListOf<OnlineTileSourceBase>()
+    // Neither public basemap is an offline source, including legacy selections.
     if (includeContours) sources += UsgsContoursTileSource
     return sources
 }
 
 internal fun offlinePrepTileSources(includeImagery: Boolean, includeOsm: Boolean, includeContours: Boolean): List<OnlineTileSourceBase> = buildList {
-    if (includeImagery) add(ArcGisWorldImageryTileSource)
-    if (includeOsm) add(OsmStandardTileSource)
+    // Both flags are retained for old callers; public OSM/Esri cannot be prefetched.
     if (includeContours) add(UsgsContoursTileSource)
 }
 
@@ -110,7 +108,7 @@ internal fun offlinePrepTileOperationCount(baseTileCount: Int, sourceCount: Int)
     (baseTileCount.toLong() * sourceCount.coerceAtLeast(0)).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
 
 internal fun offlinePrepTileOperationCount(baseTileCount: Int, includeContours: Boolean): Int {
-    val sourceCount = if (includeContours) 2 else 1
+    val sourceCount = if (includeContours) 1 else 0
     return (baseTileCount.toLong() * sourceCount.toLong()).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
 }
 

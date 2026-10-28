@@ -16,6 +16,7 @@ actor MediaMTXMobileController: MediaServerController {
     private var retainedSelf: Unmanaged<MediaMTXMobileController>?
     private var configurationURL: URL?
     private var running = false
+    private var finalizationTokens: [String: [UUID]] = [:]
 
     init() {
         let pair = AsyncStream<MediaServerEvent>.makeStream(bufferingPolicy: .bufferingNewest(256))
@@ -24,6 +25,9 @@ actor MediaMTXMobileController: MediaServerController {
     }
 
     deinit {
+        for token in finalizationTokens.values.flatMap({ $0 }) {
+            RecordingFinalizationActivity.shared.finish(token)
+        }
         continuation.finish()
     }
 
@@ -88,8 +92,37 @@ actor MediaMTXMobileController: MediaServerController {
             AppleLog.debug("MediaMTX", logLine)
         }
         if let event = parser.parse(line: logLine) {
-            continuation.yield(event)
+            if case let .recordFileCompleted(path, _, _) = event {
+                finalizationTokens[path, default: []].append(
+                    RecordingFinalizationActivity.shared.begin(path: path)
+                )
+            }
+            switch continuation.yield(event) {
+            case let .dropped(dropped):
+                if case let .recordFileCompleted(path, _, _) = dropped {
+                    finishRecordingEvent(path: path)
+                }
+            case .terminated:
+                if case let .recordFileCompleted(path, _, _) = event {
+                    finishRecordingEvent(path: path)
+                }
+            default: break
+            }
         }
+    }
+
+    func finishRecordingEvent(path: String) {
+        guard var tokens = finalizationTokens[path], !tokens.isEmpty else { return }
+        RecordingFinalizationActivity.shared.finish(tokens.removeFirst())
+        if tokens.isEmpty { finalizationTokens.removeValue(forKey: path) }
+        else { finalizationTokens[path] = tokens }
+    }
+
+    func discardPendingRecordingEvents() {
+        for token in finalizationTokens.values.flatMap({ $0 }) {
+            RecordingFinalizationActivity.shared.finish(token)
+        }
+        finalizationTokens.removeAll()
     }
 }
 
@@ -133,6 +166,11 @@ final class MediaMTXViewModel: ObservableObject {
             eventTask = Task { [controller] in
                 for await event in controller.events {
                     guard !Task.isCancelled else { return }
+                    defer {
+                        if case let .recordFileCompleted(path, _, _) = event {
+                            Task { await controller.finishRecordingEvent(path: path) }
+                        }
+                    }
                     let storageOwner = "finalize-" + UUID().uuidString
                     if case let .recordFileCompleted(_, filePath, _) = event,
                        let date = ManagedVideoRecordingIdentity.recordingStartedAt(forPath: filePath) {
@@ -180,15 +218,19 @@ final class MediaMTXViewModel: ObservableObject {
                 reportStoragePressure(storage)
                 // No day-level "recorder" owner: it pinned the start day after
                 // midnight. Today is always protected, and incomplete segments are
-                // protected via setRecorderRunning (see AppleFlightStorage).
+                // protected for this recorder run via setRecorderRunning.
+                let capturesRecordings = captureStreams && recordingAllowed
                 let configuration = try MediaMTXRuntimeConfiguration.build(
                     base: baseConfiguration,
-                    captureStreams: captureStreams && recordingAllowed,
+                    captureStreams: capturesRecordings,
                     restrictNetworkAccess: UserDefaults.standard.object(forKey: "video.restrictMediaServerAccess") as? Bool ?? true,
                     recordingRoot: recordingRoot
                 )
+                let recorderStartedAt = Date()
                 try await controller.start(configuration: configuration)
-                await storageControl.perform { AppleFlightStorage.setRecorderRunning(true) }
+                await storageControl.perform {
+                    AppleFlightStorage.setRecorderRunning(capturesRecordings, startedAt: recorderStartedAt)
+                }
                 isRunning = true
                 if status == "Starting" {
                     status = captureStreams && recordingAllowed ? "Running • capturing streams" : (captureStreams ? "Capture paused: storage limit" : "Running")
@@ -198,6 +240,7 @@ final class MediaMTXViewModel: ObservableObject {
                 AppleLog.error("MediaMTX", "Start failed: \(error)")
                 eventTask?.cancel()
                 eventTask = nil
+                await controller.discardPendingRecordingEvents()
                 status = "Start failed: \(error)"
             }
         }
@@ -368,6 +411,7 @@ final class MediaMTXViewModel: ObservableObject {
         eventTask?.cancel()
         eventTask = nil
         await controller.stop()
+        await controller.discardPendingRecordingEvents()
         await storageControl.perform {
             AppleFlightStorage.release(owner: "recorder")
             AppleFlightStorage.setRecorderRunning(false)

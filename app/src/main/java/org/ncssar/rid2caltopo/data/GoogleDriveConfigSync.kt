@@ -437,140 +437,11 @@ object GoogleDriveConfigSync {
      * a new file is created inside the folder.  Must be called from a background
      * thread.
      */
-    @JvmStatic
-    fun uploadOrgConfigFile(
-        context: Context,
-        account: GoogleSignInAccount,
-        orgConfigJson: String,
-        orgName: String
-    ): String {
-        val token = requireAccessToken(context, account)
-        val bytes = orgConfigJson.toByteArray(StandardCharsets.UTF_8)
-        val orgFileName = "${orgName}_Config.json"
-        val existingId = findOrgConfigFileId(token, orgName)
-        val metadataObj = JSONObject()
-            .put("name", orgFileName)
-            .put("appProperties", JSONObject()
-                .put(APP_PROPERTY_KEY, ORG_APP_PROPERTY_VALUE)
-                .put("org_name", orgName))
-        if (existingId == null) {
-            // Only set parent folder on creation; PATCH leaves location unchanged.
-            val folderId = findOrCreateOrgConfigFolder(context, token)
-            metadataObj.put("parents", JSONArray().put(folderId))
-        }
-        val boundary = "RID2CaltopoOrgConfigBoundary"
-        val bodyBytes = buildMultipartBody(boundary, metadataObj.toString(), bytes, "application/json; charset=UTF-8")
-        val body = bodyBytes.toRequestBody("multipart/related; boundary=$boundary".toMediaType())
-        val url = if (existingId == null) {
-            "$DRIVE_UPLOAD_URL?uploadType=multipart"
-        } else {
-            "$DRIVE_UPLOAD_URL/$existingId?uploadType=multipart"
-        }
-        val builder = Request.Builder()
-            .url(url)
-            .header("Authorization", "Bearer $token")
-        val request = if (existingId == null) builder.post(body).build() else builder.patch(body).build()
-        val fileId = httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                val details = response.body?.string().orEmpty()
-                throw IOException(formatDriveError("Org config upload failed", response.code, details))
-            }
-            val payload = response.body?.string().orEmpty()
-            JSONObject(payload).optString("id").ifBlank {
-                existingId ?: throw IOException("Org config upload succeeded but returned no file ID.")
-            }
-        }
-        // Grant public read access so members can download without auth.
-        makeFilePublic(token, fileId)
-        return fileId
-    }
 
-    @JvmStatic
-    fun uploadMutualAidProfileFile(
-        context: Context,
-        account: GoogleSignInAccount,
-        bundleJson: String,
-        bundleName: String
-    ): String {
-        val token = requireAccessToken(context, account)
-        val bytes = bundleJson.toByteArray(StandardCharsets.UTF_8)
-        val fileName = "${bundleName}_MutualAid.json"
-        val existingId = findScopedPublicJsonFileId(token, fileName, MUTUAL_AID_APP_PROPERTY_VALUE)
-        val metadataObj = JSONObject()
-            .put("name", fileName)
-            .put("appProperties", JSONObject()
-                .put(APP_PROPERTY_KEY, MUTUAL_AID_APP_PROPERTY_VALUE)
-                .put("bundle_name", bundleName))
-        if (existingId == null) {
-            val folderId = findOrCreateNamedFolder(context, token, MUTUAL_AID_FOLDER_NAME, KEY_MUTUAL_AID_FOLDER_ID)
-            metadataObj.put("parents", JSONArray().put(folderId))
-        }
-        val boundary = "RID2CaltopoMutualAidBoundary"
-        val bodyBytes = buildMultipartBody(boundary, metadataObj.toString(), bytes, "application/json; charset=UTF-8")
-        val body = bodyBytes.toRequestBody("multipart/related; boundary=$boundary".toMediaType())
-        val url = if (existingId == null) {
-            "$DRIVE_UPLOAD_URL?uploadType=multipart"
-        } else {
-            "$DRIVE_UPLOAD_URL/$existingId?uploadType=multipart"
-        }
-        val builder = Request.Builder()
-            .url(url)
-            .header("Authorization", "Bearer $token")
-        val request = if (existingId == null) builder.post(body).build() else builder.patch(body).build()
-        val fileId = httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                val details = response.body?.string().orEmpty()
-                throw IOException(formatDriveError("Mutual aid profile upload failed", response.code, details))
-            }
-            val payload = response.body?.string().orEmpty()
-            JSONObject(payload).optString("id").ifBlank {
-                existingId ?: throw IOException("Mutual aid upload succeeded but returned no file ID.")
-            }
-        }
-        makeFilePublic(token, fileId)
-        return fileId
-    }
 
-    @JvmStatic
-    fun uploadFaaConfigFile(
-        context: Context,
-        account: GoogleSignInAccount,
-        encryptedJson: String,
-        label: String
-    ): String {
-        val token = requireAccessToken(context, account)
-        val bytes = encryptedJson.toByteArray(StandardCharsets.UTF_8)
-        val existingId = findScopedPublicJsonFileId(token, FAA_CONFIG_FILE_NAME, FAA_CONFIG_APP_PROPERTY_VALUE)
-        val metadataObj = JSONObject()
-            .put("name", FAA_CONFIG_FILE_NAME)
-            .put("appProperties", JSONObject()
-                .put(APP_PROPERTY_KEY, FAA_CONFIG_APP_PROPERTY_VALUE)
-                .put("label", label))
-        val boundary = "RID2CaltopoFaaConfigBoundary"
-        val bodyBytes = buildMultipartBody(boundary, metadataObj.toString(), bytes, "application/json; charset=UTF-8")
-        val body = bodyBytes.toRequestBody("multipart/related; boundary=$boundary".toMediaType())
-        val url = if (existingId == null) {
-            "$DRIVE_UPLOAD_URL?uploadType=multipart"
-        } else {
-            "$DRIVE_UPLOAD_URL/$existingId?uploadType=multipart"
-        }
-        val builder = Request.Builder()
-            .url(url)
-            .header("Authorization", "Bearer $token")
-        val request = if (existingId == null) builder.post(body).build() else builder.patch(body).build()
-        val fileId = httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                val details = response.body?.string().orEmpty()
-                throw IOException(formatDriveError("FAA config upload failed", response.code, details))
-            }
-            val payload = response.body?.string().orEmpty()
-            JSONObject(payload).optString("id").ifBlank {
-                existingId ?: throw IOException("FAA config upload succeeded but returned no file ID.")
-            }
-        }
-        makeFilePublic(token, fileId)
-        return fileId
-    }
+
+
+
 
     /**
      * Find or create the RID2Caltopo_Configs folder at the root of the admin's
@@ -669,13 +540,13 @@ object GoogleDriveConfigSync {
             .build()
         httpClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
-                throw IOException("Mutual-aid config download failed: HTTP ${response.code}")
+                throw IOException("Organization config download failed: HTTP ${response.code}")
             }
             val body = response.body?.string()
-                ?: throw IOException("Mutual-aid config download returned an empty body.")
+                ?: throw IOException("Organization config download returned an empty body.")
             if (!body.contains("rid2caltopo_mutual_aid_profile")) {
                 CaltopoClient.CTWarn(TAG, "downloadMutualAidBundlePublic(): invalid bundle for fileId=$fileId; first 200 chars: ${body.take(200)}")
-                throw IOException("Downloaded file does not appear to be a valid mutual-aid config bundle.")
+                throw IOException("Downloaded file does not appear to be a valid organization config bundle.")
             }
             return body
         }

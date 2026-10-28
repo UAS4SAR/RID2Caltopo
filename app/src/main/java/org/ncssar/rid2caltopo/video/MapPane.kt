@@ -1,5 +1,10 @@
 package org.ncssar.rid2caltopo.video
 
+import org.ncssar.rid2caltopo.video.mapcache.EsriImageryAttribution
+import org.ncssar.rid2caltopo.video.mapcache.EsriImageryAttributionProvider
+import org.ncssar.rid2caltopo.video.mapcache.EsriImageryViewport
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import org.ncssar.rid2caltopo.data.Units
 import org.ncssar.rid2caltopo.data.DisplayUnits
 
@@ -468,9 +473,11 @@ private fun consumeInsetMarkerTaps(marker: Marker, isInsetMode: Boolean) {
     marker.setOnMarkerClickListener { _, _ -> true }
 }
 
-internal fun mapPaneAttributionText(contoursEnabled: Boolean): String =
+internal fun mapPaneAttributionText(contoursEnabled: Boolean, baseLayer: BaseLayerOption = BaseLayerOption.OpenStreetMap,
+                                    imagerySources: String = EsriImageryAttribution.FALLBACK_SOURCES): String =
     buildString {
-        append("© OpenStreetMap contributors · DEM: USGS")
+        append(if (baseLayer == BaseLayerOption.Imagery) "Powered by Esri · Sources: $imagerySources · DEM: USGS"
+               else "© OpenStreetMap contributors · DEM: USGS")
         if (contoursEnabled) append(" · Contours: USGS")
     }
 
@@ -478,7 +485,7 @@ private fun shareClueSnapshot(context: Context, scope: kotlinx.coroutines.Corout
     scope.launch {
         try {
             val photo = withContext(Dispatchers.IO) {
-                val directory = File(context.cacheDir, "shared_clues/${java.util.UUID.randomUUID()}").apply { mkdirs() }
+                val directory = File(org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context, "shared-clues"), java.util.UUID.randomUUID().toString()).apply { mkdirs() }
                 val photo = File(directory, sanitizeClueSnapshotFileName(title))
                 val source = imagePath?.let(::File)?.takeIf { it.isFile }
                 if (source != null) source.copyTo(photo)
@@ -517,7 +524,7 @@ private fun openClueSnapshotInExternalViewer(
             val snapshotFile = withContext(Dispatchers.IO) {
                 val sourceFile = imagePath?.let(::File)?.takeIf { it.isFile }
                 if (bitmap == null && sourceFile == null) return@withContext null
-                val snapshotDir = File(context.cacheDir, "clue-snapshots").apply { mkdirs() }
+                val snapshotDir = org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context, "clue-snapshots")
                 val fileName = sanitizeClueSnapshotFileName(title)
                 val snapshotFile = File(snapshotDir, fileName)
                 if (sourceFile != null) {
@@ -579,7 +586,10 @@ private fun localClueDetailText(marker: LocalMapMarker): String = buildString {
 internal fun configureOsmdroid(context: Context) {
     val cfg = Configuration.getInstance()
     val tileCacheMaxBytes = MapCachePolicy.tileCacheMaxBytes(context)
-    cfg.load(context, context.getSharedPreferences("osmdroid", 0))
+    // Our provider owns storage. Loading osmdroid's default paths can create an
+    // independent SQLite cache and performs filesystem work during UI setup.
+    cfg.osmdroidBasePath = java.io.File(context.filesDir, "map-archives")
+    cfg.osmdroidTileCache = java.io.File(context.filesDir, "map-archives/tiles")
     cfg.userAgentValue = osmUserAgent()
     cfg.tileDownloadThreads = OSM_TILE_DOWNLOAD_THREADS
     cfg.tileDownloadMaxQueueSize = OSM_TILE_DOWNLOAD_MAX_QUEUE
@@ -674,49 +684,44 @@ internal fun SplitMapPane(
     var badTilesMenuExpanded by remember { mutableStateOf(false) }
     var currentMapView by remember { mutableStateOf<MapView?>(null) }
     var mapReloadInFlight by remember { mutableStateOf(false) }
-    var showMapCacheSizeDialog by remember { mutableStateOf(false) }
-    var showMapTileAgeDialog by remember { mutableStateOf(false) }
-    var mapCacheSizeInput by remember {
-        mutableStateOf(
-            String.format(
-                Locale.US,
-                "%.1f",
-                MapCacheSettings.maxCacheBytes(context).toDouble() / 1_000_000_000.0
-            )
-        )
-    }
-    var mapTileAgeDaysInput by remember {
-        mutableStateOf(MapCacheSettings.maxTileAgeDays(context).toString())
-    }
     var showMapFoldersDialog by remember { mutableStateOf(false) }
     var surfaceBriefing by remember { mutableStateOf<org.ncssar.rid2caltopo.video.surface.SurfaceBriefing?>(null) }
     var surfaceBriefingRequest by remember { mutableStateOf(0L) }
-    var localMappingPreview by remember { mutableStateOf(org.ncssar.rid2caltopo.mapping.MappingLayer.selectedLocal(context)) }
-    var mappingLayers by remember { mutableStateOf(org.ncssar.rid2caltopo.mapping.MappingLayer.load(context,CaltopoMap.GetMapId())) }
-    val mappingProcessing by org.ncssar.rid2caltopo.mapping.MappingProcessingManager.state.collectAsState()
-    LaunchedEffect(mappingProcessing?.layer?.id) {
-        mappingProcessing?.layer?.let { layer -> localMappingPreview=layer;org.ncssar.rid2caltopo.mapping.MappingLayer.selectLocal(context,layer)
-            mappingLayers=org.ncssar.rid2caltopo.mapping.MappingLayer.load(context,CaltopoMap.GetMapId()) }
-    }
+    var localMappingPreview by remember { mutableStateOf<org.ncssar.rid2caltopo.mapping.MappingLayer?>(null) }
+    var mappingLayers by remember { mutableStateOf(emptyList<org.ncssar.rid2caltopo.mapping.MappingLayer>()) }
+    var mappingRefreshRevision by remember { mutableStateOf(0L) }
     val mappingLayerChanges by org.ncssar.rid2caltopo.mapping.MappingWorkspaceState.layerChanges.collectAsState()
-    LaunchedEffect(mappingLayerChanges) {
-        mappingLayers=org.ncssar.rid2caltopo.mapping.MappingLayer.load(context,CaltopoMap.GetMapId())
-        localMappingPreview=org.ncssar.rid2caltopo.mapping.MappingLayer.selectedLocal(context)
-        if(mappingLayerChanges>0)localMappingPreview?.takeIf{it.bounds.size==4}?.let { layer ->
-            val bounds=layer.displayBounds(context)
+    var mappingZoomRevision by remember { mutableStateOf(0L) }
+    LaunchedEffect(viewModel.mapName,mappingLayerChanges,mappingRefreshRevision) {
+        val incidentId=CaltopoMap.GetMapId()
+        val (layers,selected,bounds)=withContext(Dispatchers.IO) {
+            val layers=org.ncssar.rid2caltopo.mapping.MappingLayer.load(context,incidentId)
+            val selected=org.ncssar.rid2caltopo.mapping.MappingLayer.selectedLocal(context)
+            Triple(layers,selected,selected?.takeIf{it.bounds.size==4}?.displayBounds(context))
+        }
+        if(incidentId!=CaltopoMap.GetMapId())return@LaunchedEffect
+        mappingLayers=layers
+        localMappingPreview=selected
+        CTDebug(MAP_PANE_TAG,"Mapping layers ready incident=$incidentId count=${layers.size} selected=${selected?.id ?: "none"}")
+        if(mappingLayerChanges!=mappingZoomRevision && bounds!=null) {
             currentMapView?.zoomToBoundingBox(org.osmdroid.util.BoundingBox(bounds[3],bounds[2],bounds[1],bounds[0]),true,48)
         }
+        mappingZoomRevision=mappingLayerChanges
     }
     val displayedMappingLayers=(mappingLayers+listOfNotNull(localMappingPreview)).distinctBy{it.id}
     val mappingDisplayChanges by org.ncssar.rid2caltopo.mapping.MappingWorkspaceState.displayChanges.collectAsState()
     val mappingOverlayStore=remember(context) { org.ncssar.rid2caltopo.mapping.MappingLayerOverlays(context) {
         currentMapView?.postInvalidateOnAnimation()
     } }
-    val mappingLayerOverlays = remember(displayedMappingLayers,mappingDisplayChanges) { mappingOverlayStore.update(displayedMappingLayers) }
-    DisposableEffect(mappingOverlayStore) { onDispose { mappingOverlayStore.close() } }
+    val mappingLayerOverlays by mappingOverlayStore.overlays.collectAsState()
+    LaunchedEffect(displayedMappingLayers,mappingDisplayChanges) { mappingOverlayStore.update(displayedMappingLayers) }
+    DisposableEffect(mappingOverlayStore) { onDispose {
+        mappingOverlayStore.close { overlay -> currentMapView?.overlays?.remove(overlay);Unit }
+    } }
     var pendingArtifactZoomFeatureId by remember { mutableStateOf<String?>(null) }
-    val hiddenFolderIds = viewModel.hiddenFolderIds
-    val hiddenItemIds = viewModel.hiddenItemIds
+    val mapFolderVisibility = viewModel.mapFolderVisibility
+    val hiddenFolderIds = mapFolderVisibility.hiddenFolders
+    val hiddenItemIds = mapFolderVisibility.hiddenItems
     var showBadTilesHowToDialog by remember { mutableStateOf(false) }
     val offlinePrepCoordinator = AndroidMapOfflinePrepCoordinator
     var showOfflinePrepDialog by offlinePrepCoordinator.showDialog
@@ -761,22 +766,33 @@ internal fun SplitMapPane(
             delay(10_000)
         }
     }
-    var offlinePrepTileCacheCapBytes by remember { mutableStateOf(MapCachePolicy.tileCacheMaxBytes(context)) }
-    var offlinePrepCacheLimitInput by remember {
-        mutableStateOf(String.format(Locale.US, "%.1f", MapCachePolicy.tileCacheMaxBytes(context) / 1_000_000_000.0))
-    }
+    var offlinePrepTileCacheCapBytes by remember { mutableStateOf(10_000_000_000L) }
     var offlinePrepJob by offlinePrepCoordinator.job
     var offlinePrepAutoCloseJob by offlinePrepCoordinator.autoCloseJob
     val offlinePrepActiveCalls = offlinePrepCoordinator.activeCalls
     val viewportSnapshot=remember { MapPaneViewportSnapshot() }
+    val imageryViewport = remember { MutableStateFlow<EsriImageryViewport?>(null) }
+    var imagerySources by remember { mutableStateOf(EsriImageryAttribution.FALLBACK_SOURCES) }
+    LaunchedEffect(context, baseLayer) {
+        if (baseLayer != BaseLayerOption.Imagery) return@LaunchedEffect
+        imageryViewport.collectLatest { region ->
+            if (region == null) return@collectLatest
+            delay(180)
+            imagerySources = EsriImageryAttributionProvider.sources(context.applicationContext, region)
+            imagerySources = EsriImageryAttributionProvider.sources(context.applicationContext, region, refresh = true)
+        }
+    }
     // "Current visible map" is frozen while Download Map is open, so keyboard/layout resizes cannot change the selection.
     var offlinePrepViewportBounds by remember { mutableStateOf<BoundingBox?>(null) }
     fun offlinePrepMapBounds(): BoundingBox? = if (showOfflinePrepDialog) offlinePrepViewportBounds ?: viewportSnapshot.bounds else viewportSnapshot.bounds
     LaunchedEffect(showOfflinePrepDialog, viewportSnapshot.available.value) {
         offlinePrepViewportBounds = if (showOfflinePrepDialog) offlinePrepViewportBounds ?: viewportSnapshot.bounds else null
+        if (showOfflinePrepDialog) offlinePrepTileCacheCapBytes = withContext(Dispatchers.IO) { MapCachePolicy.tileCacheMaxBytes(context) }
     }
     val mapScaleBar=remember { mutableStateOf<MapScaleBarState?>(null) }
     fun updateMapScaleBar(mapView: MapView) {
+        val bounds = mapView.boundingBox
+        imageryViewport.value = EsriImageryViewport(bounds.latSouth, bounds.lonWest, bounds.latNorth, bounds.lonEast, mapView.zoomLevelDouble)
         val density = mapView.resources.displayMetrics.density
         val samplePx = minOf(180f * density, mapView.width * 0.35f).toInt()
         if (samplePx <= 0 || mapView.height <= 0) { mapScaleBar.value = null; return }
@@ -789,7 +805,7 @@ internal fun SplitMapPane(
         mapScaleBar.value = mapScaleBarState(distance[0].toDouble() / samplePx, samplePx.toDouble())
     }
 
-    var maPackageTiles by remember { mutableStateOf(setOf("Imagery", "OpenStreetMap", "Contours", "DEM", "AOL")) }
+    var maPackageTiles by remember { mutableStateOf(setOf("Contours", "DEM", "AOL")) }
     val activeShareSession by MutualAidPackageTransferManager.shareSession.collectAsState()
     var preparingMutualAidShare by remember { mutableStateOf(false) }
     // Offline download concurrency is deliberately conservative for all suppliers.
@@ -860,11 +876,6 @@ internal fun SplitMapPane(
         }
     }
     val tileCacheWriter = remember(context) { TileDiskCacheWriter(context) }
-    LaunchedEffect(mapManagementMenuExpanded, showMapCacheSizeDialog) {
-        if (!mapManagementMenuExpanded && !showMapCacheSizeDialog) return@LaunchedEffect
-        offlinePrepAvailableBytes = withContext(Dispatchers.IO) { queryAvailableCacheBytes(context) }
-        offlinePrepCurrentTileCacheBytes = withContext(Dispatchers.IO) { UnifiedMapCache.usage(context).total }
-    }
     val tileFetchPriorityScheduler = remember { TileFetchPriorityScheduler() }
     val baseTileSource = tileSourceForBaseLayer(baseLayer)
     val latestBaseTileSource by rememberUpdatedState(baseTileSource)
@@ -1608,8 +1619,6 @@ internal fun SplitMapPane(
                 packageName = packageName,
                 bounds = prepBounds,
                 tileSources = buildList {
-                    if ("Imagery" in maPackageTiles) add(ArcGisWorldImageryTileSource)
-                    if ("OpenStreetMap" in maPackageTiles) add(OsmStandardTileSource)
                     if ("Contours" in maPackageTiles) add(UsgsContoursTileSource)
                 },
                 includeDem = "DEM" in maPackageTiles,
@@ -1629,7 +1638,7 @@ internal fun SplitMapPane(
     }
 
     fun openMutualAidPackageDialog() {
-        maPackageTiles = setOf("Imagery", "OpenStreetMap", "Contours", "DEM", "AOL") +
+        maPackageTiles = setOf("Imagery", "Contours", "DEM", "AOL") +
             if (displayedMappingLayers.isNotEmpty()) setOf("R2C Mapping layers") else emptySet()
         showMutualAidPackageDialog = true
     }
@@ -1651,7 +1660,7 @@ internal fun SplitMapPane(
         offlinePrepInFlight = true
         val tileLayerLabels = buildList {
             if (offlinePrepIncludeImagery) add("Imagery")
-            if (offlinePrepIncludeOsm) add("OSM")
+            // Public OSM tiles are excluded from offline preparation.
             if (offlinePrepIncludeContours) add("Contours")
         }
         offlinePrepProgress = OfflinePrepProgress(
@@ -1819,6 +1828,7 @@ internal fun SplitMapPane(
                         }
                     }
                     suspend fun processTile(tileSource: OnlineTileSourceBase, tileIndex: Long) {
+                        require(tileSource.name() != OsmStandardTileSource.name()) { "OSM offline download is not permitted." }
                         ensureActive()
                         val exists = tileCacheWriter.exists(tileSource, tileIndex)
                         if (exists) {
@@ -2277,6 +2287,7 @@ internal fun SplitMapPane(
         replaceWhenSnapshotEmpty: Boolean = false,
         onComplete: (() -> Unit)? = null
     ) {
+        if (mapFolderVisibility.loading || viewModel.mapFolderVisibility !== mapFolderVisibility) return
         artifactHydrationJob?.cancel()
         val runId = artifactHydrationRunId + 1
         artifactHydrationRunId = runId
@@ -2315,7 +2326,7 @@ internal fun SplitMapPane(
                         }
                     }
                 }
-                if (artifactHydrationRunId != runId) return@launch
+                if (artifactHydrationRunId != runId || viewModel.mapFolderVisibility !== mapFolderVisibility) return@launch
                 if (result != null) {
                     val autoHiddenMovedMarkerIds = movedDroneFolderMarkerIds(
                         previousFeatures = artifactStoreById,
@@ -2365,6 +2376,7 @@ internal fun SplitMapPane(
                     } else {
                         result.overlayState
                     }
+                    if (viewModel.mapFolderVisibility !== mapFolderVisibility) return@launch
                     artifactRenderCache.replace(mergedFeatures, mergedOverlayState)
                     result.folderDefaults.forEach { folderDefault ->
                         viewModel.applyCaltopoFolderDefault(
@@ -2412,6 +2424,7 @@ internal fun SplitMapPane(
     }
 
     fun startArtifactOverlayRebuild(reason: String) {
+        if (mapFolderVisibility.loading || viewModel.mapFolderVisibility !== mapFolderVisibility) return
         artifactOverlayRebuildJob?.cancel()
         val runId = artifactOverlayRebuildRunId + 1
         artifactOverlayRebuildRunId = runId
@@ -2432,7 +2445,7 @@ internal fun SplitMapPane(
                         }
                     )
                 }
-                if (artifactOverlayRebuildRunId != runId) return@launch
+                if (artifactOverlayRebuildRunId != runId || viewModel.mapFolderVisibility !== mapFolderVisibility) return@launch
                 artifactRenderCache.updateOverlay(computed)
                 artifactOverlayState = computed
                 if (CaltopoClient.DebugLevel >= CaltopoClient.DebugLevelInfo) CTInfo(
@@ -2456,9 +2469,8 @@ internal fun SplitMapPane(
         }
     }
 
-    LaunchedEffect(mapName) {
-        mappingLayers = org.ncssar.rid2caltopo.mapping.MappingLayer.load(context,CaltopoMap.GetMapId())
-        if (artifactRenderCache.resetIfMapChanged(mapName)) {
+    LaunchedEffect(mapName, mapFolderVisibility.session) {
+        if (artifactRenderCache.resetIfMapChanged(mapFolderVisibility.mapKey ?: mapName)) {
             artifactOverlayState = cachedOverlayState()
         } else {
             val cached = cachedOverlayState()
@@ -2488,7 +2500,15 @@ internal fun SplitMapPane(
         restoredViewportStartupWaitLogged = false
         restoredViewportStartupCheckStartedAtMs = System.currentTimeMillis()
         localDeviceLocationMissingLogged = false
-        startArtifactHydration("mapName=$mapName")
+    }
+
+    LaunchedEffect(mapName, mapFolderVisibility) {
+        artifactHydrationJob?.cancel()
+        artifactOverlayRebuildJob?.cancel()
+        artifactHydrationRunId++
+        artifactOverlayRebuildRunId++
+        fullArtifactHydrationQueued = false
+        startArtifactHydration("map visibility restored/updated mapName=$mapName")
     }
 
     LaunchedEffect(mapName, CaltopoClient.GetTrackerUrlPfx()) {
@@ -2497,7 +2517,7 @@ internal fun SplitMapPane(
             val enabled=withContext(Dispatchers.IO) {
                 runCatching { org.ncssar.rid2caltopo.mapping.MappingLayer.refreshShared(context,incidentId) }.getOrDefault(true)
             }
-            if(incidentId==CaltopoMap.GetMapId())mappingLayers=org.ncssar.rid2caltopo.mapping.MappingLayer.load(context,incidentId)
+            if(incidentId==CaltopoMap.GetMapId())mappingRefreshRevision++
             if(!enabled)break
             delay(60_000)
         }
@@ -2595,6 +2615,8 @@ internal fun SplitMapPane(
         showMapFoldersDialog = showMapFoldersDialog,
         onShowMapFoldersDialogChange = { showMapFoldersDialog = it },
         artifactStoreById = artifactStoreById,
+        mapFoldersLoading = mapFolderVisibility.loading,
+        mapFoldersLoadError = mapFolderVisibility.loadError,
         hiddenFolderIds = hiddenFolderIds,
         hiddenItemIds = hiddenItemIds,
         onFolderVisibilityChanged = { folderId, visible ->
@@ -2602,13 +2624,11 @@ internal fun SplitMapPane(
             startArtifactOverlayRebuild("folder-visibility")
         },
         onItemVisibilityChanged = { itemId, visible ->
-            if (visible) hiddenItemIds.remove(itemId) else hiddenItemIds.add(itemId)
+            viewModel.setMapItemVisibility(itemId, visible)
             startArtifactOverlayRebuild("item-visibility")
         },
         onAllItemsToggled = { itemIds, visible ->
-            if (visible) hiddenItemIds.removeAll(itemIds.toSet())
-            else hiddenItemIds.addAll(itemIds)
-            startArtifactOverlayRebuild("bulk-item-visibility")
+            viewModel.setMapItemsVisibility(itemIds, visible)
         },
         onMapAssignment = { itemId ->
             runCatching {
@@ -2642,53 +2662,7 @@ internal fun SplitMapPane(
         },
         showBadTilesHowToDialog = showBadTilesHowToDialog,
         onShowBadTilesHowToDialogChange = { showBadTilesHowToDialog = it },
-        showMapCacheSizeDialog = showMapCacheSizeDialog,
-        onShowMapCacheSizeDialogChange = { showMapCacheSizeDialog = it },
-        mapCacheSizeInput = mapCacheSizeInput,
-        mapCacheAvailableBytes = offlinePrepAvailableBytes,
-        mapCacheCurrentBytes = offlinePrepCurrentTileCacheBytes,
-        mapCacheUsage = combinedCacheUsage,
-        onMapCacheSizeInputChange = { mapCacheSizeInput = it },
-        onMapCacheSizeSaved = { bytes ->
-            val reasonableMaximum = reasonableCacheMaximumBytes(
-                offlinePrepCurrentTileCacheBytes,
-                offlinePrepAvailableBytes
-            )
-            if (reasonableMaximum != null && bytes > reasonableMaximum) {
-                CaltopoClient.ShowToast(
-                    "Requested cache size exceeds the space reasonably available on this volume " +
-                        "(${MapCacheSettings.formatDecimalGb(reasonableMaximum)} maximum recommended)."
-                )
-                return@MapPaneManagementDialogs
-            }
-            MapCacheSettings.setMaxCacheBytes(context, bytes)
-            org.ncssar.rid2caltopo.video.mapcache.MapCacheMaintenanceScheduler.request(context)
-            offlinePrepTileCacheCapBytes = MapCachePolicy.tileCacheMaxBytes(context)
-            mapCacheSizeInput = String.format(
-                Locale.US,
-                "%.1f",
-                MapCacheSettings.maxCacheBytes(context).toDouble() / 1_000_000_000.0
-            )
-            val savedBytes = MapCacheSettings.maxCacheBytes(context)
-            showMapCacheSizeDialog = false
-            CaltopoClient.ShowToast(
-                if (savedBytes == bytes) {
-                    "Map cache size saved as ${MapCacheSettings.formatDecimalGb(savedBytes)}. Applies to all map and terrain caches now."
-                } else {
-                    "Map cache size adjusted to ${MapCacheSettings.formatDecimalGb(savedBytes)}. Applies to all map and terrain caches now."
-                }
-            )
-        },
-        showMapTileAgeDialog = showMapTileAgeDialog,
-        onShowMapTileAgeDialogChange = { showMapTileAgeDialog = it },
-        mapTileAgeDaysInput = mapTileAgeDaysInput,
-        onMapTileAgeDaysInputChange = { mapTileAgeDaysInput = it },
-        onMapTileAgeSaved = { days ->
-            MapCacheSettings.setMaxTileAgeDays(context, days)
-            mapTileAgeDaysInput = MapCacheSettings.maxTileAgeDays(context).toString()
-            showMapTileAgeDialog = false
-            CaltopoClient.ShowToast("Maximum tile age saved. Startup cache maintenance will use the new limit next launch.")
-        }
+
     )
 
     colorPickerTarget?.let { target ->
@@ -2838,6 +2812,9 @@ internal fun SplitMapPane(
                             )
                             Text("Camera footprint")
                         }
+                        viewModel.cameraFootprintSaveStatus(point.remoteId)?.let { status ->
+                            Text(status, style = MaterialTheme.typography.bodySmall)
+                        }
                         pilotSettings?.let { settings ->
                             Spacer(Modifier.height(12.dp))
                             PilotDisplaySettingsContent(
@@ -2878,11 +2855,11 @@ internal fun SplitMapPane(
         }
     }
 
-    DisposableEffect(Unit) {
-        startArtifactHydration("listener-init")
+    DisposableEffect(mapFolderVisibility) {
         val listener = CaltopoMap.ArtifactListener { feature, source, _ ->
             if (source == "full") {
                 uiScope.launch(Dispatchers.Main.immediate) {
+                    if (mapFolderVisibility.loading || viewModel.mapFolderVisibility !== mapFolderVisibility) return@launch
                     if (fullArtifactHydrationQueued) {
                         return@launch
                     }
@@ -2894,6 +2871,7 @@ internal fun SplitMapPane(
                 return@ArtifactListener
             }
             uiScope.launch(Dispatchers.Main.immediate) {
+                if (mapFolderVisibility.loading || viewModel.mapFolderVisibility !== mapFolderVisibility) return@launch
                 val featureId = feature.optString("id")
                 if (featureId.isBlank()) {
                     return@launch
@@ -3106,12 +3084,11 @@ internal fun SplitMapPane(
                 .clipToBounds(),
             factory = {
                 configureOsmdroid(context)
-                MapView(context).apply {
+                MapView(context, tileMapProvider).apply {
                     currentMapView = this
                     footprintProjection.mapView = this
                     addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateMapScaleBar(this) }
                     setMultiTouchControls(!isInsetMode)
-                    setTileProvider(tileMapProvider)
                     // This provider is rendered by a separate TilesOverlay, so MapView does not
                     // register its invalidation handler automatically as it does for the base
                     // provider. Redraw when an asynchronously downloaded contour tile arrives.
@@ -3411,6 +3388,7 @@ internal fun SplitMapPane(
                     mapView.overlays.add(overlay)
                     managedOverlays.add(overlay)
                 }
+                mappingOverlayStore.applied(mappingLayerOverlays.map{it.first}.toSet())
 
                 artifactOverlayState.polygons.forEach { polygonSpec ->
                     val polygonFill = Polygon(mapView).apply {
@@ -4615,7 +4593,6 @@ internal fun SplitMapPane(
                 baseLayer = baseLayer,
                 followFocusedDroneEnabled = followFocusedDroneEnabled,
                 mapReloadInFlight = mapReloadInFlight,
-                mapCacheAvailableBytes = offlinePrepAvailableBytes,
                 downloadMapStatus = offlinePrepMenuStatus(offlinePrepInFlight, offlinePrepProgress),
                 mapName = mapName,
                 autoRemoveBadTiles = autoRemoveBadTiles,
@@ -4625,11 +4602,6 @@ internal fun SplitMapPane(
                     // Reopening during a download shows that download's live progress; keep its selection.
                     if (!offlinePrepInFlight) {
                         offlinePrepIncludeContours = contourOverlayEnabled
-                        offlinePrepCacheLimitInput = String.format(
-                            Locale.US,
-                            "%.1f",
-                            MapCachePolicy.tileCacheMaxBytes(context) / 1_000_000_000.0
-                        )
                         offlinePrepViewportBounds = viewportSnapshot.bounds
                     }
                     settingsMenuExpanded = false
@@ -4700,20 +4672,6 @@ internal fun SplitMapPane(
                 onOpenBadTilesHowTo = {
                     badTilesMenuExpanded = false
                     showBadTilesHowToDialog = true
-                },
-                onOpenCacheSize = {
-                    mapManagementMenuExpanded = false
-                    mapCacheSizeInput = String.format(
-                        Locale.US,
-                        "%.1f",
-                        MapCacheSettings.maxCacheBytes(context).toDouble() / 1_000_000_000.0
-                    )
-                    showMapCacheSizeDialog = true
-                },
-                onOpenTileAge = {
-                    mapManagementMenuExpanded = false
-                    mapTileAgeDaysInput = MapCacheSettings.maxTileAgeDays(context).toString()
-                    showMapTileAgeDialog = true
                 },
                 onOpenMutualAidPackage = {
                     mapManagementMenuExpanded = false
@@ -4913,8 +4871,6 @@ internal fun SplitMapPane(
                         }
                         HorizontalDivider()
                         Text("Map layers", style = MaterialTheme.typography.titleSmall)
-                        DownloadMapCheckbox("Imagery", offlinePrepIncludeImagery, !offlinePrepInFlight) { offlinePrepIncludeImagery = it }
-                        DownloadMapCheckbox("OpenStreetMap (OSM)", offlinePrepIncludeOsm, !offlinePrepInFlight) { offlinePrepIncludeOsm = it }
                         DownloadMapCheckbox("Contours", offlinePrepIncludeContours, !offlinePrepInFlight) { offlinePrepIncludeContours = it }
                         HorizontalDivider()
                         Text("Detail", style = MaterialTheme.typography.titleSmall)
@@ -4977,7 +4933,7 @@ internal fun SplitMapPane(
                             DownloadMapSummaryRow("Current map cache", formatStorageBytes(capacity.currentTileCacheBytes))
                             DownloadMapSummaryRow("Estimated after download", formatStorageBytes(capacity.projectedTileCacheBytes))
                             DownloadMapSummaryRow("Configured cache limit", formatStorageBytes(capacity.maximumTileCacheBytes))
-                            capacity.availableVolumeBytes?.let { DownloadMapSummaryRow("Available on volume", formatStorageBytes(it)) }
+                            capacity.availableVolumeBytes?.let { DownloadMapSummaryRow("Cache storage free", formatStorageBytes(it)) }
                             Text("Map layers and elevation data share the configured limit. Estimated usage assumes selected files are not already cached and includes temporary AOL space, before cleanup. Older entries may be removed to stay within the limit or when they exceed the maximum tile age.", style = MaterialTheme.typography.bodySmall)
                             if (capacity.exceedsCacheLimit) {
                                 Text(
@@ -4985,61 +4941,8 @@ internal fun SplitMapPane(
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.error
                                 )
-                                val recommendedGb = capacity.recommendedMaximumBytes / 1_000_000_000.0
-                                TextButton(
-                                    onClick = {
-                                        MapCacheSettings.setMaxCacheBytes(context, capacity.recommendedMaximumBytes)
-                                        offlinePrepTileCacheCapBytes = MapCachePolicy.tileCacheMaxBytes(context)
-                                        offlinePrepCacheLimitInput = String.format(Locale.US, "%.1f", recommendedGb)
-                                    },
-                                    enabled = !offlinePrepInFlight
-                                ) {
-                                    Text("Use recommended ${String.format(Locale.US, "%.1f", recommendedGb)} GB limit")
-                                }
                             }
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                OutlinedTextField(
-                                    value = offlinePrepCacheLimitInput,
-                                    onValueChange = { offlinePrepCacheLimitInput = it },
-                                    label = { Text("Max cache (GB)") },
-                                    singleLine = true,
-                                    enabled = !offlinePrepInFlight,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                TextButton(
-                                    onClick = {
-                                        val requestedGb = offlinePrepCacheLimitInput.toDoubleOrNull()
-                                        if (requestedGb == null || requestedGb <= 0.0) {
-                                            CaltopoClient.ShowToast("Enter a positive cache size in GB.")
-                                        } else {
-                                            val requestedBytes = (requestedGb * 1_000_000_000.0).toLong()
-                                            val reasonableMaximum = reasonableCacheMaximumBytes(
-                                                offlinePrepCurrentTileCacheBytes,
-                                                offlinePrepAvailableBytes
-                                            )
-                                            if (reasonableMaximum != null && requestedBytes > reasonableMaximum) {
-                                                CaltopoClient.ShowToast(
-                                                    "Requested cache size exceeds the space reasonably available on this volume " +
-                                                        "(${MapCacheSettings.formatDecimalGb(reasonableMaximum)} maximum recommended)."
-                                                )
-                                            } else {
-                                                MapCacheSettings.setMaxCacheBytes(context, requestedBytes)
-                                                offlinePrepTileCacheCapBytes = MapCachePolicy.tileCacheMaxBytes(context)
-                                                offlinePrepCacheLimitInput = String.format(
-                                                    Locale.US,
-                                                    "%.1f",
-                                                    offlinePrepTileCacheCapBytes / 1_000_000_000.0
-                                                )
-                                            }
-                                        }
-                                    },
-                                    enabled = !offlinePrepInFlight
-                                ) { Text("Apply") }
-                            }
+                            Text("Change cache size and age in Manage Storage > Map Cache Management.", fontSize = 11.sp)
                             if (capacity.availableVolumeBytes != null) {
                                 if (capacity.exceedsAvailableVolume) {
                                     Text(
@@ -5325,40 +5228,26 @@ internal fun SplitMapPane(
             )
         }
 
-        if (isInsetMode) {
+        Column(
+            modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth()
+                .then(if (isInsetMode) Modifier else Modifier.navigationBarsPadding())
+                .padding(if (isInsetMode) 3.dp else 6.dp)
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.80f))
+                .padding(horizontal = 4.dp, vertical = 2.dp)
+        ) {
+            if (baseLayer == BaseLayerOption.Imagery) {
+                Text("Powered by Esri", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.clickable { uriHandler.openUri("https://www.esri.com/") })
+            }
             Text(
-                text = if (contourOverlayEnabled) "© OSM · USGS" else "© OSM",
-                fontSize = 6.sp,
-                lineHeight = 6.sp,
-                maxLines = 1,
+                text = mapPaneAttributionText(contourOverlayEnabled, baseLayer, imagerySources).removePrefix("Powered by Esri · "),
+                fontSize = 10.sp,
+                lineHeight = 12.sp,
                 color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = 3.dp, bottom = 3.dp)
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.56f))
-                    .padding(horizontal = 2.dp, vertical = 1.dp)
-                    .clickable {
-                        uriHandler.openUri("https://www.openstreetmap.org/copyright")
-                    }
-            )
-        } else {
-            Text(
-                text = mapPaneAttributionText(contourOverlayEnabled),
-                fontSize = 8.sp,
-                lineHeight = 10.sp,
-                maxLines = 4,
-                overflow = TextOverflow.Ellipsis,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(start = 6.dp, end = 6.dp, bottom = 6.dp)
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.72f))
-                    .padding(horizontal = 4.dp, vertical = 1.dp)
-                    .clickable {
-                        uriHandler.openUri("https://www.openstreetmap.org/copyright")
-                    }
+                modifier = Modifier.clickable {
+                    uriHandler.openUri(if (baseLayer == BaseLayerOption.Imagery) EsriImageryAttribution.SOURCE_URL
+                                       else "https://www.openstreetmap.org/copyright")
+                }
             )
         }
     }

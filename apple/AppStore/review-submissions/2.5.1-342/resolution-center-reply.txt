@@ -1,0 +1,11 @@
+Thank you for reviewing RID2Caltopo. Our answers to your questions are below.
+
+1. Does the app connect with specific designated hardware brands? If yes, what are the brands?
+
+RID2Caltopo implements industry-standard protocols for its core hardware interoperability: passive monitoring of supported ASTM F3411 Remote ID broadcasts over Bluetooth, and reception of RTMP video streams through its integrated MediaMTX server. These functions are not restricted to a single hardware manufacturer.
+
+We have verified interoperability with DJI and Autel Robotics controller video, and BlueMark Innovations / DroneScout DS110 Remote ID relays. These are tested examples; compatibility depends on supported protocols, formats and configuration, rather than the brand name alone.
+
+2. Are you authorized to distribute this app on behalf of these brands? If yes, please provide authorized documentation.
+
+We are not distributing RID2Caltopo on behalf of these manufacturers. RID2Caltopo is independently developed and distributed under its own name. Manufacturer and product names identify tested interoperability; they do not imply sponsorship, endorsement or that we are acting as an authorized manufacturer representative.

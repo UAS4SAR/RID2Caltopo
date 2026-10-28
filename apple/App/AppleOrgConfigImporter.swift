@@ -267,7 +267,7 @@ final class AppleCaltopoProfileLifecycle: ObservableObject {
     }
 
     private static func option(for profile: AppleStoredOperationalProfile) -> AppleOperationalProfileOption {
-        let fallback = profile.profileType == "HOME" ? "Home" : "Mutual Aid"
+        let fallback = profile.profileType == "HOME" ? "Home" : "Organization"
         let base = [profile.organizationName, profile.displayName]
             .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? fallback
@@ -280,7 +280,7 @@ final class AppleCaltopoProfileLifecycle: ObservableObject {
         return AppleOperationalProfileOption(
             id: profile.profileID,
             credentialLabel: label,
-            description: profile.profileType == "MUTUAL_AID" ? "Mutual Aid" : "Home organization",
+            description: profile.profileType == "MUTUAL_AID" ? "Organization" : "Home organization",
             expiresAt: expiry,
             isMutualAid: profile.profileType == "MUTUAL_AID"
         )
@@ -309,13 +309,14 @@ final class AppleCaltopoProfileLifecycle: ObservableObject {
             kSecAttrAccount as String: account,
         ]
         let data = try JSONEncoder().encode(profile)
-        let update = SecItemUpdate(key as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        let update = SecItemUpdate(key as CFDictionary, [kSecValueData as String: data, kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly] as CFDictionary)
         if update == errSecSuccess { return }
         guard update == errSecItemNotFound else {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(update))
         }
         var insert = key
         insert[kSecValueData as String] = data
+        insert[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         let status = SecItemAdd(insert as CFDictionary, nil)
         guard status == errSecSuccess else {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
@@ -618,7 +619,7 @@ final class AppleOrgConfigSettings: ObservableObject {
         trackerURLPrefix = profile.trackerURLPrefix
         usePeers = true
         predictiveHeadEnabled = false // Retired compatibility field.
-        sourceDescription = "Mutual-aid QR • \(profile.displayName)"
+        sourceDescription = "Organization • \(profile.displayName)"
         defaults.set(organizationName, forKey: "org.name")
         defaults.set(incident, forKey: "org.incident")
         defaults.set(operationalPeriod, forKey: "org.operationalPeriod")
@@ -642,7 +643,7 @@ final class AppleOrgConfigSettings: ObservableObject {
         trackerURLPrefix = profile.trackerURLPrefix
         sourceDescription = profile.profileType == "HOME"
             ? "Home organization • \(profile.displayName)"
-            : "Mutual aid • \(profile.displayName)"
+            : "Organization • \(profile.displayName)"
         defaults.set(organizationName, forKey: "org.name")
         defaults.set(incident, forKey: "org.incident")
         defaults.set(operationalPeriod, forKey: "org.operationalPeriod")
@@ -765,94 +766,23 @@ final class AppleOrgConfigSettings: ObservableObject {
     }
 
     func transferSnapshot() -> [String: Any] {
-        var value: [String: Any] = [
-            "organization_name": organizationName,
-            "incident": incident,
-            "operational_period": operationalPeriod,
-            "track_folder": trackFolder,
-            "team_id": teamID,
-            "tracker_url_prefix": trackerURLPrefix,
-            "tracker_api_key": trackerAPIKey,
-            "use_peers": usePeers,
-            "standalone_r2c_coordination_enabled": standaloneR2CCoordinationEnabled,
-            "predictive_head": predictiveHeadEnabled,
-            "proximity_feet": proximityAlertSpacingFeet,
-            "minimum_track_distance_feet": minimumTrackDistanceFeet,
-            "new_track_delay_seconds": newTrackDelaySeconds,
-            "bridge_check_distance_feet": bridgeCheckDistanceFeet,
-            "maximum_idle_minutes": maximumIdleMinutes,
-            "source_description": sourceDescription,
-        ]
-        if let faaConfiguration {
-            value["faa"] = [
-                "source_label": faaConfiguration.sourceLabel,
-                "api_base_url": faaConfiguration.apiBaseURL,
-                "token_url": faaConfiguration.tokenURL,
-                "client_id": faaConfiguration.clientID,
-                "client_secret": faaConfiguration.clientSecret,
-                "scope": faaConfiguration.scope,
-            ]
-        }
-        return value
+        ["proximity_feet": proximityAlertSpacingFeet, "minimum_track_distance_feet": minimumTrackDistanceFeet,
+         "new_track_delay_seconds": newTrackDelaySeconds, "bridge_check_distance_feet": bridgeCheckDistanceFeet,
+         "maximum_idle_minutes": maximumIdleMinutes]
     }
 
     func applyTransferSnapshot(_ object: [String: Any]) throws {
-        organizationName = object["organization_name"] as? String ?? ""
-        incident = object["incident"] as? String ?? ""
-        operationalPeriod = object["operational_period"] as? String ?? ""
-        trackFolder = Self.normalizedTrackFolder(object["track_folder"] as? String)
-        teamID = object["team_id"] as? String ?? ""
-        trackerURLPrefix = object["tracker_url_prefix"] as? String ?? ""
-        usePeers = (object["use_peers"] as? NSNumber)?.boolValue ?? true
-        standaloneR2CCoordinationEnabled = false
-        predictiveHeadEnabled = false // Retired compatibility field.
+        // Deliberately do not change enrollment, credentials, endpoints, organization identity or access profiles.
         proximityAlertSpacingFeet = max(50, (object["proximity_feet"] as? NSNumber)?.intValue ?? 100)
         minimumTrackDistanceFeet = max(2, (object["minimum_track_distance_feet"] as? NSNumber)?.intValue ?? 2)
         newTrackDelaySeconds = max(1, (object["new_track_delay_seconds"] as? NSNumber)?.intValue ?? 30)
         bridgeCheckDistanceFeet = max(1, (object["bridge_check_distance_feet"] as? NSNumber)?.intValue ?? 20)
-        maximumIdleMinutes = max(
-            0,
-            (object["maximum_idle_minutes"] as? NSNumber)?.intValue
-                ?? Self.defaultMaximumIdleMinutes
-        )
-        sourceDescription = object["source_description"] as? String ?? "Local backup"
-        defaults.set(organizationName, forKey: "org.name")
-        defaults.set(incident, forKey: "org.incident")
-        defaults.set(operationalPeriod, forKey: "org.operationalPeriod")
-        defaults.set(trackFolder, forKey: "org.trackFolder")
-        defaults.set(teamID, forKey: "org.teamID")
-        defaults.set(trackerURLPrefix, forKey: "org.trackerURLPrefix")
-        defaults.set(usePeers, forKey: "org.usePeers")
-        defaults.set(standaloneR2CCoordinationEnabled, forKey: "org.standaloneR2CCoordination")
-        defaults.set(predictiveHeadEnabled, forKey: "org.predictiveHead")
+        maximumIdleMinutes = max(0, (object["maximum_idle_minutes"] as? NSNumber)?.intValue ?? Self.defaultMaximumIdleMinutes)
         defaults.set(proximityAlertSpacingFeet, forKey: "org.proximityFeet")
         defaults.set(minimumTrackDistanceFeet, forKey: "track.minimumDistanceFeet")
         defaults.set(newTrackDelaySeconds, forKey: "track.newTrackDelaySeconds")
         defaults.set(bridgeCheckDistanceFeet, forKey: "track.bridgeCheckDistanceFeet")
         defaults.set(maximumIdleMinutes, forKey: "app.maximumIdleMinutes")
-        defaults.set(sourceDescription, forKey: "org.sourceDescription")
-        try Self.storeSecret(object["tracker_api_key"] as? String ?? "", account: Self.trackerAccount)
-        if let faa = object["faa"] as? [String: Any] {
-            try applyEmbedded(faa: FaaSharedConfig(
-                sourceLabel: faa["source_label"] as? String ?? "",
-                apiBaseURL: faa["api_base_url"] as? String ?? "",
-                tokenURL: faa["token_url"] as? String ?? "",
-                clientID: faa["client_id"] as? String ?? "",
-                clientSecret: faa["client_secret"] as? String ?? "",
-                scope: faa["scope"] as? String ?? ""
-            ))
-        }
-        if let template = object["mutual_aid_template"] as? [String: Any] {
-            try apply(mutualAidTemplate: MutualAidTemplateCredentials(
-                teamID: template["team_id"] as? String ?? "",
-                credentialID: template["credential_id"] as? String ?? "",
-                credentialSecret: template["credential_secret"] as? String ?? "",
-                domainAndPort: template["domain_and_port"] as? String ?? "caltopo.com",
-                sourceLabel: template["source_label"] as? String ?? "",
-                targetFolderHint: template["target_folder_hint"] as? String ?? "MAI",
-                connectKey: template["connect_key"] as? String ?? ""
-            ))
-        }
     }
 
     func apply(faa config: FaaSharedConfig, normalizedToken: String) throws {
@@ -920,13 +850,14 @@ final class AppleOrgConfigSettings: ObservableObject {
             return
         }
         let data = Data(value.utf8)
-        let update = SecItemUpdate(key as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        let update = SecItemUpdate(key as CFDictionary, [kSecValueData as String: data, kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly] as CFDictionary)
         if update == errSecSuccess { return }
         guard update == errSecItemNotFound else {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(update))
         }
         var insert = key
         insert[kSecValueData as String] = data
+        insert[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         let status = SecItemAdd(insert as CFDictionary, nil)
         guard status == errSecSuccess else {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
@@ -1115,6 +1046,11 @@ final class AppleOrgConfigImporter: ObservableObject {
         orgSettings: AppleOrgConfigSettings,
         identityStore: AppleDroneConfirmationStore
     ) async {
+        if AppleTrackerEnrollmentClient.isEnrollmentURL(rawToken) {
+            await importTrackerEnrollment(rawToken, caltopoSettings: caltopoSettings, orgSettings: orgSettings, identityStore: identityStore)
+            return
+        }
+
         if let package = MutualAidPackageTransferToken.decode(rawToken) {
             state = .downloading
             do {
@@ -1125,109 +1061,7 @@ final class AppleOrgConfigImporter: ObservableObject {
             } catch { state = .failed(error.localizedDescription) }
             return
         }
-        let normalized = AndroidConfigTokenCodec.normalize(rawToken)
-        guard let token = AndroidConfigTokenCodec.decode(normalized), token.version == 2 else {
-            state = .failed("Token not recognised or unsupported.")
-            return
-        }
-        state = .downloading
-        AppleLog.info("OrgConfig", "Downloading \(token.kind.rawValue) QR config label='\(token.displayName)'")
-        do {
-            var components = URLComponents(string: "https://drive.google.com/uc")
-            components?.queryItems = [
-                URLQueryItem(name: "export", value: "download"),
-                URLQueryItem(name: "id", value: token.driveFileID),
-            ]
-            guard let url = components?.url else { throw OrgConfigInteropError.invalidToken }
-            var request = URLRequest(url: url)
-            request.cachePolicy = .reloadIgnoringLocalCacheData
-            request.timeoutInterval = 90
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, (200 ..< 300).contains(http.statusCode) else {
-                throw URLError(.badServerResponse)
-            }
-            switch token.kind {
-            case .organization:
-                let bundle = try OrgConfigTokenCodec.parseBundle(data)
-                let name = bundle.organizationName.isEmpty ? token.displayName : bundle.organizationName
-                try orgSettings.apply(bundle: bundle, normalizedToken: normalized)
-                try caltopoSettings.applyImported(credentials: bundle.credentials)
-                caltopoConfigurationHandler?(caltopoSettings.configuration)
-                try identityStore.applyImportedMappings(bundle.mappings)
-                if let mutualAidTemplate = bundle.mutualAidTemplate {
-                    try orgSettings.apply(mutualAidTemplate: mutualAidTemplate)
-                }
-                guard AppleTrackerEnrollmentClient.isEnrollmentURL(bundle.trackerEnrollmentURL) else {
-                    throw OrgConfigInteropError.invalidBundle
-                }
-                let enrollment = try await AppleTrackerEnrollmentClient.redeem(
-                    bundle.trackerEnrollmentURL,
-                    deviceName: AppleDeviceIdentity.displayName,
-                    previousDeviceToken: orgSettings.trackerAPIKey
-                )
-                guard enrollment.organization.caseInsensitiveCompare(name) == .orderedSame else {
-                    throw OrgConfigInteropError.invalidBundle
-                }
-                try orgSettings.applyTrackerEnrollment(
-                    organization: enrollment.organization,
-                    trackerURLPrefix: enrollment.trackerBaseURL,
-                    trackerAPIKey: enrollment.deviceToken,
-                    faaProxyURL: enrollment.faaProxyURL,
-                    enrollmentURL: bundle.trackerEnrollmentURL
-                )
-                try profileLifecycle.captureHome(org: orgSettings, caltopo: caltopoSettings)
-                if let url = enrollment.reauthenticationURL {
-                    state = .awaitingSignIn("Sign in to finish organization setup.")
-                    trackerReauthenticationRequiredHandler?(url)
-                    return
-                } else {
-                    AppleNotamCenter.shared.enabled = true
-                    notamEnrollmentAppliedHandler?(
-                        orgSettings.faaProxyURL,
-                        orgSettings.trackerURLPrefix,
-                        orgSettings.trackerAPIKey
-                    )
-                }
-                let extras = [
-                    bundle.mutualAidTemplate == nil ? nil : "mutual-aid template",
-                ].compactMap { $0 }
-                let extraMessage = extras.isEmpty ? "" : " Included \(extras.joined(separator: " and "))."
-                state = .applied(
-                    "\(name) R2C2 configuration loaded and this device enrolled with r2c-tracker. "
-                        + "Applied \(bundle.mappings.count) RID mappings.\(extraMessage)"
-                )
-                AppleLog.info(
-                    "OrgConfig",
-                    "Applied Android org QR config org='\(name)' mappings=\(bundle.mappings.count) ignored=\(bundle.ignoredConfigTypes.joined(separator: ","))"
-                )
-            case .faa:
-                let config = try AndroidConfigTokenCodec.parseFaaBundle(data)
-                try orgSettings.apply(faa: config, normalizedToken: normalized)
-                state = .applied("FAA config imported: \(config.sourceLabel.isEmpty ? token.displayName : config.sourceLabel).")
-                AppleLog.info("OrgConfig", "Applied Android FAA QR config label='\(config.sourceLabel)'")
-            case .mutualAid:
-                let profile = try AndroidConfigTokenCodec.parseMutualAidBundle(data)
-                let active = try profileLifecycle.install(
-                    profile,
-                    org: orgSettings,
-                    caltopo: caltopoSettings
-                )
-                if active {
-                    try orgSettings.apply(mutualAid: profile, normalizedToken: normalized)
-                    try caltopoSettings.applyImported(mutualAid: profile)
-                    caltopoConfigurationHandler?(caltopoSettings.configuration)
-                }
-                state = .applied(
-                    active
-                        ? "Mutual-aid access installed for \(profile.displayName)."
-                        : "Expired mutual-aid access was not activated."
-                )
-                AppleLog.info("OrgConfig", "Applied Android MA QR profile='\(profile.profileID)' map='\(profile.targetMapID)'")
-            }
-        } catch {
-            state = .failed("Import failed: \(error.localizedDescription)")
-            AppleLog.error("OrgConfig", "Import failed: \(error.localizedDescription)")
-        }
+        state = .failed("Legacy credential transfers are no longer supported. Scan a tracker enrollment QR.")
     }
 
     private func importMAPackageData(
@@ -1255,6 +1089,7 @@ final class AppleOrgConfigImporter: ObservableObject {
         identityStore: AppleDroneConfirmationStore,
         onCaltopoLink: ((URL) -> Void)? = nil
     ) async {
+
         state = .downloading
         let importStartedAt = ProcessInfo.processInfo.systemUptime
         AppleLog.info(
@@ -1317,60 +1152,7 @@ final class AppleOrgConfigImporter: ObservableObject {
                 )
                 return
             }
-            guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                throw OrgConfigInteropError.invalidBundle
-            }
-            guard root["format"] as? String == "rid2caltopo_org_config" else {
-                throw OrgConfigInteropError.invalidBundle
-            }
-            let bundle = try OrgConfigTokenCodec.parseBundle(data)
-            try orgSettings.apply(bundle: bundle, normalizedToken: "local-file:\(url.lastPathComponent)")
-            try caltopoSettings.applyImported(credentials: bundle.credentials)
-            caltopoConfigurationHandler?(caltopoSettings.configuration)
-            if !bundle.mappings.isEmpty {
-                try identityStore.applyImportedMappings(bundle.mappings)
-            }
-            if let mutualAidTemplate = bundle.mutualAidTemplate {
-                try orgSettings.apply(mutualAidTemplate: mutualAidTemplate)
-            }
-            guard AppleTrackerEnrollmentClient.isEnrollmentURL(bundle.trackerEnrollmentURL) else {
-                throw OrgConfigInteropError.invalidBundle
-            }
-            let enrollment = try await AppleTrackerEnrollmentClient.redeem(
-                bundle.trackerEnrollmentURL,
-                deviceName: AppleDeviceIdentity.displayName,
-                previousDeviceToken: orgSettings.trackerAPIKey
-            )
-            guard enrollment.organization.caseInsensitiveCompare(bundle.organizationName) == .orderedSame else {
-                throw OrgConfigInteropError.invalidBundle
-            }
-            try orgSettings.applyTrackerEnrollment(
-                organization: enrollment.organization,
-                trackerURLPrefix: enrollment.trackerBaseURL,
-                trackerAPIKey: enrollment.deviceToken,
-                faaProxyURL: enrollment.faaProxyURL,
-                enrollmentURL: bundle.trackerEnrollmentURL
-            )
-            try profileLifecycle.captureHome(org: orgSettings, caltopo: caltopoSettings)
-            if let url = enrollment.reauthenticationURL {
-                state = .awaitingSignIn("Sign in to finish organization setup.")
-                trackerReauthenticationRequiredHandler?(url)
-                return
-            } else {
-                AppleNotamCenter.shared.enabled = true
-                notamEnrollmentAppliedHandler?(
-                    orgSettings.faaProxyURL,
-                    orgSettings.trackerURLPrefix,
-                    orgSettings.trackerAPIKey
-                )
-            }
-            state = .applied(
-                "Loaded \(url.lastPathComponent): \(bundle.mappings.count) RID mapping(s)."
-            )
-            AppleLog.info(
-                "OrgConfig",
-                "Loaded local config file name='\(url.lastPathComponent)' mappings=\(bundle.mappings.count) durationMs=\(Int(((ProcessInfo.processInfo.systemUptime - importStartedAt) * 1_000).rounded()))"
-            )
+            state = .failed("Legacy credential transfers are no longer supported. Scan a tracker enrollment QR.")
         } catch {
             state = .failed("Config file import failed: \(error.localizedDescription)")
             AppleLog.error("OrgConfig", "Local config import failed: \(error.localizedDescription)")
@@ -1452,7 +1234,7 @@ final class AppleOrgConfigImporter: ObservableObject {
             )
             if removed {
                 caltopoConfigurationHandler?(caltopoSettings.configuration)
-                state = .applied("Expired mutual-aid access removed; home organization restored.")
+                state = .applied("Expired organization access removed; home organization restored.")
             }
             return removed
         } catch {
@@ -1757,7 +1539,7 @@ struct ConfigImportView: View {
         switch kind {
         case .organization: "Organization"
         case .faa: "FAA"
-        case .mutualAid: "Mutual Aid"
+        case .mutualAid: "Organization"
         }
     }
 

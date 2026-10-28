@@ -85,6 +85,12 @@ internal class DroneAltitudeCoordinator(
     // ── Calibration: SnapshotState so MapPane/StreamTile recompose when it changes ──────────
     val calibrationByRemoteId = mutableStateMapOf<String, DroneAltitudeCalibration>()
 
+    /** Main-thread snapshot only. The caller samples terrain for the captured position on a worker. */
+    fun clueDemAltitudeReference(remoteId:String):ClueDemAltitudeReference? {
+        val correction=demCorrectionByRemoteId[remoteId] ?: return null
+        return ClueDemAltitudeReference(correction,demScaleToMetersByRemoteId[remoteId] ?: 1.0)
+    }
+
     // ── DEM state — keyed by remoteId (stable across mappedId / designator changes) ─────────
     private val demGroundByRemoteId     = HashMap<String, DroneAglState>()
     private val demKeyByRemoteId        = HashMap<String, String>()
@@ -538,14 +544,14 @@ internal class DroneAltitudeCoordinator(
             return
         }
         if (lat == 0.0 && lng == 0.0) return
-        // A fresh install can receive a location before archive selection completes. Do not
-        // consume the cell in that state; a later tablet/drone update must be allowed to retry.
-        if (org.ncssar.rid2caltopo.data.CaltopoClient.GetArchiveDir() == null) return
         val cell = "${demPrefetchCellKey(lat, lng)}:$radiusMeters"
         if (!terrainPrefetchGate.schedule(cell, android.os.SystemClock.elapsedRealtime())) return
         scope.launch(Dispatchers.IO) {
             var complete = false
             try {
+                // Provider validation can wait on removable storage. A location callback
+                // runs on Main; enter the worker before touching Archive Dir.
+                if (org.ncssar.rid2caltopo.data.CaltopoClient.GetArchiveDir() == null) return@launch
                 // Make already-downloaded local data usable before any catalog/network wait.
                 val localS1mReady = demElevationService.prewarmLocalForLocation(lat, lng)
                 terrainPrefetchMutex.withLock {

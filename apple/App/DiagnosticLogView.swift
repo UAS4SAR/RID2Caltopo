@@ -13,7 +13,7 @@ struct DiagnosticLogView: View {
                 Text("Today is selected automatically. The compressed ZIP includes device and app details and each selected log. Track files are optional and off by default because they contain aircraft locations.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                Text("Ordinary diagnostic messages omit location details; enabled research captures can include aircraft positions. The bundle can contain Remote IDs, the app-install coordination identifier, local network addresses, and operational status. It never includes the CalTopo credential secret.")
+                Text("Ordinary diagnostic messages omit location details; enabled research captures can include aircraft positions. The bundle can contain Remote IDs, the app-install coordination identifier, local network addresses, and operational status. It contains selected logs and optional track files, not saved-configuration files. Settings backups exclude access credentials. Use tracker enrollment and sign-in on a new device.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

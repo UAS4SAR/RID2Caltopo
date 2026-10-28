@@ -1,0 +1,76 @@
+--- a/internal/servers/rtmp/conn.go
++++ b/internal/servers/rtmp/conn.go
+@@ -160,9 +160,13 @@
+ 	}
+ 
+ 	c.Log(logger.Debug, "RTMP handshake: initializing server connection")
++	handshakeStarted := time.Now()
+ 	err := conn.Initialize()
+ 	if err != nil {
+-		c.Log(logger.Debug, "RTMP handshake failed during initialization: %v", err)
++		c.Log(logger.Info, "RTMP handshake failed during initialization: elapsedMs=%d socketReads=%d socketBytes=%d socketWaitMs=%d maxSocketReadMs=%d error=%v",
++			time.Since(handshakeStarted).Milliseconds(), c.socketTiming.reads,
++			c.socketTiming.bytes, c.socketTiming.readTime.Milliseconds(),
++			c.socketTiming.maxRead.Milliseconds(), err)
+ 		return err
+ 	}
+ 
+diff --git a/internal/servers/rtmp/r2c_handshake_diagnostics_test.go b/internal/servers/rtmp/r2c_handshake_diagnostics_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/servers/rtmp/r2c_handshake_diagnostics_test.go
+@@ -0,0 +1,54 @@
++package rtmp
++
++import (
++	"fmt"
++	"net"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/bluenviron/mediamtx/internal/conf"
++	"github.com/bluenviron/mediamtx/internal/externalcmd"
++	"github.com/bluenviron/mediamtx/internal/logger"
++	"github.com/bluenviron/mediamtx/internal/test"
++	"github.com/stretchr/testify/require"
++)
++
++type handshakeFailureLogger struct{ failures chan string }
++
++func (l *handshakeFailureLogger) Log(_ logger.Level, format string, args ...any) {
++	message := fmt.Sprintf(format, args...)
++	if strings.Contains(message, "RTMP handshake failed during initialization:") {
++		l.failures <- message
++	}
++}
++
++func TestServerHandshakeReadDiagnostics(t *testing.T) {
++	for _, payload := range [][]byte{nil, {3, 0, 0, 0}} {
++		t.Run(fmt.Sprintf("bytes-%d", len(payload)), func(t *testing.T) {
++			logs := &handshakeFailureLogger{failures: make(chan string, 1)}
++			s := &Server{
++				Address: "127.0.0.1:0", ReadTimeout: conf.Duration(500 * time.Millisecond),
++				WriteTimeout: conf.Duration(time.Second), ExternalCmdPool: &externalcmd.Pool{},
++				PathManager: &test.PathManager{}, Parent: logs,
++			}
++			require.NoError(t, s.Initialize())
++			defer s.Close()
++			client, err := net.Dial("tcp", s.ln.Addr().String())
++			require.NoError(t, err)
++			defer client.Close()
++			if len(payload) > 0 {
++				_, err = client.Write(payload)
++				require.NoError(t, err)
++			}
++			select {
++			case message := <-logs.failures:
++				require.Contains(t, message, fmt.Sprintf("socketBytes=%d", len(payload)))
++				require.Contains(t, message, "socketReads=")
++				require.Contains(t, message, "maxSocketReadMs=")
++			case <-time.After(3 * time.Second):
++				t.Fatal("missing bounded handshake failure diagnostic")
++			}
++		})
++	}
++}

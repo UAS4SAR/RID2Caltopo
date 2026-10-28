@@ -12,7 +12,9 @@ base, code, certificate_path = sys.argv[1:]
 context = ssl.create_default_context(cafile=certificate_path)
 token = ''
 def api(path, value=None):
-    headers = {'X-Auth-Token': token}
+    # Bootstrap/report requests use the same explicit page revision as Pilot's
+    # current connection page. Missing/stale revisions are intentionally rejected.
+    headers = {'X-Auth-Token': token, 'X-R2C-Page-Revision': '2'}
     body = None
     if value is not None:
         headers['Content-Type'] = 'application/json'
@@ -71,12 +73,15 @@ assert api('/cloud/status')['data']['photoCount']==2
 
 other=prefix+'OLD_FLIGHT.JPG'
 client.put_object(Bucket=bucket,Key=other,Body=one)
-receipt.update(name='OLD_FLIGHT.JPG',object_key=other)
+receipt.update(name='OLD_FLIGHT.JPG',object_key=other,fingerprint=hashlib.md5(one).hexdigest())
 assert api(f'/media/api/v1/workspaces/{workspace}/upload-callback',receipt)['code']==0
 assert api('/cloud/status')['data']['photoCount']==2 and api('/cloud/status')['data']['unmatchedCount']==1
 wrong_camera=prefix+'DJI_'+tag+'_W.JPG'
-client.put_object(Bucket=bucket,Key=wrong_camera,Body=jpeg_with_camera('WideCamera',b'wide-original-byte-content'))
-receipt.update(name='DJI_'+tag+'_W.JPG',object_key=wrong_camera)
+wide=jpeg_with_camera('WideCamera',b'wide-original-byte-content')
+client.put_object(Bucket=bucket,Key=wrong_camera,Body=wide)
+# Each receipt describes its own bytes; reusing the previous fingerprint makes
+# the missing-original assertion depend on receipt-directory iteration order.
+receipt.update(name='DJI_'+tag+'_W.JPG',object_key=wrong_camera,fingerprint=hashlib.md5(wide).hexdigest())
 assert api(f'/media/api/v1/workspaces/{workspace}/upload-callback',receipt)['code']==0
 status=api('/cloud/status')['data']
 assert status['photoCount']==2 and status['unmatchedCount']==2 and status['storedUploadCount']==4

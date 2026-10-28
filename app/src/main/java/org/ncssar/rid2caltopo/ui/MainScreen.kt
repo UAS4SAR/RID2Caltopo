@@ -63,6 +63,11 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -92,7 +97,6 @@ import kotlinx.coroutines.withContext
 import org.ncssar.rid2caltopo.BuildConfig
 import org.ncssar.rid2caltopo.app.ArchiveCleanupDeleteResult
 import org.ncssar.rid2caltopo.app.ArchiveCleanupDirectoryOption
-import org.ncssar.rid2caltopo.app.MediaMTXService
 import org.ncssar.rid2caltopo.app.LogArchiveDayOption
 import org.ncssar.rid2caltopo.app.R2CActivity
 import org.ncssar.rid2caltopo.app.ScanningService
@@ -114,7 +118,6 @@ import org.ncssar.rid2caltopo.data.CaltopoClient.CTError
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTWarn
 import org.ncssar.rid2caltopo.data.CaltopoMap
 import org.ncssar.rid2caltopo.data.DriveSyncAction
-import org.ncssar.rid2caltopo.data.ExternalDisplayContentMode
 import org.ncssar.rid2caltopo.data.FaaConfigManager
 import org.ncssar.rid2caltopo.data.GoogleDriveConfigSync
 import org.ncssar.rid2caltopo.data.MutualAidProfileManager
@@ -612,13 +615,6 @@ class OpenArchiveDir() : ActivityResultContracts.OpenDocumentTree() {
     }
 }
 
-private fun restartMediaMtxServer(context: android.content.Context) {
-    val appContext = context.applicationContext
-    MediaMTXService.requestRestart(appContext)
-    CaltopoClient.ShowToast("Streams server restarted. Connected publishers will reconnect if supported.")
-    CTDebug("MainMenu", "User requested MediaMTXService restart from menu.")
-}
-
 private fun isInstalledFromGooglePlay(context: Context): Boolean {
     return try {
         val installerPackage = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -672,9 +668,6 @@ fun MainScreen(
     onEmailLog: suspend (List<String>, Boolean) -> Unit,
     availableArchiveCleanupDirectoriesProvider: suspend () -> List<ArchiveCleanupDirectoryOption>,
     onDeleteArchiveDirectories: suspend (List<String>) -> ArchiveCleanupDeleteResult,
-    externalDisplayConnected: Boolean = false,
-    externalDisplayContentMode: ExternalDisplayContentMode? = null,
-    onSetExternalDisplayContent: ((ExternalDisplayContentMode) -> Unit)? = null,
     openDeveloperToolsOnStart: Boolean = false,
     onDeveloperToolsOpened: () -> Unit = {},
     onArchiveDirPickerStarted: () -> Boolean,
@@ -698,7 +691,7 @@ fun MainScreen(
     pendingProfileRemoval?.let { profile ->
         AlertDialog(
             onDismissRequest = { pendingProfileRemoval = null },
-            title = { Text("Remove mutual-aid profile?") },
+            title = { Text("Remove organization profile?") },
             text = { Text("Remove ${profile.credentialLabel} from this device? If selected, the app will disconnect from its map and return to Home. Cached maps and the Home configuration are preserved.") },
             confirmButton = {
                 TextButton(onClick = {
@@ -739,14 +732,10 @@ fun MainScreen(
         mutableStateOf(BluetoothRidTestPrefs.isPeriodicRestartEnabled(context))
     }
     var pendingDriveAction by remember { mutableStateOf<DriveSyncAction?>(null) }
-    var pendingOrgExport by remember { mutableStateOf(false) }
-    var pendingFaaExport by remember { mutableStateOf(false) }
     var driveSyncInProgress by remember { mutableStateOf(false) }
     var driveRestoreEligibilityLoaded by remember { mutableStateOf(false) }
     var showDriveRestoreDialog by remember { mutableStateOf(false) }
     var linkedDriveEmail by remember { mutableStateOf("") }
-    var showOrgExportDialog by remember { mutableStateOf(false) }
-    var showFaaExportDialog by remember { mutableStateOf(false) }
     var showImportConfigDialog by remember { mutableStateOf(false) }
     var pendingImportToken by rememberSaveable { mutableStateOf("") }
     var showReleaseNotesDialog by remember { mutableStateOf(false) }
@@ -907,11 +896,7 @@ fun MainScreen(
         contract = ActivityResultContracts.StartActivityForResult(),
         onResult = { result ->
             val requestedAction = pendingDriveAction
-            val orgExport = pendingOrgExport
-            val faaExport = pendingFaaExport
             pendingDriveAction = null
-            pendingOrgExport = false
-            pendingFaaExport = false
 
             val account = if (result.data != null) {
                 try {
@@ -927,47 +912,7 @@ fun MainScreen(
                     runDriveAction(result, requestedAction)
                 requestedAction != null ->
                     CaltopoClient.ShowToast("Google Drive authorization was cancelled.")
-                orgExport && account != null -> {
-                    showOrgExportDialog = true
-                    CaltopoClient.ShowToast("Signed in to Google Drive.")
-                    refreshDriveState()
-                }
-                orgExport ->
-                    CaltopoClient.ShowToast("Google Drive authorization was cancelled.")
-                faaExport && account != null -> {
-                    showFaaExportDialog = true
-                    CaltopoClient.ShowToast("Signed in to Google Drive.")
-                    refreshDriveState()
-                }
-                faaExport ->
-                    CaltopoClient.ShowToast("Google Drive authorization was cancelled.")
-            }
-        }
-    )
 
-    val loadConfigFileLauncher = rememberLauncherForActivityResult(
-        contract = FreshOpenDocument(),
-        onResult = { uri ->
-            if (uri != null) {
-                CTDebug(tag, "loadConfigFileLauncher() returned '${uri}'")
-                try {
-                    val takeFlags: Int = Intent.FLAG_GRANT_READ_URI_PERMISSION
-                    context.contentResolver.takePersistableUriPermission(uri, takeFlags)
-                    CTDebug(tag, "loadConfigFileLauncher() secured URI read permission.")
-                    if (CaltopoClient.LoadConfigFile(uri)) {
-                        localViewModel.onUIEvent(UIEvent.ConfigFileLoaded)
-                    } else {
-                        localViewModel.onUIEvent(UIEvent.NotAbleToReadConfigFile)
-                    }
-                } catch (e: Exception) {
-                    CTError(tag, "loadConfigFileLauncher(): read failed: ", e)
-                    localViewModel.onUIEvent(UIEvent.NotAbleToReadConfigFile)
-                }
-            } else {
-                CTDebug(tag, "loadConfigFileLauncher() picker closed w/o selection.")
-                if (localViewModel.overlay == OverlayState.RequestConfigFile) {
-                    localViewModel.onUIEvent(UIEvent.DismissRequested)
-                }
             }
         }
     )
@@ -1077,74 +1022,6 @@ fun MainScreen(
             CaltopoClient.ShowToast(message)
             refreshDriveState()
         }
-    }
-
-    if (showOrgExportDialog) {
-        OrgConfigExportDialog(
-            sourceOrgName = CaltopoClient.GetHomeOrgName(),
-            onDismiss = { showOrgExportDialog = false },
-            onUploadRequested = { callback ->
-                val account = GoogleDriveConfigSync.getAuthorizedAccount(context)
-                if (account != null) {
-                    OrgConfigManager.uploadOrgConfig(context, account) { success, message, token ->
-                        refreshDriveState()
-                        callback(success, message, token)
-                    }
-                } else {
-                    showOrgExportDialog = false
-                    pendingOrgExport = true
-                    driveSignInLauncher.launch(GoogleDriveConfigSync.createSignInIntent(context))
-                    callback(false, "Signing in to Google Drive…", null)
-                }
-            }
-        )
-    }
-
-    if (showFaaExportDialog) {
-        FaaConfigExportDialog(
-            onDismiss = { showFaaExportDialog = false },
-            onUploadRequested = { callback ->
-                val account = GoogleDriveConfigSync.getAuthorizedAccount(context)
-                if (account != null) {
-                    FaaConfigManager.uploadFaaConfig(context, account) { success, message, token ->
-                        refreshDriveState()
-                        callback(success, message, token)
-                    }
-                } else {
-                    showFaaExportDialog = false
-                    pendingFaaExport = true
-                    driveSignInLauncher.launch(GoogleDriveConfigSync.createSignInIntent(context))
-                    callback(false, "Signing in to Google Drive…", null)
-                }
-            }
-        )
-    }
-
-    if (appUpdateAdvisory.updateRequired) {
-        AlertDialog(
-            onDismissRequest = { },
-            title = { Text("Update available") },
-            text = {
-                Text(
-                    "Check Google Play for Update. If Play only offers Open or Uninstall, " +
-                        "return here and continue. Do not uninstall RID2Caltopo."
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    openAppUpgradeLocation(context, appUpdateAdvisory.updateUrl)
-                }) {
-                    Text("Check Play")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    AppUpdateAdvisory.dismissForSession()
-                }) {
-                    Text("Continue")
-                }
-            }
-        )
     }
 
     if (showLocationOverrideDialog) {
@@ -1304,7 +1181,7 @@ fun MainScreen(
                         Text("Package: ${preview.packageName.ifBlank { "Map Package" }}")
                         if (preview.includesMapAccess) {
                             Text("Source org: ${preview.sourceOrg.ifBlank { "Unknown" }}")
-                            Text("Display name: ${preview.displayName.ifBlank { "Mutual Aid" }}")
+                            Text("Display name: ${preview.displayName.ifBlank { "Organization" }}")
                             Text("Incident: ${preview.incident.ifBlank { "Unknown" }}")
                             Text("Op period: ${preview.opPeriod.ifBlank { "Unknown" }}")
                             Text("Map: ${preview.targetMapTitle.ifBlank { preview.targetMapId.ifBlank { "Unknown" } }}")
@@ -1360,7 +1237,7 @@ fun MainScreen(
                 Column(modifier = Modifier.fillMaxWidth()) {
                     CircularProgressIndicator()
                     Spacer(Modifier.height(12.dp))
-                    Text("Importing offline tiles and mutual-aid settings. This may take a while for larger packages.")
+                    Text("Importing offline map tiles. This may take a while for larger packages.")
                 }
             },
             confirmButton = { }
@@ -1740,7 +1617,7 @@ fun MainScreen(
                                 pendingArchiveDirInitialUri = null
                                 pendingArchiveDirPermissionMissing = false
                                 archiveDirPromptSuppressed = true
-                                if (CaltopoClient.UseTemporaryArchiveDirForSession()) {
+                                coroutineScope.launch { if (withContext(Dispatchers.IO) { CaltopoClient.UseTemporaryArchiveDirForSession() }) {
                                     CaltopoClient.ShowToast(
                                         "Using temporary storage. Choose Archive Storage from the menu when ready."
                                     )
@@ -1748,6 +1625,7 @@ fun MainScreen(
                                     CaltopoClient.ShowToast(
                                         "Archive storage is unavailable. RID2Caltopo will continue with limited file storage."
                                     )
+                                }
                                 }
                                 return@TextButton
                             }
@@ -1800,7 +1678,7 @@ fun MainScreen(
                     onClick = {
                         archiveDirSelectionFailure = null
                         archiveDirPromptSuppressed = true
-                        if (CaltopoClient.UseTemporaryArchiveDirForSession()) {
+                        coroutineScope.launch { if (withContext(Dispatchers.IO) { CaltopoClient.UseTemporaryArchiveDirForSession() }) {
                             CaltopoClient.ShowToast(
                                 "Using temporary storage. Choose Archive Storage from the menu when ready."
                             )
@@ -1808,6 +1686,7 @@ fun MainScreen(
                             CaltopoClient.ShowToast(
                                 "Archive storage is unavailable. RID2Caltopo will continue with limited file storage."
                             )
+                        }
                         }
                     }
                 ) { Text("Continue temporarily") }
@@ -1841,6 +1720,10 @@ fun MainScreen(
                             expanded = menuExpanded,
                             onDismissRequest = { menuExpanded = false }
                         ) {
+                            DropdownMenuItem(text = { Text("Aircraft and Reception") }, onClick = {
+                                menuExpanded = false
+                                showWorkspaceStats = true
+                            })
                             DropdownMenuItem(text = { Text("Settings") }, onClick = {
                                 localViewModel.showSettings()
                                 menuExpanded = false
@@ -1863,21 +1746,6 @@ fun MainScreen(
                                 showStorageManagement = true
                                 menuExpanded = false
                             })
-                            DropdownMenuItem(text = { Text("Archive Storage...") }, onClick = {
-                                archiveDirPromptSuppressed = false
-                                archiveDirSelectionFailure = null
-                                forceArchiveDirPrompt = true
-                                menuExpanded = false
-                            })
-                            if (externalDisplayConnected && onSetExternalDisplayContent != null && externalDisplayContentMode != null) {
-                                DropdownMenuItem(
-                                    text = { Text("External: Streams View") },
-                                    onClick = {
-                                        onSetExternalDisplayContent(ExternalDisplayContentMode.StreamsGrid)
-                                        menuExpanded = false
-                                    }
-                                )
-                            }
                             DropdownMenuItem(text = { Text("Send diagnostics to developer...") }, onClick = {
                                 showLogArchiveDialog = true
                                 includeTracksInDiagnostics = false
@@ -2117,10 +1985,6 @@ fun MainScreen(
                         showArchiveCleanupDialog = true
                         loadingArchiveCleanupDirs = true
                         selectedArchiveCleanupDirs = emptySet()
-                        coroutineScope.launch {
-                            archiveCleanupDirs = availableArchiveCleanupDirectoriesProvider()
-                            loadingArchiveCleanupDirs = false
-                        }
                     } else { showStorageManagement = true }
                 }) { Text(if (message.startsWith("Cleanup")) "Increase Allowance" else "Manage Storage") }
             },
@@ -2129,7 +1993,12 @@ fun MainScreen(
     }
 
     if (showStorageManagement) {
-        StorageManagementDialog(onDismiss = { showStorageManagement = false }, onFlight = {
+        StorageManagementDialog(onDismiss = { showStorageManagement = false }, onArchive = {
+            showStorageManagement = false
+            archiveDirPromptSuppressed = false
+            archiveDirSelectionFailure = null
+            forceArchiveDirPrompt = true
+        }, onFlight = {
             showStorageManagement = false
             showArchiveCleanupDialog = true
             loadingArchiveCleanupDirs = true
@@ -2138,19 +2007,32 @@ fun MainScreen(
             selectedArchiveCleanupDirs = defaultSelectedArchiveCleanupDirectories()
             archiveCleanupDeleteMessage = null
             menuExpanded = false
-            coroutineScope.launch {
-                archiveCleanupDirs = availableArchiveCleanupDirectoriesProvider()
-                loadingArchiveCleanupDirs = false
-            }
         })
     }
     browseFlightFolder?.let { folder -> FlightDirectoryBrowser(folder) { browseFlightFolder = null } }
 
     if (showArchiveCleanupDialog) {
+        val preparation by org.ncssar.rid2caltopo.storage.OperationalStorage.status.collectAsState()
+        LaunchedEffect(preparation.ready) {
+            if (deletingArchiveCleanupDirs) return@LaunchedEffect
+            loadingArchiveCleanupDirs = true
+            try {
+                archiveCleanupDirs = availableArchiveCleanupDirectoriesProvider()
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                archiveCleanupDirs = emptyList()
+                archiveCleanupDeleteMessage = error.message ?: "Flight storage could not be sized."
+            } finally {
+                // An obsolete scan must not clear a newly opened scan's busy state.
+                if (kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]?.isActive != false) {
+                    loadingArchiveCleanupDirs = false
+                }
+            }
+        }
         val deleteEnabled = canDeleteArchiveCleanupSelection(archiveCleanupDirs, selectedArchiveCleanupDirs)
         AlertDialog(
             onDismissRequest = {
-                if (!loadingArchiveCleanupDirs && !deletingArchiveCleanupDirs) {
+                if (!deletingArchiveCleanupDirs) {
                     showArchiveCleanupDialog = false
                     showArchiveDeleteConfirmDialog = false
                 }
@@ -2232,7 +2114,7 @@ fun MainScreen(
                         showArchiveCleanupDialog = false
                         showArchiveDeleteConfirmDialog = false
                     },
-                    enabled = !loadingArchiveCleanupDirs && !deletingArchiveCleanupDirs
+                    enabled = !deletingArchiveCleanupDirs
                 ) {
                     Text("Cancel")
                 }
@@ -2393,12 +2275,6 @@ fun MainScreen(
                 ) {
                     Button(
                         onClick = {
-                            context.startActivity(android.content.Intent(context, CaltopoPersonalProbeActivity::class.java))
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text("Personal CalTopo Login (Experiment)") }
-                    Button(
-                        onClick = {
                             showTestingToolsDialog = false
                             showProximityDebugDialog = true
                         },
@@ -2483,16 +2359,6 @@ fun MainScreen(
                     Button(
                         onClick = {
                             showTestingToolsDialog = false
-                            loadConfigFileLauncher.launch(arrayOf("application/json", "text/plain", "application/octet-stream"))
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Load Config File")
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Button(
-                        onClick = {
-                            showTestingToolsDialog = false
                             openDebugTagDialog()
                         },
                         modifier = Modifier.fillMaxWidth()
@@ -2510,39 +2376,6 @@ fun MainScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("Resubmit Recent Tracks To Tracker")
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Button(
-                        onClick = {
-                            showTestingToolsDialog = false
-                            if (CaltopoClient.GetHomeOrgName().isBlank()) {
-                                CaltopoClient.ShowToast("Set the organization designator in Settings before exporting organization config.")
-                            } else if (GoogleDriveConfigSync.getAuthorizedAccount(context) != null) {
-                                showOrgExportDialog = true
-                            } else {
-                                pendingOrgExport = true
-                                driveSignInLauncher.launch(GoogleDriveConfigSync.createSignInIntent(context))
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Export Org Config")
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Button(
-                        onClick = {
-                            val account = GoogleDriveConfigSync.getAuthorizedAccount(context)
-                            showTestingToolsDialog = false
-                            if (account != null) {
-                                showFaaExportDialog = true
-                            } else {
-                                pendingFaaExport = true
-                                driveSignInLauncher.launch(GoogleDriveConfigSync.createSignInIntent(context))
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Publish FAA Config")
                     }
                     Spacer(modifier = Modifier.height(8.dp))
                     Button(
@@ -2568,17 +2401,6 @@ fun MainScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("Reset Persisted App State")
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Button(
-                        onClick = {
-                            showTestingToolsDialog = false
-                            restartMediaMtxServer(context)
-                            CaltopoClient.CTEvent(tag,"RestartMediaMtxServer", null)
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Restart MediaMtx Server")
                     }
                     if (linkedDriveEmail.isNotBlank()) {
                         Spacer(modifier = Modifier.height(8.dp))
@@ -2697,6 +2519,11 @@ private fun MainBridgeSignalIndicator(rssi: Int?, onClick: () -> Unit) {
 @Composable
 internal fun AboutPrivacyDialog(onClose: () -> Unit, header: (@Composable () -> Unit)? = null) {
     val context = LocalContext.current
+    var document by remember { mutableStateOf<AppInformationDocument?>(null) }
+    if (document != null) {
+        BundledInformationDialog(requireNotNull(document)) { document = null }
+        return
+    }
         AlertDialog(
             onDismissRequest = onClose,
             title = { Text("About & Privacy") },
@@ -2718,26 +2545,54 @@ internal fun AboutPrivacyDialog(onClose: () -> Unit, header: (@Composable () -> 
 
                     Spacer(modifier = Modifier.height(16.dp))
                     Text("Privacy", style = MaterialTheme.typography.titleMedium)
+                    StorageActionButton(onClick = { document = AppInformationDocument.PrivacyPolicy }) {
+                        Text("Privacy policy")
+                    }
+                    StorageActionButton(onClick = { document = AppInformationDocument.ServiceAcknowledgments }) {
+                        Text("Service & data acknowledgments")
+                    }
                     Text("RID2Caltopo contains no advertising, does not track people across apps or websites, and does not sell personal data.")
-                    Text("The Android app uses Firebase Analytics for operational app events and configuration state. Some events include map or configuration details and mapped Remote ID identifiers; advertising-identifier collection is disabled.")
-                    Text("Remote ID observations, track archives, and diagnostic logs remain on this device unless you enable CalTopo publishing, load a configuration that enables eligible team-track upload or tracker peer coordination, enable configuration backup, or explicitly share a file.")
-                    Text("CalTopo credentials are stored in the app's private configuration and are not intentionally written to diagnostic logs or shared log bundles.")
+                    Text("The app uses Firebase Analytics for operational app events and configuration state, and Crashlytics for crash reports. Some events include map or configuration details and mapped Remote ID identifiers; advertising-identifier collection is disabled.")
+                    Text("Remote ID observations, track archives, and diagnostic logs remain on this device unless you enable CalTopo publishing, load a configuration that enables eligible team-track upload or tracker peer coordination, or explicitly share a file.")
+                    Text("CalTopo and tracker credentials are stored in this app's private configuration.")
+                    Text("CalTopo and organization credentials stay saved on this device and are reused across app restarts and updates. You do not need to enter them for each connection.")
+                    Text("Settings backups contain supported preferences and aircraft mappings, without saved CalTopo, tracker or FAA credentials. Restoring a settings backup does not erase credentials already saved on that device or set up access on another device.")
+                    Text("If you enable Google Drive settings backup, it is stored in your selected account. System settings backup is managed by the device's backup service. Both exclude access credentials.")
+                    Text("Local video and mapping analysis run on this device. Original photos, controller recordings, clue images, and exported maps can contain coordinates, capture times, aircraft identifiers, and other embedded metadata.")
 
                     Spacer(modifier = Modifier.height(16.dp))
                     Text("Permissions and network use", style = MaterialTheme.typography.titleMedium)
-                    Text("Bluetooth receives nearby ASTM Remote ID broadcasts.")
-                    Text("Location places the operator relative to aircraft on the map.")
-                    Text("Nearby Wi-Fi and local-network access receive controller video and optional external Remote ID observations.")
+                    AboutPermissionRow(Icons.Default.Bluetooth, "Bluetooth receives nearby ASTM Remote ID broadcasts.")
+                    AboutPermissionRow(Icons.Default.LocationOn, "Location places the operator relative to aircraft and supports configured incident coordination. An active monitoring session can continue location updates in the background.")
+                    Text("Monitoring uses a foreground service and its system notification. Nearby Wi-Fi permission supports compatible local-device discovery.")
+                    AboutPermissionRow(Icons.Default.Wifi, "Local-network access exchanges controller video, mapping missions and original photos, map tile packages, and optional external Remote ID observations.")
+                    AboutPermissionRow(Icons.Default.CameraAlt, "Camera scans configuration codes and aircraft/account identifiers.")
+                    AboutPermissionRow(Icons.Default.Mic, "Sending microphone audio is separately enabled for authorized VoIP; controller media may already contain source audio.")
                     Text("When enabled by the operator, CalTopo receives aircraft positions and telemetry for the selected map. Configured tracker peer coordination receives the app-install zone identifier, device zone name, operator position, confirmed drone identity, and aircraft sightings needed to coordinate ownership. Nearby NOTAM monitoring sends the operator location and selected radius to the configured tracker, which queries FAA without exposing FAA credentials to this app.")
+                    Text("Map layers can contact their configured providers to load map content.")
                     Text("When protected-land checks are enabled, public NPS, USFWS, USFS, and Colorado Parks and Wildlife services receive a small geographic search area around the operator location. Returned boundaries are cached locally; these requests do not include aircraft tracks or an operator identity.")
+                    Text("Controller and local-browser connections can exchange flight plans, settings, aircraft and controller identifiers, telemetry, and original photographs. CalTopo sign-in uses its provider pages and a retained local browser session. Organizations and shared/public maps control who can see information sent to their services.")
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("Video sharing and recording", style = MaterialTheme.typography.titleMedium)
+                    Text("Configured tracker coordination can publish stream/recording catalogs and preview thumbnails before full-session approval. Thumbnails and links can also appear on a configured CalTopo map.")
+                    Text("Full viewing and recording-file transfers use per-request approval by default. Enabling Remote Video Control authorizes supported requests without a prompt each time. It does not unmute outgoing voice, and turning it off does not stop catalog/thumbnail sharing. Saving this setting as off ends sessions and transfers using advance authorization and cancels queued automatic grants. Requests you approved individually remain approved.")
+                    Text("The microphone switch controls whether your voice is sent to the other participant. You can still hear incoming sound while your voice is muted.")
+                    Text("The app also disables microphone capture for the voice connection when this switch is off.")
+                    Text("WebRTC setup and link tests exchange network/connection information and performance estimates before media starts. Media can pass through configured relays. The tracker can retain access, session, and usage records. Downloaded recordings can include source audio; recipients can retain copies.")
+                    Text("The app uses MediaMTX, a media server running on this device, to receive incoming RTMP streams from controllers. Capture Streams controls whether those streams are recorded locally and is initially enabled. Restrict media server access is initially enabled; turning it off permits direct local-network viewing outside tracker approval.")
 
                     Spacer(modifier = Modifier.height(16.dp))
                     Text("Logs and deletion", style = MaterialTheme.typography.titleMedium)
-                    Text("You choose which log days to package. Diagnostic log messages omit location details. JSON track files contain aircraft positions and are excluded unless you explicitly include them.")
-                    Text("Nothing is transmitted until you choose a destination in the Android share panel. Local logs and track archives can be removed in the app. Android or Google Drive configuration backups remain until removed from the corresponding backup service; CalTopo and the configured tracker control retention of data sent to them.")
+                    Text("When sending diagnostics to the developer, you choose which log days to package. Diagnostic log messages omit location details. JSON track files contain aircraft positions and are excluded unless you explicitly include them.")
+                    Text("Log sharing sends nothing until you send the prepared message or choose a share destination. The diagnostic bundle contains selected logs and optional track files, not saved-configuration files. Bundles can contain operational records and performance/connection diagnostics. CalTopo publishing, tracker coordination, and video sharing operate separately, according to their own settings.")
+                    Text("Remove local files through the app's library or system file manager. Local deletion does not recall recipient copies or delete service records.")
+                    Text("Clear login removes the retained CalTopo browser session.")
+                    Text("Ask the configured service operator about server retention, access revocation, and deletion.")
+                    Text("Google Drive and system settings backups remain until removed from the corresponding backup service.")
 
                     Spacer(modifier = Modifier.height(16.dp))
-                    Text("Additional information", style = MaterialTheme.typography.titleMedium)
+                    Text("Contact", style = MaterialTheme.typography.titleMedium)
                     StorageActionButton(
                         onClick = {
                             try {
@@ -2772,4 +2627,12 @@ internal fun AboutPrivacyDialog(onClose: () -> Unit, header: (@Composable () -> 
                 }
             }
         )
+}
+
+@Composable
+private fun AboutPermissionRow(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(text, modifier = Modifier.weight(1f))
+    }
 }

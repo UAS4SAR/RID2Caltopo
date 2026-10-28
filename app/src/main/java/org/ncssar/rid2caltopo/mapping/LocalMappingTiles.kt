@@ -15,6 +15,7 @@ object LocalMappingTiles {
     private fun id(source:ITileSource)=source.name().takeIf{it.startsWith("R2C-Mapping-")}?.removePrefix("R2C-Mapping-")
         ?.takeIf{runCatching{UUID.fromString(it).toString()==it}.getOrDefault(false)}
     fun file(context:Context,source:ITileSource,index:Long):File?=id(source)?.let{
+        org.ncssar.rid2caltopo.storage.OperationalStorage.requireReady(context)
         val z=MapTileIndex.getZoom(index);val x=MapTileIndex.getX(index);val y=MapTileIndex.getY(index)
         require(z in 0..23&&x in 0 until (1 shl z)&&y in 0 until (1 shl z))
         File(directory(context,it),"$z/$x/$y.png")

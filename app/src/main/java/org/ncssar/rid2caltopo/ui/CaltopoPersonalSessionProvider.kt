@@ -10,6 +10,14 @@ import android.os.Bundle
 class CaltopoPersonalSessionProvider : ContentProvider() {
     override fun onCreate() = true
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle = Bundle().apply {
+        if (method == "beginFullMapRead") {
+            val id = requireNotNull(arg)
+            val binder = requireNotNull(extras?.getBinder("lease"))
+            putLong("delayMs", org.ncssar.rid2caltopo.data.CaltopoFullMapReadBroker.begin(requireNotNull(extras.getString("mapKey")), id, binder))
+        }
+        if (method == "finishFullMapRead") {
+            org.ncssar.rid2caltopo.data.CaltopoFullMapReadBroker.finish(requireNotNull(arg))
+        }
         if (method == "loginProtectionRequired") {
             // No network or map loading: persisted browser cookies also cover upgrades
             // from versions that did not record a personal login marker.

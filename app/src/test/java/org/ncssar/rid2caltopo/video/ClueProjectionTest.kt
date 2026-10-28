@@ -2,11 +2,59 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.cancel
 import kotlin.math.cos
 import org.ncssar.rid2caltopo.video.ffmpeg.DjiCameraOrientation
 import org.ncssar.rid2caltopo.video.mapcache.DemElevationSample
 
 class ClueProjectionTest {
+    @Test fun capturedRidAltitudeUsesItsFrozenDatumCorrectionWithFreshTerrain() {
+        val reference=ClueDemAltitudeReference(correctionMeters=-25.9,scaleToMeters=1.0)
+        // The second reported clue had no height in the live display while DEM was pending.
+        assertEquals(0.81,reference.heightMeters(509.0,534.09)!!,0.001)
+        assertEquals(23.66,reference.heightMeters(539.0,541.24)!!,0.001)
+        assertEquals(null,reference.heightMeters(500.0,534.09))
+        assertEquals(null,reference.heightMeters(-1000.0,534.09))
+        assertEquals(null,reference.heightMeters(509.0,Double.NaN))
+    }
+    @Test fun missingHeadingCannotSilentlySaveTiltedClueAtDroneLocation() {
+        assertTrue(clueProjectionIssue(17.0, null, -62.0)!!.contains("heading"))
+        assertTrue(clueProjectionIssue(17.0, Double.NaN, -62.0)!!.contains("heading"))
+        assertEquals(null, clueProjectionIssue(17.0, 45.0, -62.0))
+        assertEquals(null, clueProjectionIssue(17.0, null, -90.0))
+    }
+
+    @Test fun missingHeightAndCameraAboveHorizonCannotProduceGroundClue() {
+        assertTrue(clueProjectionIssue(null, 45.0, -24.0)!!.contains("altitude"))
+        assertTrue(clueProjectionIssue(Double.NaN, 45.0, -24.0)!!.contains("altitude"))
+        assertTrue(clueProjectionIssue(17.0, 45.0, 0.0)!!.contains("horizon"))
+        assertTrue(clueProjectionIssue(17.0, 45.0, 30.0)!!.contains("horizon"))
+    }
+    @Test fun cancelledTerrainReadStopsBeforeAnotherRaySampleOrResultPublication() = runBlocking {
+        var reads = 0
+        var published = false
+        val job = launch(start = CoroutineStart.UNDISPATCHED) {
+            projectClueLocationWithDemSamples(
+                droneLat = 39.0, droneLng = -105.0, droneAlt = 550.0,
+                headingDeg = 30.0, aglMeters = 30.0, gimbalAngleDeg = -20.0,
+                sampleElevationMeters = { _, _ ->
+                    reads++
+                    // A synchronous provider can finish its read after its job was cancelled.
+                    currentCoroutineContext().cancel()
+                    DemElevationSample(500.0, false, "usgs-geotiff-local-1m", 1.0)
+                },
+            )
+            published = true
+        }
+        job.join()
+        assertEquals(1, reads)
+        assertTrue(job.isCancelled)
+        assertTrue(!published)
+    }
+
     @Test fun verticalClueUsesLocalDemWithoutHeadingOrAgl() = runBlocking {
         val result = projectClueLocationWithDemSamples(
             droneLat = 39.0, droneLng = -105.0, droneAlt = 550.0,

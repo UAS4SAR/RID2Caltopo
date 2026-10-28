@@ -7,3 +7,8 @@ the corresponding source files.
 
 This product is not affiliated with or endorsed by CalTopo, the OpenDroneID
 project, or the suppliers of any third-party component.
+
+This software uses libraries from the FFmpeg project under LGPL 2.1 or later.
+Third-party component licenses retain their respective modification and other rights.
+This software is based in part on the work of the Independent JPEG Group.
+Full component notices and license texts are included in License & Notices.

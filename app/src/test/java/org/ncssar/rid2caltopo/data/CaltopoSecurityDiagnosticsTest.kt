@@ -8,6 +8,21 @@ import java.io.IOException
 import java.lang.reflect.Proxy
 
 class CaltopoSecurityDiagnosticsTest {
+    @Test fun savedConfigurationDiagnosticsMaskCredentialValues() {
+        val caltopoSecret = "FAKE_CALTOPO_CREDENTIAL_SECRET_123"
+        val faaSecret = "FAKE_FAA_CLIENT_SECRET_456"
+        val state = ClientClassState().apply {
+            caltopoCredentials = CaltopoCredentials("team", "credential-id", caltopoSecret)
+            notamClientId = "faa-client-id"
+            notamClientSecret = faaSecret
+        }
+        val report = state.toString()
+        assertFalse(report, report.contains(caltopoSecret))
+        assertFalse(report, report.contains(faaSecret))
+        assertFalse(report, report.contains("credential-id"))
+        assertFalse(report, report.contains("faa-client-id"))
+        assertTrue(report.contains("###########"))
+    }
     @Test fun operationDiagnosticsNeverSerializePayloadResponseOrCapabilityUrl() {
         val secret = "FAKE_COOKIE_AND_CAPABILITY_SECRET"
         val op = CaltopoOp(null).apply {

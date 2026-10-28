@@ -1,0 +1,433 @@
+{
+  "toolchain": "go1.25.6",
+  "modules": [
+    {
+      "module": "code.cloudfoundry.org/bytefmt",
+      "version": "v0.64.0",
+      "notice_files": [
+        "MediaMTX-dependencies/code.cloudfoundry.org/bytefmt/LICENSE",
+        "MediaMTX-dependencies/code.cloudfoundry.org/bytefmt/NOTICE"
+      ]
+    },
+    {
+      "module": "github.com/MicahParks/jwkset",
+      "version": "v0.11.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/MicahParks/jwkset/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/MicahParks/keyfunc/v3",
+      "version": "v3.8.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/MicahParks/keyfunc/v3/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/abema/go-mp4",
+      "version": "v1.4.1",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/abema/go-mp4/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/alecthomas/kong",
+      "version": "v1.14.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/alecthomas/kong/COPYING"
+      ]
+    },
+    {
+      "module": "github.com/asticode/go-astikit",
+      "version": "v0.30.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/asticode/go-astikit/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/asticode/go-astits",
+      "version": "v1.14.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/asticode/go-astits/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/benburkert/openpgp",
+      "version": "v0.0.0-20160410205803-c2471f86866c",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/benburkert/openpgp/keywrap-NOTICE.txt"
+      ]
+    },
+    {
+      "module": "github.com/bluenviron/gohlslib/v2",
+      "version": "v2.2.6",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/bluenviron/gohlslib/v2/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/bluenviron/gortmplib",
+      "version": "v0.3.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/bluenviron/gortmplib/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/bluenviron/gortsplib/v5",
+      "version": "v5.3.2",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/bluenviron/gortsplib/v5/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/bluenviron/mediacommon/v2",
+      "version": "v2.8.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/bluenviron/mediacommon/v2/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/datarhei/gosrt",
+      "version": "v0.10.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/datarhei/gosrt/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/fsnotify/fsnotify",
+      "version": "v1.9.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/fsnotify/fsnotify/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/gabriel-vasile/mimetype",
+      "version": "v1.4.8",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/gabriel-vasile/mimetype/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/gin-contrib/pprof",
+      "version": "v1.5.3",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/gin-contrib/pprof/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/gin-contrib/sse",
+      "version": "v1.1.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/gin-contrib/sse/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/gin-gonic/gin",
+      "version": "v1.11.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/gin-gonic/gin/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/go-playground/locales",
+      "version": "v0.14.1",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/go-playground/locales/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/go-playground/universal-translator",
+      "version": "v0.18.1",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/go-playground/universal-translator/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/go-playground/validator/v10",
+      "version": "v10.27.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/go-playground/validator/v10/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/goccy/go-yaml",
+      "version": "v1.19.2",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/goccy/go-yaml/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/golang-jwt/jwt/v5",
+      "version": "v5.3.1",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/golang-jwt/jwt/v5/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/google/gopacket",
+      "version": "v1.1.19",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/google/gopacket/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/google/uuid",
+      "version": "v1.6.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/google/uuid/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/gookit/color",
+      "version": "v1.6.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/gookit/color/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/gorilla/websocket",
+      "version": "v1.5.3",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/gorilla/websocket/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/kballard/go-shellquote",
+      "version": "v0.0.0-20180428030007-95032a82bc51",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/kballard/go-shellquote/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/leodido/go-urn",
+      "version": "v1.4.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/leodido/go-urn/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/matthewhartstonge/argon2",
+      "version": "v1.4.6",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/matthewhartstonge/argon2/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/mattn/go-isatty",
+      "version": "v0.0.20",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/mattn/go-isatty/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/pelletier/go-toml/v2",
+      "version": "v2.2.4",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/pelletier/go-toml/v2/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/pion/datachannel",
+      "version": "v1.6.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/pion/datachannel/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/pion/dtls/v3",
+      "version": "v3.1.2",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/pion/dtls/v3/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/pion/ice/v4",
+      "version": "v4.2.1",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/pion/ice/v4/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/pion/interceptor",
+      "version": "v0.1.44",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/pion/interceptor/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/pion/logging",
+      "version": "v0.2.4",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/pion/logging/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/pion/mdns/v2",
+      "version": "v2.1.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/pion/mdns/v2/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/pion/randutil",
+      "version": "v0.1.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/pion/randutil/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/pion/rtcp",
+      "version": "v1.2.16",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/pion/rtcp/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/pion/rtp",
+      "version": "v1.10.1",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/pion/rtp/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/pion/sctp",
+      "version": "v1.9.2",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/pion/sctp/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/pion/sdp/v3",
+      "version": "v3.0.18",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/pion/sdp/v3/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/pion/srtp/v3",
+      "version": "v3.0.10",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/pion/srtp/v3/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/pion/stun/v3",
+      "version": "v3.1.1",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/pion/stun/v3/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/pion/transport/v4",
+      "version": "v4.0.1",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/pion/transport/v4/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/pion/turn/v4",
+      "version": "v4.1.4",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/pion/turn/v4/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/pion/webrtc/v4",
+      "version": "v4.2.9",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/pion/webrtc/v4/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/quic-go/qpack",
+      "version": "v0.6.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/quic-go/qpack/LICENSE.md"
+      ]
+    },
+    {
+      "module": "github.com/quic-go/quic-go",
+      "version": "v0.57.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/quic-go/quic-go/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/ugorji/go/codec",
+      "version": "v1.3.0",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/ugorji/go/codec/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/wlynxg/anet",
+      "version": "v0.0.5",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/wlynxg/anet/LICENSE"
+      ]
+    },
+    {
+      "module": "github.com/xo/terminfo",
+      "version": "v0.0.0-20220910002029-abceb7e1c41e",
+      "notice_files": [
+        "MediaMTX-dependencies/github.com/xo/terminfo/LICENSE"
+      ]
+    },
+    {
+      "module": "golang.org/x/crypto",
+      "version": "v0.48.0",
+      "notice_files": [
+        "MediaMTX-dependencies/golang.org/x/crypto/LICENSE",
+        "MediaMTX-dependencies/golang.org/x/crypto/PATENTS"
+      ]
+    },
+    {
+      "module": "golang.org/x/net",
+      "version": "v0.50.0",
+      "notice_files": [
+        "MediaMTX-dependencies/golang.org/x/net/LICENSE",
+        "MediaMTX-dependencies/golang.org/x/net/PATENTS"
+      ]
+    },
+    {
+      "module": "golang.org/x/sys",
+      "version": "v0.41.0",
+      "notice_files": [
+        "MediaMTX-dependencies/golang.org/x/sys/LICENSE",
+        "MediaMTX-dependencies/golang.org/x/sys/PATENTS"
+      ]
+    },
+    {
+      "module": "golang.org/x/term",
+      "version": "v0.40.0",
+      "notice_files": [
+        "MediaMTX-dependencies/golang.org/x/term/LICENSE",
+        "MediaMTX-dependencies/golang.org/x/term/PATENTS"
+      ]
+    },
+    {
+      "module": "golang.org/x/text",
+      "version": "v0.34.0",
+      "notice_files": [
+        "MediaMTX-dependencies/golang.org/x/text/LICENSE",
+        "MediaMTX-dependencies/golang.org/x/text/PATENTS"
+      ]
+    },
+    {
+      "module": "golang.org/x/time",
+      "version": "v0.12.0",
+      "notice_files": [
+        "MediaMTX-dependencies/golang.org/x/time/LICENSE",
+        "MediaMTX-dependencies/golang.org/x/time/PATENTS"
+      ]
+    },
+    {
+      "module": "google.golang.org/protobuf",
+      "version": "v1.36.9",
+      "notice_files": [
+        "MediaMTX-dependencies/google.golang.org/protobuf/LICENSE",
+        "MediaMTX-dependencies/google.golang.org/protobuf/PATENTS"
+      ]
+    }
+  ]
+}

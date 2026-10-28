@@ -23,7 +23,7 @@ class DjiCloudPlatform(val mission: JSONObject, val route: DjiMappingRoute, val 
             temporary.writeBytes(corrected)
             check(temporary.renameTo(this)) { "Cannot update the saved route camera selection." }
         }
-    } }
+    }; org.ncssar.rid2caltopo.storage.OperationalStorage.retain(this) }
     @Volatile private var topology = JSONArray()
     @Volatile private var lastStatus = "Waiting for Pilot 2"
     @Volatile private var favorited = false

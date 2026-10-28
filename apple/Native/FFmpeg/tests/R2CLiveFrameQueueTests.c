@@ -46,6 +46,46 @@ static void display_callback_regression(int callbackUs, bool rateTransition, int
         (unsigned long long)q.dropped,(long long)R2CLiveQueueSpan(&q));
     R2CLiveQueueClear(&q,dispose); assert(released==seq);
 }
+
+static void adaptive_target_fits_memory_after_gap(size_t frameBytes, int laggedEstimateMs) {
+    R2CLiveFrameQueue q={0}; R2CLiveFrame out;
+    int64_t input=1000000, tick=1000000;
+    int seq=0; uint64_t settledDrops=0;
+    released=0;
+    for(int64_t now=1000000;now<91000000;now+=1000) {
+        // Reproduce the logged 1.3-second input gap followed by a 720p/60 burst.
+        if(now<8000000 || now>=9300000) while(now>=input) {
+            R2CLiveFrame f=frame(++seq,now/1000);
+            f.pts=input; f.camera.timestamp=input; f.bytes=frameBytes;
+            R2CLiveQueuePush(&q,f,dispose); input+=16667;
+            // The flight log has an 18–19ms smoothed estimate while the retained
+            // 720p queue spans about 16.7ms per frame. Keep that estimation lag
+            // present to verify that the physical occupancy guard remains stable.
+            if(laggedEstimateMs) q.sourceInterval=laggedEstimateMs;
+        }
+        if(now>=tick) {
+            if(R2CLiveQueuePresent(&q,now/1000,&out,dispose)) {
+                assert(out.camera.sequence==out.sequence && out.camera.timestamp==out.pts);
+                dispose(out.frame);
+            }
+            tick+=23810;
+        }
+        if(now>=9500000) {
+            int64_t slots=(int64_t)(R2C_LIVE_QUEUE_BYTES/frameBytes);
+            if(slots>R2C_LIVE_QUEUE_CAPACITY) slots=R2C_LIVE_QUEUE_CAPACITY;
+            assert(q.target <= (slots-1)*q.sourceInterval);
+            assert(q.bytes<=R2C_LIVE_QUEUE_BYTES);
+        }
+        if(now<=31000000) settledDrops=q.dropped;
+    }
+    // A gap can require bounded eviction, but steady input must not keep overflowing
+    // while the pacer tries to build a latency target its surface budget cannot hold.
+    assert(q.dropped==settledDrops);
+    assert(q.rendered+q.dropped+(uint64_t)q.count==(uint64_t)seq);
+    printf("Post-gap frameBytes=%zu estimate=%d target=%lld ms overflow=%llu stable after settling\n",
+        frameBytes,laggedEstimateMs,(long long)q.target,(unsigned long long)q.dropped);
+    R2CLiveQueueClear(&q,dispose); assert(released==seq);
+}
 int main(void) {
     R2CLiveFrameQueue q = {0}; R2CLiveFrame out;
     // 30 fps arrives in 300 ms bursts; each retained frame must display in order,
@@ -112,5 +152,9 @@ int main(void) {
     display_callback_regression(33333, false, 33333);
     display_callback_regression(16667, false, 41667);
     display_callback_regression(33333, false, 41667);
+    adaptive_target_fits_memory_after_gap(1385344, 0);
+    adaptive_target_fits_memory_after_gap(3110400, 0);
+    adaptive_target_fits_memory_after_gap(12441600, 0);
+    adaptive_target_fits_memory_after_gap(1385344, 19);
     puts("Live buffer: burst pacing, stall conservation, FIFO telemetry, underruns, bounds and reset passed");
 }

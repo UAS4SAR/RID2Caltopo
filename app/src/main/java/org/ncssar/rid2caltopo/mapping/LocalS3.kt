@@ -85,6 +85,7 @@ class LocalS3(private val directory: File, val prefix: String, private val expir
                     val other=folder.listFiles().orEmpty().filter { it.extension=="part" && it!=destination }.sumOf { it.length() }
                     require(other+size <= MappingPhotoStore.MAX_PHOTO_BYTES) { "Original exceeds 128 MiB." }
                     check(File(folder,"$part.tmp").renameTo(destination))
+                    org.ncssar.rid2caltopo.storage.OperationalStorage.retain(destination)
                     MappingPhotoStore.writeJson(File(folder,"$part.json"),JSONObject().put("size",size).put("md5",md5).put("sha256",sha))
                     return CloudHttpResponse(type="application/xml",headers=mapOf("ETag" to "\"$md5\""))
                 }
@@ -110,10 +111,10 @@ class LocalS3(private val directory: File, val prefix: String, private val expir
                     val temporary=File(folder,"complete.tmp"); temporary.outputStream().use { output -> selected.forEach { file -> file.inputStream().use { it.copyTo(output,65536) } } }
                     val etag=hex(MessageDigest.getInstance("MD5").digest(digests.toByteArray()))+"-"+selected.size
                     retain(key,temporary,etag)
-                    folder.deleteRecursively()
+                    org.ncssar.rid2caltopo.storage.OperationalStorage.removeIfManaged(folder)
                     return xml("<CompleteMultipartUploadResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Bucket>$bucket</Bucket><Key>${escape(key)}</Key><ETag>\"$etag\"</ETag></CompleteMultipartUploadResult>")
                 }
-                "DELETE" -> { folder.deleteRecursively(); return CloudHttpResponse(204,"application/xml") }
+                "DELETE" -> { org.ncssar.rid2caltopo.storage.OperationalStorage.removeIfManaged(folder); return CloudHttpResponse(204,"application/xml") }
             }
         }
         if(request.method=="POST" && request.query.containsKey("uploads")) {
@@ -165,6 +166,7 @@ class LocalS3(private val directory: File, val prefix: String, private val expir
         val sha=hex(digest.digest()); val existing=objectFile(key)
         if(existing.exists()) require(JSONObject(recordFile(key).readText()).getString("sha256")==sha) { "An existing original cannot be overwritten with different bytes." }
         check(temporary.renameTo(existing))
+        org.ncssar.rid2caltopo.storage.OperationalStorage.retain(existing)
         MappingPhotoStore.writeJson(recordFile(key),JSONObject().put("objectKey",key).put("sha256",sha).put("etag",etag).put("sizeBytes",existing.length()))
     }
     // Upload bytes are immutable and checksum-verified before this record is committed.

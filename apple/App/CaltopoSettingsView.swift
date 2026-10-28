@@ -161,14 +161,14 @@ struct CaltopoSettingsView: View {
                     text: $teamsDraft.connectKey,
                     mode: .credential
                 )
-                SettingsTextField("Domain", text: $teamsDraft.domain)
+                SettingsTextField("Domain and Port", text: $teamsDraft.domain)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 if settings.usesPersonalCredentials {
                     Text("Personal sign-in is active. These optional Teams credentials are separate; they do not change your personal sign-in or selected map.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
-                Text("Save applies these settings locally on this device; the credential secret is stored in Keychain. File export and cloud backups are managed separately. Personal sign-in does not need Teams credentials.")
+                Text("Save applies these settings locally on this device; the credential secret is stored in Keychain. Settings backups exclude credentials; use tracker enrollment on a new device. Personal sign-in does not need Teams credentials.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -237,11 +237,14 @@ struct CaltopoSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 SettingsToggle("Capture Streams", isOn: draft.binding("captureStreams", $captureStreams))
-                Text("When enabled, incoming streams are recorded as fMP4 under Files > RID2Caltopo > FlightStorage. Changing this setting restarts the local media server.")
+                Text("Initially enabled. Incoming streams are recorded as fMP4 under Files > RID2Caltopo > FlightStorage and may include controller-source audio. Turning capture off retains existing files. Changing this setting restarts the local media server.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 SettingsToggle("Remote Video Control", isOn: draft.binding("remoteVideoControlEnabled", $remoteVideoControlEnabled))
-                Text("When enabled, an authenticated requester chooses video quality after the link test without a per-request approval prompt. Only one viewer can use this iPad at a time.")
+                Text("When enabled, authorized requesters can start viewing and supported recording downloads without a prompt each time; they choose video quality after the link test. Sending microphone audio still needs its separate control and system permission. Only one viewer can use this device at a time.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Text("Configured tracker coordination can publish catalogs and preview thumbnails before full-session approval. Turning Remote Video Control off restores request prompts but does not disable catalog or thumbnail sharing. Saving this setting as off ends sessions and transfers using advance authorization and cancels queued automatic grants. Requests you approved individually remain approved.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Stepper {
@@ -258,7 +261,7 @@ struct CaltopoSettingsView: View {
                         draft.value("thumbnailRefreshSeconds", thumbnailRefreshSeconds)
                     )
                 }
-                Text("Minimum time between thumbnail refreshes and LiveTrack updates. Default 5.0 seconds; lower values update more often and use more battery and data.")
+                Text("Thumbnail refresh interval: 0.5–60.0 seconds; default 5.0. CalTopo position updates use at least 1 second per aircraft, even with a lower setting. Lower values use more battery and data.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -432,15 +435,12 @@ struct CaltopoSettingsView: View {
                 Text("OS mirroring uses the system display controls. App-managed mode presents the selected streams/map layout independently on an attached display.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            Section("Local storage") {
+            Section("Settings backup") {
                 NavigationLink {
-                    AppleStorageManagementView(trackModel: trackModel)
+                    AppleICloudSettingsBackupView(iCloud: iCloudBackup)
                 } label: {
-                    Label("Manage Storage", systemImage: "externaldrive")
+                    Label("iCloud Settings Backup", systemImage: "icloud")
                 }
-                Text("Review dated folders, ages, and sizes before selecting anything to delete.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
             }
             Section("Advanced") {
                 NavigationLink {
@@ -448,7 +448,6 @@ struct CaltopoSettingsView: View {
                         caltopo: settings,
                         organization: orgSettings,
                         locationProvider: locationProvider,
-                        importer: importer,
                         identities: identityStore,
                         trackModel: trackModel,
                         proximityAlerts: proximityAlerts,
@@ -588,95 +587,9 @@ private struct AppleTrackerConfigurationSection: View {
 @MainActor
 private final class AppleDeveloperToolsManager: ObservableObject {
     @Published var status = "Ready"
-    @Published private(set) var exportURL: URL?
     @Published private(set) var isWorking = false
 
-    func prepareOrgConfig(
-        caltopo: AppleCaltopoSettings,
-        organization: AppleOrgConfigSettings,
-        identities: AppleDroneConfirmationStore
-    ) async {
-        isWorking = true
-        exportURL = nil
-        defer { isWorking = false }
-        do {
-            let ridMap: [String: Any] = [
-                "type": "ct_ridmap",
-                "file_version": "1.0",
-                "load_type": "replace",
-                "map": identities.importedMappings.map {
-                    [
-                        "remoteId": $0.remoteID,
-                        "mappedId": $0.mappedID,
-                        "org": $0.organization,
-                        "model": $0.droneDescription,
-                        "owner": $0.pilotCallsign,
-                        "ownerName": $0.ownerName,
-                        "ownerCallsign": $0.pilotCallsign,
-                        "readiness": $0.readiness.dictionary,
-                    ] as [String: Any]
-                },
-            ]
-            var credentials: [String: Any] = [
-                "type": "ct_credentials",
-                "file_version": "1.0",
-                "org_name": organization.organizationName,
-                "team_id": caltopo.teamID,
-                "credential_id": caltopo.credentialID,
-                "credential_secret": caltopo.credentialSecret,
-                "domain_and_port": caltopo.domainAndPort,
-                "connect_key": caltopo.connectKey,
-                "track_folder": organization.trackFolder,
-                "incident": organization.incident,
-                "op_period": organization.operationalPeriod,
-                "tracker_enrollment_url": organization.trackerEnrollmentURL,
-                "use_peers": organization.usePeers,
-                "predictive_head_enabled": organization.predictiveHeadEnabled,
-                "proximity_alert_spacing_feet": organization.proximityAlertSpacingFeet,
-            ]
-            credentials = credentials.filter { value in
-                if let text = value.value as? String { return !text.isEmpty }
-                return true
-            }
-            let credentialData = try JSONSerialization.data(
-                withJSONObject: credentials,
-                options: [.sortedKeys]
-            )
-            let credentialText = String(decoding: credentialData, as: UTF8.self)
-            let configs: [[String: Any]] = [
-                ridMap,
-                [
-                    "type": "ct_credentials_enc",
-                    "enc": OrgConfigTokenCodec.encryptPayload(credentialText),
-                ],
-            ]
-            let bundle: [String: Any] = [
-                "format": "rid2caltopo_org_config",
-                "version": 2,
-                "org_name": organization.organizationName,
-                "generated": ISO8601DateFormatter().string(from: Date()),
-                "configs": configs,
-            ]
-            let data = try JSONSerialization.data(
-                withJSONObject: bundle,
-                options: [.sortedKeys]
-            )
-            let root = (FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-                ?? FileManager.default.temporaryDirectory)
-                .appendingPathComponent("RID2Caltopo/Exports", isDirectory: true)
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-            let safeOrg = organization.organizationName
-                .replacingOccurrences(of: "/", with: "-")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let name = safeOrg.isEmpty ? "RID2Caltopo_Org_Config.json" : "\(safeOrg)_Org_Config.json"
-            let destination = root.appendingPathComponent(name)
-            try data.write(to: destination, options: .atomic)
-            exportURL = destination
-            status = "Organization config prepared. Use Share Prepared Org Config to send the JSON file."
-        } catch {
-            status = "Organization export failed: \(error.localizedDescription)"
-        }
-    }
+
 
     func resetPersistedState(
         caltopo: AppleCaltopoSettings,
@@ -708,48 +621,19 @@ private struct AppleDeveloperToolsView: View {
     @ObservedObject var caltopo: AppleCaltopoSettings
     @ObservedObject var organization: AppleOrgConfigSettings
     @ObservedObject var locationProvider: AppleLocationProvider
-    @ObservedObject var importer: AppleOrgConfigImporter
     @ObservedObject var identities: AppleDroneConfirmationStore
     @ObservedObject var trackModel: RIDTrackViewModel
     @ObservedObject var proximityAlerts: AppleProximityAlertCenter
     let iCloudBackup: AppleICloudBackupCenter
     @StateObject private var manager = AppleDeveloperToolsManager()
-    @State private var importingConfig = false
     @State private var locationText = ""
     @State private var locationError: String?
     @State private var recentDays = 2
     @State private var resubmitting = false
     @State private var showingResetConfirmation = false
-    @State private var showingPersonalBrowser = false
 
     var body: some View {
         Form {
-            Section("Experiments") {
-                Button("Personal CalTopo Login") { showingPersonalBrowser = true }
-            }
-            Section("Configuration") {
-                Button("Load Config File", systemImage: "doc.badge.plus") {
-                    importingConfig = true
-                }
-                Button("Export Org Config", systemImage: "square.and.arrow.up") {
-                    Task {
-                        await manager.prepareOrgConfig(
-                            caltopo: caltopo,
-                            organization: organization,
-                            identities: identities
-                        )
-                    }
-                }
-                if let exportURL = manager.exportURL {
-                    ShareLink(item: exportURL) {
-                        Label("Share Prepared Org Config", systemImage: "square.and.arrow.up")
-                    }
-                }
-                Text(importer.statusText)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
             Section("Tracker archive") {
                 Stepper("Recent days: \(recentDays)", value: $recentDays, in: 1 ... 30)
                 Button(resubmitting ? "Resubmitting…" : "Resubmit Recent Tracks To Tracker") {
@@ -827,23 +711,6 @@ private struct AppleDeveloperToolsView: View {
             }
         }
         .navigationTitle("Developer Tools")
-        .fullScreenCover(isPresented: $showingPersonalBrowser) {
-            NavigationStack { AppleCaltopoPersonalProbeView() }
-        }
-        .fileImporter(
-            isPresented: $importingConfig,
-            allowedContentTypes: [.image, .json, .plainText, .data]
-        ) { result in
-            guard case let .success(url) = result else { return }
-            Task {
-                await importer.importFile(
-                    url,
-                    caltopoSettings: caltopo,
-                    orgSettings: organization,
-                    identityStore: identities
-                )
-            }
-        }
         .alert("Reset Persisted App State?", isPresented: $showingResetConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Reset", role: .destructive) {
@@ -1203,6 +1070,7 @@ struct CaltopoTeamMapBrowser: View {
 struct AppleStorageManagementView: View {
     @ObservedObject var trackModel: RIDTrackViewModel
     @ObservedObject private var maps = AppleMapOfflineManager.shared
+    @State private var free: Int64?
     @State private var used: Int64?
     @State private var storageStatus = ""
     var body: some View {
@@ -1210,12 +1078,21 @@ struct AppleStorageManagementView: View {
             NavigationLink {
                 AppleStorageCacheView(manager: maps)
             } label: {
-                Text("Map & Terrain Cache: \(gb(maps.cacheStats.bytes)), Max Size: \(gb(Int64(maps.maximumCacheGB * 1_000_000_000))), Max Age: \(maps.maximumTileAgeDays) days")
+                Text("Map Cache Management... — used \(maps.cacheStatsReady ? gb(maps.cacheStats.bytes) : "Scanning…") / maximum \(gb(Int64(maps.maximumCacheGB * 1_000_000_000)))")
             }
             NavigationLink {
                 AppleArchiveCleanupView(trackModel: trackModel)
             } label: {
                 Text("Flight Storage: \(used.map(gb) ?? "Scanning…"), Max Size: \(gb(AppleFlightStorage.maximumBytes)), Max Age: \(AppleFlightStorage.maximumDays) days")
+            }
+            NavigationLink("Storage Categories...") { AppleStorageCategoriesView(trackModel: trackModel) }
+            NavigationLink("Manage Local Maps...") { AppleLocalMappingView(incidentID: "") }
+            NavigationLink("Other Storage...") { AppleOtherStorageView() }
+            if let free {
+                Text("Storage free now: \(gb(free))")
+                if let used, maps.cacheStatsReady {
+                    AppleStorageAllowanceRows(value: StorageAllocation(freeBytes: free, cacheUsed: maps.cacheStats.bytes, cacheMaximum: Int64(maps.maximumCacheGB * 1_000_000_000), flightUsed: used, flightMaximum: AppleFlightStorage.maximumBytes))
+                }
             }
             if !storageStatus.isEmpty { Text(storageStatus).font(.footnote) }
         }
@@ -1224,10 +1101,197 @@ struct AppleStorageManagementView: View {
             maps.refreshStats()
             let snapshot = await Task.detached { AppleFlightStorage.maintain(purge: false) }.value
             used = snapshot.used
+            free = snapshot.available
             storageStatus = snapshot.blocked ? snapshot.message : "Cleanup runs at startup and on demand near 90% of the allowance. Today and active folders are protected."
         }
     }
     private func gb(_ bytes: Int64) -> String { String(format: "%.2f GB", Double(bytes) / 1_000_000_000) }
+}
+
+private actor AppleStorageCategoryReader {
+    static let shared = AppleStorageCategoryReader()
+    func read() throws -> StorageCategoryReport {
+        let fm = FileManager.default
+        let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first!
+        let documents = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
+        AppleMapCachePaths.prepare()
+        return try StorageCategoryReport.measure([
+            (.imagery, AppleMapCachePaths.root), (.terrain, AppleMapCachePaths.demRoot),
+            (.decoded, caches.appendingPathComponent("RID2Caltopo/TerrainV2")), (.aol, AppleSurfaceStore.root),
+            (.icons, caches.appendingPathComponent("RID2Caltopo/CalTopoMarkerIcons")),
+            (.projects, support.appendingPathComponent("mapping-missions")), (.layers, AppleMappingTileCache.root),
+            (.checkpoints, support.appendingPathComponent("mapping-processing")), (nil, AppleFlightStorage.root),
+            (.support, support.appendingPathComponent("RID2Caltopo/LandRestrictions.json")),
+            (.metadata, support), (.other, documents),
+            (.temporary, caches), (.temporary, fm.temporaryDirectory)
+        ], excluding: ["PilotCloudProvisioning", ".tipkit", "personal-browser-storage-metadata.txt"].map {
+            support.appendingPathComponent($0)
+        }, cancelled: { Task.isCancelled })
+    }
+}
+
+private struct AppleStorageCategoriesView: View {
+    @ObservedObject var trackModel: RIDTrackViewModel
+    @State private var report: StorageCategoryReport?
+    @State private var error = ""
+    var body: some View {
+        List {
+            if let report {
+                Section("Storage used") {
+                    ForEach(StorageCategory.allCases, id: \.self) { category in
+                        LabeledContent(category.rawValue, value: AppleMapOfflineManager.formatBytes(report.bytes[category, default: 0]))
+                    }
+                    LabeledContent("Total reported", value: AppleMapOfflineManager.formatBytes(report.total))
+                    if !report.complete { Text("Some storage is unavailable; these figures are incomplete.") }
+                }
+            } else if error.isEmpty { ProgressView("Scanning storage…") }
+            if !error.isEmpty { Text(error).foregroundStyle(.red) }
+            Section("Manage") {
+                NavigationLink("Map Cache Management...") { AppleStorageCacheView(manager: .shared) }
+                NavigationLink("Flight Storage") { AppleArchiveCleanupView(trackModel: trackModel) }
+                NavigationLink("Manage Local Maps...") { AppleLocalMappingView(incidentID: "") }
+                NavigationLink("Other Storage...") { AppleOtherStorageView() }
+                Text("Temporary files include current working copies and exports. Settings and saved sign-in data remain persistent.").font(.footnote)
+            }
+        }.navigationTitle("Storage Categories")
+        .task {
+            do { report = try await AppleStorageCategoryReader.shared.read() }
+            catch is CancellationError {} catch { self.error = error.localizedDescription }
+        }
+    }
+}
+
+private actor AppleOtherStorageWorker {
+    static let shared = AppleOtherStorageWorker()
+    struct Item: Identifiable, Sendable {
+        let url: URL, directory: Bool, bytes: Int64, canDelete: Bool
+        var id: String { url.path }
+    }
+    nonisolated static var documents: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first! }
+    private func protected(_ url: URL) -> Bool {
+        let path = url.standardizedFileURL.path
+        let flight = AppleFlightStorage.root.standardizedFileURL.path
+        let layers = AppleMappingTileCache.root.standardizedFileURL.path
+        return [flight, layers].contains { path == $0 || path.hasPrefix($0 + "/") || $0.hasPrefix(path + "/") }
+    }
+    func list(_ parent: URL) throws -> [Item] {
+        let fm = FileManager.default
+        let root = Self.documents.standardizedFileURL.path
+        let path = parent.standardizedFileURL.path
+        guard path == root || path.hasPrefix(root + "/") else { throw CocoaError(.fileReadNoPermission) }
+        return try fm.contentsOfDirectory(at: parent, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey]).compactMap { url in
+            let info = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey])
+            guard info.isSymbolicLink != true, url.standardizedFileURL != AppleFlightStorage.root.standardizedFileURL else { return nil }
+            return Item(url: url, directory: info.isDirectory == true, bytes: Int64(info.fileSize ?? 0), canDelete: !protected(url))
+        }.sorted { $0.url.lastPathComponent.localizedStandardCompare($1.url.lastPathComponent) == .orderedAscending }
+    }
+    func delete(_ item: Item) throws {
+        let path = item.url.resolvingSymlinksInPath().standardizedFileURL.path
+        guard path.hasPrefix(Self.documents.standardizedFileURL.path + "/"), !protected(item.url) else { throw CocoaError(.fileWriteNoPermission) }
+        try FileManager.default.removeItem(at: item.url)
+    }
+    func clearSupport() throws {
+        let file = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("RID2Caltopo/LandRestrictions.json")
+        if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+        let artifacts = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("RID2Caltopo/MapArtifacts")
+        if FileManager.default.fileExists(atPath: artifacts.path) { try FileManager.default.removeItem(at: artifacts) }
+        URLCache.shared.removeAllCachedResponses()
+    }
+    func clearTemporary() throws -> Int64 { try TemporaryWorkspace.cleanAbandoned() }
+}
+
+private struct AppleOtherStorageView: View {
+    @State private var confirmSupport = false
+    @State private var busy = false
+    @State private var message = ""
+    var body: some View {
+        List {
+            Button("Clear Downloaded Support Data", role: .destructive) { confirmSupport = true }.disabled(busy)
+            Button("Clear Unused Temporary Files") {
+                busy = true
+                Task {
+                    do { _ = try await AppleOtherStorageWorker.shared.clearTemporary(); message = "Unused temporary files cleared. Current working files remain." }
+                    catch { message = error.localizedDescription }
+                    busy = false
+                }
+            }.disabled(busy)
+            NavigationLink("Browse Other Archive Files") { AppleOtherArchiveFilesView(directory: AppleOtherStorageWorker.documents) }
+            Text("Use Manage Local Maps for saved projects and results, and Flight Storage for recordings, clue pictures and logs.").font(.footnote)
+            if busy { ProgressView() }
+            if !message.isEmpty { Text(message) }
+        }.navigationTitle("Other Storage")
+        .alert("Clear downloaded support data?", isPresented: $confirmSupport) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear", role: .destructive) {
+                busy = true
+                Task {
+                    do { try await AppleOtherStorageWorker.shared.clearSupport(); message = "Downloaded support data cleared. It can be downloaded again." }
+                    catch { message = error.localizedDescription }
+                    busy = false
+                }
+            }
+        } message: { Text("Removes saved support downloads. They can be downloaded again.") }
+    }
+}
+
+private struct AppleOtherArchiveFilesView: View {
+    let directory: URL
+    @State private var items: [AppleOtherStorageWorker.Item] = []
+    @State private var pending: AppleOtherStorageWorker.Item?
+    @State private var preview: URL?
+    @State private var loading = true
+    @State private var message = ""
+    @State private var refresh = 0
+    var body: some View {
+        List {
+            if loading { ProgressView("Loading files…") }
+            if !message.isEmpty { Text(message).foregroundStyle(.red) }
+            if !loading && items.isEmpty && message.isEmpty { Text("No other files in this folder.") }
+            ForEach(items) { item in
+                VStack(alignment: .leading) {
+                    if item.directory {
+                        NavigationLink(item.url.lastPathComponent + "/") { AppleOtherArchiveFilesView(directory: item.url) }
+                    } else {
+                        Button(item.url.lastPathComponent + " — " + AppleMapOfflineManager.formatBytes(item.bytes)) { preview = item.url }
+                    }
+                    if item.canDelete { Button("Delete \(item.url.lastPathComponent)", role: .destructive) { pending = item } }
+                }
+            }
+        }.navigationTitle(directory == AppleOtherStorageWorker.documents ? "Other Archive Files" : directory.lastPathComponent)
+        .quickLookPreview($preview)
+        .task(id: refresh) {
+            loading = true
+            do { items = try await AppleOtherStorageWorker.shared.list(directory); message = "" }
+            catch { message = error.localizedDescription }
+            loading = false
+        }
+        .alert("Delete \(pending?.url.lastPathComponent ?? "file")?", isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })) {
+            Button("Cancel", role: .cancel) { pending = nil }
+            Button("Delete", role: .destructive) {
+                guard let item = pending else { return }
+                pending = nil
+                Task {
+                    do { try await AppleOtherStorageWorker.shared.delete(item); refresh += 1 }
+                    catch { message = error.localizedDescription }
+                }
+            }
+        } message: { Text("Permanently deletes the selected file or folder and its contents.") }
+    }
+}
+
+struct AppleStorageAllowanceRows: View {
+    let value: StorageAllocation
+    private func gb(_ bytes: Int64) -> String { String(format: "%.2f GB", Double(bytes) / 1_000_000_000) }
+    var body: some View {
+        LabeledContent("Unused cache allowance", value: gb(value.remainingCache))
+        LabeledContent("Unused flight allowance", value: gb(value.remainingFlight))
+        if let remaining = value.freeAfterAllowances {
+            LabeledContent(remaining >= 0 ? "Free after remaining allowances" : "Allowances exceed free space by", value: gb(abs(remaining)))
+        }
+        Text("Limits do not reserve disk space. Free now includes unused allowances. Free after remaining allowances estimates the space left if both categories grow to their maximums.")
+            .font(.footnote).foregroundStyle(.secondary)
+    }
 }
 
 struct AppleFlightStorageLimits: View {
@@ -1419,7 +1483,11 @@ struct SettingsHelpLabel: View {
                 .navigationTitle(title.components(separatedBy: ":").first ?? title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingHelp = false } } }
-            }.presentationDetents([.medium, .large])
+            }
+            // Help remains usable when the setting that presents it is disabled.
+            // The label's override does not reach a separately presented sheet.
+            .environment(\.isEnabled, true)
+            .presentationDetents([.medium, .large])
         }
     }
 }
@@ -1722,6 +1790,7 @@ private struct SettingsDismissGuard: UIViewControllerRepresentable {
 /// Component-test host. Never records a launch acknowledgment or starts radios.
 struct AppleSettingsUnitsUIProbe: View {
     private static var didSeedFixture = false
+    private static var didSeedExternalDisplayFixture = false
     @StateObject private var settings = AppleCaltopoSettings()
     @StateObject private var organization = AppleOrgConfigSettings()
     @StateObject private var location = AppleLocationProvider()
@@ -1734,6 +1803,12 @@ struct AppleSettingsUnitsUIProbe: View {
     @State private var showingSettings = false
 
     init() {
+        if !Self.didSeedExternalDisplayFixture,
+           let argument = ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix("--external-display-help-mode=") }),
+           let mode = AppleExternalDisplayMode(rawValue: String(argument.dropFirst("--external-display-help-mode=".count))) {
+            Self.didSeedExternalDisplayFixture = true
+            AppleExternalDisplaySettings.shared.mode = mode.rawValue
+        }
         // Reset is opt-in and only used on the dedicated qualification Simulator.
         if ProcessInfo.processInfo.arguments.contains("--reset-units-fixture"), !Self.didSeedFixture {
             Self.didSeedFixture = true

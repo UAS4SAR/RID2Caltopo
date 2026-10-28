@@ -24,6 +24,7 @@ typedef struct {
     R2CLiveFrame frames[R2C_LIVE_QUEUE_CAPACITY];
     int head, count;
     size_t bytes;
+    size_t largestFrameBytes;
     int64_t started, lastDecode, lastPTS, nextDue, sourceInterval, renderInterval;
     int64_t stall, provenGap, lastGap, lastDecay, lastProvenDecay, target;
     int64_t cadence[24];
@@ -113,6 +114,17 @@ static inline void R2CLiveQueuePush(R2CLiveFrameQueue *q, R2CLiveFrame f,
         release(old->frame); q->bytes -= old->bytes;
         q->head = (q->head + 1) % R2C_LIVE_QUEUE_CAPACITY; q->count--; q->dropped++;
     }
+    if (f.bytes >= q->largestFrameBytes) {
+        q->largestFrameBytes = f.bytes;
+    } else {
+        // Resolution can fall within a stream. Only then inspect the bounded
+        // ring so an earlier large surface does not limit the rest of the flight.
+        q->largestFrameBytes = f.bytes;
+        for (int i = 0; i < q->count; ++i) {
+            size_t bytes = q->frames[(q->head + i) % R2C_LIVE_QUEUE_CAPACITY].bytes;
+            if (bytes > q->largestFrameBytes) q->largestFrameBytes = bytes;
+        }
+    }
     q->frames[(q->head + q->count++) % R2C_LIVE_QUEUE_CAPACITY] = f;
     q->bytes += f.bytes;
 }
@@ -135,9 +147,33 @@ static inline bool R2CLiveQueuePop(R2CLiveFrameQueue *q, int64_t now, R2CLiveFra
         q->lastProvenDecay = now;
     }
     q->target = anomaly_detector_runtime_budget_target_latency_ms(q->stall, q->provenGap, 300, 100, 700, 1800);
+    int64_t queuedSpan = R2CLiveQueueSpan(q);
+    int64_t queuedInterval = q->count >= 12 ? queuedSpan / (q->count - 1) : 0;
+    if (q->largestFrameBytes) {
+        int64_t slots = (int64_t)(R2C_LIVE_QUEUE_BYTES / q->largestFrameBytes);
+        if (slots > R2C_LIVE_QUEUE_CAPACITY) slots = R2C_LIVE_QUEUE_CAPACITY;
+        // Leave one eighth of the surface budget (at least two frames) for normal
+        // decode bursts. Slowing playback toward an impossible 1.8s target at
+        // 720p/60 otherwise causes repeated overflow of the 128 MiB queue.
+        int64_t reserve = slots / 8;
+        if (reserve < 2) reserve = 2;
+        int64_t spanFrames = slots > reserve + 1 ? slots - reserve - 1 : 0;
+        int64_t capacityInterval = q->sourceInterval;
+        if (queuedInterval >= 5 && queuedInterval < capacityInterval) capacityInterval = queuedInterval;
+        int64_t memoryTarget = spanFrames * capacityInterval;
+        if (q->target > memoryTarget) q->target = memoryTarget;
+    }
     bool stalled = anomaly_detector_runtime_budget_decode_stall_active(now, q->lastDecode, q->sourceInterval, 150, 3);
     q->renderInterval = anomaly_detector_runtime_budget_desired_render_interval_ms(
         q->sourceInterval, q->renderInterval, R2CLiveQueueSpan(q), q->target, stalled, 12, 40, 15).render_interval_ms;
+    if (queuedInterval >= 5 &&
+        (q->bytes >= R2C_LIVE_QUEUE_BYTES * 7 / 8 || q->count >= R2C_LIVE_QUEUE_CAPACITY * 7 / 8) &&
+        q->renderInterval > queuedInterval) {
+        // A smoothed 19ms estimate can sit in an integer-pacing dead band while
+        // queued frames are 16.7ms apart. Near the physical limit, drain at least
+        // at the measured queued cadence instead of continuously evicting frames.
+        q->renderInterval = queuedInterval;
+    }
     *out = q->frames[q->head];
     memset(&q->frames[q->head], 0, sizeof(*out));
     q->head = (q->head + 1) % R2C_LIVE_QUEUE_CAPACITY; q->count--; q->bytes -= out->bytes;

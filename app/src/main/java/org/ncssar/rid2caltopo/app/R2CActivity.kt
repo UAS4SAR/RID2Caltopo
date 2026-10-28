@@ -94,7 +94,6 @@ import org.ncssar.rid2caltopo.data.CaltopoMap
 import org.ncssar.rid2caltopo.data.CaltopoLiveTrack
 import org.ncssar.rid2caltopo.data.ExternalDisplayAlertRouting
 import org.ncssar.rid2caltopo.data.ExternalDisplayConfig
-import org.ncssar.rid2caltopo.data.ExternalDisplayContentMode
 import org.ncssar.rid2caltopo.data.ExternalDisplayMode
 import org.ncssar.rid2caltopo.data.ExternalDisplayPrefs
 import org.ncssar.rid2caltopo.data.FaaConfigManager
@@ -156,6 +155,8 @@ import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -844,6 +845,7 @@ class R2CActivity :
     AppCompatActivity(),
     R2CMqttManager.PeerListChangedListener,
     PeerCoordinator.VideoStreamRequestListener {
+    private var settingsReadyActivityCreated = false
     var locationRequest: LocationRequest? = null
     var locationCallback: LocationCallback? = null
     var mFusedLocationClient: FusedLocationProviderClient? = null
@@ -999,7 +1001,8 @@ class R2CActivity :
     }
 
     suspend fun listArchiveCleanupDirectories(): List<ArchiveCleanupDirectoryOption> = withContext(Dispatchers.IO) {
-        FlightStorage.directories(this@R2CActivity)
+        val current = currentCoroutineContext()
+        FlightStorage.directories(this@R2CActivity) { current.ensureActive() }
     }
 
     suspend fun deleteArchiveCleanupDirectories(directoryNames: List<String>): ArchiveCleanupDeleteResult = withContext(Dispatchers.IO) {
@@ -1065,7 +1068,7 @@ class R2CActivity :
             }
 
             val dateTag = SimpleDateFormat("ddMMMyyyy", Locale.US).format(Date())
-            val zipFile = File(context.cacheDir, "R2C_Logs_$dateTag.zip")
+            val zipFile = File(org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context,"diagnostics"), "R2C_Logs_$dateTag.zip")
 
             try {
                 ZipOutputStream(FileOutputStream(zipFile)).use { zos ->
@@ -1260,6 +1263,11 @@ class R2CActivity :
 
     override fun onStart() {
         super.onStart()
+        if (!settingsReadyActivityCreated) return
+        startReadyMonitors()
+    }
+
+    private fun startReadyMonitors() {
         // Application.onCreate does not run when a finished Activity reopens in
         // the same process. Restore monitors stopped by CaltopoClient.Shutdown.
         AirspaceCenter.initialize(applicationContext)
@@ -1269,6 +1277,11 @@ class R2CActivity :
 
     override fun onResume() {
         super.onResume()
+        if (!settingsReadyActivityCreated) return
+        resumeReadyActivity()
+    }
+
+    private fun resumeReadyActivity() {
         CaltopoPersonalSession.refreshLoginProtection(this)
         org.ncssar.rid2caltopo.data.PlayAppUpdateCheck.check(this)
         val returnedFromTrackerReauthentication = trackerReauthenticationBrowserOpen
@@ -1322,6 +1335,7 @@ class R2CActivity :
     }
 
     override fun onStop() {
+        if (!settingsReadyActivityCreated) { super.onStop(); return }
         systemUnlockPresentationJob?.cancel()
         ScanningService.setDisplayActive(applicationContext, false, externalDisplayConnected)
         if (configuredAccessAuthenticationRequired() &&
@@ -1357,6 +1371,33 @@ class R2CActivity :
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        if (SettingsStartup.isReady()) {
+            createReadyActivity(savedInstanceState)
+        } else {
+            val loading = android.widget.TextView(this).apply {
+                text = "Loading saved settings…"
+                gravity = android.view.Gravity.CENTER
+            }
+            setContentView(loading)
+            lifecycleScope.launch {
+                try {
+                    SettingsStartup.awaitReady()
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    loading.text = "Saved settings could not be loaded. Restart the app to retry. Your saved data has been kept."
+                    android.util.Log.e(TAG, "Saved settings startup failed", error)
+                    return@launch
+                }
+                createReadyActivity(savedInstanceState)
+                if (lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) startReadyMonitors()
+                if (lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) resumeReadyActivity()
+            }
+        }
+    }
+
+    private fun createReadyActivity(savedInstanceState: Bundle?) {
+        settingsReadyActivityCreated = true
         CaltopoPersonalSession.refreshLoginProtection(this)
         // A new task starts with bridge warnings enabled even if Android retained
         // the process after Quit. Rotation/restoration preserves the current session.
@@ -1604,6 +1645,8 @@ class R2CActivity :
                 }
                 LaunchedEffect(Unit) {
                     while (isActive) {
+                        val presenceIncident = CaltopoClient.GetIncident()
+                        val presenceMapId = CaltopoMap.GetMapId()
                         val streams = StreamRegistry.streams.value
                         maintainManagedVideoSource(streams)
                         val peerCoordinator = R2cRuntimeRegistry
@@ -1639,24 +1682,20 @@ class R2CActivity :
                         val thumbnailRefreshDesignators =
                             (previewDesignators + caltopoDesignators).take(4).toSet()
                         streamsViewModel.setManagedVideoPreviewSources(thumbnailRefreshDesignators)
-                        var recordings = ManagedVideoSessionRecordingCatalog.snapshot(
+                        val recordings = ManagedVideoSessionRecordingCatalog.refreshForPresence(
                             applicationContext
                         )
-                        if (recordings.isEmpty()) {
-                            ManagedVideoSessionRecordingCatalog.recoverCurrentIncidentFromArchive(
-                                applicationContext
-                            )
-                            recordings = ManagedVideoSessionRecordingCatalog.snapshot(
-                                applicationContext
+                        if (presenceIncident != CaltopoClient.GetIncident() || presenceMapId != CaltopoMap.GetMapId()) continue
+                        val advertisements = withContext(Dispatchers.Default) {
+                            ManagedVideoStreamPresence.snapshot(
+                                streams = streams,
+                                sourceInfoProvider = streamsViewModel::managedVideoSourceInfo,
+                                hasRecentFrame = streamsViewModel::hasRecentManagedVideoFrame,
+                                recordings = recordings,
+                                thumbnailProvider = ManagedVideoThumbnailStore::get,
                             )
                         }
-                        val advertisements = ManagedVideoStreamPresence.snapshot(
-                            streams = streams,
-                            sourceInfoProvider = streamsViewModel::managedVideoSourceInfo,
-                            hasRecentFrame = streamsViewModel::hasRecentManagedVideoFrame,
-                            recordings = recordings,
-                            thumbnailProvider = ManagedVideoThumbnailStore::get,
-                        )
+                        if (presenceIncident != CaltopoClient.GetIncident() || presenceMapId != CaltopoMap.GetMapId()) continue
                         // Presence is operational state; thumbnails are optional decoration.
                         // Publish the inventory before opening any recording decoder so a slow
                         // or malformed file cannot make otherwise valid recordings disappear
@@ -1669,21 +1708,30 @@ class R2CActivity :
                             advertisements,
                             forceDesignators = thumbnailRefreshDesignators,
                         )
-                        val advertisementsWithThumbnails = ManagedVideoStreamPresence.snapshot(
-                            streams,
-                            streamsViewModel::managedVideoDroneDesignator,
-                            streamsViewModel::managedVideoSourceInfo,
-                            streamsViewModel::hasRecentManagedVideoFrame,
-                            recordings,
-                            ManagedVideoThumbnailStore::get,
+                        if (presenceIncident != CaltopoClient.GetIncident() || presenceMapId != CaltopoMap.GetMapId()) continue
+                        val advertisedDroneDesignators = streams.keys.associateWith(
+                            streamsViewModel::managedVideoDroneDesignator
                         )
+                        val advertisementsWithThumbnails = withContext(Dispatchers.Default) {
+                            ManagedVideoStreamPresence.snapshot(
+                                streams,
+                                { advertisedDroneDesignators[it] ?: it },
+                                streamsViewModel::managedVideoSourceInfo,
+                                streamsViewModel::hasRecentManagedVideoFrame,
+                                recordings,
+                                ManagedVideoThumbnailStore::get,
+                            )
+                        }
+                        if (presenceIncident != CaltopoClient.GetIncident() || presenceMapId != CaltopoMap.GetMapId()) continue
                         if (advertisementsWithThumbnails != advertisements) {
                             peerCoordinator.updateManagedVideoStreams(
                                 CaltopoClient.GetIncident(),
                                 advertisementsWithThumbnails,
                             )
                         }
-                        CaltopoLiveTrack.RefreshActiveVideoCameraMetadata()
+                        withContext(Dispatchers.IO) {
+                            CaltopoLiveTrack.RefreshActiveVideoCameraMetadata()
+                        }
                         delay(
                             VideoThumbnailRefreshPolicy.milliseconds(
                                 VideoThumbnailRefreshPrefs.getSeconds(applicationContext)
@@ -1743,9 +1791,6 @@ class R2CActivity :
                             onDeleteArchiveDirectories = { selectedDirectoryNames ->
                                 deleteArchiveCleanupDirectories(selectedDirectoryNames)
                             },
-                            externalDisplayConnected = externalDisplayConnected,
-                            externalDisplayContentMode = externalDisplayConfig.contentMode,
-                            onSetExternalDisplayContent = ::setExternalDisplayContentMode,
                             openDeveloperToolsOnStart = openDeveloperToolsWhenMainOpens,
                             onDeveloperToolsOpened = {
                                 openDeveloperToolsWhenMainOpens = false
@@ -1949,9 +1994,9 @@ class R2CActivity :
                         confirmButton = {
                             TextButton(onClick = {
                                 R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator
-                                    .uploadRecordingDownload(request)
-                                R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator
                                     .respondToRecordingDownloadRequest(request.requestId, true)
+                                R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator
+                                    .uploadRecordingDownload(request)
                                 pendingRecordingRequestExpiryJob?.cancel()
                                 pendingRecordingRequestExpiryJob = null
                                 pendingRecordingDownloadRequest = null
@@ -2492,21 +2537,6 @@ class R2CActivity :
         refreshExternalDisplay(forceRecreate = forceRecreate)
     }
 
-    private fun setExternalDisplayContentMode(mode: ExternalDisplayContentMode) {
-        val supportedMode = when (mode) {
-            ExternalDisplayContentMode.StreamsGrid,
-            ExternalDisplayContentMode.ObserverMode -> mode
-            ExternalDisplayContentMode.MapOnly,
-            ExternalDisplayContentMode.Split -> {
-                showToast("External display map modes are not supported yet. Using streams view instead.")
-                ExternalDisplayContentMode.StreamsGrid
-            }
-        }
-        externalDisplayConfig = externalDisplayConfig.copy(contentMode = supportedMode)
-        ExternalDisplayPrefs.save(this, externalDisplayConfig)
-        refreshExternalDisplay(forceRecreate = true)
-    }
-
     private fun shouldRouteAlertToPhone(): Boolean {
         return when (externalDisplayConfig.alertRouting) {
             ExternalDisplayAlertRouting.PhoneOnly -> true
@@ -2928,6 +2958,7 @@ class R2CActivity :
     }
 
     public override fun onDestroy() {
+        if (!settingsReadyActivityCreated) { super.onDestroy(); return }
         deviceReconciliationDialog?.dismiss()
         deviceReconciliationDialog = null
         managedVideoMediaPeer?.close()
@@ -2998,8 +3029,7 @@ class R2CActivity :
     override fun onVideoStreamRequest(request: VideoStreamViewRequest) {
         runOnUiThread {
             if (
-                ManagedVideoSessionRecordingCatalog.find(
-                    applicationContext,
+                ManagedVideoSessionRecordingCatalog.findCached(
                     request.streamSessionId,
                 ) == null
             ) {
@@ -3007,7 +3037,8 @@ class R2CActivity :
                     requireManagedVideoLiveSource(request.requestId, it)
                 }
             }
-            if (!request.consentRequired) {
+            if (!request.consentRequired &&
+                org.ncssar.rid2caltopo.data.RemoteVideoControlPrefs.isEnabled(applicationContext)) {
                 remoteControlledVideoRequests[request.requestId] = request
                 CaltopoClient.CTDebug(
                     "ManagedVideoApproval",
@@ -3036,7 +3067,8 @@ class R2CActivity :
 
     override fun onRecordingDownloadRequest(request: RecordingDownloadRequest) {
         runOnUiThread {
-            if (!request.consentRequired) {
+            if (!request.consentRequired &&
+                org.ncssar.rid2caltopo.data.RemoteVideoControlPrefs.isEnabled(applicationContext)) {
                 R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator
                     .uploadRecordingDownload(request)
                 Toast.makeText(
@@ -3152,6 +3184,10 @@ class R2CActivity :
 
     override fun onVideoStreamRequestCancelled(requestId: String) {
         runOnUiThread {
+            if (pendingRecordingDownloadRequest?.requestId == requestId) {
+                pendingRecordingDownloadRequest = null
+                pendingRecordingRequestExpiryJob?.cancel()
+            }
             if (pendingVideoStreamRequest?.requestId == requestId) {
                 pendingVideoRequestExpiryJob?.cancel()
                 pendingVideoRequestExpiryJob = null
@@ -3165,8 +3201,9 @@ class R2CActivity :
             remoteControlledVideoRequests.remove(requestId)
             releaseManagedVideoLiveSource(requestId)
             if (activeRemoteVideoRequest?.requestId == requestId) {
-                managedVideoMediaPeer?.close()
+                val retiredPeer = managedVideoMediaPeer
                 managedVideoMediaPeer = null
+                java.util.concurrent.CompletableFuture.runAsync { retiredPeer?.close() }
                 stopManagedVideoRecordingDecoder()
                 setVolumeControlStream(AudioManager.STREAM_ALARM)
                 activeRemoteVideoRequest = null
@@ -3181,6 +3218,14 @@ class R2CActivity :
 
     override fun onVideoMediaOffer(offer: VideoMediaOffer) {
         runOnUiThread {
+            val mediaConsent = org.ncssar.rid2caltopo.data.RemoteVideoControlPrefs.refresh(applicationContext)
+            val consentGrant = mediaConsent.find("video|" + offer.requestId, offer.streamSessionId)
+            if (consentGrant?.isAllowed != true) {
+                onVideoStreamRequestCancelled(offer.requestId)
+                R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator
+                    .sendVideoStreamTerminated(offer.requestId, "consent_required")
+                return@runOnUiThread
+            }
             val remoteRequest = remoteControlledVideoRequests[offer.requestId]
             val remoteSelection = remoteRequest?.takeIf {
                 it.streamSessionId == offer.streamSessionId &&
@@ -3229,8 +3274,7 @@ class R2CActivity :
                     "Replacing media peer after browser reconnect request=${offer.requestId}",
                 )
             }
-            val recording = ManagedVideoSessionRecordingCatalog.find(
-                applicationContext,
+            val recording = ManagedVideoSessionRecordingCatalog.findCached(
                 approved.request.streamSessionId,
             )
             val liveSourceDesignator = if (recording == null) {
@@ -3365,6 +3409,9 @@ class R2CActivity :
                     }
                 }
             })
+            consentGrant.onRevocation {
+                java.util.concurrent.CompletableFuture.runAsync { peer.close() }
+            }
             managedVideoMediaPeer = peer
             // WebRTC factory/network-monitor creation can wait for Android
             // connectivity callbacks. Starting it on the UI thread can stall
@@ -3380,6 +3427,10 @@ class R2CActivity :
                         approved.quality.fps,
                         approved.quality.bitrateBps,
                         recording != null,
+                        {
+                            org.ncssar.rid2caltopo.data.RemoteVideoControlPrefs.refresh(applicationContext)
+                            consentGrant.isAllowed
+                        },
                     )
                 if (!started) {
                     withContext(Dispatchers.Main) {
@@ -3470,8 +3521,7 @@ class R2CActivity :
         ).filterNot { it.sessionId == activeRemoteSessionId }
         for (advertisement in candidates) {
             val recording = if (advertisement.mediaKind == "recording") {
-                ManagedVideoSessionRecordingCatalog.find(
-                    applicationContext,
+                ManagedVideoSessionRecordingCatalog.findCached(
                     advertisement.sessionId,
                 )
             } else {

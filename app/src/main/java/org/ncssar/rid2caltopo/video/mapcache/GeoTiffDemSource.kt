@@ -34,7 +34,9 @@ internal class GeoTiffDemSource(context: Context) {
     data class Sample(val elevationMeters: Double, val horizontalResolutionMeters: Double)
     private val appContext = context.applicationContext
     private val lock = Any()
-    private var catalogRefreshedAtMs: Long = 0L
+    @Volatile private var catalogRefreshedAtMs: Long = 0L
+    private val catalogInvalidations = java.util.concurrent.atomic.AtomicLong()
+    private var catalogInvalidationLoaded = -1L
     private var tiles: List<DemTile> = emptyList()
     private val metadataCache = object : LinkedHashMap<String, GeoTiffMetadata>(8, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, GeoTiffMetadata>?): Boolean {
@@ -50,7 +52,7 @@ internal class GeoTiffDemSource(context: Context) {
      * floating-point predictor implementation, so those persisted blocks must
      * never be reused after the decoder is corrected.
      */
-    private val blockCacheDir = File(appContext.noBackupFilesDir, "dem_blocks_v2")
+    private val blockCacheDir by lazy { File(appContext.noBackupFilesDir, "dem_blocks_v2") }
 
     /** In-memory LRU of recently decoded blocks (max 8 ≈ 8 MB). Keyed by "$tileName|$blockIndex". */
     private val blockMemCache = object : LinkedHashMap<String, ByteArray>(16, 0.75f, true) {
@@ -61,7 +63,7 @@ internal class GeoTiffDemSource(context: Context) {
 
     /** Force the next call to [sampleElevationMeters] to rebuild the tile catalog from disk. */
     fun invalidateCatalog() {
-        synchronized(lock) { catalogRefreshedAtMs = 0L }
+        catalogInvalidations.incrementAndGet()
     }
 
     fun sampleElevationMeters(lat: Double, lng: Double): Double? {
@@ -69,6 +71,9 @@ internal class GeoTiffDemSource(context: Context) {
     }
 
     fun sample(lat: Double, lng: Double): Sample? = sample(lat, lng, null, true, Double.POSITIVE_INFINITY)
+
+    fun sample(lat: Double, lng: Double, checkCancelled: () -> Unit): Sample? =
+        sample(lat, lng, null, true, Double.POSITIVE_INFINITY, checkCancelled)
 
     /** A batch borrows one descriptor per tile and avoids per-ray diagnostic logs.
      * Only downloaded S1M is eligible; all descriptors close even on cancellation. */
@@ -82,7 +87,9 @@ internal class GeoTiffDemSource(context: Context) {
     }
 
     private fun sample(lat: Double, lng: Double, sources: MutableMap<String, RandomAccessDataSource?>?,
-                       logSamples: Boolean, maximumResolution: Double): Sample? {
+                       logSamples: Boolean, maximumResolution: Double, checkCancelled: () -> Unit = {}): Sample? {
+        checkCancelled()
+        org.ncssar.rid2caltopo.storage.OperationalStorage.requireFor(blockCacheDir)
         if (!lat.isFinite() || !lng.isFinite()) return null
         val candidates = synchronized(lock) {
             refreshCatalogLocked()
@@ -90,23 +97,31 @@ internal class GeoTiffDemSource(context: Context) {
         }
         if (candidates.isEmpty()) return null
 
-        var best: Sample? = null
+        val eligible = ArrayList<Triple<DemTile, GeoTiffMetadata, Double>>()
         for (tile in candidates) {
+            checkCancelled()
             val metadata = getOrLoadMetadata(tile) ?: continue
-            if (metadata.horizontalResolutionMeters(lat) > maximumResolution) continue
+            val resolution = metadata.horizontalResolutionMeters(lat)
+            if (resolution > maximumResolution) continue
+            eligible += Triple(tile, metadata, resolution)
+        }
+        return firstValidTerrainSample(eligible, { it.third }, checkCancelled) { (tile, metadata, resolution) ->
             val value = trySampleFromTile(tile, metadata, lat, lng, sources, logSamples)
             if (value != null && value.isFinite()) {
-                val candidate = Sample(value, metadata.horizontalResolutionMeters(lat))
-                if (best == null || candidate.horizontalResolutionMeters < best.horizontalResolutionMeters) {
-                    best = candidate
-                }
+                Sample(value, resolution)
+            } else {
+                null
             }
         }
-        return best
     }
 
     private var budgetGeneration = -1L
     private fun refreshCatalogLocked() {
+        val invalidation = catalogInvalidations.get()
+        if (catalogInvalidationLoaded != invalidation) {
+            catalogRefreshedAtMs = 0L
+            catalogInvalidationLoaded = invalidation
+        }
         if (budgetGeneration != UnifiedMapCache.generation) {
             catalogRefreshedAtMs = 0L
             budgetGeneration = UnifiedMapCache.generation
@@ -330,6 +345,7 @@ internal class GeoTiffDemSource(context: Context) {
             bf.parentFile?.mkdirs()
             UnifiedMapCache.reserve(appContext, decoded.size.toLong()).use {
                 bf.writeBytes(decoded)
+                org.ncssar.rid2caltopo.storage.OperationalStorage.retain(bf)
                 UnifiedMapCache.remember(bf)
             }
             MapCacheDebug.warn(MapCacheDebug.TAG_DEM,

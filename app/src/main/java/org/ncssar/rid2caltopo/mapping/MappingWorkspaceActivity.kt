@@ -37,6 +37,10 @@ class MappingWorkspaceActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        org.ncssar.rid2caltopo.app.SettingsStartup.showWhenReady(this) { createReadyWorkspace() }
+    }
+
+    private fun createReadyWorkspace() {
         val url = intent.getStringExtra("workspaceUrl") ?: run { finish(); return }
         val parsed = runCatching { URI(url) }.getOrNull() ?: run { finish(); return }
         val base = runCatching { MappingStationURL.parse("${parsed.scheme}://${parsed.rawAuthority}") }

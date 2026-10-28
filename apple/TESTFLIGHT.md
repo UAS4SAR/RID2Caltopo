@@ -17,12 +17,14 @@ install RID2Caltopo like any other beta application.
    No manual certificate installation or registered iPhone/iPad is required to
    package a TestFlight build on this Mac.
 5. The matching App Store Connect record exists as Apple ID `6792518823`.
-6. The root `PrivacyPolicy.md` is published and its public GitHub page is saved
+6. The root `PrivacyPolicyApple.md` is published and its public GitHub page is saved
    as the Privacy Policy URL. Make the App Privacy answers match
-   `App/PrivacyInfo.xcprivacy`: precise location, the app-install/device zone
-   identifier, confirmed drone/operator content, and optional diagnostics are
-   used for app functionality; none is used for advertising or cross-app
-   tracking.
+   `App/PrivacyInfo.xcprivacy` and the source-evidenced
+   [disclosure catalog](AppStore/privacy-disclosures.json), including optional
+   media, identity, session records and diagnostics. All current categories are
+   linked and used for app functionality; none is used for advertising or
+   cross-app tracking. Publish the revised policy and save the matching live
+   answers separately; local verification does not perform those actions.
 
 ## Reproducible build and upload
 

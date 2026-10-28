@@ -213,6 +213,8 @@ public class ScanningService extends Service {
 
     @Override
     public void onDestroy() {
+        settingsServiceStopped = true;
+        pendingSettingsCommands.clear();
         CTDebug(TAG, String.format(Locale.US,
                 "onDestroy(): ScanningService 0x%x", this.hashCode()));
         stopForegroundSafely();
@@ -239,6 +241,10 @@ public class ScanningService extends Service {
         super.onRebind(intent);
     }
 
+    private boolean settingsWaitRegistered;
+    private boolean settingsServiceStopped;
+    private final java.util.ArrayList<Runnable> pendingSettingsCommands = new java.util.ArrayList<>();
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (foregroundStartBlocked) {
@@ -247,10 +253,31 @@ public class ScanningService extends Service {
             return START_NOT_STICKY;
         }
         if (intent != null && ACTION_STOP_SERVICE.equals(intent.getAction())) {
+            settingsServiceStopped = true;
+            pendingSettingsCommands.clear();
             CTDebug(TAG, "ScanningService shutting down.");
             stopForegroundSafely();
             stopSelf();
             return START_NOT_STICKY;
+        }
+
+        if (!SettingsStartup.isReady()) {
+            final Intent savedIntent = intent == null ? null : new Intent(intent);
+            pendingSettingsCommands.add(() -> onStartCommand(savedIntent, flags, startId));
+            if (!settingsWaitRegistered) {
+                settingsWaitRegistered = true;
+                SettingsStartup.whenReady(() -> {
+                    if (settingsServiceStopped) return;
+                    java.util.ArrayList<Runnable> commands = new java.util.ArrayList<>(pendingSettingsCommands);
+                    pendingSettingsCommands.clear();
+                    for (Runnable command : commands) command.run();
+                }, error -> {
+                    pendingSettingsCommands.clear();
+                    CTError(TAG, "Saved settings unavailable; stopping scanner.");
+                    stopSelf();
+                });
+            }
+            return START_STICKY;
         }
 
         if (intent != null && ACTION_REFRESH_WIFI_RID_SCANNING.equals(intent.getAction())) {

@@ -42,7 +42,7 @@ object DroneSpecConfirmationLogic {
         }
         val pilotCallsign = defaultPilotCallsign.trim().ifBlank { mappedPilotCallsign }
         val warning = if (drone.mappedId == drone.remoteId && drone.org.isBlank()) {
-            "New or mutual-aid drone detected. Confirm org, pilot callsign, and drone description before continuing."
+            "New or visiting organization drone detected. Confirm org, pilot callsign, and drone description before continuing."
         } else {
             null
         }

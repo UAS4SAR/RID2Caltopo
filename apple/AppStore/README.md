@@ -4,18 +4,31 @@ These files are the reviewed English (U.S.) drafts for App Store Connect. They
 are deliberately kept beside the source so release wording and application
 behavior can be checked together.
 
+The [October 23 submission audit](SUBMISSION_AUDIT_2026-10-23.md) records current
+review risks, evidence and unfinished preparation. The main metadata directory
+describes the current 2.5.4 (423) candidate. Use the separate
+[2.5.1 (342) supplemental review notes](review-submissions/2.5.1-342/review_notes.txt)
+for the October 23 information request; do not describe later mapping features
+as if they were present in that reviewed binary. Neither file has been saved
+to App Store Connect by the local metadata verifier. A concise
+[Resolution Center reply](review-submissions/2.5.1-342/resolution-center-reply.txt)
+answers the hardware/manufacturer questions for 342. The
+[interoperability and readiness note](INTEROPERABILITY_AND_REVIEW_READINESS.md)
+separates the current candidate from that reply and lists remaining owner inputs.
+
 - Bundle ID: `org.ncssar.RID2CaltopoApple`
 - SKU suggestion: `RID2CALTOPO-APPLE-001`
 - Primary category suggestion: Navigation
 - Secondary category suggestion: Utilities
 - Support URL: <https://github.com/kjtsar/RID2Caltopo>
 - Privacy Policy URL:
-  <https://github.com/kjtsar/RID2Caltopo/blob/main/PrivacyPolicy.md>
+  <https://github.com/kjtsar/RID2Caltopo/blob/main/PrivacyPolicyApple.md>
 - Copyright suggestion: `2026 Kenneth Taylor`
 - App Store Connect Apple ID: `6792518823`
 
-The updated root `PrivacyPolicy.md` was committed and pushed to the public
-repository on July 19, 2026. The public URL is saved in App Store Connect.
+The original shared policy URL was saved in App Store Connect on July 19,
+2026. Publish the reviewed `PrivacyPolicyApple.md` and save its URL before
+resubmission; the current local split has not been published or saved there.
 
 Every release has one cross-platform source at
 `../../release-notes/<version>/whats_new.txt`. It must describe shared changes,
@@ -28,11 +41,16 @@ apple/AppStore/verify-metadata.sh --marketing-version <version>
 ```
 
 `verify-metadata.sh` checks that the canonical notes exist, are bundled by the
-Apple app, and match the App Store text. It also checks local field presence and
+app, and match the App Store text. It also checks local field presence and
 Apple's text limits.
-It also checks that the privacy manifest matches the conservative linked-data
-worksheet in `APP_STORE_CONNECT_CHECKLIST.md`. It does not contact or modify
-App Store Connect.
+Reviewer notes have a 4,000-character budget and may name test devices/OS versions;
+the public-copy platform denylist does not apply to that private field. Required
+reason declarations and the direct in-app privacy-policy link are also checked.
+It also checks that the privacy manifest matches the source-evidenced
+`privacy-disclosures.json` catalog and the policy date. Archive/IPA verifiers
+check the packaged app and SDK declarations too. See the current linked-data
+worksheet in `APP_STORE_CONNECT_CHECKLIST.md`. These checks do not contact or
+modify App Store Connect or publish the privacy policy.
 
 The following is a historical onboarding snapshot, not current release
 evidence. Reconfirm every field and agreement in App Store Connect before each

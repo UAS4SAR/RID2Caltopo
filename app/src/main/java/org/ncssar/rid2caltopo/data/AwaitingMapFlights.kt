@@ -19,11 +19,24 @@ object AwaitingMapFlights {
     }
 
     private var testFile: File? = null
-    internal fun useFileForTesting(file: File?) { testFile = file; loaded = false; entries = JSONArray(); lastWrite.clear() }
+    internal fun useFileForTesting(file: File?) { testFile = file; loaded = false; entries = JSONArray(); lastWrite.clear(); publicationChoices = null; pendingPublicationChoices.clear() }
+    private val pendingPublicationChoices = java.util.concurrent.ConcurrentHashMap<String, String>()
+    /** A queued first intent must suppress publication until its destination/consent is durable. */
+    @JvmStatic fun reservePublication(remote: String, id: String) { pendingPublicationChoices[remote] = id }
+    private fun intentSaved(remote: String, id: String) { pendingPublicationChoices.remove(remote, id) }
+
+    private data class PublicationChoice(val id: String, val map: String, val team: String, val decision: String)
+    @Volatile private var publicationChoices: Map<String, PublicationChoice>? = null
+    private fun publishChoices() {
+        publicationChoices = all().filterNot { it.optBoolean("finished") }.associate { item ->
+            item.optString("remote") to PublicationChoice(item.optString("id"), item.optString("map"),
+                item.optString("team"), item.optString("decision"))
+        }
+    }
     private var loaded = false
     private var entries = JSONArray()
     private val lastWrite = mutableMapOf<String, Long>()
-    private fun file() = testFile ?: R2CApplication.getAppCtxt()?.let { File(it.filesDir, "awaiting-map-flights.json") }
+    private fun file() = testFile ?: R2CApplication.getAppCtxt()?.let { org.ncssar.rid2caltopo.storage.OperationalStorage.stateFile(it, "awaiting-map-flights.json") }
     private fun load() {
         if (loaded) return
         val file = file() ?: return
@@ -33,6 +46,7 @@ object AwaitingMapFlights {
             if (it.optString("decision") == "bound" && !it.optBoolean("publicationStarted")) it.put("decision", "review")
         }
         loaded = true
+        publishChoices()
     }
     private fun save() {
         val file = file() ?: return
@@ -40,6 +54,7 @@ object AwaitingMapFlights {
         val tmp = File(file.parentFile, file.name + ".tmp")
         tmp.writeText(entries.toString())
         Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        org.ncssar.rid2caltopo.storage.OperationalStorage.retain(file)
     }
     private fun all() = (0 until entries.length()).mapNotNull { entries.optJSONObject(it) }
 
@@ -54,25 +69,38 @@ object AwaitingMapFlights {
         val item = existing ?: JSONObject().put("id", id).put("remote", remote).put("map", initialMap)
             .put("team", selectedTeam).put("decision", if (initialMap.isEmpty()) "review" else "bound").also { entries.put(it) }
         item.put("label", label).put("points", JSONArray(points.toString())).put("finished", finished)
+        // An archive callback can finish before its queued final intent checkpoint.
+        // Keep the completed flight's compact ownership endpoints in that ordering too.
+        if (finished && item.optString("decision") == "published" && points.length() > 1) {
+            item.put("points", JSONArray().put(points.get(0)).put(points.get(points.length() - 1)))
+        }
         if (finished && item.optString("decision") == "bound" && !item.optBoolean("publicationStarted")) {
             item.put("decision", "review")
         }
         if (finished && item.optString("decision") in listOf("bound", "local")) {
-            entries = JSONArray(all().filterNot { it.optString("id") == id }); save(); return
+            entries = JSONArray(all().filterNot { it.optString("id") == id }); save(); publishChoices(); intentSaved(remote, id); return
         }
         val now = System.currentTimeMillis()
         if (finished || existing == null || now - (lastWrite[id] ?: 0) >= 5_000) {
             save(); lastWrite[id] = now
         }
+        publishChoices()
+        intentSaved(remote, id)
         if (finished && item.optString("decision") == "publish") queueCompleted(item)
     }
-    @JvmStatic @JvmOverloads @Synchronized fun publicationId(remote: String, map: String, team: String = selectedPublicationScope()): String? {
-        load()
-        val item = all().lastOrNull { it.optString("remote") == remote && !it.optBoolean("finished") } ?: return null
+    /** Hot RID/live-track decisions read immutable state without the storage writer's monitor. */
+    @JvmStatic @JvmOverloads fun publicationId(remote: String, map: String, team: String = selectedPublicationScope()): String? {
+        if (pendingPublicationChoices.containsKey(remote)) return ""
+        val choices = publicationChoices ?: synchronized(this) {
+            CaltopoRecoveryWork.requireOffMain()
+            load()
+            publicationChoices.orEmpty()
+        }
+        val item = choices[remote] ?: return null
         return when {
-            item.optString("map") != map || item.optString("team") != team -> ""
-            item.optString("decision") == "bound" -> null
-            item.optString("decision") == "publish" -> item.optString("id")
+            item.map != map || item.team != team -> ""
+            item.decision == "bound" -> null
+            item.decision == "publish" -> item.id
             else -> ""
         }
     }
@@ -103,6 +131,7 @@ object AwaitingMapFlights {
         val prior = entries.toString()
         item.put("decision", if (map == null) "local" else "publish").put("map", map ?: "").put("team", team)
         try { save() } catch (error: Exception) { entries = JSONArray(prior); throw error }
+        publishChoices()
         if (map != null) {
             val ctxt = R2CApplication.getAppCtxt()
             if (ctxt != null) org.ncssar.rid2caltopo.video.AndroidClueStore.shared(ctxt).bindAwaitingFlight(
@@ -141,6 +170,7 @@ object AwaitingMapFlights {
         val prior = entries
         entries = JSONArray(remaining)
         try { save() } catch (error: Exception) { entries = prior; throw error }
+        publishChoices()
         return true
     }
     /** Copies of every journal entry, including decided ones, for clue ownership checks. */
@@ -149,7 +179,7 @@ object AwaitingMapFlights {
         load(); all().firstOrNull { it.optString("id") == id }?.let { it.put("decision", "published")
             val points = it.optJSONArray("points")
             if (points != null && points.length() > 1) it.put("points", JSONArray().put(points.get(0)).put(points.get(points.length()-1)))
-            save() }
+            save(); publishChoices() }
     }
     fun firstTime(item: JSONObject): Long = item.optJSONArray("points")?.optJSONArray(0)?.optLong(3) ?: 0
     fun lastTime(item: JSONObject): Long = item.optJSONArray("points")?.let { it.optJSONArray(it.length() - 1)?.optLong(3) } ?: 0

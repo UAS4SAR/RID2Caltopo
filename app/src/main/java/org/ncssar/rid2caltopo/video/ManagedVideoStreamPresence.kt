@@ -11,7 +11,6 @@ object ManagedVideoStreamPresence {
     private var currentLiveSourceDesignatorBySessionId = emptyMap<String, String>()
     private val latestSessionIdByDesignator = linkedMapOf<String, String>()
 
-    @Synchronized
     fun snapshot(
         streams: Map<String, StreamInfo>,
         droneDesignatorProvider: (String) -> String = { it },
@@ -32,14 +31,14 @@ object ManagedVideoStreamPresence {
             .sortedBy { it.designator.lowercase() }
             .take(4)
         val livePaths = live.mapTo(linkedSetOf()) { it.sourcePath }
-        sessionIdBySourcePath.keys.retainAll(livePaths)
+        synchronized(this) { sessionIdBySourcePath.keys.retainAll(livePaths) }
         val liveAdvertisements = live.map { stream ->
             // Inventory follows publisher state, not decoder/UI readiness. Only
             // attach source metadata once a recent frame proves it is current.
             val source = sourceInfoProvider(stream.designator)
                 .takeIf { hasRecentFrame(stream.designator) }
-            val sessionId = sessionIdBySourcePath.getOrPut(stream.sourcePath) {
-                UUID.randomUUID().toString()
+            val sessionId = synchronized(this) {
+                sessionIdBySourcePath.getOrPut(stream.sourcePath) { UUID.randomUUID().toString() }
             }
             val thumbnail = thumbnailProvider(sessionId)
             ManagedVideoStreamAdvertisement(
@@ -59,17 +58,19 @@ object ManagedVideoStreamPresence {
                 thumbnail?.jpegBytes?.let { Base64.encodeToString(it, Base64.NO_WRAP) },
             )
         }
-        currentLiveDesignators = liveAdvertisements
-            .map { it.droneDesignator.trim().lowercase() }
-            .filter { it.isNotEmpty() }
-            .toSet()
-        currentLiveSessionIdByDesignator = liveAdvertisements.associate {
-            it.droneDesignator.trim().lowercase() to it.sessionId
+        synchronized(this) {
+            currentLiveDesignators = liveAdvertisements
+                .map { it.droneDesignator.trim().lowercase() }
+                .filter { it.isNotEmpty() }
+                .toSet()
+            currentLiveSessionIdByDesignator = liveAdvertisements.associate {
+                it.droneDesignator.trim().lowercase() to it.sessionId
+            }
+            currentLiveSourceDesignatorBySessionId = live.zip(liveAdvertisements).associate {
+                (stream, advertisement) -> advertisement.sessionId to stream.designator
+            }
+            latestSessionIdByDesignator.putAll(currentLiveSessionIdByDesignator)
         }
-        currentLiveSourceDesignatorBySessionId = live.zip(liveAdvertisements).associate {
-            (stream, advertisement) -> advertisement.sessionId to stream.designator
-        }
-        latestSessionIdByDesignator.putAll(currentLiveSessionIdByDesignator)
         return liveAdvertisements + recordings.map { recording ->
             ManagedVideoSessionRecordingCatalog.advertisement(
                 recording,

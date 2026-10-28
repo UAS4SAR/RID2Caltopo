@@ -106,7 +106,7 @@ internal object AndroidMapOfflinePrepCoordinator {
     val showDialog = mutableStateOf(false)
     val inFlight = mutableStateOf(false)
     val preset = mutableStateOf(OFFLINE_PREP_PRESETS[1])
-    val includeImagery = mutableStateOf(true)
+    val includeImagery = mutableStateOf(false)
     val includeOsm = mutableStateOf(false)
     val includeDem = mutableStateOf(true)
     val includeAol = mutableStateOf(false)

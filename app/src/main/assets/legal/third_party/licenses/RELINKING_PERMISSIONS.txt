@@ -1,0 +1,22 @@
+RID2Caltopo modification and relinking permissions
+
+RID2Caltopo's original application code and supplied application object code
+are licensed under Apache License 2.0. To the extent the application authors
+control the relevant rights, recipients may modify the work for their own use,
+replace FFmpeg with a modified compatible version, relink the application using
+the supplied objects and link inputs, and reverse engineer the work for debugging
+those modifications. These permissions are intended to preserve the rights
+required by LGPL 2.1 section 6 and impose no additional restriction on them.
+
+Third-party source, objects and libraries retain their respective licenses.
+The accompanying full notices identify those terms. Inclusion of optional Eigen
+or FFmpeg source and COPYING files does not assert that optional components are
+linked into the application. Eigen source and any locally supplied build
+configuration are provided with the corresponding materials in the relink ZIP.
+
+Apple SDKs, operating-system frameworks and signing credentials are not included.
+Recipients obtain their own development tools and use their own signing identity
+and provisioning arrangements when installing a modified build. No original
+developer signing key, device data, or service access credential is required to
+produce the unsigned executable. Third-party service access remains subject to
+the relevant operator's account and permissions.

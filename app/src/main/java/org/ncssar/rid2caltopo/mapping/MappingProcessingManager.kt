@@ -135,8 +135,15 @@ object MappingProcessingManager {
                 if(runCatching{android.system.Os.readlink(scratch.path)}.isSuccess)scratch.delete()
                 // Checkpoints are redundant only after the complete result is published.
                 File(destination,"regions").deleteRecursively()
+                org.ncssar.rid2caltopo.storage.OperationalStorage.retainTree(destination) { check() }
+                // The saved result is durable before its redundant checkpoints disappear.
+                org.ncssar.rid2caltopo.storage.OperationalStorage.remove(scratch)
                 MappingLayer.visibility(app,layer.incidentId,layer.id,true)
                 MappingLayer.save(app,layer.incidentId,MappingLayer.load(app,layer.incidentId).filterNot{it.id==layer.id}+layer)
+                // Select a newly completed result once, here on the processing worker. Replaying
+                // this from MapPane composition can overwrite a later library selection.
+                MappingLayer.selectLocal(app,layer)
+                MappingWorkspaceState.layersChanged()
                 MappingPhotoStore.writeJson(File(root,"processing-status.json"),JSONObject().put("active",false).put("stage","Map ready").put("layerId",layerId).put("photoCount",digests.size).put("progress",1.0).put("updatedAt",Instant.now().toString()))
                 current.value=MappingProcessingState(id,mission.getString("title"),active=false,stage="Map ready",progress=1.0,layer=layer,surfacePreviewId=if(layer.surfaceModel.isNotBlank())layer.id else null)
             }catch(e:Exception){

@@ -7,6 +7,7 @@ import android.media.MediaFormat
 import android.util.Base64
 import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import org.ncssar.rid2caltopo.data.CaltopoClient
 import org.ncssar.rid2caltopo.data.CaltopoMap
@@ -30,6 +31,7 @@ data class ManagedVideoSessionRecording(
     val fps: Double,
     val codec: String,
     val bitrateBps: Long = 0L,
+    val byteCount: Long = 0L,
 )
 
 /**
@@ -48,6 +50,33 @@ object ManagedVideoSessionRecordingCatalog {
     private var initializedIncidentKey = ""
     private var recoveredArchiveKey = ""
     private val recordingMetadataCache = mutableMapOf<String, CachedRecordingMetadata>()
+    private data class PublishedCatalog(val incidentKey: String, val recordings: List<ManagedVideoSessionRecording>)
+    @Volatile private var publishedCatalog = PublishedCatalog("", emptyList())
+
+    /** UI callbacks only read the bounded, immutable inventory already advertised to peers. */
+    internal fun cachedSnapshot(incidentKey: String): List<ManagedVideoSessionRecording> {
+        val published = publishedCatalog
+        return if (published.incidentKey == incidentKey) published.recordings else emptyList()
+    }
+
+    fun findCached(sessionId: String): ManagedVideoSessionRecording? =
+        cachedSnapshot(currentIncidentKey()).firstOrNull { it.sessionId == sessionId }
+
+    /** One sequential refresh per caller; archive preparation and media parsing stay on IO. */
+    suspend fun refreshForPresence(context: Context): List<ManagedVideoSessionRecording> = withContext(Dispatchers.IO) {
+        try {
+            val recordings = snapshot(context)
+            if (recordings.isNotEmpty()) recordings else {
+                recoverCurrentIncidentFromArchive(context)
+                snapshot(context)
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            CaltopoClient.CTWarn(TAG, "Recording inventory unavailable: ${error.message}")
+            emptyList()
+        }
+    }
 
     private data class CachedRecordingMetadata(
         val fingerprint: RecordingFingerprint,
@@ -95,6 +124,7 @@ object ManagedVideoSessionRecordingCatalog {
                 StandardCopyOption.ATOMIC_MOVE,
             )
             destination.setLastModified(System.currentTimeMillis())
+            org.ncssar.rid2caltopo.storage.OperationalStorage.retain(destination)
             destination
         } catch (error: Exception) {
             temporary.delete()
@@ -105,19 +135,24 @@ object ManagedVideoSessionRecordingCatalog {
 
     @Synchronized
     fun snapshot(context: Context): List<ManagedVideoSessionRecording> {
+        val incidentKey = currentIncidentKey()
         initialize(context)
-        val files = activeRoot(context)
+        val files = activeRoot(context, incidentKey)
             .walkTopDown()
             .filter { it.isFile && it.extension.equals("mp4", ignoreCase = true) }
             .toList()
         val currentPaths = files.mapTo(mutableSetOf()) { it.absolutePath }
         recordingMetadataCache.keys.retainAll(currentPaths)
-        return files
+        val recordings = files
             .asSequence()
             .mapNotNull(::readRecordingCached)
             .sortedByDescending { it.recordedAt }
             .take(20)
             .toList()
+        // Never publish a scan of the previous incident after a map/incident switch.
+        if (incidentKey != currentIncidentKey()) return emptyList()
+        publishedCatalog = PublishedCatalog(incidentKey, recordings)
+        return recordings
     }
 
     @Synchronized
@@ -221,6 +256,7 @@ object ManagedVideoSessionRecordingCatalog {
                     StandardCopyOption.ATOMIC_MOVE,
                 )
                 source.lastModified().takeIf { it > 0L }?.let(destination::setLastModified)
+                org.ncssar.rid2caltopo.storage.OperationalStorage.retain(destination)
             }.onFailure { error ->
                 temporary.delete()
                 CaltopoClient.CTWarn(TAG, "Unable to recover archived recording: ${error.message}")
@@ -330,7 +366,7 @@ object ManagedVideoSessionRecordingCatalog {
         recording.durationMs,
         thumbnail?.revision.orEmpty(),
         thumbnail?.jpegBytes?.let { Base64.encodeToString(it, Base64.NO_WRAP) },
-        recording.file.length(),
+        recording.byteCount,
     )
 
     private fun readRecording(file: File): ManagedVideoSessionRecording? {
@@ -413,12 +449,16 @@ object ManagedVideoSessionRecordingCatalog {
         recordingMetadataCache[path]
             ?.takeIf { it.fingerprint == fingerprint }
             ?.let { return it.recording }
-        return readRecording(file).also { recording ->
+        return readRecording(file)?.copy(byteCount = fingerprint.length).also { recording ->
             recordingMetadataCache[path] = CachedRecordingMetadata(fingerprint, recording)
         }
     }
 
-    private fun root(context: Context): File = File(context.filesDir, ROOT_NAME)
+    private fun root(context: Context): File {
+        if (CaltopoClient.GetArchiveUri() == null) return org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context, "recording-catalog")
+        org.ncssar.rid2caltopo.storage.OperationalStorage.requireReady(context)
+        return File(context.filesDir, ROOT_NAME)
+    }
 
     internal fun sessionIdForPath(path: String): String =
         UUID.nameUUIDFromBytes(path.toByteArray()).toString()

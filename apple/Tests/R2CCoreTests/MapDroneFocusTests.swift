@@ -104,6 +104,35 @@ import Testing
     #expect(arrivals.observe(resolvedAircraftIDs: ["mini-rid"]) == "mini-rid")
 }
 
+@Test func nextFlightOfSameDroneResumesPersistentFollowButReconnectDoesNot() {
+    var arrivals = OperationalStreamFocusArrival()
+    #expect(arrivals.observe(resolvedAircraftIDs: ["mini-rid"], flightIDs: ["flight-one"]) == "mini-rid")
+    // The operator pans during this flight; a stream reconnect must preserve that choice.
+    #expect(arrivals.observe(resolvedAircraftIDs: []) == nil)
+    #expect(arrivals.observe(resolvedAircraftIDs: [nil]) == nil)
+    #expect(arrivals.observe(resolvedAircraftIDs: ["mini-rid"], flightIDs: ["flight-one"]) == nil)
+    // A new flight is an arrival even though the aircraft and stream names are unchanged.
+    #expect(arrivals.observe(resolvedAircraftIDs: ["mini-rid"], flightIDs: ["flight-two"]) == "mini-rid")
+    #expect(arrivals.observe(resolvedAircraftIDs: ["mini-rid"], flightIDs: ["flight-two"]) == nil)
+}
+
+@Test func learningFlightIdentityDoesNotOverrideAPanTwice() {
+    var arrivals = OperationalStreamFocusArrival()
+    #expect(arrivals.observe(resolvedAircraftIDs: ["mini-rid"]) == "mini-rid")
+    #expect(arrivals.observe(resolvedAircraftIDs: ["mini-rid"], flightIDs: ["flight-one"]) == nil)
+    #expect(arrivals.observe(resolvedAircraftIDs: ["mini-rid"], flightIDs: [nil]) == nil)
+    #expect(arrivals.observe(resolvedAircraftIDs: ["mini-rid"], flightIDs: ["flight-one"]) == nil)
+}
+
+@Test func changingFlightIdentityTriggersFocusObservation() {
+    let first = OperationalInitialStreamFocusState(followEnabled: true, focusedAircraftID: nil,
+        operatorAdjustedViewport: true, liveStreamAircraftIDs: ["mini-rid"], liveStreamFlightIDs: ["one"])
+    let next = OperationalInitialStreamFocusState(followEnabled: true, focusedAircraftID: nil,
+        operatorAdjustedViewport: true, liveStreamAircraftIDs: ["mini-rid"], liveStreamFlightIDs: ["two"])
+    #expect(first != next)
+    #expect(first.candidate == nil) // Resuming follow is the new-flight arrival's responsibility.
+}
+
 @Test func telemetryArrivalAvoidsAmbiguityButAcceptsOneNewMatch() {
     var arrivals = OperationalStreamFocusArrival()
     #expect(arrivals.observe(resolvedAircraftIDs: ["a", "b"]) == nil)

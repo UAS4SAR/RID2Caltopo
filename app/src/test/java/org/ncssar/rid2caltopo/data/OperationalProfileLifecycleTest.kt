@@ -20,7 +20,7 @@ class OperationalProfileLifecycleTest {
         val options = CaltopoClient.GetOperationalProfileOptions()
 
         assertEquals(listOf("YCSAR", "NCSSAR-MA"), options.map { it[1] })
-        assertEquals(listOf("Home organization", "Mutual Aid"), options.map { it[2] })
+        assertEquals(listOf("Home organization", "Organization"), options.map { it[2] })
         options.forEach { option ->
             assertEquals(5, option.size)
         }

@@ -196,7 +196,7 @@ struct AppleStatusView: View {
                     copyStatus()
                 }
             } footer: {
-                Text("The copied report intentionally excludes configuration tokens and credential secrets.")
+                Text("The copied report excludes configuration tokens and credential secrets.")
             }
         }
         .navigationTitle("Status")

@@ -3,7 +3,7 @@ import Foundation
 
 /// Local acceptance is deliberately separate from transferable organization configuration.
 public struct ApplicationTermsAcceptance: Codable, Equatable, Sendable {
-    public static let currentVersion = "2026-09-25.1"
+    public static let currentVersion = "2026-10-24.1"
     public let version: String
     public let text: String
     public let acceptedAt: Date
