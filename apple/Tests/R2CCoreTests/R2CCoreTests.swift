@@ -471,7 +471,8 @@ import Testing
     #expect(coordinator.contains("managedVideoThumbnailUpdatedHandler?(droneDesignator)"))
     #expect(coordinator.contains("let candidates = managedVideoStreams.filter"))
     #expect(coordinator.contains("if leftIsLive != rightIsLive { return leftIsLive }"))
-    #expect(coordinator.contains("for advertisement in candidates.prefix(8)"))
+    #expect(coordinator.contains("let availableSlots = max(0, 2 - managedVideoThumbnailTasks.count)"))
+    #expect(coordinator.contains("for advertisement in candidates.prefix(availableSlots)"))
     #expect(!coordinator.contains("for advertisement in managedVideoStreams.prefix(8)"))
     #expect(viewModel.contains("refreshCaltopoThumbnailMetadata(droneDesignator: droneDesignator)"))
     #expect(viewModel.contains("observation: track.lastObservation"))
@@ -687,7 +688,7 @@ import Testing
     #expect(viewModel.contains("await terrainService.prefetch(latitude: latitude, longitude: longitude)"))
     #expect(viewModel.contains("latitude: track.lastObservation.latitude"))
     #expect(viewModel.contains("Task(priority: .utility)"))
-    #expect(terrainService.contains("func prefetch(latitude: Double, longitude: Double, radiusMeters: Double = 0)"))
+    #expect(terrainService.contains("func prefetch(latitude: Double, longitude: Double, radiusMeters: Double = 0,"))
     #expect(terrainService.contains("guard scheduledPrefetchCells.insert(cell).inserted else { return }"))
 }
 
@@ -6092,10 +6093,10 @@ private func writeInt32(_ value: Int32, into bytes: inout [UInt8], at offset: In
         hash = (hash ^ UInt64(byte)) &* 1_099_511_628_211
     }
 
-    #expect(hash == 0x8298a4ab7300621)
+    #expect(hash == 11_326_105_494_427_724_861)
     #expect(ApplicationLaunchDisclaimer.text.contains("Apache License, Version 2.0"))
     #expect(ApplicationLaunchDisclaimer.text.contains("This acknowledgement does not modify those licenses"))
-    #expect(ApplicationLaunchDisclaimer.text.contains("does not accept service terms or bind your organization"))
+    #expect(!ApplicationLaunchDisclaimer.text.contains("bind your organization"))
     #expect(ApplicationLaunchDisclaimer.text.contains("personal injury, or death"))
     #expect(ApplicationLaunchDisclaimer.text.contains("does not establish that conditions are safe"))
 }
