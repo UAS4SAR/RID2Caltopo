@@ -278,7 +278,8 @@ actor AppleCaltopoPublisher {
                 let target = CaltopoLiveConfiguration(domainAndPort: config.domainAndPort, mapID: entry.map,
                     credentialID: config.credentialID, credentialSecretBase64: config.credentialSecretBase64,
                     connectKey: config.connectKey, personalSessionID: config.personalSessionID,
-                    personalAccountID: config.personalAccountID, personalMediaOwnerID: config.personalMediaOwnerID)
+                    personalAccountID: config.personalAccountID, personalMediaOwnerID: config.personalMediaOwnerID,
+                    personalSignedAccount: config.personalSignedAccount)
                 let cleanupClient = try CaltopoLiveClient(configuration: target)
                 if await deleteAllDeviceMarkerOccurrences(client: cleanupClient, markerID: entry.marker) {
                     try markerJournal.acknowledge(entry)

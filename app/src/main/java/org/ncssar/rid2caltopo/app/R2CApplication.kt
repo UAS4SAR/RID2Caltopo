@@ -58,6 +58,16 @@ class R2CApplication : Application() {
         preloadStartupPreferences()
         AppConfigStore.initialize(this)
         CaltopoClient.PrepareSavedSettings()
+        // Reference only. The signing key is created on the first enrollment,
+        // still on this worker, and is not read while the feature flag is off.
+        val personalAccount = getSharedPreferences(
+            org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.FEATURE_PREFERENCE,
+            android.content.Context.MODE_PRIVATE
+        )
+        org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.install(
+            org.ncssar.rid2caltopo.data.CaltopoPersonalAccountKeystore(this),
+            personalAccount.getBoolean(org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.FEATURE_ENABLED_KEY, false)
+        )
         org.ncssar.rid2caltopo.data.CameraFootprintSettings.initialize(this)
         // Match Apple's startup provisioning: enroll and import an authorized
         // device-bound bundle on a worker. A locked device retries from mapping

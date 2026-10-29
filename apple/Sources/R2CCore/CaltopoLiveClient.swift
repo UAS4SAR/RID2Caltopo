@@ -35,6 +35,10 @@ public struct CaltopoLiveConfiguration: Sendable, Equatable, Hashable {
     public let personalAccountID: String
     public let personalMediaOwnerID: String
     public let connectKey: String
+    /// HMAC credential for this pilot's CalTopo account. Cookie login stays on personalSessionID.
+    public let personalSignedAccount: Bool
+
+    public var authorizesAsPersonalAccount: Bool { personalSessionID != nil || personalSignedAccount }
 
     public init(
         domainAndPort: String = "caltopo.com",
@@ -44,7 +48,8 @@ public struct CaltopoLiveConfiguration: Sendable, Equatable, Hashable {
         connectKey: String = "",
         personalSessionID: UUID? = nil,
         personalAccountID: String = "",
-        personalMediaOwnerID: String = ""
+        personalMediaOwnerID: String = "",
+        personalSignedAccount: Bool = false
     ) {
         self.domainAndPort = domainAndPort
         self.mapID = mapID
@@ -54,6 +59,7 @@ public struct CaltopoLiveConfiguration: Sendable, Equatable, Hashable {
         self.personalAccountID = personalAccountID
         self.personalMediaOwnerID = personalMediaOwnerID
         self.connectKey = connectKey
+        self.personalSignedAccount = personalSignedAccount
     }
 }
 
@@ -180,7 +186,10 @@ public actor CaltopoLiveClient {
         guard !configuration.domainAndPort.isEmpty,
               !configuration.mapID.isEmpty,
               (configuration.personalSessionID != nil || (!configuration.credentialID.isEmpty &&
-              !configuration.credentialSecretBase64.isEmpty))
+              !configuration.credentialSecretBase64.isEmpty)),
+              !configuration.personalSignedAccount || (configuration.personalSessionID == nil
+                && !configuration.personalAccountID.isEmpty
+                && CaltopoPersonalAccountConnection.allowsPersonalHost(configuration.domainAndPort))
         else {
             throw CaltopoLiveClientError.invalidConfiguration
         }
@@ -390,7 +399,7 @@ public actor CaltopoLiveClient {
         _ = try await acknowledged(requests[0])
         var mediaExists = false
         var mediaReady = false
-        let mediaOwner = configuration.personalSessionID != nil ? configuration.personalMediaOwnerID : clue.teamID
+        let mediaOwner = configuration.authorizesAsPersonalAccount ? configuration.personalMediaOwnerID : clue.teamID
         do {
             let data = try await acknowledged(makeMediaSnapshotRequest(mediaID: clue.mediaID, now: now))
             mediaReady = try CaltopoPhotoMediaState.isReady(data, mediaID: clue.mediaID, ownerID: mediaOwner)
@@ -502,11 +511,11 @@ public actor CaltopoLiveClient {
     }
 
     func makePhotoClueRequests(_ clue: CaltopoPhotoClue, now: Date) throws -> [URLRequest] {
-        if configuration.personalSessionID != nil {
+        if configuration.authorizesAsPersonalAccount {
             guard !configuration.personalAccountID.isEmpty, !configuration.personalMediaOwnerID.isEmpty,
                   clue.teamID == "personal:" + configuration.personalAccountID else { throw CaltopoLiveClientError.invalidConfiguration }
         }
-        let mediaOwner = configuration.personalSessionID != nil ? configuration.personalMediaOwnerID : clue.teamID
+        let mediaOwner = configuration.authorizesAsPersonalAccount ? configuration.personalMediaOwnerID : clue.teamID
         guard !clue.teamID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               clue.latitude.isFinite, clue.longitude.isFinite,
               !clue.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,

@@ -26,7 +26,7 @@ struct AppleCaltopoConfiguration: Sendable, Equatable {
               !mapID.isEmpty,
               (personalSessionID != nil || (!credentialID.isEmpty && !credentialSecret.isEmpty))
         else { return nil }
-        return CaltopoLiveConfiguration(
+        let fallback = CaltopoLiveConfiguration(
             domainAndPort: domainAndPort,
             mapID: mapID,
             credentialID: credentialID,
@@ -35,6 +35,15 @@ struct AppleCaltopoConfiguration: Sendable, Equatable {
             personalSessionID: personalSessionID,
             personalAccountID: personalAccountID,
             personalMediaOwnerID: personalMediaOwnerID
+        )
+        return CaltopoPersonalAccountConnection.shared.resolveLiveConfiguration(
+            lookup: CaltopoPersonalAccountConnection.shared.lookup(host: "caltopo.com", accountID: personalAccountID),
+            mapID: mapID,
+            connectKey: connectKey,
+            personalSessionID: personalSessionID,
+            personalAccountID: personalAccountID,
+            personalMediaOwnerID: personalMediaOwnerID,
+            fallback: fallback
         )
     }
 }
@@ -120,6 +129,8 @@ final class AppleCaltopoSettings: ObservableObject {
         credentialOrigin = defaults.string(forKey: Self.credentialOriginKey)
             ?? Self.originUnknown
         status = enabled ? "Standalone; select the incident map" : "Publishing disabled"
+        CaltopoPersonalAccountConnection.shared.loadFeatureFlag(from: defaults)
+        CaltopoPersonalAccountConnection.shared.use(AppleCaltopoPersonalAccountKeychain())
     }
 
     var configuration: AppleCaltopoConfiguration {

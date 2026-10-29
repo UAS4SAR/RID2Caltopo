@@ -419,12 +419,28 @@ public class CaltopoSession {
                 op.sentTimestampMsec = System.currentTimeMillis();
                 long expires = op.sentTimestampMsec + DEFAULT_TIMEOUT_MS;
                 String payloadString = (null == op.payload) ? "" : op.payload.toString();
+                // Personal signed credentials are opt-in. A null decision keeps the cookie
+                // path. Teams Cred is never replaced by an account activation secret.
+                final PersonalSigningDecision personalDecision = (!op.goNaked && op.personalAuthorization != null)
+                        ? CaltopoPersonalAccountConnection.decide(op.personalAuthorization.getAccountID())
+                        : null;
+                if (personalDecision != null && personalDecision.failure != null) {
+                    op.response = personalDecision.failure;
+                    break;
+                }
+                final CaltopoCredentials personalSigned = personalDecision == null ? null : personalDecision.credentials;
 
                 // 1. Prepare Base Parameters
                 Map<String, String> params = new HashMap<>();
                 if (!op.goNaked && op.personalAuthorization == null) {
                     String signature = Sign(op.method, op.url, expires, payloadString, requestCredentials);
                     params.put("id", requestCredentials.credentialId);
+                    params.put("expires", String.valueOf(expires));
+                    params.put("signature", signature);
+                } else if (personalSigned != null) {
+                    String signature = CaltopoPersonalAccountConnection.sign(
+                            op.method.toString(), op.url, expires, payloadString, personalSigned.credentialSecret);
+                    params.put("id", personalSigned.credentialId);
                     params.put("expires", String.valueOf(expires));
                     params.put("signature", signature);
                 }
@@ -475,7 +491,7 @@ public class CaltopoSession {
                         .method(op.method.toString(), requestBody);
 
                 OkHttpClient requestClient = MyOkHttpClient;
-                if (op.personalAuthorization != null) {
+                if (op.personalAuthorization != null && personalSigned == null) {
                     String cookie = CaltopoPersonalSession.cookie(op.personalAuthorization, op.goNaked
                             ? "/api/v1/map/" + op.personalAuthorization.getMapID() + "/since/0" : op.url);
                     if (!finalUrl.host().equals("caltopo.com") || !finalUrl.isHttps() || finalUrl.port() != 443)
@@ -491,6 +507,13 @@ public class CaltopoSession {
                                         ? "/api/v1/map/" + op.personalAuthorization.getMapID() + "/since/0" : op.url);
                                 return kotlin.Unit.INSTANCE;
                             })).build();
+                } else if (personalSigned != null) {
+                    if (!finalUrl.host().equals("caltopo.com") || !finalUrl.isHttps() || finalUrl.port() != 443)
+                        throw new IllegalStateException("Personal account credential cannot be sent to another server");
+                    if (!op.goNaked && !finalUrl.encodedPath().startsWith("/api/v1/map/" + op.personalAuthorization.getMapID() + "/")
+                            && CaltopoPersonalSession.mediaID(finalUrl.encodedPath()) == null)
+                        throw new IllegalStateException("Personal request left the selected map");
+                    requestClient = MyOkHttpClient.newBuilder().followRedirects(false).followSslRedirects(false).build();
                 }
                 if (Thread.currentThread().isInterrupted() || (op.asyncFuture != null && op.asyncFuture.isCancelled())) throw new InterruptedException();
                 try (Response response = requestClient.newCall(requestBuilder.build()).execute()) {
