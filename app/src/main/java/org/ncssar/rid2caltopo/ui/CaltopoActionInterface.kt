@@ -21,7 +21,9 @@ import androidx.compose.ui.unit.dp
 
 internal fun incidentMapDisplayValue(state: CaltopoConnectionState): String {
     if (state !is CaltopoConnectionState.MapSelected) return "No map"
-    return state.map.title.trim().ifEmpty {
+    val title = org.ncssar.rid2caltopo.data.IncidentSelection.displayMapTitle(
+        state.map.title, org.ncssar.rid2caltopo.data.CaltopoPersonalSession.username)
+    return title.ifEmpty {
         state.map.id.trim().ifEmpty { "Standalone" }
     }
 }
@@ -83,7 +85,7 @@ fun CaltopoActionInterface(
 
 @Composable
 fun ConnectedOptionsDialog(
-    mapName: String,
+    summary: String,
     onDismiss: () -> Unit,
     onSwitchMap: () -> Unit,      // Generic callback
     onDisconnect: () -> Unit      // Generic callback
@@ -91,7 +93,7 @@ fun ConnectedOptionsDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Map Options") },
-        text = { Text("You are currently synced with: $mapName") },
+        text = { Text(summary) },
         confirmButton = {
             Button(onClick = onSwitchMap) { // Just call the lambda
                 Text("Switch Map")

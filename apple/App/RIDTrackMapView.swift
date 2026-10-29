@@ -592,6 +592,7 @@ struct RIDTrackMapView: View {
     let onProximitySettings: () -> Void
     let onSwitchMap: () -> Void
     let onDisconnectMap: () -> Void
+    var teamCredentialLabel: String = ""
     let onRestartStreams: () -> Void
 
     @StateObject private var artifacts = AppleMapArtifactModel()
@@ -855,7 +856,7 @@ struct RIDTrackMapView: View {
             Button("Disconnect", role: .destructive, action: onDisconnectMap)
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("You are currently synced with: \(liveViewMapTitle)")
+            Text(caltopoSettings.mapOptionsText(teamLabel: teamCredentialLabel))
         }
         .sheet(isPresented: $showLocalMapping) { AppleLocalMappingView(incidentID:caltopoConfiguration.mapID,location:locationProvider.lastLocation,assignments:artifacts.snapshot.items.compactMap{try? artifacts.mappingMission(for:$0,launchLocation:locationProvider.lastLocation)},mapName:liveViewMapTitle) }
         .sheet(isPresented: $showMutualAidExport) {
@@ -2221,7 +2222,7 @@ struct RIDTrackMapView: View {
 
     private var liveViewMapTitle: String {
         let name = OperationalIncidentSelection.name(mapID: caltopoConfiguration.mapID,
-            mapTitle: caltopoConfiguration.mapTitle, standaloneName: orgSettings.standaloneIncidentName)
+            mapTitle: caltopoSettings.displayMapTitle, standaloneName: orgSettings.standaloneIncidentName)
         return caltopoConfiguration.mapID.isEmpty ? "No map" : name
     }
 

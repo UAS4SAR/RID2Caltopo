@@ -134,7 +134,7 @@ struct CaltopoSettingsView: View {
                 )
                 Button { showingIncidentSelection = true } label: {
                     LabeledContent("Incident", value: OperationalIncidentSelection.name(mapID: settings.mapID,
-                        mapTitle: settings.mapTitle, standaloneName: orgSettings.standaloneIncidentName))
+                        mapTitle: settings.displayMapTitle, standaloneName: orgSettings.standaloneIncidentName))
                 }
                 SettingsTextField(
                     "Operational period",
@@ -192,7 +192,7 @@ struct CaltopoSettingsView: View {
                     Label("No CalTopo map selected", systemImage: "map")
                         .foregroundStyle(.secondary)
                 } else {
-                    SettingsValue("Map / Incident name", value: settings.mapTitle.isEmpty ? "Map name unavailable" : settings.mapTitle)
+                    SettingsValue("Map / Incident name", value: settings.displayMapTitle.isEmpty ? "Map name unavailable" : settings.displayMapTitle)
                 }
                 Button { showingIncidentSelection = true } label: {
                     Label("Select Incident…", systemImage: "map.fill").font(.headline)
@@ -560,7 +560,7 @@ struct CaltopoSettingsView: View {
             if connectMapAfterIncidentSelection { connectMapAfterIncidentSelection = false; showingTeamMaps = true }
         }) {
             IncidentSelectionPanel(currentName: OperationalIncidentSelection.name(mapID: settings.mapID,
-                mapTitle: settings.mapTitle, standaloneName: orgSettings.standaloneIncidentName),
+                mapTitle: settings.displayMapTitle, standaloneName: orgSettings.standaloneIncidentName),
                 initialName: orgSettings.standaloneIncidentName,
                 onConnectMap: { connectMapAfterIncidentSelection = true; showingIncidentSelection = false },
                 onUseName: { name in

@@ -478,8 +478,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                     return
                 }
                 overlay = OverlayState.Connecting
-                CaltopoMap.OpenMap(if (map.personalSessionID != null)
-                    map.copy(title = "${CaltopoPersonalSession.username}: ${map.title}") else map)
+                CaltopoMap.OpenMap(map)
                 // OpenMap preserves an already active selection without emitting a
                 // new connection transition. Close the browser immediately in that case.
                 if (CaltopoMap.GetMapStatus() == CaltopoMap.MapStatusListener.mapStatus.up) {

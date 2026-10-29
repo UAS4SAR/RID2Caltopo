@@ -663,8 +663,18 @@ fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
             is OverlayState.Management -> {
                 // Type safety: Management only makes sense if a map is selected
                 (connection as? CaltopoConnectionState.MapSelected)?.let { state ->
+                    val personal = !state.map.personalSessionID.isNullOrBlank() ||
+                        org.ncssar.rid2caltopo.data.CaltopoPersonalSession.browsingPersonal
+                    val account = if (personal) {
+                        org.ncssar.rid2caltopo.data.CaltopoPersonalSession.username
+                    } else {
+                        val active = org.ncssar.rid2caltopo.data.CaltopoClient.GetActiveCaltopoProfileId()
+                        viewModel.mapBrowserProfiles.firstOrNull { it.profileId == active }?.label.orEmpty()
+                    }
+                    val title = org.ncssar.rid2caltopo.data.IncidentSelection.displayMapTitle(
+                        state.map.title, org.ncssar.rid2caltopo.data.CaltopoPersonalSession.username)
                     ConnectedOptionsDialog(
-                        mapName = state.map.title,
+                        summary = org.ncssar.rid2caltopo.data.IncidentSelection.mapOptionsText(personal, account, title),
                         onDismiss = { viewModel.onUIEvent(UIEvent.DismissRequested) },
                         onSwitchMap = { viewModel.onUIEvent(UIEvent.SwitchMapRequested) },
                         onDisconnect = { viewModel.onUIEvent(UIEvent.DisconnectRequested) }

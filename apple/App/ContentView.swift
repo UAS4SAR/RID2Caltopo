@@ -457,7 +457,7 @@ struct ContentView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("You are currently synced with: \(caltopoSettings.mapTitle)")
+                Text(caltopoSettings.mapOptionsText(teamLabel: profileLifecycle.activeCredentialLabel))
             }
             .alert("Update available", isPresented: updateAdvisoryPresented) {
                 if let updateURL = peerCoordinator.recommendedUpdateURL {
@@ -746,7 +746,7 @@ struct ContentView: View {
                 if !caltopoSettings.mapID.isEmpty, caltopoSettings.mapTitle.isEmpty {
                     await caltopoSettings.loadTeamMaps()
                     if !caltopoSettings.mapTitle.isEmpty {
-                        orgConfigSettings.setIncidentMapTitle(caltopoSettings.mapTitle)
+                        orgConfigSettings.setIncidentMapTitle(caltopoSettings.displayMapTitle)
                     }
                 }
                 orgConfigImporter.caltopoConfigurationHandler = { configuration in
@@ -2480,7 +2480,7 @@ struct ContentView: View {
     }
 
     private var currentIncidentName: String {
-        OperationalIncidentSelection.name(mapID: caltopoSettings.mapID, mapTitle: caltopoSettings.mapTitle,
+        OperationalIncidentSelection.name(mapID: caltopoSettings.mapID, mapTitle: caltopoSettings.displayMapTitle,
             standaloneName: orgConfigSettings.standaloneIncidentName)
     }
 
@@ -2519,6 +2519,7 @@ struct ContentView: View {
             onDisconnectMap: {
                 applyCaltopoConfiguration(caltopoSettings.disconnectMap())
             },
+            teamCredentialLabel: profileLifecycle.activeCredentialLabel,
             onRestartStreams: {
                 AppleLog.info("MediaMTX", "Operator restart streams requested from Live View")
                 streamRegistry.shutdown()
@@ -3585,7 +3586,7 @@ private struct AwaitingMapPublicationPanel: View {
     private func beginPublish(_ flight: AwaitingMapFlight) {
         destinationMap = flight.mapID.isEmpty ? settings.mapID : flight.mapID
         destinationTeam = flight.mapID.isEmpty ? settings.configuration.publicationScope : flight.teamID
-        destinationTitle = flight.mapID.isEmpty || flight.mapID == settings.mapID ? settings.mapTitle : "Original incident map"
+        destinationTitle = flight.mapID.isEmpty || flight.mapID == settings.mapID ? settings.displayMapTitle : "Original incident map"
         selected = flight
     }
 
@@ -3664,7 +3665,7 @@ private struct AwaitingMapPublicationPanel: View {
             } else {
                 HStack(spacing: 12) {
                     Image(systemName: "map").foregroundStyle(.tint)
-                    Text(verbatim: "Destination: \(settings.mapTitle) (\(settings.mapID))")
+                    Text(verbatim: "Destination: \(settings.displayMapTitle) (\(settings.mapID))")
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 0)

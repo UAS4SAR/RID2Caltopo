@@ -154,6 +154,19 @@ final class AppleCaltopoSettings: ObservableObject {
         refreshPersonalCredentialSummary()
     }
 
+    /// Catalog title only. A previously stored "account: title" prefix is not shown.
+    var displayMapTitle: String {
+        OperationalIncidentSelection.displayMapTitle(mapTitle, personalName: personalUsername)
+    }
+
+    func mapOptionsText(teamLabel: String) -> String {
+        let personal = usesPersonalCredentials || personalSessionID != nil
+        return OperationalIncidentSelection.mapOptionsText(
+            personal: personal,
+            accountName: personal ? personalUsername : teamLabel,
+            mapTitle: displayMapTitle)
+    }
+
     var configuration: AppleCaltopoConfiguration {
         let normalizedDomain = domainAndPort.trimmingCharacters(in: .whitespacesAndNewlines)
         return AppleCaltopoConfiguration(
@@ -524,7 +537,7 @@ final class AppleCaltopoSettings: ObservableObject {
             selectedPersonalAccountID = map.personalAccountID.isEmpty ? account : map.personalAccountID
             selectedPersonalMediaOwnerID = map.personalMediaOwnerID.isEmpty ? selectedPersonalAccountID : map.personalMediaOwnerID
             mapID = map.id
-            mapTitle = "\(personalUsername): \(map.title)"
+            mapTitle = map.title
             enabled = true
             status = "Connected to \(map.title)"
             return configuration
@@ -533,7 +546,7 @@ final class AppleCaltopoSettings: ObservableObject {
         selectedPersonalAccountID = map.personalAccountID
         selectedPersonalMediaOwnerID = map.personalMediaOwnerID
         mapID = map.id
-        mapTitle = map.personalSessionID != nil ? "\(personalUsername): \(map.title)" : map.title
+        mapTitle = map.title
         enabled = true
         // Selecting a map does not edit or rewrite credentials.
         defaults.set(true, forKey: "caltopo.enabled")
