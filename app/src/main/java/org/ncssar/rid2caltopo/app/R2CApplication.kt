@@ -58,16 +58,31 @@ class R2CApplication : Application() {
         preloadStartupPreferences()
         AppConfigStore.initialize(this)
         CaltopoClient.PrepareSavedSettings()
-        // Reference only. The signing key is created on the first enrollment,
-        // still on this worker, and is not read while the feature flag is off.
+        // Personal Login Support. A saved browser session keeps Session Cookies
+        // until the operator changes the setting. The signing key is read here,
+        // on this worker, only when Credentials is selected.
         val personalAccount = getSharedPreferences(
             org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.FEATURE_PREFERENCE,
             android.content.Context.MODE_PRIVATE
         )
+        val storedMode = personalAccount.getString(org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.LOGIN_MODE_KEY, null)
+        val cookieSession = storedMode == null && runCatching {
+            contentResolver.call(
+                android.net.Uri.parse("content://org.ncssar.rid2caltopo.personal-session"),
+                "loginProtectionRequired", null, null
+            )?.getBoolean("required", true) == false
+        }.getOrDefault(false)
+        val personalMode = org.ncssar.rid2caltopo.data.CaltopoPersonalLoginMode.resolve(storedMode, cookieSession)
+        if (storedMode == null) {
+            personalAccount.edit().putString(org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.LOGIN_MODE_KEY, personalMode.wire()).apply()
+        }
         org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.install(
             org.ncssar.rid2caltopo.data.CaltopoPersonalAccountKeystore(this),
-            personalAccount.getBoolean(org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.FEATURE_ENABLED_KEY, false)
+            personalMode == org.ncssar.rid2caltopo.data.CaltopoPersonalLoginMode.CREDENTIALS
         )
+        if (personalMode == org.ncssar.rid2caltopo.data.CaltopoPersonalLoginMode.CREDENTIALS) {
+            runCatching { org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.status("caltopo.com") }
+        }
         org.ncssar.rid2caltopo.data.CameraFootprintSettings.initialize(this)
         // Match Apple's startup provisioning: enroll and import an authorized
         // device-bound bundle on a worker. A locked device retries from mapping

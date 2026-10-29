@@ -28,6 +28,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.ncssar.rid2caltopo.data.CaltopoPersonalCredentialSignIn
+import org.ncssar.rid2caltopo.data.CaltopoPersonalLoginMode
+import org.ncssar.rid2caltopo.data.CaltopoPersonalSession
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.semantics
@@ -225,6 +232,15 @@ fun CaltopoSettingsScreen(
                     modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Operational period" }
                 )
 
+                Spacer(modifier = Modifier.height(16.dp))
+                HorizontalDivider()
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    "Personal Login Support",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                PersonalLoginSupportSetting()
                 Spacer(modifier = Modifier.height(16.dp))
                 HorizontalDivider()
                 Spacer(modifier = Modifier.height(16.dp))
@@ -825,6 +841,89 @@ private fun Modifier.verticalScrollbar(state: ScrollState, color: Color): Modifi
         size = Size(width, thumbHeight),
         cornerRadius = CornerRadius(width / 2)
     )
+}
+
+@Composable
+private fun PersonalLoginSupportSetting() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var mode by remember { mutableStateOf(org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.loginMode) }
+    var summary by remember { mutableStateOf("Not connected") }
+    var busy by remember { mutableStateOf(false) }
+    LaunchedEffect(mode) {
+        summary = withContext(Dispatchers.IO) {
+            val status = org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.status("caltopo.com")
+            if (status != null && !status.revoked) "Connected as ${status.displayName}" else "Not connected"
+        }
+    }
+    Text(
+        "Choose how this device signs in to a personal CalTopo account. Teams credentials are unchanged.",
+        style = MaterialTheme.typography.bodySmall
+    )
+    listOf(
+        CaltopoPersonalLoginMode.CREDENTIALS to "Credentials",
+        CaltopoPersonalLoginMode.SESSION_COOKIES to "Session Cookies"
+    ).forEach { (value, label) ->
+        Row(
+            modifier = Modifier.fillMaxWidth().selectable(
+                selected = mode == value,
+                onClick = {
+                    if (mode == value || busy) return@selectable
+                    CaltopoPersonalCredentialSignIn.switchMode(context, value)
+                    CaltopoPersonalSession.suspendPersonalSelection()
+                    mode = value
+                },
+                role = Role.RadioButton
+            ),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            RadioButton(selected = mode == value, onClick = null)
+            Text(label, modifier = Modifier.padding(start = 8.dp))
+        }
+    }
+    if (mode == CaltopoPersonalLoginMode.CREDENTIALS) {
+        Text(summary, style = MaterialTheme.typography.bodyMedium)
+        Button(
+            onClick = {
+                busy = true
+                scope.launch {
+                    val result = withContext(Dispatchers.IO) { runCatching { CaltopoPersonalCredentialSignIn.connect(context) } }
+                    result.onSuccess { CaltopoPersonalCredentialSignIn.publishCatalog(it.catalog) }
+                    summary = result.fold(
+                        onSuccess = { "Connected as ${it.status.displayName}" },
+                        onFailure = { it.message ?: "CalTopo sign-in failed." }
+                    )
+                    busy = false
+                }
+            },
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth()
+        ) { Text(if (busy) "Waiting for the browser…" else "Sign in") }
+        TextButton(
+            onClick = {
+                scope.launch {
+                    withContext(Dispatchers.IO) { CaltopoPersonalCredentialSignIn.logOut() }
+                    CaltopoPersonalSession.suspendPersonalSelection()
+                    summary = "Not connected"
+                }
+            },
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("Log out") }
+        Text(
+            "Log out removes the account credential from this device. The device stays listed on your CalTopo account until you delete it there.",
+            style = MaterialTheme.typography.bodySmall
+        )
+        Text(
+            "Switching to Session Cookies stops using this credential. A saved browser session is not used while Credentials is selected.",
+            style = MaterialTheme.typography.bodySmall
+        )
+    } else {
+        Text(
+            "Personal maps use the existing browser sign-in. The account credential, if any, stays on this device until you log out and is not used.",
+            style = MaterialTheme.typography.bodySmall
+        )
+    }
 }
 
 /** Keep partially typed decimals in the field; round only the native integer configuration. */

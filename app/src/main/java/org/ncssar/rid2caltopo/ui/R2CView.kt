@@ -20,6 +20,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
@@ -740,7 +743,22 @@ fun StandAloneOptionsDialog(
     onPersonalReady: () -> Unit = {}
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val credentialsMode = org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.loginMode == org.ncssar.rid2caltopo.data.CaltopoPersonalLoginMode.CREDENTIALS
     val (personalBusy, openPersonal) = rememberPersonalCredentialsAction(onPersonalReady)
+    var credentialBusy by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    fun signInWithCredential() {
+        credentialBusy = true
+        scope.launch {
+            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { org.ncssar.rid2caltopo.data.CaltopoPersonalCredentialSignIn.connect(context) }
+            }
+            result.onSuccess { org.ncssar.rid2caltopo.data.CaltopoPersonalCredentialSignIn.publishCatalog(it.catalog) }
+            credentialBusy = false
+            if (result.isSuccess) onPersonalReady()
+            else CaltopoClient.ShowToast(result.exceptionOrNull()?.message ?: "CalTopo sign-in failed.")
+        }
+    }
     val titleText = if (!hasNetwork) {
         "No Network Connection"
     } else if (connectingToMap || (loading && hasCreds)) {
@@ -786,10 +804,10 @@ fun StandAloneOptionsDialog(
         },
         confirmButton = {
             Button(
-                onClick = if (hasCreds) onAction else openPersonal,
-                enabled = !loading && !personalBusy && hasNetwork
+                onClick = if (hasCreds) onAction else if (credentialsMode) ::signInWithCredential else openPersonal,
+                enabled = !loading && !personalBusy && !credentialBusy && hasNetwork
             ) {
-                Text(if (hasCreds) "Connect" else if (personalBusy) "Loading personal maps…" else "Personal: Sign in")
+                Text(if (hasCreds) "Connect" else if (personalBusy || credentialBusy) "Loading personal maps…" else "Personal: Sign in")
 
             }
         },

@@ -14,17 +14,19 @@ struct AppleCaltopoConfiguration: Sendable, Equatable {
     var personalSessionID: UUID? = nil
     var personalAccountID: String = ""
     var personalMediaOwnerID: String = ""
+    var usesSignedPersonalAccount: Bool = false
     let connectKey: String
 
     var publicationScope: String {
-        CaltopoPublicationScope.identifier(personalAccountID: personalSessionID == nil ? nil : personalAccountID, teamID: teamID)
+        let personal = personalSessionID != nil || usesSignedPersonalAccount
+        return CaltopoPublicationScope.identifier(personalAccountID: personal ? personalAccountID : nil, teamID: teamID)
     }
 
     var liveConfiguration: CaltopoLiveConfiguration? {
         guard enabled,
               !domainAndPort.isEmpty,
               !mapID.isEmpty,
-              (personalSessionID != nil || (!credentialID.isEmpty && !credentialSecret.isEmpty))
+              (personalSessionID != nil || usesSignedPersonalAccount || (!credentialID.isEmpty && !credentialSecret.isEmpty))
         else { return nil }
         let fallback = CaltopoLiveConfiguration(
             domainAndPort: domainAndPort,
@@ -43,6 +45,7 @@ struct AppleCaltopoConfiguration: Sendable, Equatable {
             personalSessionID: personalSessionID,
             personalAccountID: personalAccountID,
             personalMediaOwnerID: personalMediaOwnerID,
+            useSignedPersonalAccount: usesSignedPersonalAccount,
             fallback: fallback
         )
     }
@@ -50,6 +53,10 @@ struct AppleCaltopoConfiguration: Sendable, Equatable {
 
 @MainActor
 final class AppleCaltopoSettings: ObservableObject {
+    @Published private(set) var personalLoginMode: CaltopoPersonalLoginMode
+    @Published private(set) var personalCredentialSummary = "Not connected"
+    @Published private(set) var personalCredentialBusy = false
+    private static let personalLoginModeKey = "caltopo.personalLoginSupport"
     @Published var usesPersonalCredentials: Bool {
         didSet { defaults.set(usesPersonalCredentials, forKey: "caltopo.usesPersonalCredentials") }
     }
@@ -112,6 +119,13 @@ final class AppleCaltopoSettings: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        let storedLoginMode = defaults.string(forKey: Self.personalLoginModeKey)
+        let resolvedLoginMode = CaltopoPersonalLoginMode.resolve(
+            stored: storedLoginMode,
+            cookieSessionAlreadyInUse: defaults.bool(forKey: "caltopo.usesPersonalCredentials")
+        )
+        if storedLoginMode == nil { defaults.set(resolvedLoginMode.rawValue, forKey: Self.personalLoginModeKey) }
+        personalLoginMode = resolvedLoginMode
         usesPersonalCredentials = defaults.bool(forKey: "caltopo.usesPersonalCredentials")
         enabled = defaults.bool(forKey: "caltopo.enabled")
         domainAndPort = defaults.string(forKey: "caltopo.domain") ?? "caltopo.com"
@@ -129,15 +143,16 @@ final class AppleCaltopoSettings: ObservableObject {
         credentialOrigin = defaults.string(forKey: Self.credentialOriginKey)
             ?? Self.originUnknown
         status = enabled ? "Standalone; select the incident map" : "Publishing disabled"
-        CaltopoPersonalAccountConnection.shared.loadFeatureFlag(from: defaults)
         CaltopoPersonalAccountConnection.shared.use(AppleCaltopoPersonalAccountKeychain())
+        CaltopoPersonalAccountConnection.shared.setFeatureEnabled(personalLoginMode == .credentials)
+        refreshPersonalCredentialSummary()
     }
 
     var configuration: AppleCaltopoConfiguration {
         let normalizedDomain = domainAndPort.trimmingCharacters(in: .whitespacesAndNewlines)
         return AppleCaltopoConfiguration(
             enabled: enabled,
-            domainAndPort: personalSessionID != nil ? "caltopo.com" : (normalizedDomain.isEmpty ? "caltopo.com" : normalizedDomain),
+            domainAndPort: (personalSessionID != nil || (personalLoginMode == .credentials && usesPersonalCredentials && personalSessionID == nil && !selectedPersonalAccountID.isEmpty)) ? "caltopo.com" : (normalizedDomain.isEmpty ? "caltopo.com" : normalizedDomain),
             mapID: mapID.trimmingCharacters(in: .whitespacesAndNewlines),
             mapTitle: mapTitle.trimmingCharacters(in: .whitespacesAndNewlines),
             credentialID: credentialID.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -146,6 +161,7 @@ final class AppleCaltopoSettings: ObservableObject {
             personalSessionID: personalSessionID,
             personalAccountID: selectedPersonalAccountID,
             personalMediaOwnerID: selectedPersonalMediaOwnerID,
+            usesSignedPersonalAccount: personalLoginMode == .credentials && usesPersonalCredentials && personalSessionID == nil && !selectedPersonalAccountID.isEmpty,
             connectKey: connectKey.trimmingCharacters(in: .whitespacesAndNewlines)
         )
     }
@@ -335,8 +351,111 @@ final class AppleCaltopoSettings: ObservableObject {
         }
     }
 
+    func setPersonalLoginMode(_ mode: CaltopoPersonalLoginMode) {
+        guard mode != personalLoginMode else { return }
+        personalLoginMode = mode
+        defaults.set(mode.rawValue, forKey: Self.personalLoginModeKey)
+        CaltopoPersonalAccountConnection.shared.setFeatureEnabled(mode == .credentials)
+        if usesPersonalCredentials || personalSessionID != nil {
+            personalSessionID = nil
+            selectedPersonalAccountID = ""
+            selectedPersonalMediaOwnerID = ""
+            personalMaps = []
+            personalUsername = ""
+            usesPersonalCredentials = false
+            mapID = ""
+            mapTitle = ""
+            defaults.removeObject(forKey: "caltopo.mapID")
+            defaults.removeObject(forKey: "caltopo.mapTitle")
+        }
+        status = mode == .credentials
+            ? "Credentials selected. Browser sign-in is not used. Sign in to connect an account credential."
+            : "Session Cookies selected. An account credential stays on this device until you log out, and is not used for personal maps."
+        Task { await CaltopoPersonalSessions.shared.clear() }
+    }
+
+    func signInWithPersonalCredential() async {
+        personalCredentialBusy = true
+        defer { personalCredentialBusy = false }
+        do {
+            let connected = try await CaltopoPersonalAccountConnection.shared.enroll(
+                deviceName: CaltopoPersonalAccountConnection.defaultDeviceName,
+                browser: AppleCaltopoPersonalAccountBrowser(),
+                exchange: CaltopoPersonalAccountHTTPSExchange()
+            )
+            personalCredentialSummary = "Connected as \(connected.displayName)"
+            usesPersonalCredentials = true
+            personalUsername = connected.displayName
+            selectedPersonalAccountID = connected.accountID
+            await loadCredentialPersonalMaps()
+        } catch {
+            status = error.localizedDescription
+        }
+    }
+
+    func logOutPersonalCredential() {
+        CaltopoPersonalAccountConnection.shared.disconnect()
+        personalCredentialSummary = "Not connected"
+        if personalLoginMode == .credentials {
+            personalSessionID = nil
+            selectedPersonalAccountID = ""
+            selectedPersonalMediaOwnerID = ""
+            personalMaps = []
+            personalUsername = ""
+            personalMapsStatus = "Sign in to connect your CalTopo account"
+            if usesPersonalCredentials {
+                usesPersonalCredentials = false
+                mapID = ""
+                mapTitle = ""
+                defaults.removeObject(forKey: "caltopo.mapID")
+                defaults.removeObject(forKey: "caltopo.mapTitle")
+            }
+        }
+        status = "Logged out of the CalTopo account credential."
+        Task { await CaltopoPersonalSessions.shared.clear() }
+    }
+
+    func loadCredentialPersonalMaps() async {
+        isLoadingPersonalMaps = true
+        defer { isLoadingPersonalMaps = false }
+        do {
+            let configuration = try CaltopoPersonalAccountConnection.shared.teamMapConfiguration()
+            let client = try CaltopoTeamMapClient(configuration: configuration)
+            let request = try await client.makeRequest()
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                throw CaltopoLiveClientError.httpStatus((response as? HTTPURLResponse)?.statusCode ?? 0, "CalTopo account catalog failed.")
+            }
+            let prepared = try CaltopoPersonalCatalog.prepare(data, expectedID: configuration.teamID)
+            acceptPersonalCatalog(prepared.username, maps: prepared.maps)
+            selectedPersonalAccountID = configuration.teamID
+        } catch {
+            personalMaps = []
+            personalMapsStatus = error.localizedDescription
+        }
+    }
+
+    private func refreshPersonalCredentialSummary() {
+        if let status = CaltopoPersonalAccountConnection.shared.status(host: "caltopo.com"), !status.revoked {
+            personalCredentialSummary = "Connected as \(status.displayName)"
+        } else {
+            personalCredentialSummary = "Not connected"
+        }
+    }
+
     @discardableResult
     func selectMap(_ map: CaltopoTeamMap) -> AppleCaltopoConfiguration {
+        if personalLoginMode == .credentials && usesPersonalCredentials {
+            personalSessionID = nil
+            let account = CaltopoPersonalAccountConnection.shared.status(host: "caltopo.com")?.accountID ?? selectedPersonalAccountID
+            selectedPersonalAccountID = map.personalAccountID.isEmpty ? account : map.personalAccountID
+            selectedPersonalMediaOwnerID = map.personalMediaOwnerID.isEmpty ? selectedPersonalAccountID : map.personalMediaOwnerID
+            mapID = map.id
+            mapTitle = "\(personalUsername): \(map.title)"
+            enabled = true
+            status = "Connected to \(map.title)"
+            return configuration
+        }
         personalSessionID = map.personalSessionID
         selectedPersonalAccountID = map.personalAccountID
         selectedPersonalMediaOwnerID = map.personalMediaOwnerID

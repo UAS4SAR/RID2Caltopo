@@ -2,6 +2,36 @@ import XCTest
 @testable import R2CCore
 
 final class CaltopoPersonalAccountConnectionTests: XCTestCase {
+    func testPersonalLoginModeKeepsAnExistingCookieSessionUntilChosen() {
+        XCTAssertEqual(CaltopoPersonalLoginMode.resolve(stored: nil, cookieSessionAlreadyInUse: false), .credentials)
+        XCTAssertEqual(CaltopoPersonalLoginMode.resolve(stored: nil, cookieSessionAlreadyInUse: true), .sessionCookies)
+        XCTAssertEqual(CaltopoPersonalLoginMode.resolve(stored: "credentials", cookieSessionAlreadyInUse: true), .credentials)
+        XCTAssertEqual(CaltopoPersonalLoginMode.resolve(stored: "sessionCookies", cookieSessionAlreadyInUse: false), .sessionCookies)
+    }
+
+    func testSignedPersonalMapDoesNotUseTheCookieConfiguration() throws {
+        let connection = CaltopoPersonalAccountConnection()
+        connection.setFeatureEnabled(true)
+        let secret = Data("team-secret-1".utf8).base64EncodedString()
+        try connection.useRecord(try sampleRecord(secret: secret))
+        let cookie = CaltopoLiveConfiguration(mapID: "ABC123", credentialID: "", credentialSecretBase64: "", personalSessionID: UUID(), personalAccountID: "USER01", personalMediaOwnerID: "USER01")
+        let resolved = connection.resolveLiveConfiguration(
+            lookup: connection.lookup(host: "caltopo.com", accountID: "USER01"),
+            mapID: "ABC123", connectKey: "DRONE", personalSessionID: nil,
+            personalAccountID: "USER01", personalMediaOwnerID: "USER01",
+            useSignedPersonalAccount: true, fallback: cookie
+        )
+        let signed = try XCTUnwrap(resolved)
+        XCTAssertNil(signed.personalSessionID)
+        XCTAssertTrue(signed.personalSignedAccount)
+        XCTAssertEqual(signed.credentialID, "cred12345678")
+        XCTAssertNil(connection.resolveLiveConfiguration(
+            lookup: .absent, mapID: "ABC123", connectKey: "", personalSessionID: nil,
+            personalAccountID: "USER01", personalMediaOwnerID: "USER01",
+            useSignedPersonalAccount: true, fallback: cookie
+        ))
+    }
+
     func testFlagOffLeavesCookieAndTeamsConfigurationsUntouched() throws {
         let connection = CaltopoPersonalAccountConnection()
         let secret = Data("team-secret-1".utf8).base64EncodedString()
@@ -97,7 +127,8 @@ final class CaltopoPersonalAccountConnectionTests: XCTestCase {
     }
 
     private func sampleRecord(secret: String) throws -> CaltopoPersonalAccountRecord {
-        let body = #"{"code":"cred12345678","key":"\#(secret)","account":{"id":"USER01","type":"account","properties":{"class":"UserAccount","title":"Pilot"}}}"#.data(using: .utf8)!
+        let key = Data(base64Encoded: secret)?.count == 32 ? secret : Data(repeating: 1, count: 32).base64EncodedString()
+        let body = #"{"code":"cred12345678","key":"\#(key)","account":{"id":"USER01","type":"account","properties":{"class":"UserAccount","title":"Pilot"}}}"#.data(using: .utf8)!
         return try CaltopoPersonalAccountConnection().completeExchange(body, code: "abcd1234", host: "caltopo.com", deviceName: "RID2Caltopo")
     }
 }

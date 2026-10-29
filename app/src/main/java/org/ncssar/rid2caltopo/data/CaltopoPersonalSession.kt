@@ -101,6 +101,20 @@ object CaltopoPersonalSession {
     }
     @Volatile private var selected: Authorization? = null
     private var context: Context? = null
+    /** Drops the selected personal map without deleting the saved browser session. */
+    @JvmStatic fun suspendPersonalSelection() {
+        val personalMapWasOpen = browsingPersonal
+        generation++
+        selected = null
+        accountID = ""
+        mediaOwners = emptyMap()
+        username = ""
+        browsingPersonal = false
+        maps = emptyList()
+        catalogReady = false
+        if (personalMapWasOpen) CaltopoSession.clearOpenMap()
+    }
+
     @JvmStatic fun resetRuntimeState() {
         generation++
         selected = null

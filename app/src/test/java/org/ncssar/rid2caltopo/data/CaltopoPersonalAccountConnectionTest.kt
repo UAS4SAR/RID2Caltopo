@@ -16,6 +16,20 @@ import java.nio.charset.StandardCharsets
 import java.util.Base64
 
 class CaltopoPersonalAccountConnectionTest {
+    @Test fun loginModeDefaultsToCredentialsUnlessACookieSessionAlreadyExists() {
+        assertEquals(CaltopoPersonalLoginMode.CREDENTIALS, CaltopoPersonalLoginMode.resolve(null, cookieSessionAlreadyInUse = false))
+        assertEquals(CaltopoPersonalLoginMode.SESSION_COOKIES, CaltopoPersonalLoginMode.resolve(null, cookieSessionAlreadyInUse = true))
+        assertEquals(CaltopoPersonalLoginMode.CREDENTIALS, CaltopoPersonalLoginMode.resolve("credentials", cookieSessionAlreadyInUse = true))
+        assertEquals(CaltopoPersonalLoginMode.SESSION_COOKIES, CaltopoPersonalLoginMode.resolve("sessionCookies", cookieSessionAlreadyInUse = false))
+    }
+
+    @Test fun credentialsModeDoesNotFallBackToCookiesWhenNothingIsStored() {
+        CaltopoPersonalAccountConnection.applyLoginMode(CaltopoPersonalLoginMode.CREDENTIALS)
+        val decision = CaltopoPersonalAccountConnection.decide("USER01")
+        assertNull(decision.credentials)
+        assertTrue(decision.failure!!.contains("Session cookies are not used"))
+    }
+
     @Before fun reset() { CaltopoPersonalAccountConnection.resetForTests() }
     @After fun clear() { CaltopoPersonalAccountConnection.resetForTests() }
 
@@ -113,7 +127,7 @@ class CaltopoPersonalAccountConnectionTest {
         assertEquals("cred12345678", signed.credentials!!.credentialId)
         assertEquals("USER01", signed.credentials!!.teamId)
         assertNull(CaltopoPersonalAccountConnection.decide("OTHER1").credentials)
-        assertNull(CaltopoPersonalAccountConnection.decide("OTHER1").failure)
+        assertTrue(CaltopoPersonalAccountConnection.decide("OTHER1").failure!!.contains("not covered"))
         val catalog = CaltopoPersonalAccountConnection.accountCatalogRequest(1_700_000_000_000)
         assertTrue(catalog!!.url.startsWith("https://caltopo.com/api/v1/acct/USER01/since/0?"))
         assertTrue(catalog.url.contains("id=cred12345678"))
@@ -138,7 +152,10 @@ class CaltopoPersonalAccountConnectionTest {
         assertNull(CaltopoPersonalAccountConnection.reconnect("caltopo.com"))
         CaltopoPersonalAccountConnection.disconnect()
         assertNull(CaltopoPersonalAccountConnection.status("caltopo.com"))
-        assertNull(CaltopoPersonalAccountConnection.decide("USER01").credentials)
+        val signedOut = CaltopoPersonalAccountConnection.decide("USER01")
+        assertNull(signedOut.credentials)
+        assertTrue(signedOut.failure!!.contains("Session cookies are not used"))
+        CaltopoPersonalAccountConnection.applyLoginMode(CaltopoPersonalLoginMode.SESSION_COOKIES)
         assertNull(CaltopoPersonalAccountConnection.decide("USER01").failure)
     }
 

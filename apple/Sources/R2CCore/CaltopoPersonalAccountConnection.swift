@@ -2,11 +2,25 @@ import Darwin
 import Foundation
 import Security
 
+public enum CaltopoPersonalLoginMode: String, Sendable, Hashable {
+    case credentials
+    case sessionCookies
+
+    /// A saved cookie personal login keeps Session Cookies until the operator chooses otherwise.
+    public static func resolve(stored: String?, cookieSessionAlreadyInUse: Bool) -> CaltopoPersonalLoginMode {
+        switch stored {
+        case "credentials": return .credentials
+        case "sessionCookies": return .sessionCookies
+        default: return cookieSessionAlreadyInUse ? .sessionCookies : .credentials
+        }
+    }
+}
+
 /// Personal CalTopo account credential from the Desktop activation flow.
 ///
 /// The signing key stays out of Teams credential storage and out of the cookie
-/// login. `featureEnabled` defaults off. While it is off, lookup does not read
-/// the store and personal map requests keep using session cookies.
+/// login. Credentials mode is the default. Session Cookies mode does not read
+/// this store, and personal map requests keep using the browser session.
 ///
 /// Enrollment and the activation exchange run off the main thread. A flag-off
 /// lookup is only a memory read.
@@ -108,15 +122,21 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         personalSessionID: UUID?,
         personalAccountID: String,
         personalMediaOwnerID: String,
+        useSignedPersonalAccount: Bool = false,
         fallback: CaltopoLiveConfiguration?
     ) -> CaltopoLiveConfiguration? {
+        let signedPersonal = personalSessionID != nil || useSignedPersonalAccount
         switch lookup {
-        case .inactive, .absent:
+        case .inactive:
             return fallback
+        case .absent:
+            return useSignedPersonalAccount ? nil : fallback
         case .unavailable, .revoked:
-            return personalSessionID == nil ? fallback : nil
+            return signedPersonal ? nil : fallback
         case .ready(let record):
-            guard personalSessionID != nil, record.accountID == personalAccountID, !record.revoked else { return fallback }
+            guard signedPersonal, !record.revoked else { return fallback }
+            let account = personalAccountID.isEmpty ? record.accountID : personalAccountID
+            guard account == record.accountID else { return useSignedPersonalAccount ? nil : fallback }
             return CaltopoLiveConfiguration(
                 domainAndPort: record.host,
                 mapID: mapID,
@@ -124,7 +144,7 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
                 credentialSecretBase64: record.signingKey,
                 connectKey: connectKey,
                 personalSessionID: nil,
-                personalAccountID: record.accountID,
+                personalAccountID: account,
                 personalMediaOwnerID: personalMediaOwnerID.isEmpty ? record.accountID : personalMediaOwnerID,
                 personalSignedAccount: true
             )

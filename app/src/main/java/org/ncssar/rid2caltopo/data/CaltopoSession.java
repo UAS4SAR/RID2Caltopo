@@ -187,6 +187,11 @@ public class CaltopoSession {
 	// instance variables:
 	private static String MapId;
 
+    /** Drops the open map after personal login mode changes. Teams credentials are left stored. */
+    static void clearOpenMap() {
+        MapId = null;
+    }
+
     public static final OkHttpClient MyOkHttpClient = new OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)

@@ -195,6 +195,32 @@ struct CaltopoSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            Section("Personal Login Support") {
+                Picker("Personal Login Support", selection: Binding(
+                    get: { settings.personalLoginMode },
+                    set: { settings.setPersonalLoginMode($0) }
+                )) {
+                    Text("Credentials").tag(CaltopoPersonalLoginMode.credentials)
+                    Text("Session Cookies").tag(CaltopoPersonalLoginMode.sessionCookies)
+                }
+                .pickerStyle(.segmented)
+                if settings.personalLoginMode == .credentials {
+                    SettingsValue("Account credential", value: settings.personalCredentialSummary)
+                    Button(settings.personalCredentialBusy ? "Waiting for the browser…" : "Sign in") {
+                        Task { await settings.signInWithPersonalCredential() }
+                    }
+                    .disabled(settings.personalCredentialBusy)
+                    Button("Log out") { settings.logOutPersonalCredential() }
+                        .disabled(settings.personalCredentialBusy)
+                    Text("Log out removes the account credential from this device. The device stays listed on your CalTopo account until you delete it there.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Text("Switching to Session Cookies stops using this credential. A saved browser session is not used while Credentials is selected.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                } else {
+                    Text("Personal maps use the existing browser sign-in. An account credential stays on this device until you log out and is not used.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
             Section("CalTopo access") {
                 SettingsValue("Active profile", value: settings.usesPersonalCredentials
                     ? "Personal: \(settings.personalUsername.isEmpty ? "Sign in" : settings.personalUsername)"
@@ -945,6 +971,10 @@ struct CaltopoTeamMapBrowser: View {
 
     private func loadSelectedMaps() async {
         if settings.usesPersonalCredentials {
+            if settings.personalLoginMode == .credentials {
+                await settings.loadCredentialPersonalMaps()
+                return
+            }
             let loaded = await settings.loadPersonalMaps()
             guard settings.usesPersonalCredentials else { return }
             if !loaded, settings.personalLoginRequired {
@@ -1011,8 +1041,16 @@ struct CaltopoTeamMapBrowser: View {
             .safeAreaInset(edge: .top) {
                 VStack(alignment: .leading, spacing: 8) {
                     Menu {
-                        Button("Personal: \(settings.personalUsername.isEmpty ? "Sign in" : settings.personalUsername)") { onCredentialSelect?("personal") }
-                        Button("Edit personal account", systemImage: "pencil") { showWebsite = true }
+                        Button("Personal: \(settings.personalUsername.isEmpty ? "Sign in" : settings.personalUsername)") {
+                            if settings.personalLoginMode == .credentials {
+                                Task { await settings.signInWithPersonalCredential() }
+                            } else {
+                                onCredentialSelect?("personal")
+                            }
+                        }
+                        if settings.personalLoginMode == .sessionCookies {
+                            Button("Edit personal account", systemImage: "pencil") { showWebsite = true }
+                        }
                         ForEach(profiles.availableProfiles) { profile in
                             Button(profile.credentialLabel) { onCredentialSelect?(profile.id) }
                         }

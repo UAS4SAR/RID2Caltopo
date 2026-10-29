@@ -33,6 +33,7 @@ import javax.crypto.spec.SecretKeySpec
 object CaltopoPersonalAccountConnection {
     const val FEATURE_PREFERENCE = "caltopo-personal-account"
     const val FEATURE_ENABLED_KEY = "feature_enabled"
+    const val LOGIN_MODE_KEY = "login_mode"
     const val DEFAULT_DEVICE_NAME = "RID2Caltopo"
     private const val SIGNATURE_TTL_MS = 2 * 60 * 1000L
     private const val PENDING_TTL_MS = 5 * 60 * 1000L
@@ -40,6 +41,9 @@ object CaltopoPersonalAccountConnection {
     private const val MAX_HTTP_HEADER = 8_192
 
     @Volatile var featureEnabled: Boolean = false
+    @Volatile var loginMode: CaltopoPersonalLoginMode = CaltopoPersonalLoginMode.CREDENTIALS
+    @Volatile var authorizationGeneration: Long = 0L
+        private set
 
     private val lock = Any()
     private var store: CaltopoPersonalAccountStore = CaltopoPersonalAccountMemoryStore()
@@ -53,10 +57,16 @@ object CaltopoPersonalAccountConnection {
         synchronized(lock) {
             this.store = store
             this.featureEnabled = featureEnabled
+            this.loginMode = if (featureEnabled) CaltopoPersonalLoginMode.CREDENTIALS else CaltopoPersonalLoginMode.SESSION_COOKIES
             cached = null
             cacheValid = false
             pending = null
         }
+    }
+
+    fun applyLoginMode(mode: CaltopoPersonalLoginMode) {
+        loginMode = mode
+        featureEnabled = mode == CaltopoPersonalLoginMode.CREDENTIALS
     }
 
     /** Test isolation. Production code uses [install]. */
@@ -80,6 +90,7 @@ object CaltopoPersonalAccountConnection {
 
     fun disconnect() {
         synchronized(lock) {
+            authorizationGeneration++
             store.clear()
             cached = null
             cacheValid = false
@@ -93,9 +104,8 @@ object CaltopoPersonalAccountConnection {
     }
 
     /**
-     * Cookie path when the flag is off, no credential is stored, or the stored
-     * account is a different person. A revoked credential for this account fails
-     * closed and must not fall back to session cookies.
+     * Session Cookies leaves personal requests on the browser session.
+     * Credentials never falls back to that session or to a Teams secret.
      */
     @JvmStatic fun decide(accountId: String?): PersonalSigningDecision {
         if (!featureEnabled) return PersonalSigningDecision(null, null)
@@ -103,10 +113,14 @@ object CaltopoPersonalAccountConnection {
             stored()
         } catch (error: Exception) {
             return PersonalSigningDecision(null, "Personal CalTopo credential could not be read. Team credentials were not used.")
-        } ?: return PersonalSigningDecision(null, null)
-        if (record.host != "caltopo.com") return PersonalSigningDecision(null, null)
+        } ?: return PersonalSigningDecision(null, "Sign in to connect your CalTopo account. Session cookies are not used.")
+        if (record.host != "caltopo.com") {
+            return PersonalSigningDecision(null, "The saved CalTopo account credential is for a different server. Team credentials were not used.")
+        }
         val account = accountId?.trim().orEmpty()
-        if (account.isEmpty() || account != record.accountId) return PersonalSigningDecision(null, null)
+        if (account.isEmpty() || account != record.accountId) {
+            return PersonalSigningDecision(null, "This map is not covered by the connected CalTopo account. Team credentials were not used.")
+        }
         if (record.revoked) {
             return PersonalSigningDecision(null, "Personal CalTopo credential was revoked. Reconnect the account. Team credentials were not used.")
         }
@@ -168,6 +182,7 @@ object CaltopoPersonalAccountConnection {
         val pending = begin(normalizedHost, name, server.localPort)
         server.soTimeout = 1_000
         val deadline = clock() + timeoutMilliseconds
+        val generation = authorizationGeneration
         try {
             val accept = Thread({
                 pending.acceptedReturn = awaitCode(server, pending, deadline)
@@ -177,7 +192,9 @@ object CaltopoPersonalAccountConnection {
             browser.open(pending.activationUrl)
             accept.join(timeoutMilliseconds + 2_000)
             val returned = pending.acceptedReturn ?: throw CaltopoPersonalAccountException("CalTopo activation was not completed.")
+            if (generation != authorizationGeneration) throw CaltopoPersonalAccountException("Personal CalTopo sign-in was cancelled.")
             val record = exchange(pending, returned, http)
+            if (generation != authorizationGeneration) throw CaltopoPersonalAccountException("Personal CalTopo sign-in was cancelled.")
             write(record)
             clearPending()
             return record.status()
@@ -449,6 +466,21 @@ fun interface CaltopoActivationExchange {
 data class CaltopoActivationHttp(val status: Int, val body: String)
 
 data class SignedGet(val url: String, val accountId: String)
+
+enum class CaltopoPersonalLoginMode {
+    CREDENTIALS,
+    SESSION_COOKIES;
+
+    fun wire(): String = if (this == CREDENTIALS) "credentials" else "sessionCookies"
+
+    companion object {
+        fun resolve(stored: String?, cookieSessionAlreadyInUse: Boolean): CaltopoPersonalLoginMode = when (stored) {
+            "credentials" -> CREDENTIALS
+            "sessionCookies" -> SESSION_COOKIES
+            else -> if (cookieSessionAlreadyInUse) SESSION_COOKIES else CREDENTIALS
+        }
+    }
+}
 
 data class CaltopoActivationReturn(val code: String, val deviceName: String) {
     override fun toString(): String = "CaltopoActivationReturn(codeLength=${code.length})"

@@ -99,21 +99,22 @@ The signing key is not written into Teams fields, configuration backup, or logs.
 
 The local record is bound to host plus account id. A credential enrolled for one account is not used for another account's personal maps, and it is not used for Teams publishing.
 
-## How the prototype is wired
+## How personal login is selected
 
-The flag defaults off.
+Settings has **Personal Login Support** with **Credentials** (the default) and **Session Cookies**.
 
-- Android preference `caltopo-personal-account` / `feature_enabled`, read on the startup worker into `CaltopoPersonalAccountConnection.featureEnabled`.
-- Apple `UserDefaults` key `caltopo.personalAccountActivation`, read when CalTopo settings load.
+- Credentials enrolls through the system browser and signs personal map, track, clue, and photo requests with the stored account credential. It does not attach the browser session, and it does not use the Teams secret.
+- Session Cookies is the existing embedded-browser login, unchanged. The account credential, if one is stored, is not read.
+- Teams and service-account publishing is unchanged in either mode.
 
-While the flag is off, personal requests keep using session cookies and the new store is not read. Teams requests keep using the service-account credential. Map, track, clue, and photo calls still go through `CaltopoSession` / `CaltopoLiveClient`, including the existing full-map read spacing.
+A device that already had personal browser sign-in selected, and has never stored this setting, stays on Session Cookies so that login keeps working. Choosing the other mode clears the active personal map and account selection and cancels in-flight personal requests. It does not delete the other mode's stored secret. Sign in again for the mode you selected.
 
-While the flag is on and a non-revoked credential is stored for the selected personal account:
+Log out, in Credentials mode, deletes the Keychain or Keystore entry and that selection. CalTopo still lists the device on the account until you delete it there. The Log out control says so.
 
-- Android `CaltopoSession` signs that personal request with the account credential and does not attach the cookie. A revoked credential fails that personal request and does not send the cookie. A different account, or no stored credential, still uses cookies.
-- Apple builds a `CaltopoLiveConfiguration` with `personalSignedAccount` set and `personalSessionID` cleared, so the existing signer runs and the personal media-owner rules still apply. Teams configuration is returned unchanged when no personal session is selected.
+While Credentials is selected and a personal map is connected:
 
-There is no settings control in this draft. Turning the flag on does nothing visible until a credential has been enrolled through `enroll(...)`. Cookie sign-in stays on the existing button.
+- Android signs that personal request with the account credential and does not attach the cookie. A missing, revoked, or different-account credential fails the personal request. Session Cookies is not used as a fallback.
+- Apple builds a `CaltopoLiveConfiguration` with `personalSignedAccount` set and no cookie session, so the existing signer runs and the personal media-owner rules still apply. A Teams map stays on the Teams credential.
 
 Enrollment, the code exchange, and Keystore reads run off the main thread. The Android listener and exchange are called from `enroll`, which blocks and must be started on a worker. The Apple `enroll` hops off the main actor before it listens. After the first successful read, later signing uses an in-memory copy the way the Teams secret already does.
 
@@ -131,10 +132,7 @@ Enrollment, the code exchange, and Keystore reads run off the main thread. The A
 
 Use a disposable personal CalTopo account and a disposable map. Do not use a production incident map. Leave the cookie login in place so a failure of this prototype does not remove the current path.
 
-Enable the flag only on the test device:
-
-- Android, after install, set `feature_enabled` in the `caltopo-personal-account` shared preferences, or set `CaltopoPersonalAccountConnection.featureEnabled` before enrollment. The preference is read on the next process start.
-- Apple, set the UserDefaults bool `caltopo.personalAccountActivation`.
+On the test device, open Settings and set Personal Login Support to Credentials. Use Session Cookies only for the comparison pass.
 
 Then:
 

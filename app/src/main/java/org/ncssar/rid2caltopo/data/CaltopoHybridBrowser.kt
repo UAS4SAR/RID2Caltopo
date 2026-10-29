@@ -1,6 +1,7 @@
 package org.ncssar.rid2caltopo.data
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive;
@@ -71,9 +72,29 @@ fun CaltopoHybridBrowser(
     loading: Boolean = false
 ) {
     var credentialsExpanded by remember { mutableStateOf(false) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     val editPersonal = org.ncssar.rid2caltopo.ui.rememberPersonalAccountEditor()
     val (personalBusy, selectPersonal) = org.ncssar.rid2caltopo.ui.rememberPersonalCredentialsAction {
         onUIEvent(UIEvent.BrowseProfileSelected("personal"))
+    }
+    fun openPersonal() {
+        credentialsExpanded = false
+        if (CaltopoPersonalAccountConnection.loginMode != CaltopoPersonalLoginMode.CREDENTIALS) {
+            selectPersonal()
+            return
+        }
+        scope.launch {
+            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { CaltopoPersonalCredentialSignIn.connect(context) }
+            }
+            result.onSuccess { CaltopoPersonalCredentialSignIn.publishCatalog(it.catalog) }
+            CaltopoClient.ShowToast(result.fold(
+                onSuccess = { "Connected as ${it.status.displayName}" },
+                onFailure = { it.message ?: "CalTopo sign-in failed." }
+            ))
+            if (result.isSuccess) onUIEvent(UIEvent.BrowseProfileSelected("personal"))
+        }
     }
     val navigationStack = remember(CaltopoCatalogIdentity(rootNodes)) { mutableStateListOf(rootNodes) }
     val currentItems = navigationStack.lastOrNull() ?: rootNodes
@@ -146,12 +167,14 @@ fun CaltopoHybridBrowser(
                 org.ncssar.rid2caltopo.ui.DropdownMenu(expanded = credentialsExpanded, onDismissRequest = { credentialsExpanded = false }) {
                     androidx.compose.material3.DropdownMenuItem(
                         text = { Text("Personal: ${CaltopoPersonalSession.username.ifBlank { "Sign in" }}") },
-                        onClick = { credentialsExpanded = false; selectPersonal() }
+                        onClick = { openPersonal() }
                     )
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("Edit personal account") },
-                        onClick = { credentialsExpanded = false; editPersonal() }
-                    )
+                    if (CaltopoPersonalAccountConnection.loginMode != CaltopoPersonalLoginMode.CREDENTIALS) {
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("Edit personal account") },
+                            onClick = { credentialsExpanded = false; editPersonal() }
+                        )
+                    }
                     profileOptions.forEach { option ->
                         androidx.compose.material3.DropdownMenuItem(text = { Text(option.label) }, onClick = {
                             credentialsExpanded = false
