@@ -289,18 +289,19 @@ internal object OperationalStorage {
         }
         prepareRecorder(context.applicationContext)
     }
-    private inline fun onRecordingStore(file: File, action: (Store) -> Unit) {
+    private fun onRecordingStore(file: File, action: (Store) -> Unit) {
         worker()
         val recorder = preparedRecorder?.takeIf { mapping(file, it.value) != null }
         val value = recorder?.value ?: store ?: return
+        val lane = if (recorder != null) recorderGate else gate
         fun checkLane() {
             if (recorder != null) checkRecorder(recorder)
             else check(state.value.ready) { state.value.message.ifEmpty { "Archive Dir is unavailable." } }
         }
-        synchronized(if (recorder != null) recorderGate else gate) { checkLane() }
+        synchronized(lane) { checkLane() }
         archiveCommit.lock()
         try {
-            synchronized(if (recorder != null) recorderGate else gate) { checkLane() }
+            synchronized(lane) { checkLane() }
             action(value)
         } finally {
             archiveCommit.unlock()
