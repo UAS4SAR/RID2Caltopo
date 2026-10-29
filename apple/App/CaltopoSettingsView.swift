@@ -219,7 +219,15 @@ struct CaltopoSettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     Button(settings.personalCredentialBusy ? "Waiting for CalTopo…" : "Sign in") {
-                        settings.showSyncAccountPrompt = true
+                        Task {
+                            if await Task.detached(priority: .userInitiated, operation: {
+                                CaltopoPersonalAccountConnection.shared.reconnect(host: "caltopo.com")
+                            }).value != nil {
+                                await settings.selectStoredPersonalAccount()
+                            } else {
+                                settings.showSyncAccountPrompt = true
+                            }
+                        }
                     }
                     .disabled(settings.personalCredentialBusy)
                     if settings.personalCredentialSummary != "Not connected" {
@@ -1067,29 +1075,30 @@ struct CaltopoTeamMapBrowser: View {
             .safeAreaInset(edge: .top) {
                 VStack(alignment: .leading, spacing: 8) {
                     Menu {
-                        if settings.personalLoginMode == .credentials && settings.personalUsername.isEmpty {
-                            Text(CaltopoPersonalAccountConnection.activationPrompt)
-                        }
-                        Button("Personal: \(settings.personalUsername.isEmpty ? "Sign in" : settings.personalUsername)") {
-                            if settings.personalLoginMode == .credentials && settings.personalUsername.isEmpty {
-                                settings.showSyncAccountPrompt = true
-                            } else if settings.personalLoginMode == .credentials {
-                                Task { await settings.signInWithPersonalCredential() }
-                            } else {
+                        if settings.personalLoginMode == .credentials {
+                            Button(settings.storedPersonalMenuName.map { "Personal: \($0)" } ?? "Personal: Log In") {
+                                if settings.storedPersonalMenuName == nil {
+                                    settings.showSyncAccountPrompt = true
+                                } else {
+                                    Task { await settings.selectStoredPersonalAccount() }
+                                }
+                            }
+                            if settings.storedPersonalMenuName != nil {
+                                Button("Personal: Log out", role: .destructive) { settings.showPersonalLogOutPrompt = true }
+                            }
+                        } else {
+                            Button("Personal: \(settings.personalUsername.isEmpty ? "Sign in" : settings.personalUsername)") {
                                 onCredentialSelect?("personal")
                             }
-                        }
-                        if settings.personalLoginMode == .credentials && !settings.personalUsername.isEmpty {
-                            Button("Log out", role: .destructive) { settings.showPersonalLogOutPrompt = true }
-                        }
-                        if settings.personalLoginMode == .sessionCookies {
                             Button("Edit personal account", systemImage: "pencil") { showWebsite = true }
                         }
                         ForEach(profiles.availableProfiles) { profile in
-                            Button(profile.credentialLabel) { onCredentialSelect?(profile.id) }
+                            Button(settings.personalLoginMode == .credentials ? "Team: \(profile.credentialLabel)" : profile.credentialLabel) {
+                                onCredentialSelect?(profile.id)
+                            }
                         }
                     } label: {
-                        Label("Credentials: \(settings.usesPersonalCredentials ? "Personal: " + settings.personalUsername : profiles.activeCredentialLabel)", systemImage: "person.crop.circle.badge.checkmark")
+                        Label("Credentials: \(settings.usesPersonalCredentials ? "Personal: " + (settings.storedPersonalMenuName ?? settings.personalUsername) : (settings.personalLoginMode == .credentials ? "Team: " : "") + profiles.activeCredentialLabel)", systemImage: "person.crop.circle.badge.checkmark")
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1132,6 +1141,7 @@ struct CaltopoTeamMapBrowser: View {
             }
         }
         .task(id: settings.usesPersonalCredentials ? "personal" : profiles.activeProfileID) {
+            await settings.refreshStoredPersonalName()
             navigationStack = []; search = ""
             await loadSelectedMaps()
         }

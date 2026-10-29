@@ -366,6 +366,42 @@ final class AppleCaltopoSettings: ObservableObject {
         Task { await CaltopoPersonalSessions.shared.clear() }
     }
 
+    var storedPersonalMenuName: String? {
+        let stored = personalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !stored.isEmpty { return stored }
+        let prefix = "Connected as "
+        if personalCredentialSummary.hasPrefix(prefix) {
+            let name = String(personalCredentialSummary.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            return name.isEmpty ? nil : name
+        }
+        return nil
+    }
+
+    func refreshStoredPersonalName() async {
+        let connected = await Task.detached(priority: .utility) {
+            CaltopoPersonalAccountConnection.shared.status(host: "caltopo.com")
+        }.value
+        guard personalLoginMode == .credentials else { return }
+        if let connected, !connected.revoked, !connected.displayName.isEmpty {
+            if personalUsername.isEmpty { personalUsername = connected.displayName }
+            personalCredentialSummary = "Connected as \(connected.displayName)"
+        }
+    }
+
+    func selectStoredPersonalAccount() async {
+        guard personalLoginMode == .credentials, !personalCredentialBusy else { return }
+        let existing = await Task.detached(priority: .userInitiated) {
+            CaltopoPersonalAccountConnection.shared.reconnect(host: "caltopo.com")
+        }.value
+        guard existing != nil else {
+            showSyncAccountPrompt = true
+            return
+        }
+        usesPersonalCredentials = true
+        personalUsername = existing?.displayName ?? personalUsername
+        await loadCredentialPersonalMaps()
+    }
+
     func signInWithPersonalCredential() async {
         guard personalLoginMode == .credentials, !personalCredentialBusy else { return }
         personalCredentialRevision &+= 1
@@ -432,7 +468,18 @@ final class AppleCaltopoSettings: ObservableObject {
             let request = try await client.makeRequest(now: Date())
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-                throw CaltopoLiveClientError.httpStatus((response as? HTTPURLResponse)?.statusCode ?? 0, "CalTopo account catalog failed.")
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                if status == 401 || status == 403 {
+                    await CaltopoPersonalAccountConnection.shared.disconnect()
+                    personalUsername = ""
+                    personalCredentialSummary = "Not connected"
+                    usesPersonalCredentials = false
+                    personalMaps = []
+                    showSyncAccountPrompt = true
+                    personalMapsStatus = "CalTopo rejected the saved account. Sign in again."
+                    return
+                }
+                throw CaltopoLiveClientError.httpStatus(status, "CalTopo account catalog failed.")
             }
             await CaltopoPersonalAccountConnection.shared.deleteSpareActivationCredential(body: data)
             let prepared = try await Task.detached(priority: .userInitiated) {

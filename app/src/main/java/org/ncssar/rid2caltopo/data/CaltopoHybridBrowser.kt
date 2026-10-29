@@ -30,6 +30,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
@@ -74,6 +75,14 @@ fun CaltopoHybridBrowser(
     var credentialsExpanded by remember { mutableStateOf(false) }
     var showSyncPrompt by remember { mutableStateOf(false) }
     var showLogOutPrompt by remember { mutableStateOf(false) }
+    var storedPersonalName by remember { mutableStateOf<String?>(null) }
+    var personalMenuRevision by remember { mutableStateOf(0) }
+    LaunchedEffect(personalMenuRevision, CaltopoPersonalSession.username) {
+        storedPersonalName = withContext(Dispatchers.IO) {
+            CaltopoPersonalAccountConnection.reconnect("caltopo.com")?.displayName?.ifBlank { null }
+                ?: CaltopoPersonalSession.username.ifBlank { null }
+        }
+    }
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val editPersonal = org.ncssar.rid2caltopo.ui.rememberPersonalAccountEditor()
@@ -95,7 +104,29 @@ fun CaltopoHybridBrowser(
                 onSuccess = { "Connected as ${it.status.displayName}" },
                 onFailure = { it.message ?: "CalTopo sign-in failed." }
             ))
-            if (result.isSuccess) onUIEvent(UIEvent.BrowseProfileSelected("personal"))
+            if (result.isSuccess) {
+                personalMenuRevision++
+                onUIEvent(UIEvent.BrowseProfileSelected("personal"))
+            }
+        }
+    }
+    fun selectStoredPersonal() {
+        credentialsExpanded = false
+        scope.launch {
+            val loaded = withContext(Dispatchers.IO) { CaltopoPersonalCredentialSignIn.openStored() }
+            when (loaded) {
+                is StoredPersonalLoad.Ready -> {
+                    CaltopoPersonalCredentialSignIn.publishCatalog(loaded.catalog.catalog)
+                    personalMenuRevision++
+                    onUIEvent(UIEvent.BrowseProfileSelected("personal"))
+                }
+                StoredPersonalLoad.Rejected, StoredPersonalLoad.Missing -> {
+                    CaltopoPersonalSession.suspendPersonalSelection()
+                    storedPersonalName = null
+                    showSyncPrompt = true
+                }
+                is StoredPersonalLoad.Failed -> CaltopoClient.ShowToast(loaded.message)
+            }
         }
     }
     val navigationStack = remember(CaltopoCatalogIdentity(rootNodes)) { mutableStateListOf(rootNodes) }
@@ -161,42 +192,49 @@ fun CaltopoHybridBrowser(
 
             androidx.compose.foundation.layout.Box {
                 androidx.compose.material3.TextButton(onClick = { credentialsExpanded = true }, enabled = !personalBusy) {
-                    Text(if (personalBusy) "Loading personal maps…" else "Credentials: " +
-                        if (CaltopoPersonalSession.browsingPersonal) "Personal: ${CaltopoPersonalSession.username.ifBlank { "Sign in" }}" else
-                        (profileOptions.firstOrNull { it.profileId == selectedProfileId }?.label ?: "No Teams credentials"))
+                    val credentialsMode = CaltopoPersonalAccountConnection.loginMode == CaltopoPersonalLoginMode.CREDENTIALS
+                    val teamLabel = profileOptions.firstOrNull { it.profileId == selectedProfileId }?.label ?: "No Teams credentials"
+                    val current = if (personalBusy) "Loading personal maps…"
+                        else if (CaltopoPersonalSession.browsingPersonal) "Personal: ${CaltopoPersonalSession.username.ifBlank { storedPersonalName ?: "account" }}"
+                        else if (credentialsMode) "Team: $teamLabel"
+                        else teamLabel
+                    Text(if (personalBusy) current else "Credentials: $current")
                     Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Select credentials")
                 }
                 org.ncssar.rid2caltopo.ui.DropdownMenu(expanded = credentialsExpanded, onDismissRequest = { credentialsExpanded = false }) {
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("Personal: ${CaltopoPersonalSession.username.ifBlank { "Sign in" }}") },
-                        onClick = {
-                            credentialsExpanded = false
-                            if (CaltopoPersonalAccountConnection.loginMode == CaltopoPersonalLoginMode.CREDENTIALS &&
-                                CaltopoPersonalSession.username.isBlank()) {
-                                showSyncPrompt = true
-                            } else {
-                                openPersonal()
-                            }
-                        }
-                    )
-                    if (CaltopoPersonalAccountConnection.loginMode == CaltopoPersonalLoginMode.CREDENTIALS &&
-                        CaltopoPersonalSession.username.isNotBlank()) {
+                    if (CaltopoPersonalAccountConnection.loginMode == CaltopoPersonalLoginMode.CREDENTIALS) {
+                        val personalLabel = CaltopoPersonalAccountConnection.personalMenuLabel(storedPersonalName)
                         androidx.compose.material3.DropdownMenuItem(
-                            text = { Text("Log out") },
+                            text = { Text(personalLabel) },
                             onClick = {
                                 credentialsExpanded = false
-                                showLogOutPrompt = true
+                                if (storedPersonalName == null) showSyncPrompt = true else selectStoredPersonal()
                             }
                         )
-                    }
-                    if (CaltopoPersonalAccountConnection.loginMode != CaltopoPersonalLoginMode.CREDENTIALS) {
+                        if (storedPersonalName != null) {
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text("Personal: Log out") },
+                                onClick = {
+                                    credentialsExpanded = false
+                                    showLogOutPrompt = true
+                                }
+                            )
+                        }
+                    } else {
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("Personal: ${CaltopoPersonalSession.username.ifBlank { "Sign in" }}") },
+                            onClick = { openPersonal() }
+                        )
                         androidx.compose.material3.DropdownMenuItem(
                             text = { Text("Edit personal account") },
                             onClick = { credentialsExpanded = false; editPersonal() }
                         )
                     }
                     profileOptions.forEach { option ->
-                        androidx.compose.material3.DropdownMenuItem(text = { Text(option.label) }, onClick = {
+                        val label = if (CaltopoPersonalAccountConnection.loginMode == CaltopoPersonalLoginMode.CREDENTIALS) {
+                            CaltopoPersonalAccountConnection.teamMenuLabel(option.label)
+                        } else option.label
+                        androidx.compose.material3.DropdownMenuItem(text = { Text(label) }, onClick = {
                             credentialsExpanded = false
                             onUIEvent(UIEvent.BrowseProfileSelected(option.profileId))
                         })
@@ -215,6 +253,8 @@ fun CaltopoHybridBrowser(
                                 withContext(Dispatchers.IO) {
                                     runCatching { CaltopoPersonalCredentialSignIn.logOut() }
                                 }
+                                personalMenuRevision++
+                                storedPersonalName = null
                                 onUIEvent(UIEvent.PersonalCredentialLoggedOut)
                             }
                         }) { Text("Log out") }

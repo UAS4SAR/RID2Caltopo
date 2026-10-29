@@ -54,6 +54,16 @@ class CaltopoPersonalAccountConnectionTest {
         assertNull(CaltopoPersonalAccountConnection.accountCatalogRequest())
     }
 
+    @Test fun personalMenuUsesTheStoredNameAndDoesNotOfferLogin() {
+        assertEquals("Personal: Log In", CaltopoPersonalAccountConnection.personalMenuLabel(null))
+        assertEquals("Personal: Log In", CaltopoPersonalAccountConnection.personalMenuLabel("  "))
+        assertEquals("Personal: Ken Taylor", CaltopoPersonalAccountConnection.personalMenuLabel("Ken Taylor"))
+        assertEquals("Team: NCSSAR", CaltopoPersonalAccountConnection.teamMenuLabel("NCSSAR"))
+        assertTrue(CaltopoPersonalAccountException("CalTopo account catalog failed (HTTP 401).", 401).rejectsStoredCredential())
+        assertTrue(CaltopoPersonalAccountException("CalTopo account catalog failed (HTTP 403).", 403).rejectsStoredCredential())
+        assertFalse(CaltopoPersonalAccountException("CalTopo account catalog failed (HTTP 500).", 500).rejectsStoredCredential())
+    }
+
     @Test fun activationNameMatchesTheCredentialDescriptionStyle() {
         assertEquals("RID2Caltopo app", CaltopoPersonalAccountConnection.DEFAULT_DEVICE_NAME)
         val url = CaltopoPersonalAccountConnection.activationUrl(

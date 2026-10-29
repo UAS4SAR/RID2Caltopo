@@ -40,6 +40,11 @@ object CaltopoPersonalAccountConnection {
     const val AUTH_LOG_TAG = "CaltopoPersonalAuth"
     const val ACTIVATION_PROMPT = "Check the box, then tap Sync Account."
     const val LOG_OUT_PROMPT = "Remove the personal CalTopo account from this device and return to the team account?"
+
+    fun personalMenuLabel(storedDisplayName: String?): String =
+        if (storedDisplayName.isNullOrBlank()) "Personal: Log In" else "Personal: $storedDisplayName"
+
+    fun teamMenuLabel(teamName: String): String = "Team: $teamName"
     private const val SIGNATURE_TTL_MS = 2 * 60 * 1000L
     private const val PENDING_TTL_MS = 5 * 60 * 1000L
     private const val MAX_ACTIVATION_BODY = 65_536
@@ -215,7 +220,7 @@ object CaltopoPersonalAccountConnection {
             throw CaltopoPersonalAccountException("CalTopo account catalog could not be loaded.")
         }
         logAuth("catalog HTTP ${response.status} bytes=${response.body.length}")
-        if (response.status != 200) throw CaltopoPersonalAccountException("CalTopo account catalog failed (HTTP ${response.status}).")
+        if (response.status != 200) throw CaltopoPersonalAccountException("CalTopo account catalog failed (HTTP ${response.status}).", response.status)
         return response.body
     }
 
@@ -791,7 +796,9 @@ class PersonalSigningDecision(
     }
 }
 
-class CaltopoPersonalAccountException(message: String) : IllegalStateException(message)
+class CaltopoPersonalAccountException(message: String, val httpStatus: Int? = null) : IllegalStateException(message) {
+    fun rejectsStoredCredential(): Boolean = httpStatus == 401 || httpStatus == 403
+}
 
 interface CaltopoPersonalAccountStore {
     fun load(): CaltopoPersonalAccountRecord?
