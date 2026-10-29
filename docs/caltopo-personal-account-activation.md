@@ -74,7 +74,7 @@ The same concatenation applies to a custom-scheme prefix that also keeps the non
 - `code`: 12-character credential id
 - `key`: 44-character base64 signing secret (32 bytes)
 - `account.id`: 6 characters
-- `account.type`: `account`
+- `account.type`: a short word. The live object is a GeoJSON feature, so this value is `Feature` (7 characters). Requiring the literal `account` rejected that HTTP 200. `properties.class` remains the personal-account check (`UserAccount`).
 - `account.properties`: `email`, `firstName`, `lastName`, `title`, `subscriptionType`, `subscriptionStatus`, `subscriptionExpires` (milliseconds), `subscriptionRenew`, `guest`, `featuresId`, `class` (`UserAccount` on this account), `provider`, `updated`
 
 No secret from that response is recorded here. The device name typed on the activation page is not the credentials-table Description. See below.

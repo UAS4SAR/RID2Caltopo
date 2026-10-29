@@ -256,6 +256,17 @@ object CaltopoPersonalAccountConnection {
         runCatching { authLog(message) }
     }
 
+    private fun rejectActivation(reason: String): Nothing {
+        logAuth("activation rejected: $reason")
+        throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
+    }
+
+    private fun decodeSigningKey(signingKey: String): ByteArray? {
+        val standard = runCatching { java.util.Base64.getDecoder().decode(signingKey) }.getOrNull()
+        if (standard != null) return standard
+        return runCatching { java.util.Base64.getUrlDecoder().decode(signingKey) }.getOrNull()
+    }
+
     fun enrollmentWasCancelled(): Boolean = synchronized(lock) { enrollmentCancelled }
 
     fun appReturnUrl(nonce: String): String {
@@ -338,35 +349,37 @@ object CaltopoPersonalAccountConnection {
     }
 
     fun parseActivationResponse(rawBody: String): ParsedActivation {
-        if (rawBody.length > MAX_ACTIVATION_BODY) throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
+        if (rawBody.length > MAX_ACTIVATION_BODY) rejectActivation("body length")
         val json = try {
             JSONObject(rawBody)
         } catch (error: Exception) {
-            throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
+            rejectActivation("json")
         }
         if (json.optString("status") == "error") throw CaltopoPersonalAccountException("CalTopo activation was rejected.")
         val source = json.optJSONObject("result") ?: json
         val credentialId = source.optString("code")
         val signingKey = source.optString("key")
-        val account = source.optJSONObject("account") ?: throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
+        val account = source.optJSONObject("account") ?: rejectActivation("account missing")
         val accountId = account.optString("id")
         val accountType = account.optString("type")
-        val properties = account.optJSONObject("properties") ?: throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
+        val properties = account.optJSONObject("properties") ?: rejectActivation("properties missing")
         if (properties.optString("class") != "UserAccount") {
+            logAuth("activation rejected: properties.class")
             throw CaltopoPersonalAccountException("CalTopo activation did not return a personal account.")
         }
-        if (accountType != "account" || !ACCOUNT_ID.matches(accountId) || !CREDENTIAL_ID.matches(credentialId) || signingKey.length != 44) {
-            throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
+        // CalTopo account objects are GeoJSON features. type is a short word such as
+        // Feature (7 characters), not the properties.class value.
+        if (!ACCOUNT_TYPE.matches(accountType)) rejectActivation("account.type length=${accountType.length}")
+        if (!ACCOUNT_ID.matches(accountId)) rejectActivation("account.id length=${accountId.length}")
+        if (!CREDENTIAL_ID.matches(credentialId)) rejectActivation("credential id length=${credentialId.length}")
+        if (signingKey.length != 44) rejectActivation("key length=${signingKey.length}")
+        if (properties.has("subscriptionExpires")) {
+            val expires = properties.opt("subscriptionExpires")
+            if (expires != null && expires != JSONObject.NULL && expires !is Number) rejectActivation("subscriptionExpires")
         }
-        if (properties.has("subscriptionExpires") && properties.opt("subscriptionExpires") !is Number) {
-            throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
-        }
-        val keyBytes = try {
-            java.util.Base64.getDecoder().decode(signingKey)
-        } catch (error: IllegalArgumentException) {
-            throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
-        }
-        if (keyBytes.size != 32) throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
+        val keyBytes = decodeSigningKey(signingKey) ?: rejectActivation("key decode")
+        if (keyBytes.size != 32) rejectActivation("key bytes=${keyBytes.size}")
+        logAuth("activation accepted type=$accountType")
         val person = listOf(properties.optString("firstName"), properties.optString("lastName"))
             .map { it.trim() }.filter { it.isNotEmpty() }.joinToString(" ")
         val display = person.ifBlank { null }
@@ -554,6 +567,7 @@ object CaltopoPersonalAccountConnection {
 
     private val ALLOWED_HOSTS = setOf("caltopo.com", "sartopo.com")
     private val ACCOUNT_ID = Regex("^[A-Za-z0-9]{6}$")
+    private val ACCOUNT_TYPE = Regex("^[A-Za-z]{1,32}$")
     private val CREDENTIAL_ID = Regex("^[A-Za-z0-9]{12}$")
     private val ACTIVATION_CODE = Regex("^[A-Za-z0-9]{8}$")
     private val NONCE = Regex("^[0-9a-f]{32}$")

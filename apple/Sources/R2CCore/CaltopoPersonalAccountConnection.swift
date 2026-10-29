@@ -349,14 +349,25 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         let accountType = account?["type"] as? String ?? ""
         let credentialID = source["code"] as? String ?? ""
         let signingKey = source["key"] as? String ?? ""
-        if let expires = properties?["subscriptionExpires"], !(expires is NSNumber) {
+        if let expires = properties?["subscriptionExpires"], !(expires is NSNull), !(expires is NSNumber) {
+            Self.credentialLog.error("activation rejected: subscriptionExpires")
             throw CaltopoPersonalAccountError.rejected
         }
-        guard accountType == "account",
-              accountID.range(of: "^[A-Za-z0-9]{6}$", options: .regularExpression) != nil,
-              credentialID.range(of: "^[A-Za-z0-9]{12}$", options: .regularExpression) != nil,
-              signingKey.count == 44,
-              let key = Data(base64Encoded: signingKey), key.count == 32 else {
+        // CalTopo account objects are GeoJSON features. type is a short word such as Feature.
+        guard accountType.range(of: "^[A-Za-z]{1,32}$", options: .regularExpression) != nil else {
+            Self.credentialLog.error("activation rejected: account.type")
+            throw CaltopoPersonalAccountError.rejected
+        }
+        guard accountID.range(of: "^[A-Za-z0-9]{6}$", options: .regularExpression) != nil else {
+            Self.credentialLog.error("activation rejected: account.id")
+            throw CaltopoPersonalAccountError.rejected
+        }
+        guard credentialID.range(of: "^[A-Za-z0-9]{12}$", options: .regularExpression) != nil else {
+            Self.credentialLog.error("activation rejected: credential id")
+            throw CaltopoPersonalAccountError.rejected
+        }
+        guard signingKey.count == 44, let key = Self.decodeSigningKey(signingKey), key.count == 32 else {
+            Self.credentialLog.error("activation rejected: key")
             throw CaltopoPersonalAccountError.rejected
         }
         let person = [properties?["firstName"] as? String, properties?["lastName"] as? String]
@@ -366,6 +377,12 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
             ?? (properties?["email"] as? String)?.nilIfBlank
             ?? accountID
         return ParsedActivation(accountID: accountID, credentialID: credentialID, signingKey: signingKey, displayName: display, accountType: accountType)
+    }
+
+    private static func decodeSigningKey(_ signingKey: String) -> Data? {
+        if let standard = Data(base64Encoded: signingKey), standard.count == 32 { return standard }
+        let url = signingKey.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        return Data(base64Encoded: url)
     }
 
     public static func customSchemePrefix(scheme: String, nonce: String) throws -> String {

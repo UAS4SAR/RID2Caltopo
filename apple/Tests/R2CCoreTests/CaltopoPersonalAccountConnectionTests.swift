@@ -29,6 +29,18 @@ final class CaltopoPersonalAccountConnectionTests: XCTestCase {
         XCTAssertFalse(CaltopoPersonalAccountConnection.activationPrompt.contains("Synch"))
     }
 
+    func testLiveFeatureShapeIsAccepted() throws {
+        let key = Data((0..<32).map { UInt8(($0 * 17 + 9) & 0xff) }).base64EncodedString()
+        XCTAssertEqual(key.count, 44)
+        XCTAssertEqual("Feature".count, 7)
+        let json = #"{"code":"Ab12Cd34Ef56","key":"\#(key)","account":{"id":"ACCT01","type":"Feature","properties":{"class":"UserAccount","subscriptionExpires":null}}}"#
+        let parsed = try CaltopoPersonalAccountConnection.parseActivationResponse(Data(json.utf8))
+        XCTAssertEqual(parsed.accountType, "Feature")
+        XCTAssertEqual(parsed.accountID, "ACCT01")
+        XCTAssertEqual(parsed.credentialID, "Ab12Cd34Ef56")
+        XCTAssertFalse(parsed.description.contains(key))
+    }
+
     func testPersonalLoginModeKeepsAnExistingCookieSessionUntilChosen() {
         XCTAssertEqual(CaltopoPersonalLoginMode.resolve(stored: nil, cookieSessionAlreadyInUse: false), .credentials)
         XCTAssertEqual(CaltopoPersonalLoginMode.resolve(stored: nil, cookieSessionAlreadyInUse: true), .sessionCookies)

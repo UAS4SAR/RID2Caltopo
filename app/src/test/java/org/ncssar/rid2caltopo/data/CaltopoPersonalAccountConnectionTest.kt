@@ -98,6 +98,38 @@ class CaltopoPersonalAccountConnectionTest {
         }.isFailure)
     }
 
+    @Test fun exchangeAcceptsTheLiveFeatureShapeAndNamesARejection() {
+        val key = Base64.getEncoder().encodeToString(ByteArray(32) { (it * 17 + 9).toByte() })
+        assertEquals(44, key.length)
+        val code = "Ab12Cd34Ef56"
+        val accountId = "ACCT01"
+        assertEquals(12, code.length)
+        assertEquals(6, accountId.length)
+        assertEquals(7, "Feature".length)
+        val body = """{"code":"$code","key":"$key","account":{"id":"$accountId","type":"Feature","properties":{"class":"UserAccount","email":"pilot@example.com","firstName":"Test","lastName":"Pilot","subscriptionExpires":null}}}"""
+        val logs = mutableListOf<String>()
+        CaltopoPersonalAccountConnection.authLog = { logs += it }
+        val parsed = CaltopoPersonalAccountConnection.parseActivationResponse(body)
+        assertEquals(accountId, parsed.accountId)
+        assertEquals(code, parsed.credentialId)
+        assertEquals("Feature", parsed.accountType)
+        assertEquals("Test Pilot", parsed.displayName)
+        assertTrue(logs.any { it == "activation accepted type=Feature" })
+        val urlKey = Base64.getUrlEncoder().encodeToString(ByteArray(32) { 0xFF.toByte() })
+        assertEquals(44, urlKey.length)
+        val urlBody = """{"code":"$code","key":"$urlKey","account":{"id":"$accountId","type":"Feature","properties":{"class":"UserAccount"}}}"""
+        assertEquals(code, CaltopoPersonalAccountConnection.parseActivationResponse(urlBody).credentialId)
+        val rejected = runCatching {
+            CaltopoPersonalAccountConnection.parseActivationResponse("""{"code":"short","key":"$key","account":{"id":"$accountId","type":"!!!","properties":{"class":"UserAccount"}}}""")
+        }.exceptionOrNull()!!
+        assertTrue(rejected.message!!.contains("response was rejected"))
+        val trace = logs.joinToString("\n")
+        assertTrue(trace.contains("activation rejected: account.type length=3"))
+        assertFalse(trace.contains(key))
+        assertFalse(trace.contains(urlKey))
+        assertFalse(trace.contains("pilot@example.com"))
+    }
+
     @Test fun exchangeParsesDesktopShapeAndBindsHostPlusAccount() {
         val key = Base64.getEncoder().encodeToString(ByteArray(32) { 7 })
         val body = """{"code":"cred12345678","key":"$key","account":{"id":"USER01","type":"account","properties":{"class":"UserAccount","email":"pilot@example.com","firstName":"Test","lastName":"Pilot","title":"Pilot","subscriptionType":"pro","subscriptionStatus":"active","subscriptionExpires":1790000000000,"subscriptionRenew":true,"guest":false,"featuresId":"pro","provider":"google","updated":1790000000000}}}"""
