@@ -1017,6 +1017,7 @@ struct ContentView: View {
 
     private func handleIncomingURL(_ url: URL) {
         let rawValue = url.absoluteString
+        if url.scheme?.lowercased() == CaltopoPersonalAccountConnection.returnScheme { return }
         if url.scheme == "r2creauth" {
             trackerReauthenticationBrowserOpen = false
             trackerReauthenticationURL = nil

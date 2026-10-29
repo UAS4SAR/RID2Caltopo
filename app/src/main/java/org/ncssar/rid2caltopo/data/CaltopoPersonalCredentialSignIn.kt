@@ -17,7 +17,7 @@ object CaltopoPersonalCredentialSignIn {
         val status = existing ?: CaltopoPersonalAccountConnection.enroll(
             deviceName = deviceName,
             browser = CaltopoSystemBrowser { url ->
-                context.startActivity(CaltopoPersonalAccountBrowser.systemBrowserIntent(url))
+                CaltopoPersonalAccountBrowser.open(context, url)
             },
             http = CaltopoPersonalAccountHttps
         )

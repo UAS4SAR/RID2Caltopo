@@ -771,7 +771,8 @@ fun StandAloneOptionsDialog(
     } else if (hasCreds) {
         "Existing credentials found. Would you like to select a map?"
     } else {
-        "Sign in with your personal CalTopo account to choose a map. Teams credentials are optional."
+        "Sign in with your personal CalTopo account to choose a map. Teams credentials are optional." +
+            if (credentialsMode) " " + org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.ACTIVATION_PROMPT else ""
     }
     AlertDialog(
         onDismissRequest = if (loading) ({}) else onDismiss, // disable dismiss while loading

@@ -1,3 +1,4 @@
+import AuthenticationServices
 import Foundation
 import R2CCore
 import Security
@@ -60,19 +61,61 @@ struct AppleCaltopoPersonalAccountKeychain: CaltopoPersonalAccountStore {
     }
 }
 
-/// Opens activation in Safari or the system browser. Not a WKWebView.
+/// Auth session over the app. Google sign-in stays in that session, not in a WKWebView.
+/// The session stays in the foreground, so the loopback listener is not frozen.
 struct AppleCaltopoPersonalAccountBrowser: CaltopoPersonalAccountBrowser {
+    private let session = AppleCaltopoAuthSession()
+
     func openActivationPage(_ url: URL) async throws {
         guard CaltopoPersonalAccountConnection.isActivationURL(url) else {
             throw CaltopoPersonalAccountError.invalidReturn
         }
-        let opened: Bool = await withCheckedContinuation { continuation in
+        try await session.present(url)
+    }
+
+    func dismissActivation() {
+        session.dismiss()
+    }
+}
+
+final class AppleCaltopoAuthSession: NSObject, ASWebAuthenticationPresentationContextProviding, @unchecked Sendable {
+    private var authSession: ASWebAuthenticationSession?
+    private var intentionalDismiss = false
+
+    func present(_ url: URL) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             DispatchQueue.main.async {
-                UIApplication.shared.open(url, options: [:]) { success in
-                    continuation.resume(returning: success)
+                let session = ASWebAuthenticationSession(
+                    url: url,
+                    callbackURLScheme: CaltopoPersonalAccountConnection.returnScheme
+                ) { callback, _ in
+                    if self.intentionalDismiss { return }
+                    if callback?.scheme?.lowercased() == CaltopoPersonalAccountConnection.returnScheme { return }
+                    CaltopoPersonalAccountConnection.shared.cancelActiveEnrollment()
+                }
+                session.presentationContextProvider = self
+                session.prefersEphemeralWebBrowserSession = false
+                self.authSession = session
+                if session.start() {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: CaltopoPersonalAccountError.listenerFailed)
                 }
             }
         }
-        if !opened { throw CaltopoPersonalAccountError.listenerFailed }
+    }
+
+    func dismiss() {
+        DispatchQueue.main.async {
+            self.intentionalDismiss = true
+            self.authSession?.cancel()
+            self.authSession = nil
+        }
+    }
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        return scene?.windows.first { $0.isKeyWindow } ?? scene?.windows.first ?? ASPresentationAnchor()
     }
 }

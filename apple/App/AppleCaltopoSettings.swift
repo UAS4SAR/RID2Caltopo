@@ -56,6 +56,7 @@ final class AppleCaltopoSettings: ObservableObject {
     @Published private(set) var personalLoginMode: CaltopoPersonalLoginMode
     @Published private(set) var personalCredentialSummary = "Not connected"
     @Published private(set) var personalCredentialBusy = false
+    @Published var openAccountBrowserAfterCredentialSignIn = false
     private static let personalLoginModeKey = "caltopo.personalLoginSupport"
     @Published var usesPersonalCredentials: Bool {
         didSet { defaults.set(usesPersonalCredentials, forKey: "caltopo.usesPersonalCredentials") }
@@ -384,6 +385,7 @@ final class AppleCaltopoSettings: ObservableObject {
             personalUsername = connected.displayName
             selectedPersonalAccountID = connected.accountID
             await loadCredentialPersonalMaps()
+            openAccountBrowserAfterCredentialSignIn = true
         } catch {
             status = error.localizedDescription
         }

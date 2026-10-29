@@ -183,6 +183,14 @@ fun CaltopoHybridBrowser(
                     }
                 }
             }
+            if (CaltopoPersonalAccountConnection.loginMode == CaltopoPersonalLoginMode.CREDENTIALS &&
+                CaltopoPersonalSession.username.isBlank()) {
+                Text(
+                    CaltopoPersonalAccountConnection.ACTIVATION_PROMPT,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
 
             HorizontalDivider()
             if (loading) {

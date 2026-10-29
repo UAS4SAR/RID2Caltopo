@@ -207,6 +207,7 @@ class CaltopoPersonalAccountConnectionTest {
                         socket.getOutputStream().flush()
                         val response = socket.getInputStream().readBytes().toString(Charsets.UTF_8)
                         assertTrue(response.startsWith("HTTP/1.1 200"))
+                        assertTrue(response.contains("rid2caltopo://caltopo-return/"))
                         assertFalse(response.contains(key))
                         assertFalse(response.contains("abcd1234"))
                         accepted = true
@@ -237,6 +238,30 @@ class CaltopoPersonalAccountConnectionTest {
         val normalized = CaltopoPersonalCatalog.normalize(body!!, "USER01")
         assertTrue(normalized.getJSONArray("accounts").toString().contains("WORK01"))
         assertEquals("Incident Workspace", JSONObject(workspace).getJSONObject("result").getJSONArray("accounts").getJSONObject(1).getJSONObject("properties").getString("alias"))
+    }
+
+    @Test fun successPageReturnsToTheAppWithoutTheActivationCode() {
+        val nonce = "0123456789abcdef0123456789abcdef"
+        val page = CaltopoPersonalAccountConnection.activationSuccessPage(nonce)
+        assertEquals("rid2caltopo://caltopo-return/$nonce", CaltopoPersonalAccountConnection.appReturnUrl(nonce))
+        assertTrue(page.contains("rid2caltopo://caltopo-return/$nonce"))
+        assertFalse(page.contains("code="))
+        assertEquals(
+            "On CalTopo, check the box and tap Sync Account.",
+            CaltopoPersonalAccountConnection.ACTIVATION_PROMPT
+        )
+    }
+
+    @Test fun cancelEnrollmentStopsTheListenerAndDoesNotStoreACredential() {
+        val error = runCatching {
+            CaltopoPersonalAccountConnection.enroll(
+                browser = { CaltopoPersonalAccountConnection.cancelEnrollment() },
+                http = { throw IllegalStateException("exchange") },
+                timeoutMilliseconds = 5_000
+            )
+        }.exceptionOrNull()!!
+        assertTrue(error.message!!.contains("cancelled"))
+        assertNull(CaltopoPersonalAccountConnection.status("caltopo.com"))
     }
 
     @Test fun expiredActivationAndFailedExchangeDoNotKeepTheCodeOrKey() {

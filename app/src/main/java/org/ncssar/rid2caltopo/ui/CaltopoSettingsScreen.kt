@@ -59,6 +59,7 @@ fun CaltopoSettingsScreen(
     onDismiss: () -> Unit,
     onShowDeveloperTools: () -> Unit,
     onSelectIncident: () -> Unit,
+    onPersonalAccountConnected: () -> Unit = {},
     settingsViewModel: CaltopoSettingsViewModel = viewModel(),
     startAtProximity: Boolean = false
 ) {
@@ -240,7 +241,7 @@ fun CaltopoSettingsScreen(
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.fillMaxWidth()
                 )
-                PersonalLoginSupportSetting()
+                PersonalLoginSupportSetting(onPersonalAccountConnected)
                 Spacer(modifier = Modifier.height(16.dp))
                 HorizontalDivider()
                 Spacer(modifier = Modifier.height(16.dp))
@@ -844,7 +845,7 @@ private fun Modifier.verticalScrollbar(state: ScrollState, color: Color): Modifi
 }
 
 @Composable
-private fun PersonalLoginSupportSetting() {
+private fun PersonalLoginSupportSetting(onPersonalAccountConnected: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var mode by remember { mutableStateOf(org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.loginMode) }
@@ -892,13 +893,20 @@ private fun PersonalLoginSupportSetting() {
     }
     if (mode == CaltopoPersonalLoginMode.CREDENTIALS) {
         Text(summary, style = MaterialTheme.typography.bodyMedium)
+        Text(
+            org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.ACTIVATION_PROMPT,
+            style = MaterialTheme.typography.bodySmall
+        )
         Button(
             onClick = {
                 credentialRevision++
                 busy = true
                 scope.launch {
                     val result = withContext(Dispatchers.IO) { runCatching { CaltopoPersonalCredentialSignIn.connect(context) } }
-                    result.onSuccess { CaltopoPersonalCredentialSignIn.publishCatalog(it.catalog) }
+                    result.onSuccess {
+                        CaltopoPersonalCredentialSignIn.publishCatalog(it.catalog)
+                        onPersonalAccountConnected()
+                    }
                     summary = result.fold(
                         onSuccess = { "Connected as ${it.status.displayName}" },
                         onFailure = { it.message ?: "CalTopo sign-in failed." }

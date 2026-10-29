@@ -215,7 +215,10 @@ struct CaltopoSettingsView: View {
                 .disabled(settings.personalCredentialBusy || settings.isLoadingPersonalMaps)
                 if settings.personalLoginMode == .credentials {
                     SettingsValue("Account credential", value: settings.personalCredentialSummary)
-                    Button(settings.personalCredentialBusy ? "Waiting for the browser…" : "Sign in") {
+                    Text(CaltopoPersonalAccountConnection.activationPrompt)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button(settings.personalCredentialBusy ? "Waiting for CalTopo…" : "Sign in") {
                         Task { await settings.signInWithPersonalCredential() }
                     }
                     .disabled(settings.personalCredentialBusy)
@@ -555,6 +558,12 @@ struct CaltopoSettingsView: View {
                     onSave(settings.disconnectMap())
                     showingIncidentSelection = false
                 })
+        }
+        .onChange(of: settings.openAccountBrowserAfterCredentialSignIn) { _, open in
+            if open {
+                settings.openAccountBrowserAfterCredentialSignIn = false
+                showingTeamMaps = true
+            }
         }
         .fullScreenCover(isPresented: $showingTeamMaps) {
             CaltopoTeamMapBrowser(settings: settings, onCredentialSelect: { profileID in
@@ -1054,6 +1063,9 @@ struct CaltopoTeamMapBrowser: View {
             .safeAreaInset(edge: .top) {
                 VStack(alignment: .leading, spacing: 8) {
                     Menu {
+                        if settings.personalLoginMode == .credentials && settings.personalUsername.isEmpty {
+                            Text(CaltopoPersonalAccountConnection.activationPrompt)
+                        }
                         Button("Personal: \(settings.personalUsername.isEmpty ? "Sign in" : settings.personalUsername)") {
                             if settings.personalLoginMode == .credentials {
                                 Task { await settings.signInWithPersonalCredential() }

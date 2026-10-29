@@ -18,6 +18,15 @@ final class CaltopoPersonalAccountConnectionTests: XCTestCase {
         XCTAssertEqual(request.fields["signature"], signature)
     }
 
+    func testActivationSuccessPageReturnsToTheAppWithoutTheCode() throws {
+        let nonce = "0123456789abcdef0123456789abcdef"
+        let page = try CaltopoPersonalAccountConnection.activationSuccessPage(nonce: nonce)
+        XCTAssertEqual(try CaltopoPersonalAccountConnection.appReturnURL(nonce: nonce), "rid2caltopo://caltopo-return/\(nonce)")
+        XCTAssertTrue(page.contains("rid2caltopo://caltopo-return/\(nonce)"))
+        XCTAssertFalse(page.contains("code="))
+        XCTAssertEqual(CaltopoPersonalAccountConnection.activationPrompt, "On CalTopo, check the box and tap Sync Account.")
+    }
+
     func testPersonalLoginModeKeepsAnExistingCookieSessionUntilChosen() {
         XCTAssertEqual(CaltopoPersonalLoginMode.resolve(stored: nil, cookieSessionAlreadyInUse: false), .credentials)
         XCTAssertEqual(CaltopoPersonalLoginMode.resolve(stored: nil, cookieSessionAlreadyInUse: true), .sessionCookies)

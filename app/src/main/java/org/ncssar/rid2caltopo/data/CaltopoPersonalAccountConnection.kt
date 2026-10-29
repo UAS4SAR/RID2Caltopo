@@ -36,6 +36,8 @@ object CaltopoPersonalAccountConnection {
     const val LOGIN_MODE_KEY = "login_mode"
     const val DEFAULT_DEVICE_NAME = "RID2Caltopo"
     const val CREDENTIAL_TITLE = "Last synced by RID2Caltopo app"
+    const val RETURN_SCHEME = "rid2caltopo"
+    const val ACTIVATION_PROMPT = "On CalTopo, check the box and tap Sync Account."
     private const val SIGNATURE_TTL_MS = 2 * 60 * 1000L
     private const val PENDING_TTL_MS = 5 * 60 * 1000L
     private const val MAX_ACTIVATION_BODY = 65_536
@@ -54,7 +56,10 @@ object CaltopoPersonalAccountConnection {
     var clock: () -> Long = { System.currentTimeMillis() }
     var titleClient: (CredentialTitleRequest) -> CaltopoActivationHttp = { CaltopoActivationHttp(200, "") }
     var titleFailureLog: (String) -> Unit = {}
+    var onEnrollmentAbandoned: (() -> Unit)? = null
     var randomBytes: (Int) -> ByteArray = { count -> ByteArray(count).also { SecureRandom().nextBytes(it) } }
+    private var listening: ServerSocket? = null
+    private var enrollmentCancelled = false
 
     @JvmStatic fun install(store: CaltopoPersonalAccountStore, featureEnabled: Boolean = this.featureEnabled) {
         synchronized(lock) {
@@ -77,6 +82,11 @@ object CaltopoPersonalAccountConnection {
         install(CaltopoPersonalAccountMemoryStore(), featureEnabled = false)
         titleClient = { CaltopoActivationHttp(200, "") }
         titleFailureLog = {}
+        onEnrollmentAbandoned = null
+        synchronized(lock) {
+            enrollmentCancelled = false
+            listening = null
+        }
         clock = { System.currentTimeMillis() }
         randomBytes = { count -> ByteArray(count).also { SecureRandom().nextBytes(it) } }
     }
@@ -189,6 +199,10 @@ object CaltopoPersonalAccountConnection {
         val deadline = clock() + timeoutMilliseconds
         val generation = authorizationGeneration
         try {
+            synchronized(lock) {
+                enrollmentCancelled = false
+                listening = server
+            }
             val accept = Thread({
                 pending.acceptedReturn = awaitCode(server, pending, deadline)
             }, "caltopo-personal-activate")
@@ -196,7 +210,9 @@ object CaltopoPersonalAccountConnection {
             accept.start()
             browser.open(pending.activationUrl)
             accept.join(timeoutMilliseconds + 2_000)
-            val returned = pending.acceptedReturn ?: throw CaltopoPersonalAccountException("CalTopo activation was not completed.")
+            val returned = pending.acceptedReturn ?: throw CaltopoPersonalAccountException(
+                if (enrollmentWasCancelled()) "CalTopo sign-in was cancelled." else "CalTopo sign-in timed out."
+            )
             if (generation != authorizationGeneration) throw CaltopoPersonalAccountException("Personal CalTopo sign-in was cancelled.")
             val record = exchange(pending, returned, http)
             if (generation != authorizationGeneration) throw CaltopoPersonalAccountException("Personal CalTopo sign-in was cancelled.")
@@ -205,8 +221,36 @@ object CaltopoPersonalAccountConnection {
             if (generation == authorizationGeneration) publishCredentialTitle(record)
             return record.status()
         } finally {
+            val abandoned = pending.acceptedReturn == null
             server.close()
+            synchronized(lock) { if (listening === server) listening = null }
+            if (abandoned) runCatching { onEnrollmentAbandoned?.invoke() }
         }
+    }
+
+    /** Closes the loopback listener. The in-app browser calls this when the operator cancels. */
+    fun cancelEnrollment() {
+        synchronized(lock) {
+            enrollmentCancelled = true
+            runCatching { listening?.close() }
+        }
+    }
+
+    fun enrollmentWasCancelled(): Boolean = synchronized(lock) { enrollmentCancelled }
+
+    fun appReturnUrl(nonce: String): String {
+        if (!NONCE.matches(nonce)) throw CaltopoPersonalAccountException("CalTopo activation return was rejected.")
+        return "$RETURN_SCHEME://caltopo-return/$nonce"
+    }
+
+    /** Shown in the browser after CalTopo redirects to loopback. The activation code is not in this page. */
+    fun activationSuccessPage(nonce: String): String {
+        val url = appReturnUrl(nonce)
+        return "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
+            "<meta http-equiv=\"refresh\" content=\"0;url=$url\">" +
+            "<title>RID2Caltopo</title></head><body>" +
+            "<p>CalTopo account connected. Returning to RID2Caltopo.</p>" +
+            "<p><a href=\"$url\">Return to RID2Caltopo</a></p></body></html>"
     }
 
     fun begin(host: String, deviceName: String, port: Int, now: Long = clock()): PendingActivation {
@@ -360,7 +404,7 @@ object CaltopoPersonalAccountConnection {
                 val target = readRequestTarget(client) ?: return@use
                 val code = runCatching { callbackCode(target, pending) }.getOrNull()
                 val body = if (code != null) {
-                    "<html><body>RID2Caltopo is connected. You can return to the app.</body></html>"
+                    activationSuccessPage(pending.pathToken)
                 } else {
                     "<html><body>RID2Caltopo did not accept this activation request.</body></html>"
                 }

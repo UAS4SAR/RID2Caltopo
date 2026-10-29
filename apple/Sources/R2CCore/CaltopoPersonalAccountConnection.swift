@@ -30,6 +30,8 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
     public static let featureFlagKey = "caltopo.personalAccountActivation"
     public static let defaultDeviceName = "RID2Caltopo"
     public static let credentialTitle = "Last synced by RID2Caltopo app"
+    public static let activationPrompt = "On CalTopo, check the box and tap Sync Account."
+    public static let returnScheme = "rid2caltopo"
     private static let credentialLog = Logger(subsystem: "org.ncssar.RID2Caltopo", category: "CalTopoAccount")
     private static let pendingLifetime: TimeInterval = 5 * 60
 
@@ -41,6 +43,8 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
     private var cached: CaltopoPersonalAccountRecord?
     private var cacheValid = false
     private var pending: PendingActivation?
+    private var listenerFD: Int32 = -1
+    private var enrollmentCancelled = false
     private var clock: () -> Date = { Date() }
     private var randomBytes: (Int) -> Data = { count in
         var bytes = [UInt8](repeating: 0, count: count)
@@ -249,12 +253,19 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         timeout: TimeInterval = 5 * 60
     ) async throws -> CaltopoPersonalAccountStatus {
         let bound = try CaltopoPersonalAccountLoopback.bind()
-        defer { Darwin.close(bound.fd) }
+        beginEnrollmentListener(bound.fd)
+        defer {
+            browser.dismissActivation()
+            endEnrollmentListener()
+            Darwin.close(bound.fd)
+        }
         let pending = try begin(host: host, deviceName: deviceName, port: bound.port)
         let gate = ActivationGate()
         let thread = Thread {
             gate.finish(Result {
-                try CaltopoPersonalAccountLoopback.awaitCode(fd: bound.fd, pending: pending, timeout: timeout)
+                try CaltopoPersonalAccountLoopback.awaitCode(fd: bound.fd, pending: pending, timeout: timeout) {
+                    self.isEnrollmentCancelled
+                }
             })
         }
         thread.name = "caltopo-personal-activate"
@@ -267,6 +278,31 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         try write(record)
         await publishCredentialTitle(record)
         return record.status
+    }
+
+    public func cancelActiveEnrollment() {
+        lock.lock()
+        enrollmentCancelled = true
+        let fd = listenerFD
+        lock.unlock()
+        if fd >= 0 { _ = Darwin.shutdown(fd, SHUT_RDWR) }
+    }
+
+    public static func appReturnURL(nonce: String) throws -> String {
+        guard nonce.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil else {
+            throw CaltopoPersonalAccountError.invalidReturn
+        }
+        return "\(returnScheme)://caltopo-return/\(nonce)"
+    }
+
+    /// Shown after CalTopo redirects to loopback. The activation code is not in this page.
+    public static func activationSuccessPage(nonce: String) throws -> String {
+        let url = try appReturnURL(nonce: nonce)
+        return "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
+            "<meta http-equiv=\"refresh\" content=\"0;url=\(url)\">" +
+            "<title>RID2Caltopo</title></head><body>" +
+            "<p>CalTopo account connected. Returning to RID2Caltopo.</p>" +
+            "<p><a href=\"\(url)\">Return to RID2Caltopo</a></p></body></html>"
     }
 
     public func credentialTitleRequest(_ record: CaltopoPersonalAccountRecord, now: Date = Date()) throws -> CaltopoCredentialTitleRequest {
@@ -462,6 +498,25 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         return value
     }
 
+    private func beginEnrollmentListener(_ fd: Int32) {
+        lock.lock()
+        listenerFD = fd
+        enrollmentCancelled = false
+        lock.unlock()
+    }
+
+    private func endEnrollmentListener() {
+        lock.lock()
+        listenerFD = -1
+        lock.unlock()
+    }
+
+    private var isEnrollmentCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return enrollmentCancelled
+    }
+
     private func currentDate() -> Date {
         lock.lock()
         defer { lock.unlock() }
@@ -502,8 +557,10 @@ public protocol CaltopoPersonalAccountStore: Sendable {
 }
 
 public protocol CaltopoPersonalAccountBrowser: Sendable {
-    /// System browser. Google sign-in must not run in an embedded web view.
+    /// System auth session. Google sign-in must not run in an embedded web view.
     func openActivationPage(_ url: URL) async throws
+    /// Dismiss the auth session after the code is stored, or when enrollment stops.
+    func dismissActivation()
 }
 
 public protocol CaltopoPersonalAccountExchange: Sendable {
@@ -621,6 +678,8 @@ public enum CaltopoPersonalAccountError: Error, Equatable, LocalizedError {
     case exchangeFailed(Int)
     case listenerFailed
     case unavailable
+    case cancelled
+    case timedOut
 
     public var errorDescription: String? {
         switch self {
@@ -633,6 +692,8 @@ public enum CaltopoPersonalAccountError: Error, Equatable, LocalizedError {
         case .exchangeFailed(let status): return "CalTopo activation exchange failed (HTTP \(status))."
         case .listenerFailed: return "CalTopo activation could not listen for the browser return."
         case .unavailable: return "Personal CalTopo credential could not be read. Team credentials were not used."
+        case .cancelled: return "CalTopo sign-in was cancelled."
+        case .timedOut: return "CalTopo sign-in timed out."
         }
     }
 }
@@ -731,16 +792,22 @@ enum CaltopoPersonalAccountLoopback {
         return (fd, Int(UInt16(bigEndian: actual.sin_port)))
     }
 
-    static func awaitCode(fd: Int32, pending: PendingActivation, timeout: TimeInterval) throws -> CaltopoActivationReturn {
+    static func awaitCode(fd: Int32, pending: PendingActivation, timeout: TimeInterval, cancelled: () -> Bool = { false }) throws -> CaltopoActivationReturn {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
+            if cancelled() { throw CaltopoPersonalAccountError.cancelled }
             var pollInfo = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
             let remaining = Int32(max(1, deadline.timeIntervalSinceNow * 1000))
             let ready = poll(&pollInfo, 1, min(remaining, 1000))
             if ready == 0 { continue }
-            if ready < 0 { continue }
+            if ready < 0 || (pollInfo.revents & Int16(POLLNVAL)) != 0 {
+                throw cancelled() ? CaltopoPersonalAccountError.cancelled : CaltopoPersonalAccountError.timedOut
+            }
             let client = accept(fd, nil, nil)
-            if client < 0 { continue }
+            if client < 0 {
+                if cancelled() { throw CaltopoPersonalAccountError.cancelled }
+                continue
+            }
             defer { close(client) }
             var header = [UInt8](repeating: 0, count: 8192)
             var used = 0
@@ -761,9 +828,12 @@ enum CaltopoPersonalAccountLoopback {
                 }
             }
             let returned = target.flatMap { try? CaltopoPersonalAccountConnection.shared.callbackCode($0, pending: pending) }
-            let html = returned == nil
-                ? "<html><body>RID2Caltopo did not accept this activation request.</body></html>"
-                : "<html><body>RID2Caltopo is connected. You can return to the app.</body></html>"
+            let html: String
+            if returned == nil {
+                html = "<html><body>RID2Caltopo did not accept this activation request.</body></html>"
+            } else {
+                html = try CaltopoPersonalAccountConnection.activationSuccessPage(nonce: pending.pathToken)
+            }
             let status = returned == nil ? "404 Not Found" : "200 OK"
             let payload = html.data(using: .utf8) ?? Data()
             let response = "HTTP/1.1 \(status)\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(payload.count)\r\nConnection: close\r\n\r\n"
@@ -773,7 +843,7 @@ enum CaltopoPersonalAccountLoopback {
             }
             if let returned { return returned }
         }
-        throw CaltopoPersonalAccountError.expired
+        throw cancelled() ? CaltopoPersonalAccountError.cancelled : CaltopoPersonalAccountError.timedOut
     }
 }
 
