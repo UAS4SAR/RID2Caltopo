@@ -398,6 +398,77 @@ internal class SafBlobCacheStore(
         )
     }
 
+    override fun purgeMatching(
+        decide: (key: String, createdAtMs: Long, expiresAtMs: Long) -> TileRetentionDecision,
+        shouldContinue: () -> Boolean
+    ): CacheMaintenanceResult {
+        var deleted = 0
+        var freed = 0L
+        var afterCreated = -1L
+        var afterKey = ""
+        data class RetentionRow(val key: String, val uri: String, val created: Long, val expires: Long, val size: Long)
+        while (shouldContinue()) {
+            val batch = synchronized(dbLock) {
+                db.query(
+                    "saf_entries",
+                    arrayOf("cache_key", "file_uri", "created_at", "expires_at", "size_bytes"),
+                    "namespace = ? AND (created_at > ? OR (created_at = ? AND cache_key > ?))",
+                    arrayOf(storageNamespace, afterCreated.toString(), afterCreated.toString(), afterKey),
+                    null,
+                    null,
+                    "created_at ASC, cache_key ASC",
+                    "64"
+                ).use { cursor ->
+                    buildList {
+                        while (cursor.moveToNext()) {
+                            add(RetentionRow(cursor.getString(0), cursor.getString(1), cursor.getLong(2), cursor.getLong(3), cursor.getLong(4)))
+                        }
+                    }
+                }
+            }
+            if (batch.isEmpty()) break
+            afterCreated = batch.last().created
+            afterKey = batch.last().key
+            for (row in batch) {
+                if (!shouldContinue()) break
+                when (val decision = decide(row.key, row.created, row.expires)) {
+                    TileRetentionDecision.Keep -> Unit
+                    TileRetentionDecision.Delete -> {
+                        try {
+                            DocumentFile.fromSingleUri(appContext, Uri.parse(row.uri))?.delete()
+                        } catch (_: Exception) {
+                        }
+                        val rows = synchronized(dbLock) {
+                            namespaceFileIndex?.remove(keyToRelativePath(row.key))
+                            namespaceFileIndex?.remove(legacyFileNameForKey(row.key))
+                            db.delete(
+                                "saf_entries",
+                                "namespace = ? AND cache_key = ?",
+                                arrayOf(storageNamespace, row.key)
+                            )
+                        }
+                        if (rows > 0) {
+                            deleted += 1
+                            freed += row.size
+                            evictionCount.incrementAndGet()
+                        }
+                    }
+                    is TileRetentionDecision.RewriteExpiry -> synchronized(dbLock) {
+                        val values = ContentValues().apply { put("expires_at", decision.expiresAtMs) }
+                        db.update(
+                            "saf_entries",
+                            values,
+                            "namespace = ? AND cache_key = ?",
+                            arrayOf(storageNamespace, row.key)
+                        )
+                    }
+                }
+            }
+        }
+        val remaining = synchronized(dbLock) { bytesUsedLocked().also(bytesUsedAtomic::set) }
+        return CacheMaintenanceResult(agedOutEntries = deleted, bytesFreed = freed, bytesRemaining = remaining)
+    }
+
     private fun bytesUsedLocked(): Long {
         val cursor = db.rawQuery(
             "SELECT COALESCE(SUM(size_bytes), 0) FROM saf_entries WHERE namespace = ?",

@@ -1,6 +1,7 @@
 package org.ncssar.rid2caltopo.video
 
 import org.ncssar.rid2caltopo.video.mapcache.EsriImageryAttribution
+import org.ncssar.rid2caltopo.video.mapcache.MapCacheLiveTileGate
 import org.ncssar.rid2caltopo.video.mapcache.EsriImageryAttributionProvider
 import org.ncssar.rid2caltopo.video.mapcache.EsriImageryViewport
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -478,8 +479,11 @@ private fun consumeInsetMarkerTaps(marker: Marker, isInsetMode: Boolean) {
 internal fun mapPaneAttributionText(contoursEnabled: Boolean, baseLayer: BaseLayerOption = BaseLayerOption.OpenStreetMap,
                                     imagerySources: String = EsriImageryAttribution.FALLBACK_SOURCES): String =
     buildString {
-        append(if (baseLayer == BaseLayerOption.Imagery) "Powered by Esri · Sources: $imagerySources · DEM: USGS"
-               else "© OpenStreetMap contributors · DEM: USGS")
+        append(when (baseLayer) {
+            BaseLayerOption.Imagery -> "Powered by Esri · Sources: $imagerySources · DEM: USGS"
+            BaseLayerOption.OpenStreetMap -> "© OpenStreetMap contributors · DEM: USGS"
+            BaseLayerOption.UsgsTopo, BaseLayerOption.UsfsTopo -> "${baseLayer.attribution} · DEM: USGS"
+        })
         if (contoursEnabled) append(" · Contours: USGS")
     }
 
@@ -1296,6 +1300,7 @@ internal fun SplitMapPane(
                     MapCacheDebug.TAG_TILE,
                     "live-priority pass start zoom=$passZoom requests=${requests.size} source=${source.name()}"
                 )
+                MapCacheLiveTileGate.enter()
                 try {
                     for (request in requests) {
                         currentCoroutineContext().ensureActive()
@@ -1337,6 +1342,7 @@ internal fun SplitMapPane(
                     )
                     throw e
                 } finally {
+                    MapCacheLiveTileGate.exit()
                     val elapsedMs = System.currentTimeMillis() - passStartMs
                     if (elapsedMs >= 1_000L) {
                         MapCacheDebug.warn(
@@ -5259,10 +5265,7 @@ internal fun SplitMapPane(
                 fontSize = 10.sp,
                 lineHeight = 12.sp,
                 color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.clickable {
-                    uriHandler.openUri(if (baseLayer == BaseLayerOption.Imagery) EsriImageryAttribution.SOURCE_URL
-                                       else "https://www.openstreetmap.org/copyright")
-                }
+                modifier = Modifier.clickable { uriHandler.openUri(baseLayer.attributionUrl) }
             )
         }
     }

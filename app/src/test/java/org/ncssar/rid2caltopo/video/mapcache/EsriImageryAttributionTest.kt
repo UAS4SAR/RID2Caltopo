@@ -45,5 +45,8 @@ class EsriImageryAttributionTest {
         assertTrue(text.contains("Powered by Esri") && text.contains(sources) && text.contains("Contours: USGS"))
         assertFalse(text.contains("OpenStreetMap"))
         assertTrue(mapPaneAttributionText(false, BaseLayerOption.OpenStreetMap).contains("© OpenStreetMap contributors"))
+        assertTrue(mapPaneAttributionText(false, BaseLayerOption.UsgsTopo).contains("USGS The National Map"))
+        assertTrue(mapPaneAttributionText(true, BaseLayerOption.UsfsTopo).contains("U.S. Forest Service"))
+        assertTrue(mapPaneAttributionText(true, BaseLayerOption.UsfsTopo).contains("Contours: USGS"))
     }
 }

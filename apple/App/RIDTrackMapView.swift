@@ -1440,9 +1440,10 @@ struct RIDTrackMapView: View {
             // not also change the layout and destroy their presenting view.
             .simultaneousGesture(TapGesture().onEnded { onMapTap?() }, including: onMapTap == nil ? .none : .all)
             Group {
-                if baseLayer == .openStreetMap {
-                    Link(mapAttribution(inset: inset), destination: OperationalMapTilePolicy.openStreetMapCopyrightURL)
-                } else {
+                switch baseLayer {
+                case .openStreetMap:
+                    Link(mapAttribution(inset: inset), destination: baseLayer.attributionURL)
+                case .imagery:
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 8) {
                             Link("Powered by Esri", destination: EsriImageryAttribution.esriURL)
@@ -1452,6 +1453,8 @@ struct RIDTrackMapView: View {
                              (showContours && !inset ? " · Contours: USGS" : ""))
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                case .usgsTopo, .usfsTopo:
+                    Link(mapAttribution(inset: inset), destination: baseLayer.attributionURL)
                 }
             }
                 .font(.system(size: inset ? 10 : 11))
@@ -1530,7 +1533,7 @@ struct RIDTrackMapView: View {
     }
 
     private func mapAttribution(inset: Bool) -> String {
-        let base = baseLayer == .openStreetMap ? "© OpenStreetMap contributors" : "Tiles © Esri"
+        let base = baseLayer.attribution
         return showContours && !inset ? "\(base) · Contours: USGS" : base
     }
 
@@ -5683,7 +5686,7 @@ private final class CachedMapTileOverlay: MKTileOverlay {
             requestedZoom: path.z,
             requestedX: path.x,
             requestedY: path.y,
-            sourceMaximumZoom: Self.baseSourceMaximumZ
+            sourceMaximumZoom: baseLayer?.sourceMaximumZoom ?? Self.baseSourceMaximumZ
         )
         let sourcePath = overzoom.map {
             MKTileOverlayPath(
@@ -5757,23 +5760,27 @@ private final class CachedMapTileOverlay: MKTileOverlay {
 
     private nonisolated static func usableCachedTile(at destination: URL) -> Data? {
         AppleMapCacheAccess.synchronized {
-            // The byte cache does not retain HTTP cache headers. Apply OSM's
-            // supported fallback of at least seven days, including old settings.
-            let maximumAgeDays = OperationalMapTilePolicy.cacheAgeDays(
+            let standardMaxAgeDays = OperationalMapTilePolicy.cacheAgeDays(
                 UserDefaults.standard.object(forKey: "map.maximumTileAgeDays") as? Int ?? 365
             )
-            let cutoff = Date().addingTimeInterval(-Double(maximumAgeDays) * 86_400)
             let modified = try? destination.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-            if OperationalCacheFreshness.isFresh(modifiedAt: modified, cutoff: cutoff),
+            let expired = OperationalTileRetention.shouldPurge(
+                location: destination.path,
+                createdAt: modified,
+                now: Date(),
+                standardMaxAgeDays: standardMaxAgeDays
+            )
+            if !expired,
                let data = try? Data(contentsOf: destination),
                AppleMapOfflineManager.dataIsUsableTile(data),
                !AppleBadTilePolicy.isBlocked(data) {
                 return data
             }
-            if FileManager.default.fileExists(atPath: destination.path) {
-                if UserDefaults.standard.object(forKey: "map.autoRemoveBadTiles") as? Bool ?? true {
-                    try? FileManager.default.removeItem(at: destination)
-                }
+            let unusable = !expired && FileManager.default.fileExists(atPath: destination.path)
+            if FileManager.default.fileExists(atPath: destination.path),
+               UserDefaults.standard.object(forKey: "map.autoRemoveBadTiles") as? Bool ?? true,
+               expired || unusable {
+                try? FileManager.default.removeItem(at: destination)
             }
             return nil
         }

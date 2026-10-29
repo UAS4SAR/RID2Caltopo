@@ -57,9 +57,29 @@ internal const val TILE_FS_MAX_QUEUE: Short = 2000
 internal const val TILE_IO_ACTIVE_GRACE_MS = 2_000L
 internal const val WEB_MERCATOR_HALF_WORLD_METERS = 20_037_508.342789244
 
-internal enum class BaseLayerOption(val label: String) {
-    OpenStreetMap("OpenStreetMap"),
-    Imagery("Imagery")
+internal enum class BaseLayerOption(val label: String, val attribution: String, val attributionUrl: String) {
+    OpenStreetMap(
+        "OpenStreetMap",
+        "© OpenStreetMap contributors",
+        "https://www.openstreetmap.org/copyright"
+    ),
+    Imagery(
+        "Imagery",
+        "Tiles © Esri",
+        "https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9"
+    ),
+    /** National Map USGSTopo. Public-domain US Government work; cached tiles stop at zoom 16. */
+    UsgsTopo(
+        "USGS Topo",
+        "USGS The National Map",
+        "https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer"
+    ),
+    /** USDA Forest Service Basemap. Freely distributable; the live national service is vector tiles. */
+    UsfsTopo(
+        "USFS Topo",
+        "U.S. Forest Service",
+        "https://tiles.arcgis.com/tiles/gGHDlz6USftL5Pau/arcgis/rest/services/FSBasemap_20240617/VectorTileServer"
+    )
 }
 
 internal enum class OfflinePrepAreaMode(val label: String) {

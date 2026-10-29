@@ -665,7 +665,7 @@ struct AppleCachedMapTileSelection: Identifiable {
 
 @MainActor
 final class AppleMapOfflineManager: ObservableObject {
-    static let shared = AppleMapOfflineManager()
+    static let shared = AppleMapOfflineManager(startRetentionSchedule: true)
 
     private struct DEMDownload: Hashable {
         let url: URL
@@ -822,7 +822,7 @@ final class AppleMapOfflineManager: ObservableObject {
         return "\(percent)%"
     }
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, startRetentionSchedule: Bool = false) {
         self.defaults = defaults
         // UI construction reads only the saved preference. First-use volume queries
         // run on the worker below, before publishing the initial computed allowance.
@@ -842,6 +842,18 @@ final class AppleMapOfflineManager: ObservableObject {
             }
         }
         refreshStats()
+        if startRetentionSchedule { Self.scheduleRetentionPurge(owner: self) }
+    }
+
+    /// Startup and periodic retention purge. File work stays off the main actor, and a
+    /// running download is left alone so this cannot sit on its tile lock.
+    private static func scheduleRetentionPurge(owner: AppleMapOfflineManager) {
+        Task { @MainActor in
+            while !Task.isCancelled {
+                owner.runMaintenance(quiet: true)
+                try? await Task.sleep(for: .seconds(6 * 60 * 60))
+            }
+        }
     }
 
     func prepareStorageSettings() async { await initialLimitTask?.value }
@@ -933,7 +945,7 @@ final class AppleMapOfflineManager: ObservableObject {
             includesAOL: aolPlan != nil,
             estimatedBytesTotal: Self.saturatedAdd(estimatedTileBytes, estimatedDEMBytes),
             startedAt: Date(),
-            tileLayers: baseLayers.map { $0 == .imagery ? "Imagery" : "OSM" } + (includeContours ? ["Contours"] : []),
+            tileLayers: baseLayers.map(\.label) + (includeContours ? ["Contours"] : []),
             includesDEM: includeDEM,
             aolFilesTotal: aolPlan?.sources.count ?? 0,
             aolTilesTotal: aolPlan?.tiles ?? 0
@@ -1124,26 +1136,26 @@ final class AppleMapOfflineManager: ObservableObject {
         }
     }
 
-    func runMaintenance() {
-        saveSettings()
+    func runMaintenance(quiet: Bool = false) {
+        if !quiet { saveSettings() }
         maintenanceRequested = true
-        startMaintenanceIfEligible()
+        startMaintenanceIfEligible(quiet: quiet)
     }
 
-    private func startMaintenanceIfEligible() {
+    private func startMaintenanceIfEligible(quiet: Bool = false) {
         guard !isRunning, maintenanceTask == nil, maintenanceRequested else { return }
         maintenanceRequested = false
         let maximumBytes = Int64(maximumCacheGB * 1_000_000_000)
-        let cutoff = Date().addingTimeInterval(-Double(maximumTileAgeDays) * 86_400)
-        status = "Maintaining map cache…"
+        let standardMaxAgeDays = maximumTileAgeDays
+        if !quiet { status = "Maintaining map cache…" }
         let worker = Task.detached(priority: .utility) {
-            Self.maintainCache(maximumBytes: maximumBytes, cutoff: cutoff)
+            Self.maintainCache(maximumBytes: maximumBytes, standardMaxAgeDays: standardMaxAgeDays)
         }
         maintenanceTask = worker
         maintenanceCompletionTask = Task { [weak self] in
             let result = await worker.value
             guard let self else { return }
-            if !worker.isCancelled {
+            if !quiet, !worker.isCancelled {
                 self.status = "Cache maintenance removed \(result.removedFiles) files (\(Self.formatBytes(result.removedBytes)))"
             }
             self.maintenanceTask = nil
@@ -1218,9 +1230,14 @@ final class AppleMapOfflineManager: ObservableObject {
     nonisolated static func cachedTileIsUsable(
         at url: URL,
         blockedHashes: Set<String>,
-        cutoff: Date
+        standardMaxAgeDays: Int
     ) -> Bool {
         AppleMapCacheAccess.synchronized {
+            let cutoff = OperationalTileRetention.freshnessCutoff(
+                for: url.path,
+                now: Date(),
+                standardMaxAgeDays: standardMaxAgeDays
+            )
             guard let values = try? url.resourceValues(
                 forKeys: [.fileSizeKey, .contentModificationDateKey]
             ), let size = values.fileSize, size > 100,
@@ -1263,9 +1280,9 @@ final class AppleMapOfflineManager: ObservableObject {
 
     private func fetchImage(url: URL, destination: URL) async {
         let blockedHashes = badHashes
-        let cutoff = Date().addingTimeInterval(-Double(maximumTileAgeDays) * 86_400)
+        let standardMaxAgeDays = maximumTileAgeDays
         let cached = await Task.detached(priority: .utility) {
-            Self.cachedTileIsUsable(at: destination, blockedHashes: blockedHashes, cutoff: cutoff)
+            Self.cachedTileIsUsable(at: destination, blockedHashes: blockedHashes, standardMaxAgeDays: standardMaxAgeDays)
         }.value
         if cached {
             recordCacheHit(kind: .tile)
@@ -1471,8 +1488,8 @@ final class AppleMapOfflineManager: ObservableObject {
         return result
     }
 
-    private nonisolated static func maintainCache(maximumBytes: Int64, cutoff: Date) -> (removedFiles: Int, removedBytes: Int64) {
-        var files: [(url: URL, bytes: Int64, date: Date)] = []
+    private nonisolated static func maintainCache(maximumBytes: Int64, standardMaxAgeDays: Int) -> (removedFiles: Int, removedBytes: Int64) {
+        var files: [(url: URL, bytes: Int64, date: Date?)] = []
         guard let enumerator = FileManager.default.enumerator(
             at: AppleMapCachePaths.root,
             includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
@@ -1480,16 +1497,24 @@ final class AppleMapOfflineManager: ObservableObject {
         for case let url as URL in enumerator {
             guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]),
                   values.isRegularFile == true else { continue }
-            files.append((url, Int64(values.fileSize ?? 0), values.contentModificationDate ?? .distantPast))
+            files.append((url, Int64(values.fileSize ?? 0), values.contentModificationDate))
         }
         var removedFiles = 0
         var removedBytes: Int64 = 0
-        for file in files where file.date < cutoff {
+        let now = Date()
+        for file in files where OperationalTileRetention.shouldPurge(
+            location: file.url.path,
+            createdAt: file.date,
+            now: now,
+            standardMaxAgeDays: standardMaxAgeDays
+        ) {
             guard !Task.isCancelled else { return (removedFiles, removedBytes) }
+            // A missing date is not purged. removeIfUnchanged requires the same date it scanned.
+            guard let date = file.date else { continue }
             if let bytes = AppleMapCacheAccess.removeIfUnchanged(
                 file.url,
                 expectedBytes: file.bytes,
-                expectedDate: file.date
+                expectedDate: date
             ) {
                 removedFiles += 1
                 removedBytes += bytes
