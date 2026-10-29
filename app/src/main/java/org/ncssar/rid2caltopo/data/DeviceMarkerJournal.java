@@ -40,6 +40,6 @@ public final class DeviceMarkerJournal {
         file.getParentFile().mkdirs();File temp=new File(file.getPath()+".tmp");
         try(java.io.FileOutputStream out=new java.io.FileOutputStream(temp)){out.write(array.toString().getBytes(StandardCharsets.UTF_8));out.getFD().sync();}
         Files.move(temp.toPath(),file.toPath(),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
-        org.ncssar.rid2caltopo.storage.OperationalStorage.INSTANCE.retain(file);
+        org.ncssar.rid2caltopo.storage.OperationalStorage.INSTANCE.retainLater(file);
     }
 }

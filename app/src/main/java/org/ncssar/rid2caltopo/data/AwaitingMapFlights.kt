@@ -54,7 +54,7 @@ object AwaitingMapFlights {
         val tmp = File(file.parentFile, file.name + ".tmp")
         tmp.writeText(entries.toString())
         Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-        org.ncssar.rid2caltopo.storage.OperationalStorage.retain(file)
+        org.ncssar.rid2caltopo.storage.OperationalStorage.retainLater(file)
     }
     private fun all() = (0 until entries.length()).mapNotNull { entries.optJSONObject(it) }
 

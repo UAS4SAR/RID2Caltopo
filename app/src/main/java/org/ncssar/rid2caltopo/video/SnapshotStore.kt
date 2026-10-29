@@ -112,46 +112,55 @@ class AndroidClueStore private constructor(
         return record
     }
 
-    @Synchronized
     internal fun saveEncoded(
         record: AndroidClueRecord,
         imageBytes: ByteArray,
         thumbnailBytes: ByteArray,
     ) {
         val started = System.nanoTime()
-        selectRoot()
         require(record.lat.isFinite() && record.lng.isFinite()) { "Clue location is invalid" }
         require(imageBytes.isNotEmpty()) { "Clue image is empty" }
         require(thumbnailBytes.isNotEmpty()) { "Clue thumbnail is empty" }
+        val directory = synchronized(this) { selectRoot(); root }
         context?.let { org.ncssar.rid2caltopo.app.FlightStorage.prepareWrite(it, imageBytes.size.toLong() + thumbnailBytes.size) }
-        root.mkdirs()
-        val imageFile = imageFile(record)
-        val thumbnailFile = thumbnailFile(record)
+        directory.mkdirs()
+        val imageFile = File(directory, record.imageFilename)
+        val thumbnailFile = File(directory, record.thumbnailFilename)
         val preparedAt = System.nanoTime()
         try {
             replaceFileAtomically(imageFile, imageBytes)
             val imageAt = System.nanoTime()
             replaceFileAtomically(thumbnailFile, thumbnailBytes)
             val thumbnailAt = System.nanoTime()
-            records[record.id] = record
-            persistIndex()
+            synchronized(this) {
+                selectRoot()
+                records[record.id] = record
+                persistIndex()
+            }
             if (context != null) org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("ClueStore",
                 "Save id=${record.id} storageCheckMs=${(preparedAt - started) / 1_000_000} " +
                     "imageMs=${(imageAt - preparedAt) / 1_000_000} thumbnailMs=${(thumbnailAt - imageAt) / 1_000_000} " +
                     "indexMs=${(System.nanoTime() - thumbnailAt) / 1_000_000}")
         } catch (error: Exception) {
-            records.remove(record.id)
+            synchronized(this) { records.remove(record.id) }
             imageFile.delete()
             thumbnailFile.delete()
             throw error
         }
     }
 
-    @Synchronized
     fun delete(id: String): Boolean {
-        val record = records.remove(id) ?: return false
+        val record = synchronized(this) {
+            val removed = records.remove(id) ?: return false
+            try {
+                persistIndex()
+            } catch (error: Exception) {
+                records[id] = removed
+                throw error
+            }
+            removed
+        }
         return try {
-            persistIndex()
             if (context != null) {
                 org.ncssar.rid2caltopo.storage.OperationalStorage.remove(imageFile(record))
                 org.ncssar.rid2caltopo.storage.OperationalStorage.remove(thumbnailFile(record))
@@ -161,7 +170,10 @@ class AndroidClueStore private constructor(
             }
             true
         } catch (error: Exception) {
-            records[id] = record
+            synchronized(this) {
+                records[id] = record
+                persistIndex()
+            }
             throw error
         }
     }
@@ -215,7 +227,7 @@ class AndroidClueStore private constructor(
 
     @Synchronized
     fun pendingForMap(mapId: String, teamId: String): List<AndroidClueRecord> {
-        loadIndex()
+        if (!loaded) loadIndex()
         return records.values.filter { it.publishToCaltopo && it.uploadState == "pending" &&
             mapId.isNotBlank() && teamId.isNotBlank() && it.mapKey == "map:$mapId" && it.destinationTeamId == teamId }
     }

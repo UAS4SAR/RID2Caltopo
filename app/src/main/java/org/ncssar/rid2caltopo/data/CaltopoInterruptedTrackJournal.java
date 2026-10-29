@@ -270,7 +270,7 @@ public final class CaltopoInterruptedTrackJournal {
         } catch (Exception ignored) {
             Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
         }
-        org.ncssar.rid2caltopo.storage.OperationalStorage.INSTANCE.retain(file);
+        org.ncssar.rid2caltopo.storage.OperationalStorage.INSTANCE.retainLater(file);
     }
 
     @Nullable

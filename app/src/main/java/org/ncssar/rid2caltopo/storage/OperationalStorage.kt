@@ -29,6 +29,10 @@ internal object OperationalStorage {
     private val gate = Any()
     /** Serializes archive hydration. Callers that publish do not take this lock. */
     private val prepareBody = java.util.concurrent.locks.ReentrantLock()
+    private val queuePrepare = java.util.concurrent.locks.ReentrantLock()
+    private val recorderPrepare = java.util.concurrent.locks.ReentrantLock()
+    /** One archive copy at a time. Not held during area hydration. */
+    private val archiveCommit = java.util.concurrent.locks.ReentrantLock()
     private val deferredRetains = mutableListOf<File>()
     private val queueGate = Any()
     private val recorderGate = Any()
@@ -172,12 +176,22 @@ internal object OperationalStorage {
     }
     private fun prepareQueue(context: Context, archive: DocumentFile? = null, selectedUri: String? = null): PreparedQueue {
         worker()
+        // A TreeDocumentFile's document URI can differ from the persisted tree URI.
+        // Both lanes must use the same selected URI for identity and projection paths.
+        val uri = selectedUri ?: CaltopoClient.GetArchiveUri()?.toString() ?: archive?.uri?.toString()
+            ?: error("Choose or reconnect Archive Dir to use retained operational state.")
         synchronized(queueGate) {
-            // A TreeDocumentFile's document URI can differ from the persisted tree URI.
-            // Both lanes must use the same selected URI for identity and projection paths.
-            val uri = selectedUri ?: CaltopoClient.GetArchiveUri()?.toString() ?: archive?.uri?.toString()
-                ?: error("Choose or reconnect Archive Dir to use retained operational state.")
             preparedQueue?.let { check(it.value.uri == uri) { "Restart the app after changing Archive Dir." }; checkQueue(it); return it }
+        }
+        if (!queuePrepare.tryLock()) {
+            queuePrepare.lock()
+            queuePrepare.unlock()
+            return synchronized(queueGate) { preparedQueue ?: error("Operational state is no longer available.") }
+        }
+        try {
+            synchronized(queueGate) {
+                preparedQueue?.let { check(it.value.uri == uri) { "Restart the app after changing Archive Dir." }; checkQueue(it); return it }
+            }
             val generation = selectionGeneration.get()
             fun checkSelection() = check(selectionGeneration.get() == generation) { "Archive Dir changed during operational-state preparation." }
             val root = archive ?: CaltopoClient.GetArchiveDir() ?: error("Archive Dir is unavailable.")
@@ -202,10 +216,15 @@ internal object OperationalStorage {
             checkSelection()
             check(root.isDirectory && root.canRead() && root.canWrite()) { "Archive Dir became unavailable during operational-state preparation." }
             value.migrated.clear()
-            return PreparedQueue(value, generation).also {
-                preparedQueue = it
-                CaltopoClient.CTDebug("OperationalStorage", "Operational state ready independently of bulk storage")
+            val prepared = PreparedQueue(value, generation)
+            synchronized(queueGate) {
+                preparedQueue?.let { return it }
+                preparedQueue = prepared
             }
+            CaltopoClient.CTDebug("OperationalStorage", "Operational state ready independently of bulk storage")
+            return prepared
+        } finally {
+            queuePrepare.unlock()
         }
     }
     private fun checkRecorder(current: PreparedRecorder) {
@@ -216,10 +235,20 @@ internal object OperationalStorage {
     /** Only unfinished recording state is needed to accept a new publisher. */
     private fun prepareRecorder(context: Context, archive: DocumentFile? = null, selectedUri: String? = null): PreparedRecorder {
         worker()
+        val uri = selectedUri ?: CaltopoClient.GetArchiveUri()?.toString() ?: archive?.uri?.toString()
+            ?: error("Choose or reconnect Archive Dir before recording.")
         synchronized(recorderGate) {
-            val uri = selectedUri ?: CaltopoClient.GetArchiveUri()?.toString() ?: archive?.uri?.toString()
-                ?: error("Choose or reconnect Archive Dir before recording.")
             preparedRecorder?.let { check(it.value.uri == uri); checkRecorder(it); return it }
+        }
+        if (!recorderPrepare.tryLock()) {
+            recorderPrepare.lock()
+            recorderPrepare.unlock()
+            return synchronized(recorderGate) { preparedRecorder ?: error("Recorder state is no longer available.") }
+        }
+        try {
+            synchronized(recorderGate) {
+                preparedRecorder?.let { check(it.value.uri == uri); checkRecorder(it); return it }
+            }
             val generation = selectionGeneration.get()
             fun checkSelection() = check(selectionGeneration.get() == generation) { "Archive Dir changed during recorder preparation." }
             val root = archive ?: CaltopoClient.GetArchiveDir() ?: error("Archive Dir is unavailable.")
@@ -240,10 +269,15 @@ internal object OperationalStorage {
             checkSelection()
             check(root.isDirectory && root.canRead() && root.canWrite()) { "Archive Dir became unavailable during recorder preparation." }
             value.migrated.clear()
-            return PreparedRecorder(value, generation).also {
-                preparedRecorder = it
-                CaltopoClient.CTDebug("OperationalStorage", "Recorder state ready independently of bulk storage")
+            val prepared = PreparedRecorder(value, generation)
+            synchronized(recorderGate) {
+                preparedRecorder?.let { return it }
+                preparedRecorder = prepared
             }
+            CaltopoClient.CTDebug("OperationalStorage", "Recorder state ready independently of bulk storage")
+            return prepared
+        } finally {
+            recorderPrepare.unlock()
         }
     }
     fun requireRecorderReady(context: Context) {
@@ -259,11 +293,17 @@ internal object OperationalStorage {
         worker()
         val recorder = preparedRecorder?.takeIf { mapping(file, it.value) != null }
         val value = recorder?.value ?: store ?: return
-        synchronized(if (recorder != null) recorderGate else gate) {
+        fun checkLane() {
             if (recorder != null) checkRecorder(recorder)
             else check(state.value.ready) { state.value.message.ifEmpty { "Archive Dir is unavailable." } }
+        }
+        synchronized(if (recorder != null) recorderGate else gate) { checkLane() }
+        archiveCommit.lock()
+        try {
+            synchronized(if (recorder != null) recorderGate else gate) { checkLane() }
             action(value)
-            if (recorder != null) checkRecorder(recorder)
+        } finally {
+            archiveCommit.unlock()
         }
     }
     private fun migrateAreaSources(context: Context, value: Store, area: Area, checkSelection: () -> Unit) {
@@ -516,6 +556,10 @@ internal object OperationalStorage {
         }
         return null
     }
+    /** Copies an already-written app-private file into Archive Dir without blocking the caller. */
+    fun retainLater(file: File) {
+        startup.execute { runCatching { retain(file) } }
+    }
     fun retain(file: File) {
         preparedRecorder?.takeIf { mapping(file, it.value) != null }?.let {
             onRecordingStore(file) { value ->
@@ -526,12 +570,12 @@ internal object OperationalStorage {
         }
         preparedQueue?.takeIf { mapping(file, it.value) != null }?.let { queue ->
             worker()
-            synchronized(queueGate) {
+            val path = synchronized(queueGate) {
                 checkQueue(queue)
                 val (area, relative) = requireNotNull(mapping(file, queue.value))
-                if (relative.isNotEmpty() && allowed(area, relative)) commit(queue.value, file, "${area.retained}/$relative")
-                checkQueue(queue)
+                if (relative.isNotEmpty() && allowed(area, relative)) "${area.retained}/$relative" else null
             }
+            if (path != null) commitRetained(queue.value, file, path) { synchronized(queueGate) { checkQueue(queue) } }
             return
         }
         val current = store
@@ -541,15 +585,27 @@ internal object OperationalStorage {
         }
         if (mapping(file, current) == null) return
         worker()
-        synchronized(gate) {
-            val value = store ?: return
+        val path = synchronized(gate) {
+            val value = store ?: return@synchronized null
             kotlin.check(state.value.ready) { state.value.message.ifEmpty { "Archive Dir is unavailable." } }
-            val (area, relative) = mapping(file, value) ?: return
+            val (area, relative) = mapping(file, value) ?: return@synchronized null
             // Multi-file map products publish a verified generation, not individual
             // partially updated GLB/metadata/tile files.
-            if (area.id in listOf("layers", "processing") && file.name != "work-owner.json") return
-            if (relative.isNotEmpty() && allowed(area, relative)) commit(value, file, "${area.retained}/$relative")
+            if (area.id in listOf("layers", "processing") && file.name != "work-owner.json") return@synchronized null
+            if (relative.isNotEmpty() && allowed(area, relative)) "${area.retained}/$relative" else null
+        }
+        if (path != null) commitRetained(current, file, path) {
             kotlin.check(state.value.ready) { "Archive Dir changed during the save. Retained copies were kept; restart the app." }
+        }
+    }
+    private fun commitRetained(value: Store, file: File, path: String, check: () -> Unit) {
+        archiveCommit.lock()
+        try {
+            check()
+            commit(value, file, path)
+            check()
+        } finally {
+            archiveCommit.unlock()
         }
     }
     fun retainTree(directory: File, check: () -> Unit = {}) {
