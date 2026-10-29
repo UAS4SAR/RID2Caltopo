@@ -434,6 +434,7 @@ final class AppleCaltopoSettings: ObservableObject {
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
                 throw CaltopoLiveClientError.httpStatus((response as? HTTPURLResponse)?.statusCode ?? 0, "CalTopo account catalog failed.")
             }
+            await CaltopoPersonalAccountConnection.shared.deleteSpareActivationCredential(body: data)
             let prepared = try await Task.detached(priority: .userInitiated) {
                 try CaltopoPersonalCatalog.prepare(data, expectedID: configuration.teamID)
             }.value

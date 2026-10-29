@@ -34,6 +34,7 @@ object CaltopoPersonalCredentialSignIn {
         )
         val body = CaltopoPersonalAccountConnection.fetchAccountCatalog(CaltopoPersonalAccountHttps)
             ?: throw CaltopoPersonalAccountException("CalTopo account catalog could not be loaded.")
+        CaltopoPersonalAccountConnection.deleteSpareActivationCredential(body)
         val normalized = CaltopoPersonalCatalog.normalize(body, status.accountId)
         CaltopoPersonalAccountConnection.logAuth(
             "catalog normalized accounts=${normalized.optJSONArray("accounts")?.length() ?: 0} features=${normalized.optJSONArray("features")?.length() ?: 0}"

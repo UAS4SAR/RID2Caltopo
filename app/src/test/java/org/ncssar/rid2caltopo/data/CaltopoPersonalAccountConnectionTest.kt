@@ -54,6 +54,33 @@ class CaltopoPersonalAccountConnectionTest {
         assertNull(CaltopoPersonalAccountConnection.accountCatalogRequest())
     }
 
+    @Test fun activationNameMatchesTheCredentialDescriptionStyle() {
+        assertEquals("RID2Caltopo app", CaltopoPersonalAccountConnection.DEFAULT_DEVICE_NAME)
+        val url = CaltopoPersonalAccountConnection.activationUrl(
+            "caltopo.com",
+            "http://127.0.0.1:9/0123456789abcdef0123456789abcdef",
+            CaltopoPersonalAccountConnection.DEFAULT_DEVICE_NAME
+        )
+        assertTrue(url.contains("name=RID2Caltopo%20app"))
+    }
+
+    @Test fun spareActivationCredentialIsOnlyTheUnusedOneFromThisEnrollment() {
+        val now = 1_700_000_000_000L
+        val body = """{"status":"ok","result":{"features":[
+            {"id":"cred12345678","properties":{"class":"UserCredential","title":"Last synced by RID2Caltopo app","lastUsed":$now,"updated":$now}},
+            {"id":"spare1234567","properties":{"class":"UserCredential","title":"Generated on User Request","updated":${now - 5_000}}},
+            {"id":"used12345678","properties":{"class":"UserCredential","title":"Generated on User Request","lastUsed":$now,"updated":$now}},
+            {"id":"old123456789","properties":{"class":"UserCredential","title":"Generated on User Request","updated":${now - 60 * 60 * 1000}}},
+            {"id":"map123456789","properties":{"class":"CollaborativeMap","title":"Generated on User Request","updated":$now}}
+        ]}}"""
+        assertEquals("spare1234567", CaltopoPersonalAccountConnection.spareActivationCredentialId(body, "cred12345678", now))
+        val two = body.replace(
+            """{"id":"old123456789","properties":{"class":"UserCredential","title":"Generated on User Request","updated":${now - 60 * 60 * 1000}}}""",
+            """{"id":"other1234567","properties":{"class":"UserCredential","title":"Generated on User Request","updated":$now}}"""
+        )
+        assertNull(CaltopoPersonalAccountConnection.spareActivationCredentialId(two, "cred12345678", now))
+    }
+
     @Test fun activationUrlUsesLoopbackAndRejectsOtherBrowsingTargets() {
         val pending = CaltopoPersonalAccountConnection.begin("caltopo.com", "RID2Caltopo", 9)
         assertTrue(pending.activationUrl.startsWith("https://caltopo.com/app/activate/offline?redirect="))

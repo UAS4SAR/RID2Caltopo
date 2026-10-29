@@ -28,7 +28,7 @@ public enum CaltopoPersonalLoginMode: String, Sendable, Hashable {
 public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
     public static let shared = CaltopoPersonalAccountConnection()
     public static let featureFlagKey = "caltopo.personalAccountActivation"
-    public static let defaultDeviceName = "RID2Caltopo"
+    public static let defaultDeviceName = "RID2Caltopo app"
     public static let credentialTitle = "Last synced by RID2Caltopo app"
     public static let activationPrompt = "Check the box, then tap Sync Account."
     public static let logOutPrompt = "Remove the personal CalTopo account from this device and return to the team account?"
@@ -46,6 +46,7 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
     private var pending: PendingActivation?
     private var listenerFD: Int32 = -1
     private var enrollmentCancelled = false
+    private var redeemedActivationCodes = Set<String>()
     private var clock: () -> Date = { Date() }
     private var randomBytes: (Int) -> Data = { count in
         var bytes = [UInt8](repeating: 0, count: count)
@@ -306,8 +307,29 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         thread.start()
         try await browser.openActivationPage(pending.activationURL)
         let returned = try await Task.detached { try gate.wait() }.value
-        let response = try await exchange.get(url: try exchangeURL(host: pending.host, code: returned.code, deviceName: returned.deviceName))
-        guard response.status == 200 else { throw CaltopoPersonalAccountError.exchangeFailed(response.status) }
+        lock.lock()
+        let alreadyRedeemed = !redeemedActivationCodes.insert(returned.code).inserted
+        lock.unlock()
+        if alreadyRedeemed {
+            Self.credentialLog.info("exchange skipped; activation code already redeemed")
+            if let existing = try? stored(), !existing.revoked { return existing.status }
+            throw CaltopoPersonalAccountError.rejected
+        }
+        let response: (status: Int, body: Data)
+        do {
+            response = try await exchange.get(url: try exchangeURL(host: pending.host, code: returned.code, deviceName: returned.deviceName))
+        } catch {
+            lock.lock()
+            redeemedActivationCodes.remove(returned.code)
+            lock.unlock()
+            throw error
+        }
+        guard response.status == 200 else {
+            lock.lock()
+            redeemedActivationCodes.remove(returned.code)
+            lock.unlock()
+            throw CaltopoPersonalAccountError.exchangeFailed(response.status)
+        }
         let record = try completeExchange(response.body, code: returned.code, host: pending.host, deviceName: returned.deviceName)
         try write(record)
         await publishCredentialTitle(record)
@@ -364,6 +386,50 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         } catch {
             Self.credentialLog.error("CalTopo credential title update failed")
         }
+    }
+
+    public func deleteSpareActivationCredential(body: Data) async {
+        guard let record = try? stored(),
+              let spare = Self.spareActivationCredentialID(body: body, keepCredentialID: record.credentialID, enrolledAt: record.enrolledAt) else { return }
+        let path = "/api/v1/acct/\(record.accountID)/UserCredential/\(spare)"
+        let expires = Int64(Date().timeIntervalSince1970 * 1_000) + CaltopoRequestSigner.validityMilliseconds
+        guard let signature = try? CaltopoRequestSigner.signature(
+            method: "DELETE", path: path, expiresMilliseconds: expires, payload: "",
+            credentialSecretBase64: record.signingKey
+        ) else { return }
+        var components = URLComponents(string: "https://\(record.host)\(path)")
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+        let encoded = signature.addingPercentEncoding(withAllowedCharacters: allowed) ?? signature
+        components?.percentEncodedQuery = "id=\(record.credentialID)&expires=\(expires)&signature=\(encoded)"
+        guard let url = components?.url else { return }
+        if let status = try? await CaltopoPersonalAccountHTTPSExchange().delete(url: url) {
+            Self.credentialLog.info("spare DELETE \(path, privacy: .public) HTTP \(status, privacy: .public)")
+        } else {
+            Self.credentialLog.error("spare DELETE \(path, privacy: .public) failed")
+        }
+    }
+
+    /// Sync Account's unused credential, only when the catalog has exactly one match from this enrollment.
+    public static func spareActivationCredentialID(body: Data, keepCredentialID: String, enrolledAt: Date) -> String? {
+        guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return nil }
+        let source = json["result"] as? [String: Any] ?? json
+        var matches: [String] = []
+        for key in ["features", "credentials"] {
+            guard let items = source[key] as? [[String: Any]] else { continue }
+            for item in items {
+                guard let properties = item["properties"] as? [String: Any],
+                      properties["class"] as? String == "UserCredential",
+                      let id = item["id"] as? String, !id.isEmpty, id != keepCredentialID,
+                      properties["title"] as? String == "Generated on User Request" else { continue }
+                let lastUsed = properties["lastUsed"]
+                let unused = lastUsed == nil || lastUsed is NSNull || (lastUsed as? NSNumber)?.int64Value == 0
+                guard unused, let updated = (properties["updated"] as? NSNumber)?.int64Value else { continue }
+                let enrolled = Int64(enrolledAt.timeIntervalSince1970 * 1_000)
+                if abs(updated - enrolled) > 3 * 60 * 1_000 { continue }
+                matches.append(id)
+            }
+        }
+        return matches.count == 1 ? matches[0] : nil
     }
 
     public static func parseActivationResponse(_ body: Data) throws -> ParsedActivation {

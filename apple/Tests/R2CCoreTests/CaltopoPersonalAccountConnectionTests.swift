@@ -41,6 +41,20 @@ final class CaltopoPersonalAccountConnectionTests: XCTestCase {
         XCTAssertFalse(parsed.description.contains(key))
     }
 
+    func testActivationNameMatchesTheCredentialDescriptionStyle() {
+        XCTAssertEqual(CaltopoPersonalAccountConnection.defaultDeviceName, "RID2Caltopo app")
+    }
+
+    func testSpareActivationCredentialIsOnlyTheUnusedOneFromThisEnrollment() throws {
+        let now = 1_700_000_000_000 as Int64
+        let body = #"{"status":"ok","result":{"features":[{"id":"cred12345678","properties":{"class":"UserCredential","title":"Last synced by RID2Caltopo app","lastUsed":\#(now),"updated":\#(now)}},{"id":"spare1234567","properties":{"class":"UserCredential","title":"Generated on User Request","updated":\#(now - 5_000)}},{"id":"used12345678","properties":{"class":"UserCredential","title":"Generated on User Request","lastUsed":\#(now),"updated":\#(now)}}]}}"#
+        let enrolled = Date(timeIntervalSince1970: TimeInterval(now) / 1_000)
+        XCTAssertEqual(
+            CaltopoPersonalAccountConnection.spareActivationCredentialID(body: Data(body.utf8), keepCredentialID: "cred12345678", enrolledAt: enrolled),
+            "spare1234567"
+        )
+    }
+
     func testCredentialDeleteUsesAnEmptyPayload() throws {
         let secret = Data(repeating: 3, count: 32).base64EncodedString()
         let record = try sampleRecord(secret: secret)

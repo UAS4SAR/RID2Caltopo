@@ -34,7 +34,7 @@ object CaltopoPersonalAccountConnection {
     const val FEATURE_PREFERENCE = "caltopo-personal-account"
     const val FEATURE_ENABLED_KEY = "feature_enabled"
     const val LOGIN_MODE_KEY = "login_mode"
-    const val DEFAULT_DEVICE_NAME = "RID2Caltopo"
+    const val DEFAULT_DEVICE_NAME = "RID2Caltopo app"
     const val CREDENTIAL_TITLE = "Last synced by RID2Caltopo app"
     const val RETURN_SCHEME = "rid2caltopo"
     const val AUTH_LOG_TAG = "CaltopoPersonalAuth"
@@ -63,6 +63,7 @@ object CaltopoPersonalAccountConnection {
     var randomBytes: (Int) -> ByteArray = { count -> ByteArray(count).also { SecureRandom().nextBytes(it) } }
     private var listening: ServerSocket? = null
     private var enrollmentCancelled = false
+    private val redeemedActivationCodes = mutableSetOf<String>()
 
     @JvmStatic fun install(store: CaltopoPersonalAccountStore, featureEnabled: Boolean = this.featureEnabled) {
         synchronized(lock) {
@@ -90,6 +91,7 @@ object CaltopoPersonalAccountConnection {
         synchronized(lock) {
             enrollmentCancelled = false
             listening = null
+            redeemedActivationCodes.clear()
         }
         clock = { System.currentTimeMillis() }
         randomBytes = { count -> ByteArray(count).also { SecureRandom().nextBytes(it) } }
@@ -420,16 +422,80 @@ object CaltopoPersonalAccountConnection {
     }
 
     private fun exchange(pending: PendingActivation, returned: CaltopoActivationReturn, http: CaltopoActivationExchange): CaltopoPersonalAccountRecord {
+        synchronized(lock) {
+            if (!redeemedActivationCodes.add(returned.code)) {
+                logAuth("exchange skipped; activation code already redeemed")
+                val existing = cached
+                if (existing != null && !existing.revoked) return existing
+                throw CaltopoPersonalAccountException("CalTopo activation code was already used.")
+            }
+        }
         val url = "https://${pending.host}/api/v1/activate?code=${encode(returned.code)}&name=${encode(returned.deviceName)}"
         val response = try {
             http.get(url)
         } catch (error: Exception) {
+            synchronized(lock) { redeemedActivationCodes.remove(returned.code) }
             logAuth("exchange request failed")
             throw CaltopoPersonalAccountException("CalTopo activation exchange failed.")
         }
         logAuth("exchange HTTP ${response.status}")
-        if (response.status != 200) throw CaltopoPersonalAccountException("CalTopo activation exchange failed (HTTP ${response.status}).")
+        if (response.status != 200) {
+            synchronized(lock) { redeemedActivationCodes.remove(returned.code) }
+            throw CaltopoPersonalAccountException("CalTopo activation exchange failed (HTTP ${response.status}).")
+        }
         return completeExchange(response.body, returned.code, pending.host, returned.deviceName)
+    }
+
+    /**
+     * Sync Account inserts a UserCredential before the one-time code is redeemed. That row stays
+     * "Generated on User Request" with no Last Used, because the HMAC credential we keep is the
+     * one returned by GET /api/v1/activate and then retitled. Delete only when the catalog shows
+     * exactly one other credential matching that unused, just-created shape.
+     */
+    fun spareActivationCredentialId(rawBody: String, keepCredentialId: String, enrolledAtEpochMs: Long): String? {
+        val json = try {
+            JSONObject(rawBody)
+        } catch (error: Exception) {
+            return null
+        }
+        val source = json.optJSONObject("result") ?: json
+        val matches = mutableListOf<String>()
+        for (key in listOf("features", "credentials")) {
+            val array = source.optJSONArray(key) ?: continue
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                val properties = item.optJSONObject("properties") ?: continue
+                if (properties.optString("class") != "UserCredential") continue
+                val id = item.optString("id")
+                if (id.isEmpty() || id == keepCredentialId) continue
+                if (properties.optString("title") != "Generated on User Request") continue
+                val lastUsed = if (properties.has("lastUsed")) properties.opt("lastUsed") else null
+                val unused = lastUsed == null || lastUsed == JSONObject.NULL || (lastUsed is Number && lastUsed.toLong() == 0L)
+                if (!unused) continue
+                val updated = properties.opt("updated")
+                if (updated !is Number) continue
+                if (kotlin.math.abs(updated.toLong() - enrolledAtEpochMs) > 3 * 60 * 1000L) continue
+                matches += id
+            }
+        }
+        return if (matches.size == 1) matches[0] else null.also {
+            if (matches.size > 1) logAuth("spare activation credential ambiguous count=${matches.size}; not deleted")
+        }
+    }
+
+    fun deleteSpareActivationCredential(rawBody: String, delete: (String) -> Int = { url -> CaltopoPersonalAccountHttps.delete(url).status }) {
+        val record = stored() ?: return
+        val spareId = spareActivationCredentialId(rawBody, record.credentialId, record.enrolledAtEpochMs) ?: return
+        val path = "/api/v1/acct/${record.accountId}/UserCredential/$spareId"
+        val expires = clock() + SIGNATURE_TTL_MS
+        val signature = sign("DELETE", path, expires, "", record.signingKey)
+        val url = "https://${record.host}$path?id=${encode(record.credentialId)}&expires=$expires&signature=${encode(signature)}"
+        try {
+            val status = delete(url)
+            logAuth("spare DELETE $path HTTP $status")
+        } catch (error: Exception) {
+            logAuth("spare DELETE $path failed: ${error.javaClass.simpleName}")
+        }
     }
 
     fun credentialTitleRequest(record: CaltopoPersonalAccountRecord, nowMilliseconds: Long = clock()): CredentialTitleRequest {
