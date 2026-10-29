@@ -653,7 +653,9 @@ fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
                                 profileOptions = viewModel.mapBrowserProfiles,
                                 selectedProfileId = viewModel.selectedMapBrowserProfileId,
                                 onUIEvent = { viewModel.onUIEvent(it) },
-                                loading = personalSession.catalogLoading || (!personalSession.browsingPersonal && viewModel.mapHierarchy == null)
+                                loading = personalSession.catalogLoading || (!personalSession.browsingPersonal && viewModel.mapHierarchy == null),
+                                syncPrompt = viewModel.personalSyncPrompt,
+                                onSyncPromptDismiss = { viewModel.dismissPersonalSyncPrompt() }
                             )
                         }
                     }

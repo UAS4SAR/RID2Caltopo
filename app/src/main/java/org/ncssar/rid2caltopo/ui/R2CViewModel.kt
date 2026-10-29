@@ -77,6 +77,7 @@ sealed class UIEvent(val displayName: String) {
     object DisconnectRequested : UIEvent("DisconnectRequested")
     object SwitchMapRequested: UIEvent("SwitchMapRequested")
     data class BrowseProfileSelected(val profileId: String, val openMapBrowser: Boolean = true) : UIEvent("BrowseProfileSelected")
+    object LoadStoredPersonal : UIEvent("LoadStoredPersonal")
     object PersonalCredentialLoggedOut : UIEvent("PersonalCredentialLoggedOut")
     object ConfigFileLoaded: UIEvent("ConfigFileLoaded")
     object NotAbleToReadConfigFile: UIEvent("NotAbleToReadConfigFile")
@@ -281,6 +282,44 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
     }
 
     private var openBrowserAfterCredentialCheck = true
+    private var storedPersonalCatalogLoad: kotlinx.coroutines.Job? = null
+    var personalSyncPrompt by mutableStateOf(false)
+        private set
+    fun dismissPersonalSyncPrompt() { personalSyncPrompt = false }
+
+    /**
+     * Loads the stored personal catalog on the view-model scope. The map browser is recreated
+     * when its list changes, so a load started inside that composable is cancelled before it
+     * can keep the personal selection.
+     */
+    fun loadStoredPersonalCatalog() {
+        if (storedPersonalCatalogLoad?.isActive == true) return
+        personalSyncPrompt = false
+        CaltopoPersonalSession.catalogLoading = true
+        android.util.Log.i("CaltopoPersonalAuth", "selection load stored personal")
+        storedPersonalCatalogLoad = viewModelScope.launch {
+            try {
+                val loaded = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    org.ncssar.rid2caltopo.data.CaltopoPersonalCredentialSignIn.openStored()
+                }
+                when (loaded) {
+                    is org.ncssar.rid2caltopo.data.StoredPersonalLoad.Ready -> {
+                        org.ncssar.rid2caltopo.data.CaltopoPersonalCredentialSignIn.publishCatalog(loaded.catalog.catalog)
+                        onUIEvent(UIEvent.BrowseProfileSelected("personal"))
+                    }
+                    org.ncssar.rid2caltopo.data.StoredPersonalLoad.Rejected,
+                    org.ncssar.rid2caltopo.data.StoredPersonalLoad.Missing -> {
+                        CaltopoPersonalSession.suspendPersonalSelection()
+                        personalSyncPrompt = true
+                    }
+                    is org.ncssar.rid2caltopo.data.StoredPersonalLoad.Failed ->
+                        CaltopoClient.ShowToast(loaded.message)
+                }
+            } finally {
+                CaltopoPersonalSession.catalogLoading = false
+            }
+        }
+    }
 
     fun selectOperationalProfile(profileId: String) {
         onUIEvent(UIEvent.BrowseProfileSelected(profileId, openMapBrowser = false))
@@ -427,6 +466,8 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                 overlay = OverlayState.MapBrowser // Close the management dialog and open the browser
             }
 
+            is UIEvent.LoadStoredPersonal -> loadStoredPersonalCatalog()
+
             is UIEvent.PersonalCredentialLoggedOut -> returnToTeamCredential(openBrowser = true)
 
             is UIEvent.BrowseProfileSelected -> {
@@ -493,7 +534,14 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                 CTDebug(tag, "onUIEvent(${uiEvent}): ConnectionStatus: '${status.name}'")
                 connectionState = when (status) {
                     CaltopoMap.MapStatusListener.mapStatus.credentialsVerified -> {
-                        if (!CaltopoPersonalSession.browsingPersonal && !CaltopoPersonalSession.catalogLoading) {
+                        // Team verification finishes after the operator may already have chosen
+                        // Personal. Keep that selection and its catalog; do not put the team list back.
+                        if (CaltopoPersonalSession.browsingPersonal || CaltopoPersonalSession.catalogLoading) {
+                            android.util.Log.i(
+                                "CaltopoPersonalAuth",
+                                "credentials verified left personal selection in place browsing=${CaltopoPersonalSession.browsingPersonal} loading=${CaltopoPersonalSession.catalogLoading}"
+                            )
+                        } else {
                             mapHierarchy = CaltopoMap.GetSessionNodeMap()
                         }
                         refreshMapBrowserProfiles()

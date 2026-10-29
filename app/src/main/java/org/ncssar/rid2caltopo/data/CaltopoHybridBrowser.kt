@@ -70,7 +70,9 @@ fun CaltopoHybridBrowser(
     profileOptions: List<MapBrowserProfileOption>,
     selectedProfileId: String,
     onUIEvent: (UIEvent) -> Unit,
-    loading: Boolean = false
+    loading: Boolean = false,
+    syncPrompt: Boolean = false,
+    onSyncPromptDismiss: () -> Unit = {}
 ) {
     var credentialsExpanded by remember { mutableStateOf(false) }
     var showSyncPrompt by remember { mutableStateOf(false) }
@@ -112,27 +114,9 @@ fun CaltopoHybridBrowser(
     }
     fun selectStoredPersonal() {
         credentialsExpanded = false
-        CaltopoPersonalSession.catalogLoading = true
-        scope.launch {
-            try {
-                val loaded = withContext(Dispatchers.IO) { CaltopoPersonalCredentialSignIn.openStored() }
-                when (loaded) {
-                    is StoredPersonalLoad.Ready -> {
-                        CaltopoPersonalCredentialSignIn.publishCatalog(loaded.catalog.catalog)
-                        personalMenuRevision++
-                        onUIEvent(UIEvent.BrowseProfileSelected("personal"))
-                    }
-                    StoredPersonalLoad.Rejected, StoredPersonalLoad.Missing -> {
-                        CaltopoPersonalSession.suspendPersonalSelection()
-                        storedPersonalName = null
-                        showSyncPrompt = true
-                    }
-                    is StoredPersonalLoad.Failed -> CaltopoClient.ShowToast(loaded.message)
-                }
-            } finally {
-                CaltopoPersonalSession.catalogLoading = false
-            }
-        }
+        // The view model owns this load. Recreating the browser when the list changes
+        // must not cancel it and snap the selection back to the team catalog.
+        onUIEvent(UIEvent.LoadStoredPersonal)
     }
     val navigationStack = remember(CaltopoCatalogIdentity(rootNodes)) { mutableStateListOf(rootNodes) }
     val currentItems = navigationStack.lastOrNull() ?: rootNodes
@@ -270,12 +254,16 @@ fun CaltopoHybridBrowser(
                 )
             }
             org.ncssar.rid2caltopo.ui.CaltopoSyncAccountPrompt(
-                visible = showSyncPrompt,
+                visible = showSyncPrompt || syncPrompt,
                 onContinue = {
                     showSyncPrompt = false
+                    onSyncPromptDismiss()
                     openPersonal()
                 },
-                onDismiss = { showSyncPrompt = false }
+                onDismiss = {
+                    showSyncPrompt = false
+                    onSyncPromptDismiss()
+                }
             )
 
             HorizontalDivider()
