@@ -18,6 +18,9 @@ class CaltopoPersonalSessionProvider : ContentProvider() {
         if (method == "finishFullMapRead") {
             org.ncssar.rid2caltopo.data.CaltopoFullMapReadBroker.finish(requireNotNull(arg))
         }
+        if (method == "abandonFullMapRead") {
+            org.ncssar.rid2caltopo.data.CaltopoFullMapReadBroker.abandon(requireNotNull(arg))
+        }
         if (method == "loginProtectionRequired") {
             // No network or map loading: persisted browser cookies also cover upgrades
             // from versions that did not record a personal login marker.

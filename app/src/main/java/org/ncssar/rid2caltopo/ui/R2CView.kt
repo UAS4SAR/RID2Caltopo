@@ -624,8 +624,10 @@ fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
                     hasCreds = viewModel.hasCredentials,
                     hasNetwork = viewModel.hasNetwork,
                     onDismiss = { viewModel.onUIEvent(UIEvent.DismissRequested) },
+                    onCancel = { viewModel.cancelMapOpenRetry() },
                     loading = true,
                     connectingToMap = CaltopoMap.GetMapNode() != null,
+                    retryMessage = org.ncssar.rid2caltopo.data.CaltopoMapOpenNotice.text,
                     onAction = { viewModel.onUIEvent(UIEvent.ConnectionRequested) }
                 )
             }
@@ -757,6 +759,8 @@ fun StandAloneOptionsDialog(
     hasCreds: Boolean,
     onAction: () -> Unit,
     connectingToMap: Boolean = false,
+    retryMessage: String? = null,
+    onCancel: () -> Unit = onDismiss,
     onPersonalReady: () -> Unit = {}
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -792,7 +796,11 @@ fun StandAloneOptionsDialog(
         "Sign in with your personal CalTopo account to choose a map. Teams credentials are optional."
     }
     AlertDialog(
-        onDismissRequest = if (loading) ({}) else onDismiss, // disable dismiss while loading
+        onDismissRequest = when {
+            retryMessage != null || connectingToMap -> onCancel
+            loading -> ({})
+            else -> onDismiss
+        },
         title = { Text(titleText) },
         text = {
             if (loading) {
@@ -803,7 +811,9 @@ fun StandAloneOptionsDialog(
                     CircularProgressIndicator(modifier = Modifier.size(40.dp))
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        if (connectingToMap) {
+                        if (retryMessage != null) {
+                            retryMessage
+                        } else if (connectingToMap) {
                             "Connecting to incident map…"
                         } else if (hasCreds) {
                             "Loading available maps…"
@@ -830,7 +840,10 @@ fun StandAloneOptionsDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Stay Offline") }
+            val cancelOpen = retryMessage != null || connectingToMap
+            TextButton(onClick = if (cancelOpen) onCancel else onDismiss) {
+                Text(if (cancelOpen) "Cancel" else "Stay Offline")
+            }
         }
     )
     CaltopoSyncAccountPrompt(

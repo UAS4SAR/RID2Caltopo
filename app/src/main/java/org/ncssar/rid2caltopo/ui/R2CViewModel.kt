@@ -375,6 +375,11 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         pendingProfileSwitch = null
     }
 
+    fun cancelMapOpenRetry() {
+        CaltopoMap.cancelServerRetry()
+        onUIEvent(UIEvent.DisconnectRequested)
+    }
+
     var showIncidentSelection by mutableStateOf(false)
         private set
     fun openConnectionOverlayFromCurrentScreen() { onUIEvent(UIEvent.HeaderClicked) }

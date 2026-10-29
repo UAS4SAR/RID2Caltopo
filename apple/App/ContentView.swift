@@ -1829,6 +1829,20 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         androidRestrictionStrip
                         androidOperationsHeader
+                        if ridTracks.caltopoStatus.hasPrefix("CalTopo server unavailable") {
+                            HStack(alignment: .center, spacing: 8) {
+                                Text(ridTracks.caltopoStatus)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.white)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Button("Cancel") {
+                                    applyCaltopoConfiguration(caltopoSettings.disconnectMap())
+                                }
+                                .buttonStyle(.borderedProminent)
+                            }
+                            .padding(8)
+                            .background(Color.orange, in: RoundedRectangle(cornerRadius: 6))
+                        }
                         if !ridTracks.tracks.isEmpty { androidAircraftTable }
                     }
                 }

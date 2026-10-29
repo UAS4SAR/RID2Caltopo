@@ -36,6 +36,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URI;
+import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -431,7 +432,7 @@ public class CaltopoSession {
             boolean loggedTransport = false;
             final boolean signedFullRead = op.personalAuthorization != null
                     && CaltopoPersonalAccountConnection.usesSignedCredential(op.personalAuthorization.getToken());
-            try (AutoCloseable fullRead = fullMapRead ? CaltopoFullMapReads.acquire(R2CApplication.getAppCtxt(), CaltopoFullMapReads.mapKey(op.personalAuthorization != null ? "https://caltopo.com" : "https://" + fullReadDomain, op.url), () -> op.asyncFuture != null && op.asyncFuture.isCancelled(), signedFullRead) : null) {
+            try (FullMapReadLease fullRead = fullMapRead ? CaltopoFullMapReads.acquire(R2CApplication.getAppCtxt(), CaltopoFullMapReads.mapKey(op.personalAuthorization != null ? "https://caltopo.com" : "https://" + fullReadDomain, op.url), () -> op.asyncFuture != null && op.asyncFuture.isCancelled(), signedFullRead) : null) {
                 if (Thread.currentThread().isInterrupted() || (op.asyncFuture != null && op.asyncFuture.isCancelled())) throw new InterruptedException();
                 if (fullMapRead && op.personalAuthorization == null &&
                         (fullReadCredentials != Cred || !java.util.Objects.equals(fullReadDomain, DomainAndPort))) {
@@ -558,6 +559,7 @@ public class CaltopoSession {
 
                     if (response.isSuccessful()) {
                         goodResponse = true;
+                        if (fullRead != null) fullRead.succeeded();
                         if (!op.response.isEmpty()) {
                             try {
                                 JSONObject responseJson = new JSONObject(op.response);
@@ -575,9 +577,9 @@ public class CaltopoSession {
                         op.response = "CalTopo object is already absent.";
                         CTInfo(TAG, "BgSendRequest() treating code " + op.responseCode + " as 'already gone'");
                     } else {
-                        op.response = op.personalAuthorization != null
-                                ? "Personal map request failed; check your login and map permissions. Team credentials were not used."
-                                : "CalTopo request failed; check connection and permissions.";
+                        boolean personal = op.personalAuthorization != null;
+                        boolean unavailable = CaltopoServerAvailability.isUnavailable(op.responseCode, false);
+                        op.response = CaltopoServerAvailability.message(op.responseCode, personal, false);
                         CTError(TAG, "BgSendRequest() failed w/code " + op.responseCode + ":\n" + op.response);
                         Bundle eventParams = new Bundle();
                         eventParams.putInt("r2c_responseCode", op.responseCode);
@@ -585,6 +587,8 @@ public class CaltopoSession {
                         eventParams.putString("r2c_operation", op.toString());
                         eventParams.putString("r2c_method", op.method.toString());
                         CaltopoClient.CTEvent(TAG, "CaltopoOpFailed", eventParams);
+                        // A failed full read must return to the UI. The 90s gate is not a retry timer.
+                        if (fullMapRead && unavailable) break;
                         if (!op.positionReport && IsTransientResponseCode(op.responseCode)
                                 && RetryAfterDelay("HTTP " + op.responseCode, attemptNum)) {
                             continue;
@@ -608,6 +612,13 @@ public class CaltopoSession {
                 }
             } catch (IOException e) {
                 if (!loggedTransport) logTransport(op, 0, transportCredential(op, null));
+                boolean timedOut = e instanceof SocketTimeoutException;
+                if (timedOut || fullMapRead) {
+                    op.response = CaltopoServerAvailability.message(timedOut ? 0 : op.responseCode, op.personalAuthorization != null, true);
+                    op.responseCode = timedOut ? 0 : op.responseCode;
+                    CTError(TAG, op.response);
+                    break;
+                }
                 op.response = "CalTopo request could not complete.";
                 CTError(TAG, op.response);
                 if (op.positionReport || !RetryAfterDelay("I/O exception", attemptNum)) {
@@ -783,7 +794,11 @@ public class CaltopoSession {
                 CaltopoPersonalAccountConnection.logState("map open failed map=" + mapNode.getId()
                         + " credential=" + openCredential + " code=" + outer.responseCode
                         + " error=" + error.getClass().getSimpleName());
-                outer.response = "Map could not load. Check your connection and map permissions, then retry.";
+                if (outer.response == null || !outer.response.startsWith("CalTopo server unavailable")) {
+                    outer.response = outer.responseCode == 401 || outer.responseCode == 403
+                            ? CaltopoServerAvailability.message(outer.responseCode, personal, false)
+                            : "Map could not load. Check your connection and map permissions, then retry.";
+                }
                 outer.setOperationIsDone(false);
             }
             return outer;

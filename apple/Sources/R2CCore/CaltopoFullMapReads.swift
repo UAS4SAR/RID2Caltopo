@@ -25,7 +25,10 @@ public actor CaltopoFullMapReads {
             try Task.checkCancellation()
             let state = maps[key] ?? State()
             let remaining = state.lastFinished.map { max(0, interval - (now() - $0)) } ?? 0
-            if !state.busy && remaining <= 0 { maps[key] = State(busy: true); break }
+            if !state.busy && remaining <= 0 {
+                maps[key] = State(busy: true, lastFinished: state.lastFinished)
+                break
+            }
             if !announcedWait {
                 let milliseconds = Int((state.busy ? 0.25 : remaining) * 1_000)
                 CaltopoPersonalAccountConnection.logState("map open waiting full-read gate \(milliseconds)ms")
@@ -33,9 +36,16 @@ public actor CaltopoFullMapReads {
             }
             try await sleep(state.busy ? 0.25 : remaining)
         }
-        defer { maps[key] = State(lastFinished: now()) }
-        try Task.checkCancellation()
-        return try await operation()
+        let previous = maps[key]?.lastFinished
+        do {
+            let value = try await operation()
+            maps[key] = State(lastFinished: now())
+            return value
+        } catch {
+            // A 5xx or timeout must not make the next open wait out the 90s budget.
+            maps[key] = State(busy: false, lastFinished: previous)
+            throw error
+        }
     }
     public nonisolated static func mapKey(_ url: URL) -> String {
         precondition(isFullMapRead(method: "GET", path: url.path))

@@ -147,6 +147,8 @@ public class CaltopoMap {
 
     // poll the map to see if there are any new r2c peers or user has changed one of our track labels
     private static final DelayedExec MapCheckerDelay = new DelayedExec();
+    private static final DelayedExec ServerRetryDelay = new DelayedExec();
+    private static int serverRetryAttempt = 0;
     private static final DelayedExec InitialMarkerPublishDelay = new DelayedExec();
     private static String FolderId;
     private static volatile String ArchiveFolderId;
@@ -815,7 +817,14 @@ public class CaltopoMap {
     }
 
 
+    public static void cancelServerRetry() {
+        ServerRetryDelay.stop();
+        serverRetryAttempt = 0;
+        CaltopoMapOpenNotice.clear();
+    }
+
     public static void ResetMapConnection(long maxWaitInMilliseconds) {
+        cancelServerRetry();
         ActiveMapSelection = null;
         CaltopoOp initial = InitialMapRequest;
         InitialMapRequest = null;
@@ -1421,12 +1430,47 @@ public class CaltopoMap {
      * when the app was terminated mid-record).
      * o Create TrackDir and ArchiveDir if they weren't already present.
      */
+    private static void scheduleServerRetry(@NonNull String message) {
+        CaltopoMapOpenNotice.show(message);
+        if (MapStatus != MapStatusListener.mapStatus.connecting) {
+            SetMapStatus(MapStatusListener.mapStatus.connecting, message);
+        }
+        long delay = switch (Math.min(serverRetryAttempt, 3)) {
+            case 0 -> 3_000L;
+            case 1 -> 6_000L;
+            case 2 -> 12_000L;
+            default -> 15_000L;
+        };
+        serverRetryAttempt++;
+        CaltopoPersonalAccountConnection.logState("map open server retry in " + delay + "ms " + message);
+        ServerRetryDelay.start(CaltopoMap::retryCurrentMapOpen, delay, 0L);
+    }
+
+    private static void retryCurrentMapOpen() {
+        if (ShutdownInProgress || DisconnectInProgress || MapNode == null) return;
+        if (MapStatus != MapStatusListener.mapStatus.connecting) return;
+        long requestStartedAtMs = timeSource.now();
+        long refreshGeneration;
+        synchronized (MapRefreshLock) {
+            refreshGeneration = MapRefreshGeneration;
+        }
+        InitialMapRequest = getCurrentRuntime().getCalTopoSessionGateway()
+                .openMapForConnection(MapNode, op -> OpenMapFinished(op, requestStartedAtMs, refreshGeneration));
+    }
+
     private static void OpenMapFinished(CaltopoOp lOpenMapOp,
                                         long requestStartedAtMs,
                                         long refreshGeneration) {
         if (null == MapNode || refreshGeneration != MapRefreshGeneration) return;
         InitialMapRequest = null;
         if (lOpenMapOp.fail()) {
+            if (lOpenMapOp.response != null && lOpenMapOp.response.startsWith("CalTopo server unavailable")) {
+                scheduleServerRetry(lOpenMapOp.response);
+                return;
+            }
+            ServerRetryDelay.stop();
+            serverRetryAttempt = 0;
+            CaltopoMapOpenNotice.clear();
             if (null != lOpenMapOp.response && lOpenMapOp.response.startsWith("<!DOCTYPE html>")) {
                 // Not going to figure this out on our own - write response to a file and open it with a browser:
                 CaltopoClient.OpenBufferContentsInBrowser(lOpenMapOp.response);
@@ -1440,6 +1484,9 @@ public class CaltopoMap {
             SetMapStatus(MapStatusListener.mapStatus.down, "Map could not load. Check your connection and map permissions, then retry.");
             return;
         }
+        ServerRetryDelay.stop();
+        serverRetryAttempt = 0;
+        CaltopoMapOpenNotice.clear();
         recordCaltopoSessionRtt(lOpenMapOp, "openMap");
 
         JSONObject responseJson = lOpenMapOp.responseJson;

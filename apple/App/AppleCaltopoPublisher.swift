@@ -41,6 +41,8 @@ actor AppleCaltopoPublisher {
     private var lastDeviceMarkerPublishedAt: Date?
     private var publishedDeviceMarkerID: String?
     private var ownedDeviceMarkerID = ""
+    private var mapOpenRetry: Task<Void, Never>?
+    private var mapOpenRetryAttempt = 0
     private var deviceMarkerGeneration = 0
     private var deviceMarkerPublishingSuspended = false
     private var deviceMarkerPublishInFlight = false
@@ -71,6 +73,7 @@ actor AppleCaltopoPublisher {
 
     deinit {
         recoveryTask?.cancel()
+        mapOpenRetry?.cancel()
         continuation.finish()
     }
 
@@ -114,6 +117,9 @@ actor AppleCaltopoPublisher {
     ) async {
         recoveryTask?.cancel()
         recoveryTask = nil
+        mapOpenRetry?.cancel()
+        mapOpenRetry = nil
+        mapOpenRetryAttempt = 0
         // Persist the final buffered observations before replacing the map client.
         for remoteID in Array(requestedLiveTrackIDs.keys) {
             await persistInterruptedPublication(remoteID: remoteID, force: true)
@@ -165,19 +171,60 @@ actor AppleCaltopoPublisher {
                 try await ensureFolders(client: configuredClient)
                 await removeStaleR2CDeviceMarkers(client: configuredClient)
                 await recoverInterruptedPublications(client: configuredClient)
+                mapOpenRetry?.cancel()
+                mapOpenRetry = nil
+                mapOpenRetryAttempt = 0
+                deviceMarkerPublishingSuspended = false
+                continuation.yield(.ready)
             } catch {
-                AppleLog.warning(
-                    "CalTopo",
-                    "Interrupted LiveTrack recovery will retry after map reconnect: \(error.localizedDescription)"
-                )
+                if let message = CaltopoServerAvailability.retryMessage(error) {
+                    continuation.yield(.failed(message))
+                    scheduleMapOpenRetry(client: configuredClient, generation: configurationGeneration)
+                } else {
+                    AppleLog.warning(
+                        "CalTopo",
+                        "Interrupted LiveTrack recovery will retry after map reconnect: \(error.localizedDescription)"
+                    )
+                    deviceMarkerPublishingSuspended = false
+                    continuation.yield(.ready)
+                }
             }
-            deviceMarkerPublishingSuspended = false
-            continuation.yield(.ready)
         } catch {
             client = nil
             deviceMarkerPublishingSuspended = false
             continuation.yield(.failed("Configuration: \(error.localizedDescription)"))
         }
+    }
+
+    private func scheduleMapOpenRetry(client: CaltopoLiveClient, generation: Int) {
+        mapOpenRetry?.cancel()
+        let attempt = mapOpenRetryAttempt
+        mapOpenRetryAttempt += 1
+        let delay = [3.0, 6.0, 12.0, 15.0][min(attempt, 3)]
+        mapOpenRetry = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self else { return }
+            guard await self.configurationGeneration == generation else { return }
+            do {
+                try await self.ensureFolders(client: client)
+                await self.removeStaleR2CDeviceMarkers(client: client)
+                await self.recoverInterruptedPublications(client: client)
+                await self.finishMapOpenRetry()
+                self.continuation.yield(.ready)
+            } catch {
+                guard !Task.isCancelled, await self.configurationGeneration == generation else { return }
+                if let message = CaltopoServerAvailability.retryMessage(error) {
+                    self.continuation.yield(.failed(message))
+                    await self.scheduleMapOpenRetry(client: client, generation: generation)
+                }
+            }
+        }
+    }
+
+    private func finishMapOpenRetry() {
+        mapOpenRetry = nil
+        mapOpenRetryAttempt = 0
+        deviceMarkerPublishingSuspended = false
     }
 
     func publishDeviceMarker(_ marker: CaltopoDeviceMarker, force: Bool = false, consent: AppleLocationConsent, consentGeneration: UInt) async {

@@ -69,6 +69,35 @@ public struct CaltopoLiveConfiguration: Sendable, Equatable, Hashable {
     }
 }
 
+public enum CaltopoServerAvailability {
+    public static func isUnavailable(status: Int, timedOut: Bool) -> Bool {
+        timedOut || status == 408 || status >= 500
+    }
+
+    public static func message(status: Int, personal: Bool, timedOut: Bool) -> String {
+        if status == 401 || status == 403 {
+            return personal
+                ? "Personal map request failed; check your login and map permissions. Team credentials were not used."
+                : "CalTopo request failed; check your login and map permissions."
+        }
+        if isUnavailable(status: status, timedOut: timedOut) {
+            let detail = timedOut && status <= 0 ? "timed out" : "HTTP \(status)"
+            return "CalTopo server unavailable (\(detail)), retrying..."
+        }
+        return personal ? "Personal map request failed." : "CalTopo request failed."
+    }
+
+    public static func retryMessage(_ error: Error) -> String? {
+        if let urlError = error as? URLError, urlError.code == .timedOut {
+            return message(status: 0, personal: false, timedOut: true)
+        }
+        guard case let CaltopoLiveClientError.httpStatus(code, text) = error else { return nil }
+        if text.hasPrefix("CalTopo server unavailable") { return text }
+        if isUnavailable(status: code, timedOut: false) { return message(status: code, personal: false, timedOut: false) }
+        return nil
+    }
+}
+
 public enum CaltopoLiveClientError: Error, Sendable, Equatable {
     case invalidConfiguration
     case invalidCredentialSecret
@@ -88,11 +117,14 @@ extension CaltopoLiveClientError: LocalizedError {
             return "The CalTopo credential secret is not valid Base64."
         case .invalidURL:
             return "The CalTopo server address is invalid."
-        case let .httpStatus(code, message):
+        case let .httpStatus(_, message):
             let detail = message.trimmingCharacters(in: .whitespacesAndNewlines)
-            return detail.isEmpty
-                ? "CalTopo returned HTTP \(code)."
-                : "CalTopo returned HTTP \(code): \(detail)"
+            if detail.hasPrefix("CalTopo server unavailable")
+                || detail.hasPrefix("Personal map request failed")
+                || detail.hasPrefix("CalTopo request failed") {
+                return detail
+            }
+            return detail.isEmpty ? "CalTopo returned an unexpected response." : detail
         case .missingResult:
             return "CalTopo returned a response without the expected result."
         case .mismatchedLiveTrackID:
@@ -938,6 +970,10 @@ public actor CaltopoLiveClient {
             if logTransport {
                 CaltopoPersonalAccountConnection.logRequest(method: method, path: path, status: 0, credential: credential)
             }
+            if let urlError = error as? URLError, urlError.code == .timedOut {
+                throw CaltopoLiveClientError.httpStatus(0, CaltopoServerAvailability.message(
+                    status: 0, personal: configuration.authorizesAsPersonalAccount, timedOut: true))
+            }
             throw error
         }
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -955,7 +991,10 @@ public actor CaltopoLiveClient {
         else {
             throw CaltopoLiveClientError.httpStatus(
                 httpResponse.statusCode,
-                configuration.personalSessionID == nil ? String(decoding: data.prefix(1_024), as: UTF8.self) : "Personal map request failed; check your login and map permissions."
+                CaltopoServerAvailability.message(
+                    status: httpResponse.statusCode,
+                    personal: configuration.authorizesAsPersonalAccount,
+                    timedOut: false)
             )
         }
         return data

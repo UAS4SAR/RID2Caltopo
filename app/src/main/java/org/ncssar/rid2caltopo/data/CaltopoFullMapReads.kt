@@ -27,12 +27,23 @@ class FullMapReadRateGate(private val intervalMs: Long = 90_000L) {
         state.active = id
         return 0L
     }
-    @Synchronized fun finish(map: String, id: String, now: Long): Boolean {
+    @Synchronized fun finish(map: String, id: String, now: Long): Boolean = finish(map, id, now, true)
+
+    /** A failed read releases the lease without starting the 90s cooldown. */
+    @Synchronized fun finish(map: String, id: String, now: Long, charge: Boolean): Boolean {
         val state = maps[map] ?: return false
         if (state.active != id) return false
-        state.lastFinished = now; state.active = null
+        state.active = null
+        if (charge) state.lastFinished = now
         return true
     }
+}
+
+/** Closes the full-read lease. Only a completed HTTP success consumes the 90s budget. */
+class FullMapReadLease(private val release: (Boolean) -> Unit) : AutoCloseable {
+    private var charge = false
+    fun succeeded() { charge = true }
+    override fun close() { release(charge) }
 }
 
 /** Worker-only client. Waiting never occupies the ordinary updates/network executor. */
@@ -59,7 +70,7 @@ object CaltopoFullMapReads {
      */
     @JvmStatic @JvmOverloads fun acquire(context: Context, mapKey: String,
         cancelled: java.util.function.BooleanSupplier = java.util.function.BooleanSupplier { false },
-        localOnly: Boolean = false): AutoCloseable {
+        localOnly: Boolean = false): FullMapReadLease {
         check(Looper.myLooper() != Looper.getMainLooper()) { "Full map reads must run on a worker" }
         if (localOnly) return acquireLocal(mapKey, cancelled)
         val id = UUID.randomUUID().toString()
@@ -73,8 +84,8 @@ object CaltopoFullMapReads {
                 CaltopoPersonalAccountConnection.logState("map open full-read probe unavailable; using local gate")
                 return acquireLocal(mapKey, cancelled)
             }
-            if (delay == 0L) return AutoCloseable {
-                context.contentResolver.call(uri, "finishFullMapRead", id, null)
+            if (delay == 0L) return FullMapReadLease { charge ->
+                context.contentResolver.call(uri, if (charge) "finishFullMapRead" else "abandonFullMapRead", id, null)
                 // Retain the Binder lease until completion; process death also releases it.
                 java.lang.ref.Reference.reachabilityFence(binder)
             }
@@ -103,13 +114,15 @@ object CaltopoFullMapReads {
         }
     }
 
-    private fun acquireLocal(mapKey: String, cancelled: java.util.function.BooleanSupplier): AutoCloseable {
+    private fun acquireLocal(mapKey: String, cancelled: java.util.function.BooleanSupplier): FullMapReadLease {
         val id = UUID.randomUUID().toString()
         var announced = false
         while (true) {
             if (Thread.currentThread().isInterrupted || cancelled.asBoolean) throw InterruptedException()
             val delay = localGate.tryBegin(mapKey, id, SystemClock.elapsedRealtime())
-            if (delay == 0L) return AutoCloseable { localGate.finish(mapKey, id, SystemClock.elapsedRealtime()) }
+            if (delay == 0L) return FullMapReadLease { charge ->
+                localGate.finish(mapKey, id, SystemClock.elapsedRealtime(), charge)
+            }
             if (!announced) {
                 CaltopoPersonalAccountConnection.logState("map open waiting full-read gate ${delay}ms")
                 announced = true
@@ -133,9 +146,11 @@ object CaltopoFullMapReadBroker {
         catch (error: android.os.RemoteException) { finish(id); throw error }
         return 0L
     }
-    @Synchronized fun finish(id: String) {
+    @Synchronized fun finish(id: String) { end(id, true) }
+    @Synchronized fun abandon(id: String) { end(id, false) }
+    @Synchronized private fun end(id: String, charge: Boolean) {
         val lease = leases.remove(id) ?: return
-        gate.finish(lease.map, id, SystemClock.elapsedRealtime())
+        gate.finish(lease.map, id, SystemClock.elapsedRealtime(), charge)
         runCatching { lease.binder.unlinkToDeath(lease.death, 0) }
     }
 }

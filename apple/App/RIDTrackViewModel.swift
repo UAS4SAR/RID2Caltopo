@@ -316,7 +316,7 @@ final class RIDTrackViewModel: ObservableObject {
                     self.updateCaltopoThumbnailRefreshTargets()
                     self.caltopoStatus = "Stopped \(id)"
                 case let .failed(message):
-                    self.caltopoStatus = "Error: \(message)"
+                    self.caltopoStatus = message.hasPrefix("CalTopo server unavailable") ? message : "Error: \(message)"
                     self.caltopoRTTMilliseconds = nil
                 }
             }

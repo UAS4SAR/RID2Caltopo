@@ -662,7 +662,7 @@ class CaltopoMapTest {
         // Recovery callbacks also finish map refreshes. Let them complete before
         // restoring shared map fields or a later test can receive this completion.
         CaltopoRecoveryWork.worker.submit {}.get(3, java.util.concurrent.TimeUnit.SECONDS)
-        for (name in listOf("MapCheckerDelay", "ProfileExpiryPoll", "InitialMarkerPublishDelay")) {
+        for (name in listOf("MapCheckerDelay", "ProfileExpiryPoll", "InitialMarkerPublishDelay", "ServerRetryDelay")) {
             (CaltopoMap::class.java.getDeclaredField(name).apply { isAccessible = true }.get(null) as DelayedExec).stop()
         }
         mapStatusField.set(null, originalMapStatus)
