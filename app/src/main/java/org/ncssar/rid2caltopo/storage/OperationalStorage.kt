@@ -27,6 +27,9 @@ internal object OperationalStorage {
     private val state = MutableStateFlow(Status())
     val status = state.asStateFlow()
     private val gate = Any()
+    /** Serializes archive hydration. Callers that publish do not take this lock. */
+    private val prepareBody = java.util.concurrent.locks.ReentrantLock()
+    private val deferredRetains = mutableListOf<File>()
     private val queueGate = Any()
     private val recorderGate = Any()
     private val recoveryGate = Any()
@@ -78,13 +81,29 @@ internal object OperationalStorage {
 
     fun prepare(context: Context, testArchive: DocumentFile? = null) {
         worker()
+        val uri = testArchive?.uri?.toString() ?: CaltopoClient.GetArchiveUri()?.toString()
+            ?: throw unavailable("Choose or reconnect Archive Dir to use retained operational data.")
         synchronized(gate) {
-            val uri = testArchive?.uri?.toString() ?: CaltopoClient.GetArchiveUri()?.toString()
-                ?: throw unavailable("Choose or reconnect Archive Dir to use retained operational data.")
             store?.let {
                 check(it.uri == uri) { "Restart the app after changing Archive Dir." }
                 kotlin.check(state.value.ready) { state.value.message.ifEmpty { "Restart the app to reconnect Archive Dir." } }
                 return
+            }
+        }
+        // SAF hydration stays off `gate`. Publication and live-track writes must be able
+        // to enter that monitor while Archive Dir is still being prepared.
+        if (!prepareBody.tryLock()) {
+            prepareBody.lock()
+            prepareBody.unlock()
+            return
+        }
+        try {
+            synchronized(gate) {
+                store?.let {
+                    check(it.uri == uri) { "Restart the app after changing Archive Dir." }
+                    kotlin.check(state.value.ready) { state.value.message.ifEmpty { "Restart the app to reconnect Archive Dir." } }
+                    return
+                }
             }
             val generation = selectionGeneration.get()
             fun checkSelection() = check(selectionGeneration.get() == generation) { "Archive Dir changed during preparation. Restart the app to use the selected folder." }
@@ -119,13 +138,18 @@ internal object OperationalStorage {
                 check(root.isDirectory && root.canRead() && root.canWrite()) {
                     "Archive Dir became unavailable during preparation; reconnect its storage."
                 }
-                store = value
-                value.migrated.clear()
-                state.value = Status(ready = true, message = "Retained operational data is in Archive Dir.")
+                synchronized(gate) {
+                    store = value
+                    value.migrated.clear()
+                    state.value = Status(ready = true, message = "Retained operational data is in Archive Dir.")
+                }
+                flushDeferredRetains()
             } catch (error: Exception) {
                 state.value = Status(message = error.message ?: "Archive storage could not be prepared; original copies were retained.")
                 throw error
             }
+        } finally {
+            prepareBody.unlock()
         }
     }
     private fun recoverArchive(value: Store) = synchronized(recoveryGate) {
@@ -510,7 +534,11 @@ internal object OperationalStorage {
             }
             return
         }
-        val current = store ?: return
+        val current = store
+        if (current == null) {
+            deferRetain(file)
+            return
+        }
         if (mapping(file, current) == null) return
         worker()
         synchronized(gate) {
@@ -649,7 +677,11 @@ internal object OperationalStorage {
             value.tree.delete(path); value.tree.delete("$path.r2c-info"); value.tree.delete("$path.r2c-chunks")
         }
     }
-    fun requireReady(context: Context) { if (!state.value.ready) prepare(context.applicationContext) }
+    fun requireReady(context: Context) {
+        if (state.value.ready) return
+        prepare(context.applicationContext)
+        kotlin.check(state.value.ready) { state.value.message.ifEmpty { "Archive Dir is unavailable." } }
+    }
     fun requireFor(file: File) {
         val context = org.ncssar.rid2caltopo.app.R2CApplication.getAppCtxt() ?: return
         val base = context.applicationInfo.dataDir
@@ -662,7 +694,10 @@ internal object OperationalStorage {
             requireRecorderReady(context)
             return
         }
-        val names = listOf("mapping-missions", "mapping-layers", "mapping-processing", "mapping-storage-stats", "map-archives", "clues", "managed-video-session-recordings", "mediamtx-recordings", "mediamtx-recordings-merged", "video-sei-originals", "land-restrictions", "anr-traces", "review-annotations", "operational-state")
+        // Clues and the operational queue are app-private until an asynchronous retain.
+        // They must not wait for bulk Archive Dir hydration.
+        if (listOf("clues", "operational-state").any { path == "$base/files/$it" || path.startsWith("$base/files/$it/") }) return
+        val names = listOf("mapping-missions", "mapping-layers", "mapping-processing", "mapping-storage-stats", "map-archives", "managed-video-session-recordings", "mediamtx-recordings", "mediamtx-recordings-merged", "video-sei-originals", "land-restrictions", "anr-traces", "review-annotations")
         if (names.any { path == "$base/files/$it" || path.startsWith("$base/files/$it/") } ||
             path == "$base/no_backup/dem_blocks_v2" || path == "$base/no_backup/map_cache" ||
             path.startsWith("$base/no_backup/dem_blocks_v2/") || path.startsWith("$base/no_backup/map_cache/")) {
@@ -682,10 +717,21 @@ internal object OperationalStorage {
     private val queueNames = listOf("awaiting-map-flights.json", "flight-archive-journal.json", "flight-kmz-rewrites.json", "caltopo-interrupted-tracks.json", "device-marker-cleanup.json")
     fun stateFile(context: Context, name: String): File {
         require(name in queueNames)
-        // Only marker ownership is released before bulk readiness. Flight/archive recovery
-        // consumers can touch other operational areas and retain their original startup barrier.
-        if (name == "device-marker-cleanup.json") prepareQueue(context) else requireReady(context)
+        // The queue lane is independent of bulk areas such as layers and decoded terrain.
+        // Live-track publication and clue binding read the app-private file without waiting
+        // on that hydration.
+        if (!state.value.ready) {
+            CaltopoClient.CTDebug("OperationalStorage", "state file $name skipped bulk archive prepare")
+        }
+        if (preparedQueue == null) prepareQueue(context)
         return File(context.filesDir, "operational-state/$name")
+    }
+    private fun deferRetain(file: File) {
+        synchronized(deferredRetains) { deferredRetains.add(file) }
+    }
+    private fun flushDeferredRetains() {
+        val pending = synchronized(deferredRetains) { deferredRetains.toList().also { deferredRetains.clear() } }
+        pending.forEach { retained -> runCatching { retain(retained) } }
     }
     @JvmStatic fun archiveChanged(uri: String) {
         selectionGeneration.incrementAndGet()

@@ -3017,12 +3017,24 @@ class StreamsViewModel(
             try {
                 val startedAt = android.os.SystemClock.elapsedRealtime()
                 val acceptedContext = captureClueSaveContext()
+                val contextAt = android.os.SystemClock.elapsedRealtime()
                 val bound = withContext(Dispatchers.Default) { bindAtSubmit(clue) }
+                val bindAt = android.os.SystemClock.elapsedRealtime()
                 val context = freezeClueDestination(acceptedContext, bound, mode == ClueSaveMode.PUBLISH)
-                // Nearest-waypoint position is final at Submit. Do not wait on the DEM worker:
-                // the form preview already holds it for the local 1 m GeoTIFF, and that wait
-                // used to expire before any marker POST.
-                android.util.Log.i(tag, "Clue save stage=bound elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt} " +
+                val destinationAt = android.os.SystemClock.elapsedRealtime()
+                val contextMs = contextAt - startedAt
+                val bindMs = bindAt - contextAt
+                val destinationMs = destinationAt - bindAt
+                val wait = when {
+                    destinationMs >= bindMs && destinationMs >= contextMs -> "destination"
+                    bindMs >= contextMs -> "waypoint-bind"
+                    else -> "capture-context"
+                }
+                // Nearest-waypoint position is final at Submit. Do not wait on the DEM worker
+                // or on Archive Dir hydration.
+                android.util.Log.i(tag, "Clue save stage=bound elapsedMs=${destinationAt - startedAt} " +
+                    "wait=$wait contextMs=$contextMs bindMs=$bindMs destinationMs=$destinationMs " +
+                    "storageReady=${org.ncssar.rid2caltopo.storage.OperationalStorage.ready()} " +
                     "terrainApplied=${bound.terrainProjectionApplied} demSource=${bound.demSource ?: "none"} " +
                     "publishWithoutTerrainWait=true")
                 val (title, description) = withContext(Dispatchers.Default) {
