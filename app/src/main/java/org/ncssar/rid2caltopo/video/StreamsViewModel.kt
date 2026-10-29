@@ -3033,7 +3033,10 @@ class StreamsViewModel(
                         else appendTelemetrySummary(captureSummary, bound.streamTelemetrySummary)
                     title to description
                 }
-                persistClueLocally(bound, title, description, mode == ClueSaveMode.PUBLISH, context)
+                val publishedDescription = if (mode == ClueSaveMode.PUBLISH) {
+                    appendFlatSurfaceLocationNote(description, bound.terrainProjectionApplied, bound.gimbalAngleDeg)
+                } else description
+                persistClueLocally(bound, title, publishedDescription, mode == ClueSaveMode.PUBLISH, context)
                     ?: return@launch
                 when (mode) {
                     ClueSaveMode.PUBLISH -> {
@@ -3046,7 +3049,8 @@ class StreamsViewModel(
                     }
                     ClueSaveMode.MARKER_LOCAL -> CaltopoClient.ShowToast("Local marker added to R2C Map Pane.")
                 }
-                android.util.Log.i(tag, "Clue save stage=queued-upload elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt} mode=$mode")
+                android.util.Log.i(tag, "Clue save stage=queued-upload elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt} mode=$mode " +
+                    "flatSurfaceNote=${publishedDescription.contains(FLAT_SURFACE_LOCATION_NOTE)}")
                 if (pendingClue?.timestamp == clue.timestamp && pendingClue?.designator == clue.designator) clearPendingClue()
             } catch (error: ClueTerrainUnavailable) {
                 CTWarn(tag, "Clue save awaiting terrain: ${error.message}")

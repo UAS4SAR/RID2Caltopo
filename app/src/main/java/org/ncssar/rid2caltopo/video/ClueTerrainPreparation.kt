@@ -5,6 +5,28 @@ import org.ncssar.rid2caltopo.video.mapcache.DemElevationSample
 
 internal class ClueTerrainUnavailable(message: String) : IllegalStateException(message)
 
+internal const val FLAT_SURFACE_LOCATION_NOTE =
+    "Location approximated from a flat-surface estimate (terrain data not yet loaded)."
+
+/** Straight down. Matches the projection cutoff so a nadir sightline is not called an estimate. */
+internal fun isNadirGimbal(gimbalAngleDeg: Double): Boolean =
+    gimbalAngleDeg.isFinite() && gimbalAngleDeg <= -89.9
+
+/**
+ * CalTopo description note for a published point that was not DEM-refined.
+ * Nadir stays unmarked: that position is directly below the aircraft.
+ */
+internal fun appendFlatSurfaceLocationNote(
+    description: String,
+    terrainProjectionApplied: Boolean,
+    gimbalAngleDeg: Double,
+): String {
+    if (terrainProjectionApplied || isNadirGimbal(gimbalAngleDeg)) return description
+    if (description.contains(FLAT_SURFACE_LOCATION_NOTE)) return description
+    val trimmed = description.trimEnd()
+    return if (trimmed.isEmpty()) FLAT_SURFACE_LOCATION_NOTE else "$trimmed\n\n$FLAT_SURFACE_LOCATION_NOTE"
+}
+
 /** Inputs belong to the captured photograph, never the current live aircraft. */
 internal suspend fun refineCapturedClueTerrain(
     clue: PendingClue,

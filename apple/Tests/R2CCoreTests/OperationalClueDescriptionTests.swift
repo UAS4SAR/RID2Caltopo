@@ -13,6 +13,18 @@ private func report(heading: Double? = 273.2, telemetry: OperationalClueReportTe
         aircraftPositionSource: "RID", distanceMeters: 0, telemetry: telemetry)
 }
 
+@Test func flatSurfaceNoteIsOnlyForAnUnrefinedObliquePublish() {
+    let note = OperationalClueDescription.flatSurfaceLocationNote
+    let oblique = OperationalClueDescription.appendFlatSurfaceNote("Photo", terrainApplied: false, gimbalAngleDegrees: -26.2)
+    #expect(oblique == "Photo\n\n\(note)")
+    #expect(OperationalClueDescription.appendFlatSurfaceNote("  ", terrainApplied: false, gimbalAngleDegrees: -45) == note)
+    #expect(OperationalClueDescription.appendFlatSurfaceNote("Photo", terrainApplied: true, gimbalAngleDegrees: -26.2) == "Photo")
+    #expect(OperationalClueDescription.appendFlatSurfaceNote("Photo", terrainApplied: false, gimbalAngleDegrees: -90) == "Photo")
+    #expect(OperationalClueDescription.appendFlatSurfaceNote("Photo", terrainApplied: false, gimbalAngleDegrees: -89.9) == "Photo")
+    #expect(OperationalClueDescription.appendFlatSurfaceNote(oblique, terrainApplied: false, gimbalAngleDegrees: -26.2) == oblique)
+    #expect(!report().contains(note))
+}
+
 @Test func clueCaptureDescriptionMatchesSharedAndroidFixture() throws {
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

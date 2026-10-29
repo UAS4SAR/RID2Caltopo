@@ -3178,8 +3178,8 @@ private struct ClueSubmissionView: View {
                                               from: shift.from, to: shift.to)
             projection = OperationalClueProjection(
                 latitude: moved.latitude, longitude: moved.longitude, altitudeMeters: projection.altitudeMeters,
-                terrainProjectionApplied: projection.terrainProjectionApplied, demSource: projection.demSource,
-                demResolutionMeters: projection.demResolutionMeters, demSampleStale: projection.demSampleStale)
+                terrainProjectionApplied: false, demSource: nil,
+                demResolutionMeters: nil, demSampleStale: false)
             observation = observation.relocated(latitude: shift.to.latitude, longitude: shift.to.longitude,
                                                 altitudeMeters: shift.to.altitudeMeters ?? observation.altitudeMeters)
             AppleLog.info("Clue", "Submit re-bound to a nearer waypoint \(ClueBindingText.formSummary(submittedBinding))")

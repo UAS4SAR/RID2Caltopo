@@ -20,6 +20,17 @@ class ClueTerrainPreparationTest {
         timestamp = 1_000L, bitmap = null, preview = null, title = "cows", description = "capture",
     )
 
+    @Test fun flatSurfaceNoteIsOnlyForAnUnrefinedObliquePublish() {
+        val note = FLAT_SURFACE_LOCATION_NOTE
+        val oblique = appendFlatSurfaceLocationNote("Photo", terrainProjectionApplied = false, gimbalAngleDeg = -26.2)
+        assertEquals("Photo\n\n$note", oblique)
+        assertEquals(note, appendFlatSurfaceLocationNote("  ", terrainProjectionApplied = false, gimbalAngleDeg = -45.0))
+        assertEquals("Photo", appendFlatSurfaceLocationNote("Photo", terrainProjectionApplied = true, gimbalAngleDeg = -26.2))
+        assertEquals("Photo", appendFlatSurfaceLocationNote("Photo", terrainProjectionApplied = false, gimbalAngleDeg = -90.0))
+        assertEquals("Photo", appendFlatSurfaceLocationNote("Photo", terrainProjectionApplied = false, gimbalAngleDeg = -89.9))
+        assertEquals(oblique, appendFlatSurfaceLocationNote(oblique, terrainProjectionApplied = false, gimbalAngleDeg = -26.2))
+    }
+
     @Test fun saveWaitsForTerrainAndKeepsTheCapturedInputs() = runBlocking {
         val clue = captured()
         val entered = CompletableDeferred<Unit>()
