@@ -176,13 +176,16 @@ object CaltopoPersonalAccountConnection {
     /** Signed account catalog. The existing personal-catalog normalizer interprets the body. */
     fun fetchAccountCatalog(http: CaltopoActivationExchange): String? {
         val request = accountCatalogRequest() ?: return null
+        val path = runCatching { URI(request.url).path }.getOrDefault("/api/v1/acct/${request.accountId}/since/0")
+        logAuth("catalog GET $path")
         val response = try {
             http.get(request.url)
         } catch (error: Exception) {
-            logAuth("catalog request failed")
+            val reason = if (error is CaltopoPersonalAccountException) error.message ?: "rejected" else error.javaClass.simpleName
+            logAuth("catalog GET $path failed: $reason")
             throw CaltopoPersonalAccountException("CalTopo account catalog could not be loaded.")
         }
-        logAuth("catalog HTTP ${response.status}")
+        logAuth("catalog HTTP ${response.status} bytes=${response.body.length}")
         if (response.status != 200) throw CaltopoPersonalAccountException("CalTopo account catalog failed (HTTP ${response.status}).")
         return response.body
     }
@@ -712,11 +715,16 @@ class CaltopoPersonalAccountMemoryStore : CaltopoPersonalAccountStore {
 
 /** HTTPS exchange that does not follow redirects, so an activation code cannot be sent to another host. */
 object CaltopoPersonalAccountHttps : CaltopoActivationExchange {
+    const val MAX_ACTIVATION_BODY = 65_536
+    /** A personal since/0 dump includes every workspace feature, so it is far larger than the credential JSON. */
+    const val MAX_CATALOG_BODY = 16 * 1024 * 1024
+
     override fun get(url: String): CaltopoActivationHttp {
         val parsed = URI(url)
         require(parsed.scheme == "https" && parsed.host?.lowercase(Locale.US) in setOf("caltopo.com", "sartopo.com"))
         require(parsed.path == "/api/v1/activate" || parsed.path.matches(Regex("^/api/v1/acct/[A-Za-z0-9]{6}/since/0$")))
-        return exchange(parsed, "GET", null)
+        val limit = if (parsed.path.endsWith("/since/0")) MAX_CATALOG_BODY else MAX_ACTIVATION_BODY
+        return exchange(parsed, "GET", null, limit)
     }
 
     fun postForm(url: String, fields: Map<String, String>): CaltopoActivationHttp {
@@ -726,10 +734,22 @@ object CaltopoPersonalAccountHttps : CaltopoActivationExchange {
         val body = fields.entries.joinToString("&") { (key, value) ->
             "${formEncode(key)}=${formEncode(value)}"
         }
-        return exchange(parsed, "POST", body)
+        return exchange(parsed, "POST", body, MAX_ACTIVATION_BODY)
     }
 
-    private fun exchange(parsed: URI, method: String, body: String?): CaltopoActivationHttp {
+    fun readResponseBody(input: java.io.InputStream, maxBytes: Int, status: Int): String {
+        val buffer = ByteArray(4096)
+        val output = java.io.ByteArrayOutputStream()
+        while (output.size() <= maxBytes) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            output.write(buffer, 0, read)
+        }
+        if (output.size() > maxBytes) throw CaltopoPersonalAccountException("HTTP $status response too large")
+        return output.toString(Charsets.UTF_8.name())
+    }
+
+    private fun exchange(parsed: URI, method: String, body: String?, maxBytes: Int): CaltopoActivationHttp {
         val connection = parsed.toURL().openConnection() as HttpURLConnection
         connection.instanceFollowRedirects = false
         connection.connectTimeout = 20_000
@@ -744,22 +764,10 @@ object CaltopoPersonalAccountHttps : CaltopoActivationExchange {
         }
         val status = connection.responseCode
         val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-        val responseBody = stream?.use { input -> readLimited(input) }.orEmpty()
+        val responseBody = stream?.use { input -> readResponseBody(input, maxBytes, status) }.orEmpty()
         return CaltopoActivationHttp(status, responseBody)
     }
 }
 
 private fun formEncode(value: String): String =
     java.net.URLEncoder.encode(value, Charsets.UTF_8.name()).replace("+", "%20")
-
-private fun readLimited(input: java.io.InputStream): String {
-    val buffer = ByteArray(4096)
-    val output = java.io.ByteArrayOutputStream()
-    while (output.size() <= 65_536) {
-        val read = input.read(buffer)
-        if (read < 0) break
-        output.write(buffer, 0, read)
-    }
-    if (output.size() > 65_536) throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
-    return output.toString(Charsets.UTF_8.name())
-}

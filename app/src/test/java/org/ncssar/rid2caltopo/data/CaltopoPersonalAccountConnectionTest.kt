@@ -319,6 +319,50 @@ class CaltopoPersonalAccountConnectionTest {
         assertNull(CaltopoPersonalAccountConnection.status("caltopo.com"))
     }
 
+    @Test fun catalogRequestMatchesTheEmptyPayloadGetAndCanExceedSixtyFourKilobytes() {
+        val key = Base64.getEncoder().encodeToString(ByteArray(32) { 0xFF.toByte() })
+        val record = CaltopoPersonalAccountConnection.completeExchange(
+            """{"code":"cred12345678","key":"$key","account":{"id":"USER01","type":"Feature","properties":{"class":"UserAccount"}}}""",
+            "abcd1234", "caltopo.com", "RID2Caltopo", 50
+        )
+        val store = CaltopoPersonalAccountMemoryStore()
+        store.save(record)
+        CaltopoPersonalAccountConnection.install(store, featureEnabled = true)
+        val now = 1_700_000_000_000L
+        val request = CaltopoPersonalAccountConnection.accountCatalogRequest(now)!!
+        val path = "/api/v1/acct/USER01/since/0"
+        val signature = CaltopoPersonalAccountConnection.sign("GET", path, now + 120_000, "", key)
+        assertTrue(request.url.startsWith("https://caltopo.com$path?"))
+        assertTrue(request.url.contains("id=cred12345678"))
+        assertTrue(request.url.contains("expires=${now + 120_000}"))
+        assertTrue(request.url.contains("signature=" + java.net.URLEncoder.encode(signature, Charsets.UTF_8.name()).replace("+", "%20")))
+        assertFalse(request.url.substringAfter('?').contains(" "))
+        assertFalse(request.url.contains(key))
+        val body = ByteArray(70_000) { 'x'.code.toByte() }
+        val text = CaltopoPersonalAccountHttps.readResponseBody(
+            java.io.ByteArrayInputStream(body),
+            CaltopoPersonalAccountHttps.MAX_CATALOG_BODY,
+            200
+        )
+        assertEquals(70_000, text.length)
+        val tooLarge = runCatching {
+            CaltopoPersonalAccountHttps.readResponseBody(java.io.ByteArrayInputStream(body), 65_536, 200)
+        }.exceptionOrNull()!!
+        assertEquals("HTTP 200 response too large", tooLarge.message)
+        assertFalse(tooLarge.message!!.contains(signature))
+        val logs = mutableListOf<String>()
+        CaltopoPersonalAccountConnection.authLog = { logs += it }
+        val loaded = CaltopoPersonalAccountConnection.fetchAccountCatalog { url ->
+            assertTrue(url.startsWith("https://caltopo.com$path?"))
+            assertFalse(url.contains(key))
+            CaltopoActivationHttp(200, "x".repeat(70_000))
+        }
+        assertEquals(70_000, loaded!!.length)
+        assertTrue(logs.any { it == "catalog GET $path" })
+        assertTrue(logs.any { it == "catalog HTTP 200 bytes=70000" })
+        assertFalse(logs.joinToString("\n").contains(signature))
+    }
+
     @Test fun expiredActivationAndFailedExchangeDoNotKeepTheCodeOrKey() {
         var now = 1_000L
         CaltopoPersonalAccountConnection.clock = { now }

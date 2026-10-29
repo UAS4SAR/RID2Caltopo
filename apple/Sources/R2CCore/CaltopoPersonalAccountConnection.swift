@@ -747,7 +747,8 @@ public struct CaltopoPersonalAccountHTTPSExchange: CaltopoPersonalAccountExchang
         request.setValue("RID2Caltopo/Apple", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw CaltopoPersonalAccountError.rejected }
-        guard data.count <= 65_536 else { throw CaltopoPersonalAccountError.rejected }
+        let limit = url.path.hasSuffix("/since/0") ? 16 * 1024 * 1024 : 65_536
+        guard data.count <= limit else { throw CaltopoPersonalAccountError.rejected }
         return (http.statusCode, data)
     }
 
