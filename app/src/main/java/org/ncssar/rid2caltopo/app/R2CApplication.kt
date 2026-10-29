@@ -80,6 +80,12 @@ class R2CApplication : Application() {
             org.ncssar.rid2caltopo.data.CaltopoPersonalAccountKeystore(this),
             personalMode == org.ncssar.rid2caltopo.data.CaltopoPersonalLoginMode.CREDENTIALS
         )
+        org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.titleClient = { request ->
+            org.ncssar.rid2caltopo.data.CaltopoPersonalAccountHttps.postForm(request.url, request.fields)
+        }
+        org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.titleFailureLog = { message ->
+            CaltopoClient.CTWarn("CaltopoPersonalAccount", message)
+        }
         if (personalMode == org.ncssar.rid2caltopo.data.CaltopoPersonalLoginMode.CREDENTIALS) {
             runCatching { org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.status("caltopo.com") }
         }

@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import os
 import Security
 
 public enum CaltopoPersonalLoginMode: String, Sendable, Hashable {
@@ -28,6 +29,8 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
     public static let shared = CaltopoPersonalAccountConnection()
     public static let featureFlagKey = "caltopo.personalAccountActivation"
     public static let defaultDeviceName = "RID2Caltopo"
+    public static let credentialTitle = "Last synced by RID2Caltopo app"
+    private static let credentialLog = Logger(subsystem: "org.ncssar.RID2Caltopo", category: "CalTopoAccount")
     private static let pendingLifetime: TimeInterval = 5 * 60
 
     private let lock = NSLock()
@@ -238,7 +241,35 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         guard response.status == 200 else { throw CaltopoPersonalAccountError.exchangeFailed(response.status) }
         let record = try completeExchange(response.body, code: returned.code, host: pending.host, deviceName: returned.deviceName)
         try write(record)
+        await publishCredentialTitle(record)
         return record.status
+    }
+
+    public func credentialTitleRequest(_ record: CaltopoPersonalAccountRecord, now: Date = Date()) throws -> CaltopoCredentialTitleRequest {
+        let path = "/api/v1/acct/\(record.accountID)/UserCredential/\(record.credentialID)"
+        let json = "{\"id\":\"\(record.credentialID)\",\"properties\":{\"class\":\"UserCredential\",\"title\":\"\(Self.credentialTitle)\"}}"
+        let expires = Int64(now.timeIntervalSince1970 * 1_000) + CaltopoRequestSigner.validityMilliseconds
+        let signature = try CaltopoRequestSigner.signature(
+            method: "POST", path: path, expiresMilliseconds: expires, payload: json,
+            credentialSecretBase64: record.signingKey
+        )
+        guard let url = URL(string: "https://\(record.host)\(path)") else { throw CaltopoPersonalAccountError.rejected }
+        return CaltopoCredentialTitleRequest(url: url, json: json, fields: [
+            "id": record.credentialID,
+            "expires": String(expires),
+            "signature": signature,
+            "json": json,
+        ])
+    }
+
+    private func publishCredentialTitle(_ record: CaltopoPersonalAccountRecord) async {
+        do {
+            let request = try credentialTitleRequest(record)
+            let status = try await CaltopoPersonalAccountHTTPSExchange().postForm(url: request.url, fields: request.fields)
+            if status != 200 { Self.credentialLog.error("CalTopo credential title update failed") }
+        } catch {
+            Self.credentialLog.error("CalTopo credential title update failed")
+        }
     }
 
     public static func parseActivationResponse(_ body: Data) throws -> ParsedActivation {
@@ -515,6 +546,12 @@ public struct PendingActivation: Equatable, Sendable, CustomStringConvertible {
     public var description: String { "PendingActivation(host: \(host), port: \(port))" }
 }
 
+public struct CaltopoCredentialTitleRequest: Equatable, Sendable {
+    public let url: URL
+    public let json: String
+    public let fields: [String: String]
+}
+
 public struct CaltopoActivationReturn: Equatable, Sendable, CustomStringConvertible {
     public let code: String
     public let deviceName: String
@@ -598,6 +635,29 @@ public struct CaltopoPersonalAccountHTTPSExchange: CaltopoPersonalAccountExchang
         guard let http = response as? HTTPURLResponse else { throw CaltopoPersonalAccountError.rejected }
         guard data.count <= 65_536 else { throw CaltopoPersonalAccountError.rejected }
         return (http.statusCode, data)
+    }
+
+    public func postForm(url: URL, fields: [String: String]) async throws -> Int {
+        guard url.scheme == "https",
+              let host = url.host?.lowercased(), ["caltopo.com", "sartopo.com"].contains(host),
+              url.path.range(of: "^/api/v1/acct/[A-Za-z0-9]{6}/UserCredential/[A-Za-z0-9]{12}$", options: .regularExpression) != nil,
+              url.user == nil else { throw CaltopoPersonalAccountError.rejected }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+        let body = ["id", "expires", "signature", "json"].compactMap { key -> String? in
+            guard let value = fields[key] else { return nil }
+            let encoded = value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+            return "\(key)=\(encoded)"
+        }.joined(separator: "&")
+        let session = URLSession(configuration: .ephemeral, delegate: CaltopoPersonalNoRedirect(), delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("RID2Caltopo/Apple", forHTTPHeaderField: "User-Agent")
+        request.httpBody = Data(body.utf8)
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw CaltopoPersonalAccountError.rejected }
+        return http.statusCode
     }
 }
 

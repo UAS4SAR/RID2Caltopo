@@ -35,6 +35,7 @@ object CaltopoPersonalAccountConnection {
     const val FEATURE_ENABLED_KEY = "feature_enabled"
     const val LOGIN_MODE_KEY = "login_mode"
     const val DEFAULT_DEVICE_NAME = "RID2Caltopo"
+    const val CREDENTIAL_TITLE = "Last synced by RID2Caltopo app"
     private const val SIGNATURE_TTL_MS = 2 * 60 * 1000L
     private const val PENDING_TTL_MS = 5 * 60 * 1000L
     private const val MAX_ACTIVATION_BODY = 65_536
@@ -51,6 +52,8 @@ object CaltopoPersonalAccountConnection {
     private var cacheValid = false
     private var pending: PendingActivation? = null
     var clock: () -> Long = { System.currentTimeMillis() }
+    var titleClient: (CredentialTitleRequest) -> CaltopoActivationHttp = { CaltopoActivationHttp(200, "") }
+    var titleFailureLog: (String) -> Unit = {}
     var randomBytes: (Int) -> ByteArray = { count -> ByteArray(count).also { SecureRandom().nextBytes(it) } }
 
     @JvmStatic fun install(store: CaltopoPersonalAccountStore, featureEnabled: Boolean = this.featureEnabled) {
@@ -72,6 +75,8 @@ object CaltopoPersonalAccountConnection {
     /** Test isolation. Production code uses [install]. */
     fun resetForTests() {
         install(CaltopoPersonalAccountMemoryStore(), featureEnabled = false)
+        titleClient = { CaltopoActivationHttp(200, "") }
+        titleFailureLog = {}
         clock = { System.currentTimeMillis() }
         randomBytes = { count -> ByteArray(count).also { SecureRandom().nextBytes(it) } }
     }
@@ -197,6 +202,7 @@ object CaltopoPersonalAccountConnection {
             if (generation != authorizationGeneration) throw CaltopoPersonalAccountException("Personal CalTopo sign-in was cancelled.")
             write(record)
             clearPending()
+            if (generation == authorizationGeneration) publishCredentialTitle(record)
             return record.status()
         } finally {
             server.close()
@@ -311,6 +317,32 @@ object CaltopoPersonalAccountConnection {
         val response = http.get(url)
         if (response.status != 200) throw CaltopoPersonalAccountException("CalTopo activation exchange failed (HTTP ${response.status}).")
         return completeExchange(response.body, returned.code, pending.host, returned.deviceName)
+    }
+
+    fun credentialTitleRequest(record: CaltopoPersonalAccountRecord, nowMilliseconds: Long = clock()): CredentialTitleRequest {
+        val path = "/api/v1/acct/${record.accountId}/UserCredential/${record.credentialId}"
+        val json = """{"id":"${record.credentialId}","properties":{"class":"UserCredential","title":"$CREDENTIAL_TITLE"}}"""
+        val expires = nowMilliseconds + SIGNATURE_TTL_MS
+        val signature = sign("POST", path, expires, json, record.signingKey)
+        return CredentialTitleRequest(
+            "https://${record.host}$path",
+            json,
+            linkedMapOf(
+                "id" to record.credentialId,
+                "expires" to expires.toString(),
+                "signature" to signature,
+                "json" to json
+            )
+        )
+    }
+
+    private fun publishCredentialTitle(record: CaltopoPersonalAccountRecord) {
+        try {
+            val response = titleClient(credentialTitleRequest(record))
+            if (response.status != 200) titleFailureLog("CalTopo credential title update failed (HTTP ${response.status}).")
+        } catch (error: Exception) {
+            titleFailureLog("CalTopo credential title update failed.")
+        }
     }
 
     private fun awaitCode(server: ServerSocket, pending: PendingActivation, deadline: Long): CaltopoActivationReturn? {
@@ -482,6 +514,8 @@ enum class CaltopoPersonalLoginMode {
     }
 }
 
+data class CredentialTitleRequest(val url: String, val json: String, val fields: Map<String, String>)
+
 data class CaltopoActivationReturn(val code: String, val deviceName: String) {
     override fun toString(): String = "CaltopoActivationReturn(codeLength=${code.length})"
 }
@@ -592,18 +626,41 @@ object CaltopoPersonalAccountHttps : CaltopoActivationExchange {
         val parsed = URI(url)
         require(parsed.scheme == "https" && parsed.host?.lowercase(Locale.US) in setOf("caltopo.com", "sartopo.com"))
         require(parsed.path == "/api/v1/activate" || parsed.path.matches(Regex("^/api/v1/acct/[A-Za-z0-9]{6}/since/0$")))
+        return exchange(parsed, "GET", null)
+    }
+
+    fun postForm(url: String, fields: Map<String, String>): CaltopoActivationHttp {
+        val parsed = URI(url)
+        require(parsed.scheme == "https" && parsed.host?.lowercase(Locale.US) in setOf("caltopo.com", "sartopo.com"))
+        require(parsed.path.matches(Regex("^/api/v1/acct/[A-Za-z0-9]{6}/UserCredential/[A-Za-z0-9]{12}$")))
+        val body = fields.entries.joinToString("&") { (key, value) ->
+            "${formEncode(key)}=${formEncode(value)}"
+        }
+        return exchange(parsed, "POST", body)
+    }
+
+    private fun exchange(parsed: URI, method: String, body: String?): CaltopoActivationHttp {
         val connection = parsed.toURL().openConnection() as HttpURLConnection
         connection.instanceFollowRedirects = false
         connection.connectTimeout = 20_000
         connection.readTimeout = 20_000
+        connection.requestMethod = method
         connection.setRequestProperty("Accept", "application/json")
         connection.setRequestProperty("User-Agent", "RID2Caltopo/0.2")
+        if (body != null) {
+            connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+            connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+        }
         val status = connection.responseCode
         val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-        val body = stream?.use { input -> readLimited(input) }.orEmpty()
-        return CaltopoActivationHttp(status, body)
+        val responseBody = stream?.use { input -> readLimited(input) }.orEmpty()
+        return CaltopoActivationHttp(status, responseBody)
     }
 }
+
+private fun formEncode(value: String): String =
+    java.net.URLEncoder.encode(value, Charsets.UTF_8.name()).replace("+", "%20")
 
 private fun readLimited(input: java.io.InputStream): String {
     val buffer = ByteArray(4096)

@@ -2,6 +2,22 @@ import XCTest
 @testable import R2CCore
 
 final class CaltopoPersonalAccountConnectionTests: XCTestCase {
+    func testCredentialTitleRequestMatchesTheVerifiedFormPost() throws {
+        let secret = Data(repeating: 4, count: 32).base64EncodedString()
+        let record = try sampleRecord(secret: secret)
+        let request = try CaltopoPersonalAccountConnection().credentialTitleRequest(record, now: Date(timeIntervalSince1970: 1_700_000_000))
+        let json = "{\"id\":\"cred12345678\",\"properties\":{\"class\":\"UserCredential\",\"title\":\"Last synced by RID2Caltopo app\"}}"
+        XCTAssertEqual(request.url.path, "/api/v1/acct/USER01/UserCredential/cred12345678")
+        XCTAssertEqual(request.json, json)
+        XCTAssertEqual(request.fields["json"], json)
+        XCTAssertEqual(request.fields["expires"], "1700000120000")
+        let signature = try CaltopoRequestSigner.signature(
+            method: "POST", path: request.url.path, expiresMilliseconds: 1_700_000_120_000,
+            payload: json, credentialSecretBase64: record.signingKey
+        )
+        XCTAssertEqual(request.fields["signature"], signature)
+    }
+
     func testPersonalLoginModeKeepsAnExistingCookieSessionUntilChosen() {
         XCTAssertEqual(CaltopoPersonalLoginMode.resolve(stored: nil, cookieSessionAlreadyInUse: false), .credentials)
         XCTAssertEqual(CaltopoPersonalLoginMode.resolve(stored: nil, cookieSessionAlreadyInUse: true), .sessionCookies)

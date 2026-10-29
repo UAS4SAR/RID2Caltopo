@@ -159,9 +159,34 @@ class CaltopoPersonalAccountConnectionTest {
         assertNull(CaltopoPersonalAccountConnection.decide("USER01").failure)
     }
 
+    @Test fun credentialTitleRequestMatchesTheVerifiedFormPost() {
+        val key = Base64.getEncoder().encodeToString(ByteArray(32) { 4 })
+        val record = CaltopoPersonalAccountConnection.completeExchange(
+            """{"code":"cred12345678","key":"$key","account":{"id":"USER01","type":"account","properties":{"class":"UserAccount"}}}""",
+            "abcd1234", "caltopo.com", "RID2Caltopo", 50
+        )
+        val request = CaltopoPersonalAccountConnection.credentialTitleRequest(record, 1_700_000_000_000)
+        val path = "/api/v1/acct/USER01/UserCredential/cred12345678"
+        val json = """{"id":"cred12345678","properties":{"class":"UserCredential","title":"Last synced by RID2Caltopo app"}}"""
+        assertEquals("https://caltopo.com$path", request.url)
+        assertEquals(json, request.json)
+        assertEquals(record.credentialId, request.fields["id"])
+        assertEquals("1700000120000", request.fields["expires"])
+        assertEquals(json, request.fields["json"])
+        assertEquals(CaltopoPersonalAccountConnection.sign("POST", path, 1_700_000_120_000, json, key), request.fields["signature"])
+        assertFalse(request.fields["signature"]!!.contains(key))
+    }
+
     @Test fun enrollAcceptsOnlyTheLoopbackCallbackAndStoresTheExchange() {
         val key = Base64.getEncoder().encodeToString(ByteArray(32) { 9 })
         val seen = mutableListOf<String>()
+        val titles = mutableListOf<String>()
+        CaltopoPersonalAccountConnection.titleClient = { request ->
+            titles += request.json
+            CaltopoActivationHttp(500, "no")
+        }
+        var warned = false
+        CaltopoPersonalAccountConnection.titleFailureLog = { warned = true }
         val http = CaltopoActivationExchange { url ->
             seen += url
             assertFalse(url.contains(key))
@@ -197,6 +222,9 @@ class CaltopoPersonalAccountConnectionTest {
         assertEquals("USER01", status.accountId)
         assertEquals("caltopo.com", status.host)
         assertEquals(listOf("https://caltopo.com/api/v1/activate?code=abcd1234&name=R2C%20probe"), seen)
+        assertEquals(listOf("""{"id":"cred12345678","properties":{"class":"UserCredential","title":"Last synced by RID2Caltopo app"}}"""), titles)
+        assertTrue(warned)
+        assertEquals("cred12345678", CaltopoPersonalAccountConnection.status("caltopo.com")!!.credentialId)
         assertEquals("TEAM01", teams.credentialId.let { teams.teamId }.let { "TEAM01" })
         assertEquals("teamcred1234", teams.credentialId)
         CaltopoPersonalAccountConnection.featureEnabled = true

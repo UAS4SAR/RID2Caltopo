@@ -95,23 +95,13 @@ The web client’s generic object DAO can create, save, and delete a `UserCreden
 
 Unauthenticated probes on 29 October 2026, using only the fake account `AAAAAA`: the collection POST returned HTTP 401 `Authentication required`; the object POST returned HTTP 500 `unknown server error`; GET of the object returned HTTP 401 `Not authorized or object not found`; PUT returned HTTP 405 with `Allow: GET, HEAD, POST, OPTIONS`. `GET /sideload/account/AAAAAA.json` returned HTTP 401 `login required`. There is no public `/api/v1/credential` or `/api/v1/sync` route (HTTP 404). The desktop installer at `/offline/app` redirects to login, so the Desktop program’s own JavaScript was not available.
 
-Nothing public shows a third party choosing the Description. The official phrase looks server-owned. These are the requests worth trying with a real credential, on a disposable account, before assuming the column is settable. Sign `POST /api/v1/acct/{accountId}/UserCredential/{credentialId}` the same way as any other CalTopo POST: HMAC-SHA256 over `POST <path>\n<expires>\n<json>`, with the key base64-decoded. Send `id`, `expires`, `signature`, and `json` as form fields.
+A signed form POST sets Description. On 29 October 2026 that request returned HTTP 200, and the credentials table showed the submitted `properties.title` as Description. Sign it the same way as any other CalTopo POST: HMAC-SHA256 over `POST <path>\n<expires>\n<json>`, with the key base64-decoded. Send `id`, `expires`, `signature`, and `json` as form fields.
 
-1. Read the object with the browser session, not the HMAC credential:
+`POST /api/v1/acct/{accountId}/UserCredential/{credentialId}`
 
-`GET https://caltopo.com/sideload/account/{accountId}.json?json={full: true}`
+The signed JSON is exactly `{"id":"{credentialId}","properties":{"class":"UserCredential","title":"Last synced by RID2Caltopo app"}}`. After a successful activation exchange, Android and Apple send that request. A non-200 response or a transport error is logged and the stored credential is kept. The tracker device name is not used. Apostrophes in names such as `Mike D.'s iPad Pro` are still deferred. The activation `name` remains the Sync Account label, not this Description.
 
-Record every property on that credential, especially `title`, `name`, `description`, `client`, and `source`.
-
-2. Signed title update. `{json}` is `{"id":"{credentialId}","properties":{"class":"UserCredential","title":"Last synced by RID2Caltopo"}}`.
-
-`POST https://caltopo.com/api/v1/acct/{accountId}/UserCredential/{credentialId}`
-
-3. The same POST with the browser session and a JSON body `{"properties":{"title":"Last synced by RID2Caltopo"}}`, which is the shape the web DAO uses. Reload the account sideload and see whether Description changed. If the server rewrites it back to `Generated on User Request`, the column is not client-settable.
-
-4. On a new activation code only, try one extra query at a time on `GET /api/v1/activate`: `title`, `description`, `client=caltopo-app`, and `source=app`, plus a `User-Agent` of `CalTopo App`. A fake code still returns HTTP 500 when those parameters are present, so only a real code can show whether they are ignored.
-
-If a title update sticks, use the tracker device name, not the literal `RID2Caltopo`. Tracker hello sends `name` and `deviceModel`. The tracker replies with `canonicalDeviceName` from `assign_operational_device_name`, and this app stores that string as the device name (`AndroidDeviceIdentity` managed name when a tracker API key is present; Apple `device.stableDisplayName`). That is the name Settings already shows. The current activation `name` check rejects apostrophes, so a name such as `Mike D.'s iPad Pro` cannot be sent as the activation `name` until that check is widened. The Description experiment can still send it inside the JSON `title`. Do not expect `Last synced by CalTopo App`: that wording belongs to CalTopo’s own apps and is not a template filled with the client’s name.
+These other probes were not required once that POST stuck, and they have not been run against a real credential: a browser-session POST with body `{"properties":{"title":"…"}}` (the web DAO shape), and extra `title`, `description`, `client`, or `source` query parameters on `GET /api/v1/activate`. A fake activation code still returns HTTP 500 when those parameters are present.
 
 ## Mobile return path
 
@@ -170,7 +160,7 @@ On the test device, open Settings and set Personal Login Support to Credentials.
 
 Then:
 
-1. **Enrollment on a phone.** From a worker, call `enroll` with the system-browser opener (`CaltopoPersonalAccountBrowser.systemBrowserIntent` on Android, `AppleCaltopoPersonalAccountBrowser` on Apple). Sign in with Google in that browser, not in the embedded web view. Confirm the browser reaches `http://127.0.0.1:<port>/<nonce>/client/finish-activate` and the app stores the account id and credential id. Teams credential fields stay unchanged.
+1. **Enrollment on a phone.** From a worker, call `enroll` with the system-browser opener (`CaltopoPersonalAccountBrowser.systemBrowserIntent` on Android, `AppleCaltopoPersonalAccountBrowser` on Apple). Sign in with Google in that browser, not in the embedded web view. Confirm the browser reaches `http://127.0.0.1:<port>/<nonce>/client/finish-activate` and the app stores the account id and credential id. In Your Account, that credential's Description is `Last synced by RID2Caltopo app`. If that title request fails, the stored credential is still used. Teams credential fields stay unchanged.
 2. **Catalog.** `fetchAccountCatalog` (Android) or `CaltopoTeamMapClient` fed by `teamMapConfiguration()` (Apple). Pass the body through the existing personal catalog normalizer. Confirm the invited Workspace appears and an unrelated Workspace does not. Confirm the request was signed and carried no `Cookie` header.
 3. **Map read.** Open a restricted map with the signed configuration. Confirm HTTP 200 and that anonymous access to the same map is denied. Confirm a second immediate full read is still held by the existing 90-second gate.
 4. **Publish.** Post one clue and one photo clue through the existing client. Confirm the media owner is the personal or workspace owner the catalog already chooses, and that the Teams credential id does not appear on the request.
