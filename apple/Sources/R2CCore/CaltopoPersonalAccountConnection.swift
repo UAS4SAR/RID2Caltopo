@@ -30,7 +30,7 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
     public static let featureFlagKey = "caltopo.personalAccountActivation"
     public static let defaultDeviceName = "RID2Caltopo"
     public static let credentialTitle = "Last synced by RID2Caltopo app"
-    public static let activationPrompt = "On CalTopo, check the box and tap Sync Account."
+    public static let activationPrompt = "Check the box, then tap Sync Account."
     public static let returnScheme = "rid2caltopo"
     private static let credentialLog = Logger(subsystem: "org.ncssar.RID2Caltopo", category: "CalTopoAccount")
     private static let pendingLifetime: TimeInterval = 5 * 60

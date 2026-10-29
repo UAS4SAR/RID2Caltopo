@@ -851,6 +851,7 @@ private fun PersonalLoginSupportSetting(onPersonalAccountConnected: () -> Unit) 
     var mode by remember { mutableStateOf(org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.loginMode) }
     var summary by remember { mutableStateOf("Not connected") }
     var busy by remember { mutableStateOf(false) }
+    var showSyncPrompt by remember { mutableStateOf(false) }
     var credentialRevision by remember { mutableStateOf(0L) }
     LaunchedEffect(mode) {
         if (mode != CaltopoPersonalLoginMode.CREDENTIALS) return@LaunchedEffect
@@ -893,12 +894,10 @@ private fun PersonalLoginSupportSetting(onPersonalAccountConnected: () -> Unit) 
     }
     if (mode == CaltopoPersonalLoginMode.CREDENTIALS) {
         Text(summary, style = MaterialTheme.typography.bodyMedium)
-        Text(
-            org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.ACTIVATION_PROMPT,
-            style = MaterialTheme.typography.bodySmall
-        )
-        Button(
-            onClick = {
+        CaltopoSyncAccountPrompt(
+            visible = showSyncPrompt,
+            onContinue = {
+                showSyncPrompt = false
                 credentialRevision++
                 busy = true
                 scope.launch {
@@ -914,9 +913,13 @@ private fun PersonalLoginSupportSetting(onPersonalAccountConnected: () -> Unit) 
                     busy = false
                 }
             },
+            onDismiss = { showSyncPrompt = false }
+        )
+        Button(
+            onClick = { showSyncPrompt = true },
             enabled = !busy,
             modifier = Modifier.fillMaxWidth()
-        ) { Text(if (busy) "Waiting for the browser…" else "Sign in") }
+        ) { Text(if (busy) "Waiting for CalTopo…" else "Sign in") }
         TextButton(
             onClick = {
                 credentialRevision++

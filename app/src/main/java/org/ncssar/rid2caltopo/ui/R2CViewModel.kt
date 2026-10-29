@@ -287,7 +287,11 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
     private fun performMapBrowserProfileSwitch(profileId: String, openMapBrowser: Boolean = true) {
         openBrowserAfterCredentialCheck = openMapBrowser
         if (profileId == "personal") {
-            if (!CaltopoPersonalSession.catalogReady) return
+            if (!CaltopoPersonalSession.catalogReady) {
+                android.util.Log.i("CaltopoPersonalAuth", "selection skipped; personal catalog not ready")
+                return
+            }
+            android.util.Log.i("CaltopoPersonalAuth", "selection personal roots=${CaltopoPersonalSession.maps.size}")
             if (!CaltopoPersonalSession.browsingPersonal &&
                 CaltopoMap.GetMapStatus() != CaltopoMap.MapStatusListener.mapStatus.down) CaltopoMap.OpenMap(null)
             CaltopoPersonalSession.browsingPersonal = true
@@ -409,11 +413,17 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             }
 
             is UIEvent.BrowseProfileSelected -> {
-                if (uiEvent.profileId != (if (CaltopoPersonalSession.browsingPersonal) "personal" else CaltopoClient.GetActiveCaltopoProfileId())) {
+                val currentProfile = if (CaltopoPersonalSession.browsingPersonal) "personal" else CaltopoClient.GetActiveCaltopoProfileId().orEmpty()
+                android.util.Log.i(
+                    "CaltopoPersonalAuth",
+                    "selection request=${uiEvent.profileId} current=$currentProfile catalogReady=${CaltopoPersonalSession.catalogReady} roots=${CaltopoPersonalSession.maps.size}"
+                )
+                if (uiEvent.profileId != currentProfile) {
                     val activeFlightCount = CaltopoClient.GetActiveFlightCount()
                     val targetOption = mapBrowserProfiles.firstOrNull { it.profileId == uiEvent.profileId }
                     if (activeFlightCount > 0 &&
                         CaltopoMap.GetMapStatus() == CaltopoMap.MapStatusListener.mapStatus.up) {
+                        android.util.Log.i("CaltopoPersonalAuth", "selection deferred; active flights=$activeFlightCount")
                         pendingProfileSwitch = PendingProfileSwitchUiState(
                             profileId = uiEvent.profileId,
                             label = targetOption?.label ?: uiEvent.profileId,

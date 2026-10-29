@@ -27,6 +27,7 @@ class CaltopoPersonalAuthActivity : ComponentActivity() {
     private var leftForBrowser = false
     private var ownsSession = false
     private val launcher = AuthTabIntent.registerActivityResultLauncher(this) { result ->
+        android.util.Log.i("CaltopoPersonalAuth", "auth tab result=${result.resultCode}")
         when (result.resultCode) {
             AuthTabIntent.RESULT_OK -> finish()
             AuthTabIntent.RESULT_UNKNOWN_CODE -> if (!usedCustomTab) openCustomTab() else abandon()
@@ -41,6 +42,7 @@ class CaltopoPersonalAuthActivity : ComponentActivity() {
             return
         }
         if (intent?.data?.scheme == CaltopoPersonalAccountConnection.RETURN_SCHEME) {
+            android.util.Log.i("CaltopoPersonalAuth", "return scheme delivered")
             finish()
             return
         }
@@ -49,8 +51,11 @@ class CaltopoPersonalAuthActivity : ComponentActivity() {
             app.startActivity(closeIntent(app))
         }
         ownsSession = true
+        android.util.Log.i("CaltopoPersonalAuth", "auth surface process=${android.app.Application.getProcessName()}")
         runCatching {
             ContextCompat.startForegroundService(this, Intent(this, CaltopoPersonalAuthService::class.java))
+        }.onFailure {
+            android.util.Log.i("CaltopoPersonalAuth", "foreground service start failed")
         }
     }
 
@@ -84,7 +89,10 @@ class CaltopoPersonalAuthActivity : ComponentActivity() {
             abandon()
             return
         }
-        if (intent.data?.scheme == CaltopoPersonalAccountConnection.RETURN_SCHEME) finish()
+        if (intent.data?.scheme == CaltopoPersonalAccountConnection.RETURN_SCHEME) {
+            android.util.Log.i("CaltopoPersonalAuth", "return scheme delivered")
+            finish()
+        }
     }
 
     override fun onDestroy() {

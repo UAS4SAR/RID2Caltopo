@@ -187,6 +187,8 @@ class CaltopoPersonalAccountConnectionTest {
         }
         var warned = false
         CaltopoPersonalAccountConnection.titleFailureLog = { warned = true }
+        val logs = mutableListOf<String>()
+        CaltopoPersonalAccountConnection.authLog = { logs += it }
         val http = CaltopoActivationExchange { url ->
             seen += url
             assertFalse(url.contains(key))
@@ -210,6 +212,7 @@ class CaltopoPersonalAccountConnectionTest {
                         assertTrue(response.contains("rid2caltopo://caltopo-return/"))
                         assertFalse(response.contains(key))
                         assertFalse(response.contains("abcd1234"))
+                        CaltopoPersonalAccountConnection.cancelEnrollment()
                         accepted = true
                     }
                 } catch (_: Exception) {
@@ -226,6 +229,13 @@ class CaltopoPersonalAccountConnectionTest {
         assertEquals(listOf("""{"id":"cred12345678","properties":{"class":"UserCredential","title":"Last synced by RID2Caltopo app"}}"""), titles)
         assertTrue(warned)
         assertEquals("cred12345678", CaltopoPersonalAccountConnection.status("caltopo.com")!!.credentialId)
+        val trace = logs.joinToString("\n")
+        assertTrue(trace.contains("code received"))
+        assertTrue(trace.contains("cancel ignored"))
+        assertTrue(trace.contains("stored account=USER01 credential=cred12345678"))
+        assertTrue(trace.contains("exchange HTTP 200"))
+        assertFalse(trace.contains(key))
+        assertFalse(trace.contains("abcd1234"))
         assertEquals("TEAM01", teams.credentialId.let { teams.teamId }.let { "TEAM01" })
         assertEquals("teamcred1234", teams.credentialId)
         CaltopoPersonalAccountConnection.featureEnabled = true
@@ -240,16 +250,29 @@ class CaltopoPersonalAccountConnectionTest {
         assertEquals("Incident Workspace", JSONObject(workspace).getJSONObject("result").getJSONArray("accounts").getJSONObject(1).getJSONObject("properties").getString("alias"))
     }
 
+    @Test fun cancelAfterTheCodeIsAcceptedDoesNotDropIt() {
+        val pending = CaltopoPersonalAccountConnection.begin("caltopo.com", "RID2Caltopo", 9)
+        pending.acceptedReturn = CaltopoActivationReturn("abcd1234", "RID2Caltopo")
+        CaltopoPersonalAccountConnection.cancelEnrollment()
+        assertEquals("abcd1234", pending.acceptedReturn!!.code)
+        assertFalse(CaltopoPersonalAccountConnection.enrollmentWasCancelled())
+    }
+
+    @Test fun cancelBeforeACodeMarksTheListenerCancelled() {
+        CaltopoPersonalAccountConnection.begin("caltopo.com", "RID2Caltopo", 9)
+        CaltopoPersonalAccountConnection.cancelEnrollment()
+        assertTrue(CaltopoPersonalAccountConnection.enrollmentWasCancelled())
+    }
+
     @Test fun successPageReturnsToTheAppWithoutTheActivationCode() {
         val nonce = "0123456789abcdef0123456789abcdef"
         val page = CaltopoPersonalAccountConnection.activationSuccessPage(nonce)
         assertEquals("rid2caltopo://caltopo-return/$nonce", CaltopoPersonalAccountConnection.appReturnUrl(nonce))
         assertTrue(page.contains("rid2caltopo://caltopo-return/$nonce"))
         assertFalse(page.contains("code="))
-        assertEquals(
-            "On CalTopo, check the box and tap Sync Account.",
-            CaltopoPersonalAccountConnection.ACTIVATION_PROMPT
-        )
+        assertEquals("Check the box, then tap Sync Account.", CaltopoPersonalAccountConnection.ACTIVATION_PROMPT)
+        assertTrue(CaltopoPersonalAccountConnection.ACTIVATION_PROMPT.contains("Sync"))
+        assertFalse(CaltopoPersonalAccountConnection.ACTIVATION_PROMPT.contains("Synch"))
     }
 
     @Test fun cancelEnrollmentStopsTheListenerAndDoesNotStoreACredential() {

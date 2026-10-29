@@ -72,6 +72,7 @@ fun CaltopoHybridBrowser(
     loading: Boolean = false
 ) {
     var credentialsExpanded by remember { mutableStateOf(false) }
+    var showSyncPrompt by remember { mutableStateOf(false) }
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val editPersonal = org.ncssar.rid2caltopo.ui.rememberPersonalAccountEditor()
@@ -167,7 +168,15 @@ fun CaltopoHybridBrowser(
                 org.ncssar.rid2caltopo.ui.DropdownMenu(expanded = credentialsExpanded, onDismissRequest = { credentialsExpanded = false }) {
                     androidx.compose.material3.DropdownMenuItem(
                         text = { Text("Personal: ${CaltopoPersonalSession.username.ifBlank { "Sign in" }}") },
-                        onClick = { openPersonal() }
+                        onClick = {
+                            credentialsExpanded = false
+                            if (CaltopoPersonalAccountConnection.loginMode == CaltopoPersonalLoginMode.CREDENTIALS &&
+                                CaltopoPersonalSession.username.isBlank()) {
+                                showSyncPrompt = true
+                            } else {
+                                openPersonal()
+                            }
+                        }
                     )
                     if (CaltopoPersonalAccountConnection.loginMode != CaltopoPersonalLoginMode.CREDENTIALS) {
                         androidx.compose.material3.DropdownMenuItem(
@@ -183,14 +192,14 @@ fun CaltopoHybridBrowser(
                     }
                 }
             }
-            if (CaltopoPersonalAccountConnection.loginMode == CaltopoPersonalLoginMode.CREDENTIALS &&
-                CaltopoPersonalSession.username.isBlank()) {
-                Text(
-                    CaltopoPersonalAccountConnection.ACTIVATION_PROMPT,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                )
-            }
+            org.ncssar.rid2caltopo.ui.CaltopoSyncAccountPrompt(
+                visible = showSyncPrompt,
+                onContinue = {
+                    showSyncPrompt = false
+                    openPersonal()
+                },
+                onDismiss = { showSyncPrompt = false }
+            )
 
             HorizontalDivider()
             if (loading) {

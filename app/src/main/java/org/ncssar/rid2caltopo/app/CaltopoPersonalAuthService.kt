@@ -26,9 +26,11 @@ class CaltopoPersonalAuthService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        android.util.Log.i("CaltopoPersonalAuth", "foreground service process=${android.app.Application.getProcessName()}")
         try {
             startInForeground()
         } catch (error: Exception) {
+            android.util.Log.i("CaltopoPersonalAuth", "foreground service rejected")
             stopSelf()
         }
         return START_NOT_STICKY

@@ -57,6 +57,7 @@ final class AppleCaltopoSettings: ObservableObject {
     @Published private(set) var personalCredentialSummary = "Not connected"
     @Published private(set) var personalCredentialBusy = false
     @Published var openAccountBrowserAfterCredentialSignIn = false
+    @Published var showSyncAccountPrompt = false
     private static let personalLoginModeKey = "caltopo.personalLoginSupport"
     @Published var usesPersonalCredentials: Bool {
         didSet { defaults.set(usesPersonalCredentials, forKey: "caltopo.usesPersonalCredentials") }

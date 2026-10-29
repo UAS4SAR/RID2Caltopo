@@ -13,7 +13,18 @@ import org.json.JSONObject
 /** System-browser enrollment and catalog load for Personal Login Support: Credentials. */
 object CaltopoPersonalCredentialSignIn {
     fun connect(context: Context, deviceName: String = CaltopoPersonalAccountConnection.DEFAULT_DEVICE_NAME): CredentialCatalog {
+        CaltopoPersonalAccountConnection.logAuth("connect process=${android.app.Application.getProcessName()}")
+        try {
+            return connectStoredOrEnroll(context, deviceName)
+        } catch (error: Exception) {
+            CaltopoPersonalAccountConnection.logAuth("connect failed")
+            throw error
+        }
+    }
+
+    private fun connectStoredOrEnroll(context: Context, deviceName: String): CredentialCatalog {
         val existing = CaltopoPersonalAccountConnection.reconnect("caltopo.com")
+        if (existing != null) CaltopoPersonalAccountConnection.logAuth("reconnect account=${existing.accountId}")
         val status = existing ?: CaltopoPersonalAccountConnection.enroll(
             deviceName = deviceName,
             browser = CaltopoSystemBrowser { url ->
@@ -24,6 +35,9 @@ object CaltopoPersonalCredentialSignIn {
         val body = CaltopoPersonalAccountConnection.fetchAccountCatalog(CaltopoPersonalAccountHttps)
             ?: throw CaltopoPersonalAccountException("CalTopo account catalog could not be loaded.")
         val normalized = CaltopoPersonalCatalog.normalize(body, status.accountId)
+        CaltopoPersonalAccountConnection.logAuth(
+            "catalog normalized accounts=${normalized.optJSONArray("accounts")?.length() ?: 0} features=${normalized.optJSONArray("features")?.length() ?: 0}"
+        )
         return CredentialCatalog(status, CaltopoPersonalSession.prepareCatalog(signedGrants(normalized)))
     }
 

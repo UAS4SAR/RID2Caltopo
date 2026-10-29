@@ -219,7 +219,7 @@ struct CaltopoSettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     Button(settings.personalCredentialBusy ? "Waiting for CalTopo…" : "Sign in") {
-                        Task { await settings.signInWithPersonalCredential() }
+                        settings.showSyncAccountPrompt = true
                     }
                     .disabled(settings.personalCredentialBusy)
                     Button("Log out") { Task { await settings.logOutPersonalCredential() } }
@@ -565,6 +565,7 @@ struct CaltopoSettingsView: View {
                 showingTeamMaps = true
             }
         }
+        .caltopoSyncAccountPrompt(settings, presented: !showingTeamMaps)
         .fullScreenCover(isPresented: $showingTeamMaps) {
             CaltopoTeamMapBrowser(settings: settings, onCredentialSelect: { profileID in
                 onSave(settings.disconnectMap())
@@ -1067,7 +1068,9 @@ struct CaltopoTeamMapBrowser: View {
                             Text(CaltopoPersonalAccountConnection.activationPrompt)
                         }
                         Button("Personal: \(settings.personalUsername.isEmpty ? "Sign in" : settings.personalUsername)") {
-                            if settings.personalLoginMode == .credentials {
+                            if settings.personalLoginMode == .credentials && settings.personalUsername.isEmpty {
+                                settings.showSyncAccountPrompt = true
+                            } else if settings.personalLoginMode == .credentials {
                                 Task { await settings.signInWithPersonalCredential() }
                             } else {
                                 onCredentialSelect?("personal")
@@ -1125,6 +1128,21 @@ struct CaltopoTeamMapBrowser: View {
         .task(id: settings.usesPersonalCredentials ? "personal" : profiles.activeProfileID) {
             navigationStack = []; search = ""
             await loadSelectedMaps()
+        }
+        .caltopoSyncAccountPrompt(settings, presented: true)
+    }
+}
+
+private extension View {
+    func caltopoSyncAccountPrompt(_ settings: AppleCaltopoSettings, presented: Bool) -> some View {
+        confirmationDialog("CalTopo sign-in", isPresented: Binding(
+            get: { presented && settings.showSyncAccountPrompt },
+            set: { if !$0 { settings.showSyncAccountPrompt = false } }
+        ), titleVisibility: .visible) {
+            Button("Continue") { Task { await settings.signInWithPersonalCredential() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(CaltopoPersonalAccountConnection.activationPrompt)
         }
     }
 }

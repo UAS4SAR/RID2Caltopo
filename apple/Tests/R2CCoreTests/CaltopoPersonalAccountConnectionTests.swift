@@ -24,7 +24,9 @@ final class CaltopoPersonalAccountConnectionTests: XCTestCase {
         XCTAssertEqual(try CaltopoPersonalAccountConnection.appReturnURL(nonce: nonce), "rid2caltopo://caltopo-return/\(nonce)")
         XCTAssertTrue(page.contains("rid2caltopo://caltopo-return/\(nonce)"))
         XCTAssertFalse(page.contains("code="))
-        XCTAssertEqual(CaltopoPersonalAccountConnection.activationPrompt, "On CalTopo, check the box and tap Sync Account.")
+        XCTAssertEqual(CaltopoPersonalAccountConnection.activationPrompt, "Check the box, then tap Sync Account.")
+        XCTAssertTrue(CaltopoPersonalAccountConnection.activationPrompt.contains("Sync"))
+        XCTAssertFalse(CaltopoPersonalAccountConnection.activationPrompt.contains("Synch"))
     }
 
     func testPersonalLoginModeKeepsAnExistingCookieSessionUntilChosen() {

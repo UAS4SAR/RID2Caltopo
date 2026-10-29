@@ -747,6 +747,7 @@ fun StandAloneOptionsDialog(
     val credentialsMode = org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.loginMode == org.ncssar.rid2caltopo.data.CaltopoPersonalLoginMode.CREDENTIALS
     val (personalBusy, openPersonal) = rememberPersonalCredentialsAction(onPersonalReady)
     var credentialBusy by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    var showSyncPrompt by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     fun signInWithCredential() {
         credentialBusy = true
         scope.launch {
@@ -771,8 +772,7 @@ fun StandAloneOptionsDialog(
     } else if (hasCreds) {
         "Existing credentials found. Would you like to select a map?"
     } else {
-        "Sign in with your personal CalTopo account to choose a map. Teams credentials are optional." +
-            if (credentialsMode) " " + org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.ACTIVATION_PROMPT else ""
+        "Sign in with your personal CalTopo account to choose a map. Teams credentials are optional."
     }
     AlertDialog(
         onDismissRequest = if (loading) ({}) else onDismiss, // disable dismiss while loading
@@ -805,7 +805,7 @@ fun StandAloneOptionsDialog(
         },
         confirmButton = {
             Button(
-                onClick = if (hasCreds) onAction else if (credentialsMode) ::signInWithCredential else openPersonal,
+                onClick = if (hasCreds) onAction else if (credentialsMode) ({ showSyncPrompt = true }) else openPersonal,
                 enabled = !loading && !personalBusy && !credentialBusy && hasNetwork
             ) {
                 Text(if (hasCreds) "Connect" else if (personalBusy || credentialBusy) "Loading personal maps…" else "Personal: Sign in")
@@ -815,5 +815,13 @@ fun StandAloneOptionsDialog(
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Stay Offline") }
         }
+    )
+    CaltopoSyncAccountPrompt(
+        visible = showSyncPrompt,
+        onContinue = {
+            showSyncPrompt = false
+            signInWithCredential()
+        },
+        onDismiss = { showSyncPrompt = false }
     )
 }

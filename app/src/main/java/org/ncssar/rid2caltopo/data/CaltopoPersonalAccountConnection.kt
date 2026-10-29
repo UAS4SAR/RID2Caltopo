@@ -37,7 +37,8 @@ object CaltopoPersonalAccountConnection {
     const val DEFAULT_DEVICE_NAME = "RID2Caltopo"
     const val CREDENTIAL_TITLE = "Last synced by RID2Caltopo app"
     const val RETURN_SCHEME = "rid2caltopo"
-    const val ACTIVATION_PROMPT = "On CalTopo, check the box and tap Sync Account."
+    const val AUTH_LOG_TAG = "CaltopoPersonalAuth"
+    const val ACTIVATION_PROMPT = "Check the box, then tap Sync Account."
     private const val SIGNATURE_TTL_MS = 2 * 60 * 1000L
     private const val PENDING_TTL_MS = 5 * 60 * 1000L
     private const val MAX_ACTIVATION_BODY = 65_536
@@ -57,6 +58,7 @@ object CaltopoPersonalAccountConnection {
     var titleClient: (CredentialTitleRequest) -> CaltopoActivationHttp = { CaltopoActivationHttp(200, "") }
     var titleFailureLog: (String) -> Unit = {}
     var onEnrollmentAbandoned: (() -> Unit)? = null
+    var authLog: (String) -> Unit = {}
     var randomBytes: (Int) -> ByteArray = { count -> ByteArray(count).also { SecureRandom().nextBytes(it) } }
     private var listening: ServerSocket? = null
     private var enrollmentCancelled = false
@@ -83,6 +85,7 @@ object CaltopoPersonalAccountConnection {
         titleClient = { CaltopoActivationHttp(200, "") }
         titleFailureLog = {}
         onEnrollmentAbandoned = null
+        authLog = {}
         synchronized(lock) {
             enrollmentCancelled = false
             listening = null
@@ -173,7 +176,13 @@ object CaltopoPersonalAccountConnection {
     /** Signed account catalog. The existing personal-catalog normalizer interprets the body. */
     fun fetchAccountCatalog(http: CaltopoActivationExchange): String? {
         val request = accountCatalogRequest() ?: return null
-        val response = http.get(request.url)
+        val response = try {
+            http.get(request.url)
+        } catch (error: Exception) {
+            logAuth("catalog request failed")
+            throw CaltopoPersonalAccountException("CalTopo account catalog could not be loaded.")
+        }
+        logAuth("catalog HTTP ${response.status}")
         if (response.status != 200) throw CaltopoPersonalAccountException("CalTopo account catalog failed (HTTP ${response.status}).")
         return response.body
     }
@@ -203,6 +212,7 @@ object CaltopoPersonalAccountConnection {
                 enrollmentCancelled = false
                 listening = server
             }
+            logAuth("listener start port=${server.localPort}")
             val accept = Thread({
                 pending.acceptedReturn = awaitCode(server, pending, deadline)
             }, "caltopo-personal-activate")
@@ -212,11 +222,12 @@ object CaltopoPersonalAccountConnection {
             accept.join(timeoutMilliseconds + 2_000)
             val returned = pending.acceptedReturn ?: throw CaltopoPersonalAccountException(
                 if (enrollmentWasCancelled()) "CalTopo sign-in was cancelled." else "CalTopo sign-in timed out."
-            )
+            ).also { logAuth(if (enrollmentWasCancelled()) "listener cancelled" else "listener timed out") }
             if (generation != authorizationGeneration) throw CaltopoPersonalAccountException("Personal CalTopo sign-in was cancelled.")
             val record = exchange(pending, returned, http)
             if (generation != authorizationGeneration) throw CaltopoPersonalAccountException("Personal CalTopo sign-in was cancelled.")
             write(record)
+            logAuth("stored account=${record.accountId} credential=${record.credentialId}")
             clearPending()
             if (generation == authorizationGeneration) publishCredentialTitle(record)
             return record.status()
@@ -231,9 +242,18 @@ object CaltopoPersonalAccountConnection {
     /** Closes the loopback listener. The in-app browser calls this when the operator cancels. */
     fun cancelEnrollment() {
         synchronized(lock) {
+            if (pending?.acceptedReturn != null) {
+                logAuth("cancel ignored; activation code already accepted")
+                return
+            }
             enrollmentCancelled = true
             runCatching { listening?.close() }
+            logAuth("listener cancelled")
         }
+    }
+
+    fun logAuth(message: String) {
+        runCatching { authLog(message) }
     }
 
     fun enrollmentWasCancelled(): Boolean = synchronized(lock) { enrollmentCancelled }
@@ -358,7 +378,13 @@ object CaltopoPersonalAccountConnection {
 
     private fun exchange(pending: PendingActivation, returned: CaltopoActivationReturn, http: CaltopoActivationExchange): CaltopoPersonalAccountRecord {
         val url = "https://${pending.host}/api/v1/activate?code=${encode(returned.code)}&name=${encode(returned.deviceName)}"
-        val response = http.get(url)
+        val response = try {
+            http.get(url)
+        } catch (error: Exception) {
+            logAuth("exchange request failed")
+            throw CaltopoPersonalAccountException("CalTopo activation exchange failed.")
+        }
+        logAuth("exchange HTTP ${response.status}")
         if (response.status != 200) throw CaltopoPersonalAccountException("CalTopo activation exchange failed (HTTP ${response.status}).")
         return completeExchange(response.body, returned.code, pending.host, returned.deviceName)
     }
@@ -383,8 +409,10 @@ object CaltopoPersonalAccountConnection {
     private fun publishCredentialTitle(record: CaltopoPersonalAccountRecord) {
         try {
             val response = titleClient(credentialTitleRequest(record))
+            logAuth(if (response.status == 200) "title HTTP 200" else "title HTTP ${response.status}")
             if (response.status != 200) titleFailureLog("CalTopo credential title update failed (HTTP ${response.status}).")
         } catch (error: Exception) {
+            logAuth("title request failed")
             titleFailureLog("CalTopo credential title update failed.")
         }
     }
@@ -403,6 +431,10 @@ object CaltopoPersonalAccountConnection {
                 client.soTimeout = 2_000
                 val target = readRequestTarget(client) ?: return@use
                 val code = runCatching { callbackCode(target, pending) }.getOrNull()
+                if (code != null) {
+                    pending.acceptedReturn = code
+                    logAuth("code received")
+                }
                 val body = if (code != null) {
                     activationSuccessPage(pending.pathToken)
                 } else {
