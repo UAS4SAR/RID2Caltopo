@@ -91,7 +91,7 @@ The Android session hook only signs personal requests for `caltopo.com`, because
 
 ## Credential lifetime, revocation, reconnect
 
-Nothing in the public writeups or the unauthenticated probes gives the signing key an expiry. The account object carries subscription fields. The credential itself is described as a device entry under Your Account, and the secret is shown once at creation. Treat it as long-lived until the operator deletes that credential in CalTopo, or until a live test shows otherwise.
+The signed-in account object includes `subscriptionExpires` in milliseconds. That is the subscription, not an expiry of the signing key. The credential itself is the device entry created by Sync Account. Treat the key as long-lived until the operator deletes that credential in CalTopo, or until a live call shows otherwise.
 
 No revoke call was found. `DELETE` was not attempted against a real credential. The prototype can mark its local copy revoked and then refuses to sign, without falling back to cookies for that same account. Reconnect of a still-valid local copy does not call CalTopo. A revoked or missing local copy has to enroll again, which creates another credential on the account. The previous one remains in CalTopo until someone deletes it there. Confirm that in the account UI during the live test.
 
