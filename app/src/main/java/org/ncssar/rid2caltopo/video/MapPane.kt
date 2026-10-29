@@ -5,6 +5,7 @@ import org.ncssar.rid2caltopo.video.mapcache.EsriImageryAttributionProvider
 import org.ncssar.rid2caltopo.video.mapcache.EsriImageryViewport
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.conflate
 import org.ncssar.rid2caltopo.data.Units
 import org.ncssar.rid2caltopo.data.DisplayUnits
 
@@ -69,6 +70,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Checkbox
 import androidx.compose.runtime.snapshots.SnapshotStateList
+import androidx.compose.runtime.toMutableStateList
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -583,13 +585,13 @@ private fun localClueDetailText(marker: LocalMapMarker): String = buildString {
     }
 }
 
-internal fun configureOsmdroid(context: Context) {
-    val cfg = Configuration.getInstance()
+internal fun prepareOsmdroid(context: Context) {
+    check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper())
+    val base = java.io.File(context.filesDir, "map-archives")
+    val cfg = PreparedOsmdroidConfiguration(base, java.io.File(base, "tiles"))
     val tileCacheMaxBytes = MapCachePolicy.tileCacheMaxBytes(context)
     // Our provider owns storage. Loading osmdroid's default paths can create an
     // independent SQLite cache and performs filesystem work during UI setup.
-    cfg.osmdroidBasePath = java.io.File(context.filesDir, "map-archives")
-    cfg.osmdroidTileCache = java.io.File(context.filesDir, "map-archives/tiles")
     cfg.userAgentValue = osmUserAgent()
     cfg.tileDownloadThreads = OSM_TILE_DOWNLOAD_THREADS
     cfg.tileDownloadMaxQueueSize = OSM_TILE_DOWNLOAD_MAX_QUEUE
@@ -599,6 +601,13 @@ internal fun configureOsmdroid(context: Context) {
     cfg.tileFileSystemCacheMaxBytes = tileCacheMaxBytes
     cfg.tileFileSystemCacheTrimBytes = (tileCacheMaxBytes * 9L) / 10L
     cfg.expirationOverrideDuration = MapCachePolicy.TILE_TTL_MS
+    Configuration.setConfigurationProvider(cfg)
+}
+
+internal fun configureOsmdroid(context: Context) {
+    // Startup prepares paths/preferences before the settings-ready UI gate.
+    // No Context.filesDir, path creation, or default SDK mkdirs on Main.
+    check(Configuration.getInstance() is PreparedOsmdroidConfiguration)
 }
 
 private fun buildTileMapProvider(
@@ -822,15 +831,17 @@ internal fun SplitMapPane(
     val seiTelemetryByMappedId = remember { mutableStateMapOf<String, StreamCameraTelemetrySample>() }
     val localTrackMappedIdsByRemoteId = remember { mutableStateMapOf<String, MutableSet<String>>() }
     val localTrackLastSeededTimestampByMappedId = remember { mutableMapOf<String, Long>() }
+    val localTrackLastSeededRevision = remember { mutableMapOf<String, Any>() }
     var trackOverlayRefreshToken by remember { mutableIntStateOf(0) }
+    var localTrackEpoch by remember { mutableIntStateOf(0) }
     val pilotDisplayPrefsByKey = remember { mutableStateMapOf<String, PilotDisplayPreference>() }
     var pilotDisplayRefreshToken by remember { mutableIntStateOf(0) }
     var colorPickerTarget by remember { mutableStateOf<PilotColorPickerTarget?>(null) }
     var localDeviceRefreshToken by remember { mutableIntStateOf(0) }
     var positionFreshnessRefreshToken by remember { mutableIntStateOf(0) }
     val managedOverlays = remember { mutableListOf<Overlay>() }
-    val flightTrackLines = remember { MapOwnedReusable<TrackRenderCache<Polyline>>() }
-    val recentTrackLines = remember { MapOwnedReusable<TrackRenderCache<Polyline>>() }
+    var preparedFlightLines by remember { mutableStateOf(emptyMap<String, PreparedTrackRender<Polyline>>()) }
+    var preparedRecentLines by remember { mutableStateOf(emptyMap<String, PreparedTrackRender<Polyline>>()) }
     val markerInfoWindow = remember { MapOwnedReusable<LocalMarkerInfoWindow>() }
     var artifactOverlayState: ArtifactOverlayState by remember {
         mutableStateOf(cachedOverlayState())
@@ -2481,10 +2492,14 @@ internal fun SplitMapPane(
         val persistedViewport = viewModel.mapViewportState()?.takeIf {
             isUsableMapViewportState(it.latitude, it.longitude, it.zoom)
         }
+        localTrackEpoch++
+        preparedFlightLines = emptyMap()
+        preparedRecentLines = emptyMap()
         localTrackPointsByMappedId.clear()
         currentFlightTrackPointsByMappedId.clear()
         localTrackMappedIdsByRemoteId.clear()
         localTrackLastSeededTimestampByMappedId.clear()
+        localTrackLastSeededRevision.clear()
         trackOverlayRefreshToken++
         lastRenderStats = ""
         lastAlignmentStats = ""
@@ -2928,43 +2943,74 @@ internal fun SplitMapPane(
         }
     }
 
-    fun seedActiveLocalTrackSnapshots(seedTimeMs: Long, reason: String) {
-        viewModel.droneStates.forEach { (key, state) ->
-            val snapshot = WaypointTrack.GetTrackPointsSnapshot(state.source)
-            if (snapshot.isEmpty()) return@forEach
-            if (!shouldSeedLocalTrackSnapshotForDesignator(
-                    key,
-                    snapshot,
-                    localTrackLastSeededTimestampByMappedId
-                )) {
-                return@forEach
+    LaunchedEffect(Unit) {
+        // One serial/coalesced preparation; no background writer ever mutates a
+        // Polyline already attached to MapView.
+        snapshotFlow { Triple(trackOverlayRefreshToken, positionFreshnessRefreshToken, localTrackEpoch) }
+            .conflate().collect {
+                val epoch = localTrackEpoch
+                val flightInputs = currentFlightTrackPointsByMappedId.mapValues { it.value.toList() }
+                val recentInputs = localTrackPointsByMappedId.mapValues { it.value.toList() }
+                val oldFlight = preparedFlightLines
+                val oldRecent = preparedRecentLines
+                val cutoff = System.currentTimeMillis() - CaltopoClient.GetNewTrackDelayInSeconds() * 1000L
+                val density = context.resources.displayMetrics.density
+                val prepared = withContext(Dispatchers.Default) {
+                    val create: (List<LocalTrackPoint>) -> Polyline = { points ->
+                        WorkerPreparedPolyline(density).apply { setPoints(points.map { GeoPoint(it.lat, it.lng) }) }
+                    }
+                    val recent = recentInputs.mapValues { (_, points) -> points.filter { it.receivedAtMsec > cutoff } }
+                    prepareTrackRenders(flightInputs, oldFlight, create) to
+                        prepareTrackRenders(recent, oldRecent, create)
+                }
+                if (epoch == localTrackEpoch) {
+                    preparedFlightLines = prepared.first
+                    preparedRecentLines = prepared.second
+                }
             }
-            val list = localTrackPointsByMappedId.getOrPut(key) { mutableStateListOf() }
-            val flightList = currentFlightTrackPointsByMappedId.getOrPut(key) { mutableStateListOf() }
-            if (seedLocalTrackPointsFromSnapshot(key, snapshot, seedTimeMs, list, flightList)) {
-                trackOverlayRefreshToken++
-                if (CTDebugEnabled(ICON_LATENCY_TAG)) CTDebug(
-                    ICON_LATENCY_TAG,
-                    "track_seed_snapshot designator=$key points=${snapshot.size} reason=$reason"
-                )
-            }
+    }
+
+    suspend fun seedActiveLocalTrackSnapshots() {
+        val epoch = localTrackEpoch
+        // SnapshotStateList.toList is an immutable O(1) snapshot. The worker owns
+        // all JSON parsing, copying, merging, sorting and new state-list creation.
+        val requests = viewModel.droneStates.mapNotNull { (key, state) ->
+            val label = state.source.trackLabel()
+            val revision = WaypointTrack.GetTrackRenderRevision(label)
+            if (revision != null && localTrackLastSeededRevision[key] === revision) return@mapNotNull null
+            LocalTrackSeedRequest(key, label,
+                localTrackPointsByMappedId[key]?.toList().orEmpty(),
+                currentFlightTrackPointsByMappedId[key]?.toList().orEmpty(),
+                localTrackLastSeededTimestampByMappedId[key], System.currentTimeMillis(), revision)
+        }
+        for (request in requests) {
+            val prepared = withContext(Dispatchers.Default) {
+                prepareLocalTrackSeed(request)?.let { seed ->
+                    Triple(seed, seed.recent.toMutableStateList(), seed.flight.toMutableStateList())
+                }
+            } ?: continue
+            if (epoch != localTrackEpoch || !localTrackSeedStillCurrent(request,
+                    viewModel.droneStates[request.designator]?.source?.trackLabel(),
+                    localTrackPointsByMappedId[request.designator]?.toList().orEmpty(),
+                    currentFlightTrackPointsByMappedId[request.designator]?.toList().orEmpty())) continue
+            localTrackPointsByMappedId[request.designator] = prepared.second
+            currentFlightTrackPointsByMappedId[request.designator] = prepared.third
+            localTrackLastSeededTimestampByMappedId[request.designator] = prepared.first.lastSeededTime
+            request.sourceRevision?.let { localTrackLastSeededRevision[request.designator] = it }
+            trackOverlayRefreshToken++
+            if (CTDebugEnabled(ICON_LATENCY_TAG)) CTDebug(ICON_LATENCY_TAG,
+                "track_seed_prepared designator=${request.designator} points=${prepared.first.snapshotSize} worker=true")
         }
     }
 
     LaunchedEffect(Unit) {
         snapshotFlow {
-            viewModel.droneStates.map { (key, state) ->
-                listOf(
-                    key,
-                    state.mappedId,
-                    state.flightStartMsec.toString(),
-                    state.lastTimestamp,
-                    state.lastLat.toString(),
-                    state.lastLng.toString()
-                ).joinToString(":")
+            localTrackEpoch to viewModel.droneStates.map { (key, state) ->
+                listOf(key, state.source.trackLabel(), state.lastTimestamp,
+                    state.lastLat.toString(), state.lastLng.toString()).joinToString(":")
             }.sorted()
-        }.collect {
-            seedActiveLocalTrackSnapshots(System.currentTimeMillis(), "state")
+        }.conflate().collect {
+            seedActiveLocalTrackSnapshots()
         }
     }
 
@@ -3004,25 +3050,21 @@ internal fun SplitMapPane(
         }
         val localTrackFinishedListener = CaltopoLiveTrack.LocalTrackFinishedListener { remoteId, mappedId, _ ->
             uiScope.launch(Dispatchers.Main.immediate) {
+                localTrackEpoch++
                 val mappedIds = localTrackMappedIdsByRemoteId.remove(remoteId).orEmpty() +
                     localTrackDesignator(mappedId)
                 mappedIds.forEach { key ->
                     localTrackPointsByMappedId.remove(key)
                     currentFlightTrackPointsByMappedId.remove(key)
                     localTrackLastSeededTimestampByMappedId.remove(key)
+                    localTrackLastSeededRevision.remove(key)
                 }
                 trackOverlayRefreshToken++
             }
         }
-        // Seed from the active WaypointTrack so reopening MapPane mid-flight preserves
-        // points collected while this composable was not active.
-        seedActiveLocalTrackSnapshots(System.currentTimeMillis(), "mount")
+        // The coalesced worker backfills full history. A constant-size current
+        // position keeps a newly mounted map useful until that result is ready.
         viewModel.droneStates.forEach { (key, state) ->
-            val snapshot = WaypointTrack.GetTrackPointsSnapshot(state.source)
-            if (snapshot.isNotEmpty()) {
-                return@forEach
-            }
-
             // Fall back to the current drone state if no active local track snapshot exists yet.
             val seedLat = state.lastLat
             val seedLng = state.lastLng
@@ -3554,18 +3596,6 @@ internal fun SplitMapPane(
                     managedOverlays.add(line)
                 }
 
-                val trackPointMinTimestampMs = System.currentTimeMillis() - (CaltopoClient.GetNewTrackDelayInSeconds() * 1000L)
-                val expiredTrackIds = mutableListOf<String>()
-                localTrackPointsByMappedId.forEach { (mappedId, points) ->
-                    while (points.isNotEmpty() && points.first().receivedAtMsec <= trackPointMinTimestampMs) {
-                        points.removeAt(0)
-                    }
-                    if (points.isEmpty()) {
-                        expiredTrackIds += mappedId
-                    }
-                }
-                expiredTrackIds.forEach { localTrackPointsByMappedId.remove(it) }
-
                 val confirmedCurrentFlightMappedIds = confirmedCurrentFlightMappedIds(dronePoints)
                 val fullFlightTrackMappedIds = fullFlightTrackMappedIds(
                     dronePoints = dronePoints,
@@ -3577,25 +3607,15 @@ internal fun SplitMapPane(
                     mappedIdsByRemoteId = localTrackMappedIdsByRemoteId,
                     preferenceForPilotKey = ::pilotDisplayPreferenceFor
                 )
-                val flightLines = flightTrackLines.getOrCreate(mapView) { TrackRenderCache<Polyline>() }
-                val recentLines = recentTrackLines.getOrCreate(mapView) { TrackRenderCache<Polyline>() }
-                flightLines.retainKeys(fullFlightTrackMappedIds.intersect(currentFlightTrackPointsByMappedId.keys))
-                recentLines.retainKeys(localTrackPointsByMappedId.keys)
-                currentFlightTrackPointsByMappedId.forEach { (mappedId, points) ->
-                    if (mappedId !in fullFlightTrackMappedIds) return@forEach
-                    if (points.size < 2) return@forEach
+                preparedFlightLines.forEach { (mappedId, prepared) ->
+                    if (mappedId !in fullFlightTrackMappedIds || mappedId !in currentFlightTrackPointsByMappedId) return@forEach
+                    val points = prepared.points
                     val trackColor = trackColorInt(
                         pilotPreferencesByMappedId[mappedId]?.archiveTrackColor,
                         DEFAULT_ARCHIVE_TRACK_COLOR
                     )
-                    val line = flightLines.getOrUpdate(
-                        mappedId,
-                        points.toList(), // SnapshotStateList returns an immutable, O(1) snapshot.
-                        create = { Polyline(mapView) },
-                        update = { line, snapshot ->
-                            line.setPoints(snapshot.map { GeoPoint(it.lat, it.lng) })
-                        }
-                    ).apply {
+                    val line = prepared.render.apply {
+                        infoWindow = mapView.repository.defaultPolylineInfoWindow
                         title = "Flight track: $mappedId (${points.size})"
                         applyPolylineStyle(this, trackColor, 2.0f * lineScale)
                     }
@@ -3603,20 +3623,15 @@ internal fun SplitMapPane(
                     managedOverlays.add(line)
                 }
 
-                localTrackPointsByMappedId.forEach { (mappedId, points) ->
-                    if (points.size < 2) return@forEach
+                preparedRecentLines.forEach { (mappedId, prepared) ->
+                    if (mappedId !in localTrackPointsByMappedId) return@forEach
+                    val points = prepared.points
                     val trackColor = trackColorInt(
                         pilotPreferencesByMappedId[mappedId]?.activeTrackColor,
                         DEFAULT_ACTIVE_TRACK_COLOR
                     )
-                    val line = recentLines.getOrUpdate(
-                        mappedId,
-                        points.toList(), // SnapshotStateList returns an immutable, O(1) snapshot.
-                        create = { Polyline(mapView) },
-                        update = { line, snapshot ->
-                            line.setPoints(snapshot.map { GeoPoint(it.lat, it.lng) })
-                        }
-                    ).apply {
+                    val line = prepared.render.apply {
+                        infoWindow = mapView.repository.defaultPolylineInfoWindow
                         title = "Local track: $mappedId (${points.size})"
                         applyPolylineStyle(this, trackColor, 4.0f * lineScale)
                     }

@@ -34,6 +34,8 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
     private static let pendingLifetime: TimeInterval = 5 * 60
 
     private let lock = NSLock()
+    private let storageLock = NSLock()
+    private var storageRevision: UInt64 = 0
     private var featureEnabled = false
     private var store: any CaltopoPersonalAccountStore = CaltopoPersonalAccountMemoryStore()
     private var cached: CaltopoPersonalAccountRecord?
@@ -69,6 +71,7 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
     public func use(_ store: any CaltopoPersonalAccountStore) {
         lock.lock()
         self.store = store
+        storageRevision &+= 1
         cached = nil
         cacheValid = false
         pending = nil
@@ -94,12 +97,33 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
     }
 
     public func disconnect() {
+        storageLock.lock()
+        defer { storageLock.unlock() }
         lock.lock()
-        try? store.clear()
+        let target = store
         cached = nil
         cacheValid = false
         pending = nil
+        storageRevision &+= 1
         lock.unlock()
+        try? target.clear()
+    }
+
+    /// UI configuration reads never enter Keychain or wait behind a Keychain operation.
+    public func cachedStatus(host: String) -> CaltopoPersonalAccountStatus? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard cacheValid, let cached, cached.host == host else { return nil }
+        return cached.status
+    }
+
+    public func cachedLookup(host: String, accountID: String) -> CaltopoPersonalSignedLookup {
+        lock.lock()
+        defer { lock.unlock() }
+        guard featureEnabled else { return .inactive }
+        guard cacheValid else { return .unavailable }
+        guard let cached, cached.host == host, cached.accountID == accountID else { return .absent }
+        return cached.revoked ? .revoked(accountID: cached.accountID) : .ready(cached)
     }
 
     public func markRevoked() {
@@ -365,19 +389,31 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
     private var storedAccount: String { (try? stored())?.accountID ?? "" }
 
     private func stored() throws -> CaltopoPersonalAccountRecord? {
+        storageLock.lock()
+        defer { storageLock.unlock() }
+        lock.lock()
+        if cacheValid { let result = cached; lock.unlock(); return result }
+        let target = store, revision = storageRevision
+        lock.unlock()
+        let value = try target.load()
         lock.lock()
         defer { lock.unlock() }
-        if !cacheValid {
-            cached = try store.load()
-            cacheValid = true
-        }
-        return cached
+        guard revision == storageRevision else { throw CaltopoPersonalAccountError.unavailable }
+        cached = value
+        cacheValid = true
+        return value
     }
 
     private func write(_ record: CaltopoPersonalAccountRecord) throws {
+        storageLock.lock()
+        defer { storageLock.unlock() }
+        lock.lock()
+        let target = store, revision = storageRevision
+        lock.unlock()
+        try target.save(record)
         lock.lock()
         defer { lock.unlock() }
-        try store.save(record)
+        guard revision == storageRevision else { throw CaltopoPersonalAccountError.unavailable }
         cached = record
         cacheValid = true
         pending = nil
@@ -710,8 +746,9 @@ enum CaltopoPersonalAccountLoopback {
             var used = 0
             var target: String?
             while used < header.count {
+                let remaining = header.count - used
                 let readCount = header.withUnsafeMutableBytes { buffer in
-                    Darwin.read(client, buffer.baseAddress!.advanced(by: used), header.count - used)
+                    Darwin.read(client, buffer.baseAddress!.advanced(by: used), remaining)
                 }
                 if readCount <= 0 { break }
                 used += readCount

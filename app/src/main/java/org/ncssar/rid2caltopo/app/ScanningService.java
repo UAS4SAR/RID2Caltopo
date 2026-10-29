@@ -119,7 +119,8 @@ public class ScanningService extends Service {
     }
     public void startScanning() {
         if (scanning) {
-            CTError(TAG, "startScanning(): ignoring start request while running.");
+            // A previous permission/radio failure can be retried without rebuilding service state.
+            if (btScanner != null) btScanner.startScan();
             return;
         }
         scanning = true;

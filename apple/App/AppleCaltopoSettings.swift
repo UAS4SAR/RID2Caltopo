@@ -39,7 +39,7 @@ struct AppleCaltopoConfiguration: Sendable, Equatable {
             personalMediaOwnerID: personalMediaOwnerID
         )
         return CaltopoPersonalAccountConnection.shared.resolveLiveConfiguration(
-            lookup: CaltopoPersonalAccountConnection.shared.lookup(host: "caltopo.com", accountID: personalAccountID),
+            lookup: CaltopoPersonalAccountConnection.shared.cachedLookup(host: "caltopo.com", accountID: personalAccountID),
             mapID: mapID,
             connectKey: connectKey,
             personalSessionID: personalSessionID,
@@ -93,6 +93,7 @@ final class AppleCaltopoSettings: ObservableObject {
             return false
         }
     }
+    private var personalCredentialRevision: UInt64 = 0
     private var selectedPersonalAccountID = ""
     private var selectedPersonalMediaOwnerID = ""
     @Published private(set) var personalSessionID: UUID?
@@ -108,6 +109,8 @@ final class AppleCaltopoSettings: ObservableObject {
     @Published private(set) var teamMaps: [CaltopoTeamMapNode] = []
     @Published private(set) var isLoadingTeamMaps = false
 
+    private var teamCredentialsExpired = false
+    private var credentialRevision = 0
     private let defaults: UserDefaults
     private var credentialOrigin: String
     private static let keychainService = "org.ncssar.RID2CaltopoApple.caltopo"
@@ -151,8 +154,8 @@ final class AppleCaltopoSettings: ObservableObject {
     var configuration: AppleCaltopoConfiguration {
         let normalizedDomain = domainAndPort.trimmingCharacters(in: .whitespacesAndNewlines)
         return AppleCaltopoConfiguration(
-            enabled: enabled,
-            domainAndPort: (personalSessionID != nil || (personalLoginMode == .credentials && usesPersonalCredentials && personalSessionID == nil && !selectedPersonalAccountID.isEmpty)) ? "caltopo.com" : (normalizedDomain.isEmpty ? "caltopo.com" : normalizedDomain),
+            enabled: enabled && (usesPersonalCredentials || !teamCredentialsExpired),
+            domainAndPort: (personalSessionID != nil || (personalLoginMode == .credentials && usesPersonalCredentials && !selectedPersonalAccountID.isEmpty)) ? "caltopo.com" : (normalizedDomain.isEmpty ? "caltopo.com" : normalizedDomain),
             mapID: mapID.trimmingCharacters(in: .whitespacesAndNewlines),
             mapTitle: mapTitle.trimmingCharacters(in: .whitespacesAndNewlines),
             credentialID: credentialID.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -172,24 +175,47 @@ final class AppleCaltopoSettings: ObservableObject {
     }
 
     /// Explicit local credential save. Does not select a map or switch credential sources.
-    func saveTeamsCredentials(_ draft: OperationalTeamsCredentialDraft) throws {
+    func saveTeamsCredentials(_ draft: OperationalTeamsCredentialDraft) async throws {
         if let message = draft.validationMessage {
             throw NSError(domain: "CalTopoSettings", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
         }
-        let value = draft.normalized
-        // Store the secret first; a Keychain failure must not apply a partial credential edit.
-        try Self.storeSecret(value.secret)
+        try await commitTeamsCredentials(draft, origin: Self.originIndependent)
+    }
+
+    private func commitTeamsCredentials(_ draft: OperationalTeamsCredentialDraft, origin: String) async throws {
+        try await CredentialMutationGate.shared.run { [self] in
+            try Task.checkCancellation()
+            credentialRevision += 1
+            let revision = credentialRevision
+            let value = draft.normalized
+            try await Self.storeSecret(value.secret)
+            guard revision == credentialRevision else { throw CancellationError() }
+            applyTeamsCredentialMetadata(value, origin: origin)
+
+        }
+    }
+
+    static var credentialStoreKey: PrivateCredentialStore.Key { .init(keychainService, secretAccount) }
+
+    private func applyTeamsCredentialMetadata(_ value: OperationalTeamsCredentialDraft, origin: String) {
+        teamCredentialsExpired = false
         defaults.set(value.teamID, forKey: "caltopo.teamID")
         defaults.set(value.credentialID, forKey: "caltopo.credentialID")
         defaults.set(value.connectKey, forKey: "caltopo.connectKey")
         defaults.set(value.domain, forKey: "caltopo.domain")
-        defaults.set(Self.originIndependent, forKey: Self.credentialOriginKey)
+        defaults.set(origin, forKey: Self.credentialOriginKey)
         teamID = value.teamID
         credentialID = value.credentialID
         credentialSecret = value.secret
         connectKey = value.connectKey
         domainAndPort = value.domain
-        credentialOrigin = Self.originIndependent
+        credentialOrigin = origin
+    }
+
+    func suspendExpiredTeamsPublication() {
+        teamCredentialsExpired = true
+        if !usesPersonalCredentials { _ = disconnectMap() }
+        status = "Organization access expired; restore Home or load current credentials"
     }
 
     /// Publishing preference applies immediately without saving unrelated credential drafts.
@@ -199,107 +225,68 @@ final class AppleCaltopoSettings: ObservableObject {
         return configuration
     }
 
-    @discardableResult
-    func save(markCredentialsIndependent: Bool = true) -> AppleCaltopoConfiguration {
-        let value = configuration
-        if usesPersonalCredentials {
-            // Organization refreshes may update saved credentials while a personal map is active.
-            // Never persist that map under the organization profile.
-            defaults.set(domainAndPort, forKey: "caltopo.domain")
-            defaults.set(credentialID, forKey: "caltopo.credentialID")
-            defaults.set(teamID, forKey: "caltopo.teamID")
-            defaults.set(connectKey, forKey: "caltopo.connectKey")
-            do { try Self.storeSecret(credentialSecret) }
-            catch { status = "Keychain save failed: \(error.localizedDescription)" }
-            return value
+    func applyImported(credentials: OrgConfigCredentials?) async throws {
+        try await CredentialMutationGate.shared.run { [self] in
+            guard let credentials else { return }
+            try await commitTeamsCredentials(.init(
+                teamID: credentials.teamID,
+                credentialID: credentials.credentialID.isEmpty ? credentialID : credentials.credentialID,
+                secret: credentials.credentialSecret.isEmpty ? credentialSecret : credentials.credentialSecret,
+                connectKey: credentials.connectKey,
+                domain: credentials.domainAndPort.isEmpty ? domainAndPort : credentials.domainAndPort), origin: Self.originIndependent)
+            status = "QR credentials loaded; select the incident Map ID to publish"
+
         }
-        if markCredentialsIndependent {
-            credentialOrigin = Self.originIndependent
-            defaults.set(credentialOrigin, forKey: Self.credentialOriginKey)
-        }
-        defaults.set(value.enabled, forKey: "caltopo.enabled")
-        defaults.set(value.domainAndPort, forKey: "caltopo.domain")
-        defaults.set(value.mapID, forKey: "caltopo.mapID")
-        defaults.set(value.mapTitle, forKey: "caltopo.mapTitle")
-        defaults.set(value.credentialID, forKey: "caltopo.credentialID")
-        defaults.set(value.teamID, forKey: "caltopo.teamID")
-        defaults.set(value.connectKey, forKey: "caltopo.connectKey")
-        do {
-            try Self.storeSecret(value.credentialSecret)
-            status = value.liveConfiguration == nil
-                ? "Saved; publishing remains disabled or incomplete"
-                : "Saved securely"
-        } catch {
-            status = "Keychain save failed: \(error.localizedDescription)"
-        }
-        return value
     }
 
-    func applyImported(credentials: OrgConfigCredentials?) throws {
-        guard let credentials else { return }
-        if !credentials.domainAndPort.isEmpty { domainAndPort = credentials.domainAndPort }
-        if !credentials.credentialID.isEmpty { credentialID = credentials.credentialID }
-        if !credentials.credentialSecret.isEmpty { credentialSecret = credentials.credentialSecret }
-        teamID = credentials.teamID
-        connectKey = credentials.connectKey
-        defaults.set(teamID, forKey: "caltopo.teamID")
-        credentialOrigin = Self.originIndependent
-        defaults.set(credentialOrigin, forKey: Self.credentialOriginKey)
-        _ = save(markCredentialsIndependent: false)
-        status = "QR credentials loaded; select the incident Map ID to publish"
-    }
+    func applyManagedCredentials(_ object: [String: Any]) async throws {
+        try await CredentialMutationGate.shared.run { [self] in
+            try await commitTeamsCredentials(.init(
+                teamID: object["team_id"] as? String ?? "",
+                credentialID: object["credential_id"] as? String ?? "",
+                secret: object["credential_secret"] as? String ?? "",
+                connectKey: object["connect_key"] as? String ?? "",
+                domain: object["domain_and_port"] as? String ?? "caltopo.com"), origin: Self.originTracker)
+            status = "Managed organization credentials loaded; select the incident map"
 
-    func applyManagedCredentials(_ object: [String: Any]) throws {
-        domainAndPort = (object["domain_and_port"] as? String)?.isEmpty == false
-            ? object["domain_and_port"] as! String : "caltopo.com"
-        credentialID = object["credential_id"] as? String ?? ""
-        credentialSecret = object["credential_secret"] as? String ?? ""
-        teamID = object["team_id"] as? String ?? ""
-        connectKey = object["connect_key"] as? String ?? ""
-        defaults.set(teamID, forKey: "caltopo.teamID")
-        credentialOrigin = Self.originTracker
-        defaults.set(credentialOrigin, forKey: Self.credentialOriginKey)
-        _ = save(markCredentialsIndependent: false)
-        status = "Managed organization credentials loaded; select the incident map"
-    }
-
-    func applyImported(mutualAid profile: MutualAidSharedProfile) throws {
-        if !profile.domainAndPort.isEmpty { domainAndPort = profile.domainAndPort }
-        if !usesPersonalCredentials {
-            if !profile.targetMapID.isEmpty { mapID = profile.targetMapID }
-            mapTitle = profile.displayName
-            personalSessionID = nil
         }
-        if !profile.credentialID.isEmpty { credentialID = profile.credentialID }
-        if !profile.credentialSecret.isEmpty { credentialSecret = profile.credentialSecret }
-        teamID = profile.teamID
-        connectKey = profile.connectKey
-        defaults.set(teamID, forKey: "caltopo.teamID")
-        credentialOrigin = Self.originIndependent
-        defaults.set(credentialOrigin, forKey: Self.credentialOriginKey)
-        _ = save(markCredentialsIndependent: false)
-        status = "Organization profile loaded for \(profile.displayName)"
     }
 
-    func apply(storedProfile profile: AppleStoredOperationalProfile, connectMap: Bool) throws {
-        if !usesPersonalCredentials {
-            enabled = profile.enabled
-            mapID = connectMap && profile.autoConnect ? profile.mapID : ""
-            mapTitle = mapID.isEmpty ? "" : profile.mapTitle
-            personalSessionID = nil
+    func applyImported(mutualAid profile: MutualAidSharedProfile) async throws {
+        try await CredentialMutationGate.shared.run { [self] in
+            try await commitTeamsCredentials(.init(
+                teamID: profile.teamID,
+                credentialID: profile.credentialID.isEmpty ? credentialID : profile.credentialID,
+                secret: profile.credentialSecret.isEmpty ? credentialSecret : profile.credentialSecret,
+                connectKey: profile.connectKey,
+                domain: profile.domainAndPort.isEmpty ? domainAndPort : profile.domainAndPort), origin: Self.originIndependent)
+            if !usesPersonalCredentials {
+                if !profile.targetMapID.isEmpty { mapID = profile.targetMapID }
+                mapTitle = profile.displayName
+                personalSessionID = nil
+            }
+            status = "Organization profile loaded for \(profile.displayName)"
+
         }
-        domainAndPort = profile.domainAndPort.isEmpty ? "caltopo.com" : profile.domainAndPort
-        credentialID = profile.credentialID
-        credentialSecret = profile.credentialSecret
-        teamID = profile.teamID
-        connectKey = profile.connectKey ?? ""
-        defaults.set(teamID, forKey: "caltopo.teamID")
-        credentialOrigin = Self.originIndependent
-        defaults.set(credentialOrigin, forKey: Self.credentialOriginKey)
-        _ = save(markCredentialsIndependent: false)
-        status = mapID.isEmpty
-            ? "Profile restored; select the incident map"
-            : "Connected to \(profile.mapTitle)"
+    }
+
+    func apply(storedProfile profile: AppleStoredOperationalProfile, connectMap: Bool,
+               credentialsAlreadyStored: Bool = false) async throws {
+        try await CredentialMutationGate.shared.run { [self] in
+            let draft = OperationalTeamsCredentialDraft(teamID: profile.teamID, credentialID: profile.credentialID,
+                secret: profile.credentialSecret, connectKey: profile.connectKey ?? "", domain: profile.domainAndPort).normalized
+            if credentialsAlreadyStored {
+                credentialRevision += 1
+                applyTeamsCredentialMetadata(draft, origin: Self.originIndependent)
+            } else { try await commitTeamsCredentials(draft, origin: Self.originIndependent) }
+            if !usesPersonalCredentials {
+                enabled = profile.enabled
+                mapID = connectMap && profile.autoConnect ? profile.mapID : ""
+                mapTitle = mapID.isEmpty ? "" : profile.mapTitle
+                personalSessionID = nil
+            }
+            status = mapID.isEmpty ? "Profile restored; select the incident map" : "Connected to \(profile.mapTitle)"
+        }
     }
 
     func transferSnapshot() -> [String: Any] {
@@ -352,10 +339,12 @@ final class AppleCaltopoSettings: ObservableObject {
     }
 
     func setPersonalLoginMode(_ mode: CaltopoPersonalLoginMode) {
-        guard mode != personalLoginMode else { return }
+        guard mode != personalLoginMode, !personalCredentialBusy, !isLoadingPersonalMaps else { return }
+        personalCredentialRevision &+= 1
         personalLoginMode = mode
         defaults.set(mode.rawValue, forKey: Self.personalLoginModeKey)
         CaltopoPersonalAccountConnection.shared.setFeatureEnabled(mode == .credentials)
+        if mode == .credentials { refreshPersonalCredentialSummary() }
         if usesPersonalCredentials || personalSessionID != nil {
             personalSessionID = nil
             selectedPersonalAccountID = ""
@@ -375,14 +364,21 @@ final class AppleCaltopoSettings: ObservableObject {
     }
 
     func signInWithPersonalCredential() async {
+        guard personalLoginMode == .credentials, !personalCredentialBusy else { return }
+        personalCredentialRevision &+= 1
         personalCredentialBusy = true
         defer { personalCredentialBusy = false }
         do {
-            let connected = try await CaltopoPersonalAccountConnection.shared.enroll(
-                deviceName: CaltopoPersonalAccountConnection.defaultDeviceName,
-                browser: AppleCaltopoPersonalAccountBrowser(),
-                exchange: CaltopoPersonalAccountHTTPSExchange()
-            )
+            let connected = try await Task.detached(priority: .userInitiated) {
+                if let existing = CaltopoPersonalAccountConnection.shared.reconnect(host: "caltopo.com") {
+                    return existing
+                }
+                return try await CaltopoPersonalAccountConnection.shared.enroll(
+                    deviceName: CaltopoPersonalAccountConnection.defaultDeviceName,
+                    browser: AppleCaltopoPersonalAccountBrowser(),
+                    exchange: CaltopoPersonalAccountHTTPSExchange()
+                )
+            }.value
             personalCredentialSummary = "Connected as \(connected.displayName)"
             usesPersonalCredentials = true
             personalUsername = connected.displayName
@@ -393,8 +389,12 @@ final class AppleCaltopoSettings: ObservableObject {
         }
     }
 
-    func logOutPersonalCredential() {
-        CaltopoPersonalAccountConnection.shared.disconnect()
+    func logOutPersonalCredential() async {
+        guard !personalCredentialBusy, !isLoadingPersonalMaps else { return }
+        personalCredentialRevision &+= 1
+        personalCredentialBusy = true
+        defer { personalCredentialBusy = false }
+        await Task.detached(priority: .userInitiated) { CaltopoPersonalAccountConnection.shared.disconnect() }.value
         personalCredentialSummary = "Not connected"
         if personalLoginMode == .credentials {
             personalSessionID = nil
@@ -416,30 +416,42 @@ final class AppleCaltopoSettings: ObservableObject {
     }
 
     func loadCredentialPersonalMaps() async {
+        guard personalLoginMode == .credentials, !isLoadingPersonalMaps else { return }
+        let revision = personalCredentialRevision
         isLoadingPersonalMaps = true
         defer { isLoadingPersonalMaps = false }
         do {
-            let configuration = try CaltopoPersonalAccountConnection.shared.teamMapConfiguration()
+            let configuration = try await Task.detached(priority: .userInitiated) {
+                try CaltopoPersonalAccountConnection.shared.teamMapConfiguration()
+            }.value
             let client = try CaltopoTeamMapClient(configuration: configuration)
-            let request = try await client.makeRequest()
+            let request = try await client.makeRequest(now: Date())
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
                 throw CaltopoLiveClientError.httpStatus((response as? HTTPURLResponse)?.statusCode ?? 0, "CalTopo account catalog failed.")
             }
-            let prepared = try CaltopoPersonalCatalog.prepare(data, expectedID: configuration.teamID)
+            let prepared = try await Task.detached(priority: .userInitiated) {
+                try CaltopoPersonalCatalog.prepare(data, expectedID: configuration.teamID)
+            }.value
+            guard revision == personalCredentialRevision, personalLoginMode == .credentials else { return }
             acceptPersonalCatalog(prepared.username, maps: prepared.maps)
             selectedPersonalAccountID = configuration.teamID
         } catch {
+            guard revision == personalCredentialRevision, personalLoginMode == .credentials else { return }
             personalMaps = []
             personalMapsStatus = error.localizedDescription
         }
     }
 
     private func refreshPersonalCredentialSummary() {
-        if let status = CaltopoPersonalAccountConnection.shared.status(host: "caltopo.com"), !status.revoked {
-            personalCredentialSummary = "Connected as \(status.displayName)"
-        } else {
-            personalCredentialSummary = "Not connected"
+        guard personalLoginMode == .credentials else { return }
+        let revision = personalCredentialRevision
+        Task { [weak self] in
+            let connected = await Task.detached(priority: .utility) {
+                CaltopoPersonalAccountConnection.shared.status(host: "caltopo.com")
+            }.value
+            guard let self, revision == self.personalCredentialRevision else { return }
+            personalCredentialSummary = connected.flatMap { $0.revoked ? nil : "Connected as \($0.displayName)" } ?? "Not connected"
         }
     }
 
@@ -447,7 +459,7 @@ final class AppleCaltopoSettings: ObservableObject {
     func selectMap(_ map: CaltopoTeamMap) -> AppleCaltopoConfiguration {
         if personalLoginMode == .credentials && usesPersonalCredentials {
             personalSessionID = nil
-            let account = CaltopoPersonalAccountConnection.shared.status(host: "caltopo.com")?.accountID ?? selectedPersonalAccountID
+            let account = CaltopoPersonalAccountConnection.shared.cachedStatus(host: "caltopo.com")?.accountID ?? selectedPersonalAccountID
             selectedPersonalAccountID = map.personalAccountID.isEmpty ? account : map.personalAccountID
             selectedPersonalMediaOwnerID = map.personalMediaOwnerID.isEmpty ? selectedPersonalAccountID : map.personalMediaOwnerID
             mapID = map.id
@@ -462,7 +474,11 @@ final class AppleCaltopoSettings: ObservableObject {
         mapID = map.id
         mapTitle = map.personalSessionID != nil ? "\(personalUsername): \(map.title)" : map.title
         enabled = true
-        let value = personalSessionID == nil ? save(markCredentialsIndependent: false) : configuration
+        // Selecting a map does not edit or rewrite credentials.
+        defaults.set(true, forKey: "caltopo.enabled")
+        defaults.set(mapID, forKey: "caltopo.mapID")
+        defaults.set(mapTitle, forKey: "caltopo.mapTitle")
+        let value = configuration
         status = "Connected to \(map.title)"
         return value
     }
@@ -478,61 +494,74 @@ final class AppleCaltopoSettings: ObservableObject {
         return configuration
     }
 
-    func resetPersistedState() {
-        personalResetGeneration += 1
-        personalLoginRequired = false
-        personalMaps = []
-        personalMapsStatus = "Sign in to load personal maps"
-        isLoadingPersonalMaps = false
-        selectedPersonalAccountID = ""
-        selectedPersonalMediaOwnerID = ""
-        usesPersonalCredentials = false
-        personalUsername = ""
-        personalSessionID = nil
-        enabled = false
-        domainAndPort = "caltopo.com"
-        mapID = ""
-        mapTitle = ""
-        credentialID = ""
-        credentialSecret = ""
-        teamID = ""
-        connectKey = ""
-        teamMaps = []
-        credentialOrigin = Self.originUnknown
-        status = "Not configured"
-        for key in [
-            "caltopo.enabled", "caltopo.domainAndPort", "caltopo.mapID",
-            "caltopo.mapTitle", "caltopo.credentialID", "caltopo.teamID",
-            "caltopo.connectKey",
-            Self.credentialOriginKey,
-        ] {
-            defaults.removeObject(forKey: key)
+    func resetPersistedState() async {
+        _ = try? await CredentialMutationGate.shared.run { [self] in
+            credentialRevision += 1
+            personalResetGeneration += 1
+            personalLoginRequired = false
+            personalMaps = []
+            personalMapsStatus = "Sign in to load personal maps"
+            isLoadingPersonalMaps = false
+            selectedPersonalAccountID = ""
+            selectedPersonalMediaOwnerID = ""
+            usesPersonalCredentials = false
+            personalUsername = ""
+            personalSessionID = nil
+            enabled = false
+            domainAndPort = "caltopo.com"
+            mapID = ""
+            mapTitle = ""
+            credentialID = ""
+            credentialSecret = ""
+            teamID = ""
+            connectKey = ""
+            teamMaps = []
+            credentialOrigin = Self.originUnknown
+            status = "Not configured"
+            for key in [
+                "caltopo.enabled", "caltopo.domainAndPort", "caltopo.mapID",
+                "caltopo.mapTitle", "caltopo.credentialID", "caltopo.teamID",
+                "caltopo.connectKey",
+                Self.credentialOriginKey,
+            ] {
+                defaults.removeObject(forKey: key)
+            }
+            try? await Self.storeSecret("")
+
         }
-        try? Self.storeSecret("")
     }
 
     /// Clears credentials delivered by Tracker while leaving independently entered or
     /// imported credentials available during offline operation and Tracker outages.
     @discardableResult
-    func quarantineTrackerManagedCredentials() -> Bool {
-        guard credentialOrigin != Self.originIndependent else {
-            status = "Tracker authorization paused; independent CalTopo credentials preserved"
-            return false
-        }
-        enabled = false
-        mapID = ""
-        mapTitle = ""
-        credentialID = ""
-        credentialSecret = ""
-        teamID = ""
-        connectKey = ""
-        teamMaps = []
-        credentialOrigin = Self.originTracker
-        defaults.set(credentialOrigin, forKey: Self.credentialOriginKey)
-        defaults.removeObject(forKey: AppleManagedOrganizationConfig.versionDefaultsKey)
-        _ = save(markCredentialsIndependent: false)
-        status = "Tracker-managed CalTopo credentials cleared pending reauthentication"
-        return true
+    func quarantineTrackerManagedCredentials() async -> Bool {
+        (try? await CredentialMutationGate.shared.run { [self] in
+            guard credentialOrigin != Self.originIndependent else {
+                status = "Tracker authorization paused; independent CalTopo credentials preserved"
+                return false
+            }
+            credentialRevision += 1
+            enabled = false
+            mapID = ""
+            mapTitle = ""
+            credentialID = ""
+            credentialSecret = ""
+            teamID = ""
+            connectKey = ""
+            teamMaps = []
+            credentialOrigin = Self.originTracker
+            defaults.set(credentialOrigin, forKey: Self.credentialOriginKey)
+            defaults.removeObject(forKey: AppleManagedOrganizationConfig.versionDefaultsKey)
+            for key in ["caltopo.credentialID", "caltopo.teamID", "caltopo.connectKey", "caltopo.mapID", "caltopo.mapTitle"] {
+                defaults.removeObject(forKey: key)
+            }
+            defaults.set(false, forKey: "caltopo.enabled")
+            do { try await Self.storeSecret("") }
+            catch { AppleLog.error("CalTopo", "Managed credential removal unavailable; runtime access remains revoked") }
+            status = "Tracker-managed CalTopo credentials cleared pending reauthentication"
+            return true
+
+        }) ?? false
     }
 
     private func findMap(id: String, in nodes: [CaltopoTeamMapNode]) -> CaltopoTeamMap? {
@@ -544,48 +573,11 @@ final class AppleCaltopoSettings: ObservableObject {
     }
 
     private static func loadSecret() -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: secretAccount,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data
-        else { return nil }
-        return String(data: data, encoding: .utf8)
+        PrivateCredentialStore.live.cachedString(.init(keychainService, secretAccount))
     }
 
-    private static func storeSecret(_ secret: String) throws {
-        let key: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: secretAccount,
-        ]
-        if secret.isEmpty {
-            let status = SecItemDelete(key as CFDictionary)
-            guard status == errSecSuccess || status == errSecItemNotFound else {
-                throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
-            }
-            return
-        }
-        let data = Data(secret.utf8)
-        let updateStatus = SecItemUpdate(
-            key as CFDictionary,
-            [kSecValueData as String: data, kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly] as CFDictionary
-        )
-        if updateStatus == errSecSuccess { return }
-        guard updateStatus == errSecItemNotFound else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(updateStatus))
-        }
-        var insert = key
-        insert[kSecValueData as String] = data
-        insert[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        let insertStatus = SecItemAdd(insert as CFDictionary, nil)
-        guard insertStatus == errSecSuccess else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(insertStatus))
-        }
+    private static func storeSecret(_ secret: String) async throws {
+        try await PrivateCredentialStore.live.store(secret.isEmpty ? nil : Data(secret.utf8),
+                                                    for: .init(keychainService, secretAccount))
     }
 }

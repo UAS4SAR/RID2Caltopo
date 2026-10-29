@@ -241,39 +241,23 @@ final class AppleDroneConfirmationStore: ObservableObject {
     private var peerConfirmationMapID = ""
     private var ignoredRemoteIDs: Set<String> = []
     private let defaults = UserDefaults.standard
+    private(set) var editableImportedMappings: [RidAircraftIdentity] = []
+    private var orderedImportedMappings: [RidAircraftIdentity] = []
     private var mappingRecords: [[String: String]] = []
     private var mappingRevision = 0
     private static let ignoredRemoteIDsDefaultsKey = "org.ignoredRemoteIDs"
     private static let preferredPilotCallsignDefaultsKey = "operator.pilotCallsign"
 
-    init() {
-        preferredPilotCallsign = PilotDisplayPreference.normalizePilotCallsign(
-            UserDefaults.standard.string(forKey: Self.preferredPilotCallsignDefaultsKey)
-        ) ?? ""
-        if let entries = defaults.array(forKey: "org.ridMappings") as? [[String: String]] {
-            mappingRecords = entries
-            importedIdentities = Dictionary(uniqueKeysWithValues: entries.compactMap { entry in
-                guard let remoteID = entry["remoteID"], !remoteID.isEmpty else { return nil }
-                let identity = RidAircraftIdentity(
-                    remoteID: remoteID,
-                    organization: entry["organization"] ?? "",
-                    ownerName: entry["ownerName"] ?? entry["owner"] ?? "",
-                    pilotCallsign: entry["ownerCallsign"] ?? Self.importedPilotCallsign(
-                        mappedID: entry["mappedID"] ?? "",
-                        model: entry["model"] ?? "",
-                        remoteID: remoteID
-                    ),
-                    droneDescription: entry["model"] ?? "",
-                    mappedIDOverride: entry["mappedID"],
-                    readiness: AircraftReadiness.decode(entry["readiness"])
-                )
-                return (remoteID, identity)
-            })
-        }
-        // Save and Ignore are scoped to the current flight. Paired video activity keeps the
-        // flight alive through a temporary RID gap; decisions are not persisted across launches.
-        defaults.removeObject(forKey: Self.ignoredRemoteIDsDefaultsKey)
+    init(snapshot: AircraftMappingSnapshot) {
+        preferredPilotCallsign = snapshot.preferredPilotCallsign
+        mappingRecords = snapshot.records
+        importedIdentities = snapshot.identities
+        orderedImportedMappings = snapshot.orderedIdentities
+        editableImportedMappings = snapshot.allIdentities
+        mappingRecoveryMessage = snapshot.recoveryMessage
     }
+
+    @Published var mappingRecoveryMessage: String?
 
     func identity(for remoteID: String) -> RidAircraftIdentity? {
         peerIdentities[remoteID]?.preservingLocalFlightReadiness(from: sessionIdentities[remoteID])
@@ -378,7 +362,7 @@ final class AppleDroneConfirmationStore: ObservableObject {
     }
 
     /// O(1) immutable snapshot; sorting/encoding must happen on a worker.
-    var backupIdentitySnapshot: [String: RidAircraftIdentity] { importedIdentities }
+    var backupIdentitySnapshot: [RidAircraftIdentity] { editableImportedMappings }
     var backupRevision: Int { mappingRevision }
 
     private func persistMappingRecords(_ entries: [[String: String]], completion: @escaping @Sendable () -> Void = {}) {
@@ -404,33 +388,45 @@ final class AppleDroneConfirmationStore: ObservableObject {
                     "organization": mapping.organization, "model": mapping.model, "owner": mapping.owner,
                     "ownerName": mapping.ownerName, "ownerCallsign": callsign, "readiness": mapping.readiness.jsonString])
             }
-            return (identities, records)
+            let snapshot = AircraftMappingSnapshot(records: records)
+            return (snapshot.identities, records, snapshot)
         }.value
         try Task.checkCancellation()
+        try prepared.2.requireUnambiguous()
         try AppleAircraftOrganizationAccess.requireEdit()
         guard revision == mappingRevision else { throw CancellationError() }
         try applySettings()
         importedIdentities = prepared.0
+        orderedImportedMappings = prepared.2.orderedIdentities
+        editableImportedMappings = prepared.2.allIdentities
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             persistMappingRecords(prepared.1) { continuation.resume() }
         }
+        try Task.checkCancellation()
+        try AppleAircraftOrganizationAccess.requireEdit()
+        guard mappingRevision == revision + 1 else { throw CancellationError() }
     }
 
     var importedMappings: [RidAircraftIdentity] {
-        importedIdentities.values.sorted { $0.remoteID < $1.remoteID }
+        orderedImportedMappings
     }
 
     /// A local pairing is operator-owned and never grants organization authority.
-    func saveLocalPairing(_ identity: RidAircraftIdentity) -> Bool {
-        guard importedIdentities[identity.remoteID] == nil,
-              !importedIdentities.values.contains(where: { $0.mappedID.caseInsensitiveCompare(identity.mappedID) == .orderedSame }) else { return false }
-        importedIdentities[identity.remoteID] = identity
-        var entries = mappingRecords
-        entries.append(["remoteID": identity.remoteID, "mappedID": identity.mappedID,
-                        "organization": "", "model": identity.droneDescription,
-                        "ownerCallsign": identity.pilotCallsign, "ownerName": ""])
-        persistMappingRecords(entries)
-        return true
+    func saveLocalPairing(_ identity: RidAircraftIdentity) async -> Bool {
+        let revision = mappingRevision
+        let existing = editableImportedMappings, records = mappingRecords
+        let snapshot = await Task.detached(priority: .utility) { () -> AircraftMappingSnapshot? in
+            guard !existing.contains(where: { $0.remoteID == identity.remoteID ||
+                $0.mappedID.caseInsensitiveCompare(identity.mappedID) == .orderedSame }) else { return nil }
+            var entries = records
+            entries.append(["remoteID": identity.remoteID, "mappedID": identity.mappedID,
+                            "organization": "", "model": identity.droneDescription,
+                            "ownerCallsign": identity.pilotCallsign, "ownerName": ""])
+            return AircraftMappingSnapshot(records: entries)
+        }.value
+        guard !Task.isCancelled, revision == mappingRevision, let snapshot else { return false }
+        await commit(snapshot)
+        return !Task.isCancelled && mappingRevision == revision + 1
     }
 
     func confirm(_ identity: RidAircraftIdentity, recordUnresolvedPilot: Bool = false) {
@@ -444,53 +440,58 @@ final class AppleDroneConfirmationStore: ObservableObject {
         )
     }
 
-    func applyImportedMappings(_ mappings: [OrgConfigRIDMapping], managedDownload: Bool = false) throws {
+    func applyImportedMappings(_ mappings: [OrgConfigRIDMapping], managedDownload: Bool = false) async throws {
         if !managedDownload { try AppleAircraftOrganizationAccess.requireEdit() }
-        importedIdentities = Dictionary(uniqueKeysWithValues: mappings.map { mapping in
-            (
-                mapping.remoteID,
-                RidAircraftIdentity(
-                    remoteID: mapping.remoteID,
-                    organization: mapping.organization,
-                    ownerName: mapping.ownerName,
-                    pilotCallsign: mapping.ownerCallsign.isEmpty ? (managedDownload ? mapping.owner : Self.importedPilotCallsign(mappedID: mapping.mappedID, model: mapping.model, remoteID: mapping.remoteID)) : mapping.ownerCallsign,
-                    droneDescription: mapping.model,
-                    mappedIDOverride: mapping.mappedID,
-                    readiness: mapping.readiness
-                )
-            )
-        })
-        let persisted = mappings.map { mapping in
-            [
-                "remoteID": mapping.remoteID,
-                "mappedID": mapping.mappedID,
-                "organization": mapping.organization,
-                "model": mapping.model,
-                "owner": mapping.owner,
-                "ownerName": mapping.ownerName,
-                "readiness": mapping.readiness.jsonString,
-                "ownerCallsign": mapping.ownerCallsign.isEmpty ? (managedDownload ? mapping.owner : Self.importedPilotCallsign(mappedID: mapping.mappedID, model: mapping.model, remoteID: mapping.remoteID)) : mapping.ownerCallsign,
-            ]
-        }
-        persistMappingRecords(persisted)
+        let revision = mappingRevision
+        let snapshot = await Task.detached(priority: .utility) {
+            AircraftMappingSnapshot(records: mappings.map { mapping in
+                ["remoteID": mapping.remoteID, "mappedID": mapping.mappedID,
+                 "organization": mapping.organization, "model": mapping.model,
+                 "owner": mapping.owner, "ownerName": mapping.ownerName,
+                 "readiness": mapping.readiness.jsonString,
+                 "ownerCallsign": mapping.ownerCallsign.isEmpty
+                    ? (managedDownload ? mapping.owner : RidAircraftIdentity.guessPilotCallsign(
+                        mappedID: mapping.mappedID, model: mapping.model, remoteID: mapping.remoteID))
+                    : mapping.ownerCallsign]
+            })
+        }.value
+        try Task.checkCancellation()
+        try snapshot.requireUnambiguous()
+        guard revision == mappingRevision else { throw CancellationError() }
+        if !managedDownload { try AppleAircraftOrganizationAccess.requireEdit() }
+        await commit(snapshot)
+        try Task.checkCancellation()
+        guard mappingRevision == revision + 1 else { throw CancellationError() }
     }
 
-    func replacePersistedMappings(_ mappings: [RidAircraftIdentity]) throws {
+    func replacePersistedMappings(_ mappings: [RidAircraftIdentity]) async throws {
         try AppleAircraftOrganizationAccess.requireEdit()
-        importedIdentities = Dictionary(uniqueKeysWithValues: mappings.map { ($0.remoteID, $0) })
-        let entries = mappings.map { identity in
-                [
-                    "remoteID": identity.remoteID,
-                    "mappedID": identity.mappedID,
-                    "organization": identity.organization,
-                    "model": identity.droneDescription,
-                    "owner": identity.ownerName,
-                    "ownerName": identity.ownerName,
-                    "ownerCallsign": identity.pilotCallsign,
-                    "readiness": identity.readiness.jsonString,
-                ]
-            }
-        persistMappingRecords(entries)
+        let revision = mappingRevision
+        let snapshot = await Task.detached(priority: .utility) {
+            AircraftMappingSnapshot(records: mappings.map { identity in
+                ["remoteID": identity.remoteID, "mappedID": identity.mappedID,
+                 "organization": identity.organization, "model": identity.droneDescription,
+                 "owner": identity.ownerName, "ownerName": identity.ownerName,
+                 "ownerCallsign": identity.pilotCallsign, "readiness": identity.readiness.jsonString]
+            })
+        }.value
+        try Task.checkCancellation()
+        try snapshot.requireUnambiguous()
+        guard revision == mappingRevision else { throw CancellationError() }
+        try AppleAircraftOrganizationAccess.requireEdit()
+        await commit(snapshot)
+        try Task.checkCancellation()
+        guard mappingRevision == revision + 1 else { throw CancellationError() }
+    }
+
+    private func commit(_ snapshot: AircraftMappingSnapshot) async {
+        importedIdentities = snapshot.identities
+        orderedImportedMappings = snapshot.orderedIdentities
+        editableImportedMappings = snapshot.allIdentities
+        mappingRecoveryMessage = nil
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            persistMappingRecords(snapshot.records) { continuation.resume() }
+        }
     }
 
     func setPeerConfirmationMapID(_ mapID: String) {
@@ -523,6 +524,8 @@ final class AppleDroneConfirmationStore: ObservableObject {
 
     func resetPersistedState() {
         importedIdentities.removeAll()
+        orderedImportedMappings.removeAll()
+        editableImportedMappings.removeAll()
         sessionIdentities.removeAll()
         peerIdentities.removeAll()
         confirmationLifecycle.reset()
@@ -561,6 +564,8 @@ struct DroneConfirmationView: View {
     @State private var pilotCallsign: String
     @State private var droneDescription: String
     @State private var showEquipment = false
+    @State private var pairingTask: Task<Void, Never>?
+    @State private var savingPairing = false
     @State private var pairingSaveError: String?
 
     init(
@@ -700,13 +705,20 @@ struct DroneConfirmationView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(pairingOnly ? "Save mapping" : (bootstrapDesignator == nil ? "Publish track" : "Save and publish track")) {
+                        guard !savingPairing else { return }
+                        savingPairing = true
+                        pairingTask = Task { @MainActor in
+                        defer { savingPairing = false }
+                        let scope = AppleAircraftOrganizationAccess.scope
                         if pairingOnly {
-                            guard identityStore.saveLocalPairing(identity) else {
+                            let pairingIdentity = identity
+                            guard await identityStore.saveLocalPairing(pairingIdentity) else {
                                 pairingSaveError = "This RID or stream designator already has an entry."
                                 return
                             }
-                            identityStore.setPreferredPilotCallsign(pilotCallsign)
-                            onConfirm(identity)
+                            guard !Task.isCancelled, scope == AppleAircraftOrganizationAccess.scope else { return }
+                            identityStore.setPreferredPilotCallsign(pairingIdentity.pilotCallsign)
+                            onConfirm(pairingIdentity)
                             dismiss()
                             return
                         }
@@ -729,16 +741,22 @@ struct DroneConfirmationView: View {
                         var equipment = readiness.equipmentDictionary
                         if readiness.payloadWeightGrams == nil { equipment.removeValue(forKey: "payloadWeightGrams") }
                         UserDefaults.standard.set(equipment, forKey: "equipment:" + AppleAircraftOrganizationAccess.scope + remoteID)
-                        if bootstrapDesignator != nil && !identityStore.saveLocalPairing(identity) {
-                            pairingSaveError = "This RID or stream designator already has an entry. Reopen pairing to review it."
-                            return
+                        let confirmedIdentity = identity
+                        if bootstrapDesignator != nil {
+                            guard await identityStore.saveLocalPairing(confirmedIdentity) else {
+                                pairingSaveError = "This RID or stream designator already has an entry. Reopen pairing to review it."
+                                return
+                            }
                         }
-                        identityStore.confirm(identity, recordUnresolvedPilot: true)
-                        identityStore.setPreferredPilotCallsign(pilotCallsign)
-                        onConfirm(identity)
+                        guard !Task.isCancelled, scope == AppleAircraftOrganizationAccess.scope else { return }
+                        identityStore.confirm(confirmedIdentity, recordUnresolvedPilot: true)
+                        identityStore.setPreferredPilotCallsign(confirmedIdentity.pilotCallsign)
+                        onConfirm(confirmedIdentity)
                         dismiss()
+                        }
                     }
-                    .disabled(bootstrapDesignator != nil && pilotCallsign.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .onDisappear { pairingTask?.cancel() }
+                    .disabled(savingPairing || (bootstrapDesignator != nil && pilotCallsign.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
                 }
             }
         }

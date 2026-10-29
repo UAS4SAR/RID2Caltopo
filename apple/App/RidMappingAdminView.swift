@@ -18,6 +18,9 @@ enum AppleAircraftOrganizationAccess {
     private static var messageScope = ""
     static func resetRuntimeState() {
         resetGeneration += 1
+        stateLoadTask?.cancel(); stateLoadTask = nil; stateLoadID = nil
+        replacePreparedState(.empty); preparedScope = ""; preparedToken = ""
+        cachedStateRevision += 1
         authorizedToken = ""; expires = .distantPast
         verifiedToken = ""; verifiedScope = ""; username = ""
         messageToken = ""; messageScope = ""
@@ -38,10 +41,60 @@ enum AppleAircraftOrganizationAccess {
         return username
     }
     static var scope: String { UserDefaults.standard.string(forKey: "org.trackerURLPrefix") ?? "" }
-    static var cachedState: [String: Any] {
-        guard let data = UserDefaults.standard.data(forKey: "readiness:" + scope) else { return [:] }
-        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+    nonisolated private static let stateWorker = OperationalWorkQueue(label: "r2c.organization-state")
+    private static var preparedState = PreparedOrganizationState.empty
+    private static var preparedScope = ""
+    private static var preparedToken = ""
+    private static var stateLoadTask: Task<Void, Never>?
+    private static var stateLoadID: UUID?
+    private static var stateLoadScope = ""
+    private static var stateLoadToken = ""
+    private(set) static var cachedStateRevision = 0
+
+    static var currentPreparedState: PreparedOrganizationState { hasPreparedState ? preparedState : .empty }
+
+    static var hasPreparedState: Bool {
+        preparedScope == scope && preparedToken == (AppleOrgConfigSettings.loadTrackerAPIKey() ?? "")
     }
+
+    private static func replacePreparedState(_ next: PreparedOrganizationState) {
+        let previous = preparedState
+        preparedState = next
+        stateWorker.enqueue { withExtendedLifetime(previous) {} }
+    }
+
+    static var cachedState: [String: Any] {
+        let currentScope = scope, token = AppleOrgConfigSettings.loadTrackerAPIKey() ?? ""
+        if preparedScope != currentScope || preparedToken != token {
+            if stateLoadID == nil || stateLoadScope != currentScope || stateLoadToken != token {
+                stateLoadTask?.cancel()
+                let id = UUID()
+                stateLoadID = id; stateLoadScope = currentScope; stateLoadToken = token
+                stateLoadTask = Task { @MainActor in
+                    await prepareCachedState()
+                    if stateLoadID == id { stateLoadID = nil; stateLoadTask = nil }
+                }
+            }
+            return [:]
+        }
+        return preparedState.value
+    }
+
+    static func prepareCachedState() async {
+        let currentScope = scope, token = AppleOrgConfigSettings.loadTrackerAPIKey() ?? ""
+        if preparedScope == currentScope, preparedToken == token { return }
+        let generation = resetGeneration, revision = cachedStateRevision
+        let value = await stateWorker.perform {
+            guard let data = UserDefaults.standard.data(forKey: "readiness:" + currentScope) else { return PreparedOrganizationState.empty }
+            return (try? PreparedOrganizationState(data: data)) ?? .empty
+        }
+        guard !Task.isCancelled, generation == resetGeneration, revision == cachedStateRevision,
+              currentScope == scope, token == (AppleOrgConfigSettings.loadTrackerAPIKey() ?? "") else { return }
+        replacePreparedState(value); preparedScope = currentScope; preparedToken = token
+        cachedStateRevision += 1
+        NotificationCenter.default.post(name: Notification.Name("aircraftReadinessUpdated"), object: nil)
+    }
+
     static var belongsToOrganization: Bool { (AppleOrgConfigSettings.loadTrackerAPIKey() ?? "").hasPrefix("r2c_dev_") }
     static var canEdit: Bool {
         !belongsToOrganization || (authorizedToken == AppleOrgConfigSettings.loadTrackerAPIKey() && verifiedScope == scope && Date() < expires)
@@ -83,7 +136,9 @@ enum AppleAircraftOrganizationAccess {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard generation == resetGeneration, token == AppleOrgConfigSettings.loadTrackerAPIKey(), baseURL == scope else { return false }
             if [401, 403].contains((response as? HTTPURLResponse)?.statusCode ?? 0) {
-                UserDefaults.standard.removeObject(forKey: "readiness:" + baseURL)
+                replacePreparedState(.empty); preparedScope = baseURL; preparedToken = token
+                cachedStateRevision += 1
+                stateWorker.enqueue { UserDefaults.standard.removeObject(forKey: "readiness:" + baseURL) }
                 NotificationCenter.default.post(name: Notification.Name("aircraftReadinessUpdated"), object: nil)
             }
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -94,14 +149,16 @@ enum AppleAircraftOrganizationAccess {
                     : "Tracker could not verify your account (HTTP \(status)). Try Refresh access again."
                 return false
             }
-            guard let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                accessMessage = "Tracker account verification could not be completed. Try Refresh access again."
-                return false
-            }
+            let parsed = try await stateWorker.run { try PreparedOrganizationState(data: data) }
+            guard !Task.isCancelled, generation == resetGeneration,
+                  token == AppleOrgConfigSettings.loadTrackerAPIKey(), baseURL == scope else { return false }
+            let value = parsed.value
             verifiedToken = token; verifiedScope = baseURL
             username = value["username"] as? String ?? ""
+            replacePreparedState(parsed); preparedScope = baseURL; preparedToken = token
+            cachedStateRevision += 1
             AppleLog.info("OrganizationAccess", "Tracker account verification completed; identityPresent=\(!username.isEmpty)")
-            UserDefaults.standard.set(data, forKey: "readiness:" + baseURL)
+            stateWorker.enqueue { UserDefaults.standard.set(data, forKey: "readiness:" + baseURL) }
             NotificationCenter.default.post(name: Notification.Name("aircraftReadinessUpdated"), object: nil)
             guard value["canEditAircraft"] as? Bool == true else {
                 accessMessage = "Read-only · this account does not have config_admin. Contact an organization administrator."
@@ -451,7 +508,7 @@ struct RidMappingAdminView: View {
         self.identities = identities
         self.onSaved = onSaved
         _organizationName = State(initialValue: organization.organizationName)
-        var initialMappings = identities.importedMappings.map { AppleRidMappingDraft(identity: $0) }
+        var initialMappings = identities.editableImportedMappings.map { AppleRidMappingDraft(identity: $0) }
         self.inspectionRemoteID = initialRemoteID
         let normalizedRemoteID = initialRemoteID?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() ?? ""
         var selected: UUID?
@@ -676,11 +733,14 @@ struct RidMappingAdminView: View {
         }
         let savedRemoteID = mappings.first(where: { $0.id == selectedID })?.remoteID
         do {
+            let scope = organization.trackerURLPrefix, token = organization.trackerAPIKey
             let originals = identities.importedMappings
-            try identities.replacePersistedMappings(mappings.map { mapping in
+            try await identities.replacePersistedMappings(mappings.map { mapping in
                 if mapping.id != selectedID, let original = originals.first(where: { $0.remoteID == mapping.remoteID }) { return original }
                 return identity(for: mapping)
             })
+            try AppleAircraftOrganizationAccess.requireEdit()
+            guard scope == organization.trackerURLPrefix, token == organization.trackerAPIKey else { throw CancellationError() }
         }
         catch { errors = [error.localizedDescription]; showingValidationErrors = true; return false }
         UserDefaults.standard.removeObject(forKey: Self.draftOrganizationKey)

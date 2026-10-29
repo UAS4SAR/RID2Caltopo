@@ -90,6 +90,46 @@ class VerifiedArchiveTreeTest {
             assertTrue(tree.list(VerifiedArchiveTree.JOURNAL).isEmpty())
         } finally { root.deleteRecursively() }
     }
+    @Test fun exhaustedProviderDuringStagingKeepsOldTargetAndNewOriginal() {
+        val root = Files.createTempDirectory("archive-quota").toFile()
+        try {
+            val tree = Tree(File(root, "archive"))
+            val source = File(root, "source").apply { writeText("old original") }
+            VerifiedArchiveTree(tree).put(source, "cache/data")
+            source.writeText("new original must remain available")
+            val full = object : ArchiveTree by tree {
+                override fun write(path: String, input: InputStream) {
+                    if (path.contains(".r2c-stage-")) {
+                        tree.write(path, input.readNBytes(3).inputStream())
+                        throw IOException("ENOSPC: provider quota exhausted")
+                    }
+                    tree.write(path, input)
+                }
+            }
+            assertThrows(IOException::class.java) { VerifiedArchiveTree(full).put(source, "cache/data") }
+            assertEquals("old original", tree.read("cache/data").reader().readText())
+            assertEquals("new original must remain available", source.readText())
+            VerifiedArchiveTree(tree).put(source, "cache/data")
+            assertEquals(source.readText(), tree.read("cache/data").reader().readText())
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun corruptRecoveryJournalIsQuarantinedWithoutErasingEitherOriginal() {
+        val root = Files.createTempDirectory("archive-corrupt-journal").toFile()
+        try {
+            val tree = Tree(File(root, "archive"))
+            val source = File(root, "source").apply { writeText("original") }
+            VerifiedArchiveTree(tree).put(source, "cache/data")
+            val damaged = "[{interrupted journal"
+            val path = VerifiedArchiveTree.JOURNAL + "/interrupted.json"
+            tree.write(path, damaged.byteInputStream())
+            VerifiedArchiveTree(tree).recover()
+            assertEquals(damaged, tree.read(path.removeSuffix(".json") + ".invalid").reader().readText())
+            assertEquals("original", source.readText())
+            assertEquals("original", tree.read("cache/data").reader().readText())
+        } finally { root.deleteRecursively() }
+    }
+
     @Test fun unsafePathsAreRejectedBeforeProviderWrites() {
         for (path in listOf("../data", "/data", "cache/../data", "cache//data", "cache/")) {
             assertThrows(IllegalArgumentException::class.java) { VerifiedArchiveTree.checked(path) }

@@ -923,6 +923,8 @@ class R2CActivity :
             if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
             val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
             if (state == BluetoothAdapter.STATE_OFF || state == BluetoothAdapter.STATE_TURNING_OFF) {
+                bluetoothStateGeneration += 1
+                bluetoothStateJob?.cancel()
                 setBluetoothDisabledPanelVisible(true, "state changed: $state")
             } else if (state == BluetoothAdapter.STATE_ON || state == BluetoothAdapter.STATE_TURNING_ON) {
                 setBluetoothDisabledPanelVisible(false, "state changed: $state")
@@ -2357,35 +2359,9 @@ class R2CActivity :
     }
 
     private fun checkBluetoothSupport() {
-        if (checkSelfPermission(Manifest.permission.BLUETOOTH) !=
-            PackageManager.PERMISSION_GRANTED) {
-            CTError(TAG, "checkBluetoothSupport(): Did not get access to bluetooth!")
-            refreshBluetoothDisabledState("bluetooth permission missing")
-            return
-        }
-
-        val bluetoothAdapter: BluetoothAdapter? = BluetoothScanner.getBluetoothAdapter()
-        if (null == bluetoothAdapter) {
-            CTError(TAG, "Not able to access bluetooth adapter.")
-            setBluetoothDisabledPanelVisible(false, "adapter unavailable")
-            return
-        }
-        legacyBluetoothSupported = bluetoothAdapter.isEnabled
-        setBluetoothDisabledPanelVisible(
-            shouldShowBluetoothDisabledPanel(
-                adapterPresent = true,
-                bluetoothEnabled = bluetoothAdapter.isEnabled,
-            ),
-            "support check",
-        )
         MyDeviceName = AndroidDeviceIdentity.displayName(this)
-        CTDebug(TAG, "Setting MyDeviceName to:${MyDeviceName}")
-        if (bluetoothAdapter.isLeCodedPhySupported) {
-            codedPhySupported = true
-        }
-        if (bluetoothAdapter.isLeExtendedAdvertisingSupported) {
-            extendedAdvertisingSupported = true
-        }
+        CTDebug(TAG, "Setting MyDeviceName to:$MyDeviceName")
+        refreshBluetoothDisabledState("support check")
     }
 
     private fun registerBluetoothStateReceiver() {
@@ -2487,20 +2463,40 @@ class R2CActivity :
         )
     }
 
+    private var bluetoothStateGeneration = 0L
+    private var bluetoothStateJob: kotlinx.coroutines.Job? = null
+    private val bluetoothStateWorker = Dispatchers.IO.limitedParallelism(1)
+
+    private data class BluetoothSupport(val present: Boolean, val enabled: Boolean, val coded: Boolean, val extended: Boolean)
+
     private fun refreshBluetoothDisabledState(reason: String) {
-        val bluetoothAdapter = try {
-            BluetoothScanner.getBluetoothAdapter()
-        } catch (e: SecurityException) {
-            CTError(TAG, "refreshBluetoothDisabledState(): bluetooth permission unavailable.", e)
-            null
+        val generation = ++bluetoothStateGeneration
+        bluetoothStateJob?.cancel()
+        bluetoothStateJob = lifecycleScope.launch {
+            val support = withContext(bluetoothStateWorker) {
+                try {
+                    val permitted = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+                        checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+                    if (!permitted) BluetoothSupport(false, false, false, false)
+                    else {
+                        val adapter = BluetoothScanner.getBluetoothAdapter()
+                        BluetoothSupport(adapter != null, adapter?.isEnabled == true,
+                            adapter?.isLeCodedPhySupported == true, adapter?.isLeExtendedAdvertisingSupported == true)
+                    }
+                } catch (error: SecurityException) {
+                    CTError(TAG, "Bluetooth permission changed during state query", error)
+                    BluetoothSupport(false, false, false, false)
+                } catch (error: IllegalStateException) {
+                    CTError(TAG, "Bluetooth state changed during query", error)
+                    BluetoothSupport(false, false, false, false)
+                }
+            }
+            if (generation != bluetoothStateGeneration) return@launch
+            legacyBluetoothSupported = support.enabled
+            codedPhySupported = support.coded
+            extendedAdvertisingSupported = support.extended
+            setBluetoothDisabledPanelVisible(shouldShowBluetoothDisabledPanel(support.present, support.enabled), reason)
         }
-        setBluetoothDisabledPanelVisible(
-            shouldShowBluetoothDisabledPanel(
-                adapterPresent = bluetoothAdapter != null,
-                bluetoothEnabled = bluetoothAdapter?.isEnabled == true,
-            ),
-            reason,
-        )
     }
 
     private fun setBluetoothDisabledPanelVisible(visible: Boolean, reason: String) {

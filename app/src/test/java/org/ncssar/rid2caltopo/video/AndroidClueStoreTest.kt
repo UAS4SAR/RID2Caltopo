@@ -12,6 +12,57 @@ class AndroidClueStoreTest {
     @get:Rule
     val temporaryFolder = TemporaryFolder()
 
+    @Test fun unreadableIndexBlocksWritesAndRecoversWithoutDiscardingPhotos() {
+        val root = temporaryFolder.newFolder("corrupt-index")
+        val record = clueRecord("retained", "map:alpha").copy(destinationTeamId = "team-a", uploadState = "pending")
+        val store = AndroidClueStore.forDirectory(root)
+        store.saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
+        val index = java.io.File(root, "clues.json")
+        val original = index.readBytes()
+        index.writeText("{damaged original")
+        org.junit.Assert.assertThrows(java.io.IOException::class.java) { store.pendingForMap("alpha", "team-a") }
+        org.junit.Assert.assertThrows(java.io.IOException::class.java) { store.recordUploadResult(record.id, true) }
+        assertEquals("{damaged original", index.readText())
+        assertTrue(store.imageFile(record).isFile)
+        index.writeBytes(original)
+        assertEquals(record, store.pendingForMap("alpha", "team-a").single())
+        store.recordUploadResult(record.id, true)
+    }
+
+    @Test fun unrelatedIndexWriteRetainsMetadataForTemporarilyMissingImage() {
+        val root = temporaryFolder.newFolder("missing-image")
+        val store = AndroidClueStore.forDirectory(root)
+        val missing = clueRecord("missing", "map:alpha").copy(destinationTeamId = "team-a", uploadState = "pending")
+        val other = clueRecord("other", "map:alpha").copy(destinationTeamId = "team-a", uploadState = "pending")
+        store.saveEncoded(missing, byteArrayOf(1), byteArrayOf(2))
+        store.saveEncoded(other, byteArrayOf(1), byteArrayOf(2))
+        store.imageFile(missing).delete()
+        val reopened = AndroidClueStore.forDirectory(root)
+        reopened.recordUploadResult(other.id, true)
+        assertEquals(missing, AndroidClueStore.forDirectory(root).record(missing.id))
+        store.imageFile(missing).writeBytes(byteArrayOf(1))
+        assertEquals(missing, AndroidClueStore.forDirectory(root).pendingForMap("alpha", "team-a").single())
+    }
+
+    @Test fun failedUploadResultWritePreservesPendingStateAndPhotoForRetry() {
+        val root = temporaryFolder.newFolder("failed-upload-result")
+        val record = clueRecord("retry", "map:alpha").copy(destinationTeamId = "team-a", uploadState = "pending")
+        val store = AndroidClueStore.forDirectory(root)
+        store.saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
+        val index = java.io.File(root, "clues.json").readBytes()
+        val blocked = java.io.File(root, "clues.json.partial")
+        assertTrue(blocked.mkdir())
+        java.io.File(blocked, "fault").writeText("keep directory nonempty")
+        org.junit.Assert.assertThrows(java.io.IOException::class.java) { store.recordUploadResult(record.id, true) }
+        assertEquals(record, store.record(record.id))
+        assertArrayEquals(index, java.io.File(root, "clues.json").readBytes())
+        assertTrue(store.imageFile(record).isFile)
+        assertEquals(record, AndroidClueStore.forDirectory(root).pendingForMap("alpha", "team-a").single())
+        blocked.deleteRecursively()
+        store.recordUploadResult(record.id, true)
+        assertTrue(AndroidClueStore.forDirectory(root).pendingForMap("alpha", "team-a").isEmpty())
+    }
+
     @Test
     fun mapAssignmentRefreshesPhotoEvenWhenUploadAlreadyFinished() {
         val root = temporaryFolder.newFolder("published-refresh")

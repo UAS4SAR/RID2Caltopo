@@ -56,8 +56,10 @@ class R2CApplication : Application() {
 
     private fun initializeOnWorker() {
         preloadStartupPreferences()
+        org.ncssar.rid2caltopo.video.anomaly.AnomalyPrefs.clearLegacySettings(this)
         AppConfigStore.initialize(this)
         CaltopoClient.PrepareSavedSettings()
+        org.ncssar.rid2caltopo.video.prepareOsmdroid(this)
         // Personal Login Support. A saved browser session keeps Session Cookies
         // until the operator changes the setting. The signing key is read here,
         // on this worker, only when Credentials is selected.

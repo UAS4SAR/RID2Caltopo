@@ -137,8 +137,8 @@ private func clue(_ aircraftID: String, at time: TimeInterval, file: String = "f
                        mapID: "", teamID: "", finished: true)
     try await journal.record(remoteID: "RID-2", label: "Other", observations: reviewFlight(id: "RID-2", start: start).points.map { $0.observation(remoteID: "RID-2") },
                        mapID: "", teamID: "", finished: false)
-    let target = try #require(journal.entries.first { $0.remoteID == "RID-1" })
-    let other = try #require(journal.entries.first { $0.remoteID == "RID-2" })
+    let target = try #require((await journal.entries).first { $0.remoteID == "RID-1" })
+    let other = try #require((await journal.entries).first { $0.remoteID == "RID-2" })
 
     // Archive files: the target's GeoJSON and KMZ, plus neighbours that must survive.
     let archive = root.appendingPathComponent("archive")
@@ -154,7 +154,7 @@ private func clue(_ aircraftID: String, at time: TimeInterval, file: String = "f
     var store = [clue("RID-1", at: start + 10, file: "a.jpg"), clue("RID-1", at: start + 754 + 25, file: "b.jpg"),
                  clue("RID-2", at: start + 10, file: "c.jpg"), clue("RID-1", at: start - 60, file: "d.jpg")]
     for record in store { try Data("jpg".utf8).write(to: root.appendingPathComponent(record.imageFilename)) }
-    let owned = AwaitingMapClueMatch.ownedClues(store, flight: target, otherFlights: journal.entries)
+    let owned = AwaitingMapClueMatch.ownedClues(store, flight: target, otherFlights: (await journal.entries))
     #expect(owned.map(\.imageFilename) == ["a.jpg", "b.jpg"])
 
     let result = await AwaitingMapFlightDiscarder.discard(
@@ -171,8 +171,8 @@ private func clue(_ aircraftID: String, at time: TimeInterval, file: String = "f
     #expect(result.entryRemoved)
     #expect(Set(result.deletedClueIDs) == Set(owned.map(\.id)))
     #expect(result.archive.deleted.sorted() == targetNames.map { "\(day.lastPathComponent)/\($0)" }.sorted())
-    #expect(journal.entries.map(\.id) == [other.id])
-    #expect((await AwaitingMapFlightJournal.loaded(fileURL: root.appendingPathComponent("pending.json"))).entries.map(\.id) == [other.id])
+    #expect((await journal.entries).map(\.id) == [other.id])
+    #expect(await (await AwaitingMapFlightJournal.loaded(fileURL: root.appendingPathComponent("pending.json"))).entries.map(\.id) == [other.id])
     #expect(store.map(\.imageFilename) == ["c.jpg", "d.jpg"])
     for name in ["a.jpg", "b.jpg"] { #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path)) }
     for name in ["c.jpg", "d.jpg"] { #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path)) }
@@ -186,10 +186,10 @@ private func clue(_ aircraftID: String, at time: TimeInterval, file: String = "f
     defer { try? FileManager.default.removeItem(at: root) }
     let journal = await AwaitingMapFlightJournal.loaded(fileURL: root.appendingPathComponent("pending.json"))
     try await journal.record(remoteID: "RID-1", label: "Target", observations: [reviewSample(1_000, 39, -121)], mapID: "", teamID: "", finished: false)
-    let target = try #require(journal.entries.first)
+    let target = try #require((await journal.entries).first)
     let result = await AwaitingMapFlightDiscarder.discard(flight: target, journal: journal, clueIDs: [UUID()],
         deleteClue: { _ in false }, deleteArchive: { .init() })
     #expect(!result.succeeded)
     #expect(!result.entryRemoved)
-    #expect(journal.entries.map(\.id) == [target.id])
+    #expect((await journal.entries).map(\.id) == [target.id])
 }

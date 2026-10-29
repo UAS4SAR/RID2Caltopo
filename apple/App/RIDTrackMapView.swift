@@ -1996,17 +1996,19 @@ struct RIDTrackMapView: View {
                     guard let latitude = telemetry.latitudeDegrees, let longitude = telemetry.longitudeDegrees else { return nil }
                     return ClueBindingFramePosition(latitude: latitude, longitude: longitude)
                 }
-                let binding = ClueBinder.bind(
+                let livePoints = await model.bindingPoints(aircraftID: defaultAircraftID, captureTimeMs: captureTimeMs)
+                let flightID = model.liveFlightID(aircraftID: defaultAircraftID)
+                let fallbackPoints = captureTrack.points
+                let binding = await Task.detached(priority: .utility) { ClueBinder.bind(
                     aircraftID: defaultAircraftID,
-                    flightID: model.liveFlightID(aircraftID: defaultAircraftID),
+                    flightID: flightID,
                     captureTimeMs: captureTimeMs,
                     captureTimeSource: snapshot.droneCapturedAtMs == nil ? "app-receive" : "stream-pts",
                     captureReceivedAtMs: captureReceivedMs,
-                    points: model.bindingPoints(aircraftID: defaultAircraftID, captureTimeMs: captureTimeMs)
-                        ?? captureTrack.points.map(ClueBindingPoint.init(trackPoint:)),
+                    points: livePoints ?? fallbackPoints.map(ClueBindingPoint.init(trackPoint:)),
                     framePosition: framePosition,
                     originIsWaypoint: framePosition == nil
-                )
+                ) }.value
                 // The frame's own drone position is the projection origin; without it, the bound waypoint.
                 let waypointOrigin = framePosition == nil ? binding.nearest : nil
                 let captureObservation = RidObservation(
@@ -2786,27 +2788,27 @@ private struct ClueSubmissionView: View {
     }
 
     /// Binding of the selected aircraft against the waypoints available right now.
-    private func currentBinding() -> ClueBinding {
-        let live = model.bindingPoints(aircraftID: selectedAircraftID, captureTimeMs: captureTimeMs)
-        if let current = binding, current.aircraftID == selectedAircraftID {
-            return ClueBinder.refresh(current, points: live ?? [])
-        }
-        let seiFrame = usesCaptureTelemetry ? pending.binding?.framePosition : nil
-        return ClueBinder.bind(
-            aircraftID: selectedAircraftID,
-            flightID: model.liveFlightID(aircraftID: selectedAircraftID),
-            captureTimeMs: captureTimeMs,
-            captureTimeSource: pending.binding?.captureTimeSource ?? "app-receive",
-            captureReceivedAtMs: ClueBindingPoint.milliseconds(pending.snapshot.capturedAt),
-            points: live ?? track?.points.map(ClueBindingPoint.init(trackPoint:)) ?? [],
-            framePosition: seiFrame,
-            originIsWaypoint: seiFrame == nil
-        )
+    private func currentBinding() async -> ClueBinding {
+        let aircraftID = selectedAircraftID, capture = captureTimeMs
+        let existing = binding, original = pending.binding
+        let useCapture = usesCaptureTelemetry
+        let fallback = track?.points ?? []
+        let received = ClueBindingPoint.milliseconds(pending.snapshot.capturedAt)
+        let flightID = model.liveFlightID(aircraftID: aircraftID)
+        let live = await model.bindingPoints(aircraftID: aircraftID, captureTimeMs: capture)
+        return await Task.detached(priority: .utility) {
+            if let existing, existing.aircraftID == aircraftID { return ClueBinder.refresh(existing, points: live ?? []) }
+            let frame = useCapture ? original?.framePosition : nil
+            return ClueBinder.bind(aircraftID: aircraftID, flightID: flightID, captureTimeMs: capture,
+                captureTimeSource: original?.captureTimeSource ?? "app-receive", captureReceivedAtMs: received,
+                points: live ?? fallback.map(ClueBindingPoint.init(trackPoint:)), framePosition: frame, originIsWaypoint: frame == nil)
+        }.value
     }
 
-    /// Re-binds while the form is open so the form shows the nearest waypoint so far.
-    private func refreshBinding() {
-        let next = currentBinding()
+    private func refreshBinding() async {
+        let aircraftID = selectedAircraftID
+        let next = await currentBinding()
+        guard !Task.isCancelled, aircraftID == selectedAircraftID else { return }
         if next != binding { binding = next }
     }
 
@@ -2995,7 +2997,7 @@ private struct ClueSubmissionView: View {
                     }
                     Button("Close", action: onCancel)
                     Button {
-                        submit(publish: true)
+                        Task { await submit(publish: true) }
                     } label: {
                         Label("Submit", systemImage: "icloud.and.arrow.up")
                             .frame(maxWidth: .infinity)
@@ -3003,7 +3005,7 @@ private struct ClueSubmissionView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(projectionHeight == nil)
                     Button("Mark Local Only", systemImage: "mappin.and.ellipse") {
-                        submit(publish: false)
+                        Task { await submit(publish: false) }
                     }
                     .disabled(projectionHeight == nil)
                 } footer: {
@@ -3059,16 +3061,15 @@ private struct ClueSubmissionView: View {
                 )
                 .interactiveDismissDisabled()
             }
-            .task {
+            .task(id: selectedAircraftID) {
                 // Waypoints keep arriving after the capture: follow them while the form is open.
                 while !Task.isCancelled {
-                    refreshBinding()
+                    await refreshBinding()
                     try? await Task.sleep(for: .milliseconds(500))
                 }
             }
             .onChange(of: selectedAircraftID) {
                 if usesCaptureTelemetry { binding = pending.binding }
-                refreshBinding()
                 let selection = usesCaptureTelemetry
                     ? pending.heading
                     : OperationalClueGeometry.selectedHeading(
@@ -3117,7 +3118,8 @@ private struct ClueSubmissionView: View {
         }
     }
 
-    private func submit(publish: Bool) {
+    private func submit(publish: Bool) async {
+        guard !submitting else { return }
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         AppleLog.info(
             "Clue",
@@ -3164,7 +3166,11 @@ private struct ClueSubmissionView: View {
         submissionFeedback = nil
         // Bind once more to the nearest waypoint available now; this binding is final and the
         // upload starts immediately. A waypoint-origin clue follows a nearer origin by translation.
-        let submittedBinding = currentBinding()
+        submitting = true
+        defer { submitting = false }
+        let submittedAircraftID = selectedAircraftID
+        let submittedBinding = await currentBinding()
+        guard !Task.isCancelled, submittedAircraftID == selectedAircraftID else { return }
         var observation = shownObservation
         var projection = shownProjection
         if let shift = ClueBinder.originShift(shown: binding, submitted: submittedBinding) {
@@ -3213,15 +3219,11 @@ private struct ClueSubmissionView: View {
         )
         let data = pending.snapshot.jpegData
         let coordinates = pending.showCrosshairCoordinates ? OperationalCoordinateFormatter.format(latitude: projection.latitude, longitude: projection.longitude, as: coordinateDisplayFormat) : nil
-        guard !submitting else { return }
-        submitting = true
-        Task {
-            let stamped = await Task.detached(priority: .userInitiated) {
+        let stamped = await Task.detached(priority: .userInitiated) {
                 UIImage(data: data).flatMap { stampClueCrosshair($0, coordinates: coordinates).jpegData(compressionQuality: 0.9) } ?? data
             }.value
-            _ = await onSubmit(draft, stamped, upload)
-            submitting = false
-        }
+        guard !Task.isCancelled, submittedAircraftID == selectedAircraftID else { return }
+        _ = await onSubmit(draft, stamped, upload)
     }
 
     private func coordinate(_ latitude: Double, _ longitude: Double) -> String {

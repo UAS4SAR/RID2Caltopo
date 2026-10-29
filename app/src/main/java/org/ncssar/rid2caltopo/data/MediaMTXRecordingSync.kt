@@ -34,10 +34,11 @@ object MediaMTXRecordingSync {
     @JvmOverloads
     @Synchronized
     fun syncAll(context: Context, streamPath: String? = null, completedFilePath: String? = null) {
-        val stagingRoot = getRecordingStagingDir(context)
-        if (!stagingRoot.exists()) return
-
         try {
+            // Preparation can fail while recovering Archive Dir. This also runs during
+            // service teardown, where an uncaught worker exception kills the whole app.
+            val stagingRoot = getRecordingStagingDir(context)
+            if (!stagingRoot.exists()) return
             check(completedFilePath == null || !streamPath.isNullOrBlank()) { "Recording completion is missing its stream path" }
             if (streamPath.isNullOrBlank()) {
                 syncDirectoryTree(context, stagingRoot, "")

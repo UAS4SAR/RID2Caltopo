@@ -1,0 +1,7 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <profileable android:shell="true" />
+        <provider android:name=".qualification.QualificationPolicyProvider"
+            android:authorities="${applicationId}.qualification-policy" android:exported="false" android:initOrder="1000" />
+    </application>
+</manifest>

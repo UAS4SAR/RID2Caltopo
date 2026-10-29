@@ -2,7 +2,7 @@
 """Generate an isolated XCUITest project from the app's current project.
 
 Usage: run-settings-units-ui.py OUTPUT_DIR [SettingsUnits|MainMenu|MapCache]
-Run the generated scheme on a dedicated Simulator; this never accepts terms.
+Run on a dedicated Simulator. StartupRecovery accepts terms only in its disposable fixture.
 """
 import json
 import pathlib
@@ -13,8 +13,8 @@ import sys
 apple = pathlib.Path(__file__).resolve().parents[1]
 out = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else '/tmp/r2c-settings-ui')
 suite = sys.argv[2] if len(sys.argv) > 2 else 'SettingsUnits'
-if suite not in ('SettingsUnits', 'MainMenu', 'MapCache'):
-    raise SystemExit('Supported suites: SettingsUnits, MainMenu, MapCache')
+if suite not in ('SettingsUnits', 'MainMenu', 'MapCache', 'StartupRecovery'):
+    raise SystemExit('Supported suites: SettingsUnits, MainMenu, MapCache, StartupRecovery')
 project = out / f'{suite}.xcodeproj'
 project.mkdir(parents=True, exist_ok=True)
 p = json.loads(subprocess.check_output(['plutil', '-convert', 'json', '-o', '-', str(apple / 'RID2CaltopoApple.xcodeproj/project.pbxproj')]))
@@ -43,10 +43,13 @@ o[root['productRefGroup']]['children'].append(product)
 for obj in o.values():
     if obj.get('isa') == 'XCLocalSwiftPackageReference': obj['relativePath'] = str(apple)
 (project / 'project.pbxproj').write_bytes(plistlib.dumps(p))
+configuration = 'Release' if suite == 'StartupRecovery' else 'Debug'
 scheme = project / 'xcshareddata/xcschemes'
 scheme.mkdir(parents=True, exist_ok=True)
 def reference(t, name, product_name):
     return f'<BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="{t}" BuildableName="{product_name}" BlueprintName="{name}" ReferencedContainer="container:{project}"/>'
+test_debugger = "" if suite == "StartupRecovery" else "Xcode.DebuggerFoundation.Debugger.LLDB"
+test_launcher = "Xcode.IDEFoundation.Launcher.PosixSpawn" if suite == "StartupRecovery" else "Xcode.IDEFoundation.Launcher.LLDB"
 app_ref = reference(app_target, 'RID2CaltopoApple', 'RID2CaltopoApple.app')
 test_ref = reference(target, f'{suite}UITests', f'{suite}UITests.xctest')
 (scheme / f'{suite}.xcscheme').write_text(f'''<?xml version="1.0" encoding="UTF-8"?>
@@ -55,7 +58,7 @@ test_ref = reference(target, f'{suite}UITests', f'{suite}UITests.xctest')
 <BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES">{app_ref}</BuildActionEntry>
 <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="NO">{test_ref}</BuildActionEntry>
 </BuildActionEntries></BuildAction>
-<TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES"><Testables><TestableReference skipped="NO" parallelizable="NO">{test_ref}</TestableReference></Testables></TestAction>
+<TestAction buildConfiguration="{configuration}" selectedDebuggerIdentifier="{test_debugger}" selectedLauncherIdentifier="{test_launcher}" shouldUseLaunchSchemeArgsEnv="YES"><Testables><TestableReference skipped="NO" parallelizable="NO">{test_ref}</TestableReference></Testables></TestAction>
 <LaunchAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB"><BuildableProductRunnable runnableDebuggingMode="0">{app_ref}</BuildableProductRunnable></LaunchAction>
 </Scheme>''')
 print(project)

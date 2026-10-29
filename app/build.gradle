@@ -49,7 +49,7 @@ def generateDjiProvisioningAssets = tasks.register("generateDjiProvisioningAsset
 tasks.named("preBuild").configure { dependsOn(generateDjiProvisioningAssets) }
 def versionMajor = 2
 def versionMinor = 5
-def versionPatch = 4
+def versionPatch = 5
 def appVersionName = "${versionMajor}.${versionMinor}.${versionPatch}"
 def canonicalReleaseNotesFile = rootProject.file("release-notes/${appVersionName}/whats_new.txt")
 def runProcess = { File workingDirectory, List command, Map environmentOverrides = [:], boolean ignoreExitValue = false ->
@@ -257,7 +257,7 @@ android {
         applicationId "org.ncssar.rid2caltopo"
         minSdk = 29
         targetSdk = 36
-        versionCode = 431
+        versionCode = 432
         versionName appVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
@@ -267,7 +267,7 @@ android {
         resValue "string", "app_version", "${appVersionName}"
 
         android.buildFeatures.buildConfig = true
-        buildConfigField "String", "VERSION_RELEASE_DATE", "\"2026-10-19\""
+        buildConfigField "String", "VERSION_RELEASE_DATE", "\"2026-10-28\""
         buildConfigField "String", "BUILD_VERSION", "\"${appVersionName}\""
         buildConfigField "int", "TRACKER_FUNCTIONALITY_RELEASE", "148"
         def buildTime = new Date()
@@ -329,6 +329,13 @@ android {
             // field/debug installs representative; opt in only for coverage runs.
             enableAndroidTestCoverage = providers.gradleProperty("enableDeviceCoverage")
                     .map { it.toBoolean() }.getOrElse(false)
+        }
+        benchmark {
+            initWith(release)
+            signingConfig = signingConfigs.debug
+            matchingFallbacks = ['release']
+            debuggable = false
+            firebaseCrashlytics { mappingFileUploadEnabled = false; nativeSymbolUploadEnabled = false }
         }
     }
 
@@ -428,6 +435,7 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation("org.json:json:20231013")
+    androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
@@ -628,9 +636,13 @@ tasks.register("verifyDjiReleaseProvisioning", Exec) {
 tasks.register("releaseVerification") {
     group = "verification"
     description = "Runs all verification required before producing release artifacts."
-    // connectedDebugAndroidTest requires a reachable adb device/emulator. Keep it
-    // out of the default release gate until device-level tests are intentional.
+    // Execute recovery and startup coverage on an owned emulator. Never use a
+    // managed runner against a populated physical device.
     dependsOn(
+            "assembleDebugAndroidTest",
+            "emulatorRecoveryQualification",
+            "verifyReleaseVersions",
+            "verifyQualificationHarness",
             "thirdPartyRuntimeVerification",
             "verifyReleaseWebRtcPackaging",
             "testDebugUnitTest",
@@ -641,6 +653,43 @@ tasks.register("releaseVerification") {
             "verifyDjiReleaseProvisioning"
     )
     // dependsOn("connectedDebugAndroidTest")
+}
+
+tasks.register("verifyReleaseVersions", Exec) {
+    workingDir(rootDir)
+    commandLine "python3", "tools/qualification/check_release_versions.py"
+}
+
+tasks.register("verifyQualificationHarness", Exec) {
+    workingDir(rootDir)
+    commandLine "python3", "-m", "unittest", "discover", "-s", "tools/qualification", "-p", "test_*.py"
+}
+
+tasks.register("emulatorRecoveryQualification") {
+    group = "verification"
+    description = "Runs storage faults and release-mode startup budgets on an isolated emulator."
+    dependsOn("assembleDebug", "assembleDebugAndroidTest", "assembleBenchmark", ":startup-benchmark:assembleBenchmark")
+    outputs.upToDateWhen { false }
+    // Measure after other scheduled release/JVM/native work, rather than letting
+    // compilation or compression contend with the emulator's frame timings.
+    mustRunAfter("minifyReleaseWithR8", "packageRelease", "signReleaseBundle",
+        "testDebugUnitTest", "trackerCoordinationTests", "colorRealtimeQualification",
+        "personRelevanceQualification", "thirdPartyRuntimeVerification", "verifyReleaseWebRtcPackaging")
+    doLast {
+        def sdk = androidSdkDir()
+        runProcess(rootDir, ["python3", "tools/qualification/run_android_release_qualification.py",
+            "--adb", new File(sdk, "platform-tools/adb").absolutePath,
+            "--emulator", new File(sdk, "emulator/emulator").absolutePath,
+            "--avd", providers.gradleProperty("qualificationAvd").getOrElse("R2C_Units_Qualification"),
+            "--app", file("build/outputs/apk/debug/app-debug.apk").absolutePath,
+            "--tests", file("build/outputs/apk/androidTest/debug/app-debug-androidTest.apk").absolutePath,
+            "--java", new File(System.getProperty("java.home"), "bin/java").absolutePath,
+            "--r8-jar", rootProject.buildscript.configurations.classpath.resolvedConfiguration.resolvedArtifacts.find { it.moduleVersion.id.group == "com.android.tools.build" && it.name == "builder" }.file.absolutePath,
+            "--mapping", file("build/outputs/mapping/benchmark/mapping.txt").absolutePath,
+            "--benchmark-app", file("build/outputs/apk/benchmark/app-benchmark.apk").absolutePath,
+            "--benchmark-tests", rootProject.file("startup-benchmark/build/outputs/apk/benchmark/startup-benchmark-benchmark.apk").absolutePath,
+            "--output", file("build/reports/emulator-release-qualification").absolutePath])
+    }
 }
 
 tasks.register("verifyReleaseWebRtcPackaging") {

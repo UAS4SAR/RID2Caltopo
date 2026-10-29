@@ -2,7 +2,7 @@
 
 RID2Caltopo needs a per-pilot CalTopo credential so a responder can use a restricted Workspace they were invited to. A team service account cannot. The current personal login borrows session cookies from an embedded browser. CalTopo tolerates that and may turn it off. On 28 October 2026 Matt said the Desktop account-activation flow is the right fit for now, with UAS4SAR owning investigation, maintenance, and support, and with no new CalTopo API, docs, or support.
 
-This note records what was checked against the live service on 29 October 2026, how the prototype uses that flow, and what still has to be tested with a real CalTopo account. The cookie login is still the default and is not removed.
+This note records what was checked against the live service on 29 October 2026, how the prototype uses that flow, and what still has to be tested with a real CalTopo account. Credentials is the default for a new personal login. Existing cookie logins keep Session Cookies until the operator changes the setting.
 
 ## What the public record says
 

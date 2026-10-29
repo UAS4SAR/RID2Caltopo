@@ -167,6 +167,8 @@ python3 "$repo_root/tools/mapping/native/test_jni_host.py" --fixture "$script_di
 "${NODE:-node}" "$repo_root/tools/mapping/tests/test_surface_boundary.cjs"
 "${NODE:-node}" "$repo_root/tools/mapping/tests/test_surface_scale.cjs"
 swift test --package-path "$script_dir"
+python3 "$repo_root/tools/qualification/check_release_versions.py"
+python3 "$repo_root/tools/qualification/run_apple_startup_qualification.py" --output "$work_dir/startup-recovery"
 
 echo "[7/10] Clean universal Simulator link"
 xcodebuild -quiet \

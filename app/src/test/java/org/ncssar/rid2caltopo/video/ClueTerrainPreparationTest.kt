@@ -1,0 +1,86 @@
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import org.junit.Assert.*
+import org.junit.Test
+import org.ncssar.rid2caltopo.data.CtDroneSpec
+import org.ncssar.rid2caltopo.video.mapcache.DemElevationSample
+
+class ClueTerrainPreparationTest {
+    private fun captured() = PendingClue(
+        droneSpec = CtDroneSpec("RID-CAPTURE"), designator = "camera",
+        droneLat = 39.001, droneLng = -121.0, droneAlt = 580.7,
+        lat = 39.001, lng = -120.9995, alt = 560.8,
+        headingDeg = 90.0, headingSourceLabel = "DJI camera azimuth",
+        aglMeters = 19.9, atoMeters = 19.9, projectionHeightMeters = 19.9,
+        terrainReferenceLatitude = 39.0, terrainReferenceLongitude = -121.0,
+        seiRelativeUpMeters = 19.9, gimbalAngleDeg = -26.2,
+        timestamp = 1_000L, bitmap = null, preview = null, title = "cows", description = "capture",
+    )
+
+    @Test fun saveWaitsForTerrainAndKeepsTheCapturedInputs() = runBlocking {
+        val clue = captured()
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        var published = false
+        val save = async {
+            val prepared = prepareClueTerrainForSave(clue) { lat, _ ->
+                entered.complete(Unit)
+                release.await()
+                DemElevationSample(if (lat == 39.0) 100.0 else 90.0, false, "usgs-geotiff-local-1m", 1.0)
+            }
+            assertTrue(prepared.terrainProjectionApplied)
+            assertEquals(1_000L, prepared.timestamp)
+            assertEquals(clue.droneLat, prepared.droneLat, 0.0)
+            assertEquals(clue.droneLng, prepared.droneLng, 0.0)
+            assertEquals("cows", prepared.title)
+            // Falling terrain puts the intersection beyond the provisional 40 m range.
+            assertTrue((prepared.lng - clue.droneLng) * 86_000 > 59.0)
+            assertEquals(90.0, prepared.alt, 0.01)
+            published = true
+        }
+        withTimeout(2_000) { entered.await() }
+        assertFalse(published)
+        assertFalse(save.isCompleted)
+        // Incoming live telemetry cannot alter a photograph already accepted for save.
+        clue.droneSpec.lastLat = 40.0
+        release.complete(Unit)
+        save.await()
+        assertTrue(published)
+    }
+
+    @Test fun missingTerrainCannotPublishTheFlatGroundFallback() = runBlocking {
+        var published = false
+        try {
+            prepareClueTerrainForSave(captured()) { _, _ -> null }
+            published = true
+            fail("Expected terrain-unavailable result")
+        } catch (_: ClueTerrainUnavailable) { }
+        assertFalse(published)
+    }
+
+    @Test fun slowProviderTimesOutWithoutPublishingOrUsingLaterTelemetry() = runBlocking {
+        try {
+            prepareClueTerrainForSave(captured(), timeoutMillis = 30) { _, _ -> awaitCancellation() }
+            fail("Expected a bounded terrain timeout")
+        } catch (error: ClueTerrainUnavailable) {
+            assertTrue(error.message!!.contains("timed out"))
+        }
+    }
+
+    @Test fun completedFreshProjectionIsNotRestartedAtSave() = runBlocking {
+        val clue = captured().copy(terrainProjectionApplied = true, demSource = "local", demSampleStale = false)
+        val prepared = prepareClueTerrainForSave(clue) { _, _ -> error("Completed terrain was needlessly resampled") }
+        assertSame(clue, prepared)
+    }
+
+    @Test fun staleTerrainDoesNotQualifyAsACompletedProjection() = runBlocking {
+        val clue = captured().copy(terrainProjectionApplied = true, demSampleStale = true)
+        try {
+            prepareClueTerrainForSave(clue) { _, _ -> null }
+            fail("Stale or unavailable terrain must not be published")
+        } catch (_: ClueTerrainUnavailable) { }
+    }
+}

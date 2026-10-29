@@ -58,7 +58,7 @@ class AndroidClueStore private constructor(
     private var loaded = false
     private val records: LinkedHashMap<String, AndroidClueRecord>
         get() {
-            if (!loaded) try { loadIndex() } catch (error: Exception) { if (context == null) throw error }
+            if (!loaded) loadIndex()
             return storedRecords
         }
 
@@ -219,7 +219,12 @@ class AndroidClueStore private constructor(
     fun recordUploadResult(id: String, success: Boolean, error: String = "", terminal: Boolean = false) {
         val record = records[id] ?: return
         records[id] = record.copy(uploadState = if (success) "published" else if (terminal) "failed" else "pending", lastUploadError = error)
-        persistIndex()
+        try {
+            persistIndex()
+        } catch (failure: Exception) {
+            records[id] = record
+            throw failure
+        }
     }
 
     fun imageFile(record: AndroidClueRecord): File = File(root, record.imageFilename)
@@ -241,17 +246,26 @@ class AndroidClueStore private constructor(
 
     @Synchronized
     private fun loadIndex() {
+        loaded = false
         selectRoot()
         org.ncssar.rid2caltopo.storage.OperationalStorage.requireFor(root)
-        loaded = true
-        storedRecords.clear()
-        val text = runCatching { indexFile.readText() }.getOrNull() ?: return
-        val array = runCatching { JSONArray(text) }.getOrNull() ?: return
-        for (index in 0 until array.length()) {
-            val json = array.optJSONObject(index) ?: continue
-            val record = json.toAndroidClueRecord() ?: continue
-            if (imageFile(record).isFile) storedRecords[record.id] = record
+        val prepared = LinkedHashMap<String, AndroidClueRecord>()
+        if (indexFile.exists()) {
+            try {
+                val array = JSONArray(indexFile.readText())
+                for (index in 0 until array.length()) {
+                    val json = array.optJSONObject(index) ?: throw java.io.IOException("Invalid clue index entry")
+                    val record = json.toAndroidClueRecord() ?: throw java.io.IOException("Unreadable clue index entry")
+                    // Missing media can be temporary. Never discard its retained metadata.
+                    prepared[record.id] = record
+                }
+            } catch (error: Exception) {
+                throw java.io.IOException("Clue index unavailable; original index and photos preserved", error)
+            }
         }
+        storedRecords.clear()
+        storedRecords.putAll(prepared)
+        loaded = true
     }
 
     private fun selectRoot() {
@@ -265,7 +279,6 @@ class AndroidClueStore private constructor(
 
     @Synchronized
     private fun persistIndex() {
-        records.entries.removeAll { !imageFile(it.value).isFile }
         root.mkdirs()
         val array = JSONArray()
         records.values.forEach { array.put(it.toJson()) }

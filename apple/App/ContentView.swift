@@ -98,6 +98,10 @@ private struct TrackerReauthenticationPromptModifier: ViewModifier {
 }
 
 struct ContentView: View {
+    init(mappingSnapshot: AircraftMappingSnapshot) {
+        _droneConfirmations = StateObject(wrappedValue: AppleDroneConfirmationStore(snapshot: mappingSnapshot))
+    }
+
     @AppStorage("video.remoteControlEnabled") private var remoteVideoControlEnabled = false
     @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     private let endpoint = MediaStreamEndpoint(designator: "demo")
@@ -115,13 +119,14 @@ struct ContentView: View {
     @StateObject private var ridTracks = RIDTrackViewModel()
     @StateObject private var mapViewportMemory = AppleMapViewportMemory()
     @StateObject private var locationProvider = AppleLocationProvider()
+    @ObservedObject private var credentialMutations = CredentialMutationGate.shared
     @StateObject private var caltopoSettings = AppleCaltopoSettings()
     @ObservedObject private var personalLogin = PersonalProbeModel.shared
     @State private var showingFlightAllowance = false
     @State private var showingBluetoothDisabled = false
     @StateObject private var clueStore = AppleClueStore()
     @StateObject private var diagnostics = AppleDiagnosticsCenter()
-    @StateObject private var droneConfirmations = AppleDroneConfirmationStore()
+    @StateObject private var droneConfirmations: AppleDroneConfirmationStore
     @StateObject private var orgConfigSettings = AppleOrgConfigSettings()
     @StateObject private var orgConfigImporter = AppleOrgConfigImporter()
     @StateObject private var deviceReconciliation = AppleTrackerDeviceReconciliation()
@@ -726,7 +731,7 @@ struct ContentView: View {
                     sourceID: "bluetooth"
                 )
                 ridTracks.attachClueStore(clueStore)
-                _ = orgConfigImporter.restoreActiveProfile(
+                _ = await orgConfigImporter.restoreActiveProfile(
                     caltopoSettings: caltopoSettings,
                     orgSettings: orgConfigSettings
                 )
@@ -986,6 +991,7 @@ struct ContentView: View {
                 guard !ProcessInfo.processInfo.arguments.contains("--demo-notam") else { return }
                 Task { @MainActor in
                     await Task.yield()
+                    guard !credentialMutations.isBusy else { return }
                     notams.configure(
                         faaProxyURL: orgConfigSettings.faaProxyURL,
                         trackerURLPrefix: orgConfigSettings.trackerURLPrefix,
@@ -1033,10 +1039,12 @@ struct ContentView: View {
                 configurePeerCoordinator(forceReconnect: true)
                 Task { await refreshManagedOrganizationConfiguration(force: true) }
             } else if url.host == "erase" {
-                droneConfirmations.resetPersistedState()
-                caltopoSettings.resetPersistedState()
-                orgConfigSettings.resetPersistedState()
-                configurePeerCoordinator()
+                Task {
+                    droneConfirmations.resetPersistedState()
+                    await caltopoSettings.resetPersistedState()
+                    await orgConfigSettings.resetPersistedState()
+                    configurePeerCoordinator()
+                }
             }
             return
         }
@@ -1177,6 +1185,19 @@ struct ContentView: View {
 
     private var monitoredRoot: some View {
         AnyView(lifecycleEventRoot)
+            .safeAreaInset(edge: .top) {
+                if let message = droneConfirmations.mappingRecoveryMessage {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Aircraft mappings need review").font(.headline)
+                            Spacer()
+                            Button("Dismiss") { droneConfirmations.mappingRecoveryMessage = nil }
+                                .accessibilityLabel("Dismiss mapping warning")
+                        }
+                        Text(message).font(.footnote)
+                    }.padding().background(.yellow.opacity(0.15))
+                }
+            }
             .task {
                 // After a notice-version change, show the new notice once, over proximity settings.
                 // monitoredRoot exists only after terms and organization access checks pass.
@@ -1192,6 +1213,7 @@ struct ContentView: View {
                 peerCoordinator.updateCaltopoRTT(milliseconds: milliseconds)
             }
             .onChange(of: peerConfigurationFingerprint) { _, _ in
+                guard !credentialMutations.isBusy else { return }
                 configurePeerCoordinator()
                 configureTrackArchive()
                 ridTracks.configureCaltopo(
@@ -1227,8 +1249,9 @@ struct ContentView: View {
             ) { _, generation in
                 guard generation > 0, peerCoordinator.reauthenticationURL != nil else { return }
                 deviceReconciliation.markPending()
+                Task {
                 let managedCaltopoCleared =
-                    caltopoSettings.quarantineTrackerManagedCredentials()
+                    await caltopoSettings.quarantineTrackerManagedCredentials()
                 if managedCaltopoCleared {
                     ridTracks.configureCaltopo(
                         caltopoSettings.configuration,
@@ -1244,6 +1267,7 @@ struct ContentView: View {
                 if let url = peerCoordinator.reauthenticationURL {
                     trackerReauthenticationURL = url
                     showTrackerReauthenticationPrompt = !showImportConfig
+                }
                 }
             }
             .onChange(of: peerCoordinator.heartbeatAcknowledgedAtMilliseconds) { _, _ in
@@ -1264,6 +1288,7 @@ struct ContentView: View {
             .onReceive(droneConfirmations.objectWillChange) { _ in
                 Task { @MainActor in
                     await Task.yield()
+                    guard !credentialMutations.isBusy else { return }
                     updateProximityAlerts()
                     configureTrackArchive()
                     reconcileStreamFlightPairings()
@@ -1308,6 +1333,17 @@ struct ContentView: View {
             // Bound from body, not monitoredRoot: the access gate replaces
             // monitoredRoot while the app is inactive or in background.
             .task { startAlertCoordinator() }
+            .onChange(of: credentialMutations.isBusy) { _, busy in
+                guard !busy else { return }
+                // Publish the completed configuration together. Observers skip
+                // intermediate fields while a durable credential edit is active.
+                applyCaltopoConfiguration(caltopoSettings.configuration)
+                notams.configure(faaProxyURL: orgConfigSettings.faaProxyURL,
+                    trackerURLPrefix: orgConfigSettings.trackerURLPrefix,
+                    trackerAPIKey: orgConfigSettings.trackerAPIKey)
+                reconcileStreamFlightPairings()
+                reconcileOrganizationAuthentication()
+            }
             .modifier(TrackerDeviceReconciliationModifier(
                 model: deviceReconciliation,
                 signInRequired: handleDeviceReconciliationSignIn,
@@ -1590,6 +1626,7 @@ struct ContentView: View {
     }
 
     private func reconcileOrganizationAuthentication() {
+        guard !credentialMutations.isBusy else { return }
         guard personalLogin.loginProtectionChecked else { return }
         guard organizationAuthenticationRequired,
               !organizationAuthenticationBypassedForTesting
@@ -1702,7 +1739,11 @@ struct ContentView: View {
     }
 
     private func handleDeviceReconciliationSignIn(_ url: URL) {
-        if caltopoSettings.quarantineTrackerManagedCredentials() {
+        Task { await handleDeviceReconciliationSignInAsync(url) }
+    }
+
+    private func handleDeviceReconciliationSignInAsync(_ url: URL) async {
+        if await caltopoSettings.quarantineTrackerManagedCredentials() {
             ridTracks.configureCaltopo(
                 caltopoSettings.configuration,
                 trackFolderName: orgConfigSettings.trackFolder
@@ -2545,6 +2586,10 @@ struct ContentView: View {
     }
 
     private func activateCredentialProfile(_ profileID: String) {
+        Task { await activateCredentialProfileOnWorker(profileID) }
+    }
+
+    private func activateCredentialProfileOnWorker(_ profileID: String) async {
         showTeamMaps = false
         if profileID == "personal" {
             applyCaltopoConfiguration(caltopoSettings.disconnectMap())
@@ -2558,7 +2603,7 @@ struct ContentView: View {
             applyCaltopoConfiguration(caltopoSettings.disconnectMap())
             caltopoSettings.usesPersonalCredentials = false
         }
-        guard orgConfigImporter.activateProfile(
+        guard await orgConfigImporter.activateProfile(
             profileID,
             caltopoSettings: caltopoSettings,
             orgSettings: orgConfigSettings
@@ -2579,7 +2624,7 @@ struct ContentView: View {
             }
         }
         guard !Task.isCancelled else { return }
-        if orgConfigImporter.removeExpiredProfiles(
+        if await orgConfigImporter.removeExpiredProfiles(
             caltopoSettings: caltopoSettings,
             orgSettings: orgConfigSettings
         ) {
@@ -2606,6 +2651,7 @@ struct ContentView: View {
     }
 
     private func applyCaltopoConfiguration(_ configuration: AppleCaltopoConfiguration) {
+        guard !credentialMutations.isBusy else { return }
         ridTracks.configureCaltopo(
             configuration,
             trackFolderName: orgConfigSettings.trackFolder
@@ -2791,18 +2837,19 @@ struct ContentView: View {
     }
 
     private func configurePeerCoordinator(forceReconnect: Bool = false) {
+        guard !credentialMutations.isBusy else { return }
         guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
         let arguments = ProcessInfo.processInfo.arguments
         peerCoordinator.configureOrganizationConfig(
             snapshotProvider: {
-                try AppleManagedOrganizationConfig.snapshot(
+                try await AppleManagedOrganizationConfig.snapshot(
                     caltopo: caltopoSettings,
                     organization: orgConfigSettings,
                     identities: droneConfirmations
                 )
             },
             applyHandler: { snapshot, versionMs in
-                try AppleManagedOrganizationConfig.apply(
+                try await AppleManagedOrganizationConfig.apply(
                     snapshot: snapshot,
                     versionMs: versionMs,
                     caltopo: caltopoSettings,
@@ -2869,6 +2916,7 @@ struct ContentView: View {
     }
 
     private func configureTrackArchive() {
+        guard !credentialMutations.isBusy else { return }
         droneConfirmations.setPeerConfirmationMapID(caltopoSettings.mapID)
         ridTracks.configureTrackArchive(
             trackerURLPrefix: argumentValue("--tracker-url") ?? orgConfigSettings.trackerURLPrefix,
@@ -3302,7 +3350,7 @@ struct ContentView: View {
 }
 
 #Preview {
-    ContentView()
+    ContentView(mappingSnapshot: AircraftMappingSnapshot(records: []))
 }
 private struct RecordingDownloadApprovalModifier: ViewModifier {
     @ObservedObject var coordinator: AppleTrackerCoordinator
@@ -3422,18 +3470,39 @@ private struct AwaitingMapPublicationPanel: View {
     @State private var destinationMap = ""
     @State private var destinationTeam = ""
     @State private var destinationTitle = ""
-    private var reminderFlightIDs: [String] {
-        guard settings.mapID.isEmpty else { return [] }
-        return tracks.awaitingMapFlights.filter { !$0.finished && $0.mapID.isEmpty }.map(\.id).sorted()
+    @State private var prepared = AwaitingMapPreparedReview.empty
+    @State private var worker = AwaitingMapReviewWorker()
+    private struct ReviewRequest: Equatable {
+        let flights: Int, clues: Int, ic: Int
+        let latitude: Double?, longitude: Double?
+        let map: String
+    }
+    private var request: ReviewRequest {
+        .init(flights: tracks.awaitingMapRevision, clues: clues.reviewRevision, ic: tracks.incidentCommandRevision,
+              latitude: currentFix?.coordinate.latitude, longitude: currentFix?.coordinate.longitude, map: settings.mapID)
     }
     var body: some View {
-        if !tracks.awaitingMapFlights.isEmpty {
+        if let error = tracks.awaitingMapHistoryError {
+            VStack(alignment: .leading) {
+                Text(error).foregroundStyle(.red)
+                Button("Retry flight history") { Task { await tracks.retryAwaitingMapHistory() } }
+            }
+        } else if !tracks.awaitingMapFlights.isEmpty {
             Button("\(tracks.awaitingMapFlights.count) flight(s) awaiting publication — Review") { reviewing = true }
                 .font(.caption).padding(4).background(.regularMaterial)
-                .task(id: reminderFlightIDs) {
-                    if reminder.shouldPresent(eligibleFlightIDs: Set(reminderFlightIDs), hasMap: !settings.mapID.isEmpty) {
-                        reviewing = true
-                    }
+                .task(id: request) {
+                    let flights = tracks.awaitingMapFlights, allFlights = tracks.awaitingMapJournalEntries
+                    let records = clues.records, ic = tracks.incidentCommandLocations
+                    let fix = currentFix?.coordinate
+                    do {
+                        let next = try await worker.prepare(flights: flights, allFlights: allFlights, clues: records,
+                            icLocations: ic, latitude: fix?.latitude, longitude: fix?.longitude,
+                            hasMap: !settings.mapID.isEmpty, reminder: reminder)
+                        try Task.checkCancellation()
+                        prepared = next; reminder = next.reminder
+                        if next.shouldRemind { reviewing = true }
+                    } catch is CancellationError { }
+                    catch { AppleLog.warning("AwaitingMap", "Review preparation failed: \(error)") }
                 }
                 .sheet(isPresented: $reviewing, onDismiss: {
                     // Open the incident-map picker only after this sheet has gone away.
@@ -3496,12 +3565,6 @@ private struct AwaitingMapPublicationPanel: View {
         }
     }
 
-    private var sortedFlights: [AwaitingMapFlight] {
-        tracks.awaitingMapFlights.sorted { a, b in
-            a.suggested(icLocations: tracks.incidentCommandLocations) && !b.suggested(icLocations: tracks.incidentCommandLocations)
-        }
-    }
-
     /// A usable fix, or nil when Core Location has none (negative accuracy means invalid).
     private var currentFix: CLLocation? {
         guard let fix = location.lastLocation, fix.horizontalAccuracy >= 0 else { return nil }
@@ -3515,11 +3578,7 @@ private struct AwaitingMapPublicationPanel: View {
     }
 
     private func cluePhotoCount(_ flight: AwaitingMapFlight) -> Int {
-        clues.awaitingFlightClues(flight, otherFlights: tracks.awaitingMapJournalEntries).count
-    }
-
-    private func proximity(_ flight: AwaitingMapFlight) -> AwaitingMapFlightProximity? {
-        currentFix.flatMap { flight.proximity(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude) }
+        prepared.clueCounts[flight.id, default: 0]
     }
 
     private func beginPublish(_ flight: AwaitingMapFlight) {
@@ -3530,7 +3589,7 @@ private struct AwaitingMapPublicationPanel: View {
     }
 
     private var reviewContent: some View {
-        let flights = sortedFlights
+        let flights = prepared.rows
         return VStack(alignment: .leading, spacing: 0) {
             mapBanner
             ViewThatFits(in: .horizontal) {
@@ -3564,18 +3623,18 @@ private struct AwaitingMapPublicationPanel: View {
         }
     }
 
-    private func flightGroup(_ flights: [AwaitingMapFlight], wide: Bool) -> some View {
+    private func flightGroup(_ flights: [AwaitingMapPreparedRow], wide: Bool) -> some View {
         VStack(spacing: 0) {
-            ForEach(Array(flights.enumerated()), id: \.element.id) { index, flight in
+            ForEach(Array(flights.enumerated()), id: \.element.id) { index, row in
                 AwaitingMapFlightRow(
-                    flight: flight,
-                    proximity: proximity(flight),
-                    cluePhotoCount: cluePhotoCount(flight),
-                    nearIC: flight.suggested(icLocations: tracks.incidentCommandLocations),
+                    flight: row.flight,
+                    proximity: row.proximity,
+                    cluePhotoCount: row.cluePhotoCount,
+                    nearIC: row.nearIC,
                     canPublish: !settings.mapID.isEmpty,
                     wide: wide,
-                    onPublish: { beginPublish(flight) },
-                    onDiscard: { discardCandidate = flight }
+                    onPublish: { beginPublish(row.flight) },
+                    onDiscard: { discardCandidate = row.flight }
                 )
                 if index < flights.count - 1 { Divider().padding(.leading, 74) }
             }

@@ -42,6 +42,15 @@ enum AppleMagneticNorth {
     }
 }
 
+private actor LocationServiceAvailability {
+    struct Capabilities: Sendable { let enabled: Bool; let heading: Bool }
+    func capabilities() throws -> Capabilities {
+        try Task.checkCancellation()
+        // These process-wide queries can wait on the location service's XPC reply.
+        return .init(enabled: CLLocationManager.locationServicesEnabled(), heading: CLLocationManager.headingAvailable())
+    }
+}
+
 @MainActor
 final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency CLLocationManagerDelegate {
     @Published private(set) var authorizationStatus: CLAuthorizationStatus
@@ -67,6 +76,10 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
     private var physicalLocation: CLLocation?
     private var physicalLocationIsProvisional = false
     private var started = false
+    private var startGeneration = 0
+    private var startTask: Task<Void, Never>?
+    private let availability = LocationServiceAvailability()
+    private var headingAvailable = false
     /// True from session start until full cleanup, mirroring Android's
     /// ScanningService foreground-service lifetime. While true, standard location
     /// updates continue after the display locks, which keeps RID scanning, video
@@ -113,17 +126,27 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
         backgroundOperationEnabled = true
         if let manager { applyBackgroundMonitoringConfiguration(to: manager) }
         AppleLog.info("Location", "Background operation enabled for this session")
-        guard CLLocationManager.locationServicesEnabled() else {
-            clearLocationUse()
-            errorMessage = "Location Services are disabled"
-            AppleLog.error("Location", "Location Services are disabled")
-            return
+        startGeneration &+= 1
+        let generation = startGeneration, availability = self.availability
+        startTask = Task { [weak self] in
+            guard let capabilities = try? await availability.capabilities(),
+                  let self, !Task.isCancelled, self.started, self.startGeneration == generation else { return }
+            self.startTask = nil
+            self.headingAvailable = capabilities.heading
+            guard capabilities.enabled else {
+                self.clearLocationUse()
+                self.errorMessage = "Location Services are disabled"
+                AppleLog.error("Location", "Location Services are disabled")
+                return
+            }
+            let manager = self.makeManager()
+            self.applyAuthorizationStatus(manager.authorizationStatus)
         }
-        let manager = makeManager()
-        applyAuthorizationStatus(manager.authorizationStatus)
     }
 
     func stop() {
+        startGeneration &+= 1
+        startTask?.cancel(); startTask = nil
         manager?.stopUpdatingLocation()
         manager?.stopUpdatingHeading()
         started = false
@@ -142,7 +165,7 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
 
     func requestPermission() {
         if !started { start() }
-        else { applyAuthorizationStatus(makeManager().authorizationStatus) }
+        else if startTask == nil { applyAuthorizationStatus(makeManager().authorizationStatus) }
     }
 
     func setLocationOverride(latitude: Double, longitude: Double) {
@@ -233,7 +256,7 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
                 publishProvisionalLocationIfUsable(manager?.location, source: "Core Location cache")
                 publishProvisionalLocationIfUsable(persistedPhysicalLocation(), source: "persisted device fix")
                 manager?.startUpdatingLocation()
-                if CLLocationManager.headingAvailable() {
+                if headingAvailable {
                     manager?.startUpdatingHeading()
                 }
             }

@@ -1,3 +1,5 @@
+import kotlinx.coroutines.ensureActive
+import org.ncssar.rid2caltopo.video.clueStorage
 import org.ncssar.rid2caltopo.data.Units
 import org.ncssar.rid2caltopo.data.DisplayUnits
 import org.ncssar.rid2caltopo.notam.NearbyNotam
@@ -2689,16 +2691,25 @@ class StreamsViewModel(
         return "unassigned"
     }
 
+    private var clueHydrationJob: kotlinx.coroutines.Job? = null
+
     private fun hydrateLocalClues(mapKey: String) {
-        viewModelScope.launch {
-            val generation = ++clueHydrationGeneration
-            val loaded = withContext(Dispatchers.IO) {
+        clueHydrationJob?.cancel()
+        val generation = ++clueHydrationGeneration
+        clueHydrationJob = viewModelScope.launch {
+            val loaded = clueStorage {
+                val workerContext = kotlinx.coroutines.currentCoroutineContext()
                 clueDiskMutex.withLock {
                     localClueStore.recordsForMap(mapKey).map { record ->
+                        workerContext.ensureActive()
                         record to ClueSnapshotRef(record.title, localClueStore.loadThumbnail(record), null,
                             localClueStore.imageFile(record).absolutePath)
                     }
                 }
+            }
+            .getOrElse { error ->
+                CTError(tag, "Local clues remain on disk; loading will retry", Exception(error))
+                return@launch
             }
             if (generation != clueHydrationGeneration || mapKey != currentLocalClueMapKey()) return@launch
             localMapMarkers.clear()
@@ -2721,12 +2732,24 @@ class StreamsViewModel(
         val fallbackMapKey: String,
         val fallbackTeam: String,
         val format: CoordinateDisplayFormat,
+        val acceptedDestination: Pair<String, String>? = null,
     )
 
     private fun captureClueSaveContext(): ClueSaveContext {
         val personal = org.ncssar.rid2caltopo.data.CaltopoPersonalSession.capture("")
         return ClueSaveContext(personal?.let { it.mapID to it.credentialKey }, currentLocalClueMapKey(),
             CaltopoClient.GetCaltopoCredentials().teamId.orEmpty(), coordinateDisplayFormat)
+    }
+
+    private suspend fun freezeClueDestination(
+        context: ClueSaveContext, clue: PendingClue, publish: Boolean,
+    ): ClueSaveContext = withContext(Dispatchers.IO) {
+        val flightId = clue.binding?.flightId
+        val destination = if (publish && context.personalDestination != null) context.personalDestination
+        else if (publish) (flightId?.takeIf { org.ncssar.rid2caltopo.data.AwaitingMapFlights.hasEntry(it) }
+            ?.let { org.ncssar.rid2caltopo.data.AwaitingMapFlights.clueDestinationForFlight(it) }
+            ?: org.ncssar.rid2caltopo.data.AwaitingMapFlights.clueDestination(clue.droneSpec.remoteId)) else null
+        context.copy(acceptedDestination = destination)
     }
 
     private suspend fun persistClueLocally(clue: PendingClue, title: String, description: String,
@@ -2747,11 +2770,7 @@ class StreamsViewModel(
                     CTDebug(tag, "Clue save stage=image-prepared elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt}")
                     // Flight ownership is fixed by the submit-time binding; fallback
                     // credentials/map are captured before dispatch, not read later from UI state.
-                    val boundFlightId = clue.binding?.flightId
-                    val destination = if (publish && context.personalDestination != null) context.personalDestination
-                    else if (publish) (boundFlightId?.takeIf { org.ncssar.rid2caltopo.data.AwaitingMapFlights.hasEntry(it) }
-                        ?.let { org.ncssar.rid2caltopo.data.AwaitingMapFlights.clueDestinationForFlight(it) }
-                        ?: org.ncssar.rid2caltopo.data.AwaitingMapFlights.clueDestination(clue.droneSpec.remoteId)) else null
+                    val destination = context.acceptedDestination
                     val destinationMapKey = destination?.first?.let { if (it.isBlank()) "unassigned" else "map:$it" } ?: context.fallbackMapKey
                     val record = localClueStore.save(
                         mapKey = destinationMapKey, lat = clue.lat, lng = clue.lng, alt = clue.alt,
@@ -2867,40 +2886,51 @@ class StreamsViewModel(
         val folder = CaltopoMap.GetFolderId() ?: return
         // One photo at a time; the next poll advances the remaining queue.
         if (clueUploadsInFlight.isNotEmpty()) return
+        val mapKey = currentLocalClueMapKey()
         viewModelScope.launch {
-            val (pending, visibleIds) = withContext(Dispatchers.IO) {
+            val (pending, visibleIds) = clueStorage {
                 clueDiskMutex.withLock {
                     localClueStore.pendingForMap(mapId, teamId) to
-                        localClueStore.recordsForMap(currentLocalClueMapKey()).map { it.id }.toSet()
+                        localClueStore.recordsForMap(mapKey).map { it.id }.toSet()
                 }
+            }.getOrElse { error ->
+                CTError(tag, "Pending clue storage unavailable; will retry", Exception(error))
+                return@launch
             }
-            val mapKey = currentLocalClueMapKey()
+            if (mapKey != currentLocalClueMapKey()) return@launch
             if (visibleIds != localMapMarkers.map { it.id }.toSet()) hydrateLocalClues(mapKey)
             val record = pending.firstOrNull() ?: return@launch
             if (!clueUploadsInFlight.add(record.id)) return@launch
             withContext(Dispatchers.IO) {
-            try {
-                val jpeg = localClueStore.imageFile(record).readBytes()
-                org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
-                    mapId, teamId, record.id, record.lat, record.lng, record.title, record.publishedDescription,
-                    folder, record.createdAtMs, jpeg) { result ->
-                    try {
+                try {
+                    val jpeg = localClueStore.imageFile(record).readBytes()
+                    org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
+                        mapId, teamId, record.id, record.lat, record.lng, record.title, record.publishedDescription,
+                        folder, record.createdAtMs, jpeg) { result ->
                         val permanent = result.responseCode in listOf(400, 401, 403, 404, 413, 422)
                         viewModelScope.launch {
                             try {
-                                withContext(Dispatchers.IO) { clueDiskMutex.withLock {
-                                    localClueStore.recordUploadResult(record.id, result.success(), result.responseString(), permanent)
-                                } }
-                                hydrateLocalClues(currentLocalClueMapKey())
+                                clueStorage {
+                                    clueDiskMutex.withLock {
+                                        localClueStore.recordUploadResult(record.id, result.success(), result.responseString(), permanent)
+                                    }
+                                }.onSuccess {
+                                    hydrateLocalClues(currentLocalClueMapKey())
+                                }.onFailure { error ->
+                                    CTError(tag, "Clue upload result could not be saved; retained for retry", Exception(error))
+                                    CaltopoClient.ShowToast("Clue upload status could not be saved. Local photo retained; check storage. R2C will retry.")
+                                }
                             } finally { clueUploadsInFlight.remove(record.id) }
                         }
-                    } catch (error: Exception) { clueUploadsInFlight.remove(record.id); throw error }
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    clueUploadsInFlight.remove(record.id)
+                    throw cancelled
+                } catch (error: Exception) {
+                    clueUploadsInFlight.remove(record.id)
+                    CTError(tag, "Pending clue remains local", error)
                 }
-            } catch (error: Exception) {
-                clueUploadsInFlight.remove(record.id)
-                CTError(tag, "Pending clue remains local", error)
             }
-        }
         }
     }
 
@@ -2978,15 +3008,20 @@ class StreamsViewModel(
     private fun startClueSave(clue: PendingClue, mode: ClueSaveMode) {
         if (clueSaveInProgress) return
         // Acknowledge before any suspension, track scan or image/disk work. Freeze the accepted
-        // report so edits, DEM results and waypoint refreshes cannot change it during the save.
+        // report so edits and waypoint refreshes cannot change it during the save.
+        // Replace preview-only DEM work with a required worker preparation of this frozen report.
         clueSaveInProgress = true
         clueProjectionJob?.cancel()
         pendingBindingJob?.cancel()
         viewModelScope.launch {
             try {
-                val context = captureClueSaveContext()
+                val acceptedContext = captureClueSaveContext()
+                val bound = withContext(Dispatchers.Default) { bindAtSubmit(clue) }
+                val context = freezeClueDestination(acceptedContext, bound, mode == ClueSaveMode.PUBLISH)
                 val (submitted, title, description) = withContext(Dispatchers.Default) {
-                    val submitted = bindAtSubmit(clue)
+                    val submitted = prepareClueTerrainForSave(bound) { lat, lng ->
+                        altitudeCoordinator.demElevationService.sampleElevationMeters(lat, lng)
+                    }
                     val title = if (mode == ClueSaveMode.MARKER_LOCAL) submitted.title.ifBlank { "Local marker" } else submitted.title
                     val captureSummary = appendTelemetrySummary(submitted.description,
                         buildClueCaptureSummary(submitted, context.format))
@@ -3008,6 +3043,9 @@ class StreamsViewModel(
                     ClueSaveMode.MARKER_LOCAL -> CaltopoClient.ShowToast("Local marker added to R2C Map Pane.")
                 }
                 if (pendingClue?.timestamp == clue.timestamp && pendingClue?.designator == clue.designator) clearPendingClue()
+            } catch (error: ClueTerrainUnavailable) {
+                CTWarn(tag, "Clue save awaiting terrain: ${error.message}")
+                CaltopoClient.ShowToast(error.message ?: "Terrain is unavailable; your clue is still open.")
             } catch (error: kotlinx.coroutines.CancellationException) {
                 throw error
             } catch (error: Exception) {
@@ -3090,7 +3128,7 @@ class StreamsViewModel(
     /**
      * Submit binds once more to the waypoint nearest the capture among those available now; that
      * binding is final (never revisited after Submit). A clue projected from its waypoint follows a
-     * nearer origin by translation, keeping its camera vector and any DEM refinement.
+     * nearer origin by translation, then requires a new DEM intersection for that origin.
      */
     private fun bindAtSubmit(clue: PendingClue): PendingClue {
         val submitted = currentBinding(clue) ?: return clue
@@ -3100,7 +3138,8 @@ class StreamsViewModel(
         val (lat, lng) = org.ncssar.rid2caltopo.data.ClueBinder.translated(clue.lat, clue.lng, from, to)
         CTDebug(tag, "Submit re-bound to a nearer waypoint " + org.ncssar.rid2caltopo.data.ClueBindingText.formSummary(submitted))
         return clue.copy(binding = submitted, lat = lat, lng = lng, droneLat = to.latitude, droneLng = to.longitude,
-            droneAlt = to.altitudeMeters ?: clue.droneAlt)
+            droneAlt = to.altitudeMeters ?: clue.droneAlt,
+            terrainProjectionApplied = false, demSource = null, demResolutionMeters = null, demSampleStale = false)
     }
 
     /** While the form is open, re-binds as waypoints arrive and re-projects from a nearer waypoint origin. */
@@ -3176,26 +3215,9 @@ class StreamsViewModel(
         if (clue.designator != designator) return
         clueProjectionJob?.cancel()
         clueProjectionJob = viewModelScope.launch(Dispatchers.Default) {
-            // The live display can be between DEM samples when Capture is pressed. Resolve the
-            // frozen frame's own position/altitude instead of permanently freezing "unavailable"
-            // or substituting a later live aircraft height into this photograph.
-            val capturedDemHeight = clue.demAltitudeReference?.let { reference ->
-                altitudeCoordinator.demElevationService.sampleElevationMeters(clue.droneLat,clue.droneLng)
-                    ?.takeUnless{it.stale}?.let{reference.heightMeters(clue.droneAlt,it.elevationMeters)}
+            val refined = refineCapturedClueTerrain(clue) { lat, lng ->
+                altitudeCoordinator.demElevationService.sampleElevationMeters(lat, lng)
             }
-            val projectionAglMeters = capturedDemHeight ?: clue.projectionHeightMeters
-            val refined = projectClueLocationWithDem(
-                demElevationService = altitudeCoordinator.demElevationService,
-                droneLat = clue.droneLat,
-                droneLng = clue.droneLng,
-                droneAlt = clue.droneAlt,
-                headingDeg = clue.headingDeg,
-                aglMeters = projectionAglMeters,
-                gimbalAngleDeg = clue.gimbalAngleDeg,
-                terrainReferenceLatitude = clue.terrainReferenceLatitude,
-                terrainReferenceLongitude = clue.terrainReferenceLongitude,
-                seiRelativeUpMeters = clue.seiRelativeUpMeters,
-            )
             withContext(Dispatchers.Main) {
                 val current = _pendingClue.value ?: return@withContext
                 if (current.designator != clue.designator ||
@@ -3208,16 +3230,12 @@ class StreamsViewModel(
                     return@withContext
                 }
                 _pendingClue.value = current.copy(
-                    lat = refined.lat,
-                    lng = refined.lng,
-                    alt = refined.alt,
-                    aglMeters = projectionAglMeters,
-                    aglSourceLabel = if(capturedDemHeight!=null) "DEM at captured position" else current.aglSourceLabel,
-                    projectionHeightMeters = projectionAglMeters,
-                    projectionHeightSourceLabel = if(capturedDemHeight!=null) "DEM at captured position" else current.projectionHeightSourceLabel,
+                    lat = refined.lat, lng = refined.lng, alt = refined.alt,
+                    aglMeters = refined.aglMeters, aglSourceLabel = refined.aglSourceLabel,
+                    projectionHeightMeters = refined.projectionHeightMeters,
+                    projectionHeightSourceLabel = refined.projectionHeightSourceLabel,
                     terrainProjectionApplied = refined.terrainProjectionApplied,
-                    demSource = refined.demSource,
-                    demResolutionMeters = refined.demResolutionMeters,
+                    demSource = refined.demSource, demResolutionMeters = refined.demResolutionMeters,
                     demSampleStale = refined.demSampleStale,
                 )
                 CTDebug(tag, String.format(
@@ -4404,7 +4422,7 @@ class StreamsViewModel(
                 if (generation > 0) hydrateLocalClues(currentLocalClueMapKey())
             }
         }
-        defaultAnomalyConfig = AnomalyPrefs.loadSessionDefaults(application.applicationContext)
+        defaultAnomalyConfig = AnomalyPrefs.sessionStartConfig()
         refreshConfiguredStreamBindings()
         CaltopoMap.AddMapStatusListener(this)
         if (CaltopoMap.GetMapId().isNotBlank()) {

@@ -1,3 +1,9 @@
 Latest changes:
+- Mapping screens follow a consistent Local Maps, mission planning, and reconstruction workflow.
+- Choose the completed photo set or all received originals when reconstructing.
+- Local Maps keeps flight plans, original photos, and reconstructed results together.
+- Reconstruct 2D maps and regional 3D surfaces on the device, with resumable processing and clearer saving progress.
+- Import original photos from files or transfer them directly from the controller browser.
+- Navigate between 3D regions using Previous and Next controls.
 - Choose a name when registering a new device with Tracker; the name is preserved when reconnecting.
 - Tapping the incident map opens map options directly when connected, or the map picker when disconnected. Disconnected maps show “No map”.

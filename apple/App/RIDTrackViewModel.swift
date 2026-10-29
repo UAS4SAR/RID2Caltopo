@@ -11,9 +11,45 @@ final class RIDTrackViewModel: ObservableObject {
     private let awaitingMapJournal = AwaitingMapFlightJournal(fileURL:
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("awaiting-map-flights.json"))
     @Published private(set) var awaitingMapFlights: [AwaitingMapFlight] = []
+    @Published private(set) var awaitingMapJournalEntries: [AwaitingMapFlight] = []
+    @Published private(set) var awaitingMapHistoryError: String?
+    @Published private(set) var awaitingMapRevision = 0
+    @Published private(set) var incidentCommandRevision = 0
+    private var awaitingRefreshGeneration = 0
+    private var awaitingOpenFlights: [String: AwaitingMapFlight] = [:]
+    private var awaitingOpenCanonicalFlights: [String: AwaitingMapFlight] = [:]
+    private var awaitingMapHistoryReady = false
+    private func refreshAwaitingMapState() async {
+        awaitingRefreshGeneration += 1
+        let generation = awaitingRefreshGeneration
+        await awaitingMapJournal.ready()
+        let entries = await awaitingMapJournal.entries
+        let error = await awaitingMapJournal.loadError
+        let prepared = await Task.detached(priority: .utility) {
+            var open: [String: AwaitingMapFlight] = [:], canonical: [String: AwaitingMapFlight] = [:]
+            for entry in entries where !entry.finished {
+                open[entry.remoteID] = entry
+                canonical[RidTrackStore.canonicalAircraftID(entry.remoteID)] = entry
+            }
+            return (entries.filter { $0.decision == "review" }, open, canonical)
+        }.value
+        guard generation == awaitingRefreshGeneration, !Task.isCancelled else { return }
+        awaitingMapJournalEntries = entries
+        awaitingMapFlights = prepared.0
+        awaitingOpenFlights = prepared.1; awaitingOpenCanonicalFlights = prepared.2
+        awaitingMapHistoryReady = error == nil
+        awaitingMapHistoryError = error
+        awaitingMapRevision &+= 1
+        if let error { archiveStatus = error }
+    }
+    func retryAwaitingMapHistory() async {
+        await awaitingMapJournal.retryLoading()
+        await refreshAwaitingMapState()
+    }
     @Published private(set) var incidentCommandLocations: [MapCoordinate] = []
     func refreshIncidentCommandLocations() async {
         incidentCommandLocations = await caltopoPublisher.incidentCommandLocations()
+        incidentCommandRevision &+= 1
     }
     private var publicationMapID = ""
     private var publicationTeamID = ""
@@ -31,20 +67,24 @@ final class RIDTrackViewModel: ObservableObject {
               publicationSuppressionProvider?(track.aircraftID) != true else { return nil }
         let now = Date()
         if !finished, now.timeIntervalSince(lastDeferredSnapshot[track.aircraftID] ?? .distantPast) < 5 { return nil }
-        let samples = track.points.map { RidObservation(source: $0.source ?? track.lastObservation.source, aircraftId: track.aircraftID,
-            receivedAt: $0.receivedAt, latitude: $0.latitude, longitude: $0.longitude, altitudeMeters: $0.altitudeMeters,
-            droneTimestamp: $0.droneTime) }
+        let points = track.points, fallbackSource = track.lastObservation.source, aircraftID = track.aircraftID
         let label = identityProvider?(track.aircraftID)?.displayLabel ?? track.aircraftID
         let mapID = publicationMapID, teamID = publicationTeamID
         let previous = awaitingFlightWrites[track.aircraftID]
         lastDeferredSnapshot[track.aircraftID] = now
         let task = Task {
             await previous?.value
+            let samples = await Task.detached(priority: .utility) {
+                points.map { RidObservation(source: $0.source ?? fallbackSource, aircraftId: aircraftID,
+                    receivedAt: $0.receivedAt, latitude: $0.latitude, longitude: $0.longitude, altitudeMeters: $0.altitudeMeters,
+                    droneTimestamp: $0.droneTime) }
+            }.value
+            guard !Task.isCancelled else { return }
             do {
                 try await awaitingMapJournal.record(remoteID: track.aircraftID, label: label,
                     observations: samples, mapID: mapID, teamID: teamID, finished: finished,
                     flightID: RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt))
-                awaitingMapFlights = awaitingMapJournal.entries.filter { $0.decision == "review" }
+                await refreshAwaitingMapState()
             } catch { archiveStatus = "Could not save pending publication: \(error.localizedDescription)" }
         }
         awaitingFlightWrites[track.aircraftID] = task
@@ -54,7 +94,7 @@ final class RIDTrackViewModel: ObservableObject {
     func decideAwaitingFlight(_ id: String, mapID: String?, teamID: String) async -> Bool {
         do {
             try await awaitingMapJournal.decide(id: id, mapID: mapID, teamID: teamID)
-            awaitingMapFlights = awaitingMapJournal.entries.filter { $0.decision == "review" }
+            await refreshAwaitingMapState()
             await queueCompletedDeferredFlights()
             return true
         } catch {
@@ -64,17 +104,20 @@ final class RIDTrackViewModel: ObservableObject {
     }
 
     /// Every journal entry, including decided ones, so clue ownership can avoid neighbours.
-    var awaitingMapJournalEntries: [AwaitingMapFlight] { awaitingMapJournal.entries }
 
     /// Permanently deletes a completed awaiting-map flight: its clue photos, its local track
     /// archive files, and its journal entry. Works without a connected map.
     @discardableResult
     func discardAwaitingFlight(_ flight: AwaitingMapFlight, clues: AppleClueStore) async -> Bool {
-        guard let current = awaitingMapJournal.entries.first(where: { $0.id == flight.id }), current.finished else {
+        guard let current = awaitingMapJournalEntries.first(where: { $0.id == flight.id }), current.finished else {
             AppleLog.warning("AwaitingMap", "Discard refused id=\(flight.id) remoteId=\(flight.remoteID): flight not found or still in progress")
             return false
         }
-        let owned = clues.awaitingFlightClues(current, otherFlights: awaitingMapJournal.entries)
+        let records = clues.records, otherFlights = awaitingMapJournalEntries
+        let owned = await Task.detached(priority: .utility) {
+            AwaitingMapClueMatch.ownedClues(records, flight: current, otherFlights: otherFlights)
+        }.value
+        guard !Task.isCancelled else { return false }
         let result = await AwaitingMapFlightDiscarder.discard(
             flight: current,
             journal: awaitingMapJournal,
@@ -82,7 +125,7 @@ final class RIDTrackViewModel: ObservableObject {
             deleteClue: { await clues.delete($0) },
             deleteArchive: { [archiveStore] in await archiveStore.deleteFlightArchive(current) }
         )
-        awaitingMapFlights = awaitingMapJournal.entries.filter { $0.decision == "review" }
+        await refreshAwaitingMapState()
         if result.succeeded {
             AppleLog.info("AwaitingMap", result.logSummary(for: current))
         } else {
@@ -94,8 +137,14 @@ final class RIDTrackViewModel: ObservableObject {
 
     private func queueCompletedDeferredFlights() async {
         await awaitingMapJournal.ready()
-        for entry in awaitingMapJournal.entries where entry.finished && entry.decision == "publish" &&
-                entry.mapID == publicationMapID && entry.teamID == publicationTeamID {
+        let entries = await awaitingMapJournal.entries
+        let mapID = publicationMapID, teamID = publicationTeamID
+        let publications = await Task.detached(priority: .utility) {
+            entries.filter { $0.finished && $0.decision == "publish" && $0.mapID == mapID && $0.teamID == teamID }
+                .map { (id: $0.id, publication: $0.publication) }
+        }.value
+        for entry in publications {
+            guard !Task.isCancelled, mapID == publicationMapID, teamID == publicationTeamID else { return }
             do {
                 try await caltopoPublisher.queueDeferredArchive(entry.publication)
                 try await awaitingMapJournal.markQueued(id: entry.id)
@@ -196,12 +245,14 @@ final class RIDTrackViewModel: ObservableObject {
                     pairedVideoLastActivityAt: self.pairedVideoActivityProvider?() ?? [:]
                 )
                 for track in inactive {
+                    let recording = CaltopoRecordingAssociation(
+                        track: track, identity: self.identityProvider?(track.aircraftID))
                     await self.archive(track, publishFlightEnd: true)
                     self.pendingPublication.removeValue(forKey: track.aircraftID)
                     self.lastSEIPublicationAtByAircraftID.removeValue(
                         forKey: track.aircraftID
                     )
-                    await self.finishPublication(track: track)
+                    await self.finishPublication(track: track, recording: recording)
                     self.terrainTasks.removeValue(forKey: track.aircraftID)?.cancel()
                     self.terrainRequestKeyByAircraftID.removeValue(forKey: track.aircraftID)
                     self.terrainResolvedKeyByAircraftID.removeValue(forKey: track.aircraftID)
@@ -461,40 +512,42 @@ final class RIDTrackViewModel: ObservableObject {
     }
 
     /// Waypoints of the live flight that owns `record`, or nil when that flight has ended.
-    func bindingPoints(for record: OperationalClueRecord) -> [ClueBindingPoint]? {
-        bindingPoints(aircraftID: record.aircraftID,
+    func bindingPoints(for record: OperationalClueRecord) async -> [ClueBindingPoint]? {
+        await bindingPoints(aircraftID: record.aircraftID,
                       captureTimeMs: record.binding?.captureTimeMs ?? ClueBindingPoint.milliseconds(record.capturedAt))
     }
 
     /// Waypoints (drone clock) of the aircraft's live flight around `captureTimeMs`, or nil when
     /// that flight has ended.
-    func bindingPoints(aircraftID: String, captureTimeMs captureMs: Int64) -> [ClueBindingPoint]? {
+    func bindingPoints(aircraftID: String, captureTimeMs captureMs: Int64) async -> [ClueBindingPoint]? {
         let canonical = RidTrackStore.canonicalAircraftID(aircraftID)
         guard let track = tracks.first(where: { RidTrackStore.canonicalAircraftID($0.aircraftID) == canonical })
         else { return nil }
-        let points = track.points.map(ClueBindingPoint.init(trackPoint:))
-        // A track that started well after the capture is a later flight.
-        if let first = points.map(\.timeMs).min(),
-           captureMs < first - Int64(AwaitingMapClueMatch.leadingSeconds * 1_000) { return nil }
-        return points
+        let snapshot = track.points
+        return await Task.detached(priority: .utility) {
+            let points = snapshot.map(ClueBindingPoint.init(trackPoint:))
+            if let first = points.map(\.timeMs).min(),
+               captureMs < first - Int64(AwaitingMapClueMatch.leadingSeconds * 1_000) { return nil }
+            return points
+        }.value
     }
 
     /// Id of the live flight a clue would bind to: the open journal entry's id when there is one
     /// (RidFlightID for entries created by this build), else the live track's RidFlightID.
     func liveFlightID(aircraftID: String) -> String? {
         let canonical = RidTrackStore.canonicalAircraftID(aircraftID)
-        if let entry = awaitingMapJournal.entries.last(where: {
-            RidTrackStore.canonicalAircraftID($0.remoteID) == canonical && !$0.finished
-        }) { return entry.id }
+        if let entry = awaitingOpenCanonicalFlights[canonical] { return entry.id }
         return tracks.first { RidTrackStore.canonicalAircraftID($0.aircraftID) == canonical }
             .map { RidFlightID.make(aircraftID: $0.aircraftID, startedAt: $0.flightStartedAt) }
     }
 
     private func clueChangedAfterFlight(_ record: OperationalClueRecord) {
         // A live flight writes its KMZ when it ends.
-        guard bindingPoints(for: record) == nil else { return }
-        lateClues[record.id] = record
-        scheduleArchiveRewrites()
+        Task {
+            guard await bindingPoints(for: record) == nil, !Task.isCancelled else { return }
+            lateClues[record.id] = record
+            scheduleArchiveRewrites()
+        }
     }
 
     /// Queues KMZ rebuilds for late clues and processes every queued rebuild (also after launch).
@@ -831,10 +884,9 @@ final class RIDTrackViewModel: ObservableObject {
     ) {
         publicationMapID = configuration.mapID
         publicationTeamID = configuration.publicationScope
-        awaitingMapFlights = awaitingMapJournal.entries.filter { $0.decision == "review" }
         Task { [caltopoPublisher] in
             await awaitingMapJournal.ready()
-            awaitingMapFlights = awaitingMapJournal.entries.filter { $0.decision == "review" }
+            await refreshAwaitingMapState()
             await caltopoPublisher.configure(
                 configuration,
                 trackFolderName: trackFolderName
@@ -1088,8 +1140,10 @@ final class RIDTrackViewModel: ObservableObject {
         peerCoordinator?.setManagedVideoThumbnailUpdatedHandler(nil)
 
         for track in await store.snapshot() {
+            let recording = CaltopoRecordingAssociation(
+                track: track, identity: identityProvider?(track.aircraftID))
             await archive(track)
-            await finishPublication(track: track)
+            await finishPublication(track: track, recording: recording)
         }
     }
 
@@ -1168,7 +1222,7 @@ final class RIDTrackViewModel: ObservableObject {
                 Task {
                 do {
                     try await self.awaitingMapJournal.discard(remoteID: track.aircraftID, startedAt: start)
-                    self.awaitingMapFlights = self.awaitingMapJournal.entries.filter { $0.decision == "review" }
+                    await self.refreshAwaitingMapState()
                 } catch { self.archiveStatus = "Could not discard publication offer: \(error.localizedDescription)" }
                 }
             }) { return }
@@ -1382,7 +1436,8 @@ final class RIDTrackViewModel: ObservableObject {
         label: String,
         observation: RidObservation
     ) -> Task<Void, Never> {
-        let deferred = awaitingMapJournal.entries.last { $0.remoteID == remoteID && !$0.finished }
+        guard awaitingMapHistoryReady, awaitingMapHistoryError == nil else { return Task { } }
+        let deferred = awaitingOpenFlights[remoteID]
         if let deferred, !["publish", "bound"].contains(deferred.decision) || deferred.mapID != publicationMapID || deferred.teamID != publicationTeamID {
             return Task { }
         }
@@ -1410,7 +1465,11 @@ final class RIDTrackViewModel: ObservableObject {
         let task = Task { [caltopoPublisher] in
             _ = await previous?.value
             guard !Task.isCancelled else { return }
-            if let deferred, deferred.decision == "publish" { await caltopoPublisher.seedDeferredFlight(deferred.publication) }
+            if let deferred, deferred.decision == "publish" {
+                let prepared = await Task.detached(priority: .utility) { deferred.publication }.value
+                guard !Task.isCancelled else { return }
+                await caltopoPublisher.seedDeferredFlight(prepared)
+            }
             await caltopoPublisher.publish(
                 remoteID: remoteID,
                 label: label,
@@ -1481,18 +1540,13 @@ final class RIDTrackViewModel: ObservableObject {
         peerTrafficTracks = await peerTrafficStore.snapshot()
     }
 
-    private func finishPublication(track: RidAircraftTrack) async {
+    private func finishPublication(track: RidAircraftTrack, recording: CaltopoRecordingAssociation) async {
         let remoteID = track.aircraftID
         ownershipActivationTasks.removeValue(forKey: remoteID)?.cancel()
         let publication = publicationChains.removeValue(forKey: remoteID)
         _ = await publication?.value
-        let identity = identityProvider?(remoteID)
-        let trackStartedAt = track.points.first?.receivedAt ?? track.lastObservation.receivedAt
-        let trackEndedAt = track.points.last?.receivedAt ?? track.lastObservation.receivedAt
-        let videoURL = peerCoordinator?.capturedVideoURL(matching: [
-            identity?.mappedID ?? "",
-            remoteID,
-        ], trackStartedAt: trackStartedAt, trackEndedAt: trackEndedAt)
+        let videoURL = peerCoordinator?.capturedVideoURL(matching: recording.designators,
+            trackStartedAt: recording.startedAt, trackEndedAt: recording.endedAt)
         let description = CaltopoArchiveDescription.build(capturedVideoURL: videoURL)
         var archivedTrack: AppleArchivedCaltopoTrack?
         for attempt in 0..<Self.caltopoFinishRetryCount {
@@ -1512,9 +1566,9 @@ final class RIDTrackViewModel: ObservableObject {
         Task { [weak self] in
             await self?.attachDeferredVideoLink(
                 to: archivedTrack,
-                designators: [identity?.mappedID ?? "", remoteID],
-                trackStartedAt: trackStartedAt,
-                trackEndedAt: trackEndedAt
+                designators: recording.designators,
+                trackStartedAt: recording.startedAt,
+                trackEndedAt: recording.endedAt
             )
         }
     }

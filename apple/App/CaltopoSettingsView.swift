@@ -63,11 +63,19 @@ struct CaltopoSettingsView: View {
         if hasChanges { showUnsavedSettings = true } else { dismissSettings() }
     }
     private func saveAndClose() {
+        Task { await saveAndCloseOnWorker() }
+    }
+
+    @State private var savingCredentials = false
+    private func saveAndCloseOnWorker() async {
+        guard !savingCredentials else { return }
+        savingCredentials = true
+        defer { savingCredentials = false }
         if let error = teamsDraft.validationMessage { teamsSaveMessage = error; return }
         do {
-            if teamsDraft.normalized != initialTeamsDraft.normalized { try settings.saveTeamsCredentials(teamsDraft) }
+            if teamsDraft.normalized != initialTeamsDraft.normalized { try await settings.saveTeamsCredentials(teamsDraft) }
             if trackerURLDraft != initialTrackerURL || trackerKeyDraft != initialTrackerKey {
-                try orgSettings.applyManualTrackerConfiguration(trackerURLPrefix: trackerURLDraft, trackerAPIKey: trackerKeyDraft)
+                try await orgSettings.applyManualTrackerConfiguration(trackerURLPrefix: trackerURLDraft, trackerAPIKey: trackerKeyDraft)
             }
             draft.edits.commit()
             if localConsent.enabled != consentAtOpen {
@@ -204,13 +212,14 @@ struct CaltopoSettingsView: View {
                     Text("Session Cookies").tag(CaltopoPersonalLoginMode.sessionCookies)
                 }
                 .pickerStyle(.segmented)
+                .disabled(settings.personalCredentialBusy || settings.isLoadingPersonalMaps)
                 if settings.personalLoginMode == .credentials {
                     SettingsValue("Account credential", value: settings.personalCredentialSummary)
                     Button(settings.personalCredentialBusy ? "Waiting for the browser…" : "Sign in") {
                         Task { await settings.signInWithPersonalCredential() }
                     }
                     .disabled(settings.personalCredentialBusy)
-                    Button("Log out") { settings.logOutPersonalCredential() }
+                    Button("Log out") { Task { await settings.logOutPersonalCredential() } }
                         .disabled(settings.personalCredentialBusy)
                     Text("Log out removes the account credential from this device. The device stays listed on your CalTopo account until you delete it there.")
                         .font(.footnote).foregroundStyle(.secondary)
@@ -552,8 +561,10 @@ struct CaltopoSettingsView: View {
                 onSave(settings.disconnectMap())
                 settings.usesPersonalCredentials = profileID == "personal"
                 if profileID != "personal" {
-                    _ = importer.activateProfile(profileID, caltopoSettings: settings, orgSettings: orgSettings)
-                    onSave(settings.configuration)
+                    Task {
+                        _ = await importer.activateProfile(profileID, caltopoSettings: settings, orgSettings: orgSettings)
+                        onSave(settings.configuration)
+                    }
                 }
             }) { map in
                 orgSettings.setIncidentMapTitle(map.title)
@@ -588,8 +599,9 @@ private struct AppleTrackerConfigurationSection: View {
                 secure: true
             )
             Button("Save Tracker Coordination") {
+                Task {
                 do {
-                    try settings.applyManualTrackerConfiguration(
+                    try await settings.applyManualTrackerConfiguration(
                         trackerURLPrefix: trackerURL,
                         trackerAPIKey: trackerAPIKey
                     )
@@ -597,6 +609,7 @@ private struct AppleTrackerConfigurationSection: View {
                 } catch {
                     status = "Unable to save tracker API key: \(error.localizedDescription)"
                 }
+            }
             }
             Text("Manual tracker values configure coordination only. Saving them clears the managed FAA-proxy association; import the r2c-tracker organization QR again to restore FAA proxy access.")
                 .font(.footnote)
@@ -631,9 +644,9 @@ private final class AppleDeveloperToolsManager: ObservableObject {
         if let bundleID = Bundle.main.bundleIdentifier {
             UserDefaults.standard.removePersistentDomain(forName: bundleID)
         }
-        SecItemDelete([kSecClass as String: kSecClassGenericPassword] as CFDictionary)
-        caltopo.resetPersistedState()
-        organization.resetPersistedState()
+        _ = await Task.detached { SecItemDelete([kSecClass as String: kSecClassGenericPassword] as CFDictionary) }.value
+        await caltopo.resetPersistedState()
+        await organization.resetPersistedState()
         identities.resetPersistedState()
         AppleNotamCenter.shared.resetRuntimeState()
         locationProvider.clearLocationOverride()

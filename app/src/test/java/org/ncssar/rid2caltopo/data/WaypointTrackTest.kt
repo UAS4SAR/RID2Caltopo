@@ -17,6 +17,31 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 class WaypointTrackTest {
+    @Test fun renderSnapshotsDoNotWaitForTheIngestOrArchiveMonitor() {
+        val drone = activeDrone("RID-RENDER", "RID-RENDER")
+        repeat(5_000) { index ->
+            WaypointTrack.AddWaypointForTrack(drone, 39.0, -121.0, 100L, index.toLong(),
+                index.toLong() + 100, "rid", true)
+        }
+        @Suppress("UNCHECKED_CAST")
+        val map = trackMapField.get(null) as Map<String, Any>
+        val track = map.getValue(drone.trackLabel())
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            val snapshot = synchronized(track) {
+                executor.submit<List<WaypointTrack.TrackPoint>> {
+                    WaypointTrack.GetTrackPointsSnapshotForLabel(drone.trackLabel())
+                }.get(2, TimeUnit.SECONDS)
+            }
+            assertEquals(5_000, snapshot.size)
+            val revision = WaypointTrack.GetTrackRenderRevision(drone.trackLabel())
+            WaypointTrack.AddWaypointForTrack(drone, 39.1, -121.0, 101L, 6_000L)
+            assertEquals(5_000, snapshot.size)
+            assertEquals(4_999L, snapshot.last().timestampMsec)
+            assertTrue(revision !== WaypointTrack.GetTrackRenderRevision(drone.trackLabel()))
+        } finally { executor.shutdownNow() }
+    }
+
     private lateinit var trackMapField: Field
     private lateinit var mapNodeField: Field
     private var originalTrackMap: MutableMap<Any, Any>? = null

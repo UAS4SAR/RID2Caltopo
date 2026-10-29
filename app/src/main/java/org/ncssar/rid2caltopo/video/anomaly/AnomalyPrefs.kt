@@ -12,13 +12,14 @@ object AnomalyPrefs {
     internal fun sessionStartConfig(): AnomalyConfig =
         AnomalyConfig().resetToRealtimeDefaults()
 
+    /** Worker-only migration; creating a ViewModel must never open a preference file. */
     @JvmStatic
-    fun loadSessionDefaults(context: Context): AnomalyConfig {
+    fun clearLegacySettings(context: Context) {
+        check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper())
         context.applicationContext
             .getSharedPreferences(LEGACY_PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .clear()
             .apply()
-        return sessionStartConfig()
     }
 }

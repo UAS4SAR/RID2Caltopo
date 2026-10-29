@@ -12,21 +12,21 @@ private func awaitingSample(_ time: TimeInterval = 1_000_000, latitude: Double =
     let file = root.appendingPathComponent("pending.json")
     let journal = await AwaitingMapFlightJournal.loaded(fileURL: file)
     try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample()], mapID: "", teamID: "team-a", finished: false)
-    let id = try #require(journal.entries.first?.id)
-    #expect(journal.entries[0].decision == "review")
+    let id = try #require((await journal.entries).first?.id)
+    #expect((await journal.entries)[0].decision == "review")
     // Connecting a map does not bind or authorize the flight.
     try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample(), awaitingSample(1_000_010)], mapID: "map-a", teamID: "team-a", finished: false)
-    #expect(journal.entries[0].mapID.isEmpty)
-    #expect(journal.entries[0].decision == "review")
+    #expect((await journal.entries)[0].mapID.isEmpty)
+    #expect((await journal.entries)[0].decision == "review")
     try await journal.decide(id: id, mapID: "map-a", teamID: "team-a")
     let reopened = await AwaitingMapFlightJournal.loaded(fileURL: file)
-    #expect(reopened.entries[0].id == id)
-    #expect(reopened.entries[0].finished)
-    #expect(reopened.entries[0].mapID == "map-a")
-    #expect(reopened.entries[0].points.count == 2)
+    #expect((await reopened.entries)[0].id == id)
+    #expect((await reopened.entries)[0].finished)
+    #expect((await reopened.entries)[0].mapID == "map-a")
+    #expect((await reopened.entries)[0].points.count == 2)
     // Subsequent requests cannot silently retarget an accepted flight.
     try await reopened.decide(id: id, mapID: "map-b", teamID: "team-b")
-    #expect(reopened.entries[0].mapID == "map-a")
+    #expect((await reopened.entries)[0].mapID == "map-a")
 }
 
 @Test @MainActor func keepLocalAndSeparateFlightConsentSurviveRestart() async throws {
@@ -35,10 +35,10 @@ private func awaitingSample(_ time: TimeInterval = 1_000_000, latitude: Double =
     let file = root.appendingPathComponent("pending.json")
     let journal = await AwaitingMapFlightJournal.loaded(fileURL: file)
     try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample()], mapID: "", teamID: "", finished: false)
-    try await journal.decide(id: journal.entries[0].id, mapID: nil, teamID: "")
+    try await journal.decide(id: (await journal.entries)[0].id, mapID: nil, teamID: "")
     let reopened = await AwaitingMapFlightJournal.loaded(fileURL: file)
     try await reopened.record(remoteID: "RID-1", label: "New flight", observations: [awaitingSample(1_100_000)], mapID: "", teamID: "", finished: false)
-    #expect(reopened.entries.map(\.decision) == ["local", "review"])
+    #expect((await reopened.entries).map(\.decision) == ["local", "review"])
 }
 
 @Test func suggestionsRequireRecentFlightAndIcProximity() {
@@ -63,12 +63,12 @@ private func awaitingSample(_ time: TimeInterval = 1_000_000, latitude: Double =
     let journal = await AwaitingMapFlightJournal.loaded(fileURL: root.appendingPathComponent("pending.json"))
     try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample()], mapID: "original", teamID: "team-a", finished: false)
     try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample(), awaitingSample(1_000_001)], mapID: "other", teamID: "team-b", finished: false)
-    #expect(journal.entries[0].decision == "bound")
-    #expect(journal.entries[0].mapID == "original")
-    #expect(journal.entries[0].teamID == "team-a")
+    #expect((await journal.entries)[0].decision == "bound")
+    #expect((await journal.entries)[0].mapID == "original")
+    #expect((await journal.entries)[0].teamID == "team-a")
     try await journal.notePublication(remoteID: "RID-1", mapID: "original")
     try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample()], mapID: "", teamID: "", finished: true)
-    #expect(journal.entries.isEmpty)
+    #expect((await journal.entries).isEmpty)
 }
 
 @Test @MainActor func discardingOneShortFlightDoesNotDiscardEarlierFlightOffer() async throws {
@@ -79,8 +79,8 @@ private func awaitingSample(_ time: TimeInterval = 1_000_000, latitude: Double =
     try await journal.record(remoteID: "RID-1", label: "Old", observations: [awaitingSample()], mapID: "", teamID: "", finished: true)
     try await journal.record(remoteID: "RID-1", label: "New", observations: [awaitingSample(1_100_000)], mapID: "", teamID: "", finished: false)
     try await journal.discard(remoteID: "RID-1", startedAt: Date(timeIntervalSince1970: 1_100_000))
-    #expect(journal.entries.count == 1)
-    #expect(journal.entries[0].label == "Old")
+    #expect((await journal.entries).count == 1)
+    #expect((await journal.entries)[0].label == "Old")
 }
 
 @Test func deferredFlightPublicationUsesFirstWaypointTimestamp() async throws {
@@ -106,10 +106,10 @@ private func awaitingSample(_ time: TimeInterval = 1_000_000, latitude: Double =
     try await journal.record(remoteID: "RID-1", label: "Personal flight", observations: samples, mapID: "", teamID: "", finished: false)
     try await journal.record(remoteID: "RID-1", label: "Personal flight", observations: samples, mapID: "personal-map", teamID: "", finished: true)
     let reopened = await AwaitingMapFlightJournal.loaded(fileURL: url)
-    #expect(reopened.entries[0].decision == "review")
+    #expect((await reopened.entries)[0].decision == "review")
     let scope = CaltopoPublicationScope.identifier(personalAccountID: "responder-a", teamID: "")
-    try await reopened.decide(id: reopened.entries[0].id, mapID: "personal-map", teamID: scope)
-    let saved = (await AwaitingMapFlightJournal.loaded(fileURL: url)).entries[0]
+    try await reopened.decide(id: (await reopened.entries)[0].id, mapID: "personal-map", teamID: scope)
+    let saved = await (await AwaitingMapFlightJournal.loaded(fileURL: url)).entries[0]
     #expect(saved.decision == "publish")
     #expect(saved.teamID == "personal:responder-a")
     #expect(saved.publication.points.count == 64)
@@ -126,12 +126,12 @@ private func awaitingSample(_ time: TimeInterval = 1_000_000, latitude: Double =
     let flightID = RidFlightID.make(aircraftID: "RID-1", startedAt: Date(timeIntervalSince1970: 1_000_000))
     try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample()], mapID: "", teamID: "team-a",
                        finished: false, flightID: flightID)
-    #expect(journal.entries.map(\.id) == [flightID])
+    #expect((await journal.entries).map(\.id) == [flightID])
     // Later snapshots of the same open flight keep the id (and it stays a UUID for CalTopo live tracks).
     try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample(), awaitingSample(1_000_010)],
                        mapID: "", teamID: "team-a", finished: false, flightID: "other")
-    #expect(journal.entries.map(\.id) == [flightID])
-    #expect(journal.entries[0].publication.liveTrackID == flightID)
+    #expect((await journal.entries).map(\.id) == [flightID])
+    #expect((await journal.entries)[0].publication.liveTrackID == flightID)
 }
 
 @Test @MainActor func concurrentJournalWritesRetainBothFlightsAfterRestart() async throws {
@@ -143,7 +143,7 @@ private func awaitingSample(_ time: TimeInterval = 1_000_000, latitude: Double =
     async let second: Void = journal.record(remoteID: "RID-2", label: "Second", observations: [awaitingSample()], mapID: "", teamID: "", finished: false)
     _ = try await (first, second)
     let reopened = await AwaitingMapFlightJournal.loaded(fileURL: url)
-    #expect(Set(reopened.entries.map(\.remoteID)) == ["RID-1", "RID-2"])
+    #expect(Set((await reopened.entries).map(\.remoteID)) == ["RID-1", "RID-2"])
 }
 
 @Test @MainActor func failedJournalWriteDoesNotExposeUncommittedFlight() async throws {
@@ -154,5 +154,5 @@ private func awaitingSample(_ time: TimeInterval = 1_000_000, latitude: Double =
     do {
         try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample()], mapID: "", teamID: "", finished: false)
         Issue.record("Expected an unwritable journal to fail")
-    } catch { #expect(journal.entries.isEmpty) }
+    } catch { #expect((await journal.entries).isEmpty) }
 }

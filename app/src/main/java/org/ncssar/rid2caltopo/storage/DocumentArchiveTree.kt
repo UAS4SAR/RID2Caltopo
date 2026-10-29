@@ -99,7 +99,16 @@ internal class DocumentArchiveTree(private val context: Context, private val roo
     override fun read(path: String): InputStream {
         val node = find(path) ?: error("Archive file is unavailable: $path")
         return if (node.uri.scheme == "file") File(requireNotNull(node.uri.path)).inputStream()
-        else resolver.openInputStream(node.uri) ?: error("Cannot read archive file: $path")
+        else {
+            // Archive Dir is granted read/write access. Android's external-storage provider
+            // can route a read-only media open through MediaStore, changing the returned
+            // bytes (for example, EXIF redaction) after a staging file becomes a JPEG.
+            // Use a non-truncating document descriptor for the bytes we retain and verify.
+            // A provider that cannot supply it must fail before originals are removed.
+            val descriptor = resolver.openFileDescriptor(node.uri, "rw")
+                ?: error("Cannot read original archive bytes: $path")
+            ParcelFileDescriptor.AutoCloseInputStream(descriptor)
+        }
     }
     override fun write(path: String, input: InputStream) {
         VerifiedArchiveTree.checked(path)

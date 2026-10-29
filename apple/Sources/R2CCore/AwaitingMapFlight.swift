@@ -58,42 +58,85 @@ public struct AwaitingMapFlight: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
-/// Serialized by the owning app model. Mutations commit before publication is allowed.
-@MainActor
-public final class AwaitingMapFlightJournal {
+public enum AwaitingMapFlightJournalError: Error, LocalizedError, Sendable {
+    case unavailable
+    public var errorDescription: String? {
+        "Saved flight history could not be read. Reconnect its storage and retry. The saved journal has been kept."
+    }
+}
+
+/// Geometry and journal mutations stay on this actor; durable writes precede publication.
+public actor AwaitingMapFlightJournal {
+    /// Use only from a worker. Every reader distinguishes absent data from failed recovery.
+    public nonisolated static func readSavedEntries(fileURL: URL) throws -> [AwaitingMapFlight] {
+        let data: Data
+        do { data = try Data(contentsOf: fileURL) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return [] }
+        return try JSONDecoder().decode([AwaitingMapFlight].self, from: data)
+    }
     public private(set) var entries: [AwaitingMapFlight]
+    public private(set) var loadError: String?
     private let fileURL: URL
     private let disk = OperationalWorkQueue(label: "org.ncssar.awaiting-map.disk")
-    private var loading: Task<Void, Never>?
+    private enum LoadResult: Sendable { case loaded([AwaitingMapFlight]), failed }
+    private var loading: Task<LoadResult, Never>?
+    private var loaded = false
+    private var retrying = false
+    private var loadGeneration = 0
     private var mutationInProgress = false
     private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
+    func isExecutingOnMainThread() -> Bool { Thread.isMainThread }
     public init(fileURL: URL) {
         self.fileURL = fileURL
         entries = []
-        let disk = self.disk
-        loading = Task { [weak self] in
-            let recovered: [AwaitingMapFlight] = (try? await disk.run {
-                let rows = (try? Data(contentsOf: fileURL)).flatMap { try? JSONDecoder().decode([AwaitingMapFlight].self, from: $0) } ?? []
-                return rows.map { value in
-                    var result = value; result.finished = true
-                    if result.decision == "bound" && result.publicationStarted != true { result.decision = "review" }
-                    return result
-                }
-            }) ?? []
-            self?.entries = recovered
-        }
     }
-    public func ready() async { await loading?.value }
+    public func ready() async {
+        guard !loaded else { return }
+        if loading == nil {
+            let disk = self.disk, fileURL = self.fileURL
+            loading = Task {
+                do {
+                    return .loaded(try await disk.run {
+                        return try Self.readSavedEntries(fileURL: fileURL).map { value in
+                            var result = value; result.finished = true
+                            if result.decision == "bound" && result.publicationStarted != true { result.decision = "review" }
+                            return result
+                        }
+                    })
+                } catch { return .failed }
+            }
+        }
+        let generation = loadGeneration
+        let result = await loading!.value
+        guard generation == loadGeneration else { await ready(); return }
+        guard !loaded else { return }
+        switch result {
+        case .loaded(let recovered): entries = recovered; loadError = nil
+        case .failed: loadError = AwaitingMapFlightJournalError.unavailable.localizedDescription
+        }
+        loaded = true
+    }
+    public func retryLoading() async {
+        guard loadError != nil, !retrying else { return }
+        retrying = true
+        defer { retrying = false }
+        loadGeneration &+= 1
+        loaded = false; loading = nil
+        await ready()
+    }
     public static func loaded(fileURL: URL) async -> AwaitingMapFlightJournal {
         let journal = AwaitingMapFlightJournal(fileURL: fileURL)
         await journal.ready()
         return journal
     }
-    private func beginMutation() async {
+    private func beginMutation() async throws {
         await ready()
+        try Task.checkCancellation()
+        guard loadError == nil else { throw AwaitingMapFlightJournalError.unavailable }
         if mutationInProgress {
             await withCheckedContinuation { mutationWaiters.append($0) }
         } else { mutationInProgress = true }
+        if Task.isCancelled { endMutation(); throw CancellationError() }
     }
     private func endMutation() {
         if mutationWaiters.isEmpty { mutationInProgress = false }
@@ -102,7 +145,7 @@ public final class AwaitingMapFlightJournal {
     /// `flightID` (RidFlightID) becomes the id of a newly created entry; an open entry keeps its id.
     public func record(remoteID: String, label: String, observations: [RidObservation], mapID: String, teamID: String, finished: Bool,
                        flightID: String? = nil) async throws {
-        await beginMutation()
+        try await beginMutation()
         defer { endMutation() }
         guard let first = observations.first else { return }
         var next = entries
@@ -120,7 +163,7 @@ public final class AwaitingMapFlightJournal {
         try await commit(next)
     }
     public func decide(id: String, mapID: String?, teamID: String) async throws {
-        await beginMutation()
+        try await beginMutation()
         defer { endMutation() }
         var next = entries
         guard let index = next.firstIndex(where: { $0.id == id && $0.decision == "review" }) else { return }
@@ -130,7 +173,7 @@ public final class AwaitingMapFlightJournal {
         try await commit(next)
     }
     public func notePublication(remoteID: String, mapID: String) async throws {
-        await beginMutation()
+        try await beginMutation()
         defer { endMutation() }
         var next = entries
         guard let index = next.lastIndex(where: { $0.remoteID == remoteID && !$0.finished && $0.mapID == mapID }), next[index].publicationStarted != true else { return }
@@ -138,21 +181,21 @@ public final class AwaitingMapFlightJournal {
         try await commit(next)
     }
     public func discard(remoteID: String, startedAt: Date) async throws {
-        await beginMutation()
+        try await beginMutation()
         defer { endMutation() }
         try await commit(entries.filter { !($0.remoteID == remoteID && $0.firstTime == startedAt && ["review", "bound", "local"].contains($0.decision)) })
     }
     /// Removes exactly one undecided or local entry. Returns false when nothing matched.
     @discardableResult
     public func discard(id: String) async throws -> Bool {
-        await beginMutation()
+        try await beginMutation()
         defer { endMutation() }
         guard entries.contains(where: { $0.id == id && ["review", "bound", "local"].contains($0.decision) }) else { return false }
         try await commit(entries.filter { $0.id != id })
         return true
     }
     public func markQueued(id: String) async throws {
-        await beginMutation()
+        try await beginMutation()
         defer { endMutation() }
         var next = entries
         if let index = next.firstIndex(where: { $0.id == id }) {

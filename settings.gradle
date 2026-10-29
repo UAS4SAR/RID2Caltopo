@@ -22,3 +22,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "RID2Caltopo"
 include ':app'
+include ':startup-benchmark'

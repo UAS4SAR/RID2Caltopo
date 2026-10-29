@@ -25,11 +25,15 @@ struct AppleClueDraft: Sendable {
 
 @MainActor
 final class AppleClueStore: ObservableObject {
-    @Published private(set) var records: [OperationalClueRecord] = []
+    @Published private(set) var records: [OperationalClueRecord] = [] {
+        didSet { reviewRevision &+= 1 }
+    }
+    @Published private(set) var reviewRevision = 0
     @Published private(set) var status = "No local clues"
 
     private let disk = OperationalWorkQueue(label: "org.ncssar.clues.disk")
     private var initialLoad: Task<Void, Never>?
+    private var indexLoadFailed = false
     private var indexRevision = 0
     private let root: URL
     private var personalLogin = false
@@ -50,10 +54,17 @@ final class AppleClueStore: ObservableObject {
         root = documents.appendingPathComponent("RID2Caltopo/FlightStorage", isDirectory: true)
         let root = self.root, disk = self.disk
         initialLoad = Task { [weak self] in
-            let loaded = (try? await disk.run { Self.loadIndex(root: root) }) ?? []
-            guard let self else { return }
-            self.records = loaded
-            self.updateStatus()
+            do {
+                let loaded = try await disk.run { try OperationalClueIndex.load(root: root) }
+                guard let self else { return }
+                self.records = loaded
+                self.updateStatus()
+            } catch {
+                guard let self else { return }
+                self.indexLoadFailed = true
+                self.status = "Saved clue history could not be read. Its files have been kept; reconnect storage and restart to retry."
+                AppleLog.error("Clue", "Index loading failed; writes disabled: \(error)")
+            }
         }
     }
 
@@ -94,10 +105,16 @@ final class AppleClueStore: ObservableObject {
 
     private func resumePendingUploads(generation: Int) async {
         await initialLoad?.value
-        let decisions: [AwaitingMapFlight] = (try? await disk.run {
-            let journalURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("awaiting-map-flights.json")
-            return (try? Data(contentsOf: journalURL)).flatMap { try? JSONDecoder().decode([AwaitingMapFlight].self, from: $0) } ?? []
-        }) ?? []
+        let decisions: [AwaitingMapFlight]
+        do {
+            decisions = try await disk.run {
+                let journalURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("awaiting-map-flights.json")
+                return try AwaitingMapFlightJournal.readSavedEntries(fileURL: journalURL)
+            }
+        } catch {
+            status = "Saved flight choices are unavailable; clue publication is paused."
+            return
+        }
         guard generation == configurationGeneration else { return }
         for flight in decisions where ["publish", "queued"].contains(flight.decision) && flight.mapID == mapID && flight.teamID == teamID {
             guard generation == configurationGeneration else { return }
@@ -113,11 +130,13 @@ final class AppleClueStore: ObservableObject {
     func save(_ draft: AppleClueDraft, jpegData: Data, publishToCaltopo: Bool) async throws -> OperationalClueRecord {
         guard !jpegData.isEmpty else { throw CocoaError(.fileWriteUnknown) }
         await initialLoad?.value
+        guard !indexLoadFailed else { throw CocoaError(.fileReadUnknown) }
         let id = UUID()
         let day = AppleFlightStorage.dayName(Date())
         let imageFilename = "\(day)/\(id.uuidString.lowercased()).jpg"
         let thumbnailFilename = "\(day)/\(id.uuidString.lowercased())-thumb.jpg"
         let root = self.root
+        let flightDestination = publishToCaltopo ? try await publicationDestination(for: draft) : (map: nil, team: nil)
         try await disk.run {
             try FileManager.default.createDirectory(at: root.appendingPathComponent(day), withIntermediateDirectories: true)
             AppleFlightStorage.prepareWrite(Int64(jpegData.count) * 2)
@@ -125,7 +144,6 @@ final class AppleClueStore: ObservableObject {
             let thumbnailData = Self.thumbnailJPEG(from: jpegData) ?? jpegData
             try thumbnailData.write(to: root.appendingPathComponent(thumbnailFilename), options: .atomic)
         }
-        let flightDestination = await publicationDestination(for: draft)
         let record = OperationalClueRecord(
             id: id,
             capturedAt: draft.capturedAt,
@@ -151,7 +169,12 @@ final class AppleClueStore: ObservableObject {
             binding: draft.binding
         )
         records.insert(record, at: 0)
-        try await persistIndex()
+        let mutationRevision = indexRevision + 1
+        do { try await persistIndex() }
+        catch {
+            if indexRevision == mutationRevision { records.removeAll { $0.id == id } }
+            throw error
+        }
         AppleLog.info(
             "Clue",
             "Local clue saved id=\(id) designator=\(draft.designator) bytes=\(jpegData.count) publish=\(publishToCaltopo) " +
@@ -180,29 +203,47 @@ final class AppleClueStore: ObservableObject {
     }
 
     /// The map of the flight the clue is bound to; falls back to the ownership rule, then the current map.
-    private func publicationDestination(for draft: AppleClueDraft) async -> (map: String?, team: String?) {
-        if personalLogin { return (mapID.isEmpty ? nil : mapID, teamID) }
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("awaiting-map-flights.json")
-        let flights = (try? await disk.run {
-            (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode([AwaitingMapFlight].self, from: $0) } ?? []
-        }) ?? []
-        let captured = draft.binding.map { Date(timeIntervalSince1970: Double($0.captureTimeMs) / 1_000) } ?? draft.capturedAt
-        let owner = AwaitingMapClueMatch.owner(clueAircraftID: draft.aircraftID, capturedAt: captured,
-                                               boundFlightID: draft.binding?.flightID, flights: flights)
-        if let flight = owner, !flight.finished || flight.id == draft.binding?.flightID, flight.decision != "local" {
-            return (flight.mapID.isEmpty ? nil : flight.mapID, flight.teamID.isEmpty ? nil : flight.teamID)
+    private func publicationDestination(for draft: AppleClueDraft) async throws -> (map: String?, team: String?) {
+        let generation = configurationGeneration
+        let selectedMap = mapID, selectedTeam = teamID
+        if personalLogin { return (selectedMap.isEmpty ? nil : selectedMap, selectedTeam) }
+        let result = try await disk.run {
+            let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("awaiting-map-flights.json")
+            let flights = try AwaitingMapFlightJournal.readSavedEntries(fileURL: url)
+            let captured = draft.binding.map { Date(timeIntervalSince1970: Double($0.captureTimeMs) / 1_000) } ?? draft.capturedAt
+            let owner = AwaitingMapClueMatch.owner(clueAircraftID: draft.aircraftID, capturedAt: captured,
+                                                  boundFlightID: draft.binding?.flightID, flights: flights)
+            if let flight = owner, !flight.finished || flight.id == draft.binding?.flightID, flight.decision != "local" {
+                return (map: flight.mapID.isEmpty ? nil : flight.mapID, team: flight.teamID.isEmpty ? nil : flight.teamID)
+            }
+            return (map: selectedMap.isEmpty ? nil : selectedMap, team: selectedTeam.isEmpty ? nil : selectedTeam)
         }
-        return (mapID.isEmpty ? nil : mapID, teamID.isEmpty ? nil : teamID)
+        guard generation == configurationGeneration else { throw CancellationError() }
+        return result
     }
+
 
     func bindAwaitingFlight(_ flight: AwaitingMapFlight, mapID: String, teamID: String) async {
         await initialLoad?.value
-        let previous = records
-        for index in records.indices where records[index].destinationMapID == nil &&
-                records[index].uploadState != .localOnly && records[index].uploadState != .published &&
-                AwaitingMapClueMatch.matches(records[index], flight: flight) {
-            records[index].destinationMapID = mapID
-            records[index].destinationTeamID = teamID
+        // Ownership matching scans complete track geometry. Prepare a snapshot on the
+        // worker and retry if another clue changed while it was being prepared.
+        var previous: [OperationalClueRecord] = []
+        while true {
+            let snapshot = records, revision = reviewRevision
+            let prepared = await Task.detached(priority: .utility) {
+                var next = snapshot
+                for index in next.indices where next[index].destinationMapID == nil &&
+                        next[index].uploadState != .localOnly && next[index].uploadState != .published &&
+                        AwaitingMapClueMatch.matches(next[index], flight: flight) {
+                    next[index].destinationMapID = mapID
+                    next[index].destinationTeamID = teamID
+                }
+                return next
+            }.value
+            guard !Task.isCancelled else { return }
+            guard revision == reviewRevision else { continue }
+            previous = snapshot; records = prepared
+            break
         }
         let mutationRevision = indexRevision + 1
         do { try await persistIndex() } catch {
@@ -261,12 +302,12 @@ final class AppleClueStore: ObservableObject {
         flight: AwaitingMapClueMatch.Candidate,
         otherFlights: [AwaitingMapClueMatch.Candidate]
     ) async -> [AppleTrackArchiveClue] {
-        let candidates = [flight] + otherFlights.filter { $0.id != flight.id }
-        let owned = records.filter { AwaitingMapClueMatch.ownerID($0, candidates: candidates) == flight.id }
-            .sorted { $0.capturedAt < $1.capturedAt }
-        let root = self.root
+        let snapshot = records, root = self.root
         return (try? await disk.run {
-            owned.map { AppleTrackArchiveClue(record: $0, jpegData: try? Data(contentsOf: root.appendingPathComponent($0.imageFilename))) }
+            let candidates = [flight] + otherFlights.filter { $0.id != flight.id }
+            let owned = snapshot.filter { AwaitingMapClueMatch.ownerID($0, candidates: candidates) == flight.id }
+                .sorted { $0.capturedAt < $1.capturedAt }
+            return owned.map { AppleTrackArchiveClue(record: $0, jpegData: try? Data(contentsOf: root.appendingPathComponent($0.imageFilename))) }
         }) ?? []
     }
 
@@ -399,44 +440,47 @@ final class AppleClueStore: ObservableObject {
         body(&records[index])
     }
 
-    private nonisolated static func loadIndex(root: URL) -> [OperationalClueRecord] {
-        let directories = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
-        return directories.flatMap { directory -> [OperationalClueRecord] in
-            guard AppleFlightStorage.date(directory.lastPathComponent) != nil,
-                  let data = try? Data(contentsOf: directory.appendingPathComponent("clues.json")),
-                  let loaded = try? JSONDecoder().decode([OperationalClueRecord].self, from: data) else { return [] }
-            return loaded
-        }.filter { FileManager.default.fileExists(atPath: root.appendingPathComponent($0.imageFilename).path) }
-            .sorted { $0.capturedAt > $1.capturedAt }
-    }
-
     private var pruning = false
     func pruneDeletedStorage() async {
         guard !pruning else { return }
         pruning = true
         defer { pruning = false }
         await initialLoad?.value
-        let snapshot = records, root = self.root
-        let missing = (try? await disk.run {
-            Set(snapshot.filter { !FileManager.default.fileExists(atPath: root.appendingPathComponent($0.imageFilename).path) }.map(\.id))
-        }) ?? []
-        for id in missing { uploadTasks.removeValue(forKey: id)?.cancel() }
-        records.removeAll { missing.contains($0.id) }
-        updateStatus()
+        guard !indexLoadFailed, !records.isEmpty else { return }
+        let snapshot = records, root = self.root, revision = reviewRevision
+        do {
+            let prepared = try await disk.run {
+                // A permission/protection/provider error is not proof of deletion.
+                _ = try root.resourceValues(forKeys: [.isDirectoryKey])
+                var missing: Set<UUID> = []
+                for record in snapshot {
+                    do { _ = try root.appendingPathComponent(record.imageFilename).resourceValues(forKeys: [.isRegularFileKey]) }
+                    catch let error as CocoaError where error.code == .fileReadNoSuchFile { missing.insert(record.id) }
+                }
+                return (missing, snapshot.filter { !missing.contains($0.id) })
+            }
+            guard revision == reviewRevision, !Task.isCancelled else { return }
+            if !prepared.0.isEmpty {
+                for id in prepared.0 { uploadTasks.removeValue(forKey: id)?.cancel() }
+                records = prepared.1
+            }
+            updateStatus()
+        } catch {
+            status = "Clue storage is unavailable; saved history has been kept."
+        }
     }
 
     private func persistIndex() async throws {
+        guard !indexLoadFailed else { throw CocoaError(.fileReadUnknown) }
         // Capture before suspension. The serial worker commits snapshots in order.
         let snapshot = records, root = self.root
         indexRevision += 1
         try await disk.run {
             let grouped = Dictionary(grouping: snapshot) { $0.imageFilename.components(separatedBy: "/")[0] }
-            let directories = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+            let directories = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
             for directory in directories where AppleFlightStorage.date(directory.lastPathComponent) != nil {
                 let index = directory.appendingPathComponent("clues.json")
-                let dayRecords = (grouped[directory.lastPathComponent] ?? []).filter {
-                    FileManager.default.fileExists(atPath: root.appendingPathComponent($0.imageFilename).path)
-                }
+                let dayRecords = grouped[directory.lastPathComponent] ?? []
                 guard !dayRecords.isEmpty || FileManager.default.fileExists(atPath: index.path) else { continue }
                 do { try JSONEncoder().encode(dayRecords).write(to: index, options: .atomic) }
                 catch { if FileManager.default.fileExists(atPath: directory.path) { throw error } }
@@ -445,6 +489,7 @@ final class AppleClueStore: ObservableObject {
     }
 
     private func updateStatus() {
+        guard !indexLoadFailed else { return }
         let pending = records.filter { $0.uploadState == .pending || $0.uploadState == .uploading || $0.uploadState == .failed }.count
         status = records.isEmpty ? "No local clues" : "\(records.count) local clues\(pending > 0 ? "; \(pending) awaiting CalTopo" : "")"
     }

@@ -207,7 +207,7 @@ final class AppleConfigurationTransferManager: ObservableObject {
         let preferences = organization.transferSnapshot().compactMapValues { ($0 as? NSNumber)?.intValue }
         let identitySnapshot = identities.backupIdentitySnapshot
         let data = try await Task.detached(priority: .utility) {
-            let mappings = identitySnapshot.values.sorted { $0.remoteID < $1.remoteID }.map {
+            let mappings = identitySnapshot.sorted { $0.remoteID < $1.remoteID }.map {
                 OrgConfigRIDMapping(remoteID: $0.remoteID, mappedID: $0.mappedID, organization: $0.organization,
                     model: $0.droneDescription, owner: $0.pilotCallsign, ownerName: $0.ownerName,
                     ownerCallsign: $0.pilotCallsign, readiness: $0.readiness)

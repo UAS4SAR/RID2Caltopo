@@ -24,8 +24,9 @@ import android.bluetooth.le.ScanSettings;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.os.Build;
-import android.os.Handler;
-import android.os.Looper;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import android.os.ParcelUuid;
 import android.os.SystemClock;
 
@@ -51,12 +52,23 @@ public class BluetoothScanner {
     private static final String TAG = "BluetoothScanner";
 
     private final OpenDroneIdDataManager dataManager;
-    private final BluetoothAdapter bluetoothAdapter = getBluetoothAdapter();
+    private BluetoothAdapter bluetoothAdapter;
     private BluetoothLeScanner bluetoothLeScanner;
     private final Context context;
     private final BluetoothRidTestPrefs.ScanVariant testVariant;
     private final boolean periodicRestartEnabled;
-    private final Handler diagnosticHandler = new Handler(Looper.getMainLooper());
+    private static final ScheduledThreadPoolExecutor radioWorker = createRadioWorker();
+    private static ScheduledThreadPoolExecutor createRadioWorker() {
+        ScheduledThreadPoolExecutor worker = new ScheduledThreadPoolExecutor(1, task -> {
+            Thread thread = new Thread(task, "r2c-bluetooth-control");
+            thread.setDaemon(true);
+            return thread;
+        });
+        worker.setRemoveOnCancelPolicy(true);
+        return worker;
+    }
+    private ScheduledFuture<?> reporterFuture, restartFuture, restartPauseFuture;
+    private final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean();
     private boolean scanning;
 
     private static final long DIAGNOSTIC_REPORT_INTERVAL_MS = 5_000L;
@@ -88,28 +100,34 @@ public class BluetoothScanner {
     }
 
     public static BluetoothAdapter getBluetoothAdapter() {
-
         Context appContext = R2CApplication.getAppCtxt();
-        BluetoothAdapter adapter = null;
-        if (null != appContext) {
-            BluetoothManager btManager = (BluetoothManager) appContext.getSystemService(Context.BLUETOOTH_SERVICE);
-            adapter = btManager.getAdapter();
-            if (null == adapter) {
-                CTWarn(TAG, "getBluetoothAdapter(): Can't get the default bluetooth adapter.");
-            } else if (!adapter.isEnabled()) {
-                // not sure what is going on.  Adapter frequently says it's not available, though it seems to be working.
-                CTWarn(TAG, "getBluetoothAdapter(): Default bluetooth adapter not enabled.");
-            } else {
-                CTWarn(TAG, "getBluetoothAdapter(): Default bluetooth adapter is enabled.");
-            }
-        }
-        return adapter;
+        if (appContext == null) return null;
+        // Obtaining the handle does not query adapter state or require CONNECT.
+        BluetoothManager manager = (BluetoothManager) appContext.getSystemService(Context.BLUETOOTH_SERVICE);
+        return manager == null ? null : manager.getAdapter();
+    }
+
+    private boolean hasRadioPermissions() {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+                (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
+                 ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED);
+    }
+
+    private void radioUnavailable(RuntimeException error) {
+        scanning = false;
+        cancelDiagnostics();
+        bluetoothLeScanner = null;
+        scanFailures.incrementAndGet();
+        CTWarn(TAG, "Bluetooth operation unavailable: " + error.getClass().getSimpleName());
+        if (!closed.get()) org.ncssar.rid2caltopo.data.CaltopoClient.ShowToast(
+                "Bluetooth scanning paused. Check Nearby devices permission and Bluetooth, then retry from Bluetooth Settings.");
     }
 
     private final ScanCallback scanCallback = new ScanCallback() {
 
         @Override
         public void onScanResult(int callbackType, ScanResult result) {
+            if (closed.get()) return;
             recordRawCallback(result);
             ScanRecord scanRecord = result.getScanRecord();
             if (scanRecord == null) {
@@ -128,10 +146,8 @@ public class BluetoothScanner {
             recordRidMatch(result, serviceData);
 
             CtDroneSpec.TransportTypeEnum transportType = CtDroneSpec.TransportTypeEnum.BT4;
-            if (bluetoothAdapter.isLeCodedPhySupported()) {
-                if (result.getPrimaryPhy() == BluetoothDevice.PHY_LE_CODED)
-                    transportType = CtDroneSpec.TransportTypeEnum.BT5;
-            }
+            if (result.getPrimaryPhy() == BluetoothDevice.PHY_LE_CODED)
+                transportType = CtDroneSpec.TransportTypeEnum.BT5;
 
             if (null != dataManager) dataManager.receiveDataBluetooth(serviceData, result, transportType);
         }
@@ -145,6 +161,7 @@ public class BluetoothScanner {
         public void onScanFailed(int errorCode) {
             scanFailures.incrementAndGet();
             CTError(TAG, "onScanFailed: errorCode is " + errorCode);
+            radioWorker.execute(() -> { if (!closed.get()) radioUnavailable(new IllegalStateException("scan failed: " + errorCode)); });
         }
     };
 
@@ -164,7 +181,7 @@ public class BluetoothScanner {
         public void run() {
             if (!scanning || !testVariant.getDiagnosticsEnabled()) return;
             CTInfo("BluetoothRIDTest", buildDiagnosticSummary());
-            diagnosticHandler.postDelayed(this, DIAGNOSTIC_REPORT_INTERVAL_MS);
+            reporterFuture = radioWorker.schedule(this, DIAGNOSTIC_REPORT_INTERVAL_MS, TimeUnit.MILLISECONDS);
         }
     };
 
@@ -174,36 +191,49 @@ public class BluetoothScanner {
             if (!scanning || !periodicRestartEnabled) return;
             CTInfo("BluetoothRIDTest", "Periodic Bluetooth scan restart requested after 120 seconds.");
             stopPlatformScan();
-            diagnosticHandler.postDelayed(() -> {
+            restartPauseFuture = radioWorker.schedule(() -> {
                 if (!scanning) return;
                 startPlatformScan();
-                diagnosticHandler.postDelayed(diagnosticRestarter, DIAGNOSTIC_RESTART_INTERVAL_MS);
-            }, DIAGNOSTIC_RESTART_PAUSE_MS);
+                if (scanning) restartFuture = radioWorker.schedule(diagnosticRestarter, DIAGNOSTIC_RESTART_INTERVAL_MS, TimeUnit.MILLISECONDS);
+            }, DIAGNOSTIC_RESTART_PAUSE_MS, TimeUnit.MILLISECONDS);
         }
     };
 
     public void startScan() {
-        if (null == bluetoothAdapter) {
-            CTError(TAG, "startScan(): bluetooth adapter missing.");
-            return;
-        }
-        bluetoothLeScanner = bluetoothAdapter.getBluetoothLeScanner();
-        scanning = true;
-        startPlatformScan();
+        if (!closed.get()) radioWorker.execute(this::startOnWorker);
+    }
+
+    private void startOnWorker() {
+        if (closed.get() || scanning) return;
+        boolean started = RadioOperation.attempt(this::hasRadioPermissions, () -> {
+            bluetoothAdapter = getBluetoothAdapter();
+            if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled())
+                throw new IllegalStateException("Bluetooth adapter unavailable");
+            bluetoothLeScanner = bluetoothAdapter.getBluetoothLeScanner();
+            if (bluetoothLeScanner == null) throw new IllegalStateException("Bluetooth scanner unavailable");
+            startPlatformScan();
+        }, this::radioUnavailable);
+        if (!started || !scanning) return;
         if (testVariant.getDiagnosticsEnabled()) {
             CTInfo("BluetoothRIDTest", String.format(Locale.US,
                     "Enabled variant=%s softwareFilter=%s legacy1M=%s periodicRestart=%s",
                     testVariant.name(), testVariant.getUsesSoftwareFilter(),
                     testVariant.getUsesLegacy1M(), periodicRestartEnabled));
-            diagnosticHandler.postDelayed(diagnosticReporter, DIAGNOSTIC_REPORT_INTERVAL_MS);
+            reporterFuture = radioWorker.schedule(diagnosticReporter, DIAGNOSTIC_REPORT_INTERVAL_MS, TimeUnit.MILLISECONDS);
         }
         if (periodicRestartEnabled) {
-            diagnosticHandler.postDelayed(diagnosticRestarter, DIAGNOSTIC_RESTART_INTERVAL_MS);
+            restartFuture = radioWorker.schedule(diagnosticRestarter, DIAGNOSTIC_RESTART_INTERVAL_MS, TimeUnit.MILLISECONDS);
         }
     }
 
     private void startPlatformScan() {
-        if (bluetoothLeScanner == null || bluetoothAdapter == null || !bluetoothAdapter.isEnabled()) return;
+        if (closed.get()) return;
+        RadioOperation.attempt(this::hasRadioPermissions, this::startPlatformScanChecked, this::radioUnavailable);
+    }
+
+    private void startPlatformScanChecked() {
+        if (bluetoothLeScanner == null || bluetoothAdapter == null || !bluetoothAdapter.isEnabled())
+            throw new IllegalStateException("Bluetooth adapter unavailable");
 
         List<ScanFilter> scanFilters = null;
         if (!testVariant.getUsesSoftwareFilter()) {
@@ -231,38 +261,33 @@ public class BluetoothScanner {
         }
         ScanSettings scanSettings = settingsBuilder.build();
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
-                CTError(TAG, "startScan: Did not get BLUETOOTH_SCAN permission");
-                return;
-            }
-        }
         CTDebug(TAG, "startScan: Calling bluetoothLeScanner.startScan variant=" + testVariant.name()
                 + " legacy1M=" + testVariant.getUsesLegacy1M()
                 + " periodicRestart=" + periodicRestartEnabled);
         bluetoothLeScanner.startScan(scanFilters, scanSettings, scanCallback);
+        scanning = true;
     }
 
     public void stopScan() {
-        scanning = false;
-        diagnosticHandler.removeCallbacksAndMessages(null);
-        stopPlatformScan();
-        if (testVariant.getDiagnosticsEnabled()) {
-            CTInfo("BluetoothRIDTest", "Stopped " + buildDiagnosticSummary());
-        }
+        if (closed.getAndSet(true)) return;
+        radioWorker.execute(() -> {
+            scanning = false;
+            cancelDiagnostics();
+            stopPlatformScan();
+            bluetoothLeScanner = null;
+        });
+    }
+
+    private void cancelDiagnostics() {
+        if (reporterFuture != null) reporterFuture.cancel(false);
+        if (restartFuture != null) restartFuture.cancel(false);
+        if (restartPauseFuture != null) restartPauseFuture.cancel(false);
     }
 
     private void stopPlatformScan() {
-        if (bluetoothLeScanner != null && bluetoothAdapter != null && bluetoothAdapter.isEnabled()) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
-                    CTError(TAG, "stopScan: Did not get BLUETOOTH_SCAN permission");
-                    return;
-                }
-            }
-            CTDebug(TAG, "Calling bluetoothLeScanner.stopScan().");
-            bluetoothLeScanner.stopScan(scanCallback);
-        }
+        RadioOperation.attempt(this::hasRadioPermissions, () -> {
+            if (bluetoothLeScanner != null) bluetoothLeScanner.stopScan(scanCallback);
+        }, this::radioUnavailable);
     }
 
     private void recordRawCallback(ScanResult result) {

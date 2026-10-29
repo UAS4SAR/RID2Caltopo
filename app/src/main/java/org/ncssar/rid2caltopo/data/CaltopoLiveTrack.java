@@ -145,6 +145,10 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     @NonNull private final R2cRuntime runtime;
     private String myRemoteId;
     private CtDroneSpec droneSpec;
+    // Segment identity outlives CtDroneSpec.reset() on the UI thread. Only
+    // creation/restart and an explicit rename replace it; archives and journal
+    // checkpoints must never read the next flight's mutable label.
+    @NonNull private volatile String segmentTrackLabel;
     private volatile boolean shuttingDown = false;
     private int consecutiveUpdateFails = 0;
     private long lastInterruptedJournalWriteMs = 0L;
@@ -202,7 +206,8 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
 
     public CaltopoLiveTrack(@NonNull CtDroneSpec droneSpec, double lat, double lng, double ele,
                             long droneTimestampInMsec) throws RuntimeException {
-        if (droneSpec.trackLabel().isEmpty()) {
+        segmentTrackLabel = droneSpec.trackLabel();
+        if (segmentTrackLabel.isEmpty()) {
             throw new RuntimeException("CaltopoLiveTrack(): trackLabel is required.");
         }
         mapStatus = CaltopoMap.GetMapStatus();
@@ -237,10 +242,11 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     }
 
     public void startNewTrack(double lat, double lng, double ele, long droneTimestampInMsec) {
-        CaltopoRecoveryWork.offMain(() -> startNewTrackOnWorker(lat, lng, ele, droneTimestampInMsec));
+        final String label = droneSpec.trackLabel();
+        CaltopoRecoveryWork.offMain(() -> startNewTrackOnWorker(lat, lng, ele, droneTimestampInMsec, label));
     }
 
-    private synchronized void startNewTrackOnWorker(double lat, double lng, double ele, long droneTimestampInMsec) {
+    private synchronized void startNewTrackOnWorker(double lat, double lng, double ele, long droneTimestampInMsec, String label) {
         if (shuttingDown) return;
         // A transport failure is not a new flight segment.
         if (active || requestedLiveTrackId != null || liveTrackId != null || startInFlight) {
@@ -254,6 +260,8 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         // buffering while confirmation/ownership is pending, just as the constructor
         // does, instead of recreating peer discovery for every returning waypoint.
         active = true;
+
+        if (!label.isEmpty()) segmentTrackLabel = label;
 
         trackObservedStartedAtMs = trackObservedEndedAtMs = startedAtMs;
         lastSeiPositionTimestampMs = 0L;
@@ -333,7 +341,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         String[] candidates = new String[] {
                 droneSpec.getMappedId(),
                 droneSpec.getRemoteId(),
-                droneSpec.trackLabel().split("_", 2)[0]
+                segmentTrackLabel.split("_", 2)[0]
         };
         ManagedVideoSessionRecording recording = ManagedVideoSessionRecordingCatalog.findForTrack(
                 R2CApplication.getAppCtxt(),
@@ -602,7 +610,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
      *                          so look at everything before the '_'.
      */
     public void checkCaltopoTrackLabel(@NonNull String caltopoTrackLabel) {
-        String trackLabel = droneSpec.trackLabel();
+        String trackLabel = segmentTrackLabel;
         if (trackLabel.equals(caltopoTrackLabel)) return; // no change.
         String newLabel = caltopoTrackLabel;
         int indexOfChar = caltopoTrackLabel.indexOf('_');
@@ -654,7 +662,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             resetLiveTrack();
             return;
         }
-        String trackLabel = droneSpec.trackLabel();
+        String trackLabel = segmentTrackLabel;
         int size = linePoints.size();
         String archiveId = liveTrackId != null ? liveTrackId : requestedLiveTrackId;
         if (0 == size || archiveId == null) {
@@ -679,7 +687,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         String[] archivedTrackCandidates = new String[] {
                 droneSpec.getMappedId(),
                 droneSpec.getRemoteId(),
-                droneSpec.trackLabel().split("_", 2)[0]
+                segmentTrackLabel.split("_", 2)[0]
         };
         CTDebug(TAG, String.format(Locale.US, "archiveTrackOnCaltopo(%s): Archiving track with %d points.",
                 trackLabel, size));
@@ -741,8 +749,8 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                 droneSpec.trackLabel(), isActive ? "": "in"));
         // Map publication shutdown is not physical flight termination. Keep the
         // confirmed pilot, local geometry and per-flight consent until RID/video ends.
-        if (isActive && !shuttingDown) {
-            WaypointTrack.ArchiveTrack(droneSpec.trackLabel());
+        if (isActive && !shuttingDown && segmentTrackLabel.equals(droneSpec.trackLabel())) {
+            WaypointTrack.ArchiveTrack(segmentTrackLabel);
             droneSpec.reset();
         }
         publicationGeneration++;
@@ -779,7 +787,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     }
 
     public String getTrackLabel() {
-        return droneSpec.trackLabel() + (isActive()? "":"(inactive)");
+        return segmentTrackLabel + (isActive()? "":"(inactive)");
     }
 
     public CtDroneSpec getDroneSpec() {
@@ -795,13 +803,16 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     }
 
     public void renameTrack() {
-        CaltopoRecoveryWork.offMain(this::renameTrackOnWorker);
+        final String label = droneSpec.trackLabel();
+        CaltopoRecoveryWork.offMain(() -> renameTrackOnWorker(label));
     }
 
-    private synchronized void renameTrackOnWorker() {
+    private synchronized void renameTrackOnWorker(String label) {
+        if (label.isEmpty() || !active) return;
+        segmentTrackLabel = label;
         // Just edit the current live track - replacing the title.
         // N.B. must continue to use the original track name when publishing tracks...
-        if (!active || null == startLiveTrackOp) {
+        if (null == startLiveTrackOp) {
             CTError(TAG, "renameTrack(): received on inactive track.");
             return;
         }
@@ -815,7 +826,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                 prop = new JSONObject();
                 feature.put("properties", prop);
             }
-            prop.put("title", droneSpec.trackLabel());
+            prop.put("title", segmentTrackLabel);
             prop.put("updated", timeString);
             prop.put("-updated-on", timeString);
             runtime.getCalTopoSessionGateway()
@@ -845,7 +856,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             startInFlight = true;
             active = true;
             if (null == folderId) folderId = CaltopoMap.GetFolderId();
-            String trackLabel = droneSpec.trackLabel();
+            String trackLabel = segmentTrackLabel;
             CTDebug(TAG, String.format(Locale.US,
                     "startNewTrack(%s): Starting LiveTrack w/label:%s mappedId='%s' localOwner=%s queuedPoints=%d in folder:%s",
                     effectiveFleetDeviceId(), trackLabel, droneSpec.getMappedId(), localOwner, linePoints.size(), folderId));
@@ -1133,7 +1144,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         }
         return new JournalSnapshot(++journalRevision,
                 publicationMapId != null ? publicationMapId : CaltopoMap.GetMapId(),
-                myRemoteId, journalId, droneSpec.trackLabel(), description, points);
+                myRemoteId, journalId, segmentTrackLabel, description, points);
     }
 
     private boolean saveJournalSnapshot(JournalSnapshot snapshot) {

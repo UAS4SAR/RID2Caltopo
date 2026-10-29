@@ -307,6 +307,11 @@ private final class AppleBackgroundTransferLease {
     }
 }
 
+struct ApplePreparedOrganizationSnapshot: Sendable {
+    let bytes: Data
+    let isCurrent: @MainActor @Sendable () -> Bool
+}
+
 @MainActor
 enum AppleManagedOrganizationConfig {
     static let versionDefaultsKey = "org.managedConfigVersionMs"
@@ -315,55 +320,53 @@ enum AppleManagedOrganizationConfig {
         caltopo: AppleCaltopoSettings,
         organization: AppleOrgConfigSettings,
         identities: AppleDroneConfirmationStore
-    ) throws -> [String: Any] {
-        let credentials = try OrgConfigTokenCodec.canonicalCredentialPayload([
-            "type": "ct_credentials", "file_version": "1.0",
-            "team_id": caltopo.teamID,
-            "credential_id": caltopo.credentialID,
-            "credential_secret": caltopo.credentialSecret,
-            "domain_and_port": caltopo.domainAndPort,
-            "connect_key": caltopo.connectKey,
-            "track_folder": organization.trackFolder,
-        ])
-        let mutualAidEncoded: String
-        if let template = organization.mutualAidTemplate {
-            let mutualAid = try OrgConfigTokenCodec.canonicalCredentialPayload([
-                "type": "ct_mutual_aid_credentials", "file_version": "1.0",
-                "team_id": template.teamID, "credential_id": template.credentialID,
-                "credential_secret": template.credentialSecret,
-                "domain_and_port": template.domainAndPort,
-                "source_label": template.sourceLabel,
-                "target_folder_hint": template.targetFolderHint,
-                "connect_key": template.connectKey,
-            ])
-            mutualAidEncoded = OrgConfigTokenCodec.encryptPayload(mutualAid)
-        } else {
-            mutualAidEncoded = ""
-        }
-        return [
-            "configSchemaVersion": 1, "aircraftSchemaVersion": 1, "sourcePlatform": "ios",
-            "sourceAppVersion": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
-            "sourceAppBuild": Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0") ?? 0,
-            "organizationCaltopoEnc": OrgConfigTokenCodec.encryptPayload(credentials),
-            "mutualAidCaltopoEnc": mutualAidEncoded,
-            "droneSpecs": identities.importedMappings.map { identity in
-                let source = (AppleAircraftOrganizationAccess.cachedState["aircraft"] as? [[String: Any]] ?? []).first { ($0["remoteId"] as? String)?.caseInsensitiveCompare(identity.remoteID) == .orderedSame }
-                let clean = source.map { identity.preservingBlankPublishedOwnerFields($0) } ?? identity
-                return ["remoteId": clean.remoteID, "mappedId": clean.mappedID,
-                 "org": clean.organization, "model": clean.droneDescription,
-                 "owner": clean.pilotCallsign, "ownerName": clean.ownerName, "ownerCallsign": clean.pilotCallsign,
-                 "readiness": clean.readiness.dictionary] as [String: Any]
-            },
-        ]
+    ) async throws -> ApplePreparedOrganizationSnapshot {
+        guard !CredentialMutationGate.shared.isBusy else { throw CancellationError() }
+        await AppleAircraftOrganizationAccess.prepareCachedState()
+        guard !CredentialMutationGate.shared.isBusy, AppleAircraftOrganizationAccess.hasPreparedState else { throw CancellationError() }
+        let sourceRevision = AppleAircraftOrganizationAccess.cachedStateRevision
+        let credentialRevision = CredentialMutationGate.shared.revision
+        let mappingRevision = identities.backupRevision
+        let configuration = caltopo.configuration, teams = caltopo.teamsCredentialDraft
+        let folder = organization.trackFolder
+        let templateSnapshot = organization.mutualAidTemplate
+        let mappingSnapshot = identities.importedMappings
+        let published = AppleAircraftOrganizationAccess.currentPreparedState
+        let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        let appBuild = Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0") ?? 0
+        let bytes = try await Task.detached(priority: .utility) {
+            try ManagedOrganizationWireSnapshot.encode(teams: teams, trackFolder: folder,
+                mutualAid: templateSnapshot, identities: mappingSnapshot, published: published,
+                appVersion: appVersion, appBuild: appBuild)
+        }.value
+        try Task.checkCancellation()
+        guard !CredentialMutationGate.shared.isBusy,
+              credentialRevision == CredentialMutationGate.shared.revision,
+              mappingRevision == identities.backupRevision,
+              configuration == caltopo.configuration, teams == caltopo.teamsCredentialDraft, folder == organization.trackFolder,
+              sourceRevision == AppleAircraftOrganizationAccess.cachedStateRevision else { throw CancellationError() }
+        return ApplePreparedOrganizationSnapshot(bytes: bytes, isCurrent: {
+            !CredentialMutationGate.shared.isBusy &&
+                credentialRevision == CredentialMutationGate.shared.revision &&
+                mappingRevision == identities.backupRevision && configuration == caltopo.configuration &&
+                teams == caltopo.teamsCredentialDraft &&
+                folder == organization.trackFolder && sourceRevision == AppleAircraftOrganizationAccess.cachedStateRevision
+        })
     }
 
-    static func apply(
-        snapshot: [String: Any], versionMs: Int64,
-        caltopo: AppleCaltopoSettings, organization: AppleOrgConfigSettings,
-        identities: AppleDroneConfirmationStore, defaults: UserDefaults = .standard
-    ) throws {
+    // JSONSerialization supplies immutable Foundation values; never mutate this
+    // input while a worker prepares the typed configuration.
+    private struct SnapshotInput: @unchecked Sendable { let value: [String: Any] }
+    private struct Prepared: Sendable {
+        let credentials: [String: String]
+        let mutualAid: MutualAidTemplateCredentials?
+        let mappings: [OrgConfigRIDMapping]
+        let aircraftSchema: Int
+    }
+
+    nonisolated private static func prepare(_ input: SnapshotInput) throws -> Prepared {
+        let snapshot = input.value
         guard (snapshot["configSchemaVersion"] as? NSNumber)?.intValue == 1,
-              versionMs > 0,
               let orgEncoded = snapshot["organizationCaltopoEnc"] as? String,
               let orgData = try OrgConfigTokenCodec.decryptPayload(orgEncoded).data(using: .utf8),
               let credentials = try JSONSerialization.jsonObject(with: orgData) as? [String: Any],
@@ -373,8 +376,7 @@ enum AppleManagedOrganizationConfig {
         if let encoded = snapshot["mutualAidCaltopoEnc"] as? String, !encoded.isEmpty,
            let data = try OrgConfigTokenCodec.decryptPayload(encoded).data(using: .utf8),
            let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            mutualAid = .init(
-                teamID: value["team_id"] as? String ?? "",
+            mutualAid = .init(teamID: value["team_id"] as? String ?? "",
                 credentialID: value["credential_id"] as? String ?? "",
                 credentialSecret: value["credential_secret"] as? String ?? "",
                 domainAndPort: value["domain_and_port"] as? String ?? "caltopo.com",
@@ -382,25 +384,61 @@ enum AppleManagedOrganizationConfig {
                 targetFolderHint: value["target_folder_hint"] as? String ?? "MAI",
                 connectKey: value["connect_key"] as? String ?? "")
         } else { mutualAid = nil }
-        try caltopo.applyManagedCredentials(credentials)
-        try organization.applyManagedOrganization(
-            organizationName: organization.organizationName,
-            trackFolder: credentials["track_folder"] as? String ?? organization.trackFolder,
-            mutualAidTemplate: mutualAid)
-        try identities.applyImportedMappings(droneSpecs.compactMap { value in
+        let mappings = droneSpecs.compactMap { value -> OrgConfigRIDMapping? in
             guard let remoteID = value["remoteId"] as? String, !remoteID.isEmpty else { return nil }
-            return OrgConfigRIDMapping(
-                remoteID: remoteID, mappedID: value["mappedId"] as? String ?? "",
-                organization: value["org"] as? String ?? "",
-                model: value["model"] as? String ?? "",
-                owner: value["owner"] as? String ?? "",
-                ownerName: value["ownerName"] as? String ?? "",
+            return OrgConfigRIDMapping(remoteID: remoteID, mappedID: value["mappedId"] as? String ?? "",
+                organization: value["org"] as? String ?? "", model: value["model"] as? String ?? "",
+                owner: value["owner"] as? String ?? "", ownerName: value["ownerName"] as? String ?? "",
                 ownerCallsign: value["ownerCallsign"] as? String ?? "",
                 readiness: AircraftReadiness.decode(value["readiness"]))
-        }, managedDownload: true)
-        defaults.set(versionMs, forKey: versionDefaultsKey)
-        defaults.set((snapshot["aircraftSchemaVersion"] as? NSNumber)?.intValue ?? 0, forKey: "org.managedReadinessSchemaVersion")
-        AppleLog.info("OrgConfig", "Applied managed organization configuration \(versionMs)")
+        }
+        // Reject conflicting imports before applying any settings or credentials.
+        try AircraftMappingSnapshot(records: mappings.map {
+            ["remoteID": $0.remoteID, "mappedID": $0.mappedID, "organization": $0.organization,
+             "model": $0.model, "ownerName": $0.ownerName,
+             "ownerCallsign": $0.ownerCallsign.isEmpty ? $0.owner : $0.ownerCallsign,
+             "readiness": $0.readiness.jsonString]
+        }).requireUnambiguous()
+        var strings: [String: String] = [:]
+        for key in ["team_id", "credential_id", "credential_secret", "domain_and_port", "connect_key", "track_folder"] {
+            strings[key] = credentials[key] as? String ?? ""
+        }
+        return Prepared(credentials: strings, mutualAid: mutualAid, mappings: mappings,
+                        aircraftSchema: (snapshot["aircraftSchemaVersion"] as? NSNumber)?.intValue ?? 0)
+    }
+
+    static func apply(
+        snapshot: [String: Any], versionMs: Int64,
+        caltopo: AppleCaltopoSettings, organization: AppleOrgConfigSettings,
+        identities: AppleDroneConfirmationStore, defaults: UserDefaults = .standard
+    ) async throws {
+        let requestedToken = organization.trackerAPIKey, requestedPrefix = organization.trackerURLPrefix
+        try await CredentialMutationGate.shared.run {
+                guard organization.trackerAPIKey == requestedToken, organization.trackerURLPrefix == requestedPrefix else { throw CancellationError() }
+
+            guard versionMs > 0 else { throw OrgConfigInteropError.invalidBundle }
+            let input = SnapshotInput(value: snapshot)
+            let token = organization.trackerAPIKey, prefix = organization.trackerURLPrefix
+            let revision = identities.backupRevision
+            let prepared = try await Task.detached(priority: .utility) { try prepare(input) }.value
+            try Task.checkCancellation()
+            guard token == organization.trackerAPIKey, prefix == organization.trackerURLPrefix,
+                  revision == identities.backupRevision else { throw CancellationError() }
+            try await caltopo.applyManagedCredentials(prepared.credentials)
+            guard token == organization.trackerAPIKey, prefix == organization.trackerURLPrefix else { throw CancellationError() }
+            try await organization.applyManagedOrganization(
+                organizationName: organization.organizationName,
+                trackFolder: prepared.credentials["track_folder"]?.isEmpty == false
+                    ? prepared.credentials["track_folder"]! : organization.trackFolder,
+                mutualAidTemplate: prepared.mutualAid)
+            guard token == organization.trackerAPIKey, prefix == organization.trackerURLPrefix,
+                  revision == identities.backupRevision else { throw CancellationError() }
+            try await identities.applyImportedMappings(prepared.mappings, managedDownload: true)
+            guard token == organization.trackerAPIKey, prefix == organization.trackerURLPrefix else { throw CancellationError() }
+            defaults.set(versionMs, forKey: versionDefaultsKey)
+            defaults.set(prepared.aircraftSchema, forKey: "org.managedReadinessSchemaVersion")
+            AppleLog.info("OrgConfig", "Applied managed organization configuration \(versionMs)")
+        }
     }
 
 }
@@ -504,8 +542,10 @@ final class AppleTrackerCoordinator: ObservableObject {
     private var trackerURLPrefix = ""
     private var trackerAPIKey = ""
     private let defaults: UserDefaults
-    private var organizationConfigSnapshotProvider: (() throws -> [String: Any])?
-    private var organizationConfigApplyHandler: (([String: Any], Int64) throws -> Void)?
+    private var organizationSnapshotInFlight = false
+    private var pendingOrganizationSnapshotRequests: [(id: String, connection: UUID, credentials: Int)] = []
+    private var organizationConfigSnapshotProvider: (() async throws -> ApplePreparedOrganizationSnapshot)?
+    private var organizationConfigApplyHandler: (([String: Any], Int64) async throws -> Void)?
     private var managedVideoThumbnailUpdatedHandler: ((String) -> Void)?
     private var mapID = ""
     private let zoneID: String
@@ -688,8 +728,8 @@ final class AppleTrackerCoordinator: ObservableObject {
     }
 
     func configureOrganizationConfig(
-        snapshotProvider: @escaping () throws -> [String: Any],
-        applyHandler: @escaping ([String: Any], Int64) throws -> Void
+        snapshotProvider: @escaping () async throws -> ApplePreparedOrganizationSnapshot,
+        applyHandler: @escaping ([String: Any], Int64) async throws -> Void
     ) {
         organizationConfigSnapshotProvider = snapshotProvider
         organizationConfigApplyHandler = applyHandler
@@ -1263,18 +1303,37 @@ final class AppleTrackerCoordinator: ObservableObject {
         if type == "organization_config_snapshot_request" {
             let requestID = (object["requestId"] as? String ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !requestID.isEmpty, let provider = organizationConfigSnapshotProvider else {
+            guard !requestID.isEmpty, requestID.utf8.count <= 256, let provider = organizationConfigSnapshotProvider else {
                 return true
             }
-            do {
-                let response: [String: Any] = [
-                    "type": "organization_config_snapshot_response",
-                    "requestId": requestID,
-                    "config": try provider(),
-                ]
-                send(try JSONSerialization.data(withJSONObject: response, options: [.sortedKeys]))
-            } catch {
-                AppleLog.error("OrgConfig", "Could not return organization configuration: \(error.localizedDescription)")
+            guard !organizationSnapshotInFlight else {
+                if pendingOrganizationSnapshotRequests.count < 16,
+                   !pendingOrganizationSnapshotRequests.contains(where: { $0.id == requestID && $0.connection == generation }) {
+                    pendingOrganizationSnapshotRequests.append((requestID, generation, CredentialMutationGate.shared.revision))
+                } else { AppleLog.warning("OrgConfig", "Configuration snapshot queue full or duplicate request") }
+                return true
+            }
+            organizationSnapshotInFlight = true
+            let requestGeneration = generation
+            let credentialRevision = CredentialMutationGate.shared.revision
+            Task { @MainActor [weak self] in
+                defer { self?.finishOrganizationSnapshot() }
+                do {
+                    let prepared = try await provider()
+                    let snapshot = prepared.bytes
+                    let text = try await Task.detached(priority: .utility) {
+                        let response: [String: Any] = [
+                            "type": "organization_config_snapshot_response", "requestId": requestID,
+                            "config": try JSONSerialization.jsonObject(with: snapshot)]
+                        return String(decoding: try JSONSerialization.data(withJSONObject: response, options: [.sortedKeys]), as: UTF8.self)
+                    }.value
+                    guard let self, requestGeneration == self.generation, prepared.isCurrent(),
+                          !CredentialMutationGate.shared.isBusy,
+                          credentialRevision == CredentialMutationGate.shared.revision else { return }
+                    self.sendText(text)
+                } catch {
+                    AppleLog.error("OrgConfig", "Could not return current organization configuration: \(error.localizedDescription)")
+                }
             }
             return true
         }
@@ -1295,6 +1354,26 @@ final class AppleTrackerCoordinator: ObservableObject {
         return false
     }
 
+    private func finishOrganizationSnapshot() {
+        organizationSnapshotInFlight = false
+        while !pendingOrganizationSnapshotRequests.isEmpty {
+            let next = pendingOrganizationSnapshotRequests.removeFirst()
+            guard next.connection == generation,
+                  next.credentials == CredentialMutationGate.shared.revision,
+                  !CredentialMutationGate.shared.isBusy else { continue }
+            if let request = try? JSONSerialization.data(withJSONObject: [
+                "type": "organization_config_snapshot_request", "requestId": next.id]) {
+                _ = handleOrganizationConfigMessage(request)
+            }
+            break
+        }
+    }
+
+    private struct ManagedReply: @unchecked Sendable {
+        let version: Int64
+        let snapshot: [String: Any] // Immutable JSON values, consumed only by worker preparation.
+    }
+
     private func synchronizeOrganizationConfig(advertisedVersionMs: Int64) {
         guard let baseURL = URL(string: trackerURLPrefix),
               !trackerAPIKey.isEmpty,
@@ -1308,6 +1387,7 @@ final class AppleTrackerCoordinator: ObservableObject {
             String(TrackerCoordinationClient.trackerFunctionalityRelease),
             forHTTPHeaderField: "X-R2C-Functionality-Release"
         )
+        let requestedToken = trackerAPIKey, requestedPrefix = trackerURLPrefix
         Task { @MainActor [weak self] in
             defer {
                 self?.organizationConfigSyncInProgress = false
@@ -1317,12 +1397,17 @@ final class AppleTrackerCoordinator: ObservableObject {
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard let http = response as? HTTPURLResponse,
                       (200 ..< 300).contains(http.statusCode),
-                      let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let version = (root["versionMs"] as? NSNumber)?.int64Value,
-                      let snapshot = root["config"] as? [String: Any]
-                else { throw URLError(.badServerResponse) }
+                      !data.isEmpty else { throw URLError(.badServerResponse) }
+                let decoded = try await Task.detached(priority: .utility) {
+                    guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          let version = (root["versionMs"] as? NSNumber)?.int64Value,
+                          let snapshot = root["config"] as? [String: Any] else { throw URLError(.badServerResponse) }
+                    return ManagedReply(version: version, snapshot: snapshot)
+                }.value
+                guard self?.trackerAPIKey == requestedToken, self?.trackerURLPrefix == requestedPrefix else { return }
+                let version = decoded.version, snapshot = decoded.snapshot
                 guard version != Int64(self?.defaults.integer(forKey: AppleManagedOrganizationConfig.versionDefaultsKey) ?? 0) else { return }
-                try applyHandler(snapshot, version)
+                try await applyHandler(snapshot, version)
             } catch {
                 AppleLog.error("OrgConfig", "Managed configuration sync failed: \(error.localizedDescription)")
             }
@@ -2935,7 +3020,12 @@ final class AppleTrackerCoordinator: ObservableObject {
     }
 
     private func send(_ data: Data) {
-        guard connected, let socket, let text = String(data: data, encoding: .utf8) else { return }
+        guard let text = String(data: data, encoding: .utf8) else { return }
+        sendText(text)
+    }
+
+    private func sendText(_ text: String) {
+        guard connected, let socket else { return }
         let currentGeneration = generation
         socket.send(.string(text)) { [weak self] error in
             guard let error else { return }

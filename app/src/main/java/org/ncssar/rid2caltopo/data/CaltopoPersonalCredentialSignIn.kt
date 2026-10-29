@@ -24,11 +24,11 @@ object CaltopoPersonalCredentialSignIn {
         val body = CaltopoPersonalAccountConnection.fetchAccountCatalog(CaltopoPersonalAccountHttps)
             ?: throw CaltopoPersonalAccountException("CalTopo account catalog could not be loaded.")
         val normalized = CaltopoPersonalCatalog.normalize(body, status.accountId)
-        return CredentialCatalog(status, signedGrants(normalized))
+        return CredentialCatalog(status, CaltopoPersonalSession.prepareCatalog(signedGrants(normalized)))
     }
 
-    fun publishCatalog(catalog: JSONObject) {
-        CaltopoPersonalSession.acceptCatalog(CaltopoPersonalSession.prepareCatalog(catalog))
+    fun publishCatalog(catalog: CaltopoPersonalSession.PreparedCatalog) {
+        CaltopoPersonalSession.acceptCatalog(catalog)
     }
 
     /** Keystore delete. Call from a worker, then [CaltopoPersonalSession.suspendPersonalSelection] on the UI thread. */
@@ -43,7 +43,6 @@ object CaltopoPersonalCredentialSignIn {
             .apply()
         CaltopoPersonalAccountConnection.applyLoginMode(mode)
         // Keep the unused login's stored secret. Drop the active personal map so the two are not mixed.
-        CaltopoPersonalSession.suspendPersonalSelection()
     }
 
     private fun signedGrants(normalized: JSONObject): JSONObject {
@@ -60,4 +59,4 @@ object CaltopoPersonalCredentialSignIn {
     }
 }
 
-data class CredentialCatalog(val status: CaltopoPersonalAccountStatus, val catalog: JSONObject)
+data class CredentialCatalog(val status: CaltopoPersonalAccountStatus, val catalog: CaltopoPersonalSession.PreparedCatalog)

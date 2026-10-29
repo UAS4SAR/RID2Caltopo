@@ -1,0 +1,9 @@
+Latest changes:
+- Added credential-based personal CalTopo sign-in through the system browser. Existing personal browser logins keep Session Cookies until you choose Credentials.
+- Fixed missing CalTopo track names on Android and missing recording links on iPad tracks.
+- Require fresh terrain before saving projected photo clues. If terrain is unavailable, keep the capture open for retry instead of publishing an approximate location.
+- Prepare live track history and map geometry in the background to improve responsiveness during video viewing.
+- Fixed a crash after device unlock while recovering archived originals. Preserve original photo bytes during archive verification and keep storage failures from closing the app.
+- Preserve unreadable flight and clue history and show a recovery error instead of treating it as empty.
+- Prepare saved-flight review geometry on a worker to keep the interface responsive as history grows.
+- Strengthened upgrade, interrupted-recovery and UI-thread release checks.

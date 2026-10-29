@@ -850,11 +850,15 @@ private fun PersonalLoginSupportSetting() {
     var mode by remember { mutableStateOf(org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.loginMode) }
     var summary by remember { mutableStateOf("Not connected") }
     var busy by remember { mutableStateOf(false) }
+    var credentialRevision by remember { mutableStateOf(0L) }
     LaunchedEffect(mode) {
-        summary = withContext(Dispatchers.IO) {
+        if (mode != CaltopoPersonalLoginMode.CREDENTIALS) return@LaunchedEffect
+        val revision = credentialRevision
+        val prepared = withContext(Dispatchers.IO) {
             val status = org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.status("caltopo.com")
             if (status != null && !status.revoked) "Connected as ${status.displayName}" else "Not connected"
         }
+        if (revision == credentialRevision) summary = prepared
     }
     Text(
         "Choose how this device signs in to a personal CalTopo account. Teams credentials are unchanged.",
@@ -869,9 +873,14 @@ private fun PersonalLoginSupportSetting() {
                 selected = mode == value,
                 onClick = {
                     if (mode == value || busy) return@selectable
-                    CaltopoPersonalCredentialSignIn.switchMode(context, value)
-                    CaltopoPersonalSession.suspendPersonalSelection()
-                    mode = value
+                    credentialRevision++
+                    busy = true
+                    scope.launch {
+                        withContext(Dispatchers.IO) { CaltopoPersonalCredentialSignIn.switchMode(context, value) }
+                        CaltopoPersonalSession.suspendPersonalSelection()
+                        mode = value
+                        busy = false
+                    }
                 },
                 role = Role.RadioButton
             ),
@@ -885,6 +894,7 @@ private fun PersonalLoginSupportSetting() {
         Text(summary, style = MaterialTheme.typography.bodyMedium)
         Button(
             onClick = {
+                credentialRevision++
                 busy = true
                 scope.launch {
                     val result = withContext(Dispatchers.IO) { runCatching { CaltopoPersonalCredentialSignIn.connect(context) } }
@@ -901,10 +911,16 @@ private fun PersonalLoginSupportSetting() {
         ) { Text(if (busy) "Waiting for the browser…" else "Sign in") }
         TextButton(
             onClick = {
+                credentialRevision++
+                busy = true
                 scope.launch {
-                    withContext(Dispatchers.IO) { CaltopoPersonalCredentialSignIn.logOut() }
-                    CaltopoPersonalSession.suspendPersonalSelection()
-                    summary = "Not connected"
+                    try {
+                        val result = withContext(Dispatchers.IO) { runCatching { CaltopoPersonalCredentialSignIn.logOut() } }
+                        result.onSuccess { CaltopoPersonalSession.suspendPersonalSelection() }
+                        summary = result.fold({ "Not connected" }, { it.message ?: "CalTopo log out failed." })
+                    } finally {
+                        busy = false
+                    }
                 }
             },
             enabled = !busy,

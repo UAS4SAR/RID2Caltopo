@@ -35,7 +35,8 @@ class PersonalPhotoLiveTest {
             if (catalog == null) Thread.sleep(500)
         }
         assertNotNull("Saved CalTopo login must load the native catalog", catalog)
-        instrumentation.runOnMainSync { CaltopoPersonalSession.acceptCatalog(catalog!!) }
+        val prepared = CaltopoPersonalSession.prepareCatalog(catalog!!)
+        instrumentation.runOnMainSync { CaltopoPersonalSession.acceptCatalog(prepared) }
         val token = catalog!!.getJSONObject("grants").getString("G00CPSS")
         CaltopoPersonalSession.activate(token, "G00CPSS")
         val auth = CaltopoPersonalSession.capture("")!!

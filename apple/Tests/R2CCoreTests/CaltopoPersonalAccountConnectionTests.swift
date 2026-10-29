@@ -142,6 +142,31 @@ final class CaltopoPersonalAccountConnectionTests: XCTestCase {
         XCTAssertThrowsError(try CaltopoLiveClient(configuration: CaltopoLiveConfiguration(mapID: "ABC123", credentialID: "cred12345678", credentialSecretBase64: record.signingKey, personalSessionID: UUID(), personalAccountID: "USER01", personalMediaOwnerID: "USER01", personalSignedAccount: true)))
     }
 
+    func testCachedUIReadDoesNotWaitForStorageOrAcceptAnObsoleteLoad() async throws {
+        let connection = CaltopoPersonalAccountConnection()
+        let store = DelayedPersonalAccountStore(record: try sampleRecord(secret: ""))
+        connection.use(store)
+        connection.setFeatureEnabled(true)
+        let loading = Task.detached { connection.status(host: "caltopo.com") }
+        let started = await Task.detached { store.awaitStart() }.value
+        guard started == .success else {
+            store.release.signal()
+            XCTFail("Storage load did not start")
+            return
+        }
+        let before = Date()
+        XCTAssertNil(connection.cachedStatus(host: "caltopo.com"))
+        XCTAssertEqual(connection.cachedLookup(host: "caltopo.com", accountID: "USER01"), .unavailable)
+        XCTAssertLessThan(Date().timeIntervalSince(before), 0.1)
+        connection.use(CaltopoPersonalAccountMemoryStore())
+        store.release.signal()
+        let obsolete = await loading.value
+        XCTAssertNil(obsolete)
+        XCTAssertNil(connection.cachedStatus(host: "caltopo.com"))
+        XCTAssertNil(connection.status(host: "caltopo.com"))
+        XCTAssertEqual(connection.cachedLookup(host: "caltopo.com", accountID: "USER01"), .absent)
+    }
+
     private func sampleRecord(secret: String) throws -> CaltopoPersonalAccountRecord {
         let key = Data(base64Encoded: secret)?.count == 32 ? secret : Data(repeating: 1, count: 32).base64EncodedString()
         let body = #"{"code":"cred12345678","key":"\#(key)","account":{"id":"USER01","type":"account","properties":{"class":"UserAccount","title":"Pilot"}}}"#.data(using: .utf8)!
@@ -155,4 +180,21 @@ private extension CaltopoPersonalAccountConnection {
         try store.save(record)
         use(store)
     }
+}
+
+private final class DelayedPersonalAccountStore: CaltopoPersonalAccountStore, @unchecked Sendable {
+    let started = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    let record: CaltopoPersonalAccountRecord
+    init(record: CaltopoPersonalAccountRecord) { self.record = record }
+    func awaitStart() -> DispatchTimeoutResult { started.wait(timeout: .now() + 2) }
+    func load() throws -> CaltopoPersonalAccountRecord? {
+        started.signal()
+        guard release.wait(timeout: .now() + 5) == .success else {
+            throw CaltopoPersonalAccountError.unavailable
+        }
+        return record
+    }
+    func save(_ record: CaltopoPersonalAccountRecord) throws {}
+    func clear() throws {}
 }

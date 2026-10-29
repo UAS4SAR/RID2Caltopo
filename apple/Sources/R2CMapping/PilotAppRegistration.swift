@@ -39,7 +39,14 @@ public enum PilotAppRegistration {
         if (try? String(contentsOf: receipt, encoding: .utf8)) != hash || !hasCredentials {
             try save(credentials)
             // Record only after the secure store has accepted the registration.
-            try Data(hash.utf8).write(to: receipt, options: [.atomic, .completeFileProtection])
+            // iOS Data Protection is retained on device. A command-line macOS
+            // host can reject this protection class even in a writable folder.
+            #if os(iOS)
+            let options: Data.WritingOptions = [.atomic, .completeFileProtection]
+            #else
+            let options: Data.WritingOptions = [.atomic]
+            #endif
+            try Data(hash.utf8).write(to: receipt, options: options)
         }
         return hash
     }

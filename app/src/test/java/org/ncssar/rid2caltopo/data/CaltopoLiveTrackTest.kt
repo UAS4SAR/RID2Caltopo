@@ -214,6 +214,43 @@ class CaltopoLiveTrackTest {
         assertEquals(0, gateway.countOperations("addLiveTrackPoint"))
     }
 
+    @Test fun delayedFinishKeepsSegmentTitleAfterDroneResetAndNextFlight() {
+        val track = startingTrack()
+        val gateway = fixture.calTopoSessionGateway
+        val id = gateway.snapshotOperations().first { it.kind == "startLiveTrack" }.payload!!.getString("id")
+        gateway.startCallbacks[0].accept(reply(id))
+        val drone = track.droneSpec
+        val originalLabel = drone.trackLabel()
+        track.publishDirect(39.2, -121.2, 510, 2_000)
+        // Main clears flight state immediately after dispatching finish. The
+        // worker may also run after the next flight has already changed it.
+        drone.reset()
+        setDroneTrackLabel(drone, "NEXT-FLIGHT_130000Oct28")
+        gateway.holdRecoveryEdits = true
+        CaltopoLiveTrack::class.java.getDeclaredMethod("finishTrackOnWorker", String::class.java,
+            String::class.java, String::class.java).apply { isAccessible = true }
+            .invoke(track, "flight ended", "map-test", "archive-folder-test")
+        val shape = gateway.snapshotOperations().first { it.kind == "editObject" && it.summary == "Shape:$id" }.payload!!
+        assertEquals(originalLabel, shape.getJSONObject("properties").getString("title"))
+        assertEquals(2, shape.getJSONObject("geometry").getJSONArray("coordinates").length())
+        assertEquals(originalLabel, CaltopoInterruptedTrackJournal.entriesForTesting().getJSONObject(0).getString("label"))
+        assertEquals("NEXT-FLIGHT_130000Oct28", drone.trackLabel())
+    }
+
+    @Test fun renamedSegmentKeepsItsTitleWhenDroneResetsBeforeArchive() {
+        val track = startingTrack()
+        val drone = track.droneSpec
+        val renamed = "RENAMED_120000Oct28"
+        setDroneTrackLabel(drone, renamed)
+        track.renameTrack()
+        drone.reset()
+        track.finishTrack("flight ended")
+        val shape = fixture.calTopoSessionGateway.snapshotOperations().first {
+            it.kind == "editObject" && it.summary.startsWith("Shape:")
+        }.payload!!
+        assertEquals(renamed, shape.getJSONObject("properties").getString("title"))
+    }
+
     @Test fun mapShutdownPreservesPilotConsentAndPhysicalFlight() {
         val drone = CtDroneSpec("RID-CONTINUING")
         val label = "1SAR7m3_120000Apr28"

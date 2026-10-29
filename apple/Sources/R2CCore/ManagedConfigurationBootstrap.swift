@@ -17,7 +17,7 @@ public final class ManagedConfigurationBootstrap<Snapshot> {
         now: TimeInterval = ProcessInfo.processInfo.systemUptime,
         fetch: () async throws -> Snapshot?,
         isCurrent: () -> Bool,
-        apply: (Snapshot) throws -> Void
+        apply: (Snapshot) async throws -> Void
     ) async throws -> Bool {
         guard !scope.isEmpty else { return false }
         // A restored path must get a fresh attempt after an offline request finishes.
@@ -36,7 +36,7 @@ public final class ManagedConfigurationBootstrap<Snapshot> {
             for waiter in waiters { waiter.resume() }
         }
         guard let snapshot = try await fetch(), isCurrent() else { return false }
-        try apply(snapshot)
+        try await apply(snapshot)
         return true
     }
 }

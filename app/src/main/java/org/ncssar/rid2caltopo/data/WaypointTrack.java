@@ -126,7 +126,7 @@ public class WaypointTrack {
 
     private static final String GEOJSON_MIME_TYPE = "application/geo+json";
 	// map trackLabel to WaypointTrack.
-	private static HashMap<String, WaypointTrack> TrackMap = new HashMap<>();
+	private static final java.util.concurrent.ConcurrentHashMap<String, WaypointTrack> TrackMap = new java.util.concurrent.ConcurrentHashMap<>();
     @Nullable
     private static ExecutorService TrackArchiveExecutorPool = null;
 
@@ -144,6 +144,16 @@ public class WaypointTrack {
     private String fileName;
     // Aligned with coordinates: app receive time (diagnostic only), drone-clock flag and source.
     private final List<Long> pointReceivedAtMs = new ArrayList<>();
+    // Published append-only render history: worker snapshots never lock the
+    // live ingest/archive monitor or traverse concurrently-mutated JSON.
+    private static final class RenderPointNode {
+        final TrackPoint point;
+        final RenderPointNode previous;
+        RenderPointNode(TrackPoint point, RenderPointNode previous) {
+            this.point = point; this.previous = previous;
+        }
+    }
+    private volatile RenderPointNode renderTail;
     private final List<Boolean> pointDroneClock = new ArrayList<>();
     private final List<String> pointSources = new ArrayList<>();
     // Flight start (app clock, Unix ms) and the stable flight id derived from it and the drone's
@@ -194,11 +204,7 @@ public class WaypointTrack {
 										   long altitude, long timestampInMillisec, long receivedAtMs,
 										   @NonNull String source, boolean droneClock) {
 		String trackLabel = droneSpec.trackLabel();
-		WaypointTrack track = TrackMap.get(trackLabel);
-		if (null == track) {
-			track = new WaypointTrack(trackLabel, droneSpec);
-			TrackMap.put(trackLabel, track);
-		}
+		WaypointTrack track = TrackMap.computeIfAbsent(trackLabel, key -> new WaypointTrack(key, droneSpec));
 		track.addWaypoint(lat, lng, altitude, timestampInMillisec, receivedAtMs, source, droneClock);
 	}
 
@@ -275,9 +281,22 @@ public class WaypointTrack {
 
     @NonNull
     public static List<TrackPoint> GetTrackPointsSnapshot(@NonNull CtDroneSpec droneSpec) {
-        WaypointTrack track = TrackMap.get(droneSpec.trackLabel());
+        return GetTrackPointsSnapshotForLabel(droneSpec.trackLabel());
+    }
+
+    /** Worker callers freeze the segment label before dispatch, not the mutable drone object. */
+    @NonNull
+    public static List<TrackPoint> GetTrackPointsSnapshotForLabel(@NonNull String label) {
+        WaypointTrack track = TrackMap.get(label);
         if (track == null) return new ArrayList<>();
         return track.getTrackPointsSnapshot();
+    }
+
+    /** Tiny lock-free status read; unchanged history need not be copied for every UI update. */
+    @Nullable
+    public static Object GetTrackRenderRevision(@NonNull String label) {
+        WaypointTrack track = TrackMap.get(label);
+        return track == null ? null : track.renderTail;
     }
 
     public static void RenameTrack(
@@ -374,6 +393,16 @@ public class WaypointTrack {
                 this.pointReceivedAtMs.add(i < other.pointReceivedAtMs.size() ? other.pointReceivedAtMs.get(i) : null);
                 this.pointDroneClock.add(i < other.pointDroneClock.size() ? other.pointDroneClock.get(i) : Boolean.TRUE);
                 this.pointSources.add(i < other.pointSources.size() ? other.pointSources.get(i) : "rid");
+                if (point instanceof JSONArray) try {
+                    JSONArray coordinate = (JSONArray) point;
+                    Long received = i < other.pointReceivedAtMs.size() ? other.pointReceivedAtMs.get(i) : null;
+                    long timestamp = coordinate.getLong(3);
+                    renderTail = new RenderPointNode(new TrackPoint(coordinate.getDouble(1),
+                            coordinate.getDouble(0), coordinate.getDouble(2), timestamp,
+                            received != null ? received : timestamp), renderTail);
+                } catch (JSONException error) {
+                    CTWarn(TAG, "Skipping malformed merged render point", error);
+                }
             }
         }
     }
@@ -404,24 +433,10 @@ public class WaypointTrack {
 
     @NonNull
     private List<TrackPoint> getTrackPointsSnapshot() {
-        ArrayList<TrackPoint> snapshot = new ArrayList<>(coordinates.length());
-        for (int i = 0; i < coordinates.length(); i++) {
-            JSONArray point = coordinates.optJSONArray(i);
-            if (point == null || point.length() < 4) continue;
-            try {
-                double lng = point.getDouble(0);
-                double lat = point.getDouble(1);
-                double ele = point.getDouble(2);
-                long timestampMsec = point.getLong(3);
-                Long received = i < pointReceivedAtMs.size() ? pointReceivedAtMs.get(i) : null;
-                snapshot.add(new TrackPoint(lat, lng, ele, timestampMsec,
-                        received != null ? received : timestampMsec));
-            } catch (JSONException e) {
-                CTWarn(TAG, String.format(Locale.US,
-                        "getTrackPointsSnapshot(%s): skipping malformed point at index %d",
-                        trackLabel, i), e);
-            }
-        }
+        RenderPointNode tail = renderTail;
+        ArrayList<TrackPoint> snapshot = new ArrayList<>();
+        for (RenderPointNode node = tail; node != null; node = node.previous) snapshot.add(node.point);
+        java.util.Collections.reverse(snapshot);
         return snapshot;
     }
 
@@ -1117,6 +1132,8 @@ public class WaypointTrack {
 		pointReceivedAtMs.add(receivedAtMs);
 		pointDroneClock.add(droneClock);
 		pointSources.add(source);
+        renderTail = new RenderPointNode(new TrackPoint(lat, lng, altInMeters,
+                timestampInMillisec, receivedAtMs), renderTail);
 		WaypointCount++;
         if (droneSpec.isCurrentFlightConfirmed() && !droneSpec.isLocalArchiveOnly()) {
             recordPublicationIntent(false);

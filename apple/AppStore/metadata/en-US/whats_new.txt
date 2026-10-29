@@ -1,21 +1,9 @@
 Latest changes:
-- Fixed startup crashes and kept settings loading, storage scans, recording preparation and terrain reads off the user-interface thread.
-- Improved CalTopo sign-in, map searches and folder loading. Reuse map snapshots and space out full-map reads while ordinary track updates continue.
-- Improved recovery of pending CalTopo marker updates and deletion checks after interrupted requests.
-- Fixed recording finalization, playback timing and video decoding recovery. Keep interrupted recordings and processing checkpoints available after restarting.
-- Fixed video requests and recording downloads to enforce the existing local viewing-approval rules, including cancellation and reconnects. Sharing settings are unchanged.
-- Added imagery-provider attribution and updated License & Notices, including downloads of the matching source and relinking materials.
-- Manage Storage reports retained map projects, originals, clue files, recordings, recovery records and temporary working copies, with links to manage each category.
-- Show current map-cache and flight-storage usage beside their maximum sizes, archive space free now, and estimated space left if both reach their limits. Limits do not reserve disk space.
-- Combined map-cache size, maximum age, usage by category and Local Maps storage under Manage Storage > Map Cache Management. Show a busy indicator until the populated panel is ready.
-- Added cleanup for unused map caches, prepared AOL data, downloaded support data and abandoned temporary files. Private settings, saved sign-ins and security state remain outside Manage Storage cleanup.
-- Report free space on the selected archive storage. Fixed false "recording in progress" protection on old flight folders; staging files untouched for an hour no longer imply an active recording.
-- Keep retained operational files under the selected archive storage and recover temporary working copies after restarting. Keep cache images and app-owned media out of gallery scanning.
-- Aligned the main menu, moved archive-location controls under Manage Storage, and fixed the menu redrawing during live status updates.
-- Removed the Developer Tools shortcuts for Personal CalTopo Login, Load Config File and Restart MediaMtx Server. Import Config and the stream tile's Reset Streams Server remain available.
-- Fixed Done in settings help panels, including External display > Content, when the corresponding setting is disabled.
-- Removed manual settings-backup file export/import and legacy credential transfers. Cloud settings backup, map tile packages and tracker-based enrollment remain available.
-- Settings backups exclude CalTopo, tracker and FAA credentials, enrollment links and access profiles. Restoring an older backup keeps this device's current credentials; new devices enroll through the tracker and sign in.
-- Saved credentials remain persistent and are reused. Excluding them from backups does not require reentry for each connection. Older map packages containing credentials are rejected; map-only packages remain supported.
-- Simplified the safety acknowledgment to "I have read and understand these operational warnings." Users acknowledge the revised notice once.
-- Updated About & Privacy and the linked privacy policy. Clarified configuration-code scanning, the local media server, microphone controls and sending diagnostics to the developer. Recording, microphone and sharing controls are unchanged.
+- Added credential-based personal CalTopo sign-in through the system browser. Existing personal browser logins keep Session Cookies until you choose Credentials.
+- Fixed missing CalTopo track names on Android and missing recording links on iPad tracks.
+- Require fresh terrain before saving projected photo clues. If terrain is unavailable, keep the capture open for retry instead of publishing an approximate location.
+- Prepare live track history and map geometry in the background to improve responsiveness during video viewing.
+- Fixed a crash after device unlock while recovering archived originals. Preserve original photo bytes during archive verification and keep storage failures from closing the app.
+- Preserve unreadable flight and clue history and show a recovery error instead of treating it as empty.
+- Prepare saved-flight review geometry on a worker to keep the interface responsive as history grows.
+- Strengthened upgrade, interrupted-recovery and UI-thread release checks.

@@ -402,6 +402,7 @@ private struct TermsCheckboxStyle: ToggleStyle {
         }
         .buttonStyle(.plain)
         .accessibilityValue(configuration.isOn ? "Checked" : "Unchecked")
+        .accessibilityIdentifier("launch-terms-checkbox")
     }
 }
 
@@ -415,35 +416,110 @@ struct ApplicationTermsReadOnlyView: View {
 }
 
 private struct LaunchDisclaimerGate: View {
-    @State private var acceptance = ApplicationTermsAcceptance.load()
+    @State private var acceptance: ApplicationTermsAcceptance?
+    @State private var loaded = false
+    @State private var saving = false
     @State private var error: String?
+    @ObservedObject private var credentialMutations = CredentialMutationGate.shared
+    @State private var mappings: AircraftMappingSnapshot?
+    @State private var credentialsReady = false
+    @State private var credentialFailure: String?
+    @State private var credentialAttempt = 0
+    @State private var protectedDataAvailable = UIApplication.shared.isProtectedDataAvailable
+
+    private static let credentialKeys: [PrivateCredentialStore.Key] = [
+        .init("org.ncssar.RID2CaltopoApple.caltopo", "credential-secret"),
+        .init("org.ncssar.RID2CaltopoApple.org-config", "tracker-api-key"),
+        .init("org.ncssar.RID2CaltopoApple.org-config", "faa-client-id"),
+        .init("org.ncssar.RID2CaltopoApple.org-config", "faa-client-secret"),
+        .init("org.ncssar.RID2CaltopoApple.org-config", "mutual-aid-credential-id"),
+        .init("org.ncssar.RID2CaltopoApple.org-config", "mutual-aid-credential-secret"),
+        .init("org.ncssar.RID2CaltopoApple.caltopo-profiles", "profile.home"),
+        .init("org.ncssar.RID2CaltopoApple.caltopo-profiles", "profile.mutual-aid"),
+    ]
 
     var body: some View {
         Group {
-            if acceptance?.isCurrent() == true {
-                ContentView()
+            if !loaded {
+                ProgressView("Loading saved settings…")
+            } else if acceptance?.isCurrent() == true {
+                ZStack {
+                    if let mappings { ContentView(mappingSnapshot: mappings).disabled(!credentialsReady || credentialMutations.isBusy).accessibilityHidden(!credentialsReady || credentialMutations.isBusy) }
+                    if !credentialsReady || credentialMutations.isBusy {
+                        Color(uiColor: .systemBackground).ignoresSafeArea()
+                        VStack(spacing: 16) {
+                            if let credentialFailure {
+                                Text(credentialFailure)
+                                Button("Retry") { credentialAttempt += 1 }
+                            } else {
+                                ProgressView(credentialMutations.isBusy ? "Saving secure settings…" : (protectedDataAvailable ? "Loading saved credentials…" : "Unlock this device to continue"))
+                            }
+                        }.padding()
+                    }
+                }
             } else {
                 LaunchDisclaimerView(
-                    onAgree: {
-                        let record = ApplicationTermsAcceptance()
-                        do {
-                            try record.save()
-                            AppleLog.info("Terms", record.logMessage("TermsAccepted"))
-                            acceptance = record
-                            error = nil
-                        } catch {
-                            self.error = "Unable to save acceptance. Please try again."
-                        }
-                    },
+                    onAgree: { saving = true },
                     onDisagree: AppleApplicationCleanupCenter.shared.declineLaunchDisclaimer,
                     error: error
-                )
+                ).disabled(saving)
             }
         }
-        .onAppear {
-            if let acceptance, acceptance.isCurrent() {
-                AppleLog.info("Terms", acceptance.logMessage("TermsAcceptanceRestored"))
+        .task(id: "\(acceptance?.isCurrent() == true)-\(credentialAttempt)") {
+            guard acceptance?.isCurrent() == true, protectedDataAvailable else { return }
+            credentialsReady = false
+            credentialFailure = nil
+            do {
+                try await PrivateCredentialStore.live.preload(Self.credentialKeys)
+                try await AppleCaltopoProfileLifecycle.prepareProfiles()
+                await AppleAircraftOrganizationAccess.prepareCachedState()
+                let prepared = await Task.detached(priority: .userInitiated) {
+                    let defaults = UserDefaults.standard
+                    defaults.removeObject(forKey: "org.ignoredRemoteIDs")
+                    return AircraftMappingSnapshot(records: defaults.array(forKey: "org.ridMappings") as? [[String: String]] ?? [],
+                        preferredPilotCallsign: defaults.string(forKey: "operator.pilotCallsign"))
+                }.value
+                try Task.checkCancellation()
+                if mappings == nil { mappings = prepared }
+                credentialsReady = true
+            } catch is CancellationError {
+                guard !Task.isCancelled else { return }
+                credentialFailure = "Saved settings are still updating. Tap Retry."
+            } catch {
+                guard !Task.isCancelled else { return }
+                credentialFailure = "Saved credentials are unavailable. Unlock this device and tap Retry. Existing credentials have been preserved."
+                AppleLog.error("Startup", "Private credential load failed (\((error as NSError).domain):\((error as NSError).code)); protected UI remains blocked")
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataWillBecomeUnavailableNotification)) { _ in
+            protectedDataAvailable = false
+            credentialsReady = false
+            credentialFailure = nil
+            credentialAttempt += 1
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in
+            protectedDataAvailable = true
+            credentialAttempt += 1
+        }
+        .task {
+            let record = await Task.detached(priority: .userInitiated) {
+                let record = ApplicationTermsAcceptance.load()
+                if let record, record.isCurrent() { AppleLog.info("Terms", record.logMessage("TermsAcceptanceRestored")) }
+                return record
+            }.value
+            guard !Task.isCancelled else { return }
+            acceptance = record; loaded = true
+        }
+        .task(id: saving) {
+            guard saving else { return }
+            let record = ApplicationTermsAcceptance()
+            let failure = await Task.detached(priority: .userInitiated) { () -> String? in
+                do { try record.save(); AppleLog.info("Terms", record.logMessage("TermsAccepted")); return nil }
+                catch { return "Unable to save acceptance. Please try again." }
+            }.value
+            guard !Task.isCancelled else { return }
+            if let failure { error = failure } else { acceptance = record; error = nil }
+            saving = false
         }
     }
 }

@@ -69,10 +69,8 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.ncssar.rid2caltopo.data.ArchiveFileDeletion
 import org.ncssar.rid2caltopo.data.AwaitingMapArchiveFiles
@@ -102,11 +100,21 @@ private fun flightStart(timeMs: Long): String {
 private fun usableFix(location: Location?): Location? =
     location?.takeIf { it.latitude.isFinite() && it.longitude.isFinite() && !(it.latitude == 0.0 && it.longitude == 0.0) }
 
+private data class PreparedAwaitingFlights(
+    val pending: List<JSONObject>,
+    val reviewOrder: List<JSONObject>,
+    val nearIc: Map<String, Boolean>,
+    val eligible: Set<String>,
+)
+
 @Composable
 fun AwaitingMapPublicationPanel(onChooseMap: () -> Unit = {}) {
     val context = LocalContext.current.applicationContext
     val scope = rememberCoroutineScope()
     var pending by remember { mutableStateOf(emptyList<JSONObject>()) }
+    var reviewOrder by remember { mutableStateOf(emptyList<JSONObject>()) }
+    var nearIc by remember { mutableStateOf(emptyMap<String, Boolean>()) }
+    var eligible by remember { mutableStateOf(emptySet<String>()) }
     var cluePhotoCounts by remember { mutableStateOf(emptyMap<String, Int>()) }
     var clueIdsByFlight by remember { mutableStateOf(emptyMap<String, List<String>>()) }
     var location by remember { mutableStateOf<Location?>(null) }
@@ -117,29 +125,63 @@ fun AwaitingMapPublicationPanel(onChooseMap: () -> Unit = {}) {
     var selected by remember { mutableStateOf<JSONObject?>(null) }
     var discardCandidate by remember { mutableStateOf<JSONObject?>(null) }
     var refreshTick by remember { mutableStateOf(0) }
+    var storageError by remember { mutableStateOf(false) }
+    fun storageFailed(error: Throwable) {
+        storageError = true
+        reviewing = false
+        selected = null
+        discardCandidate = null
+        CaltopoClient.CTWarn(TAG, "Flight history unavailable: ${error.message}")
+    }
+    suspend fun refreshPending(): Boolean {
+        val prepareSuggestions = reviewing
+        return awaitingMapStorage {
+            val flights = AwaitingMapFlights.pending()
+            // Relevance scans every saved track point and the incident's features.
+            // Prepare the review order on the worker, never in a Compose body.
+            val features = if (prepareSuggestions) CaltopoMap.GetArtifactFeatureSnapshot() else emptyList()
+            val suggestions = if (prepareSuggestions) flights.associate {
+                it.getString("id") to AwaitingMapFlights.suggested(it, features)
+            } else emptyMap()
+            PreparedAwaitingFlights(flights, flights.sortedByDescending { suggestions[it.getString("id")] == true },
+                suggestions, flights.filter { !it.optBoolean("finished") && it.optString("map").isBlank() }
+                    .map { it.getString("id") }.toSet())
+        }.fold(
+            onSuccess = { pending = it.pending; reviewOrder = it.reviewOrder; nearIc = it.nearIc; eligible = it.eligible; storageError = false; true },
+            onFailure = { storageFailed(it); false },
+        )
+    }
     LaunchedEffect(refreshTick) {
         while (true) {
-            pending = withContext(Dispatchers.IO) { AwaitingMapFlights.pending() }
+            // Stop polling a failed archive until the operator retries. A recovery error
+            // must neither escape the UI coroutine nor start repeated bulk migrations.
+            if (!refreshPending()) return@LaunchedEffect
             mapId = CaltopoMap.GetMapId()
             mapName = CaltopoMap.GetMapName()
             // Re-read the device fix on every pass so distances follow the operator while open.
             location = usableFix(CaltopoMap.GetMyLocation())
             if (reviewing) {
                 val flights = pending
-                val owned = withContext(Dispatchers.IO) {
+                val (owned, counts) = awaitingMapStorage {
                     val store = AndroidClueStore.shared(context)
                     val all = AwaitingMapFlights.allEntries()
-                    flights.associate { it.getString("id") to store.awaitingFlightClues(it, all).map { clue -> clue.id } }
-                }
+                    val owned = flights.associate { it.getString("id") to store.awaitingFlightClues(it, all).map { clue -> clue.id } }
+                    owned to owned.mapValues { it.value.size }
+                }.getOrElse { storageFailed(it); return@LaunchedEffect }
                 clueIdsByFlight = owned
-                cluePhotoCounts = owned.mapValues { it.value.size }
+                cluePhotoCounts = counts
             }
-            val eligible = pending.filter { !it.optBoolean("finished") && it.optString("map").isBlank() }
-                .map { it.getString("id") }.toSet()
             if (reminder.shouldPresent(eligible, mapId.isNotBlank())) { reviewing = true; refreshTick++ }
             if (pending.isEmpty()) { reviewing = false; selected = null; discardCandidate = null }
             delay(2_000)
         }
+    }
+    if (storageError) {
+        Column {
+            Text("Flight history is unavailable. Check Archive Dir in Manage Storage.", color = MaterialTheme.colorScheme.error)
+            TextButton(onClick = { refreshTick++ }) { Text("Retry flight history") }
+        }
+        return
     }
     if (pending.isNotEmpty()) {
         TextButton(onClick = { reviewing = true; refreshTick++ }) {
@@ -147,11 +189,9 @@ fun AwaitingMapPublicationPanel(onChooseMap: () -> Unit = {}) {
         }
     }
     if (reviewing) {
-        val ic = CaltopoMap.GetArtifactFeatureSnapshot()
-        val flights = pending.sortedByDescending { AwaitingMapFlights.suggested(it, ic) }
         AwaitingMapReviewDialog(
-            flights = flights,
-            nearIc = flights.associate { it.getString("id") to AwaitingMapFlights.suggested(it, ic) },
+            flights = reviewOrder,
+            nearIc = nearIc,
             cluePhotoCounts = cluePhotoCounts,
             location = location,
             mapId = mapId,
@@ -172,17 +212,17 @@ fun AwaitingMapPublicationPanel(onChooseMap: () -> Unit = {}) {
             confirmButton = { TextButton(onClick = {
                 selected = null
                 scope.launch {
-                    runCatching { withContext(Dispatchers.IO) { AwaitingMapFlights.decide(flight.getString("id"), destination, team) } }
+                    awaitingMapStorage { AwaitingMapFlights.decide(flight.getString("id"), destination, team) }
                         .onFailure { CaltopoClient.ShowToast("Publication choice could not be saved; please retry.") }
-                    pending = withContext(Dispatchers.IO) { AwaitingMapFlights.pending() }
+                    refreshPending()
                 }
             }, enabled = destination.isNotBlank() && team.isNotBlank()) { Text("Publish") } },
             dismissButton = { TextButton(onClick = {
                 selected = null
                 scope.launch {
-                    runCatching { withContext(Dispatchers.IO) { AwaitingMapFlights.decide(flight.getString("id"), null, team) } }
+                    awaitingMapStorage { AwaitingMapFlights.decide(flight.getString("id"), null, team) }
                         .onFailure { CaltopoClient.ShowToast("Publication choice could not be saved; please retry.") }
-                    pending = withContext(Dispatchers.IO) { AwaitingMapFlights.pending() }
+                    refreshPending()
                 }
             }) { Text("Keep local") } })
     }
@@ -202,15 +242,15 @@ fun AwaitingMapPublicationPanel(onChooseMap: () -> Unit = {}) {
                     onClick = {
                         discardCandidate = null
                         scope.launch {
-                            val result = withContext(Dispatchers.IO) { discardFlight(context, flight, clueIds) }
+                            val result = awaitingMapStorage { discardFlight(context, flight, clueIds) }
+                                .getOrElse { storageFailed(it); return@launch }
                             if (result.succeeded) {
                                 CaltopoClient.CTInfo(TAG, result.logSummary(flight))
                             } else {
                                 CaltopoClient.CTWarn(TAG, result.logSummary(flight))
                                 CaltopoClient.ShowToast("Flight log was not fully discarded; please retry.")
                             }
-                            pending = withContext(Dispatchers.IO) { AwaitingMapFlights.pending() }
-                            refreshTick++
+                            if (refreshPending()) refreshTick++
                         }
                     },
                     colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),

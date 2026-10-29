@@ -33,6 +33,16 @@ class OperationalStorageTest {
         finally { OperationalStorage.resetForTesting(); root.deleteRecursively() }
     }
     private fun write(root: File, name: String, text: String) = File(root, name).apply { parentFile!!.mkdirs(); writeText(text) }
+    private fun providerArchive(context: Context, transformMediaReads: Boolean = false): DocumentFile {
+        val id = UUID.randomUUID().toString()
+        context.startActivity(android.content.Intent().setClassName("org.ncssar.rid2caltopo.test", "org.ncssar.rid2caltopo.storage.QualificationArchiveGrantActivity")
+            .putExtra("root", id).putExtra("transformMediaReads", transformMediaReads).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK))
+        val archive = DocumentFile.fromTreeUri(context, android.provider.DocumentsContract.buildTreeDocumentUri("org.ncssar.rid2caltopo.test.storage", id))!!
+        val deadline = android.os.SystemClock.uptimeMillis() + 5000
+        while (!runCatching { archive.canWrite() }.getOrDefault(false) && android.os.SystemClock.uptimeMillis() < deadline) Thread.sleep(50)
+        assertTrue("The test provider's tree grant was not delivered", archive.canWrite())
+        return archive
+    }
 
     @Test fun movesVerifiedOperationalFilesAndKeepsSettingsPrivate() = fixture { context, archive ->
         val mission = write(context.filesDir, "mapping-missions/mission/originals/photo.jpg", "original bytes")
@@ -67,13 +77,7 @@ class OperationalStorageTest {
         assertEquals("durable clue", file.readText())
     }
     @Test fun documentProviderMigrationAndRestartPreserveRetainedData() = fixture { context, _ ->
-        val id = UUID.randomUUID().toString()
-        context.startActivity(android.content.Intent().setClassName("org.ncssar.rid2caltopo.test", "org.ncssar.rid2caltopo.storage.QualificationArchiveGrantActivity")
-            .putExtra("root", id).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
-        val archive = DocumentFile.fromTreeUri(context, android.provider.DocumentsContract.buildTreeDocumentUri("org.ncssar.rid2caltopo.test.storage", id))!!
-        val deadline = android.os.SystemClock.uptimeMillis() + 5000
-        while (!runCatching { archive.canWrite() }.getOrDefault(false) && android.os.SystemClock.uptimeMillis() < deadline) Thread.sleep(50)
-        assertTrue("The test provider's tree grant was not delivered", archive.canWrite())
+        val archive = providerArchive(context)
         try {
             val clue = write(context.filesDir, "clues/picture.jpg", "provider clue")
             OperationalStorage.prepare(context, archive)
@@ -85,6 +89,39 @@ class OperationalStorageTest {
             OperationalStorage.remove(clue)
             OperationalStorage.resetForTesting(); OperationalStorage.prepare(context, archive)
             assertFalse(clue.exists())
+        } finally { archive.delete() }
+    }
+    @Test fun mediaReadTransformationDoesNotCorruptMigrationOrBlockCompletedRenameRecovery() = fixture { context, _ ->
+        val archive = providerArchive(context, transformMediaReads = true)
+        try {
+            val source = write(context.filesDir, "mapping-missions/one/originals/photo.jpg", "original photo with location metadata")
+            val tree = DocumentArchiveTree(context, archive)
+            val target = "cache/local-maps/mapping-missions/one/originals/photo.jpg"
+            source.inputStream().use { tree.write(target, it) }
+            // Establish the behavior missing from the old provider fixture.
+            assertEquals("transformed media bytes", context.contentResolver.openInputStream(tree.uri(target))!!.reader().use { it.readText() })
+            val id = UUID.randomUUID().toString()
+            val journal = "${VerifiedArchiveTree.JOURNAL}/$id.json"
+            val record = org.json.JSONObject().put("path", target)
+                .put("stage", "$target.r2c-stage-$id").put("backup", "$target.r2c-previous-$id")
+                .put("sha256", source.inputStream().use { VerifiedArchiveTree.digest(it) })
+                .put("previousSha256", "").put("modified", source.lastModified())
+            tree.write(journal, record.toString().byteInputStream())
+            // The rename already completed, so recovery must verify the target without a stage.
+            assertFalse(tree.exists(record.getString("stage")))
+            val readOnlyMediaTree = object : ArchiveTree by tree {
+                override fun read(path: String) = context.contentResolver.openInputStream(tree.uri(path))!!
+            }
+            val oldFailure = assertThrows(IllegalStateException::class.java) { VerifiedArchiveTree(readOnlyMediaTree).recover() }
+            assertEquals("Archive recovery requires its verified staging file; nothing was removed.", oldFailure.message)
+            assertTrue(tree.exists(journal))
+            VerifiedArchiveTree(tree).recover()
+            assertFalse(tree.exists(journal))
+            assertEquals(source.readText(), tree.read(target).reader().use { it.readText() })
+            OperationalStorage.prepare(context, archive)
+            OperationalStorage.resetForTesting()
+            OperationalStorage.prepare(context, archive)
+            assertEquals("original photo with location metadata", source.readText())
         } finally { archive.delete() }
     }
     @Test fun unfinishedRecordingSurvivesWorkspaceRemovalAndHeaderUpdate() = fixture { context, archive ->

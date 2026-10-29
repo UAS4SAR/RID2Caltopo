@@ -4,6 +4,9 @@ import android.graphics.*
 import android.graphics.drawable.BitmapDrawable
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -34,20 +37,25 @@ class MappingLayerRenderingTest {
             Rect(start.x,start.y,end.x,end.y)
         } }
     }
-    @Test fun unchangedLayersKeepProvidersAndLocalSourcesStayOffline() {
-        val store=MappingLayerOverlays(context,{})
+    @Test fun unchangedLayersKeepProvidersAndLocalSourcesStayOffline() = runBlocking {
+        val store=withContext(Dispatchers.Main) { MappingLayerOverlays(context,{}) }
+        suspend fun update(layers:List<MappingLayer>) = withContext(Dispatchers.Main) {
+            store.update(layers)
+            store.overlays.value.also { ready -> store.applied(ready.map { it.first }.toSet()) }
+        }
         val a=layer();val b=layer();val c=layer()
         try {
-            val first=store.update(listOf(a,b))
-            val next=store.update(listOf(a,b,c))
+            val first=update(listOf(a,b))
+            val next=update(listOf(a,b,c))
             assertSame(first[0],next[0]);assertSame(first[1],next[1])
             next.forEach{it.first.setUseDataConnection(true);assertFalse(it.first.useDataConnection())}
             MappingBoundary.setSoft(context,a.id,false)
-            val changed=store.update(listOf(a,b,c))
+            val changed=update(listOf(a,b,c))
             assertNotSame(next[0],changed[0]);assertSame(next[1],changed[1]);assertSame(next[2],changed[2])
-            val removed=store.update(listOf(b,c));assertSame(changed[1],removed[0]);assertSame(changed[2],removed[1])
+            val removed=update(listOf(b,c));assertSame(changed[1],removed[0]);assertSame(changed[2],removed[1])
         } finally {
-            store.close();context.getSharedPreferences("mapping_edges",0).edit().remove(a.id).apply()
+            withContext(Dispatchers.Main) { store.close {} }
+            context.getSharedPreferences("mapping_edges",0).edit().remove(a.id).apply()
         }
     }
     @Test fun sixLayersReuseMasksThroughFractionalZoomPanAndRotation() {

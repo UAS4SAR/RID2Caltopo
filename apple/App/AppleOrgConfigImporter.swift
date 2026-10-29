@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 import Vision
 import VisionKit
 
-struct AppleStoredOperationalProfile: Codable {
+struct AppleStoredOperationalProfile: Codable, Sendable {
     let profileID: String
     let displayName: String
     let profileType: String
@@ -45,6 +45,12 @@ final class AppleCaltopoProfileLifecycle: ObservableObject {
     @Published private(set) var mutualAidExpiresAt: Date?
     @Published private(set) var availableProfiles: [AppleOperationalProfileOption] = []
 
+    private var operationRevision = 0
+    private func beginOperation() -> Int { operationRevision += 1; return operationRevision }
+    private func requireOperation(_ revision: Int) throws {
+        guard operationRevision == revision else { throw CancellationError() }
+    }
+
     private let defaults: UserDefaults
     private static let service = "org.ncssar.RID2CaltopoApple.caltopo-profiles"
     private static let homeAccount = "profile.home"
@@ -63,14 +69,20 @@ final class AppleCaltopoProfileLifecycle: ObservableObject {
         refreshPublishedProfiles()
     }
 
-    func resetPersistedState() {
-        try? Self.delete(account: Self.homeAccount)
-        try? Self.delete(account: Self.mutualAidAccount)
-        defaults.removeObject(forKey: Self.activeKey)
-        activeProfileID = ""
-        mutualAidDisplayName = nil
-        mutualAidExpiresAt = nil
-        availableProfiles = []
+    func resetPersistedState() async {
+        _ = try? await CredentialMutationGate.shared.run { [self] in
+            let revision = beginOperation()
+            try? await Self.delete(account: Self.homeAccount)
+            guard revision == operationRevision else { return }
+            try? await Self.delete(account: Self.mutualAidAccount)
+            guard revision == operationRevision else { return }
+            defaults.removeObject(forKey: Self.activeKey)
+            activeProfileID = ""
+            mutualAidDisplayName = nil
+            mutualAidExpiresAt = nil
+            availableProfiles = []
+
+        }
     }
 
     var activeCredentialLabel: String {
@@ -80,78 +92,96 @@ final class AppleCaltopoProfileLifecycle: ObservableObject {
 
     func captureHome(
         org: AppleOrgConfigSettings,
-        caltopo: AppleCaltopoSettings
-    ) throws {
-        let configuration = caltopo.configuration
-        let profile = AppleStoredOperationalProfile(
-            profileID: "home",
-            displayName: org.organizationName.isEmpty ? "Home" : org.organizationName,
-            profileType: "HOME",
-            enabled: configuration.enabled,
-            organizationName: org.organizationName,
-            incident: org.incident,
-            operationalPeriod: org.operationalPeriod,
-            trackFolder: org.trackFolder,
-            teamID: configuration.teamID.isEmpty ? org.teamID : configuration.teamID,
-            trackerURLPrefix: org.trackerURLPrefix,
-            trackerAPIKey: org.trackerAPIKey,
-            domainAndPort: configuration.domainAndPort,
-            mapID: "",
-            mapTitle: "",
-            credentialID: configuration.credentialID,
-            credentialSecret: configuration.credentialSecret,
-            autoConnect: false,
-            expiresAtEpochMilliseconds: 0,
-            quietRemoveOnExpiry: false,
-            connectKey: configuration.connectKey
-        )
-        try Self.store(profile, account: Self.homeAccount)
-        setActive("home")
-        refreshPublishedProfiles()
+        caltopo: AppleCaltopoSettings,
+        expectedRevision: Int? = nil
+    ) async throws {
+        try await CredentialMutationGate.shared.run { [self] in
+            let revision = expectedRevision ?? beginOperation()
+            try requireOperation(revision)
+            let configuration = caltopo.configuration
+            let profile = AppleStoredOperationalProfile(
+                profileID: "home",
+                displayName: org.organizationName.isEmpty ? "Home" : org.organizationName,
+                profileType: "HOME",
+                enabled: configuration.enabled,
+                organizationName: org.organizationName,
+                incident: org.incident,
+                operationalPeriod: org.operationalPeriod,
+                trackFolder: org.trackFolder,
+                teamID: configuration.teamID.isEmpty ? org.teamID : configuration.teamID,
+                trackerURLPrefix: org.trackerURLPrefix,
+                trackerAPIKey: org.trackerAPIKey,
+                domainAndPort: configuration.domainAndPort,
+                mapID: "",
+                mapTitle: "",
+                credentialID: configuration.credentialID,
+                credentialSecret: configuration.credentialSecret,
+                autoConnect: false,
+                expiresAtEpochMilliseconds: 0,
+                quietRemoveOnExpiry: false,
+                connectKey: configuration.connectKey
+            )
+            let token = org.trackerAPIKey, prefix = org.trackerURLPrefix
+            try await Self.store(profile, account: Self.homeAccount, isCurrent: {
+                self.operationRevision == revision && org.trackerAPIKey == token &&
+                    org.trackerURLPrefix == prefix && caltopo.configuration == configuration
+            })
+            try requireOperation(revision)
+            setActive("home")
+            refreshPublishedProfiles()
+
+        }
     }
 
     func install(
         _ profile: MutualAidSharedProfile,
         org: AppleOrgConfigSettings,
-        caltopo: AppleCaltopoSettings
-    ) throws -> Bool {
-        if (try? Self.load(account: Self.homeAccount)) == nil {
-            try captureHome(org: org, caltopo: caltopo)
+        caltopo: AppleCaltopoSettings,
+        expectedRevision: Int? = nil
+    ) async throws -> Bool {
+        return try await CredentialMutationGate.shared.run { [self] in
+            let revision = expectedRevision ?? beginOperation()
+            try requireOperation(revision)
+            if (try? Self.load(account: Self.homeAccount)) == nil {
+                try await captureHome(org: org, caltopo: caltopo, expectedRevision: revision)
+            }
+            let stored = AppleStoredOperationalProfile(
+                profileID: profile.profileID,
+                displayName: profile.displayName,
+                profileType: "MUTUAL_AID",
+                enabled: true,
+                organizationName: profile.sourceLabel,
+                incident: profile.incident,
+                operationalPeriod: profile.operationalPeriod,
+                trackFolder: profile.trackFolder,
+                teamID: profile.teamID,
+                trackerURLPrefix: profile.trackerURLPrefix,
+                trackerAPIKey: profile.trackerAPIKey,
+                domainAndPort: profile.domainAndPort,
+                mapID: profile.targetMapID,
+                mapTitle: profile.targetMapTitle.isEmpty ? profile.displayName : profile.targetMapTitle,
+                credentialID: profile.credentialID,
+                credentialSecret: profile.credentialSecret,
+                autoConnect: profile.autoConnect,
+                expiresAtEpochMilliseconds: profile.expiresAtEpochMilliseconds,
+                quietRemoveOnExpiry: profile.quietRemoveOnExpiry,
+                connectKey: profile.connectKey
+            )
+            try await Self.store(stored, account: Self.mutualAidAccount, isCurrent: { self.operationRevision == revision })
+            try requireOperation(revision)
+            mutualAidDisplayName = stored.displayName
+            mutualAidExpiresAt = stored.expiresAtEpochMilliseconds > 0
+                ? Date(timeIntervalSince1970: Double(stored.expiresAtEpochMilliseconds) / 1_000)
+                : nil
+            let unexpired = stored.expiresAtEpochMilliseconds <= 0
+                || Int64(Date().timeIntervalSince1970 * 1_000) < stored.expiresAtEpochMilliseconds
+            if unexpired {
+                setActive(stored.profileID)
+            }
+            refreshPublishedProfiles()
+            return unexpired
+
         }
-        let stored = AppleStoredOperationalProfile(
-            profileID: profile.profileID,
-            displayName: profile.displayName,
-            profileType: "MUTUAL_AID",
-            enabled: true,
-            organizationName: profile.sourceLabel,
-            incident: profile.incident,
-            operationalPeriod: profile.operationalPeriod,
-            trackFolder: profile.trackFolder,
-            teamID: profile.teamID,
-            trackerURLPrefix: profile.trackerURLPrefix,
-            trackerAPIKey: profile.trackerAPIKey,
-            domainAndPort: profile.domainAndPort,
-            mapID: profile.targetMapID,
-            mapTitle: profile.targetMapTitle.isEmpty ? profile.displayName : profile.targetMapTitle,
-            credentialID: profile.credentialID,
-            credentialSecret: profile.credentialSecret,
-            autoConnect: profile.autoConnect,
-            expiresAtEpochMilliseconds: profile.expiresAtEpochMilliseconds,
-            quietRemoveOnExpiry: profile.quietRemoveOnExpiry,
-            connectKey: profile.connectKey
-        )
-        try Self.store(stored, account: Self.mutualAidAccount)
-        mutualAidDisplayName = stored.displayName
-        mutualAidExpiresAt = stored.expiresAtEpochMilliseconds > 0
-            ? Date(timeIntervalSince1970: Double(stored.expiresAtEpochMilliseconds) / 1_000)
-            : nil
-        let unexpired = stored.expiresAtEpochMilliseconds <= 0
-            || Int64(Date().timeIntervalSince1970 * 1_000) < stored.expiresAtEpochMilliseconds
-        if unexpired {
-            setActive(stored.profileID)
-        }
-        refreshPublishedProfiles()
-        return unexpired
     }
 
     @discardableResult
@@ -159,92 +189,132 @@ final class AppleCaltopoProfileLifecycle: ObservableObject {
         profileID: String,
         org: AppleOrgConfigSettings,
         caltopo: AppleCaltopoSettings,
-        now: Date = Date()
-    ) throws -> Bool {
-        let account = profileID == "home" ? Self.homeAccount : Self.mutualAidAccount
-        let profile = try Self.load(account: account)
-        guard profile.profileID == profileID else { return false }
-        if profile.expiresAtEpochMilliseconds > 0,
-           Int64(now.timeIntervalSince1970 * 1_000) >= profile.expiresAtEpochMilliseconds {
-            _ = try removeExpired(org: org, caltopo: caltopo, now: now)
-            return false
+        now: Date = Date(),
+        expectedRevision: Int? = nil
+    ) async throws -> Bool {
+        return try await CredentialMutationGate.shared.run { [self] in
+            let revision = expectedRevision ?? beginOperation()
+            try requireOperation(revision)
+            let account = profileID == "home" ? Self.homeAccount : Self.mutualAidAccount
+            let profile = try Self.load(account: account)
+            guard profile.profileID == profileID else { return false }
+            if profile.expiresAtEpochMilliseconds > 0,
+               Int64(now.timeIntervalSince1970 * 1_000) >= profile.expiresAtEpochMilliseconds {
+                _ = try await removeExpired(org: org, caltopo: caltopo, now: now, expectedRevision: revision)
+                return false
+            }
+            try await applyProfile(profile, org: org, caltopo: caltopo,
+                                   connectMap: profile.profileType == "MUTUAL_AID", revision: revision)
+            setActive(profile.profileID)
+            refreshPublishedProfiles(now: now)
+            AppleLog.info(
+                "OrgConfig",
+                "Activated operational profile id='\(profile.profileID)' type='\(profile.profileType)'"
+            )
+            return true
+
         }
-        try org.apply(storedProfile: profile)
-        try caltopo.apply(
-            storedProfile: profile,
-            connectMap: profile.profileType == "MUTUAL_AID"
-        )
-        setActive(profile.profileID)
-        refreshPublishedProfiles(now: now)
-        AppleLog.info(
-            "OrgConfig",
-            "Activated operational profile id='\(profile.profileID)' type='\(profile.profileType)'"
-        )
-        return true
     }
 
     @discardableResult
     func restoreActive(
         org: AppleOrgConfigSettings,
         caltopo: AppleCaltopoSettings,
-        now: Date = Date()
-    ) throws -> Bool {
-        guard !activeProfileID.isEmpty, activeProfileID != "home",
-              let mutualAid = try? Self.load(account: Self.mutualAidAccount),
-              mutualAid.profileID == activeProfileID
-        else { return false }
-        if mutualAid.expiresAtEpochMilliseconds > 0,
-           Int64(now.timeIntervalSince1970 * 1_000) >= mutualAid.expiresAtEpochMilliseconds {
-            return try removeExpired(org: org, caltopo: caltopo, now: now)
+        now: Date = Date(),
+        expectedRevision: Int? = nil
+    ) async throws -> Bool {
+        return try await CredentialMutationGate.shared.run { [self] in
+            let revision = expectedRevision ?? beginOperation()
+            try requireOperation(revision)
+            guard !activeProfileID.isEmpty, activeProfileID != "home",
+                  let mutualAid = try? Self.load(account: Self.mutualAidAccount),
+                  mutualAid.profileID == activeProfileID
+            else { return false }
+            if mutualAid.expiresAtEpochMilliseconds > 0,
+               Int64(now.timeIntervalSince1970 * 1_000) >= mutualAid.expiresAtEpochMilliseconds {
+                return try await removeExpired(org: org, caltopo: caltopo, now: now, expectedRevision: revision)
+            }
+            try await applyProfile(mutualAid, org: org, caltopo: caltopo, connectMap: true, revision: revision)
+            return true
+
         }
-        try org.apply(storedProfile: mutualAid)
-        try caltopo.apply(storedProfile: mutualAid, connectMap: true)
-        return true
     }
 
     @discardableResult
     func removeExpired(
         org: AppleOrgConfigSettings,
         caltopo: AppleCaltopoSettings,
-        now: Date = Date()
-    ) throws -> Bool {
-        guard let mutualAid = try? Self.load(account: Self.mutualAidAccount),
-              mutualAid.expiresAtEpochMilliseconds > 0,
-              Int64(now.timeIntervalSince1970 * 1_000) >= mutualAid.expiresAtEpochMilliseconds
-        else { return false }
-        try Self.delete(account: Self.mutualAidAccount)
-        mutualAidDisplayName = nil
-        mutualAidExpiresAt = nil
-        if activeProfileID == mutualAid.profileID,
-           let home = try? Self.load(account: Self.homeAccount) {
-            try org.apply(storedProfile: home)
-            try caltopo.apply(storedProfile: home, connectMap: false)
-            setActive(home.profileID)
+        now: Date = Date(),
+        expectedRevision: Int? = nil
+    ) async throws -> Bool {
+        return try await CredentialMutationGate.shared.run { [self] in
+            let revision = expectedRevision ?? beginOperation()
+            try requireOperation(revision)
+            guard let mutualAid = try? Self.load(account: Self.mutualAidAccount),
+                  mutualAid.expiresAtEpochMilliseconds > 0,
+                  Int64(now.timeIntervalSince1970 * 1_000) >= mutualAid.expiresAtEpochMilliseconds
+            else { return false }
+            if activeProfileID == mutualAid.profileID {
+                // Expiry stops Teams publication even if Keychain is locked.
+                caltopo.suspendExpiredTeamsPublication()
+                guard let home = try? Self.load(account: Self.homeAccount) else {
+                    throw NSError(domain: "OperationalProfile", code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "Home credentials are unavailable. Expired access is disconnected and its saved profile has been preserved."])
+                }
+                try await applyProfile(home, org: org, caltopo: caltopo, connectMap: false, revision: revision)
+                setActive(home.profileID)
+            }
+            try await Self.delete(account: Self.mutualAidAccount)
+            try requireOperation(revision)
+            mutualAidDisplayName = nil
+            mutualAidExpiresAt = nil
+            refreshPublishedProfiles(now: now)
+            AppleLog.info(
+                "OrgConfig",
+                "Removed expired mutual-aid profile id='\(mutualAid.profileID)' quiet=\(mutualAid.quietRemoveOnExpiry)"
+            )
+            return true
+
         }
-        refreshPublishedProfiles(now: now)
-        AppleLog.info(
-            "OrgConfig",
-            "Removed expired mutual-aid profile id='\(mutualAid.profileID)' quiet=\(mutualAid.quietRemoveOnExpiry)"
-        )
-        return true
     }
 
     @discardableResult
     func removeMutualAid(profileID: String, org: AppleOrgConfigSettings,
-                         caltopo: AppleCaltopoSettings) throws -> Bool {
-        guard let profile = try? Self.load(account: Self.mutualAidAccount),
-              profile.profileID == profileID, profile.profileType == "MUTUAL_AID"
-        else { return false }
-        // Restore Home before deleting the active profile so a restore failure retains it.
-        if activeProfileID == profileID {
-            guard try activate(profileID: "home", org: org, caltopo: caltopo) else { return false }
+                         caltopo: AppleCaltopoSettings, expectedRevision: Int? = nil) async throws -> Bool {
+        return try await CredentialMutationGate.shared.run { [self] in
+            let revision = expectedRevision ?? beginOperation()
+            try requireOperation(revision)
+            guard let profile = try? Self.load(account: Self.mutualAidAccount),
+                  profile.profileID == profileID, profile.profileType == "MUTUAL_AID"
+            else { return false }
+            // Restore Home before deleting the active profile so a restore failure retains it.
+            if activeProfileID == profileID {
+                guard try await activate(profileID: "home", org: org, caltopo: caltopo, expectedRevision: revision) else { return false }
+            }
+            try await Self.delete(account: Self.mutualAidAccount)
+            try requireOperation(revision)
+            mutualAidDisplayName = nil
+            mutualAidExpiresAt = nil
+            refreshPublishedProfiles()
+            AppleLog.info("OrgConfig", "Removed mutual-aid profile id='\(profileID)'")
+            return true
+
         }
-        try Self.delete(account: Self.mutualAidAccount)
-        mutualAidDisplayName = nil
-        mutualAidExpiresAt = nil
-        refreshPublishedProfiles()
-        AppleLog.info("OrgConfig", "Removed mutual-aid profile id='\(profileID)'")
-        return true
+    }
+
+    private func applyProfile(_ profile: AppleStoredOperationalProfile,
+                              org: AppleOrgConfigSettings, caltopo: AppleCaltopoSettings,
+                              connectMap: Bool, revision: Int) async throws {
+        try requireOperation(revision)
+        try await PrivateCredentialStore.live.storeBatch([
+            (AppleOrgConfigSettings.trackerCredentialStoreKey,
+             profile.trackerAPIKey.isEmpty ? nil : Data(profile.trackerAPIKey.utf8)),
+            (AppleCaltopoSettings.credentialStoreKey,
+             profile.credentialSecret.isEmpty ? nil : Data(profile.credentialSecret.utf8))])
+        try requireOperation(revision)
+        try await org.apply(storedProfile: profile, credentialsAlreadyStored: true)
+        try await caltopo.apply(storedProfile: profile, connectMap: connectMap, credentialsAlreadyStored: true)
+        try requireOperation(revision)
     }
 
     private func setActive(_ profileID: String) {
@@ -286,54 +356,55 @@ final class AppleCaltopoProfileLifecycle: ObservableObject {
         )
     }
 
+    private static var profileMutationRevision = 0
+    private static var profileKeyRevisions: [String: Int] = [:]
+    private static var preparedProfiles: [String: AppleStoredOperationalProfile] = [:]
+
+    static func prepareProfiles() async throws {
+        let revision = profileMutationRevision
+        let keys = [homeAccount, mutualAidAccount].map { PrivateCredentialStore.Key(service, $0) }
+        let profiles = try await Task.detached(priority: .userInitiated) {
+            var result: [String: AppleStoredOperationalProfile] = [:]
+            for key in keys {
+                if let data = PrivateCredentialStore.live.cached(key) {
+                    result[key.account] = try JSONDecoder().decode(AppleStoredOperationalProfile.self, from: data)
+                }
+            }
+            return result
+        }.value
+        guard revision == profileMutationRevision else { throw CancellationError() }
+        preparedProfiles = profiles
+    }
+
     private static func load(account: String) throws -> AppleStoredOperationalProfile {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status == errSecSuccess, let data = item as? Data else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+        guard let profile = preparedProfiles[account] else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(errSecItemNotFound))
         }
-        return try JSONDecoder().decode(AppleStoredOperationalProfile.self, from: data)
+        return profile
     }
 
-    private static func store(_ profile: AppleStoredOperationalProfile, account: String) throws {
-        let key: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        let data = try JSONEncoder().encode(profile)
-        let update = SecItemUpdate(key as CFDictionary, [kSecValueData as String: data, kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly] as CFDictionary)
-        if update == errSecSuccess { return }
-        guard update == errSecItemNotFound else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(update))
-        }
-        var insert = key
-        insert[kSecValueData as String] = data
-        insert[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        let status = SecItemAdd(insert as CFDictionary, nil)
-        guard status == errSecSuccess else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
-        }
+    private static func store(_ profile: AppleStoredOperationalProfile, account: String,
+                              isCurrent: @MainActor () -> Bool) async throws {
+        let data = try await Task.detached(priority: .utility) { try JSONEncoder().encode(profile) }.value
+        try Task.checkCancellation()
+        guard isCurrent() else { throw CancellationError() }
+        profileMutationRevision += 1
+        let revision = (profileKeyRevisions[account] ?? 0) + 1
+        profileKeyRevisions[account] = revision
+        try await PrivateCredentialStore.live.store(data, for: .init(service, account))
+        guard revision == profileKeyRevisions[account] else { throw CancellationError() }
+        preparedProfiles[account] = profile
     }
 
-    private static func delete(account: String) throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
-        }
+    private static func delete(account: String) async throws {
+        profileMutationRevision += 1
+        let revision = (profileKeyRevisions[account] ?? 0) + 1
+        profileKeyRevisions[account] = revision
+        try await PrivateCredentialStore.live.store(nil, for: .init(service, account))
+        guard revision == profileKeyRevisions[account] else { throw CancellationError() }
+        preparedProfiles.removeValue(forKey: account)
     }
+
 }
 
 @MainActor
@@ -355,6 +426,12 @@ final class AppleOrgConfigSettings: ObservableObject {
     @Published private(set) var bridgeCheckDistanceFeet: Int
     @Published private(set) var maximumIdleMinutes: Int
     @Published private(set) var sourceDescription: String
+
+    private var credentialRevision = 0
+    private func beginCredentialEdit() -> Int { credentialRevision += 1; return credentialRevision }
+    private func requireCurrent(_ revision: Int) throws {
+        guard revision == credentialRevision else { throw CancellationError() }
+    }
 
     private let defaults: UserDefaults
     private static let keychainService = "org.ncssar.RID2CaltopoApple.org-config"
@@ -456,41 +533,39 @@ final class AppleOrgConfigSettings: ObservableObject {
         organizationName: String,
         trackFolder: String,
         mutualAidTemplate: MutualAidTemplateCredentials?
-    ) throws {
-        self.organizationName = organizationName.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.trackFolder = Self.normalizedTrackFolder(trackFolder)
-        defaults.set(self.organizationName, forKey: "org.name")
-        defaults.set(self.trackFolder, forKey: "org.trackFolder")
-        if let mutualAidTemplate {
-            try apply(mutualAidTemplate: mutualAidTemplate)
-        } else {
-            for key in [
-                "mutualAid.template.teamID", "mutualAid.template.domainAndPort",
-                "mutualAid.template.sourceLabel", "mutualAid.template.targetFolderHint",
-                "mutualAid.template.connectKey",
-            ] {
-                defaults.removeObject(forKey: key)
-            }
-            try Self.storeSecret("", account: Self.mutualAidCredentialIDAccount)
-            try Self.storeSecret("", account: Self.mutualAidCredentialSecretAccount)
+    ) async throws {
+        try await CredentialMutationGate.shared.run { [self] in
+            let revision = beginCredentialEdit()
+            try await persistMutualAidTemplate(mutualAidTemplate)
+            try requireCurrent(revision)
+            self.organizationName = organizationName.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.trackFolder = Self.normalizedTrackFolder(trackFolder)
+            defaults.set(self.organizationName, forKey: "org.name")
+            defaults.set(self.trackFolder, forKey: "org.trackFolder")
+            objectWillChange.send()
+
         }
-        objectWillChange.send()
     }
 
     func applyManualTrackerConfiguration(
         trackerURLPrefix: String,
         trackerAPIKey: String
-    ) throws {
-        try Self.storeTrackerAPIKey(trackerAPIKey.trimmingCharacters(in: .whitespacesAndNewlines))
-        self.trackerURLPrefix = trackerURLPrefix.trimmingCharacters(in: .whitespacesAndNewlines)
-        faaProxyURL = ""
-        trackerEnrollmentURL = ""
-        sourceDescription = "Manual Settings"
-        defaults.set(self.trackerURLPrefix, forKey: "org.trackerURLPrefix")
-        defaults.removeObject(forKey: "org.faaProxyURL")
-        defaults.removeObject(forKey: "org.trackerEnrollmentURL")
-        defaults.set(sourceDescription, forKey: "org.sourceDescription")
-        objectWillChange.send()
+    ) async throws {
+        try await CredentialMutationGate.shared.run { [self] in
+            let revision = beginCredentialEdit()
+            try await Self.storeTrackerAPIKey(trackerAPIKey.trimmingCharacters(in: .whitespacesAndNewlines))
+            try requireCurrent(revision)
+            self.trackerURLPrefix = trackerURLPrefix.trimmingCharacters(in: .whitespacesAndNewlines)
+            faaProxyURL = ""
+            trackerEnrollmentURL = ""
+            sourceDescription = "Manual Settings"
+            defaults.set(self.trackerURLPrefix, forKey: "org.trackerURLPrefix")
+            defaults.removeObject(forKey: "org.faaProxyURL")
+            defaults.removeObject(forKey: "org.trackerEnrollmentURL")
+            defaults.set(sourceDescription, forKey: "org.sourceDescription")
+            objectWillChange.send()
+
+        }
     }
 
     func applyTrackerEnrollment(
@@ -499,29 +574,35 @@ final class AppleOrgConfigSettings: ObservableObject {
         trackerAPIKey: String,
         faaProxyURL: String,
         enrollmentURL: String
-    ) throws {
-        organizationName = organization.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.trackerURLPrefix = TrackerCoordinationEndpoint.organizationScopedPrefix(
-            from: trackerURLPrefix,
-            organization: organizationName
-        )
-        self.faaProxyURL = faaProxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        trackerEnrollmentURL = enrollmentURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        usePeers = true
-        standaloneR2CCoordinationEnabled = false
-        sourceDescription = "Managed r2c-tracker enrollment"
-        defaults.set(organizationName, forKey: "org.name")
-        defaults.set(self.trackerURLPrefix, forKey: "org.trackerURLPrefix")
-        defaults.set(self.faaProxyURL, forKey: "org.faaProxyURL")
-        defaults.set(trackerEnrollmentURL, forKey: "org.trackerEnrollmentURL")
-        defaults.set(usePeers, forKey: "org.usePeers")
-        defaults.set(
-            standaloneR2CCoordinationEnabled,
-            forKey: "org.standaloneR2CCoordination"
-        )
-        defaults.set(true, forKey: Self.managedStandaloneMigrationKey)
-        defaults.set(sourceDescription, forKey: "org.sourceDescription")
-        try Self.storeTrackerAPIKey(trackerAPIKey)
+    ) async throws {
+        try await CredentialMutationGate.shared.run { [self] in
+            let revision = beginCredentialEdit()
+            try await Self.storeTrackerAPIKey(trackerAPIKey)
+            try requireCurrent(revision)
+            organizationName = organization.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.trackerURLPrefix = TrackerCoordinationEndpoint.organizationScopedPrefix(
+                from: trackerURLPrefix,
+                organization: organizationName
+            )
+            self.faaProxyURL = faaProxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            trackerEnrollmentURL = enrollmentURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            usePeers = true
+            standaloneR2CCoordinationEnabled = false
+            sourceDescription = "Managed r2c-tracker enrollment"
+            defaults.set(organizationName, forKey: "org.name")
+            defaults.set(self.trackerURLPrefix, forKey: "org.trackerURLPrefix")
+            defaults.set(self.faaProxyURL, forKey: "org.faaProxyURL")
+            defaults.set(trackerEnrollmentURL, forKey: "org.trackerEnrollmentURL")
+            defaults.set(usePeers, forKey: "org.usePeers")
+            defaults.set(
+                standaloneR2CCoordinationEnabled,
+                forKey: "org.standaloneR2CCoordination"
+            )
+            defaults.set(true, forKey: Self.managedStandaloneMigrationKey)
+            defaults.set(sourceDescription, forKey: "org.sourceDescription")
+
+
+        }
     }
 
     var faaConfiguration: FaaSharedConfig? {
@@ -553,42 +634,48 @@ final class AppleOrgConfigSettings: ObservableObject {
         )
     }
 
-    func apply(bundle: OrgConfigBundle, normalizedToken: String) throws {
-        let credentials = bundle.credentials
-        organizationName = credentials?.organizationName.isEmpty == false
-            ? credentials?.organizationName ?? bundle.organizationName
-            : bundle.organizationName
-        incident = credentials?.incident ?? ""
-        operationalPeriod = credentials?.operationalPeriod ?? ""
-        trackFolder = Self.normalizedTrackFolder(credentials?.trackFolder)
-        teamID = credentials?.teamID ?? ""
-        trackerURLPrefix = ""
-        faaProxyURL = ""
-        trackerEnrollmentURL = ""
-        usePeers = credentials?.usePeers ?? true
-        predictiveHeadEnabled = false // Retired compatibility field.
-        proximityAlertSpacingFeet = max(50, credentials?.proximityAlertSpacingFeet ?? 100)
-        sourceDescription = "R2C2 • \(organizationName.isEmpty ? "Unnamed org" : organizationName)"
+    func apply(bundle: OrgConfigBundle, normalizedToken: String) async throws {
+        try await CredentialMutationGate.shared.run { [self] in
+            let revision = beginCredentialEdit()
+            try await Self.storeTrackerAPIKey("")
+            try requireCurrent(revision)
+            let credentials = bundle.credentials
+            organizationName = credentials?.organizationName.isEmpty == false
+                ? credentials?.organizationName ?? bundle.organizationName
+                : bundle.organizationName
+            incident = credentials?.incident ?? ""
+            operationalPeriod = credentials?.operationalPeriod ?? ""
+            trackFolder = Self.normalizedTrackFolder(credentials?.trackFolder)
+            teamID = credentials?.teamID ?? ""
+            trackerURLPrefix = ""
+            faaProxyURL = ""
+            trackerEnrollmentURL = ""
+            usePeers = credentials?.usePeers ?? true
+            predictiveHeadEnabled = false // Retired compatibility field.
+            proximityAlertSpacingFeet = max(50, credentials?.proximityAlertSpacingFeet ?? 100)
+            sourceDescription = "R2C2 • \(organizationName.isEmpty ? "Unnamed org" : organizationName)"
 
-        defaults.set(organizationName, forKey: "org.name")
-        defaults.set(incident, forKey: "org.incident")
-        defaults.set(operationalPeriod, forKey: "org.operationalPeriod")
-        defaults.set(trackFolder, forKey: "org.trackFolder")
-        defaults.set(teamID, forKey: "org.teamID")
-        defaults.set(trackerURLPrefix, forKey: "org.trackerURLPrefix")
-        defaults.removeObject(forKey: "org.trackerEnrollmentURL")
-        if faaProxyURL.isEmpty {
-            defaults.removeObject(forKey: "org.faaProxyURL")
-        } else {
-            defaults.set(faaProxyURL, forKey: "org.faaProxyURL")
+            defaults.set(organizationName, forKey: "org.name")
+            defaults.set(incident, forKey: "org.incident")
+            defaults.set(operationalPeriod, forKey: "org.operationalPeriod")
+            defaults.set(trackFolder, forKey: "org.trackFolder")
+            defaults.set(teamID, forKey: "org.teamID")
+            defaults.set(trackerURLPrefix, forKey: "org.trackerURLPrefix")
+            defaults.removeObject(forKey: "org.trackerEnrollmentURL")
+            if faaProxyURL.isEmpty {
+                defaults.removeObject(forKey: "org.faaProxyURL")
+            } else {
+                defaults.set(faaProxyURL, forKey: "org.faaProxyURL")
+            }
+            defaults.set(usePeers, forKey: "org.usePeers")
+            defaults.set(standaloneR2CCoordinationEnabled, forKey: "org.standaloneR2CCoordination")
+            defaults.set(predictiveHeadEnabled, forKey: "org.predictiveHead")
+            defaults.set(proximityAlertSpacingFeet, forKey: "org.proximityFeet")
+            defaults.set(sourceDescription, forKey: "org.sourceDescription")
+            defaults.set(normalizedToken, forKey: "org.joinToken")
+
+
         }
-        defaults.set(usePeers, forKey: "org.usePeers")
-        defaults.set(standaloneR2CCoordinationEnabled, forKey: "org.standaloneR2CCoordination")
-        defaults.set(predictiveHeadEnabled, forKey: "org.predictiveHead")
-        defaults.set(proximityAlertSpacingFeet, forKey: "org.proximityFeet")
-        defaults.set(sourceDescription, forKey: "org.sourceDescription")
-        defaults.set(normalizedToken, forKey: "org.joinToken")
-        try Self.storeTrackerAPIKey("")
     }
 
     private static func resolvedFaaProxyURL(
@@ -610,48 +697,62 @@ final class AppleOrgConfigSettings: ObservableObject {
         return tracker.url?.absoluteString ?? ""
     }
 
-    func apply(mutualAid profile: MutualAidSharedProfile, normalizedToken: String) throws {
-        organizationName = profile.sourceLabel
-        incident = profile.incident
-        operationalPeriod = profile.operationalPeriod
-        trackFolder = Self.normalizedTrackFolder(profile.trackFolder)
-        teamID = profile.teamID
-        trackerURLPrefix = profile.trackerURLPrefix
-        usePeers = true
-        predictiveHeadEnabled = false // Retired compatibility field.
-        sourceDescription = "Organization • \(profile.displayName)"
-        defaults.set(organizationName, forKey: "org.name")
-        defaults.set(incident, forKey: "org.incident")
-        defaults.set(operationalPeriod, forKey: "org.operationalPeriod")
-        defaults.set(trackFolder, forKey: "org.trackFolder")
-        defaults.set(teamID, forKey: "org.teamID")
-        defaults.set(trackerURLPrefix, forKey: "org.trackerURLPrefix")
-        defaults.set(usePeers, forKey: "org.usePeers")
-        defaults.set(predictiveHeadEnabled, forKey: "org.predictiveHead")
-        defaults.set(sourceDescription, forKey: "org.sourceDescription")
-        defaults.set(normalizedToken, forKey: "org.mutualAidToken")
-        defaults.set(profile.expiresAtEpochMilliseconds, forKey: "org.mutualAidExpiresAt")
-        try Self.storeSecret(profile.trackerAPIKey, account: Self.trackerAccount)
+    func apply(mutualAid profile: MutualAidSharedProfile, normalizedToken: String) async throws {
+        try await CredentialMutationGate.shared.run { [self] in
+            let revision = beginCredentialEdit()
+            try await Self.storeSecret(profile.trackerAPIKey, account: Self.trackerAccount)
+            try requireCurrent(revision)
+            organizationName = profile.sourceLabel
+            incident = profile.incident
+            operationalPeriod = profile.operationalPeriod
+            trackFolder = Self.normalizedTrackFolder(profile.trackFolder)
+            teamID = profile.teamID
+            trackerURLPrefix = profile.trackerURLPrefix
+            usePeers = true
+            predictiveHeadEnabled = false // Retired compatibility field.
+            sourceDescription = "Organization • \(profile.displayName)"
+            defaults.set(organizationName, forKey: "org.name")
+            defaults.set(incident, forKey: "org.incident")
+            defaults.set(operationalPeriod, forKey: "org.operationalPeriod")
+            defaults.set(trackFolder, forKey: "org.trackFolder")
+            defaults.set(teamID, forKey: "org.teamID")
+            defaults.set(trackerURLPrefix, forKey: "org.trackerURLPrefix")
+            defaults.set(usePeers, forKey: "org.usePeers")
+            defaults.set(predictiveHeadEnabled, forKey: "org.predictiveHead")
+            defaults.set(sourceDescription, forKey: "org.sourceDescription")
+            defaults.set(normalizedToken, forKey: "org.mutualAidToken")
+            defaults.set(profile.expiresAtEpochMilliseconds, forKey: "org.mutualAidExpiresAt")
+
+
+        }
     }
 
-    func apply(storedProfile profile: AppleStoredOperationalProfile) throws {
-        organizationName = profile.organizationName
-        incident = profile.incident
-        operationalPeriod = profile.operationalPeriod
-        trackFolder = Self.normalizedTrackFolder(profile.trackFolder)
-        teamID = profile.teamID
-        trackerURLPrefix = profile.trackerURLPrefix
-        sourceDescription = profile.profileType == "HOME"
-            ? "Home organization • \(profile.displayName)"
-            : "Organization • \(profile.displayName)"
-        defaults.set(organizationName, forKey: "org.name")
-        defaults.set(incident, forKey: "org.incident")
-        defaults.set(operationalPeriod, forKey: "org.operationalPeriod")
-        defaults.set(trackFolder, forKey: "org.trackFolder")
-        defaults.set(teamID, forKey: "org.teamID")
-        defaults.set(trackerURLPrefix, forKey: "org.trackerURLPrefix")
-        defaults.set(sourceDescription, forKey: "org.sourceDescription")
-        try Self.storeTrackerAPIKey(profile.trackerAPIKey)
+    static var trackerCredentialStoreKey: PrivateCredentialStore.Key { .init(keychainService, trackerAccount) }
+
+    func apply(storedProfile profile: AppleStoredOperationalProfile, credentialsAlreadyStored: Bool = false) async throws {
+        try await CredentialMutationGate.shared.run { [self] in
+            let revision = beginCredentialEdit()
+            if !credentialsAlreadyStored { try await Self.storeTrackerAPIKey(profile.trackerAPIKey) }
+            try requireCurrent(revision)
+            organizationName = profile.organizationName
+            incident = profile.incident
+            operationalPeriod = profile.operationalPeriod
+            trackFolder = Self.normalizedTrackFolder(profile.trackFolder)
+            teamID = profile.teamID
+            trackerURLPrefix = profile.trackerURLPrefix
+            sourceDescription = profile.profileType == "HOME"
+                ? "Home organization • \(profile.displayName)"
+                : "Organization • \(profile.displayName)"
+            defaults.set(organizationName, forKey: "org.name")
+            defaults.set(incident, forKey: "org.incident")
+            defaults.set(operationalPeriod, forKey: "org.operationalPeriod")
+            defaults.set(trackFolder, forKey: "org.trackFolder")
+            defaults.set(teamID, forKey: "org.teamID")
+            defaults.set(trackerURLPrefix, forKey: "org.trackerURLPrefix")
+            defaults.set(sourceDescription, forKey: "org.sourceDescription")
+
+
+        }
     }
 
     func setPredictiveHeadEnabled(_ enabled: Bool) {
@@ -696,45 +797,50 @@ final class AppleOrgConfigSettings: ObservableObject {
         defaults.set(maximumIdleMinutes, forKey: "app.maximumIdleMinutes")
     }
 
-    func resetPersistedState() {
-        AppleCaltopoProfileLifecycle.shared.resetPersistedState()
-        AppleAircraftOrganizationAccess.resetRuntimeState()
-        AppleDeviceIdentity.applyManagedDisplayName("")
-        organizationName = ""
-        incident = "Training"
-        operationalPeriod = "1"
-        trackFolder = "Drone Tracks"
-        teamID = ""
-        trackerURLPrefix = ""
-        faaProxyURL = ""
-        usePeers = true
-        standaloneR2CCoordinationEnabled = false
-        predictiveHeadEnabled = false // Retired compatibility field.
-        proximityAlertSpacingFeet = 100
-        minimumTrackDistanceFeet = 2
-        newTrackDelaySeconds = 30
-        bridgeCheckDistanceFeet = 20
-        maximumIdleMinutes = Self.defaultMaximumIdleMinutes
-        defaults.set(maximumIdleMinutes, forKey: "app.maximumIdleMinutes")
-        sourceDescription = "Not loaded"
-        trackerEnrollmentURL = ""
-        for key in [
-            "org.name", "org.teamID", "org.trackerURLPrefix", "org.faaProxyURL",
-            "org.trackerEnrollmentURL", "org.sourceDescription", "org.joinToken",
-            "org.mutualAidToken", "mutualAid.template.teamID",
-            "mutualAid.template.domainAndPort", "mutualAid.template.sourceLabel",
-            "mutualAid.template.targetFolderHint",
-        ] {
-            defaults.removeObject(forKey: key)
-        }
-        for account in [
-            Self.trackerAccount,
-            Self.faaClientIDAccount,
-            Self.faaClientSecretAccount,
-            Self.mutualAidCredentialIDAccount,
-            Self.mutualAidCredentialSecretAccount,
-        ] {
-            try? Self.storeSecret("", account: account)
+    func resetPersistedState() async {
+        _ = try? await CredentialMutationGate.shared.run { [self] in
+            let revision = beginCredentialEdit()
+            await AppleCaltopoProfileLifecycle.shared.resetPersistedState()
+            guard revision == credentialRevision else { return }
+            AppleAircraftOrganizationAccess.resetRuntimeState()
+            AppleDeviceIdentity.applyManagedDisplayName("")
+            organizationName = ""
+            incident = "Training"
+            operationalPeriod = "1"
+            trackFolder = "Drone Tracks"
+            teamID = ""
+            trackerURLPrefix = ""
+            faaProxyURL = ""
+            usePeers = true
+            standaloneR2CCoordinationEnabled = false
+            predictiveHeadEnabled = false // Retired compatibility field.
+            proximityAlertSpacingFeet = 100
+            minimumTrackDistanceFeet = 2
+            newTrackDelaySeconds = 30
+            bridgeCheckDistanceFeet = 20
+            maximumIdleMinutes = Self.defaultMaximumIdleMinutes
+            defaults.set(maximumIdleMinutes, forKey: "app.maximumIdleMinutes")
+            sourceDescription = "Not loaded"
+            trackerEnrollmentURL = ""
+            for key in [
+                "org.name", "org.teamID", "org.trackerURLPrefix", "org.faaProxyURL",
+                "org.trackerEnrollmentURL", "org.sourceDescription", "org.joinToken",
+                "org.mutualAidToken", "mutualAid.template.teamID",
+                "mutualAid.template.domainAndPort", "mutualAid.template.sourceLabel",
+                "mutualAid.template.targetFolderHint",
+            ] {
+                defaults.removeObject(forKey: key)
+            }
+            for account in [
+                Self.trackerAccount,
+                Self.faaClientIDAccount,
+                Self.faaClientSecretAccount,
+                Self.mutualAidCredentialIDAccount,
+                Self.mutualAidCredentialSecretAccount,
+            ] {
+                try? await Self.storeSecret("", account: account)
+            }
+
         }
     }
 
@@ -785,32 +891,60 @@ final class AppleOrgConfigSettings: ObservableObject {
         defaults.set(maximumIdleMinutes, forKey: "app.maximumIdleMinutes")
     }
 
-    func apply(faa config: FaaSharedConfig, normalizedToken: String) throws {
-        try apply(faa: config, sourceToken: normalizedToken)
+    func apply(faa config: FaaSharedConfig, normalizedToken: String) async throws {
+        try await CredentialMutationGate.shared.run { [self] in
+            try await apply(faa: config, sourceToken: normalizedToken)
+
+        }
     }
 
-    func applyEmbedded(faa config: FaaSharedConfig) throws {
-        try apply(faa: config, sourceToken: nil)
+    func applyEmbedded(faa config: FaaSharedConfig) async throws {
+        try await CredentialMutationGate.shared.run { [self] in
+            try await apply(faa: config, sourceToken: nil)
+
+        }
     }
 
-    func apply(mutualAidTemplate template: MutualAidTemplateCredentials) throws {
-        defaults.set(template.teamID, forKey: "mutualAid.template.teamID")
-        defaults.set(template.domainAndPort, forKey: "mutualAid.template.domainAndPort")
-        defaults.set(template.sourceLabel, forKey: "mutualAid.template.sourceLabel")
-        defaults.set(template.targetFolderHint, forKey: "mutualAid.template.targetFolderHint")
-        defaults.set(template.connectKey, forKey: "mutualAid.template.connectKey")
-        try Self.storeSecret(template.credentialID, account: Self.mutualAidCredentialIDAccount)
-        try Self.storeSecret(template.credentialSecret, account: Self.mutualAidCredentialSecretAccount)
+    func apply(mutualAidTemplate template: MutualAidTemplateCredentials) async throws {
+        try await CredentialMutationGate.shared.run { [self] in
+            let revision = beginCredentialEdit()
+            try await persistMutualAidTemplate(template)
+            try requireCurrent(revision)
+
+        }
     }
 
-    private func apply(faa config: FaaSharedConfig, sourceToken: String?) throws {
+    private func persistMutualAidTemplate(_ template: MutualAidTemplateCredentials?) async throws {
+        let revision = credentialRevision
+        try await Self.storeSecrets([
+            (Self.mutualAidCredentialIDAccount, template?.credentialID ?? ""),
+            (Self.mutualAidCredentialSecretAccount, template?.credentialSecret ?? "")])
+        try requireCurrent(revision)
+        for (key, value) in [
+            ("mutualAid.template.teamID", template?.teamID),
+            ("mutualAid.template.domainAndPort", template?.domainAndPort),
+            ("mutualAid.template.sourceLabel", template?.sourceLabel),
+            ("mutualAid.template.targetFolderHint", template?.targetFolderHint),
+            ("mutualAid.template.connectKey", template?.connectKey)] {
+            if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
+        }
+    }
+
+    private func apply(faa config: FaaSharedConfig, sourceToken: String?) async throws {
+        let revision = beginCredentialEdit()
+        try await Self.storeSecrets([(Self.faaClientIDAccount, config.clientID), (Self.faaClientSecretAccount, config.clientSecret)])
+        try requireCurrent(revision)
         defaults.set(config.sourceLabel, forKey: "faa.sourceLabel")
         defaults.set(config.apiBaseURL, forKey: "faa.apiBaseURL")
         defaults.set(config.tokenURL, forKey: "faa.tokenURL")
         defaults.set(config.scope, forKey: "faa.scope")
         if let sourceToken { defaults.set(sourceToken, forKey: "faa.joinToken") }
-        try Self.storeSecret(config.clientID, account: Self.faaClientIDAccount)
-        try Self.storeSecret(config.clientSecret, account: Self.faaClientSecretAccount)
+    }
+
+    private static func storeSecrets(_ values: [(String, String)]) async throws {
+        try await PrivateCredentialStore.live.storeBatch(values.map {
+            (.init(keychainService, $0.0), $0.1.isEmpty ? nil : Data($0.1.utf8))
+        })
     }
 
     static func loadTrackerAPIKey() -> String? {
@@ -818,51 +952,18 @@ final class AppleOrgConfigSettings: ObservableObject {
     }
 
     private static func loadSecret(account: String) -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data
-        else { return nil }
-        return String(data: data, encoding: .utf8)
+        PrivateCredentialStore.live.cachedString(.init(keychainService, account))
     }
 
-    private static func storeTrackerAPIKey(_ value: String) throws {
-        try storeSecret(value, account: trackerAccount)
+    private static func storeTrackerAPIKey(_ value: String) async throws {
+        try await storeSecret(value, account: trackerAccount)
     }
 
-    private static func storeSecret(_ value: String, account: String) throws {
-        let key: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: account,
-        ]
-        if value.isEmpty {
-            let status = SecItemDelete(key as CFDictionary)
-            guard status == errSecSuccess || status == errSecItemNotFound else {
-                throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
-            }
-            return
-        }
-        let data = Data(value.utf8)
-        let update = SecItemUpdate(key as CFDictionary, [kSecValueData as String: data, kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly] as CFDictionary)
-        if update == errSecSuccess { return }
-        guard update == errSecItemNotFound else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(update))
-        }
-        var insert = key
-        insert[kSecValueData as String] = data
-        insert[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        let status = SecItemAdd(insert as CFDictionary, nil)
-        guard status == errSecSuccess else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
-        }
+    private static func storeSecret(_ value: String, account: String) async throws {
+        try await PrivateCredentialStore.live.store(value.isEmpty ? nil : Data(value.utf8),
+                                                    for: .init(keychainService, account))
     }
+
 }
 
 @MainActor
@@ -941,10 +1042,10 @@ final class AppleOrgConfigImporter: ObservableObject {
                 },
                 isCurrent: isCurrent,
                 apply: { managed in
-                    try AppleManagedOrganizationConfig.apply(
+                    try await AppleManagedOrganizationConfig.apply(
                         snapshot: managed.snapshot, versionMs: managed.versionMs,
                         caltopo: caltopoSettings, organization: orgSettings, identities: identityStore)
-                    try self.profileLifecycle.captureHome(org: orgSettings, caltopo: caltopoSettings)
+                    try await self.profileLifecycle.captureHome(org: orgSettings, caltopo: caltopoSettings)
                 }
             )
             guard applied else { return }
@@ -979,14 +1080,14 @@ final class AppleOrgConfigImporter: ObservableObject {
                 deviceName: deviceName,
                 previousDeviceToken: orgSettings.trackerAPIKey
             )
-            try orgSettings.applyTrackerEnrollment(
+            try await orgSettings.applyTrackerEnrollment(
                 organization: result.organization,
                 trackerURLPrefix: result.trackerBaseURL,
                 trackerAPIKey: result.deviceToken,
                 faaProxyURL: result.faaProxyURL,
                 enrollmentURL: rawURL
             )
-            try profileLifecycle.captureHome(org: orgSettings, caltopo: caltopoSettings)
+            try await profileLifecycle.captureHome(org: orgSettings, caltopo: caltopoSettings)
             if let url = result.reauthenticationURL {
                 state = .awaitingSignIn("Sign in to finish loading the organization’s aircraft and CalTopo configuration.")
                 trackerReauthenticationRequiredHandler?(url)
@@ -1007,14 +1108,14 @@ final class AppleOrgConfigImporter: ObservableObject {
                         trackerBaseURL: result.trackerBaseURL,
                         deviceToken: result.deviceToken
                     ) {
-                        try AppleManagedOrganizationConfig.apply(
+                        try await AppleManagedOrganizationConfig.apply(
                             snapshot: managed.snapshot,
                             versionMs: managed.versionMs,
                             caltopo: caltopoSettings,
                             organization: orgSettings,
                             identities: identityStore
                         )
-                        try profileLifecycle.captureHome(org: orgSettings, caltopo: caltopoSettings)
+                        try await profileLifecycle.captureHome(org: orgSettings, caltopo: caltopoSettings)
                         caltopoConfigurationHandler?(caltopoSettings.configuration)
                     }
                 } catch {
@@ -1203,9 +1304,9 @@ final class AppleOrgConfigImporter: ObservableObject {
         _ profileID: String,
         caltopoSettings: AppleCaltopoSettings,
         orgSettings: AppleOrgConfigSettings
-    ) -> Bool {
+    ) async -> Bool {
         do {
-            let activated = try profileLifecycle.activate(
+            let activated = try await profileLifecycle.activate(
                 profileID: profileID,
                 org: orgSettings,
                 caltopo: caltopoSettings
@@ -1226,9 +1327,9 @@ final class AppleOrgConfigImporter: ObservableObject {
     func removeExpiredProfiles(
         caltopoSettings: AppleCaltopoSettings,
         orgSettings: AppleOrgConfigSettings
-    ) -> Bool {
+    ) async -> Bool {
         do {
-            let removed = try profileLifecycle.removeExpired(
+            let removed = try await profileLifecycle.removeExpired(
                 org: orgSettings,
                 caltopo: caltopoSettings
             )
@@ -1247,9 +1348,9 @@ final class AppleOrgConfigImporter: ObservableObject {
     func restoreActiveProfile(
         caltopoSettings: AppleCaltopoSettings,
         orgSettings: AppleOrgConfigSettings
-    ) -> Bool {
+    ) async -> Bool {
         do {
-            return try profileLifecycle.restoreActive(
+            return try await profileLifecycle.restoreActive(
                 org: orgSettings,
                 caltopo: caltopoSettings
             )

@@ -1,0 +1,54 @@
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import org.ncssar.rid2caltopo.video.mapcache.DemElevationSample
+
+internal class ClueTerrainUnavailable(message: String) : IllegalStateException(message)
+
+/** Inputs belong to the captured photograph, never the current live aircraft. */
+internal suspend fun refineCapturedClueTerrain(
+    clue: PendingClue,
+    sampleElevation: suspend (Double, Double) -> DemElevationSample?,
+): PendingClue = withContext(Dispatchers.Default) {
+    val freshElevation: suspend (Double, Double) -> DemElevationSample? = { lat, lng ->
+        sampleElevation(lat, lng)?.takeUnless { it.stale }
+    }
+    val capturedHeight = clue.demAltitudeReference?.let { reference ->
+        freshElevation(clue.droneLat, clue.droneLng)
+            ?.let { reference.heightMeters(clue.droneAlt, it.elevationMeters) }
+    }
+    val height = capturedHeight ?: clue.projectionHeightMeters
+    val projection = projectClueLocationWithDemSamples(
+        droneLat = clue.droneLat, droneLng = clue.droneLng, droneAlt = clue.droneAlt,
+        headingDeg = clue.headingDeg, aglMeters = height, gimbalAngleDeg = clue.gimbalAngleDeg,
+        terrainReferenceLatitude = clue.terrainReferenceLatitude,
+        terrainReferenceLongitude = clue.terrainReferenceLongitude,
+        seiRelativeUpMeters = clue.seiRelativeUpMeters,
+        sampleElevationMeters = freshElevation,
+    )
+    clue.copy(
+        lat = projection.lat, lng = projection.lng, alt = projection.alt,
+        aglMeters = height, projectionHeightMeters = height,
+        aglSourceLabel = if (capturedHeight != null) "DEM at captured position" else clue.aglSourceLabel,
+        projectionHeightSourceLabel = if (capturedHeight != null) "DEM at captured position" else clue.projectionHeightSourceLabel,
+        terrainProjectionApplied = projection.terrainProjectionApplied,
+        demSource = projection.demSource, demResolutionMeters = projection.demResolutionMeters,
+        demSampleStale = projection.demSampleStale,
+    )
+}
+
+/** A save cannot publish the provisional flat-ground marker while DEM work is pending. */
+internal suspend fun prepareClueTerrainForSave(
+    clue: PendingClue,
+    timeoutMillis: Long = 30_000L,
+    sampleElevation: suspend (Double, Double) -> DemElevationSample?,
+): PendingClue {
+    val prepared = if (clue.terrainProjectionApplied && !clue.demSampleStale) clue else {
+        withTimeoutOrNull(timeoutMillis) { refineCapturedClueTerrain(clue, sampleElevation) }
+            ?: throw ClueTerrainUnavailable("Terrain lookup timed out. Your clue is still open; try saving again.")
+    }
+    if (!prepared.terrainProjectionApplied || prepared.demSampleStale) {
+        throw ClueTerrainUnavailable("Terrain for this camera view is unavailable. Download the terrain for this area and try saving again.")
+    }
+    return prepared
+}
