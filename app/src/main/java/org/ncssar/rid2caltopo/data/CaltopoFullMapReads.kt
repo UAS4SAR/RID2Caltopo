@@ -10,6 +10,9 @@ import android.os.SystemClock
 import java.util.UUID
 import java.net.URI
 import java.util.Locale
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /** Per-origin/map clock policy; accounts reading the same map share its budget. */
 class FullMapReadRateGate(private val intervalMs: Long = 90_000L) {
@@ -35,7 +38,12 @@ class FullMapReadRateGate(private val intervalMs: Long = 90_000L) {
 /** Worker-only client. Waiting never occupies the ordinary updates/network executor. */
 object CaltopoFullMapReads {
     const val MINIMUM_INTERVAL_MS = 90_000L
+    private const val PROBE_TIMEOUT_MS = 3_000L
     private val uri = Uri.parse("content://org.ncssar.rid2caltopo.personal-session")
+    private val localGate = FullMapReadRateGate()
+    private val probeCalls = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "caltopo-full-read-gate").apply { isDaemon = true }
+    }
     @JvmStatic fun isFullMapRead(method: String, path: String) = method == "GET" &&
         Regex("/api/v1/map/[A-Za-z0-9]{3,16}/since/0").matches(path)
     @JvmStatic fun mapKey(origin: String, path: String): String {
@@ -45,22 +53,66 @@ object CaltopoFullMapReads {
         val port = if (url.port == -1 || url.port == 443) "" else ":${url.port}"
         return "https://${url.host.lowercase(Locale.ROOT)}$port/${path.split('/')[4].uppercase(Locale.ROOT)}"
     }
+    /**
+     * Signed personal reads stay in this process. The cookie probe can be frozen,
+     * and a call into it then never returns, so the map open logs nothing.
+     */
     @JvmStatic @JvmOverloads fun acquire(context: Context, mapKey: String,
-        cancelled: java.util.function.BooleanSupplier = java.util.function.BooleanSupplier { false }): AutoCloseable {
+        cancelled: java.util.function.BooleanSupplier = java.util.function.BooleanSupplier { false },
+        localOnly: Boolean = false): AutoCloseable {
         check(Looper.myLooper() != Looper.getMainLooper()) { "Full map reads must run on a worker" }
+        if (localOnly) return acquireLocal(mapKey, cancelled)
         val id = UUID.randomUUID().toString()
         val binder = Binder()
         val extras = Bundle().apply { putBinder("lease", binder); putString("mapKey", mapKey) }
+        var announced = false
         while (true) {
             if (Thread.currentThread().isInterrupted || cancelled.asBoolean) throw InterruptedException()
-            val result = context.contentResolver.call(uri, "beginFullMapRead", id, extras)
-                ?: error("Full map read limiter is unavailable")
-            val delay = result.getLong("delayMs", -1L)
-            check(delay >= 0) { "Full map read limiter rejected the request" }
+            val delay = probeDelay(context, id, extras)
+            if (delay == null) {
+                CaltopoPersonalAccountConnection.logState("map open full-read probe unavailable; using local gate")
+                return acquireLocal(mapKey, cancelled)
+            }
             if (delay == 0L) return AutoCloseable {
                 context.contentResolver.call(uri, "finishFullMapRead", id, null)
                 // Retain the Binder lease until completion; process death also releases it.
                 java.lang.ref.Reference.reachabilityFence(binder)
+            }
+            if (!announced) {
+                CaltopoPersonalAccountConnection.logState("map open waiting full-read gate ${delay}ms")
+                announced = true
+            }
+            Thread.sleep(delay.coerceAtMost(1_000L))
+        }
+    }
+
+    private fun probeDelay(context: Context, id: String, extras: Bundle): Long? {
+        val task = probeCalls.submit<Long?> {
+            val result = context.contentResolver.call(uri, "beginFullMapRead", id, extras) ?: return@submit null
+            val delay = result.getLong("delayMs", -1L)
+            if (delay < 0) null else delay
+        }
+        return try {
+            task.get(PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        } catch (timeout: TimeoutException) {
+            CaltopoPersonalAccountConnection.logState("map open full-read probe timed out")
+            null
+        } catch (error: Exception) {
+            CaltopoPersonalAccountConnection.logState("map open full-read probe failed ${error.javaClass.simpleName}")
+            null
+        }
+    }
+
+    private fun acquireLocal(mapKey: String, cancelled: java.util.function.BooleanSupplier): AutoCloseable {
+        val id = UUID.randomUUID().toString()
+        var announced = false
+        while (true) {
+            if (Thread.currentThread().isInterrupted || cancelled.asBoolean) throw InterruptedException()
+            val delay = localGate.tryBegin(mapKey, id, SystemClock.elapsedRealtime())
+            if (delay == 0L) return AutoCloseable { localGate.finish(mapKey, id, SystemClock.elapsedRealtime()) }
+            if (!announced) {
+                CaltopoPersonalAccountConnection.logState("map open waiting full-read gate ${delay}ms")
+                announced = true
             }
             Thread.sleep(delay.coerceAtMost(1_000L))
         }

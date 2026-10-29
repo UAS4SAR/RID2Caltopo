@@ -460,6 +460,22 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
 
             is UIEvent.MapSelected -> {
                 val map = uiEvent.map
+                val credential = when {
+                    CaltopoPersonalAccountConnection.usesSignedCredential(map.personalSessionID) -> "personal"
+                    CaltopoPersonalAccountConnection.requiresCookieValidation(map.personalSessionID) -> "session"
+                    else -> "team"
+                }
+                val account = if (credential == "team") CaltopoClient.GetCaltopoCredentials().teamId.orEmpty()
+                    else CaltopoPersonalSession.accountID
+                CaltopoPersonalAccountConnection.logState(
+                    "map open picked map=${map.id} account=$account credential=$credential grant=${CaltopoPersonalAccountConnection.grantKind(map.personalSessionID)} browsingPersonal=${CaltopoPersonalSession.browsingPersonal}"
+                )
+                if ((CaltopoPersonalSession.browsingPersonal || CaltopoPersonalSession.catalogLoading) && credential == "team") {
+                    CaltopoPersonalAccountConnection.logState("map open refused map=${map.id} reason=team-row-while-personal-selected")
+                    CaltopoClient.ShowToast("That map is from the team list. Open it again after the personal account finishes loading.")
+                    overlay = OverlayState.MapBrowser
+                    return
+                }
                 overlay = OverlayState.Connecting
                 CaltopoMap.OpenMap(if (map.personalSessionID != null)
                     map.copy(title = "${CaltopoPersonalSession.username}: ${map.title}") else map)
@@ -477,7 +493,9 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                 CTDebug(tag, "onUIEvent(${uiEvent}): ConnectionStatus: '${status.name}'")
                 connectionState = when (status) {
                     CaltopoMap.MapStatusListener.mapStatus.credentialsVerified -> {
-                        mapHierarchy = CaltopoMap.GetSessionNodeMap()
+                        if (!CaltopoPersonalSession.browsingPersonal && !CaltopoPersonalSession.catalogLoading) {
+                            mapHierarchy = CaltopoMap.GetSessionNodeMap()
+                        }
                         refreshMapBrowserProfiles()
                         overlay = if (openBrowserAfterCredentialCheck) OverlayState.MapBrowser else OverlayState.None
                         CaltopoConnectionState.CredentialsVerified

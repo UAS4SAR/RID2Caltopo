@@ -71,6 +71,8 @@ object CaltopoPersonalAccountConnection {
     private var listening: ServerSocket? = null
     private var enrollmentCancelled = false
     private val redeemedActivationCodes = mutableSetOf<String>()
+    private var catalogAccountId: String? = null
+    private var catalogBody: String? = null
 
     @JvmStatic fun install(store: CaltopoPersonalAccountStore, featureEnabled: Boolean = this.featureEnabled) {
         synchronized(lock) {
@@ -80,6 +82,8 @@ object CaltopoPersonalAccountConnection {
             cached = null
             cacheValid = false
             pending = null
+            catalogAccountId = null
+            catalogBody = null
         }
     }
 
@@ -123,6 +127,8 @@ object CaltopoPersonalAccountConnection {
             cached = null
             cacheValid = false
             pending = null
+            catalogAccountId = null
+            catalogBody = null
         }
     }
 
@@ -216,6 +222,17 @@ object CaltopoPersonalAccountConnection {
         logAuth(requestLogLine(method, path, status, credential))
     }
 
+    @JvmStatic fun grantKind(token: String?): String = when {
+        token.isNullOrEmpty() -> "none"
+        usesSignedCredential(token) -> "signed-account"
+        else -> "session"
+    }
+
+    /** State transitions only. Callers must not pass a secret, signature, or query. */
+    @JvmStatic fun logState(message: String) {
+        logAuth(message.substringBefore('?'))
+    }
+
     /** Same HMAC construction as [CaltopoSession] and the Apple request signer. */
     @JvmStatic fun sign(method: String, path: String, expiresMilliseconds: Long, payload: String, credentialSecretBase64: String): String {
         val key = try {
@@ -245,6 +262,13 @@ object CaltopoPersonalAccountConnection {
     fun fetchAccountCatalog(http: CaltopoActivationExchange): String? {
         val request = accountCatalogRequest() ?: return null
         val path = runCatching { URI(request.url).path }.getOrDefault("/api/v1/acct/${request.accountId}/since/0")
+        synchronized(lock) {
+            val cached = catalogBody
+            if (catalogAccountId == request.accountId && cached != null) {
+                logAuth("catalog cache hit account=${request.accountId} bytes=${cached.length}")
+                return cached
+            }
+        }
         logAuth("catalog GET $path")
         val response = try {
             http.get(request.url)
@@ -255,6 +279,10 @@ object CaltopoPersonalAccountConnection {
         }
         logAuth("catalog HTTP ${response.status} bytes=${response.body.length}")
         if (response.status != 200) throw CaltopoPersonalAccountException("CalTopo account catalog failed (HTTP ${response.status}).", response.status)
+        synchronized(lock) {
+            catalogAccountId = request.accountId
+            catalogBody = response.body
+        }
         return response.body
     }
 

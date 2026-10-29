@@ -545,9 +545,14 @@ public class CaltopoMap {
         if (mapNode != null && MapNode != null && ActiveMapSelection != null &&
                 !ShutdownInProgress && !DisconnectInProgress &&
                 (MapStatus == MapStatusListener.mapStatus.up || MapStatus == MapStatusListener.mapStatus.connecting) &&
-                ActiveMapSelection.matches(mapNode)) return;
+                ActiveMapSelection.matches(mapNode)) {
+            CaltopoPersonalAccountConnection.logState("map open skipped reselect map=" + mapNode.getId()
+                    + " grant=" + CaltopoPersonalAccountConnection.grantKind(mapNode.getPersonalSessionID()));
+            return;
+        }
         if (mapNode != null && mapNode.getPersonalSessionID() != null) {
             if (!CaltopoClient.CanStartMapSession()) {
+                CaltopoPersonalAccountConnection.logState("map open refused map=" + mapNode.getId() + " reason=app-closing");
                 SetMapStatus(MapStatusListener.mapStatus.down, "App is closing. Reopen it before connecting.");
                 return;
             }
@@ -560,11 +565,14 @@ public class CaltopoMap {
             if (MyUUID == null) GetMyUUID();
         }
         if (ShutdownInProgress) {
+            CaltopoPersonalAccountConnection.logState("map open ignored shutdown"
+                    + (mapNode == null ? "" : " map=" + mapNode.getId()));
             CTDebug(TAG, "OpenMap(): ignoring request while shutdown in progress.");
             return;
         }
         DisconnectInProgress = false;
         if (mapNode == null) {
+            CaltopoPersonalAccountConnection.logState("map open reset");
             CTDebug(TAG, "OpenMap(): Map connection reset.");
             ResetMapConnection(4_000L);
             MapNode = null;
@@ -586,6 +594,15 @@ public class CaltopoMap {
 
         SetMapStatus(MapStatusListener.mapStatus.connecting, null);
         try {
+            String grant = mapNode.getPersonalSessionID();
+            String credential = grant == null ? "team"
+                    : (CaltopoPersonalAccountConnection.usesSignedCredential(grant) ? "personal" : "session");
+            String account = "team".equals(credential)
+                    ? (MyCaltopoCredentials == null || MyCaltopoCredentials.teamId == null ? "" : MyCaltopoCredentials.teamId)
+                    : CaltopoPersonalSession.INSTANCE.getAccountID();
+            CaltopoPersonalAccountConnection.logState("map open connecting map=" + mapNode.getId()
+                    + " account=" + account + " credential=" + credential
+                    + " grant=" + CaltopoPersonalAccountConnection.grantKind(grant));
             CTDebug(TAG, String.format(Locale.US, "Connecting to map '%s'(%s)'", MapNode.getTitle(), MapNode.getId()));
             long requestStartedAtMs = timeSource.now();
             long refreshGeneration;

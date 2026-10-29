@@ -52,6 +52,12 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         let line = requestLogLine(method: method, path: path, status: status, credential: credential)
         credentialLog.info("\(line, privacy: .public)")
     }
+
+    /// State transitions only. The message must not contain a secret, signature, or query.
+    public static func logState(_ message: String) {
+        let safe = message.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? message
+        credentialLog.info("\(safe, privacy: .public)")
+    }
     private static let credentialLog = Logger(subsystem: "org.ncssar.RID2Caltopo", category: "CalTopoAccount")
     private static let pendingLifetime: TimeInterval = 5 * 60
 

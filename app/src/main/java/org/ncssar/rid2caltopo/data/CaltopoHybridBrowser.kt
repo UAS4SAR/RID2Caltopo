@@ -112,20 +112,25 @@ fun CaltopoHybridBrowser(
     }
     fun selectStoredPersonal() {
         credentialsExpanded = false
+        CaltopoPersonalSession.catalogLoading = true
         scope.launch {
-            val loaded = withContext(Dispatchers.IO) { CaltopoPersonalCredentialSignIn.openStored() }
-            when (loaded) {
-                is StoredPersonalLoad.Ready -> {
-                    CaltopoPersonalCredentialSignIn.publishCatalog(loaded.catalog.catalog)
-                    personalMenuRevision++
-                    onUIEvent(UIEvent.BrowseProfileSelected("personal"))
+            try {
+                val loaded = withContext(Dispatchers.IO) { CaltopoPersonalCredentialSignIn.openStored() }
+                when (loaded) {
+                    is StoredPersonalLoad.Ready -> {
+                        CaltopoPersonalCredentialSignIn.publishCatalog(loaded.catalog.catalog)
+                        personalMenuRevision++
+                        onUIEvent(UIEvent.BrowseProfileSelected("personal"))
+                    }
+                    StoredPersonalLoad.Rejected, StoredPersonalLoad.Missing -> {
+                        CaltopoPersonalSession.suspendPersonalSelection()
+                        storedPersonalName = null
+                        showSyncPrompt = true
+                    }
+                    is StoredPersonalLoad.Failed -> CaltopoClient.ShowToast(loaded.message)
                 }
-                StoredPersonalLoad.Rejected, StoredPersonalLoad.Missing -> {
-                    CaltopoPersonalSession.suspendPersonalSelection()
-                    storedPersonalName = null
-                    showSyncPrompt = true
-                }
-                is StoredPersonalLoad.Failed -> CaltopoClient.ShowToast(loaded.message)
+            } finally {
+                CaltopoPersonalSession.catalogLoading = false
             }
         }
     }
@@ -194,7 +199,7 @@ fun CaltopoHybridBrowser(
                 androidx.compose.material3.TextButton(onClick = { credentialsExpanded = true }, enabled = !personalBusy) {
                     val credentialsMode = CaltopoPersonalAccountConnection.loginMode == CaltopoPersonalLoginMode.CREDENTIALS
                     val teamLabel = profileOptions.firstOrNull { it.profileId == selectedProfileId }?.label ?: "No Teams credentials"
-                    val current = if (personalBusy) "Loading personal maps…"
+                    val current = if (personalBusy || CaltopoPersonalSession.catalogLoading) "Loading personal maps…"
                         else if (CaltopoPersonalSession.browsingPersonal) "Personal: ${CaltopoPersonalSession.username.ifBlank { storedPersonalName ?: "account" }}"
                         else if (credentialsMode) "Team: $teamLabel"
                         else teamLabel

@@ -483,6 +483,45 @@ class CaltopoPersonalAccountConnectionTest {
         assertFalse(trace.contains("?"))
     }
 
+    @Test fun personalCatalogIsReusedUntilTheCredentialIsCleared() {
+        val key = Base64.getEncoder().encodeToString(ByteArray(32) { 9 })
+        val record = CaltopoPersonalAccountConnection.completeExchange(
+            """{"code":"cred12345678","key":"$key","account":{"id":"BCL66J","type":"Feature","properties":{"class":"UserAccount"}}}""",
+            "abcd1234", "caltopo.com", "RID2Caltopo", 50
+        )
+        val store = CaltopoPersonalAccountMemoryStore()
+        store.save(record)
+        CaltopoPersonalAccountConnection.install(store, featureEnabled = true)
+        val logs = mutableListOf<String>()
+        CaltopoPersonalAccountConnection.authLog = { logs += it }
+        var fetches = 0
+        val body = """{"status":"ok","result":{"accounts":[],"features":[]}}"""
+        val first = CaltopoPersonalAccountConnection.fetchAccountCatalog { _ ->
+            fetches += 1
+            CaltopoActivationHttp(200, body)
+        }
+        val second = CaltopoPersonalAccountConnection.fetchAccountCatalog { _ ->
+            fetches += 1
+            throw IllegalStateException("catalog refetched")
+        }
+        assertEquals(body, first)
+        assertEquals(body, second)
+        assertEquals(1, fetches)
+        assertTrue(logs.any { it == "catalog cache hit account=BCL66J bytes=${body.length}" })
+        assertEquals("signed-account", CaltopoPersonalAccountConnection.grantKind(CaltopoPersonalAccountConnection.SIGNED_ACCOUNT_GRANT))
+        assertEquals("none", CaltopoPersonalAccountConnection.grantKind(null))
+        assertEquals("session", CaltopoPersonalAccountConnection.grantKind("11111111-1111-1111-1111-111111111111"))
+        CaltopoPersonalAccountConnection.logState("map open connecting map=4J0LF02 account=BCL66J credential=personal grant=signed-account?signature=secret")
+        assertTrue(logs.any { it == "map open connecting map=4J0LF02 account=BCL66J credential=personal grant=signed-account" })
+        assertFalse(logs.joinToString("\n").contains("signature"))
+        assertFalse(logs.joinToString("\n").contains(key))
+        CaltopoPersonalAccountConnection.disconnect()
+        val afterLogout = runCatching {
+            CaltopoPersonalAccountConnection.fetchAccountCatalog { _ -> CaltopoActivationHttp(200, body) }
+        }.getOrNull()
+        assertNull(afterLogout)
+    }
+
     @Test fun expiredActivationAndFailedExchangeDoNotKeepTheCodeOrKey() {
         var now = 1_000L
         CaltopoPersonalAccountConnection.clock = { now }

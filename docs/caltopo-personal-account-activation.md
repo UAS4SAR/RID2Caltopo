@@ -152,6 +152,10 @@ While Credentials is selected and a personal map is connected:
 
 Both platforms log `METHOD PATH HTTP status credential=personal|session|team`. Android uses logcat tag `CaltopoPersonalAuth`. Apple uses the `CalTopoAccount` log. The path has no query. The line does not include the signing key, signature, or credential secret. A status of 0 means the request was not issued. Team position reports are not logged.
 
+The credential follows the map row. A row from the team catalog carries no personal grant and is signed with the team account. A row from the personal catalog carries the `signed-account` grant and is signed with the personal credential. Choosing Personal removes the team rows before the catalog returns, so a tap during that load cannot open a team row. The personal catalog body is kept in memory for the session. A later connect logs `catalog cache hit` instead of downloading it again. Log out drops the cache.
+
+A signed map read does not call the cookie-probe process. That process can be frozen, and the full-read lease used to wait there with no log line. The open logs `map open picked`, `map open connecting`, `map open worker queued`, and `map open worker started`, then the request line. If the worker has not started after 20 seconds, the open fails with `map open timed out before a request`. A full-read cooldown is logged as `map open waiting full-read gate`.
+
 Enrollment, the code exchange, and Keystore reads run off the main thread. The Android listener and exchange are called from `enroll`, which blocks and must be started on a worker. The Apple `enroll` hops off the main actor before it listens. After the first successful read, later signing uses an in-memory copy the way the Teams secret already does.
 
 ## Open questions

@@ -631,7 +631,12 @@ fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
             }
 
             is OverlayState.MapBrowser -> {
-                val nodes = if (org.ncssar.rid2caltopo.data.CaltopoPersonalSession.browsingPersonal) org.ncssar.rid2caltopo.data.CaltopoPersonalSession.maps else viewModel.mapHierarchy?: emptyList()
+                val personalSession = org.ncssar.rid2caltopo.data.CaltopoPersonalSession
+                val nodes = when {
+                    personalSession.catalogLoading -> emptyList()
+                    personalSession.browsingPersonal -> personalSession.maps
+                    else -> viewModel.mapHierarchy ?: emptyList()
+                }
                 // The browser receives the data it needs and bubbles events back up
                 Dialog(
                     onDismissRequest = { viewModel.onUIEvent(UIEvent.DismissRequested) },
@@ -648,7 +653,7 @@ fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
                                 profileOptions = viewModel.mapBrowserProfiles,
                                 selectedProfileId = viewModel.selectedMapBrowserProfileId,
                                 onUIEvent = { viewModel.onUIEvent(it) },
-                                loading = !org.ncssar.rid2caltopo.data.CaltopoPersonalSession.browsingPersonal && viewModel.mapHierarchy == null
+                                loading = personalSession.catalogLoading || (!personalSession.browsingPersonal && viewModel.mapHierarchy == null)
                             )
                         }
                     }

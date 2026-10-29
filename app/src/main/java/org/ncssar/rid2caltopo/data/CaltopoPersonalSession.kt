@@ -66,6 +66,7 @@ object CaltopoPersonalSession {
     var browsingPersonal by mutableStateOf(false)
     var maps by mutableStateOf<List<CaltopoNode>>(emptyList())
     var catalogReady by mutableStateOf(false)
+    var catalogLoading by mutableStateOf(false)
     fun readCatalog(): org.json.JSONObject {
         val result = context?.contentResolver?.call(Uri.parse("content://org.ncssar.rid2caltopo.personal-session"), "catalog", null, null)
         if (result?.getBoolean("loginRequired") == true) throw PersonalCaltopoLoginRequired()
@@ -112,6 +113,7 @@ object CaltopoPersonalSession {
         browsingPersonal = false
         maps = emptyList()
         catalogReady = false
+        catalogLoading = false
         if (personalMapWasOpen) CaltopoSession.clearOpenMap()
     }
 
@@ -124,6 +126,7 @@ object CaltopoPersonalSession {
         browsingPersonal = false
         maps = emptyList()
         catalogReady = false
+        catalogLoading = false
     }
     @JvmStatic fun initialize(context: Context) { this.context = context.applicationContext }
     @JvmStatic fun activate(token: String?, mapID: String) {

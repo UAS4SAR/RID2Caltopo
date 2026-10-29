@@ -293,7 +293,9 @@ public actor CaltopoLiveClient {
             return try await snapshotReads.read(configuration: configuration, forceFull: forceFullRead, refresh: refresh,
                 validate: { try await self.validateSnapshotAccess() }, load: { cursor in
                     if cursor <= 500 {
-                        let mapURL = try await self.makeMapChangesRequest(sinceMilliseconds: 0, now: Date()).url!
+                        let mapRequest = try await self.makeMapChangesRequest(sinceMilliseconds: 0, now: Date())
+                        let mapURL = mapRequest.url!
+                        CaltopoPersonalAccountConnection.logState("map open dispatch GET \(mapURL.path) credential=\(self.configuration.credentialKind)")
                         return try await self.fullMapReads.perform(mapURL: mapURL) {
                             try Task.checkCancellation()
                             return try await self.sendMapRead(sinceMilliseconds: 0, now: Date())

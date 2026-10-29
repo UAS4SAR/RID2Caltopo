@@ -429,7 +429,9 @@ public class CaltopoSession {
         final String fullReadDomain = DomainAndPort;
         for (int attemptNum = 1; attemptNum <= (op.positionReport ? 1 : MAX_RETRY_ATTEMPTS); attemptNum++) {
             boolean loggedTransport = false;
-            try (AutoCloseable fullRead = fullMapRead ? CaltopoFullMapReads.acquire(R2CApplication.getAppCtxt(), CaltopoFullMapReads.mapKey(op.personalAuthorization != null ? "https://caltopo.com" : "https://" + fullReadDomain, op.url), () -> op.asyncFuture != null && op.asyncFuture.isCancelled()) : null) {
+            final boolean signedFullRead = op.personalAuthorization != null
+                    && CaltopoPersonalAccountConnection.usesSignedCredential(op.personalAuthorization.getToken());
+            try (AutoCloseable fullRead = fullMapRead ? CaltopoFullMapReads.acquire(R2CApplication.getAppCtxt(), CaltopoFullMapReads.mapKey(op.personalAuthorization != null ? "https://caltopo.com" : "https://" + fullReadDomain, op.url), () -> op.asyncFuture != null && op.asyncFuture.isCancelled(), signedFullRead) : null) {
                 if (Thread.currentThread().isInterrupted() || (op.asyncFuture != null && op.asyncFuture.isCancelled())) throw new InterruptedException();
                 if (fullMapRead && op.personalAuthorization == null &&
                         (fullReadCredentials != Cred || !java.util.Objects.equals(fullReadDomain, DomainAndPort))) {
@@ -720,6 +722,15 @@ public class CaltopoSession {
         outer.url = path;
         outer.personalAuthorization = CaltopoPersonalSession.capture(path);
         final boolean personal = outer.personalAuthorization != null;
+        final String openCredential = personal
+                ? (CaltopoPersonalAccountConnection.usesSignedCredential(outer.personalAuthorization.getToken()) ? "personal" : "session")
+                : "team";
+        final String openAccount = "team".equals(openCredential)
+                ? (credentials == null || credentials.teamId == null ? "" : credentials.teamId)
+                : CaltopoPersonalSession.INSTANCE.getAccountID();
+        CaltopoPersonalAccountConnection.logState("map open worker queued map=" + mapNode.getId()
+                + " account=" + openAccount + " credential=" + openCredential
+                + " grant=" + CaltopoPersonalAccountConnection.grantKind(personal ? outer.personalAuthorization.getToken() : null));
         final CaltopoMapSnapshots.Scope scope = new CaltopoMapSnapshots.Scope(
                 personal ? "https://caltopo.com" : "https://" + domain, mapNode.getId(),
                 personal || credentials == null ? null : credentials.teamId,
@@ -727,7 +738,11 @@ public class CaltopoSession {
                 personal || credentials == null ? null : credentials.credentialSecret,
                 personal ? outer.personalAuthorization.getToken() : null,
                 personal ? CaltopoPersonalSession.INSTANCE.getGeneration() : 0L);
+        final java.util.concurrent.atomic.AtomicBoolean openStarted = new java.util.concurrent.atomic.AtomicBoolean();
         outer.asyncFuture = StartupMapExecutorPool.submit(() -> {
+            if (!openStarted.compareAndSet(false, true)) return outer;
+            CaltopoPersonalAccountConnection.logState("map open worker started map=" + mapNode.getId()
+                    + " credential=" + openCredential);
             Runnable validate = () -> {
                 if (Thread.currentThread().isInterrupted() || outer.isCancelled()) throw new java.util.concurrent.CancellationException();
                 // signed-account is an HMAC grant. The cookie probe only knows browser
@@ -761,13 +776,35 @@ public class CaltopoSession {
                 });
                 validate.run();
                 outer.receivedTimestampMsec = System.currentTimeMillis();
+                CaltopoPersonalAccountConnection.logState("map open finished map=" + mapNode.getId()
+                        + " credential=" + openCredential + " code=" + outer.responseCode);
                 outer.setOperationIsDone(true);
             } catch (Exception error) {
+                CaltopoPersonalAccountConnection.logState("map open failed map=" + mapNode.getId()
+                        + " credential=" + openCredential + " code=" + outer.responseCode
+                        + " error=" + error.getClass().getSimpleName());
                 outer.response = "Map could not load. Check your connection and map permissions, then retry.";
                 outer.setOperationIsDone(false);
             }
             return outer;
         });
+        Thread openWatch = new Thread(() -> {
+            try {
+                Thread.sleep(20_000L);
+            } catch (InterruptedException ignored) {
+                return;
+            }
+            if (openStarted.compareAndSet(false, true)) {
+                CaltopoPersonalAccountConnection.logState("map open timed out before a request map=" + mapNode.getId()
+                        + " credential=" + openCredential);
+                outer.response = "Map open timed out before a request was sent.";
+                outer.responseCode = 0;
+                if (outer.asyncFuture != null) outer.asyncFuture.cancel(false);
+                outer.setOperationIsDone(false);
+            }
+        }, "caltopo-map-open-watch");
+        openWatch.setDaemon(true);
+        openWatch.start();
         return outer;
     }
 

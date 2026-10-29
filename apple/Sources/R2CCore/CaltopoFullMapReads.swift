@@ -20,11 +20,17 @@ public actor CaltopoFullMapReads {
     public func perform<Value: Sendable>(mapURL: URL, _ operation: @Sendable () async throws -> Value) async throws -> Value {
         let key = Self.mapKey(mapURL)
         maps = maps.filter { $0.value.busy || $0.value.lastFinished.map { now() - $0 < interval } == true }
+        var announcedWait = false
         while true {
             try Task.checkCancellation()
             let state = maps[key] ?? State()
             let remaining = state.lastFinished.map { max(0, interval - (now() - $0)) } ?? 0
             if !state.busy && remaining <= 0 { maps[key] = State(busy: true); break }
+            if !announcedWait {
+                let milliseconds = Int((state.busy ? 0.25 : remaining) * 1_000)
+                CaltopoPersonalAccountConnection.logState("map open waiting full-read gate \(milliseconds)ms")
+                announcedWait = true
+            }
             try await sleep(state.busy ? 0.25 : remaining)
         }
         defer { maps[key] = State(lastFinished: now()) }

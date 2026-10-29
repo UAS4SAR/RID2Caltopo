@@ -441,6 +441,7 @@ final class AppleCaltopoSettings: ObservableObject {
             selectedPersonalAccountID = ""
             selectedPersonalMediaOwnerID = ""
             personalMaps = []
+            personalCatalogAccountID = ""
             personalUsername = ""
             personalMapsStatus = "Sign in to connect your CalTopo account"
             if usesPersonalCredentials {
@@ -455,6 +456,8 @@ final class AppleCaltopoSettings: ObservableObject {
         Task { await CaltopoPersonalSessions.shared.clear() }
     }
 
+    private var personalCatalogAccountID = ""
+
     func loadCredentialPersonalMaps() async {
         guard personalLoginMode == .credentials, !isLoadingPersonalMaps else { return }
         let revision = personalCredentialRevision
@@ -464,6 +467,10 @@ final class AppleCaltopoSettings: ObservableObject {
             let configuration = try await Task.detached(priority: .userInitiated) {
                 try CaltopoPersonalAccountConnection.shared.teamMapConfiguration()
             }.value
+            if personalCatalogAccountID == configuration.teamID, !personalMaps.isEmpty {
+                CaltopoPersonalAccountConnection.logState("catalog cache hit account=\(configuration.teamID) maps=\(personalMaps.count)")
+                return
+            }
             let client = try CaltopoTeamMapClient(configuration: configuration)
             let request = try await client.makeRequest(now: Date())
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -471,6 +478,7 @@ final class AppleCaltopoSettings: ObservableObject {
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 if status == 401 || status == 403 {
                     await CaltopoPersonalAccountConnection.shared.disconnect()
+                    personalCatalogAccountID = ""
                     personalUsername = ""
                     personalCredentialSummary = "Not connected"
                     usesPersonalCredentials = false
@@ -488,6 +496,7 @@ final class AppleCaltopoSettings: ObservableObject {
             guard revision == personalCredentialRevision, personalLoginMode == .credentials else { return }
             acceptPersonalCatalog(prepared.username, maps: prepared.maps)
             selectedPersonalAccountID = configuration.teamID
+            personalCatalogAccountID = configuration.teamID
         } catch {
             guard revision == personalCredentialRevision, personalLoginMode == .credentials else { return }
             personalMaps = []
