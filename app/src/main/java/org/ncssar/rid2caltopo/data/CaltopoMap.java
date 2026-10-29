@@ -133,7 +133,6 @@ public class CaltopoMap {
     private static final String LOCAL_DEVICE_COLOR_UNCONFIGURED = "#1976D2";
     private static final long INITIAL_MARKER_POLL_MS = 500L;
     private static final long INITIAL_MARKER_WAIT_MS = 8_000L;
-    private static final long STALE_DEVICE_MARKER_GRACE_MS = 15_000L;
     private static final long MARKER_DELETE_WAIT_MS = 4_000L;
     private static final double AUTO_QUIT_RELOCATION_DISTANCE_METERS = 50.0 * 0.3048;
     private static final float AUTO_QUIT_REQUIRED_ACCURACY_METERS = (float) (25.0 * 0.3048);
@@ -409,26 +408,6 @@ public class CaltopoMap {
         if (ShutdownInProgress || DisconnectInProgress || MapStatus != MapStatusListener.mapStatus.up) return;
         CTDebug(TAG, "onCoordinationIndicatorStateChanged(): " + state);
         refreshDeviceMarkerIfNeeded();
-    }
-
-    private static long getDeviceMarkerStaleAfterMs() {
-        return Math.max(RepeatMapUpdateTimeInSeconds * 2L * 1000L, STALE_DEVICE_MARKER_GRACE_MS);
-    }
-
-    private static long getMarkerLastSeenEpochMs(@Nullable JSONObject properties) {
-        if (properties == null) return 0L;
-        Object rawValue = properties.opt(LOCAL_DEVICE_MARKER_LAST_SEEN_PROP);
-        if (rawValue instanceof Number) {
-            return ((Number) rawValue).longValue();
-        }
-        if (rawValue instanceof String) {
-            try {
-                return Long.parseLong((String) rawValue);
-            } catch (NumberFormatException ignored) {
-                return 0L;
-            }
-        }
-        return 0L;
     }
 
     private static boolean isManagedR2cMarker(
@@ -2101,22 +2080,81 @@ public class CaltopoMap {
         if (deviceId.equals(guid) && !returned.isEmpty() && returned.matches("[A-Za-z0-9_-]+")) return returned;
         return "";
     }
+    /** Clue photos use the store id. Their media and link ids are name-based UUIDs of that store id. */
+    static boolean clueDerivedMarkerId(@NonNull String markerId, @NonNull String clueId) {
+        if (markerId.isEmpty() || clueId.isEmpty()) return false;
+        if (markerId.equalsIgnoreCase(clueId)) return true;
+        String media = UUID.nameUUIDFromBytes((clueId + ":media").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        String link = UUID.nameUUIDFromBytes((clueId + ":link").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        return markerId.equalsIgnoreCase(media) || markerId.equalsIgnoreCase(link);
+    }
+    static boolean provenOwnDeviceMarker(@NonNull DeviceMarkerJournal.Entry entry, @NonNull String deviceId) {
+        if (deviceId.isEmpty() || entry.marker.isEmpty()) return false;
+        if (deviceId.equals(entry.marker)) return true;
+        return deviceId.equals(entry.deviceGuid);
+    }
+    static final class ClueCleanupIds {
+        final boolean readable;
+        final java.util.List<String> ids;
+        ClueCleanupIds(boolean readable, java.util.List<String> ids) {
+            this.readable = readable;
+            this.ids = ids;
+        }
+    }
+    static java.util.function.Supplier<ClueCleanupIds> clueCleanupIds = CaltopoMap::readClueCleanupIds;
+    private static ClueCleanupIds readClueCleanupIds() {
+        android.content.Context context = org.ncssar.rid2caltopo.app.R2CApplication.getAppCtxt();
+        if (context == null) return new ClueCleanupIds(true, java.util.List.of());
+        java.io.File index = new java.io.File(new java.io.File(context.getFilesDir(), "clues"), "clues.json");
+        if (!index.isFile()) return new ClueCleanupIds(true, java.util.List.of());
+        try {
+            org.json.JSONArray array = new org.json.JSONArray(new String(java.nio.file.Files.readAllBytes(index.toPath()), java.nio.charset.StandardCharsets.UTF_8));
+            java.util.ArrayList<String> ids = new java.util.ArrayList<>();
+            for (int i = 0; i < array.length(); i++) {
+                org.json.JSONObject row = array.optJSONObject(i);
+                if (row == null) continue;
+                String id = row.optString("id", "");
+                if (!id.isEmpty()) ids.add(id);
+            }
+            return new ClueCleanupIds(true, ids);
+        } catch (Exception error) {
+            CTWarn(TAG, "Clue index unreadable; marker cleanup will not delete extra ids", error);
+            return new ClueCleanupIds(false, java.util.List.of());
+        }
+    }
+    private static boolean protectedClueId(@NonNull String markerId, @NonNull ClueCleanupIds clues) {
+        for (String clueId : clues.ids) if (clueDerivedMarkerId(markerId, clueId)) return true;
+        return false;
+    }
+    private static void dropUnprovenMarker(DeviceMarkerJournal.Entry entry, String reason) {
+        CTWarn(TAG, "Marker cleanup refused " + reason + " map=" + entry.map + " id=" + entry.marker);
+        try { markerJournal().acknowledge(entry); }
+        catch (Exception error) { CTWarn(TAG, "Refused marker journal entry retained", error); }
+    }
     private static CaltopoOp deleteJournalMarker(DeviceMarkerJournal.Entry entry) {
         return deleteJournalMarker(entry, getCurrentRuntime().getCalTopoSessionGateway().prepareMarkerCleanup(entry.map));
     }
     private static CaltopoOp deleteJournalMarker(DeviceMarkerJournal.Entry entry,
             java.util.function.BiFunction<String, java.util.function.Consumer<CaltopoOp>, CaltopoOp> cleanup) {
         String mine = GetMyUUID();
-        // Older journals have no ownership flag. A stored id that is not this device's marker
-        // (a published clue, for example) must be dropped from the journal without a DELETE.
         if (mine.isEmpty()) {
             CTWarn(TAG, "Marker cleanup deferred; device id unavailable");
             return null;
         }
-        if (!mine.equals(entry.marker) && !entry.owned) {
-            CTWarn(TAG, "Marker cleanup refused non-device marker map=" + entry.map + " id=" + entry.marker);
-            try { markerJournal().acknowledge(entry); }
-            catch (Exception error) { CTWarn(TAG, "Refused marker journal entry retained", error); }
+        ClueCleanupIds clues = clueCleanupIds.get();
+        if (protectedClueId(entry.marker, clues)) {
+            dropUnprovenMarker(entry, "clue marker");
+            return null;
+        }
+        if (!clues.readable && !mine.equals(entry.marker)) {
+            CTWarn(TAG, "Marker cleanup deferred; clue index unreadable id=" + entry.marker);
+            return null;
+        }
+        // The installation id is this device's marker. Any other id needs a journal row that
+        // recorded this device's guid when the feature was verified. Another device, a hand-drawn
+        // marker, or an unverified response id is removed from the journal without a DELETE.
+        if (!provenOwnDeviceMarker(entry, mine)) {
+            dropUnprovenMarker(entry, "unproven marker");
             return null;
         }
         if(!entry.domain.equals(CaltopoClient.GetCaltopoDomainAndPort())||!deletingMarkerKeys.add(entry.key()))return null;
@@ -2168,7 +2206,7 @@ public class CaltopoMap {
         CaltopoMarkerWork.execute(() -> publishMarkerAfterCleanup(key, () -> {
             try {
                 // Durable ownership must exist before any POST is constructed or queued.
-                final DeviceMarkerJournal.Entry ownership = markerJournal().arm(domain, map, markerId);
+                final DeviceMarkerJournal.Entry ownership = markerJournal().arm(domain, map, markerId, markerId);
                 activeMarkerKeys.add(key);
                 final JSONObject properties = new JSONObject()
                         .put(LOCAL_DEVICE_MARKER_NAME_PROP, name)
@@ -2192,7 +2230,7 @@ public class CaltopoMap {
                                             ? ownedDeviceMarkerId(markerOp.responseJson, markerId) : "";
                                     try {
                                         if (!resolved.isEmpty() && !resolved.equals(markerId)) {
-                                            DeviceMarkerJournal.Entry entry = markerJournal().arm(domain, map, resolved);
+                                            DeviceMarkerJournal.Entry entry = markerJournal().arm(domain, map, resolved, markerId);
                                             activeMarkerKeys.add(entry.key());
                                         }
                                     } catch (Exception error) { CTWarn(TAG, "Resolved marker journal retained for retry", error); }
@@ -2207,7 +2245,7 @@ public class CaltopoMap {
                                                     // Only the verified device marker is removed. A response that names
                                                     // another feature, such as a clue, is not armed or deleted.
                                                     deleteJournalMarker(markerJournal().arm(domain, map,
-                                                            ownedId.isEmpty() ? markerId : ownedId), cleanup);
+                                                            ownedId.isEmpty() ? markerId : ownedId, markerId), cleanup);
                                                 } catch (Exception error) { CTWarn(TAG, "Late marker cleanup deferred", error); }
                                             });
                                             return;
@@ -2229,9 +2267,6 @@ public class CaltopoMap {
         if (MapNode == null) return;
         String markerId = GetMyUUID();
         if (markerId.isEmpty()) return;
-        String markerTitle = LOCAL_DEVICE_MARKER_TITLE_PREFIX + R2CActivity.MyDeviceName;
-        long nowMs = System.currentTimeMillis();
-        long staleAfterMs = getDeviceMarkerStaleAfterMs();
         ArrayList<String> staleIds = new ArrayList<>();
         synchronized (ArtifactLock) {
             for (JSONObject feature : ArtifactFeaturesById.values()) {
@@ -2241,14 +2276,10 @@ public class CaltopoMap {
                 if (ResolvedMyDeviceMarkerId != null && ResolvedMyDeviceMarkerId.equals(featureId)) continue;
                 JSONObject properties = feature.optJSONObject("properties");
                 if (!isManagedR2cMarker(properties, LOCAL_DEVICE_MARKER_TITLE_PREFIX)) continue;
-                // Clue photos use the Drone symbol. They are not device markers even if a
-                // later property check would otherwise treat them as stale.
                 if ("Drone".equals(properties.optString("marker-symbol", ""))) continue;
-                boolean sameGuid = markerId.equals(properties.optString(LOCAL_DEVICE_MARKER_GUID_PROP, ""));
-                boolean sameTitle = markerTitle.equals(properties.optString("title", ""));
-                long lastSeenEpochMs = getMarkerLastSeenEpochMs(properties);
-                boolean staleHeartbeat = lastSeenEpochMs > 0L && (nowMs - lastSeenEpochMs) > staleAfterMs;
-                if (sameGuid || sameTitle || staleHeartbeat) {
+                // Only a second copy of this device's marker. Another tablet's guid, a matching
+                // title, or an old heartbeat is not enough.
+                if (markerId.equals(properties.optString(LOCAL_DEVICE_MARKER_GUID_PROP, ""))) {
                     staleIds.add(featureId);
                 }
             }
@@ -2284,8 +2315,8 @@ public class CaltopoMap {
         try {
             if (!domain.equals(CaltopoClient.GetCaltopoDomainAndPort())) return;
             // Also enroll legacy markers published before the durable journal existed.
-            markerJournal().arm(domain,map,markerID);
-            if(resolvedID!=null&&!resolvedID.isEmpty())markerJournal().arm(domain,map,resolvedID);
+            markerJournal().arm(domain,map,markerID,markerID);
+            if(resolvedID!=null&&!resolvedID.isEmpty()&&!resolvedID.equals(markerID))markerJournal().arm(domain,map,resolvedID,markerID);
             for(DeviceMarkerJournal.Entry entry:markerJournal().entries())if(entry.domain.equals(domain)&&entry.map.equals(map)) {
                 activeMarkerKeys.remove(entry.key());
                 CaltopoOp op=deleteJournalMarker(entry, cleanup);

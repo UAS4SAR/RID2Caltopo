@@ -1195,10 +1195,10 @@ func staleR2CDeviceMarkersRequireExplicitOwnershipAndExpiredHeartbeat() throws {
     """#.utf8)
     let snapshot = try CaltopoArtifactDecoder.decode(data: data)
 
-    #expect(snapshot.staleR2CDeviceMarkerIDs(
-        now: Date(timeIntervalSince1970: Double(nowMilliseconds) / 1_000),
-        staleAfter: 180
-    ) == ["stale"])
+    let now = Date(timeIntervalSince1970: Double(nowMilliseconds) / 1_000)
+    #expect(snapshot.staleR2CDeviceMarkerIDs(now: now, staleAfter: 180, ownedBy: "old-guid") == ["stale"])
+    #expect(snapshot.staleR2CDeviceMarkerIDs(now: now, staleAfter: 180, ownedBy: "new-guid") == [])
+    #expect(snapshot.staleR2CDeviceMarkerIDs(now: now, staleAfter: 180, ownedBy: "") == [])
 }
 
 @Test

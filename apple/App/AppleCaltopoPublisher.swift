@@ -40,6 +40,7 @@ actor AppleCaltopoPublisher {
     private var configurationIdleWaiters: [CheckedContinuation<Void, Never>] = []
     private var lastDeviceMarkerPublishedAt: Date?
     private var publishedDeviceMarkerID: String?
+    private var ownedDeviceMarkerID = ""
     private var deviceMarkerGeneration = 0
     private var deviceMarkerPublishingSuspended = false
     private var deviceMarkerPublishInFlight = false
@@ -73,9 +74,11 @@ actor AppleCaltopoPublisher {
         continuation.finish()
     }
 
-    func configure(_ configuration: AppleCaltopoConfiguration, trackFolderName: String) async {
+    func configure(_ configuration: AppleCaltopoConfiguration, trackFolderName: String, deviceMarkerID: String = "") async {
         await waitForConfigurationTransitionToFinish()
         let normalizedFolderName = Self.normalizedTrackFolderName(trackFolderName)
+        let normalizedOwner = deviceMarkerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !normalizedOwner.isEmpty { ownedDeviceMarkerID = normalizedOwner }
         guard configuredConfiguration != configuration
                 || self.trackFolderName != normalizedFolderName
         else {
@@ -275,6 +278,14 @@ actor AppleCaltopoPublisher {
         do {
             for entry in try markerJournal.entries() where entry.domain == config.domainAndPort {
                 if entry == publishedMarkerOwnership { continue }
+                let owned = ownedDeviceMarkerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if owned.isEmpty || entry.marker.lowercased() != owned {
+                    if !owned.isEmpty {
+                        try? markerJournal.acknowledge(entry)
+                        AppleLog.info("CalTopo", "Marker cleanup left an unproven marker id=\(entry.marker)")
+                    }
+                    continue
+                }
                 let target = CaltopoLiveConfiguration(domainAndPort: config.domainAndPort, mapID: entry.map,
                     credentialID: config.credentialID, credentialSecretBase64: config.credentialSecretBase64,
                     connectKey: config.connectKey, personalSessionID: config.personalSessionID,
@@ -337,7 +348,8 @@ actor AppleCaltopoPublisher {
             let snapshot = try await client.fetchMapArtifacts(now: now)
             let staleIDs = snapshot.staleR2CDeviceMarkerIDs(
                 now: now,
-                staleAfter: Self.staleDeviceMarkerAge
+                staleAfter: Self.staleDeviceMarkerAge,
+                ownedBy: ownedDeviceMarkerID
             )
             for markerID in staleIDs {
                 do {

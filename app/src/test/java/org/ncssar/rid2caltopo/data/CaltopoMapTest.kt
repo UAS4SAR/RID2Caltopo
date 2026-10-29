@@ -735,9 +735,52 @@ class CaltopoMapTest {
     }
 
     @Test
+    fun startupCleanupDoesNotDeleteAnOwnedIdThatIsNotThisDevice() {
+        val domain = CaltopoClient.GetCaltopoDomainAndPort()
+        val journal = CaltopoMap::class.java.getDeclaredField("markerJournal").apply { isAccessible = true }.get(null) as DeviceMarkerJournal
+        journal.arm(domain, "4J0LF02", "other-device-marker", "other-device")
+        CaltopoMap::class.java.getDeclaredMethod("retryMarkerCleanup").apply { isAccessible = true }.invoke(null)
+        drainMarkers()
+        assertEquals(0, fixture.calTopoSessionGateway.countOperations("deleteMarker"))
+        assertTrue(journal.entries().none { it.marker == "other-device-marker" })
+    }
+
+    @Test
+    fun startupCleanupDeletesAProvenDuplicateOfThisDevice() {
+        val domain = CaltopoClient.GetCaltopoDomainAndPort()
+        val journal = CaltopoMap::class.java.getDeclaredField("markerJournal").apply { isAccessible = true }.get(null) as DeviceMarkerJournal
+        journal.arm(domain, "4J0LF02", "server-assigned-id", "marker-guid-test")
+        CaltopoMap::class.java.getDeclaredMethod("retryMarkerCleanup").apply { isAccessible = true }.invoke(null)
+        drainMarkers()
+        assertEquals(1, fixture.calTopoSessionGateway.countOperations("deleteMarker"))
+        assertTrue(journal.entries().isEmpty())
+    }
+
+    @Test
+    fun startupCleanupDoesNotDeleteAClueLinkIdEvenWhenTheJournalNamesThisDevice() {
+        val domain = CaltopoClient.GetCaltopoDomainAndPort()
+        val clueId = "34ebccc2-1111-4111-8111-111111111111"
+        val linkId = java.util.UUID.nameUUIDFromBytes((clueId + ":link").toByteArray(java.nio.charset.StandardCharsets.UTF_8)).toString()
+        val journal = CaltopoMap::class.java.getDeclaredField("markerJournal").apply { isAccessible = true }.get(null) as DeviceMarkerJournal
+        journal.arm(domain, "4J0LF02", linkId, "marker-guid-test")
+        val supplierField = CaltopoMap::class.java.getDeclaredField("clueCleanupIds").apply { isAccessible = true }
+        val original = supplierField.get(null)
+        supplierField.set(null, java.util.function.Supplier {
+            CaltopoMap.ClueCleanupIds(true, listOf(clueId))
+        })
+        try {
+            CaltopoMap::class.java.getDeclaredMethod("retryMarkerCleanup").apply { isAccessible = true }.invoke(null)
+            drainMarkers()
+            assertEquals(0, fixture.calTopoSessionGateway.countOperations("deleteMarker"))
+            assertTrue(CaltopoMap.clueDerivedMarkerId(linkId, clueId))
+            assertTrue(journal.entries().none { it.marker == linkId })
+        } finally { supplierField.set(null, original) }
+    }
+
+    @Test
     fun interruptedMarkerCleanupRetriesOriginalMapAfterFailure() {
         val journal = CaltopoMap::class.java.getDeclaredField("markerJournal").apply { isAccessible = true }.get(null) as DeviceMarkerJournal
-        journal.arm(CaltopoClient.GetCaltopoDomainAndPort(), "previous-map", "previous-marker")
+        journal.arm(CaltopoClient.GetCaltopoDomainAndPort(), "previous-map", "marker-guid-test", "marker-guid-test")
         val retry = CaltopoMap::class.java.getDeclaredMethod("retryMarkerCleanup").apply { isAccessible = true }
         fixture.calTopoSessionGateway.markerDeleteSucceeds = false
         retry.invoke(null)

@@ -440,13 +440,16 @@ public struct CaltopoArtifactSnapshot: Codable, Sendable, Equatable {
     /// This deliberately excludes manually named `R2C:` markers and older title-only markers.
     public func staleR2CDeviceMarkerIDs(
         now: Date,
-        staleAfter: TimeInterval
+        staleAfter: TimeInterval,
+        ownedBy deviceID: String
     ) -> [String] {
+        let owner = deviceID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !owner.isEmpty else { return [] }
         let cutoffMilliseconds = Int64((now.timeIntervalSince1970 - max(0, staleAfter)) * 1_000)
         return items.compactMap { item in
             guard item.className == "Marker",
                   item.title.hasPrefix("R2C: "),
-                  !(item.r2cGUID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true),
+                  item.r2cGUID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == owner,
                   let lastSeen = item.r2cLastSeenEpochMilliseconds,
                   lastSeen > 0,
                   lastSeen < cutoffMilliseconds

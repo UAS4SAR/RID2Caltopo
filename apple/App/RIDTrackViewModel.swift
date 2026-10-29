@@ -889,7 +889,8 @@ final class RIDTrackViewModel: ObservableObject {
             await refreshAwaitingMapState()
             await caltopoPublisher.configure(
                 configuration,
-                trackFolderName: trackFolderName
+                trackFolderName: trackFolderName,
+                deviceMarkerID: peerCoordinator?.localZoneID ?? ""
             )
             await self.queueCompletedDeferredFlights()
             await MainActor.run {
