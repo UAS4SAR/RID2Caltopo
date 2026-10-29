@@ -135,8 +135,19 @@ final class CaltopoPersonalAccountConnectionTests: XCTestCase {
         let client = try CaltopoLiveClient(configuration: signed)
         let request = try await client.makeMapChangesRequest(sinceMilliseconds: 0, now: Date(timeIntervalSince1970: 1_700_000_000))
         XCTAssertEqual(request.url?.path, "/api/v1/map/ABC123/since/0")
-        XCTAssertNotNil(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "signature" }?.value)
+        XCTAssertEqual(request.httpMethod, "GET")
+        let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
+        XCTAssertEqual(query?.first { $0.name == "id" }?.value, "cred12345678")
+        XCTAssertNotNil(query?.first { $0.name == "signature" }?.value)
         XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
+        XCTAssertEqual(signed.credentialKind, "personal")
+        XCTAssertFalse(CaltopoPersonalAccountConnection.requiresCookieValidation(personalSessionID: signed.personalSessionID, personalSignedAccount: signed.personalSignedAccount))
+        XCTAssertTrue(CaltopoPersonalAccountConnection.requiresCookieValidation(personalSessionID: cookieID, personalSignedAccount: false))
+        let line = CaltopoPersonalAccountConnection.requestLogLine(
+            method: "GET", path: "/api/v1/map/ABC123/since/0?id=cred12345678&signature=abc", status: 200, credential: "personal")
+        XCTAssertEqual(line, "GET /api/v1/map/ABC123/since/0 HTTP 200 credential=personal")
+        XCTAssertFalse(line.contains(secret))
+        XCTAssertFalse(line.contains("?"))
         let clue = CaltopoPhotoClue(latitude: 1, longitude: 2, title: "Clue", description: "Photo", createdMilliseconds: 1, jpegData: Data([0xff, 0xd8]), teamID: "personal:USER01")
         let bodies = try await client.makePhotoClueRequests(clue, now: Date(timeIntervalSince1970: 1_700_000_000)).compactMap { $0.httpBody }.map { String(decoding: $0, as: UTF8.self) }
         XCTAssertTrue(bodies.contains { $0.contains("signature=") })

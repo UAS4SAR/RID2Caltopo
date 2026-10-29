@@ -40,6 +40,12 @@ public struct CaltopoLiveConfiguration: Sendable, Equatable, Hashable {
 
     public var authorizesAsPersonalAccount: Bool { personalSessionID != nil || personalSignedAccount }
 
+    public var credentialKind: String {
+        if personalSignedAccount { return "personal" }
+        if personalSessionID != nil { return "session" }
+        return "team"
+    }
+
     public init(
         domainAndPort: String = "caltopo.com",
         mapID: String,
@@ -300,10 +306,13 @@ public actor CaltopoLiveClient {
     }
     private func validateSnapshotAccess() async throws {
         try Task.checkCancellation()
-        if let token = configuration.personalSessionID {
-            let url = try makeMapChangesRequest(sinceMilliseconds: 0, now: Date()).url!
-            _ = try await CaltopoPersonalSessions.shared.cookie(token, url: url)
-        }
+        // A signed personal account is authorized by HMAC. The cookie session is not consulted.
+        guard CaltopoPersonalAccountConnection.requiresCookieValidation(
+            personalSessionID: configuration.personalSessionID,
+            personalSignedAccount: configuration.personalSignedAccount
+        ), let token = configuration.personalSessionID else { return }
+        let url = try makeMapChangesRequest(sinceMilliseconds: 0, now: Date()).url!
+        _ = try await CaltopoPersonalSessions.shared.cookie(token, url: url)
     }
     public func markerPresence(markerID: String, sinceMilliseconds: Int64) async throws -> (absent: Bool, present: Bool) {
         guard sinceMilliseconds > 500 else { throw CaltopoLiveClientError.invalidConfiguration }
@@ -912,14 +921,32 @@ public actor CaltopoLiveClient {
         }
         let data: Data
         let response: URLResponse
-        if let personalID = configuration.personalSessionID, let cookieURL = personalCookieURL {
-            (data, response) = try await CaltopoPersonalSessions.shared.perform(personalID, cookieURL: cookieURL,
-                request: request, session: personalTransport ?? session, sendCookie: personalSendCookie)
-        } else {
-            (data, response) = try await session.data(for: request)
+        let credential = configuration.credentialKind
+        let method = request.httpMethod ?? "GET"
+        let path = request.url?.path ?? "/"
+        let logTransport = credential != "team" || !path.hasPrefix("/api/v1/position/report/")
+        do {
+            if let personalID = configuration.personalSessionID, let cookieURL = personalCookieURL {
+                (data, response) = try await CaltopoPersonalSessions.shared.perform(personalID, cookieURL: cookieURL,
+                    request: request, session: personalTransport ?? session, sendCookie: personalSendCookie)
+            } else {
+                (data, response) = try await session.data(for: request)
+            }
+        } catch {
+            if logTransport {
+                CaltopoPersonalAccountConnection.logRequest(method: method, path: path, status: 0, credential: credential)
+            }
+            throw error
         }
         guard let httpResponse = response as? HTTPURLResponse else {
+            if logTransport {
+                CaltopoPersonalAccountConnection.logRequest(method: method, path: path, status: 0, credential: credential)
+            }
             throw CaltopoLiveClientError.httpStatus(0, "Non-HTTP response")
+        }
+        if logTransport {
+            CaltopoPersonalAccountConnection.logRequest(
+                method: method, path: path, status: httpResponse.statusCode, credential: credential)
         }
         guard (200 ..< 300).contains(httpResponse.statusCode)
                 || acceptedStatusCodes.contains(httpResponse.statusCode)

@@ -400,6 +400,27 @@ public class CaltopoSession {
 		return paramString.substring(0, paramString.length()-1);
     }
 
+	/** Path only. Query, signature, and secrets stay out of this line. Team position reports are omitted. */
+	private static void logTransport(CaltopoOp op, int status, @NonNull String credential) {
+		if (op.positionReport && "team".equals(credential)) return;
+		CaltopoPersonalAccountConnection.logRequest(
+				op.method == null ? "GET" : op.method.toString(),
+				op.url == null ? "/" : op.url,
+				status,
+				credential);
+	}
+
+	@NonNull
+	private static String transportCredential(CaltopoOp op, @Nullable CaltopoCredentials personalSigned) {
+		if (op.goNaked) return "unsigned";
+		if (personalSigned != null) return "personal";
+		if (op.personalAuthorization != null
+				&& CaltopoPersonalAccountConnection.usesSignedCredential(op.personalAuthorization.getToken()))
+			return "personal";
+		if (op.personalAuthorization != null) return "session";
+		return "team";
+	}
+
 	// this needs to be run in background thread to prevent blocking the app thread.
 	private static CaltopoOp BgSendRequest(CaltopoOp op) {
         boolean goodResponse = false;
@@ -407,6 +428,7 @@ public class CaltopoSession {
         final CaltopoCredentials fullReadCredentials = Cred;
         final String fullReadDomain = DomainAndPort;
         for (int attemptNum = 1; attemptNum <= (op.positionReport ? 1 : MAX_RETRY_ATTEMPTS); attemptNum++) {
+            boolean loggedTransport = false;
             try (AutoCloseable fullRead = fullMapRead ? CaltopoFullMapReads.acquire(R2CApplication.getAppCtxt(), CaltopoFullMapReads.mapKey(op.personalAuthorization != null ? "https://caltopo.com" : "https://" + fullReadDomain, op.url), () -> op.asyncFuture != null && op.asyncFuture.isCancelled()) : null) {
                 if (Thread.currentThread().isInterrupted() || (op.asyncFuture != null && op.asyncFuture.isCancelled())) throw new InterruptedException();
                 if (fullMapRead && op.personalAuthorization == null &&
@@ -425,12 +447,14 @@ public class CaltopoSession {
                 long expires = op.sentTimestampMsec + DEFAULT_TIMEOUT_MS;
                 String payloadString = (null == op.payload) ? "" : op.payload.toString();
                 // Personal signed credentials are opt-in. A null decision keeps the cookie
-                // path. Teams Cred is never replaced by an account activation secret.
+                // path. A signed-account grant never falls through to that path or to Teams Cred.
                 final PersonalSigningDecision personalDecision = (!op.goNaked && op.personalAuthorization != null)
-                        ? CaltopoPersonalAccountConnection.decide(op.personalAuthorization.getAccountID())
+                        ? CaltopoPersonalAccountConnection.signingForMap(
+                                op.personalAuthorization.getAccountID(), op.personalAuthorization.getToken())
                         : null;
                 if (personalDecision != null && personalDecision.failure != null) {
                     op.response = personalDecision.failure;
+                    logTransport(op, 0, transportCredential(op, null));
                     break;
                 }
                 final CaltopoCredentials personalSigned = personalDecision == null ? null : personalDecision.credentials;
@@ -523,6 +547,8 @@ public class CaltopoSession {
                 if (Thread.currentThread().isInterrupted() || (op.asyncFuture != null && op.asyncFuture.isCancelled())) throw new InterruptedException();
                 try (Response response = requestClient.newCall(requestBuilder.build()).execute()) {
                     op.responseCode = response.code();
+                    loggedTransport = true;
+                    logTransport(op, op.responseCode, transportCredential(op, personalSigned));
                     op.receivedTimestampMsec = System.currentTimeMillis();
 
                     // Response.body().string() handles the stream reading and closing automatically
@@ -573,17 +599,20 @@ public class CaltopoSession {
                 op.response = "Full map reload cancelled.";
                 break;
             } catch (UnknownHostException e) {
+                if (!loggedTransport) logTransport(op, 0, transportCredential(op, null));
                 op.response = "CalTopo hostname could not be resolved.";
                 if (op.positionReport || !RetryAfterDelay("DNS lookup failure", attemptNum)) {
                     break;
                 }
             } catch (IOException e) {
+                if (!loggedTransport) logTransport(op, 0, transportCredential(op, null));
                 op.response = "CalTopo request could not complete.";
                 CTError(TAG, op.response);
                 if (op.positionReport || !RetryAfterDelay("I/O exception", attemptNum)) {
                     break;
                 }
             } catch (Exception e) {
+                if (!loggedTransport) logTransport(op, 0, transportCredential(op, null));
                 op.response = "CalTopo request authorization or processing failed.";
                 CTError(TAG, op.response);
                 break;
@@ -701,8 +730,11 @@ public class CaltopoSession {
         outer.asyncFuture = StartupMapExecutorPool.submit(() -> {
             Runnable validate = () -> {
                 if (Thread.currentThread().isInterrupted() || outer.isCancelled()) throw new java.util.concurrent.CancellationException();
-                if (personal) CaltopoPersonalSession.requireValid(outer.personalAuthorization, path);
-                else if (credentials != Cred || !java.util.Objects.equals(domain, DomainAndPort))
+                // signed-account is an HMAC grant. The cookie probe only knows browser
+                // sessions, and asking it rejects the open before any map request.
+                if (personal && CaltopoPersonalAccountConnection.requiresCookieValidation(outer.personalAuthorization.getToken()))
+                    CaltopoPersonalSession.requireValid(outer.personalAuthorization, path);
+                else if (!personal && (credentials != Cred || !java.util.Objects.equals(domain, DomainAndPort)))
                     throw new IllegalStateException("Map connection changed.");
             };
             try {

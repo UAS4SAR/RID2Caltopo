@@ -38,6 +38,8 @@ object CaltopoPersonalAccountConnection {
     const val CREDENTIAL_TITLE = "Last synced by RID2Caltopo app"
     const val RETURN_SCHEME = "rid2caltopo"
     const val AUTH_LOG_TAG = "CaltopoPersonalAuth"
+    /** Map-node grant for a stored HMAC credential. It is not a browser-session token. */
+    const val SIGNED_ACCOUNT_GRANT = "signed-account"
     const val ACTIVATION_PROMPT = "Check the box, then tap Sync Account."
     const val LOG_OUT_PROMPT = "Remove the personal CalTopo account from this device and return to the team account?"
 
@@ -180,6 +182,38 @@ object CaltopoPersonalAccountConnection {
             CaltopoCredentials(record.accountId, record.credentialId, record.signingKey),
             null
         )
+    }
+
+    @JvmStatic fun usesSignedCredential(token: String?): Boolean = token == SIGNED_ACCOUNT_GRANT
+
+    /** Browser-session grants are checked with the cookie probe. The signed-account grant is not a session. */
+    @JvmStatic fun requiresCookieValidation(token: String?): Boolean =
+        !token.isNullOrEmpty() && !usesSignedCredential(token)
+
+    /**
+     * A signed-account grant never falls through to session cookies.
+     * A cookie grant keeps [decide]'s result, including the cookie path while Credentials is off.
+     */
+    @JvmStatic fun signingForMap(accountId: String?, grantToken: String?): PersonalSigningDecision {
+        val decision = decide(accountId)
+        if (usesSignedCredential(grantToken) && decision.credentials == null && decision.failure == null) {
+            return PersonalSigningDecision(null, "Sign in to connect your CalTopo account. Session cookies are not used.")
+        }
+        return decision
+    }
+
+    @JvmStatic fun requestLogLine(method: String, path: String, status: Int, credential: String): String {
+        val safePath = path.substringBefore('?')
+        val kind = if (credential == "personal" || credential == "session" || credential == "team" || credential == "unsigned") {
+            credential
+        } else {
+            "unknown"
+        }
+        return "$method $safePath HTTP $status credential=$kind"
+    }
+
+    @JvmStatic fun logRequest(method: String, path: String, status: Int, credential: String) {
+        logAuth(requestLogLine(method, path, status, credential))
     }
 
     /** Same HMAC construction as [CaltopoSession] and the Apple request signer. */

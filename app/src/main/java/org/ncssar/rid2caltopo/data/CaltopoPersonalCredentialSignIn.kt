@@ -98,7 +98,7 @@ object CaltopoPersonalCredentialSignIn {
             val feature = features.optJSONObject(index) ?: continue
             val id = feature.optString("id")
             if (feature.optJSONObject("properties")?.optString("class") == "CollaborativeMap" && id.isNotEmpty()) {
-                grants.put(id, "signed-account")
+                grants.put(id, CaltopoPersonalAccountConnection.SIGNED_ACCOUNT_GRANT)
             }
         }
         return JSONObject(normalized.toString()).put("grants", grants)

@@ -147,8 +147,10 @@ Log out, in Credentials mode, deletes the Keychain or Keystore entry and that se
 
 While Credentials is selected and a personal map is connected:
 
-- Android signs that personal request with the account credential and does not attach the cookie. A missing, revoked, or different-account credential fails the personal request. Session Cookies is not used as a fallback.
-- Apple builds a `CaltopoLiveConfiguration` with `personalSignedAccount` set and no cookie session, so the existing signer runs and the personal media-owner rules still apply. A Teams map stays on the Teams credential.
+- Android signs that personal request with the account credential and does not attach the cookie. Opening a map, and later sync and upload calls, use the same HMAC signer as the account catalog: `GET /api/v1/map/{id}/since/0` (and the existing marker, track, and media paths) with `id`, `expires`, and `signature` over an empty payload for GET. The map grant `signed-account` is not a browser session. The cookie-session probe is not asked to validate it. Asking that probe used to fail the open before any HTTP request, which left the response code at 0. A missing, revoked, or different-account credential fails the personal request. Session Cookies is not used as a fallback, including when the grant is `signed-account` and Credentials is off.
+- Apple builds a `CaltopoLiveConfiguration` with `personalSignedAccount` set and no cookie session, so the existing signer runs and the personal media-owner rules still apply. The snapshot check does not ask the cookie session for a signed account. A Teams map stays on the Teams credential.
+
+Both platforms log `METHOD PATH HTTP status credential=personal|session|team`. Android uses logcat tag `CaltopoPersonalAuth`. Apple uses the `CalTopoAccount` log. The path has no query. The line does not include the signing key, signature, or credential secret. A status of 0 means the request was not issued. Team position reports are not logged.
 
 Enrollment, the code exchange, and Keystore reads run off the main thread. The Android listener and exchange are called from `enroll`, which blocks and must be started on a worker. The Apple `enroll` hops off the main actor before it listens. After the first successful read, later signing uses an in-memory copy the way the Teams secret already does.
 

@@ -431,6 +431,58 @@ class CaltopoPersonalAccountConnectionTest {
         assertFalse(trace.contains(signature))
     }
 
+    @Test fun signedAccountMapOpenUsesThePersonalCredentialAndSkipsCookieValidation() {
+        val key = Base64.getEncoder().encodeToString(ByteArray(32) { 9 })
+        val record = CaltopoPersonalAccountConnection.completeExchange(
+            """{"code":"cred12345678","key":"$key","account":{"id":"USER01","type":"Feature","properties":{"class":"UserAccount"}}}""",
+            "abcd1234", "caltopo.com", "RID2Caltopo", 50
+        )
+        val store = CaltopoPersonalAccountMemoryStore()
+        store.save(record)
+        CaltopoPersonalAccountConnection.install(store, featureEnabled = true)
+        assertFalse(CaltopoPersonalAccountConnection.requiresCookieValidation(CaltopoPersonalAccountConnection.SIGNED_ACCOUNT_GRANT))
+        assertTrue(CaltopoPersonalAccountConnection.requiresCookieValidation("11111111-1111-1111-1111-111111111111"))
+        assertFalse(CaltopoPersonalAccountConnection.requiresCookieValidation(null))
+
+        val signed = CaltopoPersonalAccountConnection.signingForMap("USER01", CaltopoPersonalAccountConnection.SIGNED_ACCOUNT_GRANT)
+        assertNull(signed.failure)
+        assertEquals("cred12345678", signed.credentials!!.credentialId)
+        assertEquals("USER01", signed.credentials!!.teamId)
+        assertEquals(key, signed.credentials!!.credentialSecret)
+        val uncovered = CaltopoPersonalAccountConnection.signingForMap("OTHER1", CaltopoPersonalAccountConnection.SIGNED_ACCOUNT_GRANT)
+        assertNull(uncovered.credentials)
+        assertTrue(uncovered.failure!!.contains("Team credentials were not used"))
+
+        val now = 1_700_000_000_000L
+        val mapPath = "/api/v1/map/4J0LF02/since/0"
+        val catalogPath = "/api/v1/acct/USER01/since/0"
+        val expires = now + 120_000L
+        val mapSignature = CaltopoPersonalAccountConnection.sign("GET", mapPath, expires, "", key)
+        val catalogSignature = CaltopoPersonalAccountConnection.sign("GET", catalogPath, expires, "", key)
+        assertEquals(mapSignature, CaltopoPersonalAccountConnection.sign("GET", mapPath, expires, "", signed.credentials!!.credentialSecret))
+        assertFalse(mapSignature == catalogSignature)
+        assertFalse(mapSignature.contains(key))
+
+        CaltopoPersonalAccountConnection.applyLoginMode(CaltopoPersonalLoginMode.SESSION_COOKIES)
+        val cookiesOff = CaltopoPersonalAccountConnection.signingForMap("USER01", CaltopoPersonalAccountConnection.SIGNED_ACCOUNT_GRANT)
+        assertNull(cookiesOff.credentials)
+        assertTrue(cookiesOff.failure!!.contains("Session cookies are not used"))
+        val cookieGrant = CaltopoPersonalAccountConnection.signingForMap("USER01", "11111111-1111-1111-1111-111111111111")
+        assertNull(cookieGrant.credentials)
+        assertNull(cookieGrant.failure)
+
+        val logs = mutableListOf<String>()
+        CaltopoPersonalAccountConnection.authLog = { logs += it }
+        CaltopoPersonalAccountConnection.logRequest("GET", "$mapPath?id=cred12345678&signature=$mapSignature", 200, "personal")
+        CaltopoPersonalAccountConnection.logRequest("POST", "/api/v1/map/4J0LF02/Marker/abc", 0, "personal")
+        assertEquals("GET $mapPath HTTP 200 credential=personal", logs[0])
+        assertEquals("POST /api/v1/map/4J0LF02/Marker/abc HTTP 0 credential=personal", logs[1])
+        val trace = logs.joinToString("\n")
+        assertFalse(trace.contains(key))
+        assertFalse(trace.contains(mapSignature))
+        assertFalse(trace.contains("?"))
+    }
+
     @Test fun expiredActivationAndFailedExchangeDoNotKeepTheCodeOrKey() {
         var now = 1_000L
         CaltopoPersonalAccountConnection.clock = { now }

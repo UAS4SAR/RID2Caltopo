@@ -33,6 +33,25 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
     public static let activationPrompt = "Check the box, then tap Sync Account."
     public static let logOutPrompt = "Remove the personal CalTopo account from this device and return to the team account?"
     public static let returnScheme = "rid2caltopo"
+    /// Map-node grant for a stored HMAC credential. It is not a browser-session token.
+    public static let signedAccountGrant = "signed-account"
+
+    /// Cookie validation applies only to a browser session. A signed personal account uses HMAC.
+    public static func requiresCookieValidation(personalSessionID: UUID?, personalSignedAccount: Bool) -> Bool {
+        personalSessionID != nil && !personalSignedAccount
+    }
+
+    /// Method, path, status, and credential kind. The path has no query, and the line has no secret.
+    public static func requestLogLine(method: String, path: String, status: Int, credential: String) -> String {
+        let safePath = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? path
+        let kind = ["personal", "session", "team", "unsigned"].contains(credential) ? credential : "unknown"
+        return "\(method) \(safePath) HTTP \(status) credential=\(kind)"
+    }
+
+    public static func logRequest(method: String, path: String, status: Int, credential: String) {
+        let line = requestLogLine(method: method, path: path, status: status, credential: credential)
+        credentialLog.info("\(line, privacy: .public)")
+    }
     private static let credentialLog = Logger(subsystem: "org.ncssar.RID2Caltopo", category: "CalTopoAccount")
     private static let pendingLifetime: TimeInterval = 5 * 60
 
