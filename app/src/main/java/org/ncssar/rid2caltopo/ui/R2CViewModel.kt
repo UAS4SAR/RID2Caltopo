@@ -23,6 +23,7 @@ import org.ncssar.rid2caltopo.app.R2CActivity
 import org.ncssar.rid2caltopo.app.R2CApplication
 import org.ncssar.rid2caltopo.app.ScanningService
 import org.ncssar.rid2caltopo.data.CaltopoClient
+import org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection
 import org.ncssar.rid2caltopo.data.CaltopoPersonalSession
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTWarn
