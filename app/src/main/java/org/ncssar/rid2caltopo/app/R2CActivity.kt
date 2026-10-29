@@ -1764,6 +1764,7 @@ class R2CActivity :
                             localViewModel.showMain()
                             localViewModel.onUIEvent(org.ncssar.rid2caltopo.ui.UIEvent.BrowseProfileSelected("personal"))
                         },
+                        onPersonalCredentialLoggedOut = { localViewModel.returnToTeamCredential(openBrowser = false) },
                         onDismiss = {
                             reloadExternalDisplayConfig(forceRecreate = true)
                             localViewModel.dismissProximitySettings()
@@ -1857,6 +1858,7 @@ class R2CActivity :
                                 localViewModel.showMain()
                                 localViewModel.onUIEvent(org.ncssar.rid2caltopo.ui.UIEvent.BrowseProfileSelected("personal"))
                             },
+                            onPersonalCredentialLoggedOut = { localViewModel.returnToTeamCredential(openBrowser = false) },
                             onDismiss = {
                                 reloadExternalDisplayConfig(forceRecreate = true)
                                 localViewModel.showMain()

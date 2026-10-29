@@ -222,9 +222,11 @@ struct CaltopoSettingsView: View {
                         settings.showSyncAccountPrompt = true
                     }
                     .disabled(settings.personalCredentialBusy)
-                    Button("Log out") { Task { await settings.logOutPersonalCredential() } }
-                        .disabled(settings.personalCredentialBusy)
-                    Text("Log out removes the account credential from this device. The device stays listed on your CalTopo account until you delete it there.")
+                    if settings.personalCredentialSummary != "Not connected" {
+                        Button("Log out") { settings.showPersonalLogOutPrompt = true }
+                            .disabled(settings.personalCredentialBusy)
+                    }
+                    Text("Log out removes the account credential from this device and returns to the team account.")
                         .font(.footnote).foregroundStyle(.secondary)
                     Text("Switching to Session Cookies stops using this credential. A saved browser session is not used while Credentials is selected.")
                         .font(.footnote).foregroundStyle(.secondary)
@@ -566,6 +568,7 @@ struct CaltopoSettingsView: View {
             }
         }
         .caltopoSyncAccountPrompt(settings, presented: !showingTeamMaps)
+        .caltopoLogOutPrompt(settings, presented: !showingTeamMaps)
         .fullScreenCover(isPresented: $showingTeamMaps) {
             CaltopoTeamMapBrowser(settings: settings, onCredentialSelect: { profileID in
                 onSave(settings.disconnectMap())
@@ -1076,6 +1079,9 @@ struct CaltopoTeamMapBrowser: View {
                                 onCredentialSelect?("personal")
                             }
                         }
+                        if settings.personalLoginMode == .credentials && !settings.personalUsername.isEmpty {
+                            Button("Log out", role: .destructive) { settings.showPersonalLogOutPrompt = true }
+                        }
                         if settings.personalLoginMode == .sessionCookies {
                             Button("Edit personal account", systemImage: "pencil") { showWebsite = true }
                         }
@@ -1130,10 +1136,23 @@ struct CaltopoTeamMapBrowser: View {
             await loadSelectedMaps()
         }
         .caltopoSyncAccountPrompt(settings, presented: true)
+        .caltopoLogOutPrompt(settings, presented: true)
     }
 }
 
 private extension View {
+    func caltopoLogOutPrompt(_ settings: AppleCaltopoSettings, presented: Bool) -> some View {
+        confirmationDialog("Log out", isPresented: Binding(
+            get: { presented && settings.showPersonalLogOutPrompt },
+            set: { if !$0 { settings.showPersonalLogOutPrompt = false } }
+        ), titleVisibility: .visible) {
+            Button("Log out", role: .destructive) { Task { await settings.logOutPersonalCredential() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(CaltopoPersonalAccountConnection.logOutPrompt)
+        }
+    }
+
     func caltopoSyncAccountPrompt(_ settings: AppleCaltopoSettings, presented: Bool) -> some View {
         confirmationDialog("CalTopo sign-in", isPresented: Binding(
             get: { presented && settings.showSyncAccountPrompt },

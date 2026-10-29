@@ -41,6 +41,21 @@ final class CaltopoPersonalAccountConnectionTests: XCTestCase {
         XCTAssertFalse(parsed.description.contains(key))
     }
 
+    func testCredentialDeleteUsesAnEmptyPayload() throws {
+        let secret = Data(repeating: 3, count: 32).base64EncodedString()
+        let record = try sampleRecord(secret: secret)
+        let url = try CaltopoPersonalAccountConnection().credentialDeleteURL(record, now: Date(timeIntervalSince1970: 1_700_000_000))
+        XCTAssertEqual(url.path, "/api/v1/acct/USER01/UserCredential/cred12345678")
+        let signature = try CaltopoRequestSigner.signature(
+            method: "DELETE", path: url.path, expiresMilliseconds: 1_700_000_120_000,
+            payload: "", credentialSecretBase64: record.signingKey
+        )
+        XCTAssertTrue(url.absoluteString.contains("expires=1700000120000"))
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+        XCTAssertEqual(query?.first { $0.name == "signature" }?.value, signature)
+        XCTAssertFalse(url.absoluteString.contains(secret))
+    }
+
     func testPersonalLoginModeKeepsAnExistingCookieSessionUntilChosen() {
         XCTAssertEqual(CaltopoPersonalLoginMode.resolve(stored: nil, cookieSessionAlreadyInUse: false), .credentials)
         XCTAssertEqual(CaltopoPersonalLoginMode.resolve(stored: nil, cookieSessionAlreadyInUse: true), .sessionCookies)

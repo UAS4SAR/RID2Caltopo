@@ -73,6 +73,7 @@ fun CaltopoHybridBrowser(
 ) {
     var credentialsExpanded by remember { mutableStateOf(false) }
     var showSyncPrompt by remember { mutableStateOf(false) }
+    var showLogOutPrompt by remember { mutableStateOf(false) }
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val editPersonal = org.ncssar.rid2caltopo.ui.rememberPersonalAccountEditor()
@@ -178,6 +179,16 @@ fun CaltopoHybridBrowser(
                             }
                         }
                     )
+                    if (CaltopoPersonalAccountConnection.loginMode == CaltopoPersonalLoginMode.CREDENTIALS &&
+                        CaltopoPersonalSession.username.isNotBlank()) {
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("Log out") },
+                            onClick = {
+                                credentialsExpanded = false
+                                showLogOutPrompt = true
+                            }
+                        )
+                    }
                     if (CaltopoPersonalAccountConnection.loginMode != CaltopoPersonalLoginMode.CREDENTIALS) {
                         androidx.compose.material3.DropdownMenuItem(
                             text = { Text("Edit personal account") },
@@ -191,6 +202,27 @@ fun CaltopoHybridBrowser(
                         })
                     }
                 }
+            }
+            if (showLogOutPrompt) {
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = { showLogOutPrompt = false },
+                    title = { Text("Log out") },
+                    text = { Text(CaltopoPersonalAccountConnection.LOG_OUT_PROMPT) },
+                    confirmButton = {
+                        androidx.compose.material3.TextButton(onClick = {
+                            showLogOutPrompt = false
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    runCatching { CaltopoPersonalCredentialSignIn.logOut() }
+                                }
+                                onUIEvent(UIEvent.PersonalCredentialLoggedOut)
+                            }
+                        }) { Text("Log out") }
+                    },
+                    dismissButton = {
+                        androidx.compose.material3.TextButton(onClick = { showLogOutPrompt = false }) { Text("Cancel") }
+                    }
+                )
             }
             org.ncssar.rid2caltopo.ui.CaltopoSyncAccountPrompt(
                 visible = showSyncPrompt,

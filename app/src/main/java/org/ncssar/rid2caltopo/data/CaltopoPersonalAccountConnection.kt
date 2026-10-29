@@ -39,6 +39,7 @@ object CaltopoPersonalAccountConnection {
     const val RETURN_SCHEME = "rid2caltopo"
     const val AUTH_LOG_TAG = "CaltopoPersonalAuth"
     const val ACTIVATION_PROMPT = "Check the box, then tap Sync Account."
+    const val LOG_OUT_PROMPT = "Remove the personal CalTopo account from this device and return to the team account?"
     private const val SIGNATURE_TTL_MS = 2 * 60 * 1000L
     private const val PENDING_TTL_MS = 5 * 60 * 1000L
     private const val MAX_ACTIVATION_BODY = 65_536
@@ -114,6 +115,32 @@ object CaltopoPersonalAccountConnection {
             cacheValid = false
             pending = null
         }
+    }
+
+    /**
+     * Best-effort signed DELETE of the CalTopo credential, then the local record is always removed.
+     * The web object DAO documents DELETE on this URL. A non-200 or a transport error does not keep the key.
+     */
+    fun logOut(delete: (String) -> Int = { url -> CaltopoPersonalAccountHttps.delete(url).status }) {
+        val record = stored()
+        if (record != null && !record.revoked) {
+            val path = "/api/v1/acct/${record.accountId}/UserCredential/${record.credentialId}"
+            try {
+                val status = delete(credentialDeleteUrl(record))
+                logAuth("credential DELETE $path HTTP $status")
+            } catch (error: Exception) {
+                logAuth("credential DELETE $path failed: ${error.javaClass.simpleName}")
+            }
+        }
+        disconnect()
+        logAuth("logged out")
+    }
+
+    fun credentialDeleteUrl(record: CaltopoPersonalAccountRecord, nowMilliseconds: Long = clock()): String {
+        val path = "/api/v1/acct/${record.accountId}/UserCredential/${record.credentialId}"
+        val expires = nowMilliseconds + SIGNATURE_TTL_MS
+        val signature = sign("DELETE", path, expires, "", record.signingKey)
+        return "https://${record.host}$path?id=${encode(record.credentialId)}&expires=$expires&signature=${encode(signature)}"
     }
 
     fun markRevoked() {
@@ -735,6 +762,13 @@ object CaltopoPersonalAccountHttps : CaltopoActivationExchange {
             "${formEncode(key)}=${formEncode(value)}"
         }
         return exchange(parsed, "POST", body, MAX_ACTIVATION_BODY)
+    }
+
+    fun delete(url: String): CaltopoActivationHttp {
+        val parsed = URI(url)
+        require(parsed.scheme == "https" && parsed.host?.lowercase(Locale.US) in setOf("caltopo.com", "sartopo.com"))
+        require(parsed.path.matches(Regex("^/api/v1/acct/[A-Za-z0-9]{6}/UserCredential/[A-Za-z0-9]{12}$")))
+        return exchange(parsed, "DELETE", null, MAX_ACTIVATION_BODY)
     }
 
     fun readResponseBody(input: java.io.InputStream, maxBytes: Int, status: Int): String {

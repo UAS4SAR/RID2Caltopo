@@ -31,6 +31,7 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
     public static let defaultDeviceName = "RID2Caltopo"
     public static let credentialTitle = "Last synced by RID2Caltopo app"
     public static let activationPrompt = "Check the box, then tap Sync Account."
+    public static let logOutPrompt = "Remove the personal CalTopo account from this device and return to the team account?"
     public static let returnScheme = "rid2caltopo"
     private static let credentialLog = Logger(subsystem: "org.ncssar.RID2Caltopo", category: "CalTopoAccount")
     private static let pendingLifetime: TimeInterval = 5 * 60
@@ -98,6 +99,39 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
     public func reconnect(host: String) -> CaltopoPersonalAccountStatus? {
         guard let current = status(host: host), !current.revoked else { return nil }
         return current
+    }
+
+    public func logOut() async {
+        if let record = try? stored(), !record.revoked {
+            let path = "/api/v1/acct/\(record.accountID)/UserCredential/\(record.credentialID)"
+            do {
+                let url = try credentialDeleteURL(record)
+                let status = try await CaltopoPersonalAccountHTTPSExchange().delete(url: url)
+                Self.credentialLog.info("credential DELETE \(path, privacy: .public) HTTP \(status, privacy: .public)")
+            } catch {
+                Self.credentialLog.error("credential DELETE \(path, privacy: .public) failed")
+            }
+        }
+        disconnect()
+    }
+
+    public func credentialDeleteURL(_ record: CaltopoPersonalAccountRecord, now: Date = Date()) throws -> URL {
+        let path = "/api/v1/acct/\(record.accountID)/UserCredential/\(record.credentialID)"
+        let expires = Int64(now.timeIntervalSince1970 * 1_000) + CaltopoRequestSigner.validityMilliseconds
+        let signature = try CaltopoRequestSigner.signature(
+            method: "DELETE", path: path, expiresMilliseconds: expires, payload: "",
+            credentialSecretBase64: record.signingKey
+        )
+        guard var components = URLComponents(string: "https://\(record.host)\(path)") else {
+            throw CaltopoPersonalAccountError.rejected
+        }
+        components.percentEncodedQuery = [
+            "id=\(record.credentialID)",
+            "expires=\(expires)",
+            "signature=\(signature.addingPercentEncoding(withAllowedCharacters: CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))) ?? signature)",
+        ].joined(separator: "&")
+        guard let url = components.url else { throw CaltopoPersonalAccountError.rejected }
+        return url
     }
 
     public func disconnect() {
@@ -770,6 +804,21 @@ public struct CaltopoPersonalAccountHTTPSExchange: CaltopoPersonalAccountExchang
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.setValue("RID2Caltopo/Apple", forHTTPHeaderField: "User-Agent")
         request.httpBody = Data(body.utf8)
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw CaltopoPersonalAccountError.rejected }
+        return http.statusCode
+    }
+
+    public func delete(url: URL) async throws -> Int {
+        guard url.scheme == "https",
+              let host = url.host?.lowercased(), ["caltopo.com", "sartopo.com"].contains(host),
+              url.path.range(of: "^/api/v1/acct/[A-Za-z0-9]{6}/UserCredential/[A-Za-z0-9]{12}$", options: .regularExpression) != nil,
+              url.user == nil else { throw CaltopoPersonalAccountError.rejected }
+        let session = URLSession(configuration: .ephemeral, delegate: CaltopoPersonalNoRedirect(), delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("RID2Caltopo/Apple", forHTTPHeaderField: "User-Agent")
         let (_, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw CaltopoPersonalAccountError.rejected }
         return http.statusCode

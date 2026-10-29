@@ -58,6 +58,7 @@ final class AppleCaltopoSettings: ObservableObject {
     @Published private(set) var personalCredentialBusy = false
     @Published var openAccountBrowserAfterCredentialSignIn = false
     @Published var showSyncAccountPrompt = false
+    @Published var showPersonalLogOutPrompt = false
     private static let personalLoginModeKey = "caltopo.personalLoginSupport"
     @Published var usesPersonalCredentials: Bool {
         didSet { defaults.set(usesPersonalCredentials, forKey: "caltopo.usesPersonalCredentials") }
@@ -397,7 +398,7 @@ final class AppleCaltopoSettings: ObservableObject {
         personalCredentialRevision &+= 1
         personalCredentialBusy = true
         defer { personalCredentialBusy = false }
-        await Task.detached(priority: .userInitiated) { CaltopoPersonalAccountConnection.shared.disconnect() }.value
+        await CaltopoPersonalAccountConnection.shared.logOut()
         personalCredentialSummary = "Not connected"
         if personalLoginMode == .credentials {
             personalSessionID = nil

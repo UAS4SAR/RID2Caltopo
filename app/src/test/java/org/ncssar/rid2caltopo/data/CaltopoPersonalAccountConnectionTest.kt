@@ -363,6 +363,37 @@ class CaltopoPersonalAccountConnectionTest {
         assertFalse(logs.joinToString("\n").contains(signature))
     }
 
+    @Test fun logOutTriesASignedDeleteAndClearsTheCredentialWhenDeleteFails() {
+        val key = Base64.getEncoder().encodeToString(ByteArray(32) { 3 })
+        val record = CaltopoPersonalAccountConnection.completeExchange(
+            """{"code":"cred12345678","key":"$key","account":{"id":"USER01","type":"Feature","properties":{"class":"UserAccount"}}}""",
+            "abcd1234", "caltopo.com", "RID2Caltopo", 50
+        )
+        val store = CaltopoPersonalAccountMemoryStore()
+        store.save(record)
+        CaltopoPersonalAccountConnection.install(store, featureEnabled = true)
+        val now = 1_700_000_000_000L
+        CaltopoPersonalAccountConnection.clock = { now }
+        val path = "/api/v1/acct/USER01/UserCredential/cred12345678"
+        val signature = CaltopoPersonalAccountConnection.sign("DELETE", path, now + 120_000, "", key)
+        val logs = mutableListOf<String>()
+        CaltopoPersonalAccountConnection.authLog = { logs += it }
+        CaltopoPersonalAccountConnection.logOut { url ->
+            assertTrue(url.startsWith("https://caltopo.com$path?"))
+            assertTrue(url.contains("id=cred12345678"))
+            assertTrue(url.contains("expires=${now + 120_000}"))
+            assertTrue(url.contains("signature=" + java.net.URLEncoder.encode(signature, Charsets.UTF_8.name()).replace("+", "%20")))
+            assertFalse(url.contains(key))
+            throw java.io.IOException("down")
+        }
+        assertNull(CaltopoPersonalAccountConnection.status("caltopo.com"))
+        val trace = logs.joinToString("\n")
+        assertTrue(trace.contains("credential DELETE $path failed: IOException"))
+        assertTrue(trace.contains("logged out"))
+        assertFalse(trace.contains(key))
+        assertFalse(trace.contains(signature))
+    }
+
     @Test fun expiredActivationAndFailedExchangeDoNotKeepTheCodeOrKey() {
         var now = 1_000L
         CaltopoPersonalAccountConnection.clock = { now }

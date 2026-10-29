@@ -45,9 +45,9 @@ object CaltopoPersonalCredentialSignIn {
         CaltopoPersonalSession.acceptCatalog(catalog)
     }
 
-    /** Keystore delete. Call from a worker, then [CaltopoPersonalSession.suspendPersonalSelection] on the UI thread. */
+    /** Keystore delete. Call from a worker, then clear the personal selection on the UI thread. */
     fun logOut() {
-        CaltopoPersonalAccountConnection.disconnect()
+        CaltopoPersonalAccountConnection.logOut()
     }
 
     fun switchMode(context: Context, mode: CaltopoPersonalLoginMode) {

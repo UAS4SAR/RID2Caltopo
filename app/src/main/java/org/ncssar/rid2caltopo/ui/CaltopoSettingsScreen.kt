@@ -60,6 +60,7 @@ fun CaltopoSettingsScreen(
     onShowDeveloperTools: () -> Unit,
     onSelectIncident: () -> Unit,
     onPersonalAccountConnected: () -> Unit = {},
+    onPersonalCredentialLoggedOut: () -> Unit = {},
     settingsViewModel: CaltopoSettingsViewModel = viewModel(),
     startAtProximity: Boolean = false
 ) {
@@ -241,7 +242,7 @@ fun CaltopoSettingsScreen(
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.fillMaxWidth()
                 )
-                PersonalLoginSupportSetting(onPersonalAccountConnected)
+                PersonalLoginSupportSetting(onPersonalAccountConnected, onPersonalCredentialLoggedOut)
                 Spacer(modifier = Modifier.height(16.dp))
                 HorizontalDivider()
                 Spacer(modifier = Modifier.height(16.dp))
@@ -845,13 +846,17 @@ private fun Modifier.verticalScrollbar(state: ScrollState, color: Color): Modifi
 }
 
 @Composable
-private fun PersonalLoginSupportSetting(onPersonalAccountConnected: () -> Unit) {
+private fun PersonalLoginSupportSetting(
+    onPersonalAccountConnected: () -> Unit,
+    onPersonalCredentialLoggedOut: () -> Unit
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var mode by remember { mutableStateOf(org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.loginMode) }
     var summary by remember { mutableStateOf("Not connected") }
     var busy by remember { mutableStateOf(false) }
     var showSyncPrompt by remember { mutableStateOf(false) }
+    var showLogOutPrompt by remember { mutableStateOf(false) }
     var credentialRevision by remember { mutableStateOf(0L) }
     LaunchedEffect(mode) {
         if (mode != CaltopoPersonalLoginMode.CREDENTIALS) return@LaunchedEffect
@@ -920,25 +925,40 @@ private fun PersonalLoginSupportSetting(onPersonalAccountConnected: () -> Unit) 
             enabled = !busy,
             modifier = Modifier.fillMaxWidth()
         ) { Text(if (busy) "Waiting for CalTopo…" else "Sign in") }
-        TextButton(
-            onClick = {
-                credentialRevision++
-                busy = true
-                scope.launch {
-                    try {
-                        val result = withContext(Dispatchers.IO) { runCatching { CaltopoPersonalCredentialSignIn.logOut() } }
-                        result.onSuccess { CaltopoPersonalSession.suspendPersonalSelection() }
-                        summary = result.fold({ "Not connected" }, { it.message ?: "CalTopo log out failed." })
-                    } finally {
-                        busy = false
-                    }
-                }
-            },
-            enabled = !busy,
-            modifier = Modifier.fillMaxWidth()
-        ) { Text("Log out") }
+        if (showLogOutPrompt) {
+            AlertDialog(
+                onDismissRequest = { showLogOutPrompt = false },
+                title = { Text("Log out") },
+                text = { Text(org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.LOG_OUT_PROMPT) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showLogOutPrompt = false
+                        credentialRevision++
+                        busy = true
+                        scope.launch {
+                            try {
+                                withContext(Dispatchers.IO) { runCatching { CaltopoPersonalCredentialSignIn.logOut() } }
+                                CaltopoPersonalSession.suspendPersonalSelection()
+                                onPersonalCredentialLoggedOut()
+                                summary = "Not connected"
+                            } finally {
+                                busy = false
+                            }
+                        }
+                    }) { Text("Log out") }
+                },
+                dismissButton = { TextButton(onClick = { showLogOutPrompt = false }) { Text("Cancel") } }
+            )
+        }
+        if (summary != "Not connected") {
+            TextButton(
+                onClick = { showLogOutPrompt = true },
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Log out") }
+        }
         Text(
-            "Log out removes the account credential from this device. The device stays listed on your CalTopo account until you delete it there.",
+            "Log out removes the account credential from this device and returns to the team account.",
             style = MaterialTheme.typography.bodySmall
         )
         Text(
