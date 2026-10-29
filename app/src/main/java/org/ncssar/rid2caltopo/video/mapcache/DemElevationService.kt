@@ -83,7 +83,12 @@ internal class DemElevationService(context: Context) {
         // pixels and has its own decoded-block cache, so this is both cheap and spatially smooth.
         // The point cache retains approximately one-metre keys so EPQS can expose its
         // best-available 3DEP source resolution.
+        val sampleStartedAt = android.os.SystemClock.elapsedRealtime()
         val localTiff = terrainReads.read { checkCancelled -> localGeoTiff.sample(lat, lng, checkCancelled) }
+        val sampleElapsedMs = android.os.SystemClock.elapsedRealtime() - sampleStartedAt
+        if (sampleElapsedMs >= 1_000L) {
+            MapCacheDebug.warn(MapCacheDebug.TAG_DEM, "dem sample slow elapsedMs=$sampleElapsedMs key=$key")
+        }
         if (localTiff != null && localTiff.elevationMeters.isFinite() && localTiff.elevationMeters >= -500.0 && localTiff.elevationMeters <= 10_000.0) {
             val sample = DemElevationSample(
                 elevationMeters = localTiff.elevationMeters,

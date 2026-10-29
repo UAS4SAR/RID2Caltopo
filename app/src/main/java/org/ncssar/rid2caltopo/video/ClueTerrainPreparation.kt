@@ -37,7 +37,10 @@ internal suspend fun refineCapturedClueTerrain(
     )
 }
 
-/** A save cannot publish the provisional flat-ground marker while DEM work is pending. */
+/**
+ * Optional refinement. Submit does not call this: a slow GeoTIFF sample must not
+ * delay the marker POST. The form preview may still refine in the background.
+ */
 internal suspend fun prepareClueTerrainForSave(
     clue: PendingClue,
     timeoutMillis: Long = 30_000L,

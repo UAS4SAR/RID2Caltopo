@@ -152,15 +152,23 @@ object AwaitingMapFlights {
         CaltopoInterruptedTrackJournal.save(item.optString("map"), item.optString("remote"), id,
             item.optString("label"), "", geometry)
     }
-    @JvmStatic @Synchronized fun reconcile(map: String, team: String) {
-        load()
+    @JvmStatic fun reconcile(map: String, team: String) {
         val ctxt = R2CApplication.getAppCtxt()
-        if (ctxt != null) all().filter { it.optString("decision") in listOf("publish", "published") && it.optString("map") == map && it.optString("team") == team }.forEach {
-            org.ncssar.rid2caltopo.video.AndroidClueStore.shared(ctxt).bindAwaitingFlight(
-                JSONObject(it.toString()), all().map { other -> JSONObject(other.toString()) }, map, team)
+        val bindings = synchronized(this) {
+            load()
+            val others = all().map { JSONObject(it.toString()) }
+            all().filter { it.optString("decision") in listOf("publish", "published") && it.optString("map") == map && it.optString("team") == team }
+                .map { JSONObject(it.toString()) to others }
         }
-        all().filter { it.optString("decision") == "publish" && it.optString("map") == map && it.optString("team") == team && it.optBoolean("finished") }
-            .forEach { queueCompleted(it) }
+        // Clue-store file checks must not run while this journal lock is held.
+        if (ctxt != null) bindings.forEach { (item, others) ->
+            org.ncssar.rid2caltopo.video.AndroidClueStore.shared(ctxt).bindAwaitingFlight(item, others, map, team)
+        }
+        synchronized(this) {
+            load()
+            all().filter { it.optString("decision") == "publish" && it.optString("map") == map && it.optString("team") == team && it.optBoolean("finished") }
+                .forEach { queueCompleted(it) }
+        }
     }
     /** Removes exactly one undecided or local entry. Returns false when nothing matched. */
     @JvmStatic @Synchronized fun discard(id: String): Boolean {

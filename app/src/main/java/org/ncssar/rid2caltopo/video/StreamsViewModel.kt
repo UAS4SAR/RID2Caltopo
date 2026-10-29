@@ -3009,27 +3009,31 @@ class StreamsViewModel(
         if (clueSaveInProgress) return
         // Acknowledge before any suspension, track scan or image/disk work. Freeze the accepted
         // report so edits and waypoint refreshes cannot change it during the save.
-        // Replace preview-only DEM work with a required worker preparation of this frozen report.
+        // Submit publishes the nearest-waypoint position immediately. DEM refinement stays on the preview.
         clueSaveInProgress = true
         clueProjectionJob?.cancel()
         pendingBindingJob?.cancel()
         viewModelScope.launch {
             try {
+                val startedAt = android.os.SystemClock.elapsedRealtime()
                 val acceptedContext = captureClueSaveContext()
                 val bound = withContext(Dispatchers.Default) { bindAtSubmit(clue) }
                 val context = freezeClueDestination(acceptedContext, bound, mode == ClueSaveMode.PUBLISH)
-                val (submitted, title, description) = withContext(Dispatchers.Default) {
-                    val submitted = prepareClueTerrainForSave(bound) { lat, lng ->
-                        altitudeCoordinator.demElevationService.sampleElevationMeters(lat, lng)
-                    }
-                    val title = if (mode == ClueSaveMode.MARKER_LOCAL) submitted.title.ifBlank { "Local marker" } else submitted.title
-                    val captureSummary = appendTelemetrySummary(submitted.description,
-                        buildClueCaptureSummary(submitted, context.format))
+                // Nearest-waypoint position is final at Submit. Do not wait on the DEM worker:
+                // the form preview already holds it for the local 1 m GeoTIFF, and that wait
+                // used to expire before any marker POST.
+                android.util.Log.i(tag, "Clue save stage=bound elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt} " +
+                    "terrainApplied=${bound.terrainProjectionApplied} demSource=${bound.demSource ?: "none"} " +
+                    "publishWithoutTerrainWait=true")
+                val (title, description) = withContext(Dispatchers.Default) {
+                    val title = if (mode == ClueSaveMode.MARKER_LOCAL) bound.title.ifBlank { "Local marker" } else bound.title
+                    val captureSummary = appendTelemetrySummary(bound.description,
+                        buildClueCaptureSummary(bound, context.format))
                     val description = if (mode == ClueSaveMode.MARKER_LOCAL) captureSummary
-                        else appendTelemetrySummary(captureSummary, submitted.streamTelemetrySummary)
-                    Triple(submitted, title, description)
+                        else appendTelemetrySummary(captureSummary, bound.streamTelemetrySummary)
+                    title to description
                 }
-                persistClueLocally(submitted, title, description, mode == ClueSaveMode.PUBLISH, context)
+                persistClueLocally(bound, title, description, mode == ClueSaveMode.PUBLISH, context)
                     ?: return@launch
                 when (mode) {
                     ClueSaveMode.PUBLISH -> {
@@ -3037,11 +3041,12 @@ class StreamsViewModel(
                         CaltopoClient.ShowToast("Clue saved locally; map publication is pending.")
                     }
                     ClueSaveMode.IGNORED_LOCAL -> {
-                        CTDebug(tag, "Clue on ignored flight kept local only remoteId=${submitted.droneSpec.remoteId}")
+                        CTDebug(tag, "Clue on ignored flight kept local only remoteId=${bound.droneSpec.remoteId}")
                         CaltopoClient.ShowToast(org.ncssar.rid2caltopo.data.IgnoredFlightClue.LOCAL_ONLY_SAVED)
                     }
                     ClueSaveMode.MARKER_LOCAL -> CaltopoClient.ShowToast("Local marker added to R2C Map Pane.")
                 }
+                android.util.Log.i(tag, "Clue save stage=queued-upload elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt} mode=$mode")
                 if (pendingClue?.timestamp == clue.timestamp && pendingClue?.designator == clue.designator) clearPendingClue()
             } catch (error: ClueTerrainUnavailable) {
                 CTWarn(tag, "Clue save awaiting terrain: ${error.message}")

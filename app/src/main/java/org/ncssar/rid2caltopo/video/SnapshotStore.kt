@@ -170,20 +170,25 @@ class AndroidClueStore private constructor(
      * Assigns the unassigned publishable clues owned by [flight] (shared rule in AwaitingMapClueMatch,
      * with [otherFlights] competing for them) to the chosen map.
      */
-    @Synchronized
     fun bindAwaitingFlight(flight: JSONObject, otherFlights: List<JSONObject>, mapId: String, teamId: String) {
         val owned = awaitingFlightClues(flight, otherFlights).map { it.id }.toSet()
-        records.values.toList().filter { it.id in owned && it.mapKey == "unassigned" && it.publishToCaltopo }.forEach {
-            records[it.id] = it.copy(mapKey = "map:$mapId", destinationTeamId = teamId, uploadState = "pending")
+        synchronized(this) {
+            records.values.toList().filter { it.id in owned && it.mapKey == "unassigned" && it.publishToCaltopo }.forEach {
+                records[it.id] = it.copy(mapKey = "map:$mapId", destinationTeamId = teamId, uploadState = "pending")
+            }
+            persistIndex()
         }
-        persistIndex()
     }
 
     /** Clue photos that belong to an awaiting-map flight (shared rule in AwaitingMapClueMatch). */
-    @Synchronized
-    fun awaitingFlightClues(flight: JSONObject, otherFlights: List<JSONObject>): List<AndroidClueRecord> =
-        AwaitingMapClueMatch.ownedClues(records.values.filter { imageFile(it).isFile }, flight, otherFlights,
+    fun awaitingFlightClues(flight: JSONObject, otherFlights: List<JSONObject>): List<AndroidClueRecord> {
+        // File checks stay outside the store monitor. Flight recovery was holding it across
+        // image existence checks, and pending uploads waited on that same monitor.
+        val snapshot = synchronized(this) { records.values.toList() }
+        val present = snapshot.filter { imageFile(it).isFile }
+        return AwaitingMapClueMatch.ownedClues(present, flight, otherFlights,
             { it.sourceDesignator }, { it.ownershipTimeMs }, { it.binding?.flightId })
+    }
 
     /** Every stored clue and local marker whose image is present. */
     @Synchronized
