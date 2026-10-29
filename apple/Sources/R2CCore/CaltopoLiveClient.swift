@@ -214,6 +214,7 @@ public actor CaltopoLiveClient {
         return .seconds(OperationalThumbnailRefreshInterval.normalized(stored))
     })
     private var positionReportKeys: Set<String> = []
+    private var stoppedLiveTrackIDs: Set<String> = []
 
     public init(
         configuration: CaltopoLiveConfiguration,
@@ -300,10 +301,35 @@ public actor CaltopoLiveClient {
     }
 
     public func stopLiveTrack(liveTrackID: String, now: Date = Date()) async throws {
-        _ = try await perform(
-            makeStopLiveTrackRequest(liveTrackID: liveTrackID, now: now),
-            acceptedStatusCodes: [400, 404]
-        )
+        guard !liveTrackID.isEmpty else { throw CaltopoLiveClientError.missingLiveTrackID }
+        // Archive and interrupted-track recovery both stop the same LiveTrack.
+        // A second DELETE is the 400 that follows a successful 200.
+        guard reserveLiveTrackStop(liveTrackID: liveTrackID) else {
+            CaltopoPersonalAccountConnection.logState("live track delete already sent id=\(liveTrackID)")
+            return
+        }
+        do {
+            _ = try await perform(
+                makeStopLiveTrackRequest(liveTrackID: liveTrackID, now: now),
+                acceptedStatusCodes: [400, 404]
+            )
+        } catch {
+            releaseLiveTrackStop(liveTrackID: liveTrackID)
+            throw error
+        }
+    }
+
+    /// Returns false when this LiveTrack DELETE was already sent or is in flight.
+    func reserveLiveTrackStop(liveTrackID: String) -> Bool {
+        let key = liveTrackID.lowercased()
+        if key.isEmpty || stoppedLiveTrackIDs.contains(key) { return false }
+        stoppedLiveTrackIDs.insert(key)
+        return true
+    }
+
+    /// Lets a failed DELETE be retried. Success and already-gone stay reserved.
+    func releaseLiveTrackStop(liveTrackID: String) {
+        stoppedLiveTrackIDs.remove(liveTrackID.lowercased())
     }
 
     public func fetchMapArtifacts(now: Date = Date(), refresh: Bool = false) async throws -> CaltopoArtifactSnapshot {
@@ -802,6 +828,8 @@ public actor CaltopoLiveClient {
         return request
     }
 
+    /// The connect key in the path authorizes this GET for team and personal credentials.
+    /// Query `id` is the device id, so the request stays unsigned.
     func makePointRequest(
         remoteID: String,
         observation: RidObservation,
@@ -936,6 +964,8 @@ public actor CaltopoLiveClient {
         var request = request
         var personalCookieURL: URL?
         var personalSendCookie = false
+        // A signed personal account has no browser cookie. Position reports stay
+        // unsigned connect-key GETs. Only a cookie session consults that cookie.
         if configuration.personalSessionID != nil {
             guard let url = request.url, url.scheme == "https", url.host == "caltopo.com", url.port == nil,
                   url.user == nil, url.password == nil,

@@ -4663,6 +4663,51 @@ private func proximityDrone(
     #expect(signature == "4c5G2oSEYaecJyf81tFERXDlcClrG4EZZPYWysPN+4Q=")
 }
 
+@Test func signedPersonalPointReportStaysAnUnsignedConnectKeyGet() async throws {
+    let client = try CaltopoLiveClient(configuration: CaltopoLiveConfiguration(
+        domainAndPort: "caltopo.com",
+        mapID: "4J0LF02",
+        credentialID: "cred12345678",
+        credentialSecretBase64: "c2VjcmV0",
+        connectKey: "NCSSAR-UAS",
+        personalAccountID: "USER01",
+        personalSignedAccount: true
+    ))
+    let observation = RidObservation(
+        source: .bluetoothLegacy,
+        aircraftId: "RID01",
+        receivedAt: Date(timeIntervalSince1970: 1_700_000_000),
+        latitude: 39.7392,
+        longitude: -104.9903,
+        altitudeMeters: 1_600.8
+    )
+    let request = try await client.makePointRequest(remoteID: "RID01", observation: observation)
+    let url = try #require(request.url)
+    let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+    #expect(request.httpMethod == "GET")
+    #expect(components.path == "/api/v1/position/report/NCSSAR-UAS")
+    let values = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+    #expect(values["id"] == "RID01")
+    #expect(values["expires"] == nil)
+    #expect(values["signature"] == nil)
+    #expect(request.value(forHTTPHeaderField: "Cookie") == nil)
+}
+
+@Test func liveTrackStopIsReservedOnceUntilReleased() async throws {
+    let client = try CaltopoLiveClient(configuration: CaltopoLiveConfiguration(
+        domainAndPort: "caltopo.com",
+        mapID: "4J0LF02",
+        credentialID: "cred12345678",
+        credentialSecretBase64: "c2VjcmV0",
+        personalAccountID: "USER01",
+        personalSignedAccount: true
+    ))
+    #expect(await client.reserveLiveTrackStop(liveTrackID: "CC1A8356"))
+    #expect(await client.reserveLiveTrackStop(liveTrackID: "cc1a8356") == false)
+    await client.releaseLiveTrackStop(liveTrackID: "cc1a8356")
+    #expect(await client.reserveLiveTrackStop(liveTrackID: "cc1a8356"))
+}
+
 @Test func caltopoPointRequestMatchesAndroidPositionEndpoint() async throws {
     let client = try CaltopoLiveClient(configuration: CaltopoLiveConfiguration(
         domainAndPort: "caltopo.com",

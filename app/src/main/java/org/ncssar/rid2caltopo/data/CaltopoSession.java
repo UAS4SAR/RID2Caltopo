@@ -411,9 +411,24 @@ public class CaltopoSession {
 				credential);
 	}
 
+	static boolean personalCookieRequired(@NonNull CaltopoOp op) {
+		if (op.personalAuthorization == null) return false;
+		if (op.goNaked && CaltopoPersonalAccountConnection.usesSignedCredential(op.personalAuthorization.getToken())) {
+			return false;
+		}
+		return true;
+	}
+
 	@NonNull
 	private static String transportCredential(CaltopoOp op, @Nullable CaltopoCredentials personalSigned) {
-		if (op.goNaked) return "unsigned";
+		if (op.goNaked) {
+			if (op.personalAuthorization != null
+					&& CaltopoPersonalAccountConnection.usesSignedCredential(op.personalAuthorization.getToken())) {
+				return "personal";
+			}
+			if (op.personalAuthorization != null) return "session";
+			return "unsigned";
+		}
 		if (personalSigned != null) return "personal";
 		if (op.personalAuthorization != null
 				&& CaltopoPersonalAccountConnection.usesSignedCredential(op.personalAuthorization.getToken()))
@@ -523,7 +538,10 @@ public class CaltopoSession {
                         .method(op.method.toString(), requestBody);
 
                 OkHttpClient requestClient = MyOkHttpClient;
-                if (op.personalAuthorization != null && personalSigned == null) {
+                // Position reports authenticate with the connect key in the path. A signed
+                // personal map has no browser cookie; asking the cookie probe throws before
+                // the GET is sent and the live track never receives points.
+                if (op.personalAuthorization != null && personalSigned == null && personalCookieRequired(op)) {
                     String cookie = CaltopoPersonalSession.cookie(op.personalAuthorization, op.goNaked
                             ? "/api/v1/map/" + op.personalAuthorization.getMapID() + "/since/0" : op.url);
                     if (!finalUrl.host().equals("caltopo.com") || !finalUrl.isHttps() || finalUrl.port() != 443)
@@ -1081,7 +1099,28 @@ public class CaltopoSession {
     }
 
     public static CaltopoOp DeleteLiveTrackOnMap(String mapId, String id, Consumer<CaltopoOp> done) {
-        CaltopoOp op = new CaltopoOp(done);
+        // End-of-flight archive and interrupted-track recovery both stop the same
+        // LiveTrack. The second DELETE is the 400 that follows a successful 200.
+        if (!CaltopoLiveTrackDeletes.claim(mapId, id)) {
+            CaltopoPersonalAccountConnection.logState(
+                    "live track delete already sent map=" + mapId + " id=" + id);
+            CaltopoOp skipped = new CaltopoOp(done);
+            skipped.method = CtsMethod_t.DELETE;
+            skipped.url = CALTOPO_MAP_API_V1 + mapId + "/LiveTrack/" + id;
+            skipped.responseCode = 200;
+            skipped.response = "";
+            long now = System.currentTimeMillis();
+            skipped.sentTimestampMsec = now;
+            skipped.receivedTimestampMsec = now;
+            skipped.setOperationIsDone(true);
+            return skipped;
+        }
+        CaltopoOp op = new CaltopoOp(result -> {
+            if (!(result.success() || result.responseCode == 400 || result.responseCode == 404)) {
+                CaltopoLiveTrackDeletes.release(mapId, id);
+            }
+            if (done != null) done.accept(result);
+        });
         // CalTopo returns 400 for an absent LiveTrack after standalone upload.
         // Match Apple stopLiveTrack; this is limited to this DELETE operation.
         op.acceptedErrorCodes = new int[] {400, 404};
@@ -1177,6 +1216,9 @@ public class CaltopoSession {
 		CaltopoOp op = new CaltopoOp(onComplete);
 		op.positionReport = true;
         op.personalAuthorization = CaltopoPersonalSession.capture(url);
+        // The connect key in the path authorizes this GET. Query id is the device id,
+        // so it must not be replaced with an HMAC credential id. A signed personal
+        // grant is recorded for logging and must not be sent through the cookie probe.
         op.goNaked = true;
         op.method = positionReportMethod();
         op.url = url;
