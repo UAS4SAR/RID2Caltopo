@@ -256,6 +256,59 @@ internal class BlobSqlDiskCache(
         }
     }
 
+    override fun purgeMatching(
+        decide: (key: String, createdAtMs: Long, expiresAtMs: Long) -> TileRetentionDecision,
+        shouldContinue: () -> Boolean
+    ): CacheMaintenanceResult {
+        var deleted = 0
+        var freed = 0L
+        var afterCreated = -1L
+        var afterKey = ""
+        data class RetentionRow(val key: String, val created: Long, val expires: Long, val size: Long)
+        while (shouldContinue()) {
+            val batch = synchronized(lock) {
+                db.query(
+                    "entries",
+                    arrayOf("cache_key", "created_at", "expires_at", "size_bytes"),
+                    "created_at > ? OR (created_at = ? AND cache_key > ?)",
+                    arrayOf(afterCreated.toString(), afterCreated.toString(), afterKey),
+                    null,
+                    null,
+                    "created_at ASC, cache_key ASC",
+                    "64"
+                ).use { cursor ->
+                    buildList {
+                        while (cursor.moveToNext()) {
+                            add(RetentionRow(cursor.getString(0), cursor.getLong(1), cursor.getLong(2), cursor.getLong(3)))
+                        }
+                    }
+                }
+            }
+            if (batch.isEmpty()) break
+            afterCreated = batch.last().created
+            afterKey = batch.last().key
+            for (row in batch) {
+                if (!shouldContinue()) break
+                when (val decision = decide(row.key, row.created, row.expires)) {
+                    TileRetentionDecision.Keep -> Unit
+                    TileRetentionDecision.Delete -> synchronized(lock) {
+                        if (db.delete("entries", "cache_key = ?", arrayOf(row.key)) > 0) {
+                            deleted += 1
+                            freed += row.size
+                            evictionCount.incrementAndGet()
+                        }
+                    }
+                    is TileRetentionDecision.RewriteExpiry -> synchronized(lock) {
+                        val values = ContentValues().apply { put("expires_at", decision.expiresAtMs) }
+                        db.update("entries", values, "cache_key = ?", arrayOf(row.key))
+                    }
+                }
+            }
+        }
+        val remaining = synchronized(lock) { bytesUsedLocked().also(bytesUsedAtomic::set) }
+        return CacheMaintenanceResult(agedOutEntries = deleted, bytesFreed = freed, bytesRemaining = remaining)
+    }
+
     private fun bytesUsedLocked(): Long {
         val cursor = db.rawQuery("SELECT COALESCE(SUM(size_bytes), 0) FROM entries", null)
         cursor.use {
