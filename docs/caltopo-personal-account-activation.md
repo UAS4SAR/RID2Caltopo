@@ -77,7 +77,41 @@ The same concatenation applies to a custom-scheme prefix that also keeps the non
 - `account.type`: `account`
 - `account.properties`: `email`, `firstName`, `lastName`, `title`, `subscriptionType`, `subscriptionStatus`, `subscriptionExpires` (milliseconds), `subscriptionRenew`, `guest`, `featuresId`, `class` (`UserAccount` on this account), `provider`, `updated`
 
-No secret from that response is recorded here. The device name from the page is the name CalTopo showed for the new credential. The Your Account screen was not checked in that pass.
+No secret from that response is recorded here. The device name typed on the activation page is not the credentials-table Description. See below.
+
+## Credential Description column
+
+The Your Account credentials table is rendered by the CalTopo web bundle (`main.js`, Last-Modified 27 October 2026). Its columns are the `UserCredential` id, `properties.title` labeled **Description**, `properties.lastUsed` labeled **Last Used**, and `properties.updated`. The table is filled from `pt.account.credentials` after:
+
+`GET /sideload/account/{accountId}.json` with query `json={full: true}`
+
+That bundle does not contain the strings `Generated on User Request` or `Last synced by CalTopo App`. The server writes `properties.title`. A signed `GET /api/v1/acct/{accountId}/since/0` updates Last Used and does not change Description. Redeeming `/api/v1/activate?code=…&name=R2C probe` produced Description `Generated on User Request`, so the activation `name` is not that column. Desktop and mobile credentials show the fixed phrase `Last synced by CalTopo App`, not `Last synced by <their device name>`.
+
+The web client’s generic object DAO can create, save, and delete a `UserCredential`:
+
+- `POST /api/v1/acct/{accountId}/UserCredential` with a JSON body
+- `POST /api/v1/acct/{accountId}/UserCredential/{credentialId}` with a JSON body
+- `DELETE` the same object URL
+
+Unauthenticated probes on 29 October 2026, using only the fake account `AAAAAA`: the collection POST returned HTTP 401 `Authentication required`; the object POST returned HTTP 500 `unknown server error`; GET of the object returned HTTP 401 `Not authorized or object not found`; PUT returned HTTP 405 with `Allow: GET, HEAD, POST, OPTIONS`. `GET /sideload/account/AAAAAA.json` returned HTTP 401 `login required`. There is no public `/api/v1/credential` or `/api/v1/sync` route (HTTP 404). The desktop installer at `/offline/app` redirects to login, so the Desktop program’s own JavaScript was not available.
+
+Nothing public shows a third party choosing the Description. The official phrase looks server-owned. These are the requests worth trying with a real credential, on a disposable account, before assuming the column is settable. Sign `POST /api/v1/acct/{accountId}/UserCredential/{credentialId}` the same way as any other CalTopo POST: HMAC-SHA256 over `POST <path>\n<expires>\n<json>`, with the key base64-decoded. Send `id`, `expires`, `signature`, and `json` as form fields.
+
+1. Read the object with the browser session, not the HMAC credential:
+
+`GET https://caltopo.com/sideload/account/{accountId}.json?json={full: true}`
+
+Record every property on that credential, especially `title`, `name`, `description`, `client`, and `source`.
+
+2. Signed title update. `{json}` is `{"id":"{credentialId}","properties":{"class":"UserCredential","title":"Last synced by RID2Caltopo"}}`.
+
+`POST https://caltopo.com/api/v1/acct/{accountId}/UserCredential/{credentialId}`
+
+3. The same POST with the browser session and a JSON body `{"properties":{"title":"Last synced by RID2Caltopo"}}`, which is the shape the web DAO uses. Reload the account sideload and see whether Description changed. If the server rewrites it back to `Generated on User Request`, the column is not client-settable.
+
+4. On a new activation code only, try one extra query at a time on `GET /api/v1/activate`: `title`, `description`, `client=caltopo-app`, and `source=app`, plus a `User-Agent` of `CalTopo App`. A fake code still returns HTTP 500 when those parameters are present, so only a real code can show whether they are ignored.
+
+If a title update sticks, use the tracker device name, not the literal `RID2Caltopo`. Tracker hello sends `name` and `deviceModel`. The tracker replies with `canonicalDeviceName` from `assign_operational_device_name`, and this app stores that string as the device name (`AndroidDeviceIdentity` managed name when a tracker API key is present; Apple `device.stableDisplayName`). That is the name Settings already shows. The current activation `name` check rejects apostrophes, so a name such as `Mike D.'s iPad Pro` cannot be sent as the activation `name` until that check is widened. The Description experiment can still send it inside the JSON `title`. Do not expect `Last synced by CalTopo App`: that wording belongs to CalTopo’s own apps and is not a template filled with the client’s name.
 
 ## Mobile return path
 
