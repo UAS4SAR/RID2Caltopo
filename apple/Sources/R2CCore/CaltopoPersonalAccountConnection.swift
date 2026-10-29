@@ -307,9 +307,9 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         thread.start()
         try await browser.openActivationPage(pending.activationURL)
         let returned = try await Task.detached { try gate.wait() }.value
-        lock.lock()
-        let alreadyRedeemed = !redeemedActivationCodes.insert(returned.code).inserted
-        lock.unlock()
+        let alreadyRedeemed = lock.withLock {
+            !redeemedActivationCodes.insert(returned.code).inserted
+        }
         if alreadyRedeemed {
             Self.credentialLog.info("exchange skipped; activation code already redeemed")
             if let existing = try? stored(), !existing.revoked { return existing.status }
@@ -319,15 +319,11 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         do {
             response = try await exchange.get(url: try exchangeURL(host: pending.host, code: returned.code, deviceName: returned.deviceName))
         } catch {
-            lock.lock()
-            redeemedActivationCodes.remove(returned.code)
-            lock.unlock()
+            lock.withLock { redeemedActivationCodes.remove(returned.code) }
             throw error
         }
         guard response.status == 200 else {
-            lock.lock()
-            redeemedActivationCodes.remove(returned.code)
-            lock.unlock()
+            lock.withLock { redeemedActivationCodes.remove(returned.code) }
             throw CaltopoPersonalAccountError.exchangeFailed(response.status)
         }
         let record = try completeExchange(response.body, code: returned.code, host: pending.host, deviceName: returned.deviceName)
