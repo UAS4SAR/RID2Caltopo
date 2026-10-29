@@ -45,24 +45,45 @@ Probes below were unauthenticated. No CalTopo account, password, or activation c
 | `GET /account/login` | HTTP 200. The page bootstrap lists providers `google`, `apple`, `facebook`, `msft`, and `yahoo`, and `featureFlags` includes `firstPartyLogin` |
 | `main.js` fetched 29 October 2026 (Last-Modified 27 October 2026, 10,473,695 bytes) | No `finish-activate`, `/app/activate`, or `/api/v1/activate` string. The activation page is not in the map bundle; the server handles it before the SPA |
 
-The pre-login check is "redirect is present and non-empty." It is not an allowlist. A logged-out session does not echo the redirect on `/account/login`, so the original URL is either stored in the `SESSION` cookie or dropped until after sign-in. Which of those is true was not visible without completing login.
+The pre-login check is "redirect is present and non-empty." It is not an allowlist. After a real sign-in on 29 October 2026, CalTopo kept the redirect and showed it on the activation page. See the signed-in results below.
+
+## Signed-in results (29 October 2026)
+
+A desktop browser, already able to sign in to a real CalTopo account, requested:
+
+`GET /app/activate/offline?redirect=` followed by a loopback URL that itself contained a query (`http://127.0.0.1:<port>/r2c-probe/callback?state=...`).
+
+After login, the browser landed on `https://caltopo.com/app/activate/finish`, titled Offline Activation. That page showed the account email, an editable device name defaulting to `Unnamed Device`, a checkbox quoting the redirect URL verbatim, and a Sync Account button.
+
+Sync Account sent the browser to the redirect string with this suffix concatenated onto it:
+
+`/client/finish-activate?code=<8 alphanumeric characters>&name=<device name, form-encoded>`
+
+The device name chosen on the page was the `name` value. With a `?` already in the redirect, that suffix landed inside the query and the state value was no longer a separate parameter. The return prefix must contain no query and no fragment. The nonce belongs in the path:
+
+`http://127.0.0.1:<port>/<nonce>`
+
+CalTopo then requests:
+
+`http://127.0.0.1:<port>/<nonce>/client/finish-activate?code=<8 characters>&name=<device name>`
+
+The same concatenation applies to a custom-scheme prefix that also keeps the nonce in the path and has no query, for example `caltopoapp://return/<nonce>`. That form is covered by the matcher and is not registered as an app link. The signed-in check used loopback only.
+
+`GET /api/v1/activate?code=<that code>&name=<that device name>` with no cookies returned HTTP 200 JSON:
+
+- `code`: 12-character credential id
+- `key`: 44-character base64 signing secret (32 bytes)
+- `account.id`: 6 characters
+- `account.type`: `account`
+- `account.properties`: `email`, `firstName`, `lastName`, `title`, `subscriptionType`, `subscriptionStatus`, `subscriptionExpires` (milliseconds), `subscriptionRenew`, `guest`, `featuresId`, `class` (`UserAccount` on this account), `provider`, `updated`
+
+No secret from that response is recorded here. The device name from the page is the name CalTopo showed for the new credential. The Your Account screen was not checked in that pass.
 
 ## Mobile return path
 
-A phone can use this flow without a CalTopo server change only if, after the operator signs in and chooses Sync Account, CalTopo sends the browser to the `redirect` value (or that value plus a query CalTopo appends) and that URL can reach a listener on the phone.
+Bind `127.0.0.1` on an ephemeral port before opening the browser. The redirect is `http://127.0.0.1:<port>/<32 hex characters>` and nothing else. Open `https://caltopo.com/app/activate/offline?redirect=<that url>&name=<suggested device name>` in the system browser. `name` on that page is still the value the operator confirms; the signed-in page defaulted to `Unnamed Device` when the query was omitted.
 
-The prototype does that the way Desktop does:
-
-- Bind `127.0.0.1` on an ephemeral port before opening the browser.
-- Put an unguessable path and `state` in the redirect: `http://127.0.0.1:<port>/r2c/<token>?state=<state>`.
-- Open `https://caltopo.com/app/activate/offline?redirect=<that url>&name=<device name>` in the system browser.
-- Accept a callback only when the path and `state` match. Anything else, including a code that arrives on a different path, is rejected.
-- Exchange the code once with `GET https://<host>/api/v1/activate?code=<code>`. Redirects are not followed, so the code is not sent to another host.
-- Store the signing key in the iOS Keychain or the Android Keystore. Teams credentials are not read or written.
-
-`name` on the activation URL is a hint. The Desktop instructions say the name is typed on the Sync Account page. Whether CalTopo pre-fills it from the query is unconfirmed. The callback still has to carry our `state`.
-
-This is safe if CalTopo preserves the redirect URL and appends `code`. It fails closed if CalTopo rewrites the return to something like `http://127.0.0.1:8080/client/finish-activate?code&name` and drops `state`. That rewrite is what the older browser-devtools writeups describe for a Desktop listener, and it is the main live-test question. Do not accept a code from an unmatched request in order to make that rewrite work. A local app that can connect to our port during the enrollment window must still present the unguessable path and state.
+Accept a callback only when the path is `/<nonce>/client/finish-activate` and the query has an 8-character `code` plus `name`. A second `?`, an `http` or `https` URL, or the old query-bearing redirect is rejected. Exchange with `GET https://<host>/api/v1/activate?code=<code>&name=<name>` and do not follow redirects. No browser session cookie is required. Store the signing key in the iOS Keychain or the Android Keystore. Teams credentials are not read or written.
 
 Custom schemes such as `rid2caltopo://activate` passed the pre-login non-empty check and failed nothing else, because that check does not look at the value. That is not evidence CalTopo will redirect to a custom scheme after login. `ASWebAuthenticationSession` and Chrome Custom Tabs are the right return path if a logged-in test shows a custom scheme or an HTTPS app link is preserved. They are a poor fit for `http://127.0.0.1`, which is why this prototype opens the system browser and listens on loopback. Google sign-in stays in that browser. It does not run in the embedded web view that holds the cookie experiment. The embedded-webview Google block stays as it is.
 
@@ -96,18 +117,15 @@ There is no settings control in this draft. Turning the flag on does nothing vis
 
 Enrollment, the code exchange, and Keystore reads run off the main thread. The Android listener and exchange are called from `enroll`, which blocks and must be started on a worker. The Apple `enroll` hops off the main actor before it listens. After the first successful read, later signing uses an in-memory copy the way the Teams secret already does.
 
-## Open questions that need a real account
+## Open questions
 
-1. After login and Sync Account, what is the exact browser URL? Does it preserve `http://127.0.0.1:<port>/r2c/<token>?state=<state>` and append `code`, or does it replace the path and drop `state`?
-2. Is `GET /api/v1/activate?code=` successful without the browser's session cookie? The public `urllib` examples omit cookies. Our probes only saw HTTP 500 for synthetic codes, with or without an anonymous session.
-3. What is the real JSON for a 200 response? Field names, credential-id length, key length, whether it is wrapped in `result`, and whether `properties.class` is `UserAccount`. The parser accepts the documented shape and a `result` wrapper, and it rejects a non-user account. Lengths outside 8–32 for the credential id or 16–64 decoded key bytes are rejected until a live sample says otherwise. The activation code itself is accepted at 4–64 URL-safe characters because the "8 characters" figure is only from the writeups.
-4. Is the code single-use, and how quickly does it expire? The local pending record expires after five minutes.
-5. Does the signing key expire, and does deleting it under Your Account make the next signed call fail? Which HTTP status is that? Do not guess from the activation endpoint's HTTP 500.
-6. Does a signed `GET /api/v1/acct/<account id>/since/0` return the same catalog the cookie login normalizes, including a restricted Workspace the pilot was invited to and not a Workspace they were not?
-7. Can that credential read a restricted map and publish a clue and a photo through the existing client, with the same full-map read spacing?
-8. Does the Keychain or Keystore item survive an in-place app update, and is it gone after the credential is deleted in CalTopo and the app is told to disconnect?
-9. Does CalTopo pre-fill the device name from the `name` query? If the extra parameter changes the activation page, drop it. The required parameter is `redirect`.
-10. On a phone, can Safari and Chrome complete the redirect to `127.0.0.1`? iOS local-network and cleartext prompts are untested. Android cleartext policy does not apply to Chrome connecting to the listener; the app's own exchange is HTTPS.
+1. Is the activation code single-use, and how quickly does the unused code expire? The local listener still gives up after five minutes. The signed-in exchange was performed once, immediately, without cookies.
+2. Does the signing key expire, and does deleting it under Your Account make the next signed call fail? Which HTTP status is that? The credential list in Your Account was not opened during this pass.
+3. Does a signed `GET /api/v1/acct/<account id>/since/0` return the same catalog the cookie login normalizes, including a restricted Workspace the pilot was invited to and not a Workspace they were not?
+4. Can that credential read a restricted map and publish a clue and a photo through the existing client, with the same full-map read spacing?
+5. Does the Keychain or Keystore item survive an in-place app update, and is it gone after the credential is deleted in CalTopo and the app is told to disconnect?
+6. Does CalTopo pre-fill "Your device will be synced as" from the activation URL's `name` query? The signed-in page showed `Unnamed Device` when that query was absent. The name that matters is the one submitted with Sync Account.
+7. On a phone, can Safari and Chrome complete the redirect to `127.0.0.1`? The signed-in check used a desktop browser. A custom-scheme return that uses the same path suffix has not been tried against CalTopo.
 
 ## Live test plan
 
@@ -120,7 +138,7 @@ Enable the flag only on the test device:
 
 Then:
 
-1. **Enrollment.** From a worker, call `enroll` with the system-browser opener (`CaltopoPersonalAccountBrowser.systemBrowserIntent` on Android, `AppleCaltopoPersonalAccountBrowser` on Apple). Sign in with Google in that browser, not in the embedded web view. Record the final browser URL and whether `state` survived. Confirm the local status shows the account id and credential id and that the Teams credential fields are unchanged.
+1. **Enrollment on a phone.** From a worker, call `enroll` with the system-browser opener (`CaltopoPersonalAccountBrowser.systemBrowserIntent` on Android, `AppleCaltopoPersonalAccountBrowser` on Apple). Sign in with Google in that browser, not in the embedded web view. Confirm the browser reaches `http://127.0.0.1:<port>/<nonce>/client/finish-activate` and the app stores the account id and credential id. Teams credential fields stay unchanged.
 2. **Catalog.** `fetchAccountCatalog` (Android) or `CaltopoTeamMapClient` fed by `teamMapConfiguration()` (Apple). Pass the body through the existing personal catalog normalizer. Confirm the invited Workspace appears and an unrelated Workspace does not. Confirm the request was signed and carried no `Cookie` header.
 3. **Map read.** Open a restricted map with the signed configuration. Confirm HTTP 200 and that anonymous access to the same map is denied. Confirm a second immediate full read is still held by the existing 90-second gate.
 4. **Publish.** Post one clue and one photo clue through the existing client. Confirm the media owner is the personal or workspace owner the catalog already chooses, and that the Teams credential id does not appear on the request.
@@ -128,4 +146,4 @@ Then:
 6. **Revocation.** In CalTopo, delete that credential under Your Account. Confirm the next signed call fails, the app does not attach the old session cookie for that account, and Teams publishing still works. Disconnect locally and confirm the Keystore or Keychain item is gone. Enroll again and confirm CalTopo now lists a new credential.
 7. **Flag off.** Turn the flag off and relaunch. Confirm personal maps use the existing cookie login again and a stored signing key is not attached to those requests.
 
-Stop if the return URL drops `state`. That result belongs in this note before the matcher is loosened. Do not point the redirect at anything except `127.0.0.1` with a token this app generated.
+The desktop browser already confirmed the string-append return. On a phone, stop if the browser does not request `/<nonce>/client/finish-activate`. Do not point the redirect at anything except `127.0.0.1` with a nonce this app generated.

@@ -45,39 +45,57 @@ class CaltopoPersonalAccountConnectionTest {
         assertTrue(pending.activationUrl.startsWith("https://caltopo.com/app/activate/offline?redirect="))
         assertTrue(CaltopoPersonalAccountConnection.isActivationUrl(pending.activationUrl))
         val redirect = URLDecoder.decode(pending.activationUrl.substringAfter("redirect=").substringBefore("&"), StandardCharsets.UTF_8)
-        assertTrue(redirect.startsWith("http://127.0.0.1:9/r2c/"))
-        assertTrue(redirect.contains("state="))
-        assertFalse(pending.toString().contains(pending.state))
+        assertTrue(redirect.matches(Regex("http://127\\.0\\.0\\.1:9/[0-9a-f]{32}")))
+        assertFalse(redirect.contains("?"))
+        assertFalse(pending.toString().contains(pending.pathToken))
         assertFalse(CaltopoPersonalAccountConnection.isActivationUrl("https://accounts.google.com/o/oauth2/auth"))
         assertFalse(CaltopoPersonalAccountConnection.isActivationUrl("https://caltopo.com/account/login"))
         assertFalse(CaltopoPersonalAccountConnection.isActivationUrl("javascript:alert(1)"))
     }
 
-    @Test fun callbackRequiresTheMintedPathAndState() {
+    @Test fun callbackMatchesCalTopoStringAppendOnLoopbackAndCustomScheme() {
         val pending = CaltopoPersonalAccountConnection.begin("CalTopo.com", "RID2Caltopo", 4242)
-        val code = CaltopoPersonalAccountConnection.acceptCallback(
-            "/r2c/${pending.pathToken}?state=${pending.state}&code=abcd1234&name=RID2Caltopo"
+        val appended = pending.activationUrl.let {
+            val redirect = URLDecoder.decode(it.substringAfter("redirect=").substringBefore("&"), StandardCharsets.UTF_8)
+            redirect + "/client/finish-activate?code=abcd1234&name=R2C+probe"
+        }
+        val returned = CaltopoPersonalAccountConnection.acceptCallback(
+            "/${pending.pathToken}/client/finish-activate?code=abcd1234&name=R2C+probe"
         )
-        assertEquals("abcd1234", code)
-        val again = CaltopoPersonalAccountConnection.begin("caltopo.com", "RID2Caltopo", 4242)
+        assertEquals("abcd1234", returned.code)
+        assertEquals("R2C probe", returned.deviceName)
+        assertTrue(appended.endsWith("/${pending.pathToken}/client/finish-activate?code=abcd1234&name=R2C+probe"))
+        val custom = CaltopoPersonalAccountConnection.begin("caltopo.com", "RID2Caltopo", 4242)
+        val prefix = CaltopoPersonalAccountConnection.customSchemePrefix("caltopoapp", custom.pathToken)
+        assertFalse(prefix.contains("?"))
+        val customReturn = CaltopoPersonalAccountConnection.acceptCallback(
+            prefix + "/client/finish-activate?code=abcd1234&name=R2C+probe"
+        )
+        assertEquals("abcd1234", customReturn.code)
+        assertEquals("R2C probe", customReturn.deviceName)
+        val broken = CaltopoPersonalAccountConnection.begin("caltopo.com", "RID2Caltopo", 4242)
         assertTrue(runCatching {
-            CaltopoPersonalAccountConnection.acceptCallback("/r2c/${again.pathToken}?state=wrong&code=abcd1234")
+            CaltopoPersonalAccountConnection.acceptCallback(
+                "/${broken.pathToken}?state=r2ctest123/client/finish-activate?code=abcd1234&name=R2C+probe"
+            )
         }.isFailure)
         assertTrue(runCatching {
-            CaltopoPersonalAccountConnection.acceptCallback("http://evil.test/r2c/${again.pathToken}?state=${again.state}&code=abcd1234")
+            CaltopoPersonalAccountConnection.acceptCallback("https://evil.test/${broken.pathToken}/client/finish-activate?code=abcd1234&name=R2C+probe")
         }.isFailure)
     }
 
     @Test fun exchangeParsesDesktopShapeAndBindsHostPlusAccount() {
         val key = Base64.getEncoder().encodeToString(ByteArray(32) { 7 })
-        val body = """{"code":"cred12345678","key":"$key","account":{"id":"USER01","type":"Feature","properties":{"class":"UserAccount","title":"Pilot","email":"pilot@example.com"}}}"""
+        val body = """{"code":"cred12345678","key":"$key","account":{"id":"USER01","type":"account","properties":{"class":"UserAccount","email":"pilot@example.com","firstName":"Test","lastName":"Pilot","title":"Pilot","subscriptionType":"pro","subscriptionStatus":"active","subscriptionExpires":1790000000000,"subscriptionRenew":true,"guest":false,"featuresId":"pro","provider":"google","updated":1790000000000}}}"""
         val record = CaltopoPersonalAccountConnection.completeExchange(body, "abcd1234", "caltopo.com", "RID2Caltopo", now = 50)
         assertEquals("USER01", record.accountId)
         assertEquals("cred12345678", record.credentialId)
-        assertEquals("Pilot", record.displayName)
+        assertEquals("Test Pilot", record.displayName)
         assertFalse(record.toString().contains(key))
-        val wrapped = """{"status":"ok","result":{"code":"cred12345678","key":"$key","account":{"id":"USER01","properties":{"class":"UserAccount"}}}}"""
+        assertFalse(record.toString().contains("pilot@example.com"))
+        val wrapped = """{"status":"ok","result":{"code":"cred12345678","key":"$key","account":{"id":"USER01","type":"account","properties":{"class":"UserAccount"}}}}"""
         assertEquals("USER01", CaltopoPersonalAccountConnection.parseActivationResponse(wrapped).accountId)
+        assertEquals("account", CaltopoPersonalAccountConnection.parseActivationResponse(wrapped).accountType)
         assertTrue(runCatching { CaltopoPersonalAccountConnection.parseActivationResponse("""{"status":"error","message":"no"}""") }.isFailure)
         assertTrue(runCatching {
             CaltopoPersonalAccountConnection.parseActivationResponse("""{"code":"cred12345678","key":"$key","account":{"id":"USER01","properties":{"class":"TeamAccount"}}}""")
@@ -105,7 +123,7 @@ class CaltopoPersonalAccountConnectionTest {
     @Test fun revokedCredentialDoesNotFallBackToCookiesAndDisconnectClearsIt() {
         val key = Base64.getEncoder().encodeToString(ByteArray(32) { 3 })
         val record = CaltopoPersonalAccountConnection.completeExchange(
-            """{"code":"cred12345678","key":"$key","account":{"id":"USER01","properties":{"class":"UserAccount"}}}""",
+            """{"code":"cred12345678","key":"$key","account":{"id":"USER01","type":"account","properties":{"class":"UserAccount"}}}""",
             "abcd1234", "sartopo.com", "RID2Caltopo", 10
         )
         val store = CaltopoPersonalAccountMemoryStore()
@@ -130,11 +148,12 @@ class CaltopoPersonalAccountConnectionTest {
         val http = CaltopoActivationExchange { url ->
             seen += url
             assertFalse(url.contains(key))
-            CaltopoActivationHttp(200, """{"code":"cred12345678","key":"$key","account":{"id":"USER01","properties":{"class":"UserAccount","title":"Pilot"}}}""")
+            CaltopoActivationHttp(200, """{"code":"cred12345678","key":"$key","account":{"id":"USER01","type":"account","properties":{"class":"UserAccount","firstName":"Test","lastName":"Pilot"}}}""")
         }
         val browser = CaltopoSystemBrowser { activation ->
             val redirect = URI(URLDecoder.decode(activation.substringAfter("redirect=").substringBefore("&"), StandardCharsets.UTF_8))
-            val request = "GET ${redirect.rawPath}?${redirect.rawQuery}&code=abcd1234 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+            check(redirect.rawQuery == null)
+            val request = "GET ${redirect.rawPath}/client/finish-activate?code=abcd1234&name=R2C+probe HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
             val started = System.currentTimeMillis()
             var accepted = false
             while (System.currentTimeMillis() - started < 5_000 && !accepted) {
@@ -160,7 +179,7 @@ class CaltopoPersonalAccountConnectionTest {
         val status = CaltopoPersonalAccountConnection.enroll(browser = browser, http = http)
         assertEquals("USER01", status.accountId)
         assertEquals("caltopo.com", status.host)
-        assertEquals(listOf("https://caltopo.com/api/v1/activate?code=abcd1234"), seen)
+        assertEquals(listOf("https://caltopo.com/api/v1/activate?code=abcd1234&name=R2C%20probe"), seen)
         assertEquals("TEAM01", teams.credentialId.let { teams.teamId }.let { "TEAM01" })
         assertEquals("teamcred1234", teams.credentialId)
         CaltopoPersonalAccountConnection.featureEnabled = true
@@ -181,12 +200,12 @@ class CaltopoPersonalAccountConnectionTest {
         val pending = CaltopoPersonalAccountConnection.begin("caltopo.com", "RID2Caltopo", 9)
         now += 5 * 60 * 1000L + 1
         val error = runCatching {
-            CaltopoPersonalAccountConnection.acceptCallback("/r2c/${pending.pathToken}?state=${pending.state}&code=abcd1234", now)
+            CaltopoPersonalAccountConnection.acceptCallback("/${pending.pathToken}/client/finish-activate?code=abcd1234&name=RID2Caltopo", now)
         }.exceptionOrNull()!!
         assertTrue(error.message!!.contains("expired"))
         val key = Base64.getEncoder().encodeToString(ByteArray(32) { 4 })
         val exchanged = runCatching {
-            CaltopoPersonalAccountConnection.completeExchange("""{"key":"$key","code":"nope","account":{"id":"USER01"}}""", "abcd1234", "caltopo.com", "RID2Caltopo")
+            CaltopoPersonalAccountConnection.completeExchange("""{"key":"$key","code":"nope","account":{"id":"USER01","type":"account","properties":{"class":"UserAccount"}}}""", "abcd1234", "caltopo.com", "RID2Caltopo")
         }.exceptionOrNull()!!
         assertFalse(exchanged.message!!.contains(key))
     }

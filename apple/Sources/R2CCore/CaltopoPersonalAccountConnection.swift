@@ -149,15 +149,14 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         guard (1...65535).contains(port) else { throw CaltopoPersonalAccountError.invalidReturn }
         let createdAt = now ?? currentDate()
         let pathToken = hex(random())
-        let state = hex(random())
-        let loopback = "http://127.0.0.1:\(port)/r2c/\(pathToken)?state=\(state)"
+        // CalTopo appends "/client/finish-activate?code&name" onto this string.
+        let loopback = "http://127.0.0.1:\(port)/\(pathToken)"
         let activation = try activationURL(host: normalized, loopback: loopback, deviceName: name)
         let created = PendingActivation(
             host: normalized,
             deviceName: name,
             port: port,
             pathToken: pathToken,
-            state: state,
             activationURL: activation,
             expiresAt: createdAt.addingTimeInterval(Self.pendingLifetime)
         )
@@ -167,17 +166,17 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         return created
     }
 
-    public func acceptCallback(_ requestTarget: String, now: Date = Date()) throws -> String {
+    public func acceptCallback(_ requestTarget: String, now: Date = Date()) throws -> CaltopoActivationReturn {
         lock.lock()
         let current = pending
         lock.unlock()
         guard let current else { throw CaltopoPersonalAccountError.rejected }
         if now > current.expiresAt { throw CaltopoPersonalAccountError.expired }
-        let code = try callbackCode(requestTarget, pending: current)
+        let returned = try callbackCode(requestTarget, pending: current)
         lock.lock()
         pending = nil
         lock.unlock()
-        return code
+        return returned
     }
 
     public func completeExchange(_ body: Data, code: String, host: String, deviceName: String, now: Date = Date()) throws -> CaltopoPersonalAccountRecord {
@@ -214,10 +213,10 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         thread.name = "caltopo-personal-activate"
         thread.start()
         try await browser.openActivationPage(pending.activationURL)
-        let code = try await Task.detached { try gate.wait() }.value
-        let response = try await exchange.get(url: try exchangeURL(host: pending.host, code: code))
+        let returned = try await Task.detached { try gate.wait() }.value
+        let response = try await exchange.get(url: try exchangeURL(host: pending.host, code: returned.code, deviceName: returned.deviceName))
         guard response.status == 200 else { throw CaltopoPersonalAccountError.exchangeFailed(response.status) }
-        let record = try completeExchange(response.body, code: code, host: pending.host, deviceName: pending.deviceName)
+        let record = try completeExchange(response.body, code: returned.code, host: pending.host, deviceName: returned.deviceName)
         try write(record)
         return record.status
     }
@@ -234,18 +233,37 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         if let kind = properties?["class"] as? String, kind != "UserAccount" {
             throw CaltopoPersonalAccountError.notPersonalAccount
         }
+        guard properties?["class"] as? String == "UserAccount" else { throw CaltopoPersonalAccountError.notPersonalAccount }
         let accountID = account?["id"] as? String ?? ""
+        let accountType = account?["type"] as? String ?? ""
         let credentialID = source["code"] as? String ?? ""
         let signingKey = source["key"] as? String ?? ""
-        guard accountID.range(of: "^[A-Za-z0-9]{6}$", options: .regularExpression) != nil,
-              credentialID.range(of: "^[A-Za-z0-9]{8,32}$", options: .regularExpression) != nil,
-              let key = Data(base64Encoded: signingKey), (16...64).contains(key.count) else {
+        if let expires = properties?["subscriptionExpires"], !(expires is NSNumber) {
             throw CaltopoPersonalAccountError.rejected
         }
-        let display = (properties?["title"] as? String)?.nilIfBlank
+        guard accountType == "account",
+              accountID.range(of: "^[A-Za-z0-9]{6}$", options: .regularExpression) != nil,
+              credentialID.range(of: "^[A-Za-z0-9]{12}$", options: .regularExpression) != nil,
+              signingKey.count == 44,
+              let key = Data(base64Encoded: signingKey), key.count == 32 else {
+            throw CaltopoPersonalAccountError.rejected
+        }
+        let person = [properties?["firstName"] as? String, properties?["lastName"] as? String]
+            .compactMap { $0?.nilIfBlank }.joined(separator: " ")
+        let display = person.nilIfBlank
+            ?? (properties?["title"] as? String)?.nilIfBlank
             ?? (properties?["email"] as? String)?.nilIfBlank
             ?? accountID
-        return ParsedActivation(accountID: accountID, credentialID: credentialID, signingKey: signingKey, displayName: display)
+        return ParsedActivation(accountID: accountID, credentialID: credentialID, signingKey: signingKey, displayName: display, accountType: accountType)
+    }
+
+    public static func customSchemePrefix(scheme: String, nonce: String) throws -> String {
+        guard scheme.range(of: "^[a-z][a-z0-9+.-]{0,31}$", options: .regularExpression) != nil,
+              scheme != "http", scheme != "https",
+              nonce.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil else {
+            throw CaltopoPersonalAccountError.invalidReturn
+        }
+        return "\(scheme)://return/\(nonce)"
     }
 
     public static func isActivationURL(_ url: URL) -> Bool {
@@ -256,7 +274,7 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
               url.path == "/app/activate/offline" else { return false }
         guard let redirect = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
             .first(where: { $0.name == "redirect" })?.value else { return false }
-        return redirect.hasPrefix("http://127.0.0.1:") && redirect.contains("/r2c/")
+        return redirect.range(of: "^http://127\\.0\\.0\\.1:[1-9][0-9]{0,4}/[0-9a-f]{32}$", options: .regularExpression) != nil
     }
 
     public static func allowsPersonalHost(_ domainAndPort: String) -> Bool {
@@ -266,19 +284,30 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         return Int(parts[1]) == 443
     }
 
-    func callbackCode(_ requestTarget: String, pending: PendingActivation) throws -> String {
+    func callbackCode(_ requestTarget: String, pending: PendingActivation) throws -> CaltopoActivationReturn {
         let target = requestTarget.components(separatedBy: "#").first ?? requestTarget
-        if target.hasPrefix("http://") || target.hasPrefix("https://") || target.contains("\\") {
+        if target.contains("\\") || target.contains("??") { throw CaltopoPersonalAccountError.invalidReturn }
+        let query = target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+        if query.count == 2, query[1].contains("?") { throw CaltopoPersonalAccountError.invalidReturn }
+        let path: String
+        let rawQuery: String
+        if target.hasPrefix("/") {
+            path = String(query[0])
+            rawQuery = query.count > 1 ? String(query[1]) : ""
+        } else if let components = URLComponents(string: target),
+                  let scheme = components.scheme?.lowercased(), scheme != "http", scheme != "https",
+                  components.user == nil {
+            path = components.path
+            rawQuery = components.percentEncodedQuery ?? ""
+        } else {
             throw CaltopoPersonalAccountError.invalidReturn
         }
-        let path = target.components(separatedBy: "?").first ?? target
-        let query = target.contains("?") ? String(target.dropFirst(path.count + 1)) : ""
-        guard path == "/r2c/\(pending.pathToken)" else { throw CaltopoPersonalAccountError.invalidReturn }
-        let items = queryItems(query)
-        guard items["state"] == pending.state, let code = items["code"], Self.activationCode.matches(code) else {
+        guard path == "/\(pending.pathToken)/client/finish-activate" else { throw CaltopoPersonalAccountError.invalidReturn }
+        let items = queryItems(rawQuery)
+        guard let code = items["code"], Self.activationCode.matches(code), let name = items["name"] else {
             throw CaltopoPersonalAccountError.invalidReturn
         }
-        return code
+        return CaltopoActivationReturn(code: code, deviceName: try normalizeDeviceName(name))
     }
 
     private var storedHost: String { (try? stored())?.host ?? "" }
@@ -304,7 +333,9 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
     }
 
     private func activationURL(host: String, loopback: String, deviceName: String) throws -> URL {
-        guard loopback.hasPrefix("http://127.0.0.1:"), !loopback.contains("@") else { throw CaltopoPersonalAccountError.invalidReturn }
+        guard loopback.range(of: "^http://127\\.0\\.0\\.1:[1-9][0-9]{0,4}/[0-9a-f]{32}$", options: .regularExpression) != nil else {
+            throw CaltopoPersonalAccountError.invalidReturn
+        }
         var components = URLComponents()
         components.scheme = "https"
         components.host = host
@@ -317,12 +348,15 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         return url
     }
 
-    private func exchangeURL(host: String, code: String) throws -> URL {
+    private func exchangeURL(host: String, code: String, deviceName: String) throws -> URL {
         var components = URLComponents()
         components.scheme = "https"
         components.host = host
         components.path = "/api/v1/activate"
-        components.queryItems = [URLQueryItem(name: "code", value: code)]
+        components.queryItems = [
+            URLQueryItem(name: "code", value: code),
+            URLQueryItem(name: "name", value: deviceName),
+        ]
         guard let url = components.url else { throw CaltopoPersonalAccountError.rejected }
         return url
     }
@@ -355,12 +389,17 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
 
     private func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
 
+    private func formDecode(_ value: String) -> String {
+        let spaced = value.replacingOccurrences(of: "+", with: " ")
+        return spaced.removingPercentEncoding ?? spaced
+    }
+
     private func queryItems(_ query: String) -> [String: String] {
         var items: [String: String] = [:]
         for part in query.split(separator: "&") where !part.isEmpty {
             let pieces = part.split(separator: "=", maxSplits: 1).map(String.init)
-            let name = pieces[0].removingPercentEncoding ?? pieces[0]
-            let value = pieces.count > 1 ? (pieces[1].removingPercentEncoding ?? pieces[1]) : ""
+            let name = formDecode(pieces[0])
+            let value = pieces.count > 1 ? formDecode(pieces[1]) : ""
             items[name] = value
         }
         return items
@@ -451,17 +490,24 @@ public struct PendingActivation: Equatable, Sendable, CustomStringConvertible {
     public let deviceName: String
     public let port: Int
     public let pathToken: String
-    public let state: String
     public let activationURL: URL
     public let expiresAt: Date
     public var description: String { "PendingActivation(host: \(host), port: \(port))" }
 }
 
-public struct ParsedActivation: Equatable, Sendable {
+public struct CaltopoActivationReturn: Equatable, Sendable, CustomStringConvertible {
+    public let code: String
+    public let deviceName: String
+    public var description: String { "CaltopoActivationReturn(codeLength: \(code.count))" }
+}
+
+public struct ParsedActivation: Equatable, Sendable, CustomStringConvertible {
     public let accountID: String
     public let credentialID: String
     public let signingKey: String
     public let displayName: String
+    public let accountType: String
+    public var description: String { "ParsedActivation(accountID: \(accountID), credentialID: \(credentialID), accountType: \(accountType))" }
 }
 
 public enum CaltopoPersonalSignedLookup: Equatable, Sendable {
@@ -569,7 +615,7 @@ enum CaltopoPersonalAccountLoopback {
         return (fd, Int(UInt16(bigEndian: actual.sin_port)))
     }
 
-    static func awaitCode(fd: Int32, pending: PendingActivation, timeout: TimeInterval) throws -> String {
+    static func awaitCode(fd: Int32, pending: PendingActivation, timeout: TimeInterval) throws -> CaltopoActivationReturn {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             var pollInfo = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
@@ -597,18 +643,18 @@ enum CaltopoPersonalAccountLoopback {
                     break
                 }
             }
-            let code = target.flatMap { try? CaltopoPersonalAccountConnection.shared.callbackCode($0, pending: pending) }
-            let html = code == nil
+            let returned = target.flatMap { try? CaltopoPersonalAccountConnection.shared.callbackCode($0, pending: pending) }
+            let html = returned == nil
                 ? "<html><body>RID2Caltopo did not accept this activation request.</body></html>"
                 : "<html><body>RID2Caltopo is connected. You can return to the app.</body></html>"
-            let status = code == nil ? "404 Not Found" : "200 OK"
+            let status = returned == nil ? "404 Not Found" : "200 OK"
             let payload = html.data(using: .utf8) ?? Data()
             let response = "HTTP/1.1 \(status)\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(payload.count)\r\nConnection: close\r\n\r\n"
             _ = response.withCString { Darwin.write(client, $0, Int(strlen($0))) }
             _ = payload.withUnsafeBytes { buffer in
                 _ = Darwin.write(client, buffer.baseAddress, payload.count)
             }
-            if let code { return code }
+            if let returned { return returned }
         }
         throw CaltopoPersonalAccountError.expired
     }
@@ -616,20 +662,20 @@ enum CaltopoPersonalAccountLoopback {
 
 private struct ActivationCodePattern {
     func matches(_ value: String) -> Bool {
-        value.range(of: "^[A-Za-z0-9_-]{4,64}$", options: .regularExpression) != nil
+        value.range(of: "^[A-Za-z0-9]{8}$", options: .regularExpression) != nil
     }
 }
 
 private final class ActivationGate: @unchecked Sendable {
     private let condition = NSCondition()
-    private var value: Result<String, Error>?
-    func finish(_ value: Result<String, Error>) {
+    private var value: Result<CaltopoActivationReturn, Error>?
+    func finish(_ value: Result<CaltopoActivationReturn, Error>) {
         condition.lock()
         self.value = value
         condition.signal()
         condition.unlock()
     }
-    func wait() throws -> String {
+    func wait() throws -> CaltopoActivationReturn {
         condition.lock()
         while value == nil { condition.wait() }
         let result = value!

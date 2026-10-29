@@ -53,18 +53,28 @@ final class CaltopoPersonalAccountConnectionTests: XCTestCase {
         let connection = CaltopoPersonalAccountConnection()
         let pending = try connection.begin(host: "caltopo.com", deviceName: "RID2Caltopo", port: 9)
         XCTAssertTrue(CaltopoPersonalAccountConnection.isActivationURL(pending.activationURL))
-        XCTAssertFalse(pending.description.contains(pending.state))
-        let code = try connection.acceptCallback("/r2c/\(pending.pathToken)?state=\(pending.state)&code=abcd1234&name=RID2Caltopo")
-        XCTAssertEqual(code, "abcd1234")
+        XCTAssertFalse(pending.description.contains(pending.pathToken))
+        let redirect = URLComponents(url: pending.activationURL, resolvingAgainstBaseURL: false)?
+            .queryItems?.first { $0.name == "redirect" }?.value
+        XCTAssertEqual(redirect?.contains("?"), false)
+        let returned = try connection.acceptCallback("/\(pending.pathToken)/client/finish-activate?code=abcd1234&name=R2C+probe")
+        XCTAssertEqual(returned.code, "abcd1234")
+        XCTAssertEqual(returned.deviceName, "R2C probe")
+        let custom = try connection.begin(port: 9)
+        let prefix = try CaltopoPersonalAccountConnection.customSchemePrefix(scheme: "caltopoapp", nonce: custom.pathToken)
+        XCTAssertFalse(prefix.contains("?"))
+        let customReturn = try connection.acceptCallback(prefix + "/client/finish-activate?code=abcd1234&name=R2C+probe")
+        XCTAssertEqual(customReturn.deviceName, "R2C probe")
         let retry = try connection.begin(port: 9)
-        XCTAssertThrowsError(try connection.acceptCallback("https://evil.test/r2c/\(retry.pathToken)?state=\(retry.state)&code=abcd1234"))
+        XCTAssertThrowsError(try connection.acceptCallback("/\(retry.pathToken)?state=r2ctest123/client/finish-activate?code=abcd1234&name=R2C+probe"))
+        XCTAssertThrowsError(try connection.acceptCallback("https://evil.test/\(retry.pathToken)/client/finish-activate?code=abcd1234&name=R2C+probe"))
         let secret = Data(repeating: 7, count: 32).base64EncodedString()
-        let body = #"{"code":"cred12345678","key":"\#(secret)","account":{"id":"USER01","properties":{"class":"UserAccount","title":"Pilot"}}}"#.data(using: .utf8)!
+        let body = #"{"code":"cred12345678","key":"\#(secret)","account":{"id":"USER01","type":"account","properties":{"class":"UserAccount","firstName":"Test","lastName":"Pilot","title":"Pilot","email":"pilot@example.com","subscriptionExpires":1790000000000}}}"#.data(using: .utf8)!
         let record = try connection.completeExchange(body, code: "abcd1234", host: "caltopo.com", deviceName: "RID2Caltopo")
-        XCTAssertEqual(record.displayName, "Pilot")
+        XCTAssertEqual(record.displayName, "Test Pilot")
         XCTAssertFalse(record.description.contains(secret))
         XCTAssertFalse(record.debugDescription.contains(secret))
-        let team = #"{"code":"cred12345678","key":"\#(secret)","account":{"id":"USER01","properties":{"class":"TeamAccount"}}}"#.data(using: .utf8)!
+        let team = #"{"code":"cred12345678","key":"\#(secret)","account":{"id":"USER01","type":"account","properties":{"class":"TeamAccount"}}}"#.data(using: .utf8)!
         XCTAssertThrowsError(try CaltopoPersonalAccountConnection.parseActivationResponse(team)) { error in
             XCTAssertEqual(error as? CaltopoPersonalAccountError, .notPersonalAccount)
             XCTAssertFalse(String(describing: error).contains(secret))
@@ -87,7 +97,7 @@ final class CaltopoPersonalAccountConnectionTests: XCTestCase {
     }
 
     private func sampleRecord(secret: String) throws -> CaltopoPersonalAccountRecord {
-        let body = #"{"code":"cred12345678","key":"\#(secret)","account":{"id":"USER01","properties":{"class":"UserAccount","title":"Pilot"}}}"#.data(using: .utf8)!
+        let body = #"{"code":"cred12345678","key":"\#(secret)","account":{"id":"USER01","type":"account","properties":{"class":"UserAccount","title":"Pilot"}}}"#.data(using: .utf8)!
         return try CaltopoPersonalAccountConnection().completeExchange(body, code: "abcd1234", host: "caltopo.com", deviceName: "RID2Caltopo")
     }
 }

@@ -170,14 +170,14 @@ object CaltopoPersonalAccountConnection {
         val deadline = clock() + timeoutMilliseconds
         try {
             val accept = Thread({
-                pending.acceptedCode = awaitCode(server, pending, deadline)
+                pending.acceptedReturn = awaitCode(server, pending, deadline)
             }, "caltopo-personal-activate")
             accept.isDaemon = true
             accept.start()
             browser.open(pending.activationUrl)
             accept.join(timeoutMilliseconds + 2_000)
-            val code = pending.acceptedCode ?: throw CaltopoPersonalAccountException("CalTopo activation was not completed.")
-            val record = exchange(pending, code, http)
+            val returned = pending.acceptedReturn ?: throw CaltopoPersonalAccountException("CalTopo activation was not completed.")
+            val record = exchange(pending, returned, http)
             write(record)
             clearPending()
             return record.status()
@@ -190,15 +190,15 @@ object CaltopoPersonalAccountConnection {
         val normalizedHost = normalizeHost(host)
         require(port in 1..65535) { "Activation listener port is invalid." }
         val pathToken = hex(randomBytes(16))
-        val state = hex(randomBytes(16))
-        val loopback = "http://127.0.0.1:$port/r2c/$pathToken?state=$state"
+        // CalTopo appends "/client/finish-activate?code&name" onto this string.
+        // A query here would swallow that suffix. The nonce is the whole path.
+        val loopback = "http://127.0.0.1:$port/$pathToken"
         val activation = activationUrl(normalizedHost, loopback, normalizeDeviceName(deviceName))
         val created = PendingActivation(
             host = normalizedHost,
             deviceName = normalizeDeviceName(deviceName),
             port = port,
             pathToken = pathToken,
-            state = state,
             activationUrl = activation,
             expiresAtMilliseconds = now + PENDING_TTL_MS
         )
@@ -206,12 +206,12 @@ object CaltopoPersonalAccountConnection {
         return created
     }
 
-    fun acceptCallback(requestTarget: String, now: Long = clock()): String {
+    fun acceptCallback(requestTarget: String, now: Long = clock()): CaltopoActivationReturn {
         val current = synchronized(lock) { pending } ?: throw CaltopoPersonalAccountException("CalTopo activation is not waiting for a code.")
         if (now > current.expiresAtMilliseconds) throw CaltopoPersonalAccountException("CalTopo activation expired. Start it again.")
-        val code = callbackCode(requestTarget, current)
+        val returned = callbackCode(requestTarget, current)
         clearPending()
-        return code
+        return returned
     }
 
     fun completeExchange(rawBody: String, code: String, host: String, deviceName: String, now: Long = clock()): CaltopoPersonalAccountRecord {
@@ -229,9 +229,16 @@ object CaltopoPersonalAccountConnection {
     }
 
     fun activationUrl(host: String, loopbackUrl: String, deviceName: String): String {
-        require(loopbackUrl.startsWith("http://127.0.0.1:")) { "Activation return must be a loopback URL." }
-        require(!loopbackUrl.contains("@") && !loopbackUrl.contains("\\")) { "Activation return URL is invalid." }
+        require(LOOPBACK_REDIRECT.matches(loopbackUrl)) { "Activation return must be a loopback URL with the nonce in the path." }
         return "https://${normalizeHost(host)}/app/activate/offline?redirect=${encode(loopbackUrl)}&name=${encode(deviceName)}"
+    }
+
+    /** Same append rule as loopback: nonce is a path segment and the prefix has no query. */
+    fun customSchemePrefix(scheme: String, nonce: String): String {
+        if (!SCHEME.matches(scheme) || scheme == "http" || scheme == "https" || !NONCE.matches(nonce)) {
+            throw CaltopoPersonalAccountException("CalTopo activation return was rejected.")
+        }
+        return "$scheme://return/$nonce"
     }
 
     fun isActivationUrl(value: String): Boolean {
@@ -240,7 +247,7 @@ object CaltopoPersonalAccountConnection {
         if (url.host?.lowercase(Locale.US) !in ALLOWED_HOSTS || url.path != "/app/activate/offline") return false
         val query = url.rawQuery ?: return false
         val redirect = queryParameters(query)["redirect"] ?: return false
-        return redirect.startsWith("http://127.0.0.1:") && redirect.contains("/r2c/")
+        return LOOPBACK_REDIRECT.matches(redirect)
     }
 
     fun parseActivationResponse(rawBody: String): ParsedActivation {
@@ -256,11 +263,15 @@ object CaltopoPersonalAccountConnection {
         val signingKey = source.optString("key")
         val account = source.optJSONObject("account") ?: throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
         val accountId = account.optString("id")
-        val properties = account.optJSONObject("properties")
-        if (properties != null && properties.has("class") && properties.optString("class") != "UserAccount") {
+        val accountType = account.optString("type")
+        val properties = account.optJSONObject("properties") ?: throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
+        if (properties.optString("class") != "UserAccount") {
             throw CaltopoPersonalAccountException("CalTopo activation did not return a personal account.")
         }
-        if (!ACCOUNT_ID.matches(accountId) || !CREDENTIAL_ID.matches(credentialId)) {
+        if (accountType != "account" || !ACCOUNT_ID.matches(accountId) || !CREDENTIAL_ID.matches(credentialId) || signingKey.length != 44) {
+            throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
+        }
+        if (properties.has("subscriptionExpires") && properties.opt("subscriptionExpires") !is Number) {
             throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
         }
         val keyBytes = try {
@@ -268,22 +279,24 @@ object CaltopoPersonalAccountConnection {
         } catch (error: IllegalArgumentException) {
             throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
         }
-        if (keyBytes.size !in 16..64) throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
-        val display = properties?.optString("title")?.takeIf { it.isNotBlank() }
-            ?: properties?.optString("email")?.takeIf { it.isNotBlank() }
+        if (keyBytes.size != 32) throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
+        val person = listOf(properties.optString("firstName"), properties.optString("lastName"))
+            .map { it.trim() }.filter { it.isNotEmpty() }.joinToString(" ")
+        val display = person.ifBlank { null }
+            ?: properties.optString("title").takeIf { it.isNotBlank() }
+            ?: properties.optString("email").takeIf { it.isNotBlank() }
             ?: accountId
-        return ParsedActivation(accountId, credentialId, signingKey, display)
+        return ParsedActivation(accountId, credentialId, signingKey, display, accountType)
     }
 
-    private fun exchange(pending: PendingActivation, code: String, http: CaltopoActivationExchange): CaltopoPersonalAccountRecord {
-        if (!ACTIVATION_CODE.matches(code)) throw CaltopoPersonalAccountException("CalTopo activation code was rejected.")
-        val url = "https://${pending.host}/api/v1/activate?code=${encode(code)}"
+    private fun exchange(pending: PendingActivation, returned: CaltopoActivationReturn, http: CaltopoActivationExchange): CaltopoPersonalAccountRecord {
+        val url = "https://${pending.host}/api/v1/activate?code=${encode(returned.code)}&name=${encode(returned.deviceName)}"
         val response = http.get(url)
         if (response.status != 200) throw CaltopoPersonalAccountException("CalTopo activation exchange failed (HTTP ${response.status}).")
-        return completeExchange(response.body, code, pending.host, pending.deviceName)
+        return completeExchange(response.body, returned.code, pending.host, returned.deviceName)
     }
 
-    private fun awaitCode(server: ServerSocket, pending: PendingActivation, deadline: Long): String? {
+    private fun awaitCode(server: ServerSocket, pending: PendingActivation, deadline: Long): CaltopoActivationReturn? {
         while (clock() < deadline) {
             val socket = try {
                 server.accept()
@@ -334,19 +347,37 @@ object CaltopoPersonalAccountConnection {
         return null
     }
 
-    fun callbackCode(requestTarget: String, pending: PendingActivation): String {
-        val pathAndQuery = requestTarget.substringBefore('#')
-        if (pathAndQuery.startsWith("http://") || pathAndQuery.startsWith("https://") || pathAndQuery.contains("\\")) {
+    fun callbackCode(requestTarget: String, pending: PendingActivation): CaltopoActivationReturn {
+        val raw = requestTarget.substringBefore('#')
+        if (raw.contains('\\') || raw.contains('?') && raw.substringAfter('?', "").contains('?')) {
             throw CaltopoPersonalAccountException("CalTopo activation return was rejected.")
         }
-        val path = pathAndQuery.substringBefore('?')
-        val query = pathAndQuery.substringAfter('?', "")
-        if (path != "/r2c/${pending.pathToken}") throw CaltopoPersonalAccountException("CalTopo activation return was rejected.")
+        val path: String
+        val query: String
+        if (raw.startsWith("/")) {
+            path = raw.substringBefore('?')
+            query = raw.substringAfter('?', "")
+        } else {
+            val uri = try {
+                URI(raw)
+            } catch (error: Exception) {
+                throw CaltopoPersonalAccountException("CalTopo activation return was rejected.")
+            }
+            val scheme = uri.scheme?.lowercase(Locale.US)
+            if (scheme == null || scheme == "http" || scheme == "https" || uri.userInfo != null) {
+                throw CaltopoPersonalAccountException("CalTopo activation return was rejected.")
+            }
+            path = uri.path ?: ""
+            query = uri.rawQuery ?: ""
+        }
+        if (path != "/${pending.pathToken}/client/finish-activate") {
+            throw CaltopoPersonalAccountException("CalTopo activation return was rejected.")
+        }
         val params = queryParameters(query)
-        if (params["state"] != pending.state) throw CaltopoPersonalAccountException("CalTopo activation return was rejected.")
         val code = params["code"] ?: throw CaltopoPersonalAccountException("CalTopo activation return was rejected.")
+        val deviceName = params["name"] ?: throw CaltopoPersonalAccountException("CalTopo activation return was rejected.")
         if (!ACTIVATION_CODE.matches(code)) throw CaltopoPersonalAccountException("CalTopo activation code was rejected.")
-        return code
+        return CaltopoActivationReturn(code, normalizeDeviceName(deviceName))
     }
 
     private fun stored(): CaltopoPersonalAccountRecord? {
@@ -398,8 +429,11 @@ object CaltopoPersonalAccountConnection {
 
     private val ALLOWED_HOSTS = setOf("caltopo.com", "sartopo.com")
     private val ACCOUNT_ID = Regex("^[A-Za-z0-9]{6}$")
-    private val CREDENTIAL_ID = Regex("^[A-Za-z0-9]{8,32}$")
-    private val ACTIVATION_CODE = Regex("^[A-Za-z0-9_-]{4,64}$")
+    private val CREDENTIAL_ID = Regex("^[A-Za-z0-9]{12}$")
+    private val ACTIVATION_CODE = Regex("^[A-Za-z0-9]{8}$")
+    private val NONCE = Regex("^[0-9a-f]{32}$")
+    private val SCHEME = Regex("^[a-z][a-z0-9+.-]{0,31}$")
+    private val LOOPBACK_REDIRECT = Regex("^http://127\\.0\\.0\\.1:[1-9][0-9]{0,4}/[0-9a-f]{32}$")
     private val DEVICE_NAME = Regex("^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$")
 }
 
@@ -416,17 +450,28 @@ data class CaltopoActivationHttp(val status: Int, val body: String)
 
 data class SignedGet(val url: String, val accountId: String)
 
-data class ParsedActivation(val accountId: String, val credentialId: String, val signingKey: String, val displayName: String)
+data class CaltopoActivationReturn(val code: String, val deviceName: String) {
+    override fun toString(): String = "CaltopoActivationReturn(codeLength=${code.length})"
+}
+
+data class ParsedActivation(
+    val accountId: String,
+    val credentialId: String,
+    val signingKey: String,
+    val displayName: String,
+    val accountType: String
+) {
+    override fun toString(): String = "ParsedActivation(accountId=$accountId, credentialId=$credentialId, accountType=$accountType)"
+}
 
 data class PendingActivation(
     val host: String,
     val deviceName: String,
     val port: Int,
     val pathToken: String,
-    val state: String,
     val activationUrl: String,
     val expiresAtMilliseconds: Long,
-    @Volatile var acceptedCode: String? = null
+    @Volatile var acceptedReturn: CaltopoActivationReturn? = null
 ) {
     override fun toString(): String = "PendingActivation(host=$host, port=$port)"
 }
