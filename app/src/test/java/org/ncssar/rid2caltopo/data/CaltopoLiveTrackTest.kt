@@ -306,6 +306,63 @@ class CaltopoLiveTrackTest {
         assertEquals(renamed, shape.getJSONObject("properties").getString("title"))
     }
 
+    @Test fun disconnectThenFlightEndsOfflineThenReconnectPublishesArchiveOnce() {
+        val drone = CtDroneSpec("RID-OFFLINE-END")
+        setDroneTrackLabel(drone, "1sar7DjMn4Pr_110642Oct30")
+        drone.setOwner("1sar7")
+        drone.setCurrentFlightConfirmed(true)
+        val track = CaltopoLiveTrack(drone, 39.153, -121.133, 527.0, 1_000L)
+        track.mapStatusUpdate(CaltopoMap.MapStatusListener.mapStatus.up, null, null)
+        track.setLocalOwner(true)
+        forceLiveTrackId(track, "487badd1-10d0-4c05-b41f-dc62b2fd2c06")
+        track.publishDirect(39.154, -121.134, 528L, 2_000L)
+        drainRecovery()
+
+        // Mid-flight disconnect: durable journal only; no Shape/LiveTrack network archive.
+        track.shutdown(4_000L)
+        drainRecovery()
+        assertEquals(0, fixture.calTopoSessionGateway.countOperations("editObject"))
+        assertEquals(0, fixture.calTopoSessionGateway.countOperations("deleteLiveTrack"))
+        assertEquals(1, CaltopoInterruptedTrackJournal.entriesForTesting().length())
+        assertEquals(
+            "487badd1-10d0-4c05-b41f-dc62b2fd2c06",
+            CaltopoInterruptedTrackJournal.entriesForTesting().getJSONObject(0).getString("liveTrackId"),
+        )
+        assertFalse(track.isActive)
+
+        // Flight ends while the map is still down.
+        var ended = 0
+        val listener = CaltopoLiveTrack.LocalTrackFinishedListener { remote, _, _ ->
+            if (remote == drone.remoteId) ended++
+        }
+        CaltopoLiveTrack.AddLocalTrackFinishedListener(listener)
+        try {
+            track.finishTrack("RID/peer idle while map down")
+            drainRecovery()
+            assertEquals(1, ended)
+        } finally {
+            CaltopoLiveTrack.RemoveLocalTrackFinishedListener(listener)
+        }
+        assertEquals(0, fixture.calTopoSessionGateway.countOperations("editObject"))
+        assertEquals(1, CaltopoInterruptedTrackJournal.entriesForTesting().length())
+
+        // Reconnect recovers exactly once: Shape publish + LiveTrack cleanup.
+        CaltopoInterruptedTrackJournal.recover("map-test", "archive-folder-test", fixture.runtime)
+        assertEquals(1, fixture.calTopoSessionGateway.countOperations("editObject"))
+        assertEquals(1, fixture.calTopoSessionGateway.countOperations("deleteLiveTrack"))
+        val shape = fixture.calTopoSessionGateway.snapshotOperations()
+            .first { it.kind == "editObject" && it.summary == "Shape:487badd1-10d0-4c05-b41f-dc62b2fd2c06" }
+            .payload!!
+        assertEquals("Shape", shape.getJSONObject("properties").getString("class"))
+        assertTrue(shape.getJSONObject("geometry").getJSONArray("coordinates").length() >= 1)
+        assertEquals(0, CaltopoInterruptedTrackJournal.entriesForTesting().length())
+
+        // A second recovery must not publish or delete again.
+        CaltopoInterruptedTrackJournal.recover("map-test", "archive-folder-test", fixture.runtime)
+        assertEquals(1, fixture.calTopoSessionGateway.countOperations("editObject"))
+        assertEquals(1, fixture.calTopoSessionGateway.countOperations("deleteLiveTrack"))
+    }
+
     @Test fun mapShutdownPreservesPilotConsentAndPhysicalFlight() {
         val drone = CtDroneSpec("RID-CONTINUING")
         val label = "1SAR7m3_120000Apr28"
@@ -316,6 +373,7 @@ class CaltopoLiveTrackTest {
         val readiness = drone.flightReadinessJson
         val track = CaltopoLiveTrack(drone, 39.1, -121.1, 500.0, 1_000L)
         track.mapStatusUpdate(CaltopoMap.MapStatusListener.mapStatus.up, null, null)
+        track.setLocalOwner(true)
         forceLiveTrackId(track, "live-continuing")
         track.shutdown(0)
         assertEquals(label, drone.trackLabel())

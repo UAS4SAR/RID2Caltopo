@@ -12,6 +12,8 @@ class FlightStorageTransientCheckTest {
             IllegalStateException("Failed to determine if clues/x.jpg is child of archive: java.io.FileNotFoundException: Missing file for clues/x.jpg")))
         assertTrue(FlightStorage.isTransientStorageCheckFailure(
             IllegalStateException("Archive file is unavailable: application-logs/operational/clues/x.jpg")))
+        assertTrue(FlightStorage.isTransientStorageCheckFailure(
+            IllegalStateException("Archive hydration did not preserve clues; original copies were retained.")))
         assertFalse(FlightStorage.isTransientStorageCheckFailure(
             IllegalStateException("Archive Dir is unavailable; reconnect its storage.")))
         assertFalse(FlightStorage.isTransientStorageCheckFailure(

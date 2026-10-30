@@ -6356,6 +6356,56 @@ private func writeInt32(_ value: Int32, into bytes: inout [UInt8], at offset: In
     let afterSuccessfulRecovery = CaltopoInterruptedPublicationJournal(fileURL: fileURL)
     #expect(await afterSuccessfulRecovery.entries(mapID: "map-a").isEmpty)
 }
+
+@Test func disconnectThenFlightEndsOfflineLeavesExactlyOnePendingFinishForReconnect() async throws {
+    // Mirrors the Android path: map disconnect checkpoints the LiveTrack, the
+    // flight then ends offline, and reconnect recovery must see one durable entry.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let fileURL = root.appendingPathComponent("caltopo-interrupted-publications.json")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let liveTrackID = "487badd1-10d0-4c05-b41f-dc62b2fd2c06"
+    let observation = RidObservation(
+        source: .bluetoothLegacy,
+        aircraftId: "RID-OFFLINE-END",
+        receivedAt: Date(timeIntervalSince1970: 1_793_383_602),
+        latitude: 39.153080,
+        longitude: -121.132828,
+        altitudeMeters: 527
+    )
+    let disconnectCheckpoint = CaltopoInterruptedPublication(
+        mapID: "4J0LF02",
+        remoteID: "RID-OFFLINE-END",
+        liveTrackID: liveTrackID,
+        label: "1sar7DjMn4Pr_110642Oct30",
+        observations: [observation]
+    )
+    let journal = CaltopoInterruptedPublicationJournal(fileURL: fileURL)
+    try await journal.upsert(disconnectCheckpoint)
+
+    // Flight-end while disconnected upserts the same LiveTrack id (owner only).
+    let finished = CaltopoInterruptedPublication(
+        mapID: "4J0LF02",
+        remoteID: "RID-OFFLINE-END",
+        liveTrackID: liveTrackID,
+        label: "1sar7DjMn4Pr_110642Oct30",
+        description: "flight ended offline",
+        observations: [observation]
+    )
+    try await journal.upsert(finished)
+
+    let pending = await journal.entries(mapID: "4J0LF02")
+    #expect(pending.count == 1)
+    #expect(pending[0].liveTrackID == liveTrackID)
+    #expect(pending[0].description == "flight ended offline")
+
+    // Reconnect recovery clears the entry once after a successful archive.
+    try await journal.remove(liveTrackID: liveTrackID)
+    #expect(await journal.entries(mapID: "4J0LF02").isEmpty)
+    // A second cleanup is a no-op.
+    try await journal.remove(liveTrackID: liveTrackID)
+    #expect(await journal.entries(mapID: "4J0LF02").isEmpty)
+}
 @Test func appleClueCapturePrefersCompleteFreshSEIWithoutRIDAnchoring() throws {
     let appleRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()

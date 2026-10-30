@@ -583,24 +583,83 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     public void shutdown(long maxWaitInMilliseconds) {
         // Capture the departing map before ResetMapConnection clears its fields.
         final String destinationMap = CaltopoMap.GetMapId();
-        final String destinationFolder = CaltopoMap.GetArchiveFolderId();
         shuttingDown = true;
-        CaltopoRecoveryWork.offMain(() -> shutdownOnWorker(maxWaitInMilliseconds, destinationMap, destinationFolder));
+        // Map teardown must not archive over the network on the recovery worker: a
+        // syncOp or video-catalog scan under the track lock can stall finishTrack,
+        // AwaitingMapFlights, and interrupted-track recovery until process death.
+        // Persist the durable checkpoint here; reconnect recovery (or a later
+        // finishTrack while the map is up) converts the LiveTrack exactly once.
+        CaltopoRecoveryWork.offMain(() -> shutdownOnWorker(destinationMap));
     }
 
-    private synchronized void shutdownOnWorker(long maxWaitInMilliseconds, String destinationMap, String destinationFolder) {
-        boolean wasActive = active;
-        if (active && (liveTrackId != null || requestedLiveTrackId != null)) try {
-            CTDebug(TAG, String.format(Locale.US, "shutdown(%d). Terminating '%s'",
-                    maxWaitInMilliseconds, droneSpec.trackLabel()));
-            if (liveTrackId != null) CaltopoMap.RemoveLiveTrack(liveTrackId);
-            archiveTrackOnWorker(maxWaitInMilliseconds, destinationMap, destinationFolder);
-        } catch (Exception e) {
-            CTError(TAG, String.format(Locale.US, "shutdown(%s) failed:", droneSpec.trackLabel()), e);
+    private static final class ShutdownWork {
+        final JournalSnapshot snapshot;
+        final String orphanDeleteId;
+        final String orphanDeleteMap;
+        final boolean notifyPeer;
+        ShutdownWork(JournalSnapshot snapshot, String orphanDeleteId, String orphanDeleteMap,
+                     boolean notifyPeer) {
+            this.snapshot = snapshot;
+            this.orphanDeleteId = orphanDeleteId;
+            this.orphanDeleteMap = orphanDeleteMap;
+            this.notifyPeer = notifyPeer;
         }
-        notifyPeerCoordinatorTrackEnded(wasActive);
+    }
+
+    private void shutdownOnWorker(String destinationMap) {
+        final ShutdownWork work;
+        synchronized (this) {
+            work = prepareShutdownLocked(destinationMap);
+        }
+        // Journal I/O and orphan DELETE stay outside the track monitor.
+        if (work.snapshot != null) {
+            try {
+                saveJournalSnapshot(work.snapshot);
+            } catch (Exception e) {
+                CTError(TAG, String.format(Locale.US, "shutdown(%s) journal persist failed:",
+                        work.snapshot.label), e);
+            }
+        }
+        if (work.orphanDeleteId != null) {
+            try {
+                runtime.getCalTopoSessionGateway().deleteLiveTrackOnMap(
+                        work.orphanDeleteMap, work.orphanDeleteId,
+                        deleteOp -> CaltopoRecoveryWork.offMain(() -> {
+                            if (deleteOp.success()) {
+                                CaltopoInterruptedTrackJournal.remove(work.orphanDeleteId);
+                            }
+                        }));
+            } catch (Exception e) {
+                CTError(TAG, "shutdown(): deleteLiveTrackWithId() raised: "
+                        + " (" + e.getClass().getSimpleName() + ")");
+            }
+        }
+        if (work.notifyPeer) notifyPeerCoordinatorTrackEnded(true);
+    }
+
+    private ShutdownWork prepareShutdownLocked(String destinationMap) {
+        boolean wasActive = active;
+        String archiveId = liveTrackId != null ? liveTrackId : requestedLiveTrackId;
+        if (active && archiveId != null) {
+            CTDebug(TAG, String.format(Locale.US, "shutdown(0). Terminating '%s'",
+                    droneSpec.trackLabel()));
+            if (liveTrackId != null) CaltopoMap.RemoveLiveTrack(liveTrackId);
+            if (!ownsPublication()) {
+                String map = publicationMapId != null ? publicationMapId : destinationMap;
+                localOwner = false;
+                clearLiveTrackState();
+                return new ShutdownWork(null, archiveId, map, wasActive);
+            }
+            // Owner: durable checkpoint only. Skip capturedVideoUrl / ArchiveFeatureOnMap
+            // here so catalog SAF work and syncOp cannot pin the recovery worker.
+            JournalSnapshot snapshot = journalSnapshot("");
+            localOwner = false;
+            clearLiveTrackState();
+            return new ShutdownWork(snapshot, null, null, wasActive);
+        }
         localOwner = false;
         clearLiveTrackState();
+        return new ShutdownWork(null, null, null, wasActive);
     }
 
     /** CaltopoMap periodically checks for updates to map features
@@ -974,7 +1033,8 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
 
     private synchronized void finishTrackOnWorker(@NonNull String reason, String destinationMap, String destinationFolder) {
         if (!active) {
-            // A map disconnect may have stopped publication while the flight continued.
+            // Map disconnect already persisted the interrupted journal and cleared
+            // publication state. Reconnect recovery converts the LiveTrack once.
             if (droneSpec.isActive()) NotifyLocalTrackFinished(droneSpec, reason);
             return;
         }

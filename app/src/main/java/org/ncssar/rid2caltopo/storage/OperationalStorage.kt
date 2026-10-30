@@ -377,12 +377,7 @@ internal object OperationalStorage {
             check(staged.isDirectory || staged.mkdirs())
             hydrate(value, area.retained, staged, reuse = false, hydrationScratch, checkSelection)
         }
-        for ((path, hash) in value.migrated.filterKeys { it.startsWith(area.retained + "/") }) {
-            val copied = File(staged, path.removePrefix(area.retained + "/"))
-            check(copied.isFile && copied.inputStream().use { VerifiedArchiveTree.digest(it) } == hash) {
-                "Archive hydration did not preserve ${area.id}; original copies were retained."
-            }
-        }
+        verifyHydratedProjection(area, value, staged)
         checkSelection()
         if (!reuse) {
             if (destination.exists()) removeTree(destination)
@@ -409,7 +404,48 @@ internal object OperationalStorage {
             message.contains("Archive Dir changed during preparation") ||
             message.contains("Missing file") ||
             message.contains("is child of") ||
-            message.contains("Archive file is unavailable")
+            message.contains("Archive file is unavailable") ||
+            // Clues-lane delete/add during bulk hydrate can stale the migrated snapshot.
+            message.contains("Archive hydration did not preserve clues")
+    }
+
+    /** After hydrate, every migrated path must still match the staged copy. */
+    private fun verifyHydratedProjection(area: Area, value: Store, staged: File) {
+        val prefix = area.retained + "/"
+        val expected = value.migrated.filterKeys { it.startsWith(prefix) }
+        if (expected.isEmpty()) return
+        if (area.id == "clues") value.tree.refresh()
+        for ((path, hash) in expected) {
+            val relative = path.removePrefix(prefix)
+            val copied = File(staged, relative)
+            if (area.id == "clues") {
+                val localHash = if (copied.isFile) {
+                    copied.inputStream().use { VerifiedArchiveTree.digest(it) }
+                } else null
+                val archivePresent = runCatching { value.tree.exists(path) }.getOrDefault(false)
+                val archiveHash = if (archivePresent) {
+                    runCatching { value.tree.read(path).use { VerifiedArchiveTree.digest(it) } }.getOrNull()
+                } else null
+                when (ClueHydrationReconcile.verdict(localHash, hash, archivePresent, archiveHash)) {
+                    ClueHydrationReconcile.Verdict.MATCH -> continue
+                    ClueHydrationReconcile.Verdict.RACE -> {
+                        if (archiveHash != null && localHash == archiveHash) value.migrated[path] = archiveHash
+                        else value.migrated.remove(path)
+                        CaltopoClient.CTDebug(
+                            "OperationalStorage",
+                            "Clues hydrate reconciled concurrent lane change path=$path",
+                        )
+                        continue
+                    }
+                    ClueHydrationReconcile.Verdict.MISMATCH -> error(
+                        "Archive hydration did not preserve ${area.id}; original copies were retained.",
+                    )
+                }
+            }
+            check(copied.isFile && copied.inputStream().use { VerifiedArchiveTree.digest(it) } == hash) {
+                "Archive hydration did not preserve ${area.id}; original copies were retained."
+            }
+        }
     }
     private fun importLegacyCaches(context: Context, root: DocumentFile, value: Store) {
         val cache = root.findFile("cache") ?: root.createDirectory("cache") ?: error("Cannot access retained map cache.")

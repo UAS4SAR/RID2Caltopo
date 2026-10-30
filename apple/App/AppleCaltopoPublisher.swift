@@ -601,13 +601,31 @@ actor AppleCaltopoPublisher {
                 observations.removeValue(forKey: remoteID)
             }
         }
-        guard generation == configurationGeneration, let client = finishingClient,
-              let id, let configuration = finishingConfiguration else { return nil }
+        // A map disconnect may already have cleared the live client while this
+        // flight was still airborne. Persist the finish intent first so reconnect
+        // recovery can convert the LiveTrack once, exactly as a normal archive.
+        guard let id else { return nil }
+        let mapID = finishingConfiguration?.mapID ?? configuredConfiguration?.mapID
+        guard let mapID, !mapID.isEmpty else { return nil }
         let entry = CaltopoInterruptedPublication(
-            mapID: configuration.mapID, remoteID: remoteID, liveTrackID: id,
+            mapID: mapID, remoteID: remoteID, liveTrackID: id,
             label: label, description: description, observations: saved)
         do {
             try await interruptedJournal.upsert(entry)
+        } catch {
+            AppleLog.warning(
+                "CalTopo",
+                "Could not persist finished LiveTrack \(id) for reconnect recovery: \(error.localizedDescription)"
+            )
+        }
+        guard generation == configurationGeneration,
+              let client = finishingClient,
+              let configuration = finishingConfiguration else {
+            // Ended offline after disconnect: the journal upsert above is the
+            // durable pending finish; reconnect recovery loads it once.
+            return nil
+        }
+        do {
             // Finish an in-flight create before the Shape write; a lost response does not
             // prevent conversion because the durable identity is already known.
             if let pendingStart { _ = try? await pendingStart.value }
