@@ -6,21 +6,53 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ConcurrentHashMap;
 
-/** Ordered flight-journal work; completion callbacks must not perform storage on Main. */
+/**
+ * Flight publication work lanes.
+ * LiveTrack start / point forwarding must never wait behind another flight's archive,
+ * catalog scan, or interrupted-track recovery.
+ */
 final class CaltopoRecoveryWork {
-    private static final ConcurrentHashMap<Object, Runnable> pending = new ConcurrentHashMap<>();
-    static final ExecutorService worker = Executors.newSingleThreadExecutor(task -> {
-        Thread thread = new Thread(task, "caltopo-flight-recovery");
+    private static final ConcurrentHashMap<Object, Runnable> pendingArchive = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<Object, Runnable> pendingStart = new ConcurrentHashMap<>();
+
+    static final ExecutorService startWorker = Executors.newSingleThreadExecutor(task -> {
+        Thread thread = new Thread(task, "caltopo-flight-start");
         thread.setDaemon(true);
         return thread;
     });
 
-    static void execute(Runnable task) { worker.execute(task); }
+    static final ExecutorService archiveWorker = Executors.newSingleThreadExecutor(task -> {
+        Thread thread = new Thread(task, "caltopo-flight-archive");
+        thread.setDaemon(true);
+        return thread;
+    });
 
-    /** At most one waiting checkpoint per flight; a slow archive must not queue every packet. */
+    /** @deprecated Prefer {@link #archiveWorker}; retained for tests that drain the archive lane. */
+    static final ExecutorService worker = archiveWorker;
+
+    static void execute(Runnable task) { archiveWorker.execute(task); }
+
+    static void executeStart(Runnable task) { startWorker.execute(task); }
+
+    static void executeArchive(Runnable task) { archiveWorker.execute(task); }
+
+    /** At most one waiting checkpoint per flight on the archive lane. */
     static void checkpoint(Object key, Runnable task) {
+        checkpointOn(pendingArchive, archiveWorker, key, task);
+    }
+
+    /** At most one waiting checkpoint per flight on the start/publication-intent lane. */
+    static void checkpointStart(Object key, Runnable task) {
+        checkpointOn(pendingStart, startWorker, key, task);
+    }
+
+    private static void checkpointOn(
+            ConcurrentHashMap<Object, Runnable> pending,
+            ExecutorService executor,
+            Object key,
+            Runnable task) {
         if (pending.put(key, task) == null) {
-            execute(() -> {
+            executor.execute(() -> {
                 Runnable latest = pending.remove(key);
                 if (latest != null) latest.run();
             });
@@ -35,9 +67,29 @@ final class CaltopoRecoveryWork {
     }
 
     static void offMain(Runnable task) {
+        offMainArchive(task);
+    }
+
+    static void offMainStart(Runnable task) {
         Looper main = Looper.getMainLooper();
-        if (main != null && Looper.myLooper() == main) execute(task);
+        if ((main != null && Looper.myLooper() == main) || isArchiveThread()) executeStart(task);
         else task.run();
+    }
+
+    static void offMainArchive(Runnable task) {
+        Looper main = Looper.getMainLooper();
+        if ((main != null && Looper.myLooper() == main) || isStartThread()) executeArchive(task);
+        else task.run();
+    }
+
+    private static boolean isArchiveThread() {
+        String name = Thread.currentThread().getName();
+        return name != null && name.startsWith("caltopo-flight-archive");
+    }
+
+    private static boolean isStartThread() {
+        String name = Thread.currentThread().getName();
+        return name != null && name.startsWith("caltopo-flight-start");
     }
 
     static void onMain(Runnable task) {

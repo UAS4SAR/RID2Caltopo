@@ -109,7 +109,7 @@ public final class CaltopoInterruptedTrackJournal {
                 }
                 JSONObject feature = archiveFeature(entry, archiveFolderId);
                 runtime.getCalTopoSessionGateway().editObjectOnMap(
-                        mapId, "Shape", liveTrackId, feature, editOp -> CaltopoRecoveryWork.offMain(() -> {
+                        mapId, "Shape", liveTrackId, feature, editOp -> CaltopoRecoveryWork.offMainArchive(() -> {
                             if (!editOp.success()) {
                                 inFlight.remove(liveTrackId);
                                 CaltopoClient.CTWarn(TAG, "Interrupted LiveTrack conversion deferred id=" + liveTrackId);
@@ -162,7 +162,7 @@ public final class CaltopoInterruptedTrackJournal {
                 writeRoot(root);
             }
             AwaitingMapFlights.published(liveTrackId);
-            runtime.getCalTopoSessionGateway().deleteLiveTrackOnMap(mapId, liveTrackId, deleteOp -> CaltopoRecoveryWork.offMain(() -> {
+            runtime.getCalTopoSessionGateway().deleteLiveTrackOnMap(mapId, liveTrackId, deleteOp -> CaltopoRecoveryWork.offMainArchive(() -> {
                 // Match Apple's already-gone handling. Standalone archives never
                 // created a LiveTrack, for which CalTopo returns 400 (or 404).
                 if (deleteOp.success() || deleteOp.responseCode == 400 || deleteOp.responseCode == 404) {

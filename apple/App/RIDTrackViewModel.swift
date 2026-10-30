@@ -10,6 +10,10 @@ final class RIDTrackViewModel: ObservableObject {
     let shortFlightDecisions = ShortFlightRecordingGate()
     private let awaitingMapJournal = AwaitingMapFlightJournal(fileURL:
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("awaiting-map-flights.json"))
+    private let waypointAppendJournal = WaypointTrackAppendJournal(directory:
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("waypoint-track-journals", isDirectory: true))
+    private var waypointJournalRecoveryDone = false
     @Published private(set) var awaitingMapFlights: [AwaitingMapFlight] = []
     @Published private(set) var awaitingMapJournalEntries: [AwaitingMapFlight] = []
     @Published private(set) var awaitingMapHistoryError: String?
@@ -22,6 +26,10 @@ final class RIDTrackViewModel: ObservableObject {
     private func refreshAwaitingMapState() async {
         awaitingRefreshGeneration += 1
         let generation = awaitingRefreshGeneration
+        if !waypointJournalRecoveryDone {
+            waypointJournalRecoveryDone = true
+            await recoverWaypointAppendJournals()
+        }
         await awaitingMapJournal.ready()
         let entries = await awaitingMapJournal.entries
         let error = await awaitingMapJournal.loadError
@@ -61,6 +69,50 @@ final class RIDTrackViewModel: ObservableObject {
     }
 
     private var awaitingFlightWrites: [String: Task<Void, Never>] = [:]
+
+    private func recoverWaypointAppendJournals() async {
+        do {
+            let recovered = try await waypointAppendJournal.recoverUnfinished()
+            for flight in recovered {
+                try await awaitingMapJournal.record(
+                    remoteID: flight.remoteID,
+                    label: flight.label,
+                    observations: flight.observations,
+                    mapID: flight.mapID,
+                    teamID: flight.teamID,
+                    finished: false,
+                    flightID: flight.id)
+                try await awaitingMapJournal.record(
+                    remoteID: flight.remoteID,
+                    label: flight.label,
+                    observations: flight.observations,
+                    mapID: flight.mapID,
+                    teamID: flight.teamID,
+                    finished: true,
+                    flightID: flight.id)
+            }
+        } catch {
+            archiveStatus = "Could not recover unfinished tracks: \(error.localizedDescription)"
+        }
+    }
+
+    private func appendWaypointJournal(track: RidAircraftTrack, observation: RidObservation) {
+        let flightID = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+        let label = identityProvider?(track.aircraftID)?.displayLabel ?? track.aircraftID
+        let mapID = publicationMapID
+        let teamID = publicationTeamID
+        Task(priority: .utility) {
+            do {
+                try await waypointAppendJournal.ensureOpen(
+                    flightID: flightID, remoteID: track.aircraftID, label: label,
+                    mapID: mapID, teamID: teamID)
+                try await waypointAppendJournal.append(observation: observation, flightID: flightID)
+            } catch {
+                // Live ingest continues; awaiting-map snapshots remain a secondary durability path.
+            }
+        }
+    }
+
     @discardableResult
     private func recordAwaitingFlight(_ track: RidAircraftTrack, finished: Bool = false) -> Task<Void, Never>? {
         guard flightRecordingAllowed?(track.aircraftID) == true,
@@ -379,6 +431,7 @@ final class RIDTrackViewModel: ObservableObject {
                 lastHorizontalAccuracyCodeByAircraftID[track.aircraftID] = code
             }
             recordAwaitingFlight(track)
+            appendWaypointJournal(track: track, observation: observation)
             logAcceptedObservation(track)
             updateAltitude(for: track)
             if publicationSuppressionProvider?(track.aircraftID) == true {
@@ -1250,6 +1303,7 @@ final class RIDTrackViewModel: ObservableObject {
         let flightID = liveFlightID(aircraftID: track.aircraftID)
             ?? RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
         await recordAwaitingFlight(track, finished: true)?.value
+        try? await waypointAppendJournal.markFinishedAndRemove(flightID: flightID)
         await queueCompletedDeferredFlights()
         let identity = identityProvider?(track.aircraftID)
         let archiveConfiguration = archiveConfiguration

@@ -209,12 +209,17 @@ public actor CaltopoLiveClient {
     private let personalTransport: URLSession?
     private let fullMapReads: CaltopoFullMapReads
     private let snapshotReads: CaltopoSnapshotReads
+    /// Separate lanes so Shape archive / DELETE cannot occupy the same serial
+    /// executor as LiveTrack create and position reports.
+    private let startLane: CaltopoNetworkLane
+    private let archiveLane: CaltopoNetworkLane
     private static let positionReports = LatestPositionReports(intervalProvider: {
         let stored = UserDefaults.standard.object(forKey: OperationalThumbnailRefreshInterval.storageKey) as? Double
         return .seconds(OperationalThumbnailRefreshInterval.normalized(stored))
     })
     private var positionReportKeys: Set<String> = []
     private var stoppedLiveTrackIDs: Set<String> = []
+    public static let requestTimeoutSeconds: TimeInterval = 20
 
     public init(
         configuration: CaltopoLiveConfiguration,
@@ -236,8 +241,12 @@ public actor CaltopoLiveClient {
         self.session = session
         self.fullMapReads = fullMapReads
         self.snapshotReads = snapshotReads ?? (session === URLSession.shared ? .shared : CaltopoSnapshotReads())
+        self.startLane = CaltopoNetworkLane(session: session)
+        self.archiveLane = CaltopoNetworkLane(session: session)
         if configuration.personalSessionID != nil {
             let transport = session.configuration
+            transport.timeoutIntervalForRequest = Self.requestTimeoutSeconds
+            transport.timeoutIntervalForResource = Self.requestTimeoutSeconds * 2
             transport.httpCookieStorage = nil
             transport.httpShouldSetCookies = false
             transport.urlCache = nil
@@ -261,7 +270,7 @@ public actor CaltopoLiveClient {
             folderID: folderID,
             now: now
         )
-        let data = try await perform(request)
+        let data = try await perform(request, lane: startLane)
         let root = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         guard let result = root?["result"] as? [String: Any] else {
             throw CaltopoLiveClientError.missingResult
@@ -283,7 +292,7 @@ public actor CaltopoLiveClient {
         let key = positionReportKey(remoteID)
         positionReportKeys.insert(key)
         return try await Self.positionReports.submit(key: key) {
-            _ = try await self.perform(request)
+            _ = try await self.perform(request, lane: self.startLane)
         }
     }
 
@@ -311,7 +320,8 @@ public actor CaltopoLiveClient {
         do {
             _ = try await perform(
                 makeStopLiveTrackRequest(liveTrackID: liveTrackID, now: now),
-                acceptedStatusCodes: [400, 404]
+                acceptedStatusCodes: [400, 404],
+                lane: archiveLane
             )
         } catch {
             releaseLiveTrackStop(liveTrackID: liveTrackID)
@@ -430,7 +440,7 @@ public actor CaltopoLiveClient {
             folderID: folderID,
             description: description,
             now: now
-        ))
+        ), lane: archiveLane)
         try await stopLiveTrack(liveTrackID: liveTrackID, now: now)
     }
 
@@ -450,7 +460,7 @@ public actor CaltopoLiveClient {
             folderID: folderID,
             description: description,
             now: now
-        ))
+        ), lane: archiveLane)
     }
 
     public func publishPhotoClue(_ clue: CaltopoPhotoClue, now: Date = Date()) async throws -> String {
@@ -987,9 +997,11 @@ public actor CaltopoLiveClient {
 
     private func perform(
         _ request: URLRequest,
-        acceptedStatusCodes: Set<Int> = []
+        acceptedStatusCodes: Set<Int> = [],
+        lane: CaltopoNetworkLane? = nil
     ) async throws -> Data {
         var request = request
+        request.timeoutInterval = Self.requestTimeoutSeconds
         var personalCookieURL: URL?
         var personalSendCookie = false
         // A signed personal account has no browser cookie. Position reports stay
@@ -1017,12 +1029,13 @@ public actor CaltopoLiveClient {
         let method = request.httpMethod ?? "GET"
         let path = request.url?.path ?? "/"
         let logTransport = credential != "team" || !path.hasPrefix("/api/v1/position/report/")
+        let networkLane = lane ?? startLane
         do {
             if let personalID = configuration.personalSessionID, let cookieURL = personalCookieURL {
                 (data, response) = try await CaltopoPersonalSessions.shared.perform(personalID, cookieURL: cookieURL,
                     request: request, session: personalTransport ?? session, sendCookie: personalSendCookie)
             } else {
-                (data, response) = try await session.data(for: request)
+                (data, response) = try await networkLane.data(for: request)
             }
         } catch {
             if logTransport {
@@ -1081,5 +1094,18 @@ public actor CaltopoLiveClient {
             return "\(encodedKey)=\(encodedValue)"
         }.joined(separator: "&")
         return Data(body.utf8)
+    }
+}
+
+/// Dedicated network executor so LiveTrack start/point POSTs never wait behind archive/DELETE.
+actor CaltopoNetworkLane {
+    private let session: URLSession
+
+    init(session: URLSession) {
+        self.session = session
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        try await session.data(for: request)
     }
 }

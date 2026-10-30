@@ -76,10 +76,18 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     private static final long LIVE_TRACK_SIDE_EFFECT_SLOW_MS = 250L;
     private static final long DEFERRED_VIDEO_LINK_RETRY_MS = 2_000L;
     private static final long DEFERRED_VIDEO_LINK_WINDOW_MS = 30_000L;
+    /** Bound Shape POST wait so one flight's archive cannot occupy the archive lane indefinitely. */
+    private static final long ARCHIVE_NETWORK_TIMEOUT_MS = 20_000L;
     private static final long SEI_POSITION_PUBLISH_INTERVAL_MS = 1_000L;
     private static final ScheduledExecutorService DeferredVideoLinkExecutor =
             Executors.newSingleThreadScheduledExecutor(runnable -> {
                 Thread thread = new Thread(runnable, "CaltopoDeferredVideoLink");
+                thread.setDaemon(true);
+                return thread;
+            });
+    private static final java.util.concurrent.ExecutorService CatalogLookupExecutor =
+            Executors.newCachedThreadPool(runnable -> {
+                Thread thread = new Thread(runnable, "CaltopoRecordingCatalogLookup");
                 thread.setDaemon(true);
                 return thread;
             });
@@ -251,7 +259,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
 
     public void startNewTrack(double lat, double lng, double ele, long droneTimestampInMsec) {
         final String label = droneSpec.trackLabel();
-        CaltopoRecoveryWork.offMain(() -> startNewTrackOnWorker(lat, lng, ele, droneTimestampInMsec, label));
+        CaltopoRecoveryWork.offMainStart(() -> startNewTrackOnWorker(lat, lng, ele, droneTimestampInMsec, label));
     }
 
     private synchronized void startNewTrackOnWorker(double lat, double lng, double ele, long droneTimestampInMsec, String label) {
@@ -318,7 +326,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             case up: {
                 folderId = CaltopoMap.GetFolderId();
                 // Ownership may already be true when the map becomes (or stays) up.
-                CaltopoRecoveryWork.offMain(this::ensureLiveTrackStarted);
+                CaltopoRecoveryWork.offMainStart(this::ensureLiveTrackStarted);
                 break;
             }
             case down: {
@@ -348,27 +356,45 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
 
     @Nullable
     private String capturedVideoUrl(@NonNull CtDroneSpec droneSpec) {
-        if (R2CApplication.getAppCtxt() == null) return null;
-        String[] candidates = new String[] {
+        return capturedVideoUrl(
                 droneSpec.getMappedId(),
                 droneSpec.getRemoteId(),
-                segmentTrackLabel.split("_", 2)[0]
-        };
-        ManagedVideoSessionRecording recording = ManagedVideoSessionRecordingCatalog.findForTrack(
-                R2CApplication.getAppCtxt(),
+                segmentTrackLabel.split("_", 2)[0],
                 trackObservedStartedAtMs,
-                trackObservedEndedAtMs,
-                candidates
-        );
-        String sessionId = recording != null
-                ? recording.getSessionId()
-                : ManagedVideoStreamPresence.matchingLiveSessionId(candidates);
-        if (sessionId == null) return null;
-        return TrackerTabletLink.recordingShortUrl(
-                CaltopoClient.GetTrackerCoordinationUrlPfx(),
-                R2CActivity.MyDeviceName,
-                sessionId
-        );
+                trackObservedEndedAtMs);
+    }
+
+    /** Catalog / MediaMetadataRetriever can hang on incomplete MediaMTX files; bound the wait. */
+    @Nullable
+    private static String capturedVideoUrl(
+            @NonNull String mappedId,
+            @NonNull String remoteId,
+            @NonNull String labelPrefix,
+            long trackStartedAtMs,
+            long trackEndedAtMs) {
+        if (R2CApplication.getAppCtxt() == null) return null;
+        String[] candidates = new String[] { mappedId, remoteId, labelPrefix };
+        try {
+            java.util.concurrent.Future<ManagedVideoSessionRecording> lookup =
+                    CatalogLookupExecutor.submit(() -> ManagedVideoSessionRecordingCatalog.findForTrack(
+                            R2CApplication.getAppCtxt(),
+                            trackStartedAtMs,
+                            trackEndedAtMs,
+                            candidates));
+            ManagedVideoSessionRecording recording = lookup.get(5, TimeUnit.SECONDS);
+            String sessionId = recording != null
+                    ? recording.getSessionId()
+                    : ManagedVideoStreamPresence.matchingLiveSessionId(candidates);
+            if (sessionId == null) return null;
+            return TrackerTabletLink.recordingShortUrl(
+                    CaltopoClient.GetTrackerCoordinationUrlPfx(),
+                    R2CActivity.MyDeviceName,
+                    sessionId
+            );
+        } catch (Exception error) {
+            CTWarn(TAG, "capturedVideoUrl timed out or failed; deferring video link", error);
+            return null;
+        }
     }
 
     private static void scheduleDeferredVideoDescriptionUpdate(
@@ -514,7 +540,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         OwnershipRequest request = new OwnershipRequest(isOwner);
         ownershipRequest.set(request);
         // ownershipRequest already gates ownsPublication(); no monitor needed for readers.
-        CaltopoRecoveryWork.offMain(() -> setLocalOwnerOnWorker(request));
+        CaltopoRecoveryWork.offMainStart(() -> setLocalOwnerOnWorker(request));
     }
 
     private synchronized void setLocalOwnerOnWorker(OwnershipRequest request) {
@@ -597,7 +623,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         // Journal-only fallback used after DisconnectAfterFinishingOwned already tried
         // the live archive, or when teardown cannot wait on the network. Reconnect
         // recovery converts the LiveTrack exactly once.
-        CaltopoRecoveryWork.offMain(() -> shutdownOnWorker(destinationMap));
+        CaltopoRecoveryWork.offMainArchive(() -> shutdownOnWorker(destinationMap));
     }
 
     /**
@@ -680,7 +706,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             try {
                 runtime.getCalTopoSessionGateway().deleteLiveTrackOnMap(
                         work.orphanDeleteMap, work.orphanDeleteId,
-                        deleteOp -> CaltopoRecoveryWork.offMain(() -> {
+                        deleteOp -> CaltopoRecoveryWork.offMainArchive(() -> {
                             if (deleteOp.success()) {
                                 CaltopoInterruptedTrackJournal.remove(work.orphanDeleteId);
                             }
@@ -708,7 +734,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             try {
                 runtime.getCalTopoSessionGateway().deleteLiveTrackOnMap(
                         work.orphanDeleteMap, work.orphanDeleteId,
-                        deleteOp -> CaltopoRecoveryWork.offMain(() -> {
+                        deleteOp -> CaltopoRecoveryWork.offMainArchive(() -> {
                             if (deleteOp.success()) {
                                 CaltopoInterruptedTrackJournal.remove(work.orphanDeleteId);
                             }
@@ -890,7 +916,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     public void archiveTrackOnCaltopo(long maxWaitInMilliseconds) {
         final String destinationMap = CaltopoMap.GetMapId();
         final String destinationFolder = CaltopoMap.GetArchiveFolderId();
-        CaltopoRecoveryWork.offMain(() -> archiveTrackOnWorker(maxWaitInMilliseconds, destinationMap, destinationFolder));
+        CaltopoRecoveryWork.offMainArchive(() -> archiveTrackOnWorker(maxWaitInMilliseconds, destinationMap, destinationFolder));
     }
 
     private void archiveTrackOnWorker(long maxWaitInMilliseconds, String destinationMap, String destinationFolder) {
@@ -1019,7 +1045,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             try {
                 runtime.getCalTopoSessionGateway().deleteLiveTrackOnMap(
                         work.orphanDeleteMap, work.orphanDeleteId,
-                        deleteOp -> CaltopoRecoveryWork.offMain(() -> {
+                        deleteOp -> CaltopoRecoveryWork.offMainArchive(() -> {
                             if (deleteOp.success()) {
                                 CaltopoInterruptedTrackJournal.remove(work.orphanDeleteId);
                             }
@@ -1035,36 +1061,15 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                 || destinationFolder == null || destinationFolder.isEmpty()) {
             return;
         }
-        // Recording catalog / MediaMetadataRetriever scan stays off the track monitor.
-        String capturedVideoUrl = capturedVideoUrl(droneSpec);
-        String archiveDescription = buildArchiveDescription(droneSpec, capturedVideoUrl);
+        // Never scan the recording catalog / MediaMetadataRetriever / OperationalStorage
+        // prepare on the archive lane — that stalled Mn4Pr finish for minutes and blocked the
+        // next flight's LiveTrack start when start shared the same single worker. Video links
+        // attach asynchronously after the Shape POST.
+        String archiveDescription = "";
         JSONObject feature = work.feature;
-        try {
-            JSONObject properties = feature.optJSONObject("properties");
-            if (properties == null) {
-                properties = new JSONObject();
-                feature.put("properties", properties);
-            }
-            if (!archiveDescription.isEmpty()) {
-                properties.put("description", archiveDescription);
-            }
-        } catch (JSONException e) {
-            CTError(TAG, "archiveTrackCaltopo() JSONObject.put() raised - for no apparent reason."
-                    + " (" + e.getClass().getSimpleName() + ")");
-        }
         if (work.journalSnapshot != null) {
             try {
-                JournalSnapshot snapshot = archiveDescription.isEmpty()
-                        ? work.journalSnapshot
-                        : new JournalSnapshot(
-                                work.journalSnapshot.revision,
-                                work.journalSnapshot.mapId,
-                                work.journalSnapshot.remoteId,
-                                work.journalSnapshot.trackId,
-                                work.journalSnapshot.label,
-                                archiveDescription,
-                                work.journalSnapshot.points);
-                saveJournalSnapshot(snapshot);
+                saveJournalSnapshot(work.journalSnapshot);
             } catch (Exception e) {
                 CTError(TAG, String.format(Locale.US, "archiveTrackOnCaltopo(%s) journal persist failed:",
                         work.trackLabel), e);
@@ -1076,13 +1081,21 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         final long archivedTrackStartedAtMs = work.trackStartedAtMs;
         final long archivedTrackEndedAtMs = work.trackEndedAtMs;
         final String[] archivedTrackCandidates = work.trackCandidates;
+        // Shape POST stays asynchronous on the session pool. Bound only when the caller
+        // requests a wait (disconnect); finishTrack must return so NotifyLocalTrackFinished
+        // and the next archive job are not stuck behind a hung CalTopo edit.
+        long archiveWaitMs = maxWaitInMilliseconds > 0
+                ? Math.min(maxWaitInMilliseconds, ARCHIVE_NETWORK_TIMEOUT_MS)
+                : 0L;
+        CountDownLatch archiveDone = archiveWaitMs > 0 ? new CountDownLatch(1) : null;
         CaltopoMap.ArchiveFeatureOnMap(
                 feature,
                 "LiveTrack",
                 System.currentTimeMillis(),
-                maxWaitInMilliseconds,
+                0L,
                 destinationMap, destinationFolder, runtime,
-                success -> CaltopoRecoveryWork.offMain(() -> {
+                success -> CaltopoRecoveryWork.offMainArchive(() -> {
+                    if (archiveDone != null) archiveDone.countDown();
                     if (!success) return;
                     CaltopoInterruptedTrackJournal.remove(archivedLiveTrackId);
                     AwaitingMapFlights.published(archivedLiveTrackId);
@@ -1096,6 +1109,19 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                         );
                     }
                 }));
+        if (archiveDone != null) {
+            try {
+                if (!archiveDone.await(archiveWaitMs, TimeUnit.MILLISECONDS)) {
+                    CTWarn(TAG, String.format(Locale.US,
+                            "archiveTrackOnCaltopo(%s): Shape POST timed out after %dms; interrupted journal retained",
+                            work.trackLabel, archiveWaitMs));
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                CTWarn(TAG, String.format(Locale.US,
+                        "archiveTrackOnCaltopo(%s): interrupted waiting for Shape POST", work.trackLabel));
+            }
+        }
     }
 
     private synchronized void resetLiveTrack() {
@@ -1148,7 +1174,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
 
     public void renameTrack() {
         final String label = droneSpec.trackLabel();
-        CaltopoRecoveryWork.offMain(() -> renameTrackOnWorker(label));
+        CaltopoRecoveryWork.offMainStart(() -> renameTrackOnWorker(label));
     }
 
     private void renameTrackOnWorker(String label) {
@@ -1205,7 +1231,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         if (request != null) {
             // Always queue: callers may still hold the track monitor (queueWaypoint) or be
             // on the recovery worker where offMain would run inline under that monitor.
-            CaltopoRecoveryWork.execute(() -> startLiveTrackAfterPersist(request));
+            CaltopoRecoveryWork.executeStart(() -> startLiveTrackAfterPersist(request));
         }
     }
 
@@ -1300,7 +1326,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         try {
             CaltopoOp op = runtime.getCalTopoSessionGateway()
                     .startLiveTrack(requestedId, myRemoteId, trackLabel, folderId,
-                            null, null, completed -> CaltopoRecoveryWork.offMain(() -> {
+                            null, null, completed -> CaltopoRecoveryWork.offMainStart(() -> {
                                 synchronized (CaltopoLiveTrack.this) {
                                     if (generation != publicationGeneration || !requestedId.equals(requestedLiveTrackId)) return;
                                     startLiveTrackComplete(completed);
@@ -1347,7 +1373,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     public void finishTrack(@NonNull String reason) {
         final String destinationMap = CaltopoMap.GetMapId();
         final String destinationFolder = CaltopoMap.GetArchiveFolderId();
-        CaltopoRecoveryWork.offMain(() -> finishTrackOnWorker(reason, destinationMap, destinationFolder));
+        CaltopoRecoveryWork.offMainArchive(() -> finishTrackOnWorker(reason, destinationMap, destinationFolder));
     }
 
     private void finishTrackOnWorker(@NonNull String reason, String destinationMap, String destinationFolder) {
@@ -1500,7 +1526,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     }
 
     public void publishDirect(double lat, double lng, long altitudeInMeters, long droneTimestampInMillisec) {
-        CaltopoRecoveryWork.offMain(() -> publishDirectOnWorker(lat, lng, altitudeInMeters, droneTimestampInMillisec));
+        CaltopoRecoveryWork.offMainStart(() -> publishDirectOnWorker(lat, lng, altitudeInMeters, droneTimestampInMillisec));
     }
 
     private void publishDirectOnWorker(double lat, double lng, long altitudeInMeters, long droneTimestampInMillisec) {
@@ -1525,7 +1551,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             double altitudeMeters,
             long timestampMsec,
             @Nullable CtDroneSpec.PositionTelemetry telemetry) {
-        CaltopoRecoveryWork.offMain(() -> onPeerWaypointOnWorker(sourceZoneId, lat, lng, altitudeMeters, timestampMsec, telemetry));
+        CaltopoRecoveryWork.offMainStart(() -> onPeerWaypointOnWorker(sourceZoneId, lat, lng, altitudeMeters, timestampMsec, telemetry));
     }
 
     private void onPeerWaypointOnWorker(String sourceZoneId, double lat, double lng, double altitudeMeters,
@@ -1685,7 +1711,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
      *  Pull waypoints off the queue and forward to Caltopo
      */
     public void forwardNextWaypoints(@Nullable CaltopoOp lastOp) {
-        CaltopoRecoveryWork.offMain(() -> forwardNextWaypointsOnWorker(lastOp));
+        CaltopoRecoveryWork.offMainStart(() -> forwardNextWaypointsOnWorker(lastOp));
     }
 
     private void forwardNextWaypointsOnWorker(@Nullable CaltopoOp lastOp) {
@@ -1754,7 +1780,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             runtime.getCalTopoSessionGateway()
                     .addLiveTrackPoint(myRemoteId, pointToSend.lat, pointToSend.lng, pointToSend.ele,
                             pointToSend.telemetry, cameraMetadata,
-                            op -> CaltopoRecoveryWork.offMain(() -> {
+                            op -> CaltopoRecoveryWork.offMainStart(() -> {
                                 if (generation == publicationGeneration) forwardNextWaypoints(op);
                             }));
         } catch (Exception e) {

@@ -77,7 +77,8 @@ class CaltopoLiveTrackTest {
 
     @After
     fun tearDown() {
-        CaltopoRecoveryWork.worker.submit {}.get(3, java.util.concurrent.TimeUnit.SECONDS)
+        CaltopoRecoveryWork.startWorker.submit {}.get(3, java.util.concurrent.TimeUnit.SECONDS)
+        CaltopoRecoveryWork.archiveWorker.submit {}.get(3, java.util.concurrent.TimeUnit.SECONDS)
         mapNodeField.set(null, previousMapNode)
         CaltopoMap::class.java.getDeclaredField("CurrentRuntime").apply { isAccessible = true; set(null, previousRuntime) }
         CaltopoInterruptedTrackJournal.setFileForTesting(null)
@@ -101,7 +102,10 @@ class CaltopoLiveTrackTest {
     }
 
     private fun drainRecovery() {
-        repeat(3) { CaltopoRecoveryWork.worker.submit {}.get(3, TimeUnit.SECONDS) }
+        repeat(3) {
+            CaltopoRecoveryWork.startWorker.submit {}.get(3, TimeUnit.SECONDS)
+            CaltopoRecoveryWork.archiveWorker.submit {}.get(3, TimeUnit.SECONDS)
+        }
     }
 
     private fun startingTrack(): CaltopoLiveTrack {
