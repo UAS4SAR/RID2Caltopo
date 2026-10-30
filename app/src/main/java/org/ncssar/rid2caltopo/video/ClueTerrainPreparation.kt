@@ -3,6 +3,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.ncssar.rid2caltopo.video.mapcache.DemElevationSample
 
+/** Retained for log/catch sites; Submit no longer throws this for missing DEM. */
 internal class ClueTerrainUnavailable(message: String) : IllegalStateException(message)
 
 internal const val FLAT_SURFACE_LOCATION_NOTE =
@@ -60,20 +61,16 @@ internal suspend fun refineCapturedClueTerrain(
 }
 
 /**
- * Optional refinement. Submit does not call this: a slow GeoTIFF sample must not
- * delay the marker POST. The form preview may still refine in the background.
+ * Optional bounded refinement for callers that still want a best-effort DEM pass.
+ * Submit does not call this: a slow or missing GeoTIFF sample must not delay the marker POST.
+ * Without DEM, returns the flat-ground projection with terrainProjectionApplied=false.
  */
 internal suspend fun prepareClueTerrainForSave(
     clue: PendingClue,
     timeoutMillis: Long = 30_000L,
     sampleElevation: suspend (Double, Double) -> DemElevationSample?,
 ): PendingClue {
-    val prepared = if (clue.terrainProjectionApplied && !clue.demSampleStale) clue else {
-        withTimeoutOrNull(timeoutMillis) { refineCapturedClueTerrain(clue, sampleElevation) }
-            ?: throw ClueTerrainUnavailable("Terrain lookup timed out. Your clue is still open; try saving again.")
-    }
-    if (!prepared.terrainProjectionApplied || prepared.demSampleStale) {
-        throw ClueTerrainUnavailable("Terrain for this camera view is unavailable. Download the terrain for this area and try saving again.")
-    }
-    return prepared
+    if (clue.terrainProjectionApplied && !clue.demSampleStale) return clue
+    return withTimeoutOrNull(timeoutMillis) { refineCapturedClueTerrain(clue, sampleElevation) }
+        ?: clue.copy(terrainProjectionApplied = false, demSource = null, demSampleStale = false)
 }

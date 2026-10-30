@@ -36,6 +36,9 @@ actor AppleTerrainElevationService {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         localDEM = GeoTiffElevationSource(directory: support.appendingPathComponent("RID2Caltopo/DEM", isDirectory: true))
+        // Altitude / AOL / clue projection must not wait for a map view to open.
+        let dem = localDEM
+        Task.detached(priority: .utility) { dem.warmCatalog() }
     }
 
     func sample(latitude: Double, longitude: Double) async -> OperationalTerrainSample? {
@@ -50,6 +53,7 @@ actor AppleTerrainElevationService {
         let key = OperationalAltitudeCoordinator.terrainCacheKey(coordinate)
         prefetch(latitude: latitude, longitude: longitude)
         let localDEM = self.localDEM
+        // Catalog-not-ready returns nil immediately; EPQS / point cache still apply.
         if let localSample = await Task.detached(priority: .utility, operation: {
             localDEM.sample(latitude: latitude, longitude: longitude)
         }).value {

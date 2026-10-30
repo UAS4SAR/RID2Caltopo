@@ -83,11 +83,16 @@ internal class DemElevationService(context: Context) {
         // pixels and has its own decoded-block cache, so this is both cheap and spatially smooth.
         // The point cache retains approximately one-metre keys so EPQS can expose its
         // best-available 3DEP source resolution.
+        // Catalog warm is independent of SplitMapPane. GeoTiffDemSource.sample returns null
+        // immediately while the catalog is loading and schedules a background refresh.
         val sampleStartedAt = android.os.SystemClock.elapsedRealtime()
         val localTiff = terrainReads.read { checkCancelled -> localGeoTiff.sample(lat, lng, checkCancelled) }
         val sampleElapsedMs = android.os.SystemClock.elapsedRealtime() - sampleStartedAt
         if (sampleElapsedMs >= 1_000L) {
             MapCacheDebug.warn(MapCacheDebug.TAG_DEM, "dem sample slow elapsedMs=$sampleElapsedMs key=$key")
+        }
+        if (localTiff == null && !localGeoTiff.isCatalogReady()) {
+            MapCacheDebug.log("dem local-geotiff-catalog-not-ready key=$key")
         }
         if (localTiff != null && localTiff.elevationMeters.isFinite() && localTiff.elevationMeters >= -500.0 && localTiff.elevationMeters <= 10_000.0) {
             val sample = DemElevationSample(
@@ -156,7 +161,18 @@ internal class DemElevationService(context: Context) {
         cache.prewarm()
     }
 
-    /** Force GeoTiffDemSource to reload its tile catalog from disk on the next query. */
+    /**
+     * Open the dem_point index and scan local GeoTIFF tiles without opening SplitMapPane.
+     * Safe on a background worker; altitude and clue projection depend on this completing.
+     */
+    fun warmCatalogAndIndex() {
+        cache.prewarm()
+        localGeoTiff.warmCatalog()
+    }
+
+    fun isGeoTiffCatalogReady(): Boolean = localGeoTiff.isCatalogReady()
+
+    /** Force GeoTiffDemSource to rebuild its tile catalog from disk on a background worker. */
     fun refreshGeoTiffCatalog() {
         localGeoTiff.invalidateCatalog()
     }

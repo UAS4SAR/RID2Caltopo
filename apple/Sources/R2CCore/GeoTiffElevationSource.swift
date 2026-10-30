@@ -57,6 +57,8 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
     private let lock = NSLock()
     private var tiles: [Tile] = []
     private var catalogDate = Date.distantPast
+    private var catalogReady = false
+    private var catalogWarmInFlight = false
     private var metadataCache: [URL: Metadata] = [:]
     private var fileCache: [URL: Data] = [:]
     private var blockCache: [String: Data] = [:]
@@ -66,11 +68,19 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
 
     public init(directory: URL) { self.directory = directory }
 
+    public var isCatalogReady: Bool { lock.r2cWithLock { catalogReady } }
+
+    /// Scan the DEM directory without waiting for a map view. Catalog I/O never holds [lock].
+    public func warmCatalog() {
+        refreshCatalogFromDisk()
+    }
+
     public func invalidateCatalog() {
         lock.r2cWithLock {
             catalogDate = .distantPast
             coarseTileURLs.removeAll()
         }
+        scheduleWarmCatalog()
     }
 
     public func sampleElevationMeters(latitude: Double, longitude: Double) -> Double? {
@@ -85,30 +95,52 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
         maximumHorizontalResolutionMeters: Double = .infinity
     ) -> Sample? {
         guard latitude.isFinite, longitude.isFinite else { return nil }
-        return lock.r2cWithLock {
-            refreshCatalog()
-            var best: Sample?
-            for tile in tiles where tile.bounds?.contains(latitude: latitude, longitude: longitude) != false {
-                if maximumHorizontalResolutionMeters.isFinite, coarseTileURLs.contains(tile.url) { continue }
-                guard let data = loadFile(tile.url), let metadata = loadMetadata(tile.url, data: data) else { continue }
-                let resolution = metadata.horizontalResolutionMeters(latitude: latitude)
-                if resolution > maximumHorizontalResolutionMeters {
-                    if maximumHorizontalResolutionMeters.isFinite {
-                        coarseTileURLs.insert(tile.url)
-                        fileCache.removeValue(forKey: tile.url)
-                    }
-                    continue
+        let snapshot: [Tile]
+        let ready: Bool
+        let needsRefresh: Bool
+        lock.lock()
+        ready = catalogReady
+        needsRefresh = Date().timeIntervalSince(catalogDate) >= 60 || tiles.isEmpty
+        snapshot = tiles
+        lock.unlock()
+        if !ready {
+            scheduleWarmCatalog()
+            return nil
+        }
+        if needsRefresh { scheduleWarmCatalog() }
+
+        var best: Sample?
+        var newlyCoarse: [URL] = []
+        for tile in snapshot where tile.bounds?.contains(latitude: latitude, longitude: longitude) != false {
+            let skipCoarse = lock.r2cWithLock { coarseTileURLs.contains(tile.url) }
+            if maximumHorizontalResolutionMeters.isFinite, skipCoarse { continue }
+            guard let data = loadFileUnlocked(tile.url),
+                  let metadata = loadMetadataUnlocked(tile.url, data: data)
+            else { continue }
+            let resolution = metadata.horizontalResolutionMeters(latitude: latitude)
+            if resolution > maximumHorizontalResolutionMeters {
+                if maximumHorizontalResolutionMeters.isFinite {
+                    newlyCoarse.append(tile.url)
                 }
-                guard let value = sample(tile: tile, data: data, metadata: metadata, latitude: latitude, longitude: longitude),
-                      value.isFinite, (-500 ... 10_000).contains(value)
-                else { continue }
-                let candidate = Sample(elevationMeters: value, horizontalResolutionMeters: resolution)
-                if best == nil || candidate.horizontalResolutionMeters < best!.horizontalResolutionMeters {
-                    best = candidate
+                continue
+            }
+            guard let value = sample(tile: tile, data: data, metadata: metadata, latitude: latitude, longitude: longitude),
+                  value.isFinite, (-500 ... 10_000).contains(value)
+            else { continue }
+            let candidate = Sample(elevationMeters: value, horizontalResolutionMeters: resolution)
+            if best == nil || candidate.horizontalResolutionMeters < best!.horizontalResolutionMeters {
+                best = candidate
+            }
+        }
+        if !newlyCoarse.isEmpty {
+            lock.r2cWithLock {
+                for url in newlyCoarse {
+                    coarseTileURLs.insert(url)
+                    fileCache.removeValue(forKey: url)
                 }
             }
-            return best
         }
+        return best
     }
 
     public static func tileBounds(fileName: String) -> (south: Double, north: Double, west: Double, east: Double)? {
@@ -199,31 +231,55 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
         return (radius * sin(theta), rho(phi0) - radius * cos(theta))
     }
 
-    private func refreshCatalog() {
-        guard Date().timeIntervalSince(catalogDate) >= 60 || tiles.isEmpty else { return }
-        catalogDate = Date()
+    private func scheduleWarmCatalog() {
+        let shouldStart = lock.r2cWithLock { () -> Bool in
+            guard !catalogWarmInFlight else { return false }
+            catalogWarmInFlight = true
+            return true
+        }
+        guard shouldStart else { return }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            self?.refreshCatalogFromDisk()
+            guard let self else { return }
+            let again = self.lock.r2cWithLock { () -> Bool in
+                self.catalogWarmInFlight = false
+                return Date().timeIntervalSince(self.catalogDate) >= 60 || !self.catalogReady
+            }
+            if again { self.scheduleWarmCatalog() }
+        }
+    }
+
+    /// Directory listing happens with no lock held.
+    private func refreshCatalogFromDisk() {
         let urls = (try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]
         )) ?? []
-        tiles = urls.filter { ["tif", "tiff"].contains($0.pathExtension.lowercased()) }.map { url in
+        let built = urls.filter { ["tif", "tiff"].contains($0.pathExtension.lowercased()) }.map { url in
             let value = Self.tileBounds(fileName: url.lastPathComponent)
             return Tile(url: url, bounds: value.map { Bounds(
                 minLatitude: $0.south, maxLatitude: $0.north,
                 minLongitude: $0.west, maxLongitude: $0.east
             ) })
         }
+        lock.r2cWithLock {
+            tiles = built
+            catalogDate = Date()
+            catalogReady = true
+        }
     }
 
-    private func loadFile(_ url: URL) -> Data? {
-        if let value = fileCache[url] { return value }
+    private func loadFileUnlocked(_ url: URL) -> Data? {
+        if let value = lock.r2cWithLock({ fileCache[url] }) { return value }
         guard let value = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
-        if fileCache.count >= 2, let key = fileCache.keys.first { fileCache.removeValue(forKey: key) }
-        fileCache[url] = value
+        lock.r2cWithLock {
+            if fileCache.count >= 2, let key = fileCache.keys.first { fileCache.removeValue(forKey: key) }
+            fileCache[url] = value
+        }
         return value
     }
 
-    private func loadMetadata(_ url: URL, data: Data) -> Metadata? {
-        if let value = metadataCache[url] { return value }
+    private func loadMetadataUnlocked(_ url: URL, data: Data) -> Metadata? {
+        if let value = lock.r2cWithLock({ metadataCache[url] }) { return value }
         guard data.count >= 8 else { return nil }
         let endian: Endian
         if data[0] == 0x49, data[1] == 0x49 { endian = .little }
@@ -282,7 +338,7 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
         guard width > 0, height > 0, metadata.scaleX != 0, metadata.scaleY != 0,
               !metadata.offsets.isEmpty, metadata.offsets.count == metadata.byteCounts.count
         else { return nil }
-        metadataCache[url] = metadata
+        lock.r2cWithLock { metadataCache[url] = metadata }
         return metadata
     }
 
@@ -323,17 +379,25 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
         }
         guard metadata.offsets.indices.contains(blockIndex), metadata.byteCounts.indices.contains(blockIndex) else { return nil }
         let cacheKey = "\(tile.url.path)|\(blockIndex)"
-        let block: Data
-        if let cached = blockCache[cacheKey] { block = cached }
-        else {
-            let offset = metadata.offsets[blockIndex], count = metadata.byteCounts[blockIndex]
-            guard offset >= 0, count > 0, offset <= data.count, count <= data.count - offset else { return nil }
-            let raw = data.subdata(in: offset ..< offset + count)
-            guard let decoded = decodeBlock(raw, metadata: metadata, width: blockWidth, height: blockHeight) else { return nil }
-            block = decoded
+        if let cached = lock.r2cWithLock({ blockCache[cacheKey] }) {
+            return extractSample(block: cached, metadata: metadata, blockWidth: blockWidth,
+                                 localColumn: localColumn, localRow: localRow)
+        }
+        let offset = metadata.offsets[blockIndex], count = metadata.byteCounts[blockIndex]
+        guard offset >= 0, count > 0, offset <= data.count, count <= data.count - offset else { return nil }
+        let raw = data.subdata(in: offset ..< offset + count)
+        guard let decoded = decodeBlock(raw, metadata: metadata, width: blockWidth, height: blockHeight) else { return nil }
+        lock.r2cWithLock {
             blockCache[cacheKey] = decoded; blockOrder.append(cacheKey)
             if blockOrder.count > 8 { blockCache.removeValue(forKey: blockOrder.removeFirst()) }
         }
+        return extractSample(block: decoded, metadata: metadata, blockWidth: blockWidth,
+                             localColumn: localColumn, localRow: localRow)
+    }
+
+    private func extractSample(
+        block: Data, metadata: Metadata, blockWidth: Int, localColumn: Int, localRow: Int
+    ) -> Double? {
         let bytesPerSample = metadata.bitsPerSample / 8
         let offset = ((localRow * blockWidth) + localColumn) * bytesPerSample * metadata.samplesPerPixel
         guard bytesPerSample > 0, offset + bytesPerSample <= block.count else { return nil }

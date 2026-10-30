@@ -1439,6 +1439,7 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
     #expect(bounds.south == 39 && bounds.north == 40)
     #expect(bounds.west == -105 && bounds.east == -104)
     let source = GeoTiffElevationSource(directory: directory)
+    source.warmCatalog()
     #expect(abs((source.sampleElevationMeters(latitude: 39.5, longitude: -104.5) ?? 0) - 250) < 0.001)
     #expect(source.sampleElevationMeters(latitude: 38, longitude: -104.5) == nil)
 }
@@ -1452,8 +1453,21 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
     try makeLZWFloatPredictorGeoTiff().write(to: tile)
 
     let source = GeoTiffElevationSource(directory: directory)
+    source.warmCatalog()
     let elevation = try #require(source.sampleElevationMeters(latitude: 39.5, longitude: -104.5))
     #expect(abs(elevation - 250) < 0.001)
+}
+
+@Test func geoTiffSampleWhileCatalogNotReadyReturnsImmediately() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("r2c-dem-not-ready-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let source = GeoTiffElevationSource(directory: directory)
+    #expect(!source.isCatalogReady)
+    let started = Date()
+    #expect(source.sample(latitude: 39.5, longitude: -104.5) == nil)
+    #expect(Date().timeIntervalSince(started) < 0.5)
 }
 
 @Test func operationalFacilityMapMatchesAndroidQueryParserAndPolicy() throws {

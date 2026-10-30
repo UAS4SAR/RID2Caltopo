@@ -35,9 +35,17 @@ internal class GeoTiffDemSource(context: Context) {
     private val appContext = context.applicationContext
     private val lock = Any()
     @Volatile private var catalogRefreshedAtMs: Long = 0L
+    @Volatile private var catalogReady = false
     private val catalogInvalidations = java.util.concurrent.atomic.AtomicLong()
     private var catalogInvalidationLoaded = -1L
     private var tiles: List<DemTile> = emptyList()
+    private val catalogWarmExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { work ->
+        Thread({
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            work.run()
+        }, "DEM-GeoTIFF-catalog").apply { isDaemon = true }
+    }
+    private val catalogWarmInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
     private val metadataCache = object : LinkedHashMap<String, GeoTiffMetadata>(8, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, GeoTiffMetadata>?): Boolean {
             return size > 128
@@ -61,9 +69,21 @@ internal class GeoTiffDemSource(context: Context) {
     /** Eviction only cares that a tile was used in the last minute, so once per half-minute is enough. */
     private val terrainTouchAtMs = HashMap<String, Long>()
 
-    /** Force the next call to [sampleElevationMeters] to rebuild the tile catalog from disk. */
+    /** True after at least one catalog scan has published tiles (possibly empty). */
+    fun isCatalogReady(): Boolean = catalogReady
+
+    /**
+     * Scan Archive Dir for GeoTIFF tiles on a worker. Safe to call before SplitMapPane opens.
+     * Never holds [lock] across SAF listing.
+     */
+    fun warmCatalog() {
+        refreshCatalogFromDisk()
+    }
+
+    /** Force a background rebuild of the tile catalog; existing tiles stay queryable until replaced. */
     fun invalidateCatalog() {
         catalogInvalidations.incrementAndGet()
+        scheduleWarmCatalog()
     }
 
     fun sampleElevationMeters(lat: Double, lng: Double): Double? {
@@ -89,10 +109,16 @@ internal class GeoTiffDemSource(context: Context) {
     private fun sample(lat: Double, lng: Double, sources: MutableMap<String, RandomAccessDataSource?>?,
                        logSamples: Boolean, maximumResolution: Double, checkCancelled: () -> Unit = {}): Sample? {
         checkCancelled()
-        org.ncssar.rid2caltopo.storage.OperationalStorage.requireFor(blockCacheDir)
+        // Never wait for OperationalStorage bulk prepare. Decoded-block writes retain later if ready.
         if (!lat.isFinite() || !lng.isFinite()) return null
         val candidates = synchronized(lock) {
-            refreshCatalogLocked()
+            if (!catalogReady) {
+                scheduleWarmCatalog()
+                return null
+            }
+            if (catalogNeedsRefreshLocked()) {
+                scheduleWarmCatalog()
+            }
             tiles.filter { tile -> tile.bounds?.contains(lat, lng) != false }
         }
         if (candidates.isEmpty()) return null
@@ -116,52 +142,68 @@ internal class GeoTiffDemSource(context: Context) {
     }
 
     private var budgetGeneration = -1L
-    private fun refreshCatalogLocked() {
+
+    private fun catalogNeedsRefreshLocked(): Boolean {
         val invalidation = catalogInvalidations.get()
-        if (catalogInvalidationLoaded != invalidation) {
-            catalogRefreshedAtMs = 0L
-            catalogInvalidationLoaded = invalidation
-        }
-        if (budgetGeneration != UnifiedMapCache.generation) {
-            catalogRefreshedAtMs = 0L
-            budgetGeneration = UnifiedMapCache.generation
-        }
+        if (catalogInvalidationLoaded != invalidation) return true
+        if (budgetGeneration != UnifiedMapCache.generation) return true
         val now = System.currentTimeMillis()
-        if (now - catalogRefreshedAtMs < 60_000L && tiles.isNotEmpty()) return
-        catalogRefreshedAtMs = now
+        return now - catalogRefreshedAtMs >= 60_000L
+    }
 
-        val archive = CaltopoClient.GetArchiveDir()
-        if (archive == null || !archive.isDirectory) {
-            tiles = emptyList()
-            return
-        }
-
-        val cacheDir = archive.findFile("cache")
-        val demDir = cacheDir?.findFile("dem")
-        val roots = mutableListOf<DocumentFile>()
-        if (demDir != null && demDir.isDirectory) roots += demDir
-        if (cacheDir != null && cacheDir.isDirectory) roots += cacheDir
-
-        val out = mutableListOf<DemTile>()
-        roots.forEach { root ->
-            root.listFiles().forEach { doc ->
-                if (!doc.isFile) return@forEach
-                val name = doc.name ?: return@forEach
-                if (!name.lowercase(Locale.US).endsWith(".tif") && !name.lowercase(Locale.US).endsWith(".tiff")) {
-                    return@forEach
-                }
-                out += DemTile(
-                    id = doc.uri.toString(),
-                    uri = doc.uri,
-                    displayName = name,
-                    bounds = boundsFromName(name)
-                )
+    private fun scheduleWarmCatalog() {
+        if (!catalogWarmInFlight.compareAndSet(false, true)) return
+        catalogWarmExecutor.execute {
+            try {
+                refreshCatalogFromDisk()
+            } finally {
+                catalogWarmInFlight.set(false)
+                // A concurrent invalidate may have arrived while we were scanning.
+                val needsAgain = synchronized(lock) { catalogNeedsRefreshLocked() || !catalogReady }
+                if (needsAgain) scheduleWarmCatalog()
             }
         }
+    }
 
-        tiles = out
+    /** SAF/listFiles happens here with no monitor held. */
+    private fun refreshCatalogFromDisk() {
+        val invalidation = catalogInvalidations.get()
+        val generation = UnifiedMapCache.generation
+        val archive = CaltopoClient.GetArchiveDir()
+        val out = mutableListOf<DemTile>()
+        if (archive != null && archive.isDirectory) {
+            val cacheDir = archive.findFile("cache")
+            val demDir = cacheDir?.findFile("dem")
+            val roots = mutableListOf<DocumentFile>()
+            if (demDir != null && demDir.isDirectory) roots += demDir
+            if (cacheDir != null && cacheDir.isDirectory) roots += cacheDir
+            roots.forEach { root ->
+                root.listFiles().forEach { doc ->
+                    if (!doc.isFile) return@forEach
+                    val name = doc.name ?: return@forEach
+                    if (!name.lowercase(Locale.US).endsWith(".tif") && !name.lowercase(Locale.US).endsWith(".tiff")) {
+                        return@forEach
+                    }
+                    out += DemTile(
+                        id = doc.uri.toString(),
+                        uri = doc.uri,
+                        displayName = name,
+                        bounds = boundsFromName(name)
+                    )
+                }
+            }
+        }
+        synchronized(lock) {
+            tiles = out
+            catalogRefreshedAtMs = System.currentTimeMillis()
+            catalogInvalidationLoaded = invalidation
+            budgetGeneration = generation
+            catalogReady = true
+        }
         if (out.isNotEmpty()) {
-            CTDebug("SplitMapPane", "DEM GeoTIFF catalog loaded tiles=${out.size}")
+            CTDebug(MapCacheDebug.TAG_DEM, "DEM GeoTIFF catalog loaded tiles=${out.size}")
+        } else {
+            CTDebug(MapCacheDebug.TAG_DEM, "DEM GeoTIFF catalog loaded tiles=0")
         }
     }
 
@@ -341,12 +383,17 @@ internal class GeoTiffDemSource(context: Context) {
         val decoded = decodeBlock(raw, metadata, blockWidth, blockHeight) ?: return null
 
         // Persist decoded block — future sessions skip the LZW+pred3 work entirely.
+        // App-private noBackup write must not wait for Archive Dir bulk hydration.
         try {
             bf.parentFile?.mkdirs()
-            UnifiedMapCache.reserve(appContext, decoded.size.toLong()).use {
+            if (org.ncssar.rid2caltopo.storage.OperationalStorage.ready()) {
+                UnifiedMapCache.reserve(appContext, decoded.size.toLong()).use {
+                    bf.writeBytes(decoded)
+                    org.ncssar.rid2caltopo.storage.OperationalStorage.retain(bf)
+                    UnifiedMapCache.remember(bf)
+                }
+            } else {
                 bf.writeBytes(decoded)
-                org.ncssar.rid2caltopo.storage.OperationalStorage.retain(bf)
-                UnifiedMapCache.remember(bf)
             }
             MapCacheDebug.warn(MapCacheDebug.TAG_DEM,
                 "dem block-saved $tileName #$blockIndex (${decoded.size}B)")
