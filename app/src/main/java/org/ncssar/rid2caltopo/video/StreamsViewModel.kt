@@ -2008,6 +2008,7 @@ class StreamsViewModel(
     override fun onCleared() {
         StreamRegistry.setAdmissionGuard(null)
         CaltopoMap.RemoveMapStatusListener(this)
+        CaltopoMap.setPendingClueFlushHandler(null)
         altitudeCoordinator.close()
         ffmpegProbeService?.close()
         streamSessionService.releaseAll()
@@ -4598,6 +4599,7 @@ class StreamsViewModel(
         defaultAnomalyConfig = AnomalyPrefs.sessionStartConfig()
         refreshConfiguredStreamBindings()
         CaltopoMap.AddMapStatusListener(this)
+        CaltopoMap.setPendingClueFlushHandler { retryPendingClues() }
         if (CaltopoMap.GetMapId().isNotBlank()) {
             restoreMapFolderVisibility(mapFolderVisibilityKey(
                 CaltopoClient.GetCaltopoDomainAndPort(), CaltopoMap.GetMapId()))

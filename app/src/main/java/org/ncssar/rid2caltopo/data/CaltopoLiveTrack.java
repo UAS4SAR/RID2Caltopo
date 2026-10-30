@@ -22,13 +22,17 @@ import org.ncssar.rid2caltopo.video.ffmpeg.StreamCameraTelemetrySample;
 
 import org.opendroneid.android.data.Util;
 
+import android.os.Looper;
+
 import java.util.Hashtable;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug;
 import static org.ncssar.rid2caltopo.data.CaltopoClient.CTError;
@@ -584,12 +588,35 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         // Capture the departing map before ResetMapConnection clears its fields.
         final String destinationMap = CaltopoMap.GetMapId();
         shuttingDown = true;
-        // Map teardown must not archive over the network on the recovery worker: a
-        // syncOp or video-catalog scan under the track lock can stall finishTrack,
-        // AwaitingMapFlights, and interrupted-track recovery until process death.
-        // Persist the durable checkpoint here; reconnect recovery (or a later
-        // finishTrack while the map is up) converts the LiveTrack exactly once.
+        // Journal-only fallback used after DisconnectAfterFinishingOwned already tried
+        // the live archive, or when teardown cannot wait on the network. Reconnect
+        // recovery converts the LiveTrack exactly once.
         CaltopoRecoveryWork.offMain(() -> shutdownOnWorker(destinationMap));
+    }
+
+    /**
+     * Finish an owned LiveTrack for map disconnect using the normal archive path
+     * (Shape to Drone Tracks + LiveTrack delete), with a bounded wait. On timeout or
+     * unreachable CalTopo, keep the interrupted journal for reconnect recovery.
+     * Does not end the physical flight. Must run off the main thread and must not
+     * hold the track monitor across network I/O.
+     */
+    public void finishOwnedPublicationForDisconnect(
+            long maxWaitMs, @Nullable String destinationMap, @Nullable String destinationFolder) {
+        Looper main = Looper.getMainLooper();
+        if (main != null && Looper.myLooper() == main) {
+            throw new IllegalStateException("finishOwnedPublicationForDisconnect must run off Main");
+        }
+        final DisconnectFinishWork work;
+        synchronized (this) {
+            work = prepareDisconnectFinishLocked(destinationMap);
+        }
+        applyDisconnectFinishWork(work, maxWaitMs, destinationMap, destinationFolder);
+    }
+
+    public synchronized boolean hasOwnedActivePublication() {
+        return active && ownsPublication()
+                && (liveTrackId != null || requestedLiveTrackId != null);
     }
 
     private static final class ShutdownWork {
@@ -600,6 +627,24 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         ShutdownWork(JournalSnapshot snapshot, String orphanDeleteId, String orphanDeleteMap,
                      boolean notifyPeer) {
             this.snapshot = snapshot;
+            this.orphanDeleteId = orphanDeleteId;
+            this.orphanDeleteMap = orphanDeleteMap;
+            this.notifyPeer = notifyPeer;
+        }
+    }
+
+    private static final class DisconnectFinishWork {
+        final JournalSnapshot snapshot;
+        final JSONObject feature;
+        final String archiveId;
+        final String orphanDeleteId;
+        final String orphanDeleteMap;
+        final boolean notifyPeer;
+        DisconnectFinishWork(JournalSnapshot snapshot, JSONObject feature, String archiveId,
+                             String orphanDeleteId, String orphanDeleteMap, boolean notifyPeer) {
+            this.snapshot = snapshot;
+            this.feature = feature;
+            this.archiveId = archiveId;
             this.orphanDeleteId = orphanDeleteId;
             this.orphanDeleteMap = orphanDeleteMap;
             this.notifyPeer = notifyPeer;
@@ -635,6 +680,131 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             }
         }
         if (work.notifyPeer) notifyPeerCoordinatorTrackEnded(true);
+    }
+
+    private void applyDisconnectFinishWork(
+            DisconnectFinishWork work, long maxWaitMs,
+            @Nullable String destinationMap, @Nullable String destinationFolder) {
+        if (work.snapshot != null) {
+            try {
+                saveJournalSnapshot(work.snapshot);
+            } catch (Exception e) {
+                CTError(TAG, String.format(Locale.US,
+                        "disconnect-finish(%s) journal persist failed:", work.snapshot.label), e);
+            }
+        }
+        if (work.orphanDeleteId != null) {
+            try {
+                runtime.getCalTopoSessionGateway().deleteLiveTrackOnMap(
+                        work.orphanDeleteMap, work.orphanDeleteId,
+                        deleteOp -> CaltopoRecoveryWork.offMain(() -> {
+                            if (deleteOp.success()) {
+                                CaltopoInterruptedTrackJournal.remove(work.orphanDeleteId);
+                            }
+                        }));
+            } catch (Exception e) {
+                CTError(TAG, "disconnect-finish(): deleteLiveTrackWithId() raised: "
+                        + " (" + e.getClass().getSimpleName() + ")");
+            }
+        }
+        if (work.feature != null && work.archiveId != null
+                && destinationMap != null && !destinationMap.isEmpty()
+                && destinationFolder != null && !destinationFolder.isEmpty()) {
+            final String archivedLiveTrackId = work.archiveId;
+            CountDownLatch done = new CountDownLatch(1);
+            AtomicBoolean archived = new AtomicBoolean(false);
+            try {
+                runtime.getCalTopoSessionGateway().cancelLiveTrackPoints(myRemoteId);
+                CaltopoMap.ArchiveFeatureOnMap(
+                        work.feature,
+                        "LiveTrack",
+                        System.currentTimeMillis(),
+                        0L,
+                        destinationMap, destinationFolder, runtime,
+                        success -> {
+                            archived.set(success);
+                            done.countDown();
+                        });
+                long waitMs = Math.max(0L, maxWaitMs);
+                if (!done.await(waitMs, TimeUnit.MILLISECONDS)) {
+                    CTWarn(TAG, String.format(Locale.US,
+                            "disconnect-finish(%s): archive timed out after %dms; journal retained",
+                            work.snapshot != null ? work.snapshot.label : archivedLiveTrackId, waitMs));
+                } else if (archived.get()) {
+                    // Clear the durable checkpoint only after the archive finished, on
+                    // this worker — not from a gateway callback that may hop to Main.
+                    CaltopoInterruptedTrackJournal.remove(archivedLiveTrackId);
+                    AwaitingMapFlights.published(archivedLiveTrackId);
+                } else {
+                    CTWarn(TAG, String.format(Locale.US,
+                            "disconnect-finish(%s): archive failed; journal retained",
+                            work.snapshot != null ? work.snapshot.label : archivedLiveTrackId));
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                CTWarn(TAG, "disconnect-finish(): interrupted; journal retained");
+            } catch (Exception e) {
+                CTError(TAG, "disconnect-finish(): archive raised", e);
+            }
+        }
+        if (work.notifyPeer) notifyPeerCoordinatorTrackEnded(true);
+    }
+
+    private DisconnectFinishWork prepareDisconnectFinishLocked(@Nullable String destinationMap) {
+        shuttingDown = true;
+        boolean wasActive = active;
+        String archiveId = liveTrackId != null ? liveTrackId : requestedLiveTrackId;
+        if (active && archiveId != null) {
+            CTDebug(TAG, String.format(Locale.US, "disconnect-finish. Terminating '%s'",
+                    droneSpec.trackLabel()));
+            if (liveTrackId != null) CaltopoMap.RemoveLiveTrack(liveTrackId);
+            if (!ownsPublication()) {
+                String map = publicationMapId != null ? publicationMapId : destinationMap;
+                localOwner = false;
+                clearLiveTrackState();
+                return new DisconnectFinishWork(null, null, null, archiveId, map, wasActive);
+            }
+            JournalSnapshot snapshot = journalSnapshot("");
+            JSONObject feature = buildArchiveFeatureLocked(archiveId);
+            localOwner = false;
+            clearLiveTrackState();
+            return new DisconnectFinishWork(snapshot, feature, archiveId, null, null, wasActive);
+        }
+        localOwner = false;
+        clearLiveTrackState();
+        return new DisconnectFinishWork(null, null, null, null, null, wasActive);
+    }
+
+    @Nullable
+    private JSONObject buildArchiveFeatureLocked(@NonNull String archiveId) {
+        int size = linePoints.size();
+        if (size == 0) return null;
+        JSONArray jsonArray = new JSONArray();
+        for (int i = 0; i < size; i++) {
+            QueuedPoint point = linePoints.get(i);
+            JSONArray pointArray = new JSONArray();
+            pointArray.put(String.format(Locale.US, "%.7f", point.lng));
+            pointArray.put(String.format(Locale.US, "%.7f", point.lat));
+            pointArray.put(String.format(Locale.US, "%f", point.ele));
+            jsonArray.put(pointArray);
+        }
+        JSONObject feature = new JSONObject();
+        JSONObject geometry = new JSONObject();
+        try {
+            feature.put("id", archiveId);
+            feature.put("type", "Feature");
+            geometry.put("coordinates", jsonArray);
+            geometry.put("type", "LineString");
+            feature.put("geometry", geometry);
+            JSONObject properties = new JSONObject();
+            properties.put("title", segmentTrackLabel);
+            properties.put("class", "LiveTrack");
+            feature.put("properties", properties);
+        } catch (JSONException e) {
+            CTError(TAG, "disconnect-finish feature build raised", e);
+            return null;
+        }
+        return feature;
     }
 
     private ShutdownWork prepareShutdownLocked(String destinationMap) {

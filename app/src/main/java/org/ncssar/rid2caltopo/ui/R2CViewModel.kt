@@ -94,6 +94,7 @@ sealed class OverlayState(val displayName: String) {
     object ConnectionSetup : OverlayState("ConnectionSetup") // Formerly showStandAlonePopup
     object RequestConfigFile : OverlayState("RequestConfigFile")
     object Connecting: OverlayState("Connecting")      // spinning icon.
+    data class Progress(val message: String) : OverlayState("Progress")
     object MapBrowser : OverlayState("MapBrowser")     // Formerly showMapBrowser
     object Management : OverlayState("Management")     // Formerly showConnectedOptions
     data class Error(val message: String) : OverlayState("Error") // Added for the error dialog
@@ -566,8 +567,15 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             }
 
             is UIEvent.DisconnectRequested -> {
-                overlay = OverlayState.None
-                CaltopoMap.OpenMap(null) // Java call to drop connection
+                val finishingOwned = CaltopoMap.hasOwnedActivePublications()
+                if (finishingOwned) {
+                    overlay = OverlayState.Progress("Finishing live track…")
+                } else {
+                    overlay = OverlayState.None
+                }
+                CaltopoMap.DisconnectAfterFinishingOwned(CaltopoMap.DISCONNECT_FINISH_TIMEOUT_MS) {
+                    if (overlay is OverlayState.Progress) overlay = OverlayState.None
+                }
                 // Note: connectionState will update via the MapStatusListener callback
             }
 

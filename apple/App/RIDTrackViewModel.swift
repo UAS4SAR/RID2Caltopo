@@ -885,17 +885,44 @@ final class RIDTrackViewModel: ObservableObject {
         publicationMapID = configuration.mapID
         publicationTeamID = configuration.publicationScope
         Task { [caltopoPublisher] in
-            await awaitingMapJournal.ready()
-            await refreshAwaitingMapState()
-            await caltopoPublisher.configure(
+            await self.applyCaltopoConfiguration(
                 configuration,
                 trackFolderName: trackFolderName,
-                deviceMarkerID: peerCoordinator?.localZoneID ?? ""
+                publisher: caltopoPublisher
             )
-            await self.queueCompletedDeferredFlights()
-            await MainActor.run {
-                if let marker = self.localDeviceMarker { self.publishLocalDeviceMarker(marker, force: true) }
-            }
+        }
+    }
+
+    /// Awaitable map configure/disconnect used by quit and Disconnect so owned LiveTracks
+    /// finish before the CalTopo client and tracker websocket are torn down.
+    func configureCaltopoAwaiting(
+        _ configuration: AppleCaltopoConfiguration,
+        trackFolderName: String = "Drone Tracks"
+    ) async {
+        publicationMapID = configuration.mapID
+        publicationTeamID = configuration.publicationScope
+        await applyCaltopoConfiguration(
+            configuration,
+            trackFolderName: trackFolderName,
+            publisher: caltopoPublisher
+        )
+    }
+
+    private func applyCaltopoConfiguration(
+        _ configuration: AppleCaltopoConfiguration,
+        trackFolderName: String,
+        publisher: AppleCaltopoPublisher
+    ) async {
+        await awaitingMapJournal.ready()
+        await refreshAwaitingMapState()
+        await publisher.configure(
+            configuration,
+            trackFolderName: trackFolderName,
+            deviceMarkerID: peerCoordinator?.localZoneID ?? ""
+        )
+        await queueCompletedDeferredFlights()
+        await MainActor.run {
+            if let marker = self.localDeviceMarker { self.publishLocalDeviceMarker(marker, force: true) }
         }
     }
 
@@ -1144,6 +1171,21 @@ final class RIDTrackViewModel: ObservableObject {
         thumbnailMetadataRefreshTasks.values.forEach { $0.cancel() }
         thumbnailMetadataRefreshTasks.removeAll()
         peerCoordinator?.setManagedVideoThumbnailUpdatedHandler(nil)
+
+        // Drop the CalTopo map first (finish owned LiveTracks, then close the client).
+        await configureCaltopoAwaiting(
+            AppleCaltopoConfiguration(
+                enabled: false,
+                domainAndPort: "",
+                mapID: "",
+                mapTitle: "",
+                credentialID: "",
+                credentialSecret: "",
+                teamID: "",
+                connectKey: ""
+            ),
+            trackFolderName: "Drone Tracks"
+        )
 
         for track in await store.snapshot() {
             let recording = CaltopoRecordingAssociation(

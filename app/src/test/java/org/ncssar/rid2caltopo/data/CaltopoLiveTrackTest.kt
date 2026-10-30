@@ -9,6 +9,7 @@ import org.junit.Test
 import org.ncssar.rid2caltopo.app.R2CActivity
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class CaltopoLiveTrackTest {
@@ -87,6 +88,15 @@ class CaltopoLiveTrackTest {
         archiveFolderIdField.set(null, originalArchiveFolderId)
         @Suppress("UNCHECKED_CAST")
         (liveTracksByIdField.get(null) as MutableMap<String, *>).clear()
+        CaltopoMap::class.java.getDeclaredField("liveTracks").apply {
+            isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            (get(null) as MutableList<*>).clear()
+        }
+        CaltopoLiveTrack::class.java.getDeclaredField("LiveTrackByRemoteId").apply {
+            isAccessible = true
+            (get(null) as MutableMap<*, *>).clear()
+        }
         R2cRuntimeRegistry.resetDefaultRuntimeForTesting()
     }
 
@@ -165,20 +175,19 @@ class CaltopoLiveTrackTest {
         assertEquals(1, fixture.calTopoSessionGateway.countOperations("startLiveTrack"))
     }
 
-    @Test fun delayedShutdownArchivesToTheDepartingMapAndFolder() {
+    @Test fun disconnectFinishArchivesToTheDepartingMapAndFolder() {
         val track = startingTrack()
         val gateway = fixture.calTopoSessionGateway
         val id = gateway.snapshotOperations().first { it.kind == "startLiveTrack" }.payload!!.getString("id")
         mapNodeField.set(null, CaltopoNode.MapNode("new-map", "Next", 0L))
         archiveFolderIdField.set(null, null)
-        setPrivateField(track, "shuttingDown", true)
-        CaltopoLiveTrack::class.java.getDeclaredMethod("shutdownOnWorker", java.lang.Long.TYPE,
-            String::class.java, String::class.java).apply { isAccessible = true }
-            .invoke(track, 0L, "map-test", "archive-folder-test")
+        // Captured destination must be used even after MapNode/folder fields change.
+        track.finishOwnedPublicationForDisconnect(4_000L, "map-test", "archive-folder-test")
         val shape = gateway.snapshotOperations().first { it.kind == "editObject" && it.summary == "Shape:$id" }.payload!!
         assertEquals("archive-folder-test", shape.getJSONObject("properties").getString("folderId"))
         assertEquals("map-test", gateway.recoveryMaps.last())
         assertFalse(gateway.recoveryMaps.contains("new-map"))
+        assertEquals(0, CaltopoInterruptedTrackJournal.entriesForTesting().length())
     }
 
     @Test fun delayedCheckpointCannotOverwriteANewerFinalSnapshot() {
@@ -361,6 +370,63 @@ class CaltopoLiveTrackTest {
         CaltopoInterruptedTrackJournal.recover("map-test", "archive-folder-test", fixture.runtime)
         assertEquals(1, fixture.calTopoSessionGateway.countOperations("editObject"))
         assertEquals(1, fixture.calTopoSessionGateway.countOperations("deleteLiveTrack"))
+    }
+
+    @Test fun disconnectWithOwnedActiveLiveTrackPublishesArchiveOnceThenMapDown() {
+        val drone = CtDroneSpec("RID-DISCONNECT-FINISH")
+        setDroneTrackLabel(drone, "1sar7Finish_111500Oct30")
+        drone.setOwner("1sar7")
+        drone.setCurrentFlightConfirmed(true)
+        val track = ownedActiveTrack(drone, "finish-once-live-track")
+
+        val done = CountDownLatch(1)
+        CaltopoMap.DisconnectAfterFinishingOwned(CaltopoMap.DISCONNECT_FINISH_TIMEOUT_MS) {
+            done.countDown()
+        }
+        assertTrue(done.await(5, TimeUnit.SECONDS))
+        drainRecovery()
+
+        assertEquals(1, fixture.calTopoSessionGateway.countOperations("editObject"))
+        assertEquals(1, fixture.calTopoSessionGateway.countOperations("deleteLiveTrack"))
+        val shape = fixture.calTopoSessionGateway.snapshotOperations()
+            .first { it.kind == "editObject" && it.summary == "Shape:finish-once-live-track" }
+            .payload!!
+        assertEquals("Shape", shape.getJSONObject("properties").getString("class"))
+        assertEquals(
+            "journal after disconnect: ${CaltopoInterruptedTrackJournal.entriesForTesting()}",
+            0,
+            CaltopoInterruptedTrackJournal.entriesForTesting().length(),
+        )
+        assertFalse(track.isActive)
+        assertEquals(CaltopoMap.MapStatusListener.mapStatus.down, CaltopoMap.GetMapStatus())
+        // Aircraft may still be flying; disconnect must not clear physical flight state.
+        assertTrue(drone.isActive)
+        assertTrue(drone.isCurrentFlightConfirmed)
+    }
+
+    @Test fun disconnectWhenCalTopoUnreachableJournalsOfflineFallback() {
+        val drone = CtDroneSpec("RID-DISCONNECT-OFFLINE")
+        setDroneTrackLabel(drone, "1sar7Offline_111500Oct30")
+        drone.setOwner("1sar7")
+        drone.setCurrentFlightConfirmed(true)
+        val track = ownedActiveTrack(drone, "offline-finish-live-track")
+
+        fixture.calTopoSessionGateway.failRecoveryEdits = true
+        val done = CountDownLatch(1)
+        CaltopoMap.DisconnectAfterFinishingOwned(CaltopoMap.DISCONNECT_FINISH_TIMEOUT_MS) {
+            done.countDown()
+        }
+        assertTrue(done.await(5, TimeUnit.SECONDS))
+        drainRecovery()
+
+        assertEquals(0, fixture.calTopoSessionGateway.countOperations("deleteLiveTrack"))
+        assertEquals(1, CaltopoInterruptedTrackJournal.entriesForTesting().length())
+        assertEquals(
+            "offline-finish-live-track",
+            CaltopoInterruptedTrackJournal.entriesForTesting().getJSONObject(0).getString("liveTrackId"),
+        )
+        assertFalse(track.isActive)
+        assertEquals(CaltopoMap.MapStatusListener.mapStatus.down, CaltopoMap.GetMapStatus())
     }
 
     @Test fun mapShutdownPreservesPilotConsentAndPhysicalFlight() {
@@ -627,11 +693,23 @@ class CaltopoLiveTrackTest {
         }
     }
 
+    /** Owned active publication without going through async startLiveTrack (avoids dual journal ids). */
+    private fun ownedActiveTrack(drone: CtDroneSpec, liveTrackId: String): CaltopoLiveTrack {
+        val track = CaltopoLiveTrack(drone, 39.153, -121.133, 527.0, 1_000L)
+        track.mapStatusUpdate(CaltopoMap.MapStatusListener.mapStatus.up, null, null)
+        setPrivateField(track, "localOwner", true)
+        forceLiveTrackId(track, liveTrackId)
+        setPrivateField(track, "startInFlight", false)
+        track.publishDirect(39.154, -121.134, 528L, 2_000L)
+        drainRecovery()
+        journalFile.writeText("""{"entries":[]}""")
+        return track
+    }
+
     private fun forceLiveTrackId(liveTrack: CaltopoLiveTrack, liveTrackId: String) {
-        val liveTrackIdField = CaltopoLiveTrack::class.java.getDeclaredField("liveTrackId").apply {
-            isAccessible = true
-        }
-        liveTrackIdField.set(liveTrack, liveTrackId)
+        setPrivateField(liveTrack, "liveTrackId", liveTrackId)
+        setPrivateField(liveTrack, "requestedLiveTrackId", liveTrackId)
+        setPrivateField(liveTrack, "publicationMapId", CaltopoMap.GetMapId())
     }
 
     private fun setPrivateField(target: Any, fieldName: String, value: Any?) {

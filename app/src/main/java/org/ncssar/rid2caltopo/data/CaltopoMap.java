@@ -48,6 +48,9 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
@@ -139,6 +142,17 @@ public class CaltopoMap {
     private static final float AUTO_QUIT_REQUIRED_ACCURACY_METERS = (float) (25.0 * 0.3048);
     private static final long AUTO_QUIT_FLIGHT_QUIET_MS = 5L * 60L * 1000L;
     private static final long TRACKER_SILENCE_STANDBY_MS = 60L * 1000L;
+    /** Bounded wait for finishing owned LiveTracks before map disconnect / quit. */
+    public static final long DISCONNECT_FINISH_TIMEOUT_MS = 15_000L;
+    private static final ExecutorService DisconnectFinishWorker =
+            Executors.newSingleThreadExecutor(task -> {
+                Thread thread = new Thread(task, "caltopo-disconnect-finish");
+                thread.setDaemon(true);
+                return thread;
+            });
+    private static final AtomicBoolean DisconnectFinishInFlight = new AtomicBoolean(false);
+    @Nullable private static volatile Consumer<String> disconnectProgressHandler = null;
+    @Nullable private static volatile Runnable pendingClueFlushHandler = null;
     @NonNull private static volatile TimeSource timeSource = System::currentTimeMillis;
     @NonNull private static volatile InactivityDisconnectHandler inactivityDisconnectHandler =
             () -> DisconnectIncidentMapIfInactive("relocation");
@@ -556,14 +570,16 @@ public class CaltopoMap {
         if (mapNode == null) {
             CaltopoPersonalAccountConnection.logState("map open reset");
             CTDebug(TAG, "OpenMap(): Map connection reset.");
-            ResetMapConnection(4_000L);
-            MapNode = null;
-            CaltopoPersonalSession.activate(null, "");
-            OperatingProfiles.endAssignment();
-            SetMapStatus(MapStatusListener.mapStatus.down, "Disconnect request.");
+            DisconnectAfterFinishingOwned(DISCONNECT_FINISH_TIMEOUT_MS, null);
             return;
         }
         if (MapNode != null) {
+            if (hasOwnedActivePublications()) {
+                // Finish owned LiveTracks off the UI thread, then open the new map.
+                final CaltopoNode.MapNode target = mapNode;
+                DisconnectAfterFinishingOwned(DISCONNECT_FINISH_TIMEOUT_MS, () -> OpenMap(target));
+                return;
+            }
             // don't wait around for reset operations to complete:
             ResetMapConnection(0);
             SetMapStatus(MapStatusListener.mapStatus.down, "Map switch request.");
@@ -822,6 +838,141 @@ public class CaltopoMap {
         ServerRetryDelay.stop();
         serverRetryAttempt = 0;
         CaltopoMapOpenNotice.clear();
+    }
+
+    public static void setDisconnectProgressHandler(@Nullable Consumer<String> handler) {
+        disconnectProgressHandler = handler;
+    }
+
+    public static void setPendingClueFlushHandler(@Nullable Runnable handler) {
+        pendingClueFlushHandler = handler;
+    }
+
+    public static boolean hasOwnedActivePublications() {
+        for (CaltopoLiveTrack track : new ArrayList<>(liveTracks)) {
+            if (track.hasOwnedActivePublication()) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Finish each owned LiveTrack (archive Shape once), flush pending clues where
+     * possible, then drop the map connection. Bounded; journals on timeout/unreachable
+     * CalTopo and disconnects anyway. Never blocks the main thread.
+     */
+    public static void DisconnectAfterFinishingOwned(
+            long timeoutMs, @Nullable Runnable onComplete) {
+        if (MapStatus == MapStatusListener.mapStatus.down && MapNode == null) {
+            if (onComplete != null) CaltopoRecoveryWork.onMain(onComplete);
+            return;
+        }
+        final String destinationMap = GetMapId();
+        final String destinationFolder = GetArchiveFolderId();
+        final ArrayList<CaltopoLiveTrack> tracks = new ArrayList<>(liveTracks);
+        final boolean needsFinish = hasOwnedActivePublications();
+        final long budgetMs = Math.max(0L, timeoutMs);
+        final Runnable complete = () -> {
+            completeMapDisconnect("Disconnect request.");
+            if (onComplete != null) onComplete.run();
+        };
+        if (!needsFinish) {
+            if (isMainThread()) {
+                DisconnectFinishWorker.execute(() -> {
+                    flushPendingCluesBestEffort();
+                    CaltopoRecoveryWork.onMain(complete);
+                });
+            } else {
+                flushPendingCluesBestEffort();
+                complete.run();
+            }
+            return;
+        }
+        if (!DisconnectFinishInFlight.compareAndSet(false, true)) {
+            CTDebug(TAG, "DisconnectAfterFinishingOwned(): finish already in flight.");
+            if (onComplete != null) CaltopoRecoveryWork.onMain(onComplete);
+            return;
+        }
+        publishDisconnectProgress("Finishing live track…");
+        DisconnectFinishWorker.execute(() -> {
+            try {
+                finishOwnedTracksOnWorker(tracks, destinationMap, destinationFolder, budgetMs);
+            } finally {
+                DisconnectFinishInFlight.set(false);
+                CaltopoRecoveryWork.onMain(complete);
+            }
+        });
+    }
+
+    /** Blocking finish for callers already on a worker (quit / Shutdown). */
+    static void finishOwnedTracksBlocking(long timeoutMs) {
+        if (isMainThread()) {
+            throw new IllegalStateException("finishOwnedTracksBlocking must run off Main");
+        }
+        if (!hasOwnedActivePublications()) {
+            flushPendingCluesBestEffort();
+            return;
+        }
+        publishDisconnectProgress("Finishing live track…");
+        finishOwnedTracksOnWorker(
+                new ArrayList<>(liveTracks), GetMapId(), GetArchiveFolderId(), Math.max(0L, timeoutMs));
+    }
+
+    private static void finishOwnedTracksOnWorker(
+            @NonNull ArrayList<CaltopoLiveTrack> tracks,
+            @Nullable String destinationMap,
+            @Nullable String destinationFolder,
+            long budgetMs) {
+        flushPendingCluesBestEffort();
+        long deadline = System.currentTimeMillis() + budgetMs;
+        for (CaltopoLiveTrack track : tracks) {
+            if (!track.hasOwnedActivePublication()) continue;
+            long remaining = Math.max(0L, deadline - System.currentTimeMillis());
+            try {
+                track.finishOwnedPublicationForDisconnect(remaining, destinationMap, destinationFolder);
+            } catch (Exception e) {
+                CTError(TAG, "finishOwnedTracksOnWorker(): track finish raised", e);
+            }
+        }
+    }
+
+    private static void flushPendingCluesBestEffort() {
+        Runnable flush = pendingClueFlushHandler;
+        if (flush == null) return;
+        try {
+            flush.run();
+        } catch (Exception e) {
+            CTWarn(TAG, "flushPendingCluesBestEffort() raised", e);
+        }
+    }
+
+    private static void publishDisconnectProgress(@NonNull String message) {
+        Consumer<String> handler = disconnectProgressHandler;
+        if (handler != null) {
+            CaltopoRecoveryWork.onMain(() -> {
+                try {
+                    handler.accept(message);
+                } catch (Exception e) {
+                    CTWarn(TAG, "disconnectProgressHandler raised", e);
+                }
+            });
+        } else {
+            CaltopoRecoveryWork.onMain(() -> ShowToast(message));
+        }
+    }
+
+    private static void completeMapDisconnect(@NonNull String reason) {
+        CTDebug(TAG, "completeMapDisconnect(): " + reason);
+        ResetMapConnection(0);
+        MapNode = null;
+        ActiveMapSelection = null;
+        CaltopoPersonalSession.activate(null, "");
+        OperatingProfiles.endAssignment();
+        SetMapStatus(MapStatusListener.mapStatus.down, reason);
+    }
+
+    private static boolean isMainThread() {
+        Looper main = Looper.getMainLooper();
+        return main != null && Looper.myLooper() == main;
     }
 
     public static void ResetMapConnection(long maxWaitInMilliseconds) {
@@ -2085,6 +2236,14 @@ public class CaltopoMap {
 
     public static void Shutdown() {
         try {
+            // Finish owned LiveTracks while the map session is still usable, then
+            // force the map and tracker websocket down so a surviving process cannot
+            // keep a background map connection after quit.
+            try {
+                finishOwnedTracksBlocking(DISCONNECT_FINISH_TIMEOUT_MS);
+            } catch (Exception e) {
+                CTError(TAG, "Shutdown(): finishOwnedTracksBlocking raised", e);
+            }
             ShutdownInProgress = true;
             MapCheckerDelay.stop();
             VerifyTimer.stop();
@@ -2094,11 +2253,11 @@ public class CaltopoMap {
             InitialMarkerPublishPending = false;
             InitialMarkerWaitStartedMs = 0L;
             DeferredExpiredProfileId = null;
-            // Drain active map-owned LiveTracks through the normal archive path
-            // before tearing down the CalTopo session.
-            ResetMapConnection(10_000L);
-            removeMyDeviceMarker(10_000L);
+            // Journal any leftovers; do not wait on network here.
+            ResetMapConnection(0);
+            removeMyDeviceMarker(0);
             MapNode = null;
+            ActiveMapSelection = null;
             OperatingProfiles.endAssignment();
             SessionNodeMap = null;
             SetMapStatus(MapStatusListener.mapStatus.down, "Shutdown in progress.");
@@ -2106,6 +2265,15 @@ public class CaltopoMap {
             getCurrentRuntime().getCalTopoSessionGateway().shutdown();
         } catch (Exception e) {
             CTError(TAG, "Shutdown() raised: " + " (" + e.getClass().getSimpleName() + ")");
+            // Ensure map/tracker cannot remain live after an exception mid-teardown.
+            try {
+                ShutdownInProgress = true;
+                MapCheckerDelay.stop();
+                MapNode = null;
+                ActiveMapSelection = null;
+                SetMapStatus(MapStatusListener.mapStatus.down, "Shutdown in progress.");
+                getCurrentRuntime().getPeerCoordinator().stop();
+            } catch (Exception ignored) { }
         }
     }
 

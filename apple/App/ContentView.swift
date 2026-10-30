@@ -1447,6 +1447,13 @@ struct ContentView: View {
                     },
                     fullCleanup: {
                         await ridTracks.setLocalDeviceMarkerPublishingEnabled(false)
+                        // Finish owned LiveTracks, then close the CalTopo map before
+                        // tearing down the tracker websocket on quit / scene termination.
+                        let disconnected = caltopoSettings.disconnectMap()
+                        await ridTracks.configureCaltopoAwaiting(
+                            disconnected,
+                            trackFolderName: orgConfigSettings.trackFolder
+                        )
                         await bluetoothScanner.stop()
                         locationProvider.stop()
                         networkDiagnostics.stop()

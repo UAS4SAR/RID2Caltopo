@@ -28,6 +28,7 @@ public final class FakeCalTopoSessionGateway implements CalTopoSessionGateway {
     public final List<String> recoveryMaps = new ArrayList<>();
     public final List<Consumer<CaltopoOp>> recoveryEditCallbacks = new ArrayList<>();
     public boolean holdRecoveryEdits;
+    public boolean failRecoveryEdits;
     public int recoveryDeleteResponseCode = 200;
 
     public boolean markerDeleteSucceeds = true;
@@ -54,6 +55,14 @@ public final class FakeCalTopoSessionGateway implements CalTopoSessionGateway {
             record("editObject", type + ":" + id, feature);
             recoveryEditCallbacks.add(done);
             return new CaltopoOp(null);
+        }
+        if (failRecoveryEdits) {
+            record("editObject", type + ":" + id, feature);
+            CaltopoOp op = new CaltopoOp(null);
+            op.responseCode = 503;
+            op.setOperationIsDone(false);
+            if (done != null) done.accept(op);
+            return op;
         }
         return editObjectWithId(type, id, feature, done);
     }

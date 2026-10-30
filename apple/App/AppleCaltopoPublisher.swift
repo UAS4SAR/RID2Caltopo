@@ -111,6 +111,8 @@ actor AppleCaltopoPublisher {
         }
     }
 
+    private static let disconnectFinishTimeout: Duration = .seconds(15)
+
     private func performConfiguration(
         _ configuration: AppleCaltopoConfiguration,
         normalizedFolderName: String
@@ -120,9 +122,16 @@ actor AppleCaltopoPublisher {
         mapOpenRetry?.cancel()
         mapOpenRetry = nil
         mapOpenRetryAttempt = 0
-        // Persist the final buffered observations before replacing the map client.
-        for remoteID in Array(requestedLiveTrackIDs.keys) {
-            await persistInterruptedPublication(remoteID: remoteID, force: true)
+        let disconnecting = configuration.liveConfiguration == nil && client != nil
+        if disconnecting {
+            // Finish owned LiveTracks (Shape archive once) before dropping the map client.
+            // On timeout/unreachable CalTopo the finish path journals for reconnect recovery.
+            await finishOwnedLiveTracksForDisconnect(timeout: Self.disconnectFinishTimeout)
+        } else {
+            // Persist the final buffered observations before replacing the map client.
+            for remoteID in Array(requestedLiveTrackIDs.keys) {
+                await persistInterruptedPublication(remoteID: remoteID, force: true)
+            }
         }
         deviceMarkerGeneration += 1
         deviceMarkerPublishingSuspended = true
@@ -568,6 +577,32 @@ actor AppleCaltopoPublisher {
             }
             startTasks.removeValue(forKey: remoteID)
             continuation.yield(.failed("\(remoteID): \(error.localizedDescription)"))
+        }
+    }
+
+    /// Finish each owned LiveTrack for map disconnect using the normal archive path,
+    /// bounded by `timeout`. Failures leave the interrupted journal for reconnect recovery.
+    func finishOwnedLiveTracksForDisconnect(timeout: Duration) async {
+        let remoteIDs = Array(requestedLiveTrackIDs.keys)
+        guard !remoteIDs.isEmpty else { return }
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        for remoteID in remoteIDs {
+            if clock.now >= deadline {
+                await persistInterruptedPublication(remoteID: remoteID, force: true)
+                continue
+            }
+            let remaining = deadline - clock.now
+            let finishTask = Task { await self.finish(remoteID: remoteID) }
+            let timeoutTask = Task { try? await Task.sleep(for: remaining) }
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { _ = await finishTask.value }
+                group.addTask { _ = await timeoutTask.value }
+                _ = await group.next()
+                finishTask.cancel()
+                timeoutTask.cancel()
+                group.cancelAll()
+            }
         }
     }
 

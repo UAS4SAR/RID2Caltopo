@@ -6357,9 +6357,29 @@ private func writeInt32(_ value: Int32, into bytes: inout [UInt8], at offset: In
     #expect(await afterSuccessfulRecovery.entries(mapID: "map-a").isEmpty)
 }
 
+@Test func applePublisherFinishesOwnedLiveTracksBeforeDisconnectingMap() throws {
+    let appleRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let publisher = try String(
+        contentsOf: appleRoot.appendingPathComponent("App/AppleCaltopoPublisher.swift"),
+        encoding: .utf8
+    )
+    #expect(publisher.contains("finishOwnedLiveTracksForDisconnect"))
+    #expect(publisher.contains("disconnectFinishTimeout"))
+    #expect(publisher.contains("finishOwnedLiveTracksForDisconnect(timeout:"))
+    let contentView = try String(
+        contentsOf: appleRoot.appendingPathComponent("App/ContentView.swift"),
+        encoding: .utf8
+    )
+    #expect(contentView.contains("configureCaltopoAwaiting"))
+    #expect(contentView.contains("caltopoSettings.disconnectMap()"))
+}
+
 @Test func disconnectThenFlightEndsOfflineLeavesExactlyOnePendingFinishForReconnect() async throws {
-    // Mirrors the Android path: map disconnect checkpoints the LiveTrack, the
-    // flight then ends offline, and reconnect recovery must see one durable entry.
+    // Offline fallback after disconnect finish fails: journal the LiveTrack so
+    // reconnect recovery converts it once. Matches Android's unreachable path.
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
     let fileURL = root.appendingPathComponent("caltopo-interrupted-publications.json")

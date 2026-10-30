@@ -693,6 +693,24 @@ fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
                 )
             }
 
+            is OverlayState.Progress -> {
+                AlertDialog(
+                    onDismissRequest = {},
+                    title = { Text("Please wait") },
+                    text = {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(40.dp))
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(overlay.message)
+                        }
+                    },
+                    confirmButton = {}
+                )
+            }
+
             OverlayState.None -> { /* Render nothing over the map */ }
         }
     }
