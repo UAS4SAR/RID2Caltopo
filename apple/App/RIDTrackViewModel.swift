@@ -634,6 +634,9 @@ final class RIDTrackViewModel: ObservableObject {
             relativeUpMeters: relativeUpMeters,
             sampleElevationMeters: { latitude, longitude in
                 await terrainService.sample(latitude: latitude, longitude: longitude)
+            },
+            sampleLocalElevationMeters: { latitude, longitude in
+                await terrainService.sampleLocal(latitude: latitude, longitude: longitude)
             }
         )
     }

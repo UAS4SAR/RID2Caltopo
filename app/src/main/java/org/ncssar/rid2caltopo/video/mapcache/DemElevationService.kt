@@ -10,7 +10,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Response
 import okhttp3.Request
 import org.json.JSONObject
-import org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTError
 import java.nio.charset.StandardCharsets
 import java.util.LinkedHashMap
@@ -74,6 +73,27 @@ internal class DemElevationService(context: Context) {
         .callTimeout(6, TimeUnit.SECONDS)
         .build()
 
+    /**
+     * Local GeoTIFF only. Does not consult EPQS or the point cache. Used by clue ray walks
+     * once the aircraft sample is known to be a local raster so out-of-coverage steps end
+     * immediately instead of blocking on network elevation lookups.
+     */
+    suspend fun sampleLocalElevationMeters(lat: Double, lng: Double): DemElevationSample? = withContext(Dispatchers.IO) {
+        if (!lat.isFinite() || !lng.isFinite()) return@withContext null
+        val localTiff = terrainReads.read { checkCancelled -> localGeoTiff.sample(lat, lng, checkCancelled) }
+        if (localTiff != null && localTiff.elevationMeters.isFinite() &&
+            localTiff.elevationMeters >= -500.0 && localTiff.elevationMeters <= 10_000.0
+        ) {
+            return@withContext DemElevationSample(
+                elevationMeters = localTiff.elevationMeters,
+                stale = false,
+                source = "usgs-geotiff-local-${localTiff.horizontalResolutionMeters.roundToInt()}m",
+                horizontalResolutionMeters = localTiff.horizontalResolutionMeters,
+            )
+        }
+        null
+    }
+
     suspend fun sampleElevationMeters(lat: Double, lng: Double): DemElevationSample? = withContext(Dispatchers.IO) {
         if (!lat.isFinite() || !lng.isFinite()) return@withContext null
         val key = cacheKey(lat, lng)
@@ -105,9 +125,11 @@ internal class DemElevationService(context: Context) {
             return@withContext sample
         }
         if (localTiff != null) {
-            MapCacheDebug.warn(MapCacheDebug.TAG_DEM,
-                "dem local-geotiff-range-reject key=$key elevM=${localTiff.elevationMeters} " +
-                    "lat=${"%.5f".format(Locale.US, lat)} lng=${"%.5f".format(Locale.US, lng)}")
+            MapCacheDebug.warnSummary(
+                MapCacheDebug.TAG_DEM,
+                reason = "local-geotiff-range-reject",
+                detail = "elevM=${localTiff.elevationMeters}",
+            )
         }
         MapCacheDebug.log("dem local-geotiff-miss key=$key")
 
@@ -139,12 +161,12 @@ internal class DemElevationService(context: Context) {
             MapCacheDebug.log("dem network-fetch key=$key elevM=${"%.2f".format(Locale.US, network.elevationMeters)}")
             return@withContext network
         }
-        logDemWarn("dem network-fail key=$key lat=${"%.5f".format(Locale.US, lat)} lng=${"%.5f".format(Locale.US, lng)}")
+        logDemWarn("dem network-fail key=$key")
 
         if (cachedSample != null) {
             cache.markStaleServed()
             synchronized(mem) { mem[key] = cachedSample }
-            CTDebug("SplitMapPane", "DEM stale fallback lat=${"%.5f".format(Locale.US, lat)} lng=${"%.5f".format(Locale.US, lng)}")
+            MapCacheDebug.warnSummary(MapCacheDebug.TAG_DEM, reason = "stale-fallback", detail = "source=${cachedSample.source}")
             MapCacheDebug.log("dem stale-fallback key=$key source=${cachedSample.source}")
             return@withContext cachedSample
         }
@@ -253,8 +275,7 @@ internal class DemElevationService(context: Context) {
                         val retryAfterMs = retryAfterMs(resp)
                         logDemWarn(
                             "dem http-fail code=${resp.code} msg=${resp.message} attempt=$attempt/$EPQS_MAX_ATTEMPTS " +
-                                "retryAfterMs=${retryAfterMs ?: -1} " +
-                                "lat=${"%.5f".format(Locale.US, lat)} lng=${"%.5f".format(Locale.US, lng)}"
+                                "retryAfterMs=${retryAfterMs ?: -1}"
                         )
                         if (resp.code == 429 || resp.code == 503 || resp.code == 502) {
                             if (attempt < EPQS_MAX_ATTEMPTS) {
@@ -267,9 +288,7 @@ internal class DemElevationService(context: Context) {
                     }
                     val body = resp.body?.string()
                     if (body.isNullOrBlank()) {
-                        logDemWarn(
-                            "dem body-empty lat=${"%.5f".format(Locale.US, lat)} lng=${"%.5f".format(Locale.US, lng)}"
-                        )
+                        logDemWarn("dem body-empty")
                         return null
                     }
                     val jo = JSONObject(body)
@@ -285,15 +304,12 @@ internal class DemElevationService(context: Context) {
                     }
                     if (value.isNaN()) {
                         logDemWarn(
-                            "dem parse-miss keys=${jo.keys().asSequence().toList().joinToString("|")} " +
-                                "lat=${"%.5f".format(Locale.US, lat)} lng=${"%.5f".format(Locale.US, lng)}"
+                            "dem parse-miss keys=${jo.keys().asSequence().toList().joinToString("|")}"
                         )
                         return null
                     }
                     if (!value.isFinite() || value < -500.0 || value > 10000.0) {
-                        logDemWarn(
-                            "dem value-invalid v=$value lat=${"%.5f".format(Locale.US, lat)} lng=${"%.5f".format(Locale.US, lng)}"
-                        )
+                        logDemWarn("dem value-invalid v=$value")
                         return null
                     }
                     return DemElevationSample(
@@ -308,8 +324,7 @@ internal class DemElevationService(context: Context) {
                 throw e
             } catch (e: Exception) {
                 logDemWarn(
-                    "dem fetch-ex ${e.javaClass.simpleName}:${e.message} attempt=$attempt/$EPQS_MAX_ATTEMPTS " +
-                        "lat=${"%.5f".format(Locale.US, lat)} lng=${"%.5f".format(Locale.US, lng)}"
+                    "dem fetch-ex ${e.javaClass.simpleName}:${e.message} attempt=$attempt/$EPQS_MAX_ATTEMPTS"
                 )
                 if (attempt < EPQS_MAX_ATTEMPTS) {
                     delay(backoffMs(attempt))
@@ -352,10 +367,11 @@ internal class DemElevationService(context: Context) {
 
     private fun logDemWarn(message: String) {
         val n = networkFailCount.incrementAndGet()
-        if (n <= 12 || (n % 50) == 0) {
-            MapCacheDebug.warn(MapCacheDebug.TAG_DEM, "$message failCount=$n")
-            val code = demHttpCodeRegex.find(message)?.groupValues?.getOrNull(1)?.toIntOrNull()
-            if (code == 403 || code == 429 || code == 503) {
+        val reason = message.substringBefore(' ').ifBlank { "dem-warn" }
+        MapCacheDebug.warnSummary(MapCacheDebug.TAG_DEM, reason = reason, detail = "$message failCount=$n")
+        val code = demHttpCodeRegex.find(message)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        if (code == 403 || code == 429 || code == 503) {
+            if (n <= 3 || n % 50 == 0) {
                 CTError(
                     "SplitMapPane",
                     "DEM upstream status=$code (possible policy/rate-limit/service pressure) $message failCount=$n"

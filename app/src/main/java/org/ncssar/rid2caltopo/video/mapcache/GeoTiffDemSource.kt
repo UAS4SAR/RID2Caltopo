@@ -90,10 +90,10 @@ internal class GeoTiffDemSource(context: Context) {
         return sample(lat, lng)?.elevationMeters
     }
 
-    fun sample(lat: Double, lng: Double): Sample? = sample(lat, lng, null, true, Double.POSITIVE_INFINITY)
+    fun sample(lat: Double, lng: Double): Sample? = sample(lat, lng, null, false, Double.POSITIVE_INFINITY)
 
     fun sample(lat: Double, lng: Double, checkCancelled: () -> Unit): Sample? =
-        sample(lat, lng, null, true, Double.POSITIVE_INFINITY, checkCancelled)
+        sample(lat, lng, null, false, Double.POSITIVE_INFINITY, checkCancelled)
 
     /** A batch borrows one descriptor per tile and avoids per-ray diagnostic logs.
      * Only downloaded S1M is eligible; all descriptors close even on cancellation. */
@@ -216,25 +216,21 @@ internal class GeoTiffDemSource(context: Context) {
         synchronized(lock) {
             metadataCache[tile.id] = loaded
         }
-        // Log key metadata once per tile on first load to aid decoder diagnostics.
+        // One non-location summary per newly decoded tile metadata (exported logs redact
+        // tieXY/lat/lng lines entirely, which previously produced opaque WARN spam).
         val vertUnit = when (loaded.verticalUnitCode) {
             9001 -> if (loaded.verticalUnitCodeExplicit) "m(9001)" else "m(9001-default)"
             9002 -> "ft(9002)"
             9003 -> "ftUS(9003)"
             else -> "?(${loaded.verticalUnitCode})"
         }
-        MapCacheDebug.warn(MapCacheDebug.TAG_DEM,
-            "dem meta ${tile.displayName}: " +
-                "size=${loaded.width}x${loaded.height} " +
-                "tile=${loaded.tileWidth}x${loaded.tileHeight} " +
-                "rowsPerStrip=${loaded.rowsPerStrip} " +
-                "isTiled=${loaded.isTiled} blocks=${loaded.blockOffsets.size} " +
-                "comp=${loaded.compression} pred=${loaded.predictor} " +
-                "bps=${loaded.bitsPerSample} fmt=${loaded.sampleFormat} " +
-                "bo=${loaded.byteOrder} spp=${loaded.samplesPerPixel} " +
-                "vertUnit=$vertUnit nodata=${loaded.noDataValue} " +
-                "tieIJ=${loaded.tieI},${loaded.tieJ} tieXY=${"%.6f".format(Locale.US, loaded.tieX)},${"%.6f".format(Locale.US, loaded.tieY)} " +
-                "scaleXY=${"%.8f".format(Locale.US, loaded.scaleX)},${"%.8f".format(Locale.US, loaded.scaleY)}")
+        MapCacheDebug.warnSummary(
+            MapCacheDebug.TAG_DEM,
+            reason = "geotiff-meta-loaded",
+            detail = "size=${loaded.width}x${loaded.height} blocks=${loaded.blockOffsets.size} " +
+                "comp=${loaded.compression} pred=${loaded.predictor} vertUnit=$vertUnit " +
+                "isTiled=${loaded.isTiled}",
+        )
         return loaded
     }
 
@@ -269,10 +265,13 @@ internal class GeoTiffDemSource(context: Context) {
             val s00 = sampleAtPixel(source, metadata, tile.displayName, c0, r0) ?: return null
             if (isNoData(s00, metadata.noDataValue)) return null
             if (c0 == c1 && r0 == r1) {
-                if (logSamples) MapCacheDebug.warn(MapCacheDebug.TAG_DEM,
-                    "dem sample lat=${"%.5f".format(Locale.US, lat)} lng=${"%.5f".format(Locale.US, lng)} " +
-                        "colF=${"%.2f".format(Locale.US, colF)} rowF=${"%.2f".format(Locale.US, rowF)} " +
-                        "c0=$c0 r0=$r0 s00=${"%.2f".format(Locale.US, s00)} -> exact")
+                if (logSamples) {
+                    MapCacheDebug.warnSummary(
+                        MapCacheDebug.TAG_DEM,
+                        reason = "geotiff-sample-exact",
+                        detail = "elevM=${"%.2f".format(Locale.US, s00)}",
+                    )
+                }
                 return s00
             }
 
@@ -289,11 +288,13 @@ internal class GeoTiffDemSource(context: Context) {
             val dx = (colF - c0.toDouble()).coerceIn(0.0, 1.0)
             val dy = (rowF - r0.toDouble()).coerceIn(0.0, 1.0)
             val result = bilinearInterpolate(s00, s10, s01, s11, dx, dy)
-            if (logSamples) MapCacheDebug.warn(MapCacheDebug.TAG_DEM,
-                "dem sample lat=${"%.5f".format(Locale.US, lat)} lng=${"%.5f".format(Locale.US, lng)} " +
-                    "colF=${"%.2f".format(Locale.US, colF)} rowF=${"%.2f".format(Locale.US, rowF)} " +
-                    "c0=$c0 r0=$r0 s00=${"%.2f".format(Locale.US, s00)} s10=${"%.2f".format(Locale.US, s10)} " +
-                    "s01=${"%.2f".format(Locale.US, s01)} s11=${"%.2f".format(Locale.US, s11)} -> ${"%.2f".format(Locale.US, result)}")
+            if (logSamples) {
+                MapCacheDebug.warnSummary(
+                    MapCacheDebug.TAG_DEM,
+                    reason = "geotiff-sample-bilinear",
+                    detail = "elevM=${"%.2f".format(Locale.US, result)}",
+                )
+            }
             return result
         }
         if (sources == null) return openDataSource(tile.uri)?.use { readSample(it) }

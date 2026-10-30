@@ -32,9 +32,13 @@ internal fun appendFlatSurfaceLocationNote(
 internal suspend fun refineCapturedClueTerrain(
     clue: PendingClue,
     sampleElevation: suspend (Double, Double) -> DemElevationSample?,
+    sampleLocalElevation: suspend (Double, Double) -> DemElevationSample? = sampleElevation,
 ): PendingClue = withContext(Dispatchers.Default) {
     val freshElevation: suspend (Double, Double) -> DemElevationSample? = { lat, lng ->
         sampleElevation(lat, lng)?.takeUnless { it.stale }
+    }
+    val freshLocal: suspend (Double, Double) -> DemElevationSample? = { lat, lng ->
+        sampleLocalElevation(lat, lng)?.takeUnless { it.stale }
     }
     val capturedHeight = clue.demAltitudeReference?.let { reference ->
         freshElevation(clue.droneLat, clue.droneLng)
@@ -48,7 +52,13 @@ internal suspend fun refineCapturedClueTerrain(
         terrainReferenceLongitude = clue.terrainReferenceLongitude,
         seiRelativeUpMeters = clue.seiRelativeUpMeters,
         sampleElevationMeters = freshElevation,
+        sampleLocalElevationMeters = freshLocal,
     )
+    val knownGround = when {
+        projection.terrainProjectionApplied && projection.alt.isFinite() -> projection.alt
+        projection.demSource != null && projection.alt.isFinite() -> projection.alt
+        else -> clue.knownDemGroundMeters
+    }
     clue.copy(
         lat = projection.lat, lng = projection.lng, alt = projection.alt,
         aglMeters = height, projectionHeightMeters = height,
@@ -57,7 +67,16 @@ internal suspend fun refineCapturedClueTerrain(
         terrainProjectionApplied = projection.terrainProjectionApplied,
         demSource = projection.demSource, demResolutionMeters = projection.demResolutionMeters,
         demSampleStale = projection.demSampleStale,
-    )
+        knownDemGroundMeters = knownGround,
+    ).also {
+        if (!projection.terrainProjectionApplied) {
+            val reason = projection.flatFallbackReason ?: "DEM terrain unavailable"
+            org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug(
+                "StreamsViewModel",
+                "refineCapturedClueTerrain: flat fallback reason=$reason designator=${clue.designator}",
+            )
+        }
+    }
 }
 
 /**

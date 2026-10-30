@@ -1949,9 +1949,12 @@ internal fun SplitMapPane(
                             totalFailed.incrementAndGet()
                             val n = demFailureLogCount.incrementAndGet()
                             if (n <= 12 || (n % 50) == 0) {
-                                val msg = "download dem failure#$n lat=${"%.5f".format(Locale.US, lat)} lng=${"%.5f".format(Locale.US, lng)} reason=$failureDetail"
-                                CTError(MAP_PANE_TAG, "DownloadMap DEM $msg")
-                                MapCacheDebug.warn(MapCacheDebug.TAG_DEM, msg)
+                                MapCacheDebug.warnSummary(
+                                    MapCacheDebug.TAG_DEM,
+                                    reason = "download-dem-failure",
+                                    detail = "count=$n detail=$failureDetail",
+                                )
+                                CTError(MAP_PANE_TAG, "DownloadMap DEM failure#$n reason=$failureDetail")
                             }
                         }
                         if (sample != null) {

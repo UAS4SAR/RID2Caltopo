@@ -3122,6 +3122,66 @@ private func proximityDrone(
     #expect(projected.terrainProjectionApplied)
 }
 
+@Test func operationalClueProjectionObliqueGimbalIntersectsRisingSlopedDEM() async {
+    let droneLatitude = 39.0
+    let droneLongitude = -105.0
+    let droneAltitude = 1_050.0
+    let agl = 50.0
+    let projected = await OperationalClueGeometry.projectWithTerrain(
+        droneLatitude: droneLatitude,
+        droneLongitude: droneLongitude,
+        droneAltitudeMeters: droneAltitude,
+        headingDegrees: 0,
+        aglMeters: agl,
+        gimbalAngleDegrees: -30,
+        sampleElevationMeters: { latitude, _ in
+            let northMeters = max(0, (latitude - droneLatitude) * 111_195)
+            return OperationalTerrainSample(
+                elevationMeters: 1_000 + northMeters * 0.5,
+                source: "usgs-geotiff-local-1m",
+                horizontalResolutionMeters: 1
+            )
+        }
+    )
+    let flat = OperationalClueGeometry.project(
+        droneLatitude: droneLatitude,
+        droneLongitude: droneLongitude,
+        droneAltitudeMeters: droneAltitude,
+        headingDegrees: 0,
+        aglMeters: agl,
+        gimbalAngleDegrees: -30
+    )
+    let northMeters = (projected.latitude - droneLatitude) * 111_195
+    let flatNorthMeters = (flat.latitude - droneLatitude) * 111_195
+    #expect(projected.terrainProjectionApplied)
+    #expect(northMeters < flatNorthMeters - 5)
+    #expect(northMeters > 20)
+    #expect((projected.altitudeMeters ?? 0) > 1_000)
+    #expect(projected.flatFallbackReason == nil)
+}
+
+@Test func operationalClueProjectionFlatFallbackUsesKnownDEMGround() {
+    let withDEM = OperationalClueGeometry.project(
+        droneLatitude: 39,
+        droneLongitude: -105,
+        droneAltitudeMeters: 527,
+        headingDegrees: 0,
+        aglMeters: 6.1,
+        gimbalAngleDegrees: -30,
+        knownGroundElevationMeters: 539.1
+    )
+    #expect(withDEM.altitudeMeters == 539.1)
+    let withoutDEM = OperationalClueGeometry.project(
+        droneLatitude: 39,
+        droneLongitude: -105,
+        droneAltitudeMeters: 527,
+        headingDegrees: 0,
+        aglMeters: 6.1,
+        gimbalAngleDegrees: -30
+    )
+    #expect(abs((withoutDEM.altitudeMeters ?? 0) - 520.9) < 1e-9)
+}
+
 @Test func operationalClueProjectionFollowsShallowSightlineAcrossDescendingTerrain() async {
     let projected = await OperationalClueGeometry.projectWithTerrain(
         droneLatitude: 39,

@@ -2724,6 +2724,7 @@ private struct ClueSubmissionView: View {
     @State private var cameraHeadingDegrees: Double
     @State private var cameraHeadingSource: String
     @State private var terrainProjection: OperationalClueProjection?
+    @State private var knownDemGroundMeters: Double?
     @State private var terrainProjectionPending = false
     @State private var submissionFeedback: String?
     @State private var submitting = false
@@ -2852,7 +2853,8 @@ private struct ClueSubmissionView: View {
             droneAltitudeMeters: observation.altitudeMeters,
             headingDegrees: heading.degrees,
             aglMeters: projectionHeight.meters,
-            gimbalAngleDegrees: gimbalAngle
+            gimbalAngleDegrees: gimbalAngle,
+            knownGroundElevationMeters: knownDemGroundMeters
         )
     }
     private var projection: OperationalClueProjection? { terrainProjection ?? flatProjection }
@@ -3085,9 +3087,15 @@ private struct ClueSubmissionView: View {
                 cameraHeadingSource = Self.headingSourceLabel(selection)
             }
             .task(id: projectionInput) {
-                terrainProjection = nil
-                guard let input = projectionInput, let observation else { return }
+                // Keep the last terrain result visible while the slider settles; only clear
+                // after a debounced DEM pass so Submit still has the best available point.
+                guard let input = projectionInput, let observation else {
+                    terrainProjection = nil
+                    return
+                }
                 terrainProjectionPending = true
+                try? await Task.sleep(for: .milliseconds(200))
+                guard !Task.isCancelled, projectionInput == input else { return }
                 let refined = await model.projectClueWithTerrain(
                     observation: observation,
                     headingDegrees: input.headingDegrees,
@@ -3099,7 +3107,18 @@ private struct ClueSubmissionView: View {
                 )
                 guard !Task.isCancelled, projectionInput == input else { return }
                 terrainProjection = refined
+                if refined.terrainProjectionApplied, let alt = refined.altitudeMeters, alt.isFinite {
+                    knownDemGroundMeters = alt
+                } else if let alt = refined.altitudeMeters, alt.isFinite, refined.demSource != nil {
+                    knownDemGroundMeters = alt
+                }
                 terrainProjectionPending = false
+                if !refined.terrainProjectionApplied {
+                    AppleLog.info(
+                        "Clue",
+                        "DEM projection flat fallback reason=\(refined.flatFallbackReason ?? "DEM terrain unavailable") aircraft=\(input.aircraftID)"
+                    )
+                }
                 AppleLog.info(
                     "Clue",
                     String(

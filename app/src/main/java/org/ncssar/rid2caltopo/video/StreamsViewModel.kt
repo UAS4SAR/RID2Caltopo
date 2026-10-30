@@ -44,6 +44,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -170,6 +171,8 @@ data class PendingClue(
     val demSource: String? = null,
     val demResolutionMeters: Double? = null,
     val demSampleStale: Boolean = false,
+    /** Last DEM ground elevation known for this capture; retained across interim flat recomputes. */
+    val knownDemGroundMeters: Double? = null,
     /** Waypoint nearest in time to the frame capture (drone clock); re-bound while the form is open, fixed at Submit. */
     val binding: org.ncssar.rid2caltopo.data.ClueBinding? = null,
     /** The "Current flight ignored" panel is showing over the clue form. */
@@ -476,6 +479,8 @@ private const val DEFAULT_CLUE_GIMBAL_ANGLE_DEG = -90.0
 /** Shown when a second snapshot is requested while a clue form is open (same wording as Apple). */
 private const val METERS_TO_FEET = 3.28084
 private const val RID_INVALID_ALTITUDE_METERS = -1000.0
+/** Let gimbal/heading sliders settle before starting another DEM ray walk. */
+private const val CLUE_DEM_REFRESH_DEBOUNCE_MS = 200L
 
 internal data class ClueProjection(
     val lat: Double,
@@ -485,6 +490,8 @@ internal data class ClueProjection(
     val demSource: String? = null,
     val demResolutionMeters: Double? = null,
     val demSampleStale: Boolean = false,
+    /** Set when returning a flat-surface estimate; null when terrain was applied. */
+    val flatFallbackReason: String? = null,
 )
 
 internal fun buildClueDescriptionTemplate(
@@ -648,14 +655,17 @@ internal fun projectClueLocation(
     headingDeg: Double?,
     aglMeters: Double?,
     gimbalAngleDeg: Double,
+    knownGroundElevationMeters: Double? = null,
 ): ClueProjection {
     val validHeading = headingDeg?.takeIf { it.isFinite() }
     val validAgl = aglMeters?.takeIf { it.isFinite() && it >= 0.0 }
-    val projectedAlt = if (droneAlt.isFinite() && droneAlt > RID_INVALID_ALTITUDE_METERS && validAgl != null) {
-        droneAlt - validAgl
-    } else {
-        droneAlt
-    }
+    val demGround = knownGroundElevationMeters?.takeIf { it.isFinite() }
+    val projectedAlt = demGround
+        ?: if (droneAlt.isFinite() && droneAlt > RID_INVALID_ALTITUDE_METERS && validAgl != null) {
+            droneAlt - validAgl
+        } else {
+            droneAlt
+        }
     if (validHeading == null || validAgl == null) {
         return ClueProjection(droneLat, droneLng, projectedAlt)
     }
@@ -725,10 +735,23 @@ internal suspend fun projectClueLocationWithDemSamples(
     terrainReferenceLongitude: Double? = null,
     seiRelativeUpMeters: Double? = null,
     sampleElevationMeters: suspend (Double, Double) -> DemElevationSample?,
+    /**
+     * Local-raster-only sampler used once the aircraft sample is known to be a GeoTIFF.
+     * Must not fall through to network EPQS; a null means end of local coverage.
+     * Defaults to [sampleElevationMeters] for unit tests that inject a single fake DEM.
+     */
+    sampleLocalElevationMeters: suspend (Double, Double) -> DemElevationSample? = sampleElevationMeters,
 ): ClueProjection {
     suspend fun checkedSample(lat: Double, lng: Double): DemElevationSample? {
         currentCoroutineContext().ensureActive()
         val result = sampleElevationMeters(lat, lng)
+        currentCoroutineContext().ensureActive()
+        return result
+    }
+
+    suspend fun checkedLocalSample(lat: Double, lng: Double): DemElevationSample? {
+        currentCoroutineContext().ensureActive()
+        val result = sampleLocalElevationMeters(lat, lng)
         currentCoroutineContext().ensureActive()
         return result
     }
@@ -745,14 +768,6 @@ internal suspend fun projectClueLocationWithDemSamples(
         referenceGround + anchoredRelativeUp
     } else droneAlt
     val effectiveAgl = anchoredRelativeUp ?: aglMeters
-    val flatProjection = projectClueLocation(
-        droneLat = droneLat,
-        droneLng = droneLng,
-        droneAlt = effectiveDroneAlt,
-        headingDeg = headingDeg,
-        aglMeters = effectiveAgl,
-        gimbalAngleDeg = gimbalAngleDeg,
-    )
     // A vertical sightline needs neither heading nor AGL: terrain directly below is the target.
     if (gimbalAngleDeg.isFinite() && gimbalAngleDeg <= -89.9 &&
         droneLat.isFinite() && droneLng.isFinite() && droneLat in -90.0..90.0 && droneLng in -180.0..180.0
@@ -765,37 +780,103 @@ internal suspend fun projectClueLocationWithDemSamples(
                 demResolutionMeters = ground.horizontalResolutionMeters, demSampleStale = ground.stale,
             )
         }
-        return flatProjection
+        return projectClueLocation(
+            droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
+            headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
+        ).copy(flatFallbackReason = "nadir DEM sample unavailable")
     }
     if (anchoredRelativeUp != null && terrainReferenceLatitude != null &&
         terrainReferenceLongitude != null && referenceGround == null
     ) {
-        return flatProjection
+        return projectClueLocation(
+            droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
+            headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
+        ).copy(flatFallbackReason = "SEI relative-up reference DEM unavailable")
     }
-    val validHeading = headingDeg?.takeIf { it.isFinite() } ?: return flatProjection
-    val validAgl = effectiveAgl?.takeIf { it.isFinite() && it > 0.0 } ?: return flatProjection
+    val validHeading = headingDeg?.takeIf { it.isFinite() }
+        ?: return projectClueLocation(
+            droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
+            headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
+            knownGroundElevationMeters = referenceGround,
+        ).copy(flatFallbackReason = "heading unavailable")
+    val validAgl = effectiveAgl?.takeIf { it.isFinite() && it > 0.0 }
+        ?: return projectClueLocation(
+            droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
+            headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
+            knownGroundElevationMeters = referenceGround,
+        ).copy(flatFallbackReason = "AGL unavailable")
     val clampedAngle = gimbalAngleDeg
         .takeIf { it.isFinite() }
         ?.coerceIn(-90.0, 90.0)
         ?: DEFAULT_CLUE_GIMBAL_ANGLE_DEG
-    if (clampedAngle >= -0.1) return flatProjection
+    if (clampedAngle >= -0.1) {
+        return projectClueLocation(
+            droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
+            headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
+            knownGroundElevationMeters = referenceGround,
+        ).copy(flatFallbackReason = "gimbal at or above horizon")
+    }
     val tiltFromHorizonDeg = abs(clampedAngle).coerceIn(0.1, 90.0)
-    if (tiltFromHorizonDeg >= 89.9) return flatProjection
+    if (tiltFromHorizonDeg >= 89.9) {
+        return projectClueLocation(
+            droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
+            headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
+            knownGroundElevationMeters = referenceGround,
+        ).copy(flatFallbackReason = "gimbal treated as nadir without DEM")
+    }
 
     val slopeDown = tan(Math.toRadians(tiltFromHorizonDeg))
-    if (!slopeDown.isFinite() || slopeDown <= 0.0) return flatProjection
+    if (!slopeDown.isFinite() || slopeDown <= 0.0) {
+        return projectClueLocation(
+            droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
+            headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
+            knownGroundElevationMeters = referenceGround,
+        ).copy(flatFallbackReason = "invalid sightline slope")
+    }
 
     val flatDistanceM = validAgl / slopeDown
-    if (!flatDistanceM.isFinite() || flatDistanceM <= 0.0) return flatProjection
+    if (!flatDistanceM.isFinite() || flatDistanceM <= 0.0) {
+        return projectClueLocation(
+            droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
+            headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
+            knownGroundElevationMeters = referenceGround,
+        ).copy(flatFallbackReason = "non-positive flat distance")
+    }
 
-    val flatGroundM = referenceGround ?: (effectiveDroneAlt - validAgl)
     val droneDemSample = referenceDemSample ?: checkedSample(droneLat, droneLng)
     val droneDemRaw = referenceGround ?: droneDemSample?.elevationMeters?.takeIf { it.isFinite() }
+    // ATO/AGL flat ground anchors foot-vs-metre DEM scale detection; do not feed raw DEM
+    // elevations here or a feet-encoded GeoTIFF looks like metres and the ray walk breaks.
+    val atoFlatGroundM = referenceGround ?: (effectiveDroneAlt - validAgl)
     val demScaleToMeters = if (referenceGround == null) inferDemScaleToMeters(
         droneAltMeters = effectiveDroneAlt,
-        knownGroundMeters = flatGroundM,
+        knownGroundMeters = atoFlatGroundM,
         droneDemRaw = droneDemRaw,
     ) else 1.0
+    val knownDemGroundM = referenceGround ?: droneDemRaw?.let { it * demScaleToMeters }
+    val flatGroundM = knownDemGroundM ?: atoFlatGroundM
+
+    fun flatWithKnownGround(reason: String): ClueProjection {
+        val base = projectClueLocation(
+            droneLat = droneLat,
+            droneLng = droneLng,
+            droneAlt = effectiveDroneAlt,
+            headingDeg = headingDeg,
+            aglMeters = effectiveAgl,
+            gimbalAngleDeg = gimbalAngleDeg,
+            knownGroundElevationMeters = knownDemGroundM,
+        )
+        return base.copy(
+            demSource = droneDemSample?.source,
+            demResolutionMeters = droneDemSample?.horizontalResolutionMeters,
+            demSampleStale = droneDemSample?.stale == true,
+            flatFallbackReason = reason,
+        )
+    }
+
+    if (droneDemSample == null && referenceGround == null) {
+        return flatWithKnownGround("DEM sample unavailable at aircraft")
+    }
 
     // A shallow sightline over falling terrain may stay above the ground for kilometres.
     // Search far enough to reach the visible terrain instead of sizing the DEM walk from
@@ -806,7 +887,8 @@ internal suspend fun projectClueLocationWithDemSamples(
 
     var previousDistanceM = 0.0
     var previousPoint = Pair(droneLat, droneLng)
-    var previousGroundM = flatGroundM
+    var previousGroundM = knownDemGroundM ?: flatGroundM
+    var coverageEnded = false
 
     var distanceM = stepM
     while (distanceM <= maxDistanceM + 0.001) {
@@ -816,8 +898,13 @@ internal suspend fun projectClueLocationWithDemSamples(
             bearingDeg = validHeading,
             distanceM = distanceM,
         )
-        val sampledCandidate = checkedSample(candidate.first, candidate.second)
+        val sampledCandidate = if (usingLocalDem) {
+            checkedLocalSample(candidate.first, candidate.second)
+        } else {
+            checkedSample(candidate.first, candidate.second)
+        }
         if (usingLocalDem && sampledCandidate?.source?.startsWith("usgs-geotiff-local-") != true) {
+            coverageEnded = true
             break
         }
         if (sampledCandidate == null) {
@@ -840,7 +927,6 @@ internal suspend fun projectClueLocationWithDemSamples(
         val rayAltitudeM = effectiveDroneAlt - (slopeDown * distanceM)
         if (rayAltitudeM <= groundM) {
             var lowDistanceM = previousDistanceM
-            var lowPoint = previousPoint
             var lowGroundM = previousGroundM
             var highDistanceM = distanceM
             var highPoint = candidate
@@ -854,7 +940,11 @@ internal suspend fun projectClueLocationWithDemSamples(
                     bearingDeg = validHeading,
                     distanceM = midDistanceM,
                 )
-                val midDemSample = checkedSample(midPoint.first, midPoint.second)
+                val midDemSample = if (usingLocalDem) {
+                    checkedLocalSample(midPoint.first, midPoint.second)
+                } else {
+                    checkedSample(midPoint.first, midPoint.second)
+                }
                 val midGroundM = normalizeDemGroundMeters(
                     candidateDemRaw = midDemSample?.elevationMeters,
                     droneDemRaw = droneDemRaw,
@@ -868,7 +958,6 @@ internal suspend fun projectClueLocationWithDemSamples(
                     highGroundM = midGroundM
                 } else {
                     lowDistanceM = midDistanceM
-                    lowPoint = midPoint
                     lowGroundM = midGroundM
                 }
             }
@@ -889,7 +978,10 @@ internal suspend fun projectClueLocationWithDemSamples(
         distanceM += stepM
     }
 
-    return flatProjection
+    return flatWithKnownGround(
+        if (coverageEnded) "local DEM coverage ended before ray intersection"
+        else "ray did not intersect DEM within search distance",
+    )
 }
 
 internal fun inferDemScaleToMeters(
@@ -1399,6 +1491,7 @@ class StreamsViewModel(
     internal val mapStreamFocusArrival = StreamFocusArrival()
     private var persistedMapViewportState: MapViewportState? = null
     private var clueProjectionJob: Job? = null
+    private var clueProjectionDebounceJob: Job? = null
     private val mutedComplianceAlertDesignators = mutableStateSetOf<String>()
     private val _overLimitDrones = MutableStateFlow<List<OverLimitDroneUiState>>(emptyList())
     val overLimitDrones: StateFlow<List<OverLimitDroneUiState>> = _overLimitDrones.asStateFlow()
@@ -2836,6 +2929,8 @@ class StreamsViewModel(
     fun updateClueGimbalAngle(gimbalAngleDeg: Double) {
         if (clueSaveInProgress) return
         _pendingClue.value = _pendingClue.value?.let { clue ->
+            val knownGround = clue.knownDemGroundMeters
+                ?: clue.alt.takeIf { clue.terrainProjectionApplied || clue.demSource != null }
             val projection = projectClueLocation(
                 droneLat = clue.droneLat,
                 droneLng = clue.droneLng,
@@ -2843,10 +2938,11 @@ class StreamsViewModel(
                 headingDeg = clue.headingDeg,
                 aglMeters = clue.projectionHeightMeters,
                 gimbalAngleDeg = gimbalAngleDeg,
+                knownGroundElevationMeters = knownGround,
             )
             CTDebug(tag, String.format(
                 Locale.US,
-                "updateClueGimbalAngle(): designator=%s bearingDeg=%s aglM=%s gimbalDeg=%.1f projectedLat=%.6f projectedLng=%.6f projectedAlt=%.1f",
+                "updateClueGimbalAngle(): designator=%s bearingDeg=%s aglM=%s gimbalDeg=%.1f projectedLat=%.6f projectedLng=%.6f projectedAlt=%.1f knownDemGround=%s",
                 clue.designator,
                 clue.headingDeg?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
                 clue.projectionHeightMeters?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
@@ -2854,6 +2950,7 @@ class StreamsViewModel(
                 projection.lat,
                 projection.lng,
                 projection.alt,
+                knownGround?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
             ))
             clue.copy(
                 lat = projection.lat,
@@ -2865,14 +2962,17 @@ class StreamsViewModel(
                 demSource = null,
                 demResolutionMeters = null,
                 demSampleStale = false,
+                knownDemGroundMeters = knownGround,
             )
-        }?.also { requestDemClueProjectionRefresh(it.designator) }
+        }?.also { scheduleDemClueProjectionRefresh(it.designator) }
     }
 
     fun updateClueCameraHeading(headingDeg: Double) {
         if (clueSaveInProgress) return
         val normalizedHeading = normalizeClueHeading(headingDeg) ?: return
         _pendingClue.value = _pendingClue.value?.let { clue ->
+            val knownGround = clue.knownDemGroundMeters
+                ?: clue.alt.takeIf { clue.terrainProjectionApplied || clue.demSource != null }
             val projection = projectClueLocation(
                 droneLat = clue.droneLat,
                 droneLng = clue.droneLng,
@@ -2880,6 +2980,7 @@ class StreamsViewModel(
                 headingDeg = normalizedHeading,
                 aglMeters = clue.projectionHeightMeters,
                 gimbalAngleDeg = clue.gimbalAngleDeg,
+                knownGroundElevationMeters = knownGround,
             )
             clue.copy(
                 lat = projection.lat,
@@ -2891,8 +2992,9 @@ class StreamsViewModel(
                 demSource = null,
                 demResolutionMeters = null,
                 demSampleStale = false,
+                knownDemGroundMeters = knownGround,
             )
-        }?.also { requestDemClueProjectionRefresh(it.designator) }
+        }?.also { scheduleDemClueProjectionRefresh(it.designator) }
     }
 
     private val clueUploadStartedAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
@@ -3143,6 +3245,7 @@ class StreamsViewModel(
         // report so edits and waypoint refreshes cannot change it during the save.
         // Submit publishes the nearest-waypoint position immediately. DEM refinement stays on the preview.
         clueSaveInProgress = true
+        clueProjectionDebounceJob?.cancel()
         clueProjectionJob?.cancel()
         pendingBindingJob?.cancel()
         viewModelScope.launch {
@@ -3286,6 +3389,8 @@ class StreamsViewModel(
     private fun clearPendingClue() {
         clueCaptureJob?.cancel()
         clueCaptureJob = null
+        clueProjectionDebounceJob?.cancel()
+        clueProjectionDebounceJob = null
         clueProjectionJob?.cancel()
         clueProjectionJob = null
         pendingBindingJob?.cancel()
@@ -3347,6 +3452,8 @@ class StreamsViewModel(
                     val origin = next.nearest
                     val moveOrigin = binding.originIsWaypoint && origin != null && origin != binding.nearest
                     _pendingClue.value = if (moveOrigin && origin != null) {
+                        val knownGround = clue.knownDemGroundMeters
+                            ?: clue.alt.takeIf { clue.terrainProjectionApplied || clue.demSource != null }
                         val projection = projectClueLocation(
                             droneLat = origin.latitude,
                             droneLng = origin.longitude,
@@ -3354,13 +3461,15 @@ class StreamsViewModel(
                             headingDeg = clue.headingDeg,
                             aglMeters = clue.projectionHeightMeters,
                             gimbalAngleDeg = clue.gimbalAngleDeg,
+                            knownGroundElevationMeters = knownGround,
                         )
                         CTDebug(tag, "Pending clue origin moved to nearer waypoint " +
                             org.ncssar.rid2caltopo.data.ClueBindingText.formSummary(next))
                         clue.copy(binding = next, droneLat = origin.latitude, droneLng = origin.longitude,
                             droneAlt = origin.altitudeMeters ?: clue.droneAlt,
                             lat = projection.lat, lng = projection.lng, alt = projection.alt,
-                            terrainProjectionApplied = false, demSource = null, demResolutionMeters = null, demSampleStale = false)
+                            terrainProjectionApplied = false, demSource = null, demResolutionMeters = null, demSampleStale = false,
+                            knownDemGroundMeters = knownGround)
                     } else {
                         clue.copy(binding = next)
                     }
@@ -3400,14 +3509,33 @@ class StreamsViewModel(
         }
     }
 
+    /**
+     * Debounced DEM refresh for slider-driven gimbal/heading edits. Capture and binding
+     * origin moves still call [requestDemClueProjectionRefresh] immediately.
+     */
+    private fun scheduleDemClueProjectionRefresh(designator: String) {
+        clueProjectionDebounceJob?.cancel()
+        clueProjectionDebounceJob = viewModelScope.launch {
+            delay(CLUE_DEM_REFRESH_DEBOUNCE_MS)
+            if (!isActive) return@launch
+            requestDemClueProjectionRefresh(designator)
+        }
+    }
+
     private fun requestDemClueProjectionRefresh(designator: String) {
         val clue = _pendingClue.value ?: return
         if (clue.designator != designator) return
         clueProjectionJob?.cancel()
+        val snapshotGimbal = clue.gimbalAngleDeg
+        val snapshotHeading = clue.headingDeg
+        val snapshotHeight = clue.projectionHeightMeters
         clueProjectionJob = viewModelScope.launch(Dispatchers.Default) {
-            val refined = refineCapturedClueTerrain(clue) { lat, lng ->
-                altitudeCoordinator.demElevationService.sampleElevationMeters(lat, lng)
-            }
+            val dem = altitudeCoordinator.demElevationService
+            val refined = refineCapturedClueTerrain(
+                clue,
+                sampleElevation = { lat, lng -> dem.sampleElevationMeters(lat, lng) },
+                sampleLocalElevation = { lat, lng -> dem.sampleLocalElevationMeters(lat, lng) },
+            )
             withContext(Dispatchers.Main) {
                 val current = _pendingClue.value ?: return@withContext
                 if (current.designator != clue.designator ||
@@ -3415,8 +3543,10 @@ class StreamsViewModel(
                     current.droneLat != clue.droneLat ||
                     current.droneLng != clue.droneLng ||
                     current.droneAlt != clue.droneAlt ||
-                    current.headingDeg != clue.headingDeg ||
-                    current.gimbalAngleDeg != clue.gimbalAngleDeg) {
+                    current.headingDeg != snapshotHeading ||
+                    current.projectionHeightMeters != snapshotHeight ||
+                    current.gimbalAngleDeg != snapshotGimbal) {
+                    CTDebug(tag, "requestDemClueProjectionRefresh($designator): discarded stale refinement")
                     return@withContext
                 }
                 _pendingClue.value = current.copy(
@@ -3427,6 +3557,9 @@ class StreamsViewModel(
                     terrainProjectionApplied = refined.terrainProjectionApplied,
                     demSource = refined.demSource, demResolutionMeters = refined.demResolutionMeters,
                     demSampleStale = refined.demSampleStale,
+                    knownDemGroundMeters = refined.knownDemGroundMeters
+                        ?: refined.alt.takeIf { refined.terrainProjectionApplied }
+                        ?: current.knownDemGroundMeters,
                 )
                 CTDebug(tag, String.format(
                     Locale.US,

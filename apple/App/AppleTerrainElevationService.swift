@@ -41,6 +41,26 @@ actor AppleTerrainElevationService {
         Task.detached(priority: .utility) { dem.warmCatalog() }
     }
 
+    /// Local GeoTIFF only. Does not consult EPQS or the point cache.
+    func sampleLocal(latitude: Double, longitude: Double) async -> OperationalTerrainSample? {
+        guard latitude.isFinite, longitude.isFinite,
+              (-90 ... 90).contains(latitude), (-180 ... 180).contains(longitude)
+        else { return nil }
+        if budgetGeneration != AppleUnifiedMapCache.generation {
+            localDEM.invalidateCatalog()
+            budgetGeneration = AppleUnifiedMapCache.generation
+        }
+        let localDEM = self.localDEM
+        guard let localSample = await Task.detached(priority: .utility, operation: {
+            localDEM.sample(latitude: latitude, longitude: longitude)
+        }).value else { return nil }
+        return OperationalTerrainSample(
+            elevationMeters: localSample.elevationMeters,
+            source: "usgs-geotiff-local-\(Int(localSample.horizontalResolutionMeters.rounded()))m",
+            horizontalResolutionMeters: localSample.horizontalResolutionMeters
+        )
+    }
+
     func sample(latitude: Double, longitude: Double) async -> OperationalTerrainSample? {
         guard latitude.isFinite, longitude.isFinite,
               (-90 ... 90).contains(latitude), (-180 ... 180).contains(longitude)
