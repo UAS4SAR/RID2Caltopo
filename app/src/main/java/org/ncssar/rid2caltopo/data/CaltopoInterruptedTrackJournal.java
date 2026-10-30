@@ -10,7 +10,6 @@ import org.ncssar.rid2caltopo.app.R2CApplication;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -263,13 +262,8 @@ public final class CaltopoInterruptedTrackJournal {
         if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
             throw new IllegalStateException("Could not create journal directory");
         }
-        File temporary = new File(parent, file.getName() + ".tmp");
-        Files.write(temporary.toPath(), root.toString().getBytes(StandardCharsets.UTF_8));
-        try {
-            Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (Exception ignored) {
-            Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
-        }
+        // .partial + fsync + verify + atomic move — same durability as flight archives.
+        PlainFileSafeWriter.replace(file, root.toString().getBytes(StandardCharsets.UTF_8), bytes -> bytes.length > 0);
         org.ncssar.rid2caltopo.storage.OperationalStorage.INSTANCE.retainLater(file);
     }
 

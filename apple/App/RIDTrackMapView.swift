@@ -2213,7 +2213,14 @@ struct RIDTrackMapView: View {
         .contentShape(Rectangle())
         .accessibilityLabel("Incident map")
         .accessibilityValue(liveViewMapTitle)
-
+        if clueStore.pendingUploadCount > 0 {
+            AppleOperationalStatusChipLabel(
+                title: "\(clueStore.pendingUploadCount) clue\(clueStore.pendingUploadCount == 1 ? "" : "s") pending",
+                tone: .caution
+            )
+            .accessibilityLabel("Pending clue uploads")
+            .accessibilityValue("\(clueStore.pendingUploadCount)")
+        }
     }
 
     private var usesAirspaceRestrictionStatus: Bool {

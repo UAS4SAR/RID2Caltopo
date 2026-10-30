@@ -248,15 +248,49 @@ class AndroidClueStore private constructor(
             .ifEmpty { "none" }
     }
 
+    /**
+     * Publish outcome. Permanent 4xx ([terminal]=true) keeps the clue as `failed` with
+     * [error] surfaced; never deletes the index row or photo.
+     */
     @Synchronized
     fun recordUploadResult(id: String, success: Boolean, error: String = "", terminal: Boolean = false) {
         val record = records[id] ?: return
-        records[id] = record.copy(uploadState = if (success) "published" else if (terminal) "failed" else "pending", lastUploadError = error)
+        records[id] = record.copy(
+            uploadState = if (success) "published" else if (terminal) "failed" else "pending",
+            lastUploadError = error,
+        )
         try {
             persistIndex()
         } catch (failure: Exception) {
             records[id] = record
             throw failure
+        }
+    }
+
+    /** Marks a pending clue as actively uploading (UI + Manage Storage visibility). */
+    @Synchronized
+    fun markUploading(id: String) {
+        val record = records[id] ?: return
+        if (!record.publishToCaltopo || record.uploadState == "published") return
+        if (record.uploadState == "uploading") return
+        records[id] = record.copy(uploadState = "uploading")
+        try {
+            persistIndex()
+        } catch (failure: Exception) {
+            records[id] = record
+            throw failure
+        }
+    }
+
+    /** Pending + failed publishable clues for the connected map (visibility / badges). */
+    @Synchronized
+    fun unpublishedForMap(mapId: String, teamId: String): List<AndroidClueRecord> {
+        if (!loaded) loadIndex()
+        return records.values.filter {
+            it.publishToCaltopo &&
+                (it.uploadState == "pending" || it.uploadState == "uploading" || it.uploadState == "failed") &&
+                mapId.isNotBlank() && teamId.isNotBlank() && it.mapKey == "map:$mapId" &&
+                org.ncssar.rid2caltopo.data.CluePublicationIdentity.sameTeam(it.destinationTeamId, teamId)
         }
     }
 
@@ -289,8 +323,12 @@ class AndroidClueStore private constructor(
                 for (index in 0 until array.length()) {
                     val json = array.optJSONObject(index) ?: throw java.io.IOException("Invalid clue index entry")
                     val record = json.toAndroidClueRecord() ?: throw java.io.IOException("Unreadable clue index entry")
+                    // A process kill mid-upload leaves "uploading"; treat as pending on reload.
+                    val normalized = if (record.uploadState == "uploading") {
+                        record.copy(uploadState = "pending")
+                    } else record
                     // Missing media can be temporary. Never discard its retained metadata.
-                    prepared[record.id] = record
+                    prepared[record.id] = normalized
                 }
             } catch (error: Exception) {
                 throw java.io.IOException("Clue index unavailable; original index and photos preserved", error)

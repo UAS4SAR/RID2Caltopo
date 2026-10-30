@@ -579,6 +579,16 @@ private fun localClueDetailText(marker: LocalMapMarker): String = buildString {
     )
     append("\nLocation: ")
     append(String.format(Locale.US, "%.5f, %.5f", marker.lat, marker.lng))
+    when (marker.uploadState) {
+        "pending", "uploading" -> append("\nUpload: ${marker.uploadState}")
+        "failed" -> {
+            append("\nUpload: failed")
+            if (marker.lastUploadError.isNotBlank()) {
+                append(" — ")
+                append(marker.lastUploadError.take(120))
+            }
+        }
+    }
     if (marker.description.isNotBlank()) {
         append("\n\n")
         append(marker.description.trim())
@@ -3657,7 +3667,11 @@ internal fun SplitMapPane(
                 }
 
                 viewModel.localMapMarkers.forEach { point ->
-                    val markerTitle = "Local: ${point.title}"
+                    val markerTitle = when (point.uploadState) {
+                        "pending", "uploading" -> "Local: ${point.title} (${point.uploadState})"
+                        "failed" -> "Local: ${point.title} (failed)"
+                        else -> "Local: ${point.title}"
+                    }
                     val markerSnippet = localClueDetailText(point)
                     val snapshot = viewModel.clueSnapshotForId(point.id) ?: viewModel.clueSnapshotForTitle(point.title)
                     val marker = Marker(mapView).apply {

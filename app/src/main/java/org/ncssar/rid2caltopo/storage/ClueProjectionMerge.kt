@@ -54,7 +54,10 @@ internal object ClueProjectionMerge {
                     archive = source.readText(),
                 )
                 target.parentFile!!.mkdirs()
-                target.writeText(merged)
+                org.ncssar.rid2caltopo.data.PlainFileSafeWriter.replace(
+                    target,
+                    merged.toByteArray(Charsets.UTF_8),
+                ) { it.isNotEmpty() }
                 return@forEach
             }
             if (target.isFile) {

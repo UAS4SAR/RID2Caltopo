@@ -30,6 +30,7 @@ final class AppleClueStore: ObservableObject {
     }
     @Published private(set) var reviewRevision = 0
     @Published private(set) var status = "No local clues"
+    @Published private(set) var pendingUploadCount = 0
 
     private let disk = OperationalWorkQueue(label: "org.ncssar.clues.disk")
     private var initialLoad: Task<Void, Never>?
@@ -45,6 +46,7 @@ final class AppleClueStore: ObservableObject {
     private var trackFolderID: String?
     private var folderResolver = CaltopoTrackFolderResolver()
     private var uploadTasks: [UUID: Task<Void, Never>] = [:]
+    private var integrityScanDone = false
     /// Called after a clue is saved or deleted, so a finished flight's KMZ can be rebuilt.
     var clueChanged: ((OperationalClueRecord) -> Void)?
 
@@ -59,6 +61,7 @@ final class AppleClueStore: ObservableObject {
                 guard let self else { return }
                 self.records = loaded
                 self.updateStatus()
+                await self.performDurabilityIntegrityScan()
             } catch {
                 guard let self else { return }
                 self.indexLoadFailed = true
@@ -103,7 +106,14 @@ final class AppleClueStore: ObservableObject {
         }
     }
 
-    private func resumePendingUploads(generation: Int) async {
+    /// Network-path wake and startup: re-enqueue pending/failed uploads without reconfiguring.
+    func resume() {
+        guard client != nil, !teamID.isEmpty else { return }
+        let generation = configurationGeneration
+        Task { await resumePendingUploads(generation: generation) }
+    }
+
+    func resumePendingUploads(generation: Int) async {
         await initialLoad?.value
         guard generation == configurationGeneration else { return }
         // Publish connected-map clues before awaiting-map binding. A journal failure must not pause them.
@@ -419,8 +429,9 @@ final class AppleClueStore: ObservableObject {
                     try? await self.persistIndex()
                     self.updateStatus()
                     if case let CaltopoLiveClientError.httpStatus(code, _) = error,
-                       [400, 401, 403, 404, 413, 422].contains(code) {
-                        // Real auth failures stop. Do not spin on 401/403.
+                       ClueTrackDurabilityIntegrity.isPermanentClientFailure(statusCode: code) {
+                        // Keep the record as failed; never delete. Media-probe 400/404
+                        // is handled inside publishPhotoClue and does not reach here as stop.
                         break
                     }
                     // Match Android: 2 s doubling, capped at 60 s. One uploadTasks owner per id.
@@ -487,19 +498,52 @@ final class AppleClueStore: ObservableObject {
                 _ = try root.resourceValues(forKeys: [.isDirectoryKey])
                 var missing: Set<UUID> = []
                 for record in snapshot {
-                    do { _ = try root.appendingPathComponent(record.imageFilename).resourceValues(forKeys: [.isRegularFileKey]) }
-                    catch let error as CocoaError where error.code == .fileReadNoSuchFile { missing.insert(record.id) }
+                    do {
+                        let values = try root.appendingPathComponent(record.imageFilename)
+                            .resourceValues(forKeys: [.isRegularFileKey])
+                        if values.isRegularFile != true { missing.insert(record.id) }
+                    } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+                        missing.insert(record.id)
+                    }
                 }
-                return (missing, snapshot.filter { !missing.contains($0.id) })
+                // Keep index rows; flag missing photos. Operator delete alone removes metadata.
+                let flagged = ClueTrackDurabilityIntegrity.flagMissingPhotos(in: snapshot, missingIDs: missing)
+                return (missing, flagged.records, flagged.flagged)
             }
             guard revision == reviewRevision, !Task.isCancelled else { return }
             if !prepared.0.isEmpty {
                 for id in prepared.0 { uploadTasks.removeValue(forKey: id)?.cancel() }
                 records = prepared.1
+                if prepared.2 > 0 { try? await persistIndex() }
             }
             updateStatus()
         } catch {
             status = "Clue storage is unavailable; saved history has been kept."
+        }
+    }
+
+    /// Startup scan: orphan photos → re-index; index without photo → keep + failed.
+    func runDurabilityIntegrityScan() async {
+        await initialLoad?.value
+        await performDurabilityIntegrityScan()
+    }
+
+    private func performDurabilityIntegrityScan() async {
+        guard !integrityScanDone, !indexLoadFailed else { return }
+        integrityScanDone = true
+        let snapshot = records, root = self.root
+        do {
+            let result = try await disk.run {
+                try ClueTrackDurabilityIntegrity.scan(root: root, records: snapshot)
+            }
+            if result.summary.orphanPhotosReindexed > 0 || result.summary.missingPhotoFlagged > 0 {
+                records = result.records
+                try? await persistIndex()
+            }
+            updateStatus()
+            AppleLog.info("Clue", result.summary.description)
+        } catch {
+            AppleLog.warning("Clue", "Durability integrity scan failed: \(error.localizedDescription)")
         }
     }
 
@@ -523,7 +567,8 @@ final class AppleClueStore: ObservableObject {
 
     private func updateStatus() {
         guard !indexLoadFailed else { return }
-        let pending = records.filter { $0.uploadState == .pending || $0.uploadState == .uploading || $0.uploadState == .failed }.count
+        let pending = ClueTrackDurabilityIntegrity.pendingUploadCount(in: records)
+        pendingUploadCount = pending
         status = records.isEmpty ? "No local clues" : "\(records.count) local clues\(pending > 0 ? "; \(pending) awaiting CalTopo" : "")"
     }
 

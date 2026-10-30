@@ -246,7 +246,8 @@ public class CaltopoSession {
     @NonNull
     private static synchronized ExecutorService GetPhotoWaypointExecutorPool() {
         if (PhotoWaypointExecutorPool == null || PhotoWaypointExecutorPool.isShutdown() || PhotoWaypointExecutorPool.isTerminated()) {
-            PhotoWaypointExecutorPool = Executors.newFixedThreadPool(1);
+            // Bounded parallelism so one stalled photo/clue upload cannot serialize all others.
+            PhotoWaypointExecutorPool = Executors.newFixedThreadPool(3);
         }
         return PhotoWaypointExecutorPool;
     }

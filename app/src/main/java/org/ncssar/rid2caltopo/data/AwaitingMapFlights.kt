@@ -4,8 +4,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.ncssar.rid2caltopo.app.R2CApplication
 import java.io.File
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 import java.util.UUID
 
 /** Durable per-flight destination choices; only unassigned Publish decisions are offered for review. */
@@ -50,9 +48,8 @@ object AwaitingMapFlights {
     private fun save() {
         val file = file() ?: return
         file.parentFile?.mkdirs()
-        val tmp = File(file.parentFile, file.name + ".tmp")
-        tmp.writeText(entries.toString())
-        Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        // .partial + fsync + verify + atomic move — same durability as flight archives.
+        PlainFileSafeWriter.replace(file, entries.toString().toByteArray(Charsets.UTF_8)) { it.isNotEmpty() }
         org.ncssar.rid2caltopo.storage.OperationalStorage.retainLater(file)
     }
     private fun all() = (0 until entries.length()).mapNotNull { entries.optJSONObject(it) }

@@ -105,6 +105,12 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     private volatile String liveTrackId;
     private volatile String requestedLiveTrackId;
     private String publicationMapId;
+    /**
+     * Stable WaypointTrackJournal flight key for this LiveTrack segment. Chosen on the
+     * first accepted point (publication id when known; otherwise a local RidFlightId) and
+     * held for the segment so ANR/kill before liveTrackId still recovers every point.
+     */
+    @Nullable private String durableJournalFlightId;
 
     static boolean hasActivePublication(String id) {
         for (CaltopoLiveTrack track : LiveTrackByRemoteId.values()) {
@@ -245,6 +251,8 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         linePoints.add(new QueuedPoint(effectiveLat, effectiveLng, effectiveEle, droneTimestampInMsec,
                 droneSpec.getLastPositionTelemetry(), cameraTelemetry));
         queuedPointCount.set(linePoints.size());
+        appendDurableJournalPointLocked(effectiveLat, effectiveLng, effectiveEle, droneTimestampInMsec,
+                System.currentTimeMillis(), "live");
         notifyLocalTrackPoint(effectiveLat, effectiveLng, effectiveEle, droneTimestampInMsec);
         linePointsSentCount = linePointsConfirmedCount = consecutiveUpdateFails = 0;
 
@@ -280,6 +288,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         if (!label.isEmpty()) segmentTrackLabel = label;
 
         trackObservedStartedAtMs = trackObservedEndedAtMs = startedAtMs;
+        durableJournalFlightId = null;
         lastSeiPositionTimestampMs = 0L;
         thumbnailMetadataRefreshOp = null;
         lastThumbnailMetadataRevision = "";
@@ -291,6 +300,8 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         linePoints.add(new QueuedPoint(effectiveLat, effectiveLng, effectiveEle, droneTimestampInMsec,
                 droneSpec.getLastPositionTelemetry(), cameraTelemetry));
         queuedPointCount.set(linePoints.size());
+        appendDurableJournalPointLocked(effectiveLat, effectiveLng, effectiveEle, droneTimestampInMsec,
+                System.currentTimeMillis(), "live");
         long notifyStartedAtMs = System.currentTimeMillis();
         notifyLocalTrackPoint(effectiveLat, effectiveLng, effectiveEle, droneTimestampInMsec);
         logSideEffectIfSlow("startNewTrack.notifyLocalTrackPoint", myRemoteId, droneSpec.getMappedId(),
@@ -677,14 +688,21 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         final String orphanDeleteId;
         final String orphanDeleteMap;
         final boolean notifyPeer;
+        @Nullable final String durableJournalId;
         DisconnectFinishWork(JournalSnapshot snapshot, JSONObject feature, String archiveId,
                              String orphanDeleteId, String orphanDeleteMap, boolean notifyPeer) {
+            this(snapshot, feature, archiveId, orphanDeleteId, orphanDeleteMap, notifyPeer, null);
+        }
+        DisconnectFinishWork(JournalSnapshot snapshot, JSONObject feature, String archiveId,
+                             String orphanDeleteId, String orphanDeleteMap, boolean notifyPeer,
+                             @Nullable String durableJournalId) {
             this.snapshot = snapshot;
             this.feature = feature;
             this.archiveId = archiveId;
             this.orphanDeleteId = orphanDeleteId;
             this.orphanDeleteMap = orphanDeleteMap;
             this.notifyPeer = notifyPeer;
+            this.durableJournalId = durableJournalId;
         }
     }
 
@@ -772,6 +790,9 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                     // this worker — not from a gateway callback that may hop to Main.
                     CaltopoInterruptedTrackJournal.remove(archivedLiveTrackId);
                     AwaitingMapFlights.published(archivedLiveTrackId);
+                    if (work.durableJournalId != null) {
+                        WaypointTrackJournal.markFinishedAndRemove(work.durableJournalId);
+                    }
                 } else {
                     CTWarn(TAG, String.format(Locale.US,
                             "disconnect-finish(%s): archive failed; journal retained",
@@ -806,6 +827,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             }
         }
         String archiveId = liveTrackId != null ? liveTrackId : requestedLiveTrackId;
+        String journalId = durableJournalFlightId;
         if (active && archiveId != null) {
             CTDebug(TAG, String.format(Locale.US, "disconnect-finish. Terminating '%s'",
                     droneSpec.trackLabel()));
@@ -814,17 +836,17 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                 String map = publicationMapId != null ? publicationMapId : destinationMap;
                 localOwner = false;
                 clearLiveTrackState();
-                return new DisconnectFinishWork(null, null, null, archiveId, map, wasActive);
+                return new DisconnectFinishWork(null, null, null, archiveId, map, wasActive, journalId);
             }
             JournalSnapshot snapshot = journalSnapshot("");
             JSONObject feature = buildArchiveFeatureLocked(archiveId);
             localOwner = false;
             clearLiveTrackState();
-            return new DisconnectFinishWork(snapshot, feature, archiveId, null, null, wasActive);
+            return new DisconnectFinishWork(snapshot, feature, archiveId, null, null, wasActive, journalId);
         }
         localOwner = false;
         clearLiveTrackState();
-        return new DisconnectFinishWork(null, null, null, null, null, wasActive);
+        return new DisconnectFinishWork(null, null, null, null, null, wasActive, journalId);
     }
 
     @Nullable
@@ -941,10 +963,20 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         final String[] trackCandidates;
         final boolean resetPhysicalSegment;
         final String physicalSegmentLabel;
+        @Nullable final String durableJournalId;
         ArchiveWork(boolean skip, String trackLabel, String orphanDeleteId, String orphanDeleteMap,
                     JournalSnapshot journalSnapshot, JSONObject feature, String archiveId, int pointCount,
                     long trackStartedAtMs, long trackEndedAtMs, String[] trackCandidates,
                     boolean resetPhysicalSegment, String physicalSegmentLabel) {
+            this(skip, trackLabel, orphanDeleteId, orphanDeleteMap, journalSnapshot, feature, archiveId,
+                    pointCount, trackStartedAtMs, trackEndedAtMs, trackCandidates,
+                    resetPhysicalSegment, physicalSegmentLabel, null);
+        }
+        ArchiveWork(boolean skip, String trackLabel, String orphanDeleteId, String orphanDeleteMap,
+                    JournalSnapshot journalSnapshot, JSONObject feature, String archiveId, int pointCount,
+                    long trackStartedAtMs, long trackEndedAtMs, String[] trackCandidates,
+                    boolean resetPhysicalSegment, String physicalSegmentLabel,
+                    @Nullable String durableJournalId) {
             this.skip = skip;
             this.trackLabel = trackLabel;
             this.orphanDeleteId = orphanDeleteId;
@@ -958,6 +990,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             this.trackCandidates = trackCandidates;
             this.resetPhysicalSegment = resetPhysicalSegment;
             this.physicalSegmentLabel = physicalSegmentLabel;
+            this.durableJournalId = durableJournalId;
         }
     }
 
@@ -1007,6 +1040,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         JournalSnapshot snapshot = journalSnapshot("");
         long startedAtMs = trackObservedStartedAtMs;
         long endedAtMs = trackObservedEndedAtMs;
+        String journalId = durableJournalFlightId;
         String[] candidates = new String[] {
                 droneSpec.getMappedId(),
                 droneSpec.getRemoteId(),
@@ -1019,7 +1053,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         localOwner = false;
         clearLiveTrackStateLocked();
         return new ArchiveWork(false, trackLabel, null, null, snapshot, feature, archiveId, size,
-                startedAtMs, endedAtMs, candidates, resetPhysical, physicalLabel);
+                startedAtMs, endedAtMs, candidates, resetPhysical, physicalLabel, journalId);
     }
 
     private boolean prepareResetPhysicalSegmentLocked() {
@@ -1099,6 +1133,9 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                     if (!success) return;
                     CaltopoInterruptedTrackJournal.remove(archivedLiveTrackId);
                     AwaitingMapFlights.published(archivedLiveTrackId);
+                    if (work.durableJournalId != null) {
+                        WaypointTrackJournal.markFinishedAndRemove(work.durableJournalId);
+                    }
                     if (archiveDescription.isEmpty()) {
                         scheduleDeferredVideoDescriptionUpdate(
                                 feature,
@@ -1147,6 +1184,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         linePoints.clear();
         queuedPointCount.set(0);
         liveTrackId = null;
+        durableJournalFlightId = null;
         linePointsSentCount = linePointsConfirmedCount = consecutiveUpdateFails = 0;
         startLiveTrackOp = null;
         active = false;
@@ -1485,6 +1523,23 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         }
     }
 
+    /**
+     * Internet restored: retry LiveTrack start / point flush for owned active tracks.
+     * Must be invoked off Main; does not run archive or interrupted-journal recovery.
+     */
+    public static void wakePublicationAfterInternetRestored() {
+        CaltopoRecoveryWork.requireOffMain();
+        for (CaltopoLiveTrack liveTrack : new LinkedList<>(LiveTrackByRemoteId.values())) {
+            try {
+                CaltopoRecoveryWork.offMainStart(liveTrack::ensureLiveTrackStarted);
+                CaltopoRecoveryWork.offMainStart(() -> liveTrack.forwardNextWaypoints(null));
+            } catch (Exception error) {
+                CTWarn(TAG, "wakePublicationAfterInternetRestored raised for "
+                        + liveTrack.myRemoteId, error);
+            }
+        }
+    }
+
     private synchronized void startLiveTrackComplete(CaltopoOp op) {
         startInFlight = false;
         startLiveTrackOp = op;
@@ -1601,6 +1656,9 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                     telemetry, cameraTelemetry));
             queuedPointCount.set(linePoints.size());
             trackObservedEndedAtMs = System.currentTimeMillis();
+            // Per-point durable journal — do not wait for liveTrackId / requestedLiveTrackId.
+            appendDurableJournalPointLocked(effectiveLat, effectiveLng, effectiveAltitudeMeters,
+                    timestampMsec, System.currentTimeMillis(), "live");
             scheduleInterruptedPublication(false);
             CTDebug(TAG, String.format(Locale.US,
                     "queueWaypoint(%s/localOwner=%s/%s): waypoint queued. size=%d sent=%d confirmed=%d errors=%d notify=%s",
@@ -1643,6 +1701,56 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         }
         logSideEffectIfSlow("queueWaypoint.total", myRemoteId, droneSpec.getMappedId(),
                 System.currentTimeMillis() - startedAtMs);
+    }
+
+    /**
+     * Resolve / open the append-only WaypointTrackJournal for this segment.
+     * Prefer durable publication ids; otherwise a stable local RidFlightId so recovery
+     * can promote into AwaitingMapFlights without waiting for CalTopo LiveTrack create.
+     * Must hold the track monitor.
+     */
+    @NonNull
+    private String ensureDurableJournalOpenLocked() {
+        if (durableJournalFlightId != null && !durableJournalFlightId.isEmpty()) {
+            return durableJournalFlightId;
+        }
+        String mapId = publicationMapId != null ? publicationMapId : CaltopoMap.GetMapId();
+        if (mapId == null) mapId = "";
+        String flightId = null;
+        if (liveTrackId != null && !liveTrackId.isEmpty()) {
+            flightId = liveTrackId;
+        } else if (requestedLiveTrackId != null && !requestedLiveTrackId.isEmpty()) {
+            flightId = requestedLiveTrackId;
+        } else {
+            String publication = AwaitingMapFlights.publicationId(myRemoteId, mapId);
+            if (publication != null && !publication.isEmpty()) {
+                flightId = publication;
+            } else {
+                String reserved = AwaitingMapFlights.reservedPublicationId(myRemoteId);
+                if (reserved != null && !reserved.isEmpty()) flightId = reserved;
+            }
+        }
+        if (flightId == null || flightId.isEmpty()) {
+            long started = trackObservedStartedAtMs > 0 ? trackObservedStartedAtMs : System.currentTimeMillis();
+            String aircraft = myRemoteId != null && !myRemoteId.isEmpty() ? myRemoteId : segmentTrackLabel;
+            flightId = RidFlightId.make(aircraft, started);
+        }
+        durableJournalFlightId = flightId;
+        WaypointTrackJournal.ensureOpen(
+                flightId,
+                myRemoteId == null ? "" : myRemoteId,
+                segmentTrackLabel,
+                mapId,
+                AwaitingMapFlights.selectedPublicationScope());
+        return flightId;
+    }
+
+    /** Must hold the track monitor. I/O is queued off this thread by WaypointTrackJournal. */
+    private void appendDurableJournalPointLocked(
+            double lat, double lng, double ele, long timestampMsec, long receivedAtMs, @NonNull String source) {
+        String flightId = ensureDurableJournalOpenLocked();
+        WaypointTrackJournal.appendPoint(
+                flightId, lat, lng, ele, timestampMsec, receivedAtMs, source, true);
     }
 
     /** Called with the track monitor; only copies in-memory geometry here. */

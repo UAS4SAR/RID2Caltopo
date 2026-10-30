@@ -28,4 +28,17 @@ class ClueUploadBackoffTest {
         assertEquals(2_000L, table.nextDelayMs("fresh"))
         assertEquals(4_000L, table.backoff("old").peekMs())
     }
+
+    @Test fun timeoutAnd5xxSharePerClueScheduleWithoutBlockingPeers() {
+        val table = ClueUploadBackoffTable()
+        // Simulate clue A hitting 502 / timeout storm.
+        assertEquals(2_000L, table.nextDelayMs("a"))
+        table.markDelayedUntil("a", 8_000L)
+        assertEquals(4_000L, table.nextDelayMs("a"))
+        table.markDelayedUntil("a", 20_000L)
+        // Clue B remains immediately ready.
+        assertTrue(table.isReady("b", 9_000L))
+        assertFalse(table.isReady("a", 9_000L))
+        assertEquals(2_000L, table.nextDelayMs("b"))
+    }
 }

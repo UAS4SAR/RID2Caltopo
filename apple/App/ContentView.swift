@@ -1157,6 +1157,10 @@ struct ContentView: View {
                         _ = await AppleAircraftOrganizationAccess.refresh(baseURL: AppleAircraftOrganizationAccess.scope)
                     }
                 }
+                // Resume clue uploads and interrupted LiveTrack recovery when connectivity returns.
+                // Heavy network work stays off MainActor inside those helpers.
+                clueStore.resume()
+                ridTracks.retryInterruptedLiveTrackRecovery()
             }
             .onChange(of: networkDiagnostics.currentSnapshotID) { _, _ in
                 refreshControllerRTMPURL()
@@ -2403,6 +2407,10 @@ struct ContentView: View {
             LabeledContent("Invalid observation", value: String(ridTracks.invalidObservationCount))
             LabeledContent("Archived tracks", value: String(ridTracks.archivedTrackCount))
             Text(ridTracks.archiveStatus).font(.caption).foregroundStyle(.secondary)
+            if clueStore.pendingUploadCount > 0 {
+                LabeledContent("Pending clue uploads", value: String(clueStore.pendingUploadCount))
+            }
+            Text(clueStore.status).font(.caption).foregroundStyle(.secondary)
             LabeledContent("Tracker archive", value: ridTracks.trackerArchiveStatus)
             Text("Files › On My iPad › RID2Caltopo › RID2Caltopo › FlightStorage")
                 .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
@@ -3105,7 +3113,10 @@ struct ContentView: View {
                 maintain: {
                     guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
                     mediaMTX.ensureHealthy(captureStreams: captureStreams)
-                    Task { await clueStore.pruneDeletedStorage() }
+                    Task {
+                        await clueStore.runDurabilityIntegrityScan()
+                        await clueStore.pruneDeletedStorage()
+                    }
                 },
                 status: {
                     let freshness = AlertTrackFreshnessSummary(

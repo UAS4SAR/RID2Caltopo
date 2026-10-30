@@ -70,6 +70,8 @@ public struct WaypointTrackAppendJournal: Sendable {
         }
     }
 
+    /// Reads unfinished journals without deleting them. Call `acknowledgeRecovered`
+    /// only after the awaiting-map (or equivalent) durable record has succeeded.
     public func recoverUnfinished() async throws -> [RecoveredFlight] {
         try await disk.run {
             try FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
@@ -86,9 +88,17 @@ public struct WaypointTrackAppendJournal: Sendable {
                     continue
                 }
                 recovered.append(flight)
-                try? FileManager.default.removeItem(at: fileURL)
             }
             return recovered
+        }
+    }
+
+    /// Deletes a recovered journal after durable awaiting-map commit succeeded.
+    public func acknowledgeRecovered(flightID: String) async throws {
+        try await disk.run {
+            let fileURL = self.fileURL(flightID)
+            guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
+            try FileManager.default.removeItem(at: fileURL)
         }
     }
 

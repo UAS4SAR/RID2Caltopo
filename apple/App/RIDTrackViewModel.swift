@@ -74,22 +74,28 @@ final class RIDTrackViewModel: ObservableObject {
         do {
             let recovered = try await waypointAppendJournal.recoverUnfinished()
             for flight in recovered {
-                try await awaitingMapJournal.record(
-                    remoteID: flight.remoteID,
-                    label: flight.label,
-                    observations: flight.observations,
-                    mapID: flight.mapID,
-                    teamID: flight.teamID,
-                    finished: false,
-                    flightID: flight.id)
-                try await awaitingMapJournal.record(
-                    remoteID: flight.remoteID,
-                    label: flight.label,
-                    observations: flight.observations,
-                    mapID: flight.mapID,
-                    teamID: flight.teamID,
-                    finished: true,
-                    flightID: flight.id)
+                do {
+                    try await awaitingMapJournal.record(
+                        remoteID: flight.remoteID,
+                        label: flight.label,
+                        observations: flight.observations,
+                        mapID: flight.mapID,
+                        teamID: flight.teamID,
+                        finished: false,
+                        flightID: flight.id)
+                    try await awaitingMapJournal.record(
+                        remoteID: flight.remoteID,
+                        label: flight.label,
+                        observations: flight.observations,
+                        mapID: flight.mapID,
+                        teamID: flight.teamID,
+                        finished: true,
+                        flightID: flight.id)
+                    try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
+                } catch {
+                    // Leave the .ndjson until awaiting-map commit succeeds on a later pass.
+                    archiveStatus = "Could not commit recovered track \(flight.label): \(error.localizedDescription)"
+                }
             }
         } catch {
             archiveStatus = "Could not recover unfinished tracks: \(error.localizedDescription)"
@@ -108,7 +114,7 @@ final class RIDTrackViewModel: ObservableObject {
                     mapID: mapID, teamID: teamID)
                 try await waypointAppendJournal.append(observation: observation, flightID: flightID)
             } catch {
-                // Live ingest continues; awaiting-map snapshots remain a secondary durability path.
+                archiveStatus = "Waypoint journal write failed: \(error.localizedDescription)"
             }
         }
     }
@@ -952,6 +958,13 @@ final class RIDTrackViewModel: ObservableObject {
         }
     }
 
+    /// Network-path wake: resume interrupted LiveTrack archive recovery off MainActor.
+    func retryInterruptedLiveTrackRecovery() {
+        Task { [caltopoPublisher] in
+            await caltopoPublisher.retryInterruptedPublications()
+        }
+    }
+
     /// Awaitable map configure/disconnect used by quit / scene teardown so owned LiveTracks
     /// finish before the CalTopo client and tracker websocket are torn down. UI Disconnect
     /// must use configureCaltopo so MainActor stays responsive.
@@ -1572,8 +1585,11 @@ final class RIDTrackViewModel: ObservableObject {
         label: String,
         observation: RidObservation
     ) -> Task<Void, Never> {
-        guard awaitingMapHistoryReady, awaitingMapHistoryError == nil else { return Task { } }
-        let deferred = awaitingOpenFlights[remoteID]
+        // LiveTrack must publish even when awaiting-map history is corrupt/unloadable.
+        // Review UI stays degraded via awaitingMapHistoryError; clues already upload without it.
+        let deferred = (awaitingMapHistoryReady && awaitingMapHistoryError == nil)
+            ? awaitingOpenFlights[remoteID]
+            : nil
         if let deferred, deferred.decision == "review", deferred.mapID.isEmpty, !publicationMapID.isEmpty {
             return Task { [weak self] in
                 await self?.bindOpenReviewIfNeeded(remoteID: remoteID)

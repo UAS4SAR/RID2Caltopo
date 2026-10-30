@@ -209,10 +209,11 @@ public actor CaltopoLiveClient {
     private let personalTransport: URLSession?
     private let fullMapReads: CaltopoFullMapReads
     private let snapshotReads: CaltopoSnapshotReads
-    /// Separate lanes so Shape archive / DELETE cannot occupy the same serial
-    /// executor as LiveTrack create and position reports.
+    /// Separate lanes so Shape archive / DELETE and clue media POSTs cannot
+    /// occupy the same serial executor as LiveTrack create and position reports.
     private let startLane: CaltopoNetworkLane
     private let archiveLane: CaltopoNetworkLane
+    private let clueLane: CaltopoNetworkLane
     private static let positionReports = LatestPositionReports(intervalProvider: {
         let stored = UserDefaults.standard.object(forKey: OperationalThumbnailRefreshInterval.storageKey) as? Double
         return .seconds(OperationalThumbnailRefreshInterval.normalized(stored))
@@ -243,6 +244,7 @@ public actor CaltopoLiveClient {
         self.snapshotReads = snapshotReads ?? (session === URLSession.shared ? .shared : CaltopoSnapshotReads())
         self.startLane = CaltopoNetworkLane(session: session)
         self.archiveLane = CaltopoNetworkLane(session: session)
+        self.clueLane = CaltopoNetworkLane(session: session)
         if configuration.personalSessionID != nil {
             let transport = session.configuration
             transport.timeoutIntervalForRequest = Self.requestTimeoutSeconds
@@ -468,8 +470,9 @@ public actor CaltopoLiveClient {
         if let id = configuration.personalSessionID {
             try await CaltopoPersonalSessions.shared.authorizeMedia(id, mediaID: clue.mediaID)
         }
+        // Clue media must not share startLane: 502 retries would HOL-block LiveTrack create/points.
         func acknowledged(_ request: URLRequest) async throws -> Data {
-            let data = try await perform(request)
+            let data = try await perform(request, lane: clueLane)
             guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   envelope["status"] as? String == "ok", envelope["error"] == nil
             else { throw CaltopoLiveClientError.httpStatus(502, "Photo upload was not acknowledged; retained for retry.") }
@@ -492,7 +495,8 @@ public actor CaltopoLiveClient {
         do {
             // Probe with perform — not acknowledged — so a CalTopo 400/404 "absent"
             // stays 400/404 instead of being rewritten into a false 502 envelope failure.
-            let data = try await perform(makeMediaSnapshotRequest(mediaID: clue.mediaID, now: now))
+            // Probe 400/404 is not a store-level permanent stop; media is simply absent.
+            let data = try await perform(makeMediaSnapshotRequest(mediaID: clue.mediaID, now: now), lane: clueLane)
             guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   envelope["status"] as? String == "ok", envelope["error"] == nil
             else { throw CaltopoLiveClientError.httpStatus(502, "Photo upload was not acknowledged; retained for retry.") }

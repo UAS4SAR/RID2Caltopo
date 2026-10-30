@@ -3,7 +3,7 @@ import Testing
 @testable import R2CCore
 
 @Suite struct WaypointTrackAppendJournalTests {
-    @Test func uncleanExitRecoversUnfinishedPoints() async throws {
+    @Test func uncleanExitRecoversUnfinishedPointsWithoutDeletingUntilAck() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("waypoint-journals-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -26,8 +26,41 @@ import Testing
         #expect(recovered[0].id == flightID)
         #expect(recovered[0].observations.count == 2)
         #expect(recovered[0].label == "1sar7DjMtrc4td_143651Oct30")
-        let leftover = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-        #expect(leftover.isEmpty)
+        // Journal must survive until awaiting-map commit is acknowledged.
+        let leftoverAfterRecover = try FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil)
+        #expect(leftoverAfterRecover.count == 1)
+        #expect(leftoverAfterRecover[0].pathExtension == "ndjson")
+
+        try await journal.acknowledgeRecovered(flightID: flightID)
+        let leftoverAfterAck = try FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil)
+        #expect(leftoverAfterAck.isEmpty)
+    }
+
+    @Test func killBetweenRecoverAndAwaitingMapCommitLeavesJournalForRetry() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("waypoint-journals-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = WaypointTrackAppendJournal(directory: directory)
+        let flightID = "flight-kill-mid-commit"
+        try await journal.ensureOpen(
+            flightID: flightID, remoteID: "RID-K", label: "label", mapID: "map", teamID: "team")
+        try await journal.append(
+            observation: RidObservation(
+                source: .wifiBeacon, aircraftId: "RID-K", receivedAt: Date(),
+                latitude: 1, longitude: 2, altitudeMeters: 3),
+            flightID: flightID)
+
+        let firstPass = try await journal.recoverUnfinished()
+        #expect(firstPass.count == 1)
+        // Simulate process death before awaiting-map record / acknowledgeRecovered.
+        let secondPass = try await journal.recoverUnfinished()
+        #expect(secondPass.count == 1)
+        #expect(secondPass[0].id == flightID)
+        #expect(secondPass[0].observations.count == 1)
+        try await journal.acknowledgeRecovered(flightID: flightID)
+        #expect(try await journal.recoverUnfinished().isEmpty)
     }
 
     @Test func finishedJournalIsNotRecovered() async throws {

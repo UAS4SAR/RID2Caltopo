@@ -41,12 +41,31 @@ object NetworkCheckRecovery {
                 AirspaceCenter.requestImmediateRefresh()
                 NotamCenter.requestImmediateRefresh()
                 LandRestrictionCenter.requestImmediateRefresh()
+                // Connectivity callbacks can run on Main — never block it with disk/network.
                 trackerExecutor.execute {
                     if (!CaltopoClient.IsExitRequested()) {
                         org.ncssar.rid2caltopo.data.TrackerEnrollmentClient.retryManagedConfigurationBootstrap(context.applicationContext)
                         if (org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.belongsToOrganization()) {
                             org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.refresh()
                         }
+                    }
+                }
+                trackerExecutor.execute {
+                    if (CaltopoClient.IsExitRequested()) return@execute
+                    try {
+                        org.ncssar.rid2caltopo.data.CaltopoMap.flushPendingCluesOnInternetRestored()
+                    } catch (error: Exception) {
+                        CaltopoClient.CTWarn("NetworkChecks", "Pending clue flush after reconnect raised", error)
+                    }
+                    try {
+                        org.ncssar.rid2caltopo.data.CaltopoMap.recoverInterruptedTracksOnInternetRestored()
+                    } catch (error: Exception) {
+                        CaltopoClient.CTWarn("NetworkChecks", "Interrupted LiveTrack recovery after reconnect raised", error)
+                    }
+                    try {
+                        org.ncssar.rid2caltopo.data.CaltopoLiveTrack.wakePublicationAfterInternetRestored()
+                    } catch (error: Exception) {
+                        CaltopoClient.CTWarn("NetworkChecks", "LiveTrack wake after reconnect raised", error)
                     }
                 }
             }

@@ -811,6 +811,11 @@ actor AppleCaltopoPublisher {
         }
     }
 
+    /// Network-path wake: retry interrupted LiveTrack archive recovery without waiting on clue work.
+    func retryInterruptedPublications() async {
+        await retryInterruptedPublications(generation: configurationGeneration)
+    }
+
     private func retryInterruptedPublications(generation: Int) async {
         if generation == configurationGeneration && !configurationTransitionInFlight { await retryMarkerCleanup() }
         guard generation == configurationGeneration, !configurationTransitionInFlight,

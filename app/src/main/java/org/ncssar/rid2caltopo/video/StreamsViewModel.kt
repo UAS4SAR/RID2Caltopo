@@ -51,6 +51,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -248,7 +250,9 @@ data class LocalMapMarker(
     val title: String,
     val description: String,
     val createdAtMs: Long,
-    val sourceDesignator: String
+    val sourceDesignator: String,
+    val uploadState: String = "legacy",
+    val lastUploadError: String = "",
 )
 
 data class ClueSnapshotRef(
@@ -267,6 +271,8 @@ private fun AndroidClueRecord.toLocalMapMarker(): LocalMapMarker = LocalMapMarke
     description = description,
     createdAtMs = createdAtMs,
     sourceDesignator = sourceDesignator,
+    uploadState = uploadState,
+    lastUploadError = lastUploadError,
 )
 
 fun removeLocalMapMarkerById(markers: MutableList<LocalMapMarker>, markerId: String): Boolean {
@@ -3002,6 +3008,7 @@ class StreamsViewModel(
     private val clueRetryLoggedAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val clueUploadBackoff = org.ncssar.rid2caltopo.data.ClueUploadBackoffTable()
     private var clueUploadOwner: kotlinx.coroutines.Job? = null
+    private val maxConcurrentClueUploads = 3
 
     /** Default logging is Debug. Info is Ludicrous, so skip lines must not use CTInfo. */
     private fun logClueRetry(reason: String, message: String, warn: Boolean = false) {
@@ -3019,7 +3026,16 @@ class StreamsViewModel(
     private fun beginClueUpload(id: String): Boolean {
         val now = android.os.SystemClock.elapsedRealtime()
         val startedAt = clueUploadStartedAtMs.putIfAbsent(id, now)
-        if (startedAt == null) return true
+        if (startedAt == null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                clueStorage {
+                    clueDiskMutex.withLock { localClueStore.markUploading(id) }
+                }.onSuccess {
+                    hydrateLocalClues(currentLocalClueMapKey())
+                }
+            }
+            return true
+        }
         if (now - startedAt < clueUploadStaleAfterMs) return false
         if (!clueUploadStartedAtMs.replace(id, startedAt, now)) return false
         CTWarn(tag, "retryPendingClues: cleared stale in-flight clue id=$id ageMs=${now - startedAt}")
@@ -3042,8 +3058,8 @@ class StreamsViewModel(
             logClueRetry("publication-team-blank", "retryPendingClues: skip reason=publication-team-blank")
             return
         }
-        // One serial owner; per-clue backoff must not block other pending ids. Skip only while
-        // that owner is alive — never because of a stale empty in-flight map.
+        // One owner loop; up to MAX_CONCURRENT_CLUE_UPLOADS in flight. Per-clue backoff must
+        // not block other ready ids — a 502 on one clue must not stall the rest.
         if (clueUploadOwner?.isActive == true) {
             logClueRetry(
                 "upload-in-flight",
@@ -3094,77 +3110,98 @@ class StreamsViewModel(
                         return@launch
                     }
                     val now = android.os.SystemClock.elapsedRealtime()
-                    // Freshly submitted clues first; skip ids still in per-clue backoff.
+                    val slots = (maxConcurrentClueUploads - clueUploadStartedAtMs.size).coerceAtLeast(0)
                     val ready = pending
                         .filter { clueUploadBackoff.isReady(it.id, now) && !clueUploadStartedAtMs.containsKey(it.id) }
                         .sortedByDescending { it.createdAtMs }
-                    val record = ready.firstOrNull()
-                    if (record == null) {
+                        .take(slots)
+                    if (ready.isEmpty()) {
+                        if (clueUploadStartedAtMs.isNotEmpty()) {
+                            kotlinx.coroutines.delay(200L)
+                            continue
+                        }
                         val wakeAt = pending.minOf { clueUploadBackoff.readyAt(it.id) }
                         val waitMs = (wakeAt - now).coerceAtLeast(50L).coerceAtMost(60_000L)
                         kotlinx.coroutines.delay(waitMs)
                         continue
                     }
-                    if (!beginClueUpload(record.id)) {
-                        logClueRetry("already-in-flight:${record.id}", "retryPendingClues: skip reason=already-in-flight id=${record.id}")
+                    val batch = ready.mapNotNull { record ->
+                        if (!beginClueUpload(record.id)) {
+                            logClueRetry(
+                                "already-in-flight:${record.id}",
+                                "retryPendingClues: skip reason=already-in-flight id=${record.id}",
+                            )
+                            return@mapNotNull null
+                        }
+                        logClueRetry(
+                            "uploading:${record.id}",
+                            "retryPendingClues: uploading id=${record.id} mapId=$mapId teamId=$teamId folder=$folder",
+                        )
+                        async(Dispatchers.IO) { uploadPendingClue(mapId, teamId, folder, record) }
+                    }
+                    if (batch.isEmpty()) {
+                        kotlinx.coroutines.delay(50L)
                         continue
                     }
-                    logClueRetry(
-                        "uploading:${record.id}",
-                        "retryPendingClues: uploading id=${record.id} mapId=$mapId teamId=$teamId folder=$folder",
-                    )
-                    val outcome = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
-                    try {
-                        withContext(Dispatchers.IO) {
-                            org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
-                                mapId, teamId, record.id, record.lat, record.lng, record.title,
-                                record.publishedDescription, folder, record.createdAtMs,
-                                localClueStore.imageFile(record).readBytes(),
-                            ) { result -> outcome.complete(result) }
-                            val result = outcome.await()
-                            val permanent = result.responseCode in listOf(400, 401, 403, 404, 413, 422)
-                            clueStorage {
-                                clueDiskMutex.withLock {
-                                    localClueStore.recordUploadResult(record.id, result.success(), result.responseString(), permanent)
-                                }
-                            }.onSuccess {
-                                hydrateLocalClues(currentLocalClueMapKey())
-                            }.onFailure { error ->
-                                CTError(tag, "Clue upload result could not be saved; retained for retry", Exception(error))
-                                CaltopoClient.ShowToast("Clue upload status could not be saved. Local photo retained; check storage. R2C will retry.")
-                            }
-                            endClueUpload(record.id)
-                            if (result.success()) {
-                                clueUploadBackoff.reset(record.id)
-                                return@withContext
-                            }
-                            val delayMs = clueUploadBackoff.nextDelayMs(record.id)
-                            clueUploadBackoff.markDelayedUntil(
-                                record.id,
-                                android.os.SystemClock.elapsedRealtime() + delayMs,
-                            )
-                            logClueRetry(
-                                "backoff:${record.id}",
-                                "retryPendingClues: backoffMs=$delayMs id=${record.id} code=${result.responseCode}",
-                                warn = true,
-                            )
-                        }
-                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                        endClueUpload(record.id)
-                        throw cancelled
-                    } catch (error: Exception) {
-                        endClueUpload(record.id)
-                        CTError(tag, "Pending clue remains local", error)
-                        val delayMs = clueUploadBackoff.nextDelayMs(record.id)
-                        clueUploadBackoff.markDelayedUntil(
-                            record.id,
-                            android.os.SystemClock.elapsedRealtime() + delayMs,
-                        )
-                    }
+                    batch.awaitAll()
                 }
             } finally {
                 if (clueUploadOwner === owner) clueUploadOwner = null
             }
+        }
+    }
+
+    private suspend fun uploadPendingClue(
+        mapId: String,
+        teamId: String,
+        folder: String,
+        record: AndroidClueRecord,
+    ) {
+        val outcome = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
+        try {
+            org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
+                mapId, teamId, record.id, record.lat, record.lng, record.title,
+                record.publishedDescription, folder, record.createdAtMs,
+                localClueStore.imageFile(record).readBytes(),
+            ) { result -> outcome.complete(result) }
+            val result = outcome.await()
+            val permanent = result.responseCode in listOf(400, 401, 403, 404, 413, 422)
+            clueStorage {
+                clueDiskMutex.withLock {
+                    localClueStore.recordUploadResult(record.id, result.success(), result.responseString(), permanent)
+                }
+            }.onSuccess {
+                hydrateLocalClues(currentLocalClueMapKey())
+            }.onFailure { error ->
+                CTError(tag, "Clue upload result could not be saved; retained for retry", Exception(error))
+                CaltopoClient.ShowToast("Clue upload status could not be saved. Local photo retained; check storage. R2C will retry.")
+            }
+            endClueUpload(record.id)
+            if (result.success()) {
+                clueUploadBackoff.reset(record.id)
+                return
+            }
+            val delayMs = clueUploadBackoff.nextDelayMs(record.id)
+            clueUploadBackoff.markDelayedUntil(
+                record.id,
+                android.os.SystemClock.elapsedRealtime() + delayMs,
+            )
+            logClueRetry(
+                "backoff:${record.id}",
+                "retryPendingClues: backoffMs=$delayMs id=${record.id} code=${result.responseCode}",
+                warn = true,
+            )
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            endClueUpload(record.id)
+            throw cancelled
+        } catch (error: Exception) {
+            endClueUpload(record.id)
+            CTError(tag, "Pending clue remains local", error)
+            val delayMs = clueUploadBackoff.nextDelayMs(record.id)
+            clueUploadBackoff.markDelayedUntil(
+                record.id,
+                android.os.SystemClock.elapsedRealtime() + delayMs,
+            )
         }
     }
 

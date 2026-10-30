@@ -945,6 +945,18 @@ public class CaltopoMap {
         }
     }
 
+    /** Internet restored: wake pending clue uploads without blocking the caller. */
+    public static void flushPendingCluesOnInternetRestored() {
+        flushPendingCluesBestEffort();
+    }
+
+    /** Internet restored: retry interrupted LiveTrack archive recovery when a map is up. */
+    public static void recoverInterruptedTracksOnInternetRestored() {
+        if (GetMapStatus() != MapStatusListener.mapStatus.up) return;
+        if (ArchiveFolderId == null || ArchiveFolderId.isEmpty()) return;
+        LookForExistingLiveTracks();
+    }
+
     private static void publishDisconnectProgress(@NonNull String message) {
         Consumer<String> handler = disconnectProgressHandler;
         if (handler != null) {

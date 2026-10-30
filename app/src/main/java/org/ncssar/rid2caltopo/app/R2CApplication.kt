@@ -108,6 +108,7 @@ class R2CApplication : Application() {
 
         initializeCrashlyticsProbe()
         org.ncssar.rid2caltopo.storage.OperationalStorage.start(this)
+        org.ncssar.rid2caltopo.storage.ClueTrackDurabilityIntegrity.runAtStartup(this)
         TrackerEnrollmentClient.retryManagedConfigurationBootstrap(this)
         FaaConfigManager.refreshIfNeededOnStartup(this)
         AirspaceCenter.initialize(this)

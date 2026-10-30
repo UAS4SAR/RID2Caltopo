@@ -46,12 +46,26 @@ public final class WaypointTrackJournal {
 
     private static final ConcurrentHashMap<String, Object> FlightLocks = new ConcurrentHashMap<>();
     @Nullable private static File testRoot;
+    /** Fault injection: runs after open record, before finish record. May throw to leave the journal. */
+    @Nullable private static volatile Runnable recoverBetweenRecordStepsHook;
+    /** Fault injection: runs after successful open+finish (+ best-effort local write), before delete. */
+    @Nullable private static volatile Runnable recoverBeforeDeleteHook;
 
     private WaypointTrackJournal() { }
 
     @VisibleForTesting
     static void setRootForTesting(@Nullable File root) {
         testRoot = root;
+    }
+
+    @VisibleForTesting
+    static void setRecoverBetweenRecordStepsHook(@Nullable Runnable hook) {
+        recoverBetweenRecordStepsHook = hook;
+    }
+
+    @VisibleForTesting
+    static void setRecoverBeforeDeleteHook(@Nullable Runnable hook) {
+        recoverBeforeDeleteHook = hook;
     }
 
     @VisibleForTesting
@@ -202,7 +216,8 @@ public final class WaypointTrackJournal {
                 CTDebug(TAG, String.format(Locale.US,
                         "recoverUnfinished(): promoting %s (%d points) into awaiting-map / flight storage",
                         recovered.id, recovered.points.length()));
-                // record() rejects a brand-new finished entry; open then finish.
+                // Commit-then-delete: only remove the journal after AwaitingMapFlights
+                // open+finish succeed. A kill or failure mid-way leaves the .ndjson.
                 AwaitingMapFlights.record(
                         recovered.id,
                         recovered.remote,
@@ -211,6 +226,8 @@ public final class WaypointTrackJournal {
                         false,
                         recovered.map,
                         recovered.team);
+                Runnable between = recoverBetweenRecordStepsHook;
+                if (between != null) between.run();
                 AwaitingMapFlights.record(
                         recovered.id,
                         recovered.remote,
@@ -220,10 +237,13 @@ public final class WaypointTrackJournal {
                         recovered.map,
                         recovered.team);
                 writeLocalTrackIfPossible(recovered);
+                Runnable beforeDelete = recoverBeforeDeleteHook;
+                if (beforeDelete != null) beforeDelete.run();
                 // noinspection ResultOfMethodCallIgnored
                 file.delete();
             } catch (Exception error) {
-                CTError(TAG, "recoverUnfinished failed for " + file.getName(), error);
+                CTError(TAG, "recoverUnfinished failed for " + file.getName()
+                        + "; journal retained", error);
             }
         }
     }
