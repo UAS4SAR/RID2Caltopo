@@ -104,6 +104,18 @@ internal object OperationalStorage {
         if (!prepareBody.tryLock()) {
             prepareBody.lock()
             prepareBody.unlock()
+            // Contended waiters must observe the winner's result, not return with !ready
+            // and force callers through requireReady's hard failure.
+            synchronized(gate) {
+                store?.let {
+                    check(it.uri == uri) { "Restart the app after changing Archive Dir." }
+                    kotlin.check(state.value.ready) { state.value.message.ifEmpty { "Restart the app to reconnect Archive Dir." } }
+                    return
+                }
+            }
+            if (state.value.ready) return
+            val message = state.value.message
+            if (message.isNotEmpty()) throw IllegalStateException(message)
             return
         }
         try {
@@ -140,6 +152,9 @@ internal object OperationalStorage {
                 // Each bulk source is verified before its old projection is replaced. The
                 // independently prepared queue area is never scanned or hydrated again here.
                 for (area in selected.filterNot { it.id == "queue-state" || it.id in recorderAreas }) {
+                    // Independent lanes (clues) may delete archive entries while bulk prepare
+                    // still holds a stale directory listing from migrate.
+                    tree.refresh()
                     prepareAreaProjection(context, value, area, hydrationScratch, ::checkSelection)
                 }
                 importLegacyCaches(context, root, value)
@@ -343,13 +358,25 @@ internal object OperationalStorage {
         val hydrationStarted = android.os.SystemClock.elapsedRealtime()
         checkSelection()
         val destination = File(work, area.id)
-        val reuse = area.id !in listOf("processing", "layers") &&
+        var reuse = area.id !in listOf("processing", "layers") &&
             destination.isDirectory && Files.isSymbolicLink(area.alias.toPath()) &&
             projectedRoot(context, area, area.alias) == destination.canonicalFile.toPath() &&
             !requiresIsolatedHydration(value, area.retained)
-        val staged = if (reuse) destination else File(work.parentFile, ".${area.id}-${UUID.randomUUID()}")
+        var staged = if (reuse) destination else File(work.parentFile, ".${area.id}-${UUID.randomUUID()}")
         check(staged.isDirectory || staged.mkdirs())
-        hydrate(value, area.retained, staged, reuse, hydrationScratch, checkSelection)
+        try {
+            hydrate(value, area.retained, staged, reuse, hydrationScratch, checkSelection)
+        } catch (error: IllegalStateException) {
+            if (!isTransientPrepareFailure(error) || !reuse) throw error
+            // Working copy changed under us (clue delete/upload). Rebuild that area once.
+            CaltopoClient.CTWarn("OperationalStorage", "Retrying ${area.id} hydrate without reuse: ${error.message}")
+            value.tree.refresh()
+            if (staged != destination && staged.exists()) removeTree(staged)
+            reuse = false
+            staged = File(work.parentFile, ".${area.id}-${UUID.randomUUID()}")
+            check(staged.isDirectory || staged.mkdirs())
+            hydrate(value, area.retained, staged, reuse = false, hydrationScratch, checkSelection)
+        }
         for ((path, hash) in value.migrated.filterKeys { it.startsWith(area.retained + "/") }) {
             val copied = File(staged, path.removePrefix(area.retained + "/"))
             check(copied.isFile && copied.inputStream().use { VerifiedArchiveTree.digest(it) } == hash) {
@@ -375,6 +402,14 @@ internal object OperationalStorage {
     private fun unavailable(message: String): IllegalStateException {
         state.value = Status(message = message)
         return IllegalStateException(message)
+    }
+    internal fun isTransientPrepareFailure(error: Throwable): Boolean {
+        val message = error.message.orEmpty()
+        return message.contains("Existing operational projection changed during preparation") ||
+            message.contains("Archive Dir changed during preparation") ||
+            message.contains("Missing file") ||
+            message.contains("is child of") ||
+            message.contains("Archive file is unavailable")
     }
     private fun importLegacyCaches(context: Context, root: DocumentFile, value: Store) {
         val cache = root.findFile("cache") ?: root.createDirectory("cache") ?: error("Cannot access retained map cache.")
@@ -535,20 +570,28 @@ internal object OperationalStorage {
             val target = File(directory, entry.name)
             if (entry.directory) { check(target.isDirectory || target.mkdirs()); hydrate(value, relative, target, reuse, scratch, checkCurrent) }
             else {
-                if (reuse) {
-                    VerifiedProjectionFile.restore(target, value.migrated[relative], requireNotNull(scratch),
-                        openRetained = { value.tree.read(relative) },
-                        modifiedForHash = { hash ->
-                            val meta = if (value.tree.exists("$relative.r2c-info")) value.tree.read("$relative.r2c-info").use { VerifiedArchiveTree.json(it) } else null
-                            if (meta?.optString("sha256") == hash) meta.optLong("modified", entry.modified) else entry.modified
-                        }, checkCurrent = checkCurrent)
-                    continue
+                try {
+                    if (reuse) {
+                        VerifiedProjectionFile.restore(target, value.migrated[relative], requireNotNull(scratch),
+                            openRetained = { value.tree.read(relative) },
+                            modifiedForHash = { hash ->
+                                val meta = if (value.tree.exists("$relative.r2c-info")) value.tree.read("$relative.r2c-info").use { VerifiedArchiveTree.json(it) } else null
+                                if (meta?.optString("sha256") == hash) meta.optLong("modified", entry.modified) else entry.modified
+                            }, checkCurrent = checkCurrent)
+                        continue
+                    }
+                    FileOutputStream(target).use { out -> value.tree.read(relative).use { it.copyTo(out, 256 * 1024) }; out.fd.sync() }
+                    val localHash = target.inputStream().use { VerifiedArchiveTree.digest(it) }
+                    check(localHash == value.tree.read(relative).use { VerifiedArchiveTree.digest(it) }) { "Temporary workspace verification failed." }
+                    val meta = if (value.tree.exists("$relative.r2c-info")) value.tree.read("$relative.r2c-info").use { VerifiedArchiveTree.json(it) } else null
+                    target.setLastModified(if (meta?.optString("sha256") == localHash) meta.optLong("modified", entry.modified) else entry.modified)
+                } catch (error: Exception) {
+                    // A concurrent clues-lane delete can remove the archive file after list().
+                    if (!isTransientPrepareFailure(error) && error.message?.contains("Archive file is unavailable") != true) throw error
+                    value.tree.refresh()
+                    if (!value.tree.exists(relative)) continue
+                    throw error
                 }
-                FileOutputStream(target).use { out -> value.tree.read(relative).use { it.copyTo(out, 256 * 1024) }; out.fd.sync() }
-                val localHash = target.inputStream().use { VerifiedArchiveTree.digest(it) }
-                check(localHash == value.tree.read(relative).use { VerifiedArchiveTree.digest(it) }) { "Temporary workspace verification failed." }
-                val meta = if (value.tree.exists("$relative.r2c-info")) value.tree.read("$relative.r2c-info").use { VerifiedArchiveTree.json(it) } else null
-                target.setLastModified(if (meta?.optString("sha256") == localHash) meta.optLong("modified", entry.modified) else entry.modified)
             }
         }
     }

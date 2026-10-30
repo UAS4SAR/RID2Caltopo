@@ -263,6 +263,14 @@ public class CaltopoSession {
         return false;
     }
 
+    private static boolean isQuietErrorCode(CaltopoOp op) {
+        if (op.quietErrorCodes == null) return false;
+        for (int code : op.quietErrorCodes) {
+            if (code == op.responseCode) return true;
+        }
+        return false;
+    }
+
     private static long RetryDelayMsecForAttempt(int attemptNum) {
         long expDelay = BASE_RETRY_DELAY_MS << Math.max(0, attemptNum - 1);
         expDelay = Math.min(expDelay, MAX_RETRY_DELAY_MS);
@@ -440,6 +448,7 @@ public class CaltopoSession {
 	// this needs to be run in background thread to prevent blocking the app thread.
 	private static CaltopoOp BgSendRequest(CaltopoOp op) {
         boolean goodResponse = false;
+        boolean quietFailure = false;
         final boolean fullMapRead = CaltopoFullMapReads.isFullMapRead(op.method.toString(), op.url);
         final CaltopoCredentials fullReadCredentials = Cred;
         final String fullReadDomain = DomainAndPort;
@@ -594,6 +603,13 @@ public class CaltopoSession {
                         goodResponse = true;
                         op.response = "CalTopo object is already absent.";
                         CTInfo(TAG, "BgSendRequest() treating code " + op.responseCode + " as 'already gone'");
+                    } else if (isQuietErrorCode(op)) {
+                        // Expected probe miss (e.g. media not created yet). Keep failure for
+                        // success() so callers can POST-create, but do not alarm the user.
+                        boolean personal = op.personalAuthorization != null;
+                        op.response = CaltopoServerAvailability.message(op.responseCode, personal, false);
+                        quietFailure = true;
+                        CTDebug(TAG, "BgSendRequest() expected probe code " + op.responseCode);
                     } else {
                         boolean personal = op.personalAuthorization != null;
                         boolean unavailable = CaltopoServerAvailability.isUnavailable(op.responseCode, false);
@@ -651,7 +667,7 @@ public class CaltopoSession {
         }
 
         op.goodResponse = goodResponse;
-        op.setOperationIsDone(goodResponse);
+        op.setOperationIsDone(goodResponse || quietFailure);
         if (!goodResponse && op.responseCode > 0 && op.response.isEmpty()) {
             op.response = SafeResponseText(op.response);
         }
@@ -1535,6 +1551,11 @@ public class CaltopoSession {
     // Each stage uses the authorization captured for this clue, never the current account by accident.
     private static CaltopoOp PhotoOp(CaltopoPersonalSession.Authorization personal, String credentialKey,
             CtsMethod_t method, String path, JSONObject payload, boolean naked) {
+        return PhotoOp(personal, credentialKey, method, path, payload, naked, null);
+    }
+
+    private static CaltopoOp PhotoOp(CaltopoPersonalSession.Authorization personal, String credentialKey,
+            CtsMethod_t method, String path, JSONObject payload, boolean naked, int[] quietErrorCodes) {
         if (!java.util.Objects.equals(personal, CaltopoPersonalSession.capture("")) ||
             (personal == null && (Cred == null || !credentialKey.equals(Cred.teamId))))
             throw new IllegalStateException("Clue upload paused: original credentials are no longer selected");
@@ -1544,6 +1565,7 @@ public class CaltopoSession {
         op.method = method;
         op.url = path;
         op.payload = payload;
+        op.quietErrorCodes = quietErrorCodes;
         BgSendRequest(op);
         if (op.success()) {
             try {
@@ -1611,7 +1633,9 @@ public class CaltopoSession {
                 result = PhotoOp(personal, teamId, CtsMethod_t.POST, CALTOPO_MAP_API_V1 + mapId + "/Marker/" + markerId, marker, false);
                 boolean mediaReady = false;
                 if (result.success()) {
-                    CaltopoOp existing = PhotoOp(personal, teamId, CtsMethod_t.GET, CALTOPO_MEDIA_API_V1 + mediaId, null, false);
+                    // Absent media is an expected 400/404 probe miss before create; quiet it.
+                    CaltopoOp existing = PhotoOp(personal, teamId, CtsMethod_t.GET, CALTOPO_MEDIA_API_V1 + mediaId,
+                            null, false, new int[] {400, 404});
                     if (existing.success()) {
                         mediaReady = CaltopoPhotoMediaState.isReady(existing.responseJson, mediaId, mediaOwner);
                         result = existing;

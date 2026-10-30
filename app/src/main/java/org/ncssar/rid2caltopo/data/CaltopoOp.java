@@ -52,6 +52,8 @@ public class CaltopoOp implements Future <CaltopoOp> {
 	public int responseCode;
     public boolean goodResponse;    // Valid if receivedTimestampInMsec != 0;
     public int[] acceptedErrorCodes; // response codes to treat as success rather than firing CaltopoOpFailed
+    /** Response codes that stay failures for success() but must not emit CaltopoOpFailed. */
+    public int[] quietErrorCodes;
     public String response;    // if receivedTimestampInMsec && goodResponse == false;
     public JSONObject responseJson; // if receivedTimestampInMsec && goodResponse == true;
 	public boolean goNaked;

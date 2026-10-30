@@ -21,6 +21,23 @@ internal class DocumentArchiveTree(private val context: Context, private val roo
     private val children = mutableMapOf<String, MutableMap<String, Node>>()
     private var rootCheckedAt = 0L
     override fun refresh() { children.clear(); rootCheckedAt = 0 }
+    private fun isMissingDocument(error: Throwable): Boolean {
+        var current: Throwable? = error
+        while (current != null) {
+            if (current is java.io.FileNotFoundException) return true
+            val message = current.message.orEmpty()
+            if (message.contains("Missing file") || message.contains("is child of")) return true
+            current = current.cause
+        }
+        return false
+    }
+    private fun forget(path: String) {
+        if (path.isEmpty()) { children.clear(); return }
+        children.remove(path)
+        children.keys.filter { it == path || it.startsWith("$path/") }.forEach { children.remove(it) }
+        val parent = path.substringBeforeLast('/', "")
+        children[parent]?.remove(path.substringAfterLast('/'))
+    }
     private fun checkRoot() {
         val now = android.os.SystemClock.elapsedRealtime()
         if (now - rootCheckedAt >= 1000 || rootCheckedAt == 0L) {
@@ -34,7 +51,14 @@ internal class DocumentArchiveTree(private val context: Context, private val roo
         var node = rootNode
         var parent = ""
         for (part in VerifiedArchiveTree.checked(path).split('/')) {
-            node = entries(parent, node)[part] ?: return null
+            val listing = try {
+                entries(parent, node)
+            } catch (error: Exception) {
+                if (!isMissingDocument(error)) throw error
+                forget(parent)
+                return null
+            }
+            node = listing[part] ?: return null
             parent = if (parent.isEmpty()) part else "$parent/$part"
         }
         return node
@@ -98,16 +122,22 @@ internal class DocumentArchiveTree(private val context: Context, private val roo
     }
     override fun read(path: String): InputStream {
         val node = find(path) ?: error("Archive file is unavailable: $path")
-        return if (node.uri.scheme == "file") File(requireNotNull(node.uri.path)).inputStream()
-        else {
-            // Archive Dir is granted read/write access. Android's external-storage provider
-            // can route a read-only media open through MediaStore, changing the returned
-            // bytes (for example, EXIF redaction) after a staging file becomes a JPEG.
-            // Use a non-truncating document descriptor for the bytes we retain and verify.
-            // A provider that cannot supply it must fail before originals are removed.
-            val descriptor = resolver.openFileDescriptor(node.uri, "rw")
-                ?: error("Cannot read original archive bytes: $path")
-            ParcelFileDescriptor.AutoCloseInputStream(descriptor)
+        return try {
+            if (node.uri.scheme == "file") File(requireNotNull(node.uri.path)).inputStream()
+            else {
+                // Archive Dir is granted read/write access. Android's external-storage provider
+                // can route a read-only media open through MediaStore, changing the returned
+                // bytes (for example, EXIF redaction) after a staging file becomes a JPEG.
+                // Use a non-truncating document descriptor for the bytes we retain and verify.
+                // A provider that cannot supply it must fail before originals are removed.
+                val descriptor = resolver.openFileDescriptor(node.uri, "rw")
+                    ?: error("Cannot read original archive bytes: $path")
+                ParcelFileDescriptor.AutoCloseInputStream(descriptor)
+            }
+        } catch (error: Exception) {
+            if (!isMissingDocument(error)) throw error
+            forget(path)
+            error("Archive file is unavailable: $path")
         }
     }
     override fun write(path: String, input: InputStream) {

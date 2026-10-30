@@ -992,6 +992,11 @@ final class RIDTrackViewModel: ObservableObject {
                     self.ownershipActivationTasks.removeValue(forKey: remoteID)?.cancel()
                     if localOwner, alertEligible,
                        self.publicationSuppressionProvider?(remoteID) != true {
+                        // Start as soon as ownership is granted while the map is already up;
+                        // keep the short delay only as a second chance after peer settle.
+                        if coordinator.publicationAllowed(remoteID: remoteID) {
+                            self.flushPendingPublication(remoteID: remoteID)
+                        }
                         self.ownershipActivationTasks[remoteID] = Task { [weak self, coordinator] in
                             try? await Task.sleep(for: .seconds(2))
                             guard !Task.isCancelled, let self,

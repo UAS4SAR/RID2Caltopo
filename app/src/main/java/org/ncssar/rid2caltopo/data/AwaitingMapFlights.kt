@@ -20,6 +20,8 @@ object AwaitingMapFlights {
     private val pendingPublicationChoices = java.util.concurrent.ConcurrentHashMap<String, String>()
     /** A queued first intent must suppress publication until its destination/consent is durable. */
     @JvmStatic fun reservePublication(remote: String, id: String) { pendingPublicationChoices[remote] = id }
+    /** Reserved flight id while the first durable intent write is still in flight; null when none. */
+    @JvmStatic fun reservedPublicationId(remote: String): String? = pendingPublicationChoices[remote]
     private fun intentSaved(remote: String, id: String) { pendingPublicationChoices.remove(remote, id) }
 
     private data class PublicationChoice(val id: String, val map: String, val team: String, val decision: String)
@@ -72,7 +74,9 @@ object AwaitingMapFlights {
             item.put("points", JSONArray().put(points.get(0)).put(points.get(points.length() - 1)))
         }
         if (finished && item.optString("decision") == "bound" && !item.optBoolean("publicationStarted")) {
-            item.put("decision", "review")
+            // A flight that already had a connected map should publish through the archive,
+            // not wait in the review inbox while that same map is still up.
+            item.put("decision", if (item.optString("map").isNotEmpty()) "publish" else "review")
         }
         if (finished && item.optString("decision") in listOf("bound", "local")) {
             entries = JSONArray(all().filterNot { it.optString("id") == id }); save(); publishChoices(); intentSaved(remote, id); return
@@ -95,7 +99,7 @@ object AwaitingMapFlights {
         }
         val item = choices[remote] ?: return null
         return when {
-            item.map != map || item.team != team -> ""
+            item.map != map || (item.team != team && !CluePublicationIdentity.sameTeam(item.team, team)) -> ""
             item.decision == "bound" -> null
             item.decision == "publish" -> item.id
             else -> ""

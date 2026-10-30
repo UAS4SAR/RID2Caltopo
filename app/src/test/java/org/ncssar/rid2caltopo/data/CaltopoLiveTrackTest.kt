@@ -3,11 +3,13 @@ package org.ncssar.rid2caltopo.data
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.ncssar.rid2caltopo.app.R2CActivity
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.util.concurrent.TimeUnit
 
 class CaltopoLiveTrackTest {
     private lateinit var journalFile: java.io.File
@@ -88,12 +90,60 @@ class CaltopoLiveTrackTest {
         R2cRuntimeRegistry.resetDefaultRuntimeForTesting()
     }
 
+    private fun drainRecovery() {
+        repeat(3) { CaltopoRecoveryWork.worker.submit {}.get(3, TimeUnit.SECONDS) }
+    }
+
     private fun startingTrack(): CaltopoLiveTrack {
         val drone = CtDroneSpec("RID-TIMEOUT")
         setDroneTrackLabel(drone, "RID-TIMEOUT_120000Sep25")
         return CaltopoLiveTrack(drone, 39.1, -121.1, 500.0, 1_000L).also {
             it.mapStatusUpdate(CaltopoMap.MapStatusListener.mapStatus.up, null, null)
             it.setLocalOwner(true)
+            drainRecovery()
+        }
+    }
+
+    @Test fun ownerGrantedWhileMapAlreadyUp_startsLiveTrackExactlyOnce() {
+        val drone = CtDroneSpec("RID-OWNER-UP")
+        setDroneTrackLabel(drone, "RID-OWNER-UP_120100Sep25")
+        val track = CaltopoLiveTrack(drone, 39.1, -121.1, 500.0, 1_000L)
+        // Map is already up before ownership; constructor captured mapStatus=up.
+        track.mapStatusUpdate(CaltopoMap.MapStatusListener.mapStatus.up, null, null)
+        drainRecovery()
+        assertEquals(0, fixture.calTopoSessionGateway.countOperations("startLiveTrack"))
+
+        track.setLocalOwner(true)
+        drainRecovery()
+        assertEquals(1, fixture.calTopoSessionGateway.countOperations("startLiveTrack"))
+
+        // Idempotent: a second grant and map-up must not POST again while start is in flight / started.
+        track.setLocalOwner(true)
+        track.mapStatusUpdate(CaltopoMap.MapStatusListener.mapStatus.up, null, null)
+        drainRecovery()
+        assertEquals(1, fixture.calTopoSessionGateway.countOperations("startLiveTrack"))
+        assertTrue(track.publishingLocally())
+    }
+
+    @Test fun reservedPublicationIntentWhileMapUp_stillStartsLiveTrack() {
+        val awaiting = java.io.File.createTempFile("awaiting-live-", ".json").also { it.delete() }
+        try {
+            AwaitingMapFlights.useFileForTesting(awaiting)
+            // CtDroneSpec keeps A-Z0-9 only; reserve must use the same normalized remote id.
+            AwaitingMapFlights.reservePublication("RIDRESERVED", "flight-reserved-1")
+            val drone = CtDroneSpec("RID-RESERVED")
+            assertEquals("RIDRESERVED", drone.remoteId)
+            setDroneTrackLabel(drone, "RIDRESERVED_120200Sep25")
+            val track = CaltopoLiveTrack(drone, 39.1, -121.1, 500.0, 1_000L)
+            track.mapStatusUpdate(CaltopoMap.MapStatusListener.mapStatus.up, null, null)
+            track.setLocalOwner(true)
+            drainRecovery()
+            assertEquals(1, fixture.calTopoSessionGateway.countOperations("startLiveTrack"))
+            val start = fixture.calTopoSessionGateway.snapshotOperations().first { it.kind == "startLiveTrack" }
+            assertEquals("flight-reserved-1", start.payload!!.getString("id"))
+        } finally {
+            AwaitingMapFlights.useFileForTesting(null)
+            awaiting.delete()
         }
     }
 
@@ -169,10 +219,12 @@ class CaltopoLiveTrackTest {
         assertEquals(4, track.queuedPointCount)
 
         track.setLocalOwner(true)
+        drainRecovery()
         val secondId = gateway.snapshotOperations().last { it.kind == "startLiveTrack" }.payload!!.getString("id")
         org.junit.Assert.assertNotEquals(firstId, secondId)
         gateway.startCallbacks[1].accept(reply(secondId))
         track.finishTrack("second segment ended")
+        drainRecovery()
         val shape = gateway.snapshotOperations().first { it.kind == "editObject" && it.summary == "Shape:$secondId" }.payload!!
         assertEquals(4, shape.getJSONObject("geometry").getJSONArray("coordinates").length())
     }
@@ -188,15 +240,18 @@ class CaltopoLiveTrackTest {
         gateway.startCallbacks[0].accept(reply())
         setPrivateField(track, "nextStartAttemptAtMs", 0L)
         track.publishDirect(39.3, -121.3, 502L, 3_000L)
+        drainRecovery()
         val ids = gateway.snapshotOperations().filter { it.kind == "startLiveTrack" }.map { it.payload!!.getString("id") }
         assertEquals(listOf(id, id), ids)
         assertEquals(0, gateway.countOperations("addLiveTrackPoint"))
         gateway.startCallbacks[1].accept(reply(id))
+        drainRecovery()
         assertEquals(1, gateway.countOperations("addLiveTrackPoint"))
         assertEquals(39.3, gateway.snapshotOperations().last { it.kind == "addLiveTrackPoint" }.payload!!.getDouble("lat"), 0.000001)
         repeat(4) { gateway.pointCallbacks[0].accept(reply()) }
         org.junit.Assert.assertTrue(track.isActive)
         track.publishDirect(39.4, -121.4, 503L, 4_000L)
+        drainRecovery()
         assertEquals(2, gateway.countOperations("startLiveTrack"))
     }
 
@@ -428,6 +483,7 @@ class CaltopoLiveTrackTest {
             liveTrack.mapStatusUpdate(CaltopoMap.MapStatusListener.mapStatus.up, null, null)
 
             liveTrack.setLocalOwner(true)
+            drainRecovery()
             val callback = CaltopoOp(null).apply {
                 responseCode = 200
                 response = "fake"
@@ -462,6 +518,7 @@ class CaltopoLiveTrackTest {
             val liveTrack = CaltopoLiveTrack(drone, 39.1, -121.1, 500.0, 1_000L)
             liveTrack.mapStatusUpdate(CaltopoMap.MapStatusListener.mapStatus.up, null, null)
             liveTrack.setLocalOwner(true)
+            drainRecovery()
             forceLiveTrackId(liveTrack, "live-thumbnail-test")
             fixture.calTopoSessionGateway.clear()
 

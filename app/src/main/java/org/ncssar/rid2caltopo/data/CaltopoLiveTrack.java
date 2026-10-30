@@ -308,6 +308,8 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             }
             case up: {
                 folderId = CaltopoMap.GetFolderId();
+                // Ownership may already be true when the map becomes (or stays) up.
+                CaltopoRecoveryWork.offMain(this::ensureLiveTrackStarted);
                 break;
             }
             case down: {
@@ -510,11 +512,10 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         boolean isOwner = request.owner;
         CTDebug(TAG, String.format(Locale.US,
                 "setLocalOwner(%s): %s → %s", droneSpec.trackLabel(), localOwner, isOwner));
-        boolean wasOwner = localOwner;
         localOwner = isOwner;
-        if (isOwner && !wasOwner && mapStatus == CaltopoMap.MapStatusListener.mapStatus.up) {
+        if (isOwner && mapStatus == CaltopoMap.MapStatusListener.mapStatus.up) {
             backfillQueuedPointsFromWaypointTrackIfNeeded();
-            startNewTrack();
+            ensureLiveTrackStarted();
         }
     }
 
@@ -836,33 +837,100 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         }
     }
 
-    private synchronized void startNewTrack() {
-        String deferredId = AwaitingMapFlights.publicationId(myRemoteId, CaltopoMap.GetMapId());
-        if (deferredId != null && deferredId.isEmpty()) return;
-        if (!startInFlight && liveTrackId == null && ownsPublication()
-                && System.currentTimeMillis() >= nextStartAttemptAtMs) {
-            if (requestedLiveTrackId == null) {
-                requestedLiveTrackId = deferredId != null ? deferredId : java.util.UUID.randomUUID().toString();
-                publicationMapId = CaltopoMap.GetMapId();
-            }
-            final String requestedId = requestedLiveTrackId;
-            final long generation = publicationGeneration;
-            if (!persistInterruptedPublication("", true)) {
+    /**
+     * Start the CalTopo LiveTrack exactly once whenever local ownership, map-up, and
+     * a missing liveTrackId all hold. Safe to call from owner grants, map-up, waypoint
+     * queueing, and backfill; duplicate calls are no-ops while a start is in flight.
+     * Journal I/O and the create POST run outside the track monitor.
+     */
+    private void ensureLiveTrackStarted() {
+        final LiveTrackStartRequest request;
+        synchronized (this) {
+            request = beginLiveTrackStartLocked();
+        }
+        if (request != null) {
+            // Always queue: callers may still hold the track monitor (queueWaypoint) or be
+            // on the recovery worker where offMain would run inline under that monitor.
+            CaltopoRecoveryWork.execute(() -> startLiveTrackAfterPersist(request));
+        }
+    }
+
+    private void startNewTrack() {
+        ensureLiveTrackStarted();
+    }
+
+    private static final class LiveTrackStartRequest {
+        final String requestedId;
+        final long generation;
+        final String trackLabel;
+        final String folderId;
+        final int queuedPoints;
+        LiveTrackStartRequest(String requestedId, long generation, String trackLabel,
+                              String folderId, int queuedPoints) {
+            this.requestedId = requestedId;
+            this.generation = generation;
+            this.trackLabel = trackLabel;
+            this.folderId = folderId;
+            this.queuedPoints = queuedPoints;
+        }
+    }
+
+    /** @return start request when this call claimed the in-flight slot; null when nothing to do. */
+    @Nullable
+    private LiveTrackStartRequest beginLiveTrackStartLocked() {
+        if (shuttingDown || !active) return null;
+        if (mapStatus != CaltopoMap.MapStatusListener.mapStatus.up) return null;
+        if (!ownsPublication()) return null;
+        if (liveTrackId != null || startInFlight) return null;
+        if (System.currentTimeMillis() < nextStartAttemptAtMs) return null;
+
+        String mapId = CaltopoMap.GetMapId();
+        String deferredId = AwaitingMapFlights.publicationId(myRemoteId, mapId);
+        if (deferredId != null && deferredId.isEmpty()) {
+            // Intent write still pending, or destination mismatched. A connected map with a
+            // reserved id may still start; an empty/undecided map must wait.
+            String reserved = AwaitingMapFlights.reservedPublicationId(myRemoteId);
+            if (reserved == null || mapId == null || mapId.isEmpty()) return null;
+            deferredId = reserved;
+        }
+        if (requestedLiveTrackId == null) {
+            requestedLiveTrackId = deferredId != null ? deferredId : java.util.UUID.randomUUID().toString();
+            publicationMapId = mapId;
+        }
+        String startFolderId = folderId != null ? folderId : CaltopoMap.GetFolderId();
+        folderId = startFolderId;
+        startInFlight = true;
+        active = true;
+        return new LiveTrackStartRequest(requestedLiveTrackId, publicationGeneration,
+                segmentTrackLabel, startFolderId, linePoints.size());
+    }
+
+    private void startLiveTrackAfterPersist(@NonNull LiveTrackStartRequest request) {
+        if (!persistInterruptedPublication("", true)) {
+            synchronized (this) {
+                if (request.generation != publicationGeneration
+                        || !request.requestedId.equals(requestedLiveTrackId)) return;
+                startInFlight = false;
                 nextStartAttemptAtMs = System.currentTimeMillis() + 20_000L;
+            }
+            return;
+        }
+        synchronized (this) {
+            if (request.generation != publicationGeneration
+                    || !request.requestedId.equals(requestedLiveTrackId)) return;
+            if (!ownsPublication() || shuttingDown || !active) {
+                startInFlight = false;
                 return;
             }
-            // Ownership can be revoked while the durable archive/provider write is in progress.
-            if (!ownsPublication() || shuttingDown || !active) return;
-            startInFlight = true;
-            active = true;
-            if (null == folderId) folderId = CaltopoMap.GetFolderId();
-            String trackLabel = segmentTrackLabel;
             CTDebug(TAG, String.format(Locale.US,
                     "startNewTrack(%s): Starting LiveTrack w/label:%s mappedId='%s' localOwner=%s queuedPoints=%d in folder:%s",
-                    effectiveFleetDeviceId(), trackLabel, droneSpec.getMappedId(), localOwner, linePoints.size(), folderId));
+                    effectiveFleetDeviceId(), request.trackLabel, droneSpec.getMappedId(), localOwner,
+                    request.queuedPoints, request.folderId));
             try {
+                final String requestedId = request.requestedId;
+                final long generation = request.generation;
                 startLiveTrackOp = runtime.getCalTopoSessionGateway()
-                        .startLiveTrack(requestedId, myRemoteId, trackLabel, folderId,
+                        .startLiveTrack(requestedId, myRemoteId, request.trackLabel, request.folderId,
                                 null, null, op -> CaltopoRecoveryWork.offMain(() -> {
                                     synchronized (CaltopoLiveTrack.this) {
                                         if (generation != publicationGeneration || !requestedId.equals(requestedLiveTrackId)) return;
@@ -911,6 +979,21 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             return;
         }
         CTDebug(TAG, String.format(Locale.US, "finishTrack(%s): %s", getTrackLabel(), reason));
+        // Queued points from a flight that never received a LiveTrack id must still publish
+        // through the archive when the map is up, not only land in AwaitingMapFlights.
+        if (liveTrackId == null && requestedLiveTrackId == null && !linePoints.isEmpty()
+                && ownsPublication()
+                && destinationMap != null && !destinationMap.isEmpty()) {
+            String deferredId = AwaitingMapFlights.publicationId(myRemoteId, destinationMap);
+            if (deferredId != null && deferredId.isEmpty()) {
+                String reserved = AwaitingMapFlights.reservedPublicationId(myRemoteId);
+                deferredId = reserved != null ? reserved : null;
+            }
+            if (deferredId == null || !deferredId.isEmpty()) {
+                requestedLiveTrackId = deferredId != null ? deferredId : java.util.UUID.randomUUID().toString();
+                publicationMapId = destinationMap;
+            }
+        }
         if (liveTrackId != null || requestedLiveTrackId != null) try {
             if (liveTrackId != null) CaltopoMap.RemoveLiveTrack(liveTrackId);
             archiveTrackOnWorker(0, destinationMap, destinationFolder);
@@ -1118,9 +1201,9 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             forwardNextWaypoints(null);
             logSideEffectIfSlow("queueWaypoint.forwardNextWaypoints", myRemoteId, droneSpec.getMappedId(),
                     System.currentTimeMillis() - forwardStartedAtMs);
-        } else if (!startInFlight) {
+        } else {
             long startStartedAtMs = System.currentTimeMillis();
-            startNewTrack();
+            ensureLiveTrackStarted();
             logSideEffectIfSlow("queueWaypoint.startNewTrack", myRemoteId, droneSpec.getMappedId(),
                     System.currentTimeMillis() - startStartedAtMs);
         }
@@ -1198,8 +1281,11 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     }
 
     private synchronized void forwardNextWaypointsOnWorker(@Nullable CaltopoOp lastOp) {
-        String destinationChoice = AwaitingMapFlights.publicationId(myRemoteId, CaltopoMap.GetMapId());
-        if (destinationChoice != null && destinationChoice.isEmpty()) return;
+        // Once a LiveTrack exists, keep flushing even while a durable intent write is pending.
+        if (liveTrackId == null) {
+            String destinationChoice = AwaitingMapFlights.publicationId(myRemoteId, CaltopoMap.GetMapId());
+            if (destinationChoice != null && destinationChoice.isEmpty()) return;
+        }
         if (shuttingDown || !active || liveTrackId == null) {
             CTDebug(TAG, "forwardNextWaypoints(): Not active.");
             return; // Don't send any more waypoints at this time.

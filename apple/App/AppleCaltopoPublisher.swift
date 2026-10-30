@@ -575,9 +575,16 @@ actor AppleCaltopoPublisher {
         guard !finishingRemoteIDs.contains(remoteID) else { return nil }
         finishingRemoteIDs.insert(remoteID)
         let generation = configurationGeneration
-        let id = liveTrackIDs[remoteID] ?? requestedLiveTrackIDs[remoteID]
         let label = labels[remoteID] ?? remoteID
         let saved = observations[remoteID] ?? []
+        // Queued points from a flight that never received a LiveTrack id must still
+        // publish through the archive when a map is configured.
+        var id = liveTrackIDs[remoteID] ?? requestedLiveTrackIDs[remoteID]
+        if id == nil && !saved.isEmpty && configuredConfiguration != nil {
+            let assigned = UUID().uuidString.lowercased()
+            requestedLiveTrackIDs[remoteID] = assigned
+            id = assigned
+        }
         let pendingStart = startTasks[remoteID]
         let finishingClient = client
         let finishingConfiguration = configuredConfiguration
