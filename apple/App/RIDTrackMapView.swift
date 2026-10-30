@@ -3296,6 +3296,7 @@ private struct ClueDetailView: View {
     let onClose: () -> Void
     @State private var share: ClueShareBundle?
     @State private var shareError: String?
+    @State private var confirmClueDelete = false
     @State private var photo: UIImage?
     @State private var preparingShare = false
 
@@ -3352,9 +3353,7 @@ private struct ClueDetailView: View {
                     Section { Button("Retry CalTopo Upload") { Task { await store.retry(clue.id) } } }
                 }
                 Section {
-                    Button("Delete Local Clue", role: .destructive) {
-                        Task { await store.delete(clue.id); onClose() }
-                    }
+                    Button("Delete Local Clue", role: .destructive) { confirmClueDelete = true }
                 }
             }
             .task(id: clue.id) {
@@ -3367,6 +3366,16 @@ private struct ClueDetailView: View {
             .alert("Unable to Share Clue", isPresented: Binding(get: { shareError != nil }, set: { if !$0 { shareError = nil } })) {
                 Button("OK") { shareError = nil }
             } message: { Text(shareError ?? "") }
+            .alert(clue.uploadState == .published ? "Delete local copy?" : "Delete unpublished clue?", isPresented: $confirmClueDelete) {
+                Button("Delete", role: .destructive) { Task { await store.delete(clue.id); onClose() } }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(clue.uploadState == .published
+                     ? "The local copy will be deleted. Its CalTopo marker remains."
+                     : clue.uploadState == .localOnly
+                     ? "This deletes the local clue from this device."
+                     : "This clue has not been published. Deleting it removes it permanently.")
+            }
             .navigationTitle("Clue")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done", action: onClose) } }

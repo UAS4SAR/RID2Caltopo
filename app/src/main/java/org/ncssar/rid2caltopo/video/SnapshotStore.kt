@@ -185,10 +185,15 @@ class AndroidClueStore private constructor(
     fun bindAwaitingFlight(flight: JSONObject, otherFlights: List<JSONObject>, mapId: String, teamId: String) {
         val owned = awaitingFlightClues(flight, otherFlights).map { it.id }.toSet()
         synchronized(this) {
+            var changed = false
             records.values.toList().filter { it.id in owned && it.mapKey == "unassigned" && it.publishToCaltopo }.forEach {
-                records[it.id] = it.copy(mapKey = "map:$mapId", destinationTeamId = teamId, uploadState = "pending")
+                val updated = it.copy(mapKey = "map:$mapId", destinationTeamId = teamId, uploadState = "pending")
+                if (records[it.id] != updated) {
+                    records[it.id] = updated
+                    changed = true
+                }
             }
-            persistIndex()
+            if (changed) persistIndex()
         }
     }
 
@@ -229,7 +234,8 @@ class AndroidClueStore private constructor(
     fun pendingForMap(mapId: String, teamId: String): List<AndroidClueRecord> {
         if (!loaded) loadIndex()
         return records.values.filter { it.publishToCaltopo && it.uploadState == "pending" &&
-            mapId.isNotBlank() && teamId.isNotBlank() && it.mapKey == "map:$mapId" && it.destinationTeamId == teamId }
+            mapId.isNotBlank() && teamId.isNotBlank() && it.mapKey == "map:$mapId" &&
+            org.ncssar.rid2caltopo.data.CluePublicationIdentity.sameTeam(it.destinationTeamId, teamId) }
     }
 
     /** Pending publishes that did not match the connected map, for the retry log. */
@@ -397,6 +403,26 @@ private fun JSONObject.toAndroidClueRecord(): AndroidClueRecord? {
         lastUploadError = optString("lastUploadError"),
         binding = ClueBinding.fromJson(optJSONObject("binding")),
     ).takeIf { it.lat.isFinite() && it.lng.isFinite() }
+}
+
+/**
+ * Uploads the first pending clue for this map and account. Submit and retry both
+ * identify that account with [org.ncssar.rid2caltopo.data.CluePublicationIdentity].
+ */
+internal fun publishFirstPendingClue(
+    store: AndroidClueStore,
+    mapId: String,
+    teamId: String,
+    folderId: String,
+    jpegFor: (AndroidClueRecord) -> ByteArray,
+    done: java.util.function.Consumer<org.ncssar.rid2caltopo.data.CaltopoOp>?,
+): AndroidClueRecord? {
+    val record = store.pendingForMap(mapId, teamId).firstOrNull() ?: return null
+    org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
+        mapId, teamId, record.id, record.lat, record.lng, record.title, record.publishedDescription,
+        folderId, record.createdAtMs, jpegFor(record), done,
+    )
+    return record
 }
 
 internal fun clueShareReport(record: AndroidClueRecord, format: CoordinateDisplayFormat): String {

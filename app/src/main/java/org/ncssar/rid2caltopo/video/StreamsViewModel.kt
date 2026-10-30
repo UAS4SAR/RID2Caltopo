@@ -1,5 +1,6 @@
 import kotlinx.coroutines.ensureActive
 import org.ncssar.rid2caltopo.video.clueStorage
+import org.ncssar.rid2caltopo.video.publishFirstPendingClue
 import org.ncssar.rid2caltopo.data.Units
 import org.ncssar.rid2caltopo.data.DisplayUnits
 import org.ncssar.rid2caltopo.notam.NearbyNotam
@@ -2736,16 +2737,8 @@ class StreamsViewModel(
         val acceptedDestination: Pair<String, String>? = null,
     )
 
-    /** Personal clues use personal:<account>. A blank authorization snapshot uses the live account. */
-    private fun publicationTeamId(): String {
-        val personal = org.ncssar.rid2caltopo.data.CaltopoPersonalSession.capture("")
-        if (personal == null) return CaltopoClient.GetCaltopoCredentials().teamId.orEmpty()
-        val account = personal.accountID.trim().ifEmpty {
-            org.ncssar.rid2caltopo.data.CaltopoPersonalSession.accountID.trim()
-        }
-        return if (account.isNotEmpty()) "personal:$account"
-        else CaltopoClient.GetCaltopoCredentials().teamId.orEmpty()
-    }
+    /** Same identity stored at Submit and used to find that clue after the map connects. */
+    private fun publicationTeamId(): String = org.ncssar.rid2caltopo.data.CluePublicationIdentity.publicationTeamId()
 
     private fun captureClueSaveContext(): ClueSaveContext {
         val personal = org.ncssar.rid2caltopo.data.CaltopoPersonalSession.capture("")
@@ -2902,6 +2895,16 @@ class StreamsViewModel(
 
     private val clueUploadStartedAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val clueUploadStaleAfterMs = 180_000L
+    private val clueRetryLoggedAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** Default logging is Debug. Info is Ludicrous, so skip lines must not use CTInfo. */
+    private fun logClueRetry(reason: String, message: String, warn: Boolean = false) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val previous = clueRetryLoggedAtMs[reason]
+        if (previous != null && now - previous < 60_000L) return
+        clueRetryLoggedAtMs[reason] = now
+        if (warn) CTWarn(tag, message) else CTDebug(tag, message)
+    }
 
     private fun endClueUpload(id: String) {
         clueUploadStartedAtMs.remove(id)
@@ -2920,17 +2923,17 @@ class StreamsViewModel(
     private fun retryPendingClues() {
         val status = CaltopoMap.GetMapStatus()
         if (status != mapStatus.up) {
-            CTInfo(tag, "retryPendingClues: skip reason=map-not-up status=$status")
+            logClueRetry("map-not-up", "retryPendingClues: skip reason=map-not-up status=$status")
             return
         }
         val mapId = CaltopoMap.GetMapId().trim()
         if (mapId.isEmpty()) {
-            CTInfo(tag, "retryPendingClues: skip reason=map-id-blank")
+            logClueRetry("map-id-blank", "retryPendingClues: skip reason=map-id-blank")
             return
         }
         val teamId = publicationTeamId()
         if (teamId.isBlank()) {
-            CTInfo(tag, "retryPendingClues: skip reason=publication-team-blank")
+            logClueRetry("publication-team-blank", "retryPendingClues: skip reason=publication-team-blank")
             return
         }
         val stale = clueUploadStartedAtMs.entries.filter {
@@ -2943,14 +2946,14 @@ class StreamsViewModel(
             }
         }
         if (clueUploadStartedAtMs.isNotEmpty()) {
-            CTInfo(tag, "retryPendingClues: skip reason=upload-in-flight ids=$clueUploadStartedAtMs")
+            logClueRetry("upload-in-flight", "retryPendingClues: skip reason=upload-in-flight ids=$clueUploadStartedAtMs")
             return
         }
         val mapKey = currentLocalClueMapKey()
         viewModelScope.launch {
             val folder = withContext(Dispatchers.IO) { CaltopoMap.resolveTrackFolderIdForClue() }
             if (folder.isNullOrBlank()) {
-                CTWarn(tag, "retryPendingClues: skip reason=track-folder-unresolved mapId=$mapId teamId=$teamId")
+                logClueRetry("track-folder-unresolved", "retryPendingClues: skip reason=track-folder-unresolved mapId=$mapId teamId=$teamId")
                 return@launch
             }
             val (pending, visibleIds, pendingSummary) = clueStorage {
@@ -2966,26 +2969,31 @@ class StreamsViewModel(
                 return@launch
             }
             if (mapKey != currentLocalClueMapKey()) {
-                CTInfo(tag, "retryPendingClues: skip reason=map-changed")
+                logClueRetry("map-changed", "retryPendingClues: skip reason=map-changed")
                 return@launch
             }
             if (visibleIds != localMapMarkers.map { it.id }.toSet()) hydrateLocalClues(mapKey)
             val record = pending.firstOrNull()
             if (record == null) {
-                CTInfo(tag, "retryPendingClues: skip reason=no-matching-pending mapId=$mapId teamId=$teamId pending=$pendingSummary")
+                val queryTeam = org.ncssar.rid2caltopo.data.CluePublicationIdentity.normalizeTeamId(teamId)
+                val message = "retryPendingClues: skip reason=no-matching-pending queryMap=map:$mapId queryTeam=$queryTeam pending=$pendingSummary"
+                logClueRetry("no-matching-pending", message, warn = pendingSummary != "none")
                 return@launch
             }
             if (!beginClueUpload(record.id)) {
-                CTInfo(tag, "retryPendingClues: skip reason=already-in-flight id=${record.id}")
+                logClueRetry("already-in-flight:${record.id}", "retryPendingClues: skip reason=already-in-flight id=${record.id}")
                 return@launch
             }
-            CTInfo(tag, "retryPendingClues: uploading id=${record.id} mapId=$mapId teamId=$teamId folder=$folder")
+            logClueRetry(
+                "uploading:${record.id}",
+                "retryPendingClues: uploading id=${record.id} mapId=$mapId teamId=$teamId folder=$folder",
+            )
             withContext(Dispatchers.IO) {
                 try {
-                    val jpeg = localClueStore.imageFile(record).readBytes()
-                    org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
-                        mapId, teamId, record.id, record.lat, record.lng, record.title, record.publishedDescription,
-                        folder, record.createdAtMs, jpeg) { result ->
+                    val published = publishFirstPendingClue(
+                        localClueStore, mapId, teamId, folder,
+                        { localClueStore.imageFile(it).readBytes() },
+                    ) { result ->
                         val permanent = result.responseCode in listOf(400, 401, 403, 404, 413, 422)
                         viewModelScope.launch {
                             try {
@@ -3009,6 +3017,7 @@ class StreamsViewModel(
                             }
                         }
                     }
+                    if (published == null) endClueUpload(record.id)
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
                     endClueUpload(record.id)
                     throw cancelled
@@ -3173,7 +3182,36 @@ class StreamsViewModel(
         }
     }
 
+    private val _unpublishedClueDelete = MutableStateFlow<String?>(null)
+    val unpublishedClueDelete: StateFlow<String?> = _unpublishedClueDelete.asStateFlow()
+    private var unpublishedClueDeleteAction: (() -> Unit)? = null
+
+    /**
+     * Pending and failed clues are not on the map yet. Deleting them is permanent, so confirm first.
+     * The "marker remains" toast is only for a clue CalTopo already accepted.
+     */
     fun deleteLocalMapMarker(markerId: String, onDeleted: () -> Unit = {}) {
+        val record = localClueRecordsById[markerId]
+        if (record != null && record.publishToCaltopo && record.uploadState != "published") {
+            unpublishedClueDeleteAction = { performDeleteLocalMapMarker(markerId, onDeleted) }
+            _unpublishedClueDelete.value = record.title.ifBlank { "This clue" }
+            return
+        }
+        performDeleteLocalMapMarker(markerId, onDeleted)
+    }
+
+    fun confirmUnpublishedClueDelete() {
+        val action = unpublishedClueDeleteAction
+        dismissUnpublishedClueDelete()
+        action?.invoke()
+    }
+
+    fun dismissUnpublishedClueDelete() {
+        unpublishedClueDeleteAction = null
+        _unpublishedClueDelete.value = null
+    }
+
+    private fun performDeleteLocalMapMarker(markerId: String, onDeleted: () -> Unit) {
         viewModelScope.launch {
             val marker = localMapMarkers.firstOrNull { it.id == markerId } ?: return@launch
             val deletedRecord = localClueRecordsById[markerId]
@@ -3194,8 +3232,11 @@ class StreamsViewModel(
             if (replacementSnapshot == null) clueSnapshotRefsByTitle.remove(marker.title.trim())
             else clueSnapshotRefsByTitle[marker.title.trim()] = replacementSnapshot
             deletedRecord?.let { scheduleArchiveRewrite(it) }
-            CaltopoClient.ShowToast("Local clue copy deleted; its CalTopo marker remains.")
-            CTDebug(tag, "deleteLocalMapMarker: deleted local copy id=$markerId")
+            val toast = if (deletedRecord?.uploadState == "published")
+                "Local clue copy deleted; its CalTopo marker remains."
+            else "Local clue copy deleted."
+            CaltopoClient.ShowToast(toast)
+            CTDebug(tag, "deleteLocalMapMarker: deleted local copy id=$markerId state=${deletedRecord?.uploadState}")
             onDeleted()
         }
     }

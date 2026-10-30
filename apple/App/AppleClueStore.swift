@@ -382,6 +382,10 @@ final class AppleClueStore: ObservableObject {
                 try? await self.persistIndex()
                 self.updateStatus()
                 do {
+                    AppleLog.debug(
+                        "Clue",
+                        "Clue upload start id=\(id) mapId=\(self.mapID) teamId=\(destinationTeamID)"
+                    )
                     let folderID = try await self.resolveTrackFolder(using: client)
                     guard !Task.isCancelled, generation == self.configurationGeneration else { break }
                     let markerID = try await client.publishPhotoClue(CaltopoPhotoClue(
@@ -403,7 +407,7 @@ final class AppleClueStore: ObservableObject {
                     }
                     try? await self.persistIndex()
                     self.updateStatus()
-                    AppleLog.info("Clue", "CalTopo clue published id=\(id) marker=\(markerID)")
+                    AppleLog.debug("Clue", "CalTopo clue published id=\(id) marker=\(markerID)")
                     break
                 } catch {
                     guard !Task.isCancelled, generation == self.configurationGeneration else { break }

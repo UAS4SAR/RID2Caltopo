@@ -1558,17 +1558,44 @@ public class CaltopoSession {
         return op;
     }
 
+    /** Unit tests observe the call without sending the photo. */
+    public interface StoredPhotoProbe {
+        void onPublish(String mapId, String teamId, String markerId);
+    }
+    @androidx.annotation.Nullable private static volatile StoredPhotoProbe storedPhotoProbeForTesting;
+
+    public static void setStoredPhotoProbeForTesting(@androidx.annotation.Nullable StoredPhotoProbe probe) {
+        storedPhotoProbeForTesting = probe;
+    }
+
     public static CaltopoOp PublishStoredPhoto(String mapId, String teamId, String markerId,
             double lat, double lng, String title, String description, String folderId,
             long createdAt, byte[] jpeg, Consumer<CaltopoOp> done) {
+        CTDebug(TAG, "PublishStoredPhoto() start mapId='" + mapId + "' teamId='" + teamId +
+                "' markerId='" + markerId + "' folderId='" + folderId +
+                "' bytes=" + (jpeg == null ? 0 : jpeg.length));
         CaltopoOp outer = new CaltopoOp(done);
+        StoredPhotoProbe probe = storedPhotoProbeForTesting;
+        if (probe != null) {
+            probe.onPublish(mapId, teamId, markerId);
+            outer.responseCode = 200;
+            outer.response = "test-probe";
+            outer.setOperationIsDone(true);
+            CTDebug(TAG, "PublishStoredPhoto() result markerId='" + markerId + "' success=true code=200");
+            return outer;
+        }
         final CaltopoPersonalSession.Authorization personal = CaltopoPersonalSession.capture("");
         SubmitPhotoRequest(outer, () -> {
             CaltopoOp result;
             try {
-                if (personal != null && (!mapId.equals(personal.getMapID()) || !teamId.equals(personal.getCredentialKey()) || personal.getMediaOwnerID().isEmpty()))
+                String mediaOwner = personal != null ? personal.getMediaOwnerID() : teamId;
+                if ((mediaOwner == null || mediaOwner.isEmpty()) && teamId != null && teamId.startsWith("personal:")) {
+                    mediaOwner = teamId.substring("personal:".length()).trim();
+                }
+                if (personal != null && (!mapId.equals(personal.getMapID())
+                        || !CluePublicationIdentity.sameTeam(teamId, personal.getCredentialKey())
+                        || mediaOwner.isEmpty()))
                     throw new IllegalStateException("Original personal account and map must be selected");
-                final String mediaOwner = personal != null ? personal.getMediaOwnerID() : teamId;
                 String mediaId = UUID.nameUUIDFromBytes((markerId + ":media").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
                 if (personal != null) CaltopoPersonalSession.authorizeMedia(personal, mediaId);
                 String linkId = UUID.nameUUIDFromBytes((markerId + ":link").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
@@ -1600,9 +1627,13 @@ public class CaltopoSession {
                 }
                 outer.responseCode = result.responseCode;
                 outer.response = result.response;
+                CTDebug(TAG, "PublishStoredPhoto() result markerId='" + markerId + "' success=" +
+                        result.success() + " code=" + result.responseCode);
                 outer.setOperationIsDone(result.success());
             } catch (Exception error) {
                 outer.response = error.getMessage();
+                CTDebug(TAG, "PublishStoredPhoto() result markerId='" + markerId +
+                        "' success=false error=" + error.getMessage());
                 outer.setOperationIsDone(false);
             }
             return outer;

@@ -1106,6 +1106,20 @@ internal fun SplitMapPane(
         localEntries = localDronePointEntries,
         peerEntries = peerDronePointEntries,
     )
+    val unpublishedClueDelete by viewModel.unpublishedClueDelete.collectAsStateWithLifecycle()
+    unpublishedClueDelete?.let { title ->
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissUnpublishedClueDelete() },
+            title = { Text("Delete unpublished clue?") },
+            text = { Text("$title has not been published. Deleting it removes it permanently.") },
+            confirmButton = {
+                TextButton(onClick = { viewModel.confirmUnpublishedClueDelete() }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissUnpublishedClueDelete() }) { Text("Cancel") }
+            },
+        )
+    }
 
     surfaceBriefing?.let { briefing ->
         AlertDialog(onDismissRequest = { surfaceBriefing = null }, title = { Text("Surface high-point briefing") },

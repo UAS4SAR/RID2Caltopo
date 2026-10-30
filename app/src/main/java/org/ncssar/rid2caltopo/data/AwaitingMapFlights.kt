@@ -13,10 +13,7 @@ object AwaitingMapFlights {
     internal fun destinationScope(personalAccountId: String?, teamId: String): String =
         personalAccountId?.trim()?.let { if (it.isEmpty()) "" else "personal:$it" } ?: teamId
 
-    @JvmStatic fun selectedPublicationScope(): String {
-        val personal = CaltopoPersonalSession.capture("/")
-        return destinationScope(personal?.accountID, CaltopoClient.GetCaltopoCredentials().teamId.orEmpty())
-    }
+    @JvmStatic fun selectedPublicationScope(): String = CluePublicationIdentity.publicationTeamId()
 
     private var testFile: File? = null
     internal fun useFileForTesting(file: File?) { testFile = file; loaded = false; entries = JSONArray(); lastWrite.clear(); publicationChoices = null; pendingPublicationChoices.clear() }
