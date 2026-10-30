@@ -2610,6 +2610,7 @@ struct ContentView: View {
         if profileID == "personal" {
             applyCaltopoConfiguration(caltopoSettings.disconnectMap())
             caltopoSettings.usesPersonalCredentials = true
+            caltopoSettings.rememberBrowseProfile(MapBrowserProfilePreference.personalProfileID)
             // The native browser restores saved login offscreen. It opens the
             // website only when CalTopo actually requires interactive sign-in.
             showTeamMaps = true
@@ -2619,6 +2620,7 @@ struct ContentView: View {
             applyCaltopoConfiguration(caltopoSettings.disconnectMap())
             caltopoSettings.usesPersonalCredentials = false
         }
+        caltopoSettings.rememberBrowseProfile(profileID)
         guard await orgConfigImporter.activateProfile(
             profileID,
             caltopoSettings: caltopoSettings,
@@ -2649,7 +2651,11 @@ struct ContentView: View {
     }
 
     private func openMapBrowser() {
-        if caltopoSettings.usesPersonalCredentials || caltopoSettings.credentialID.isEmpty || caltopoSettings.credentialSecret.isEmpty {
+        let remembered = MapBrowserProfilePreference(defaults: .standard).lastSelectedProfileID()
+        if caltopoSettings.usesPersonalCredentials ||
+            remembered == MapBrowserProfilePreference.personalProfileID ||
+            caltopoSettings.credentialID.isEmpty ||
+            caltopoSettings.credentialSecret.isEmpty {
             activateCredentialProfile("personal")
         } else {
             showTeamMaps = true

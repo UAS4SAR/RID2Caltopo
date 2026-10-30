@@ -2828,6 +2828,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         Ccstate = new ClientClassState();
         AircraftOrganizationAccess.resetRuntimeState();
         CaltopoPersonalSession.resetRuntimeState();
+        MapBrowserProfilePreference.INSTANCE.clear();
         if (R2CApplication.getAppCtxt() != null) {
             R2CActivity.MyDeviceName = AndroidDeviceIdentity.displayName(
                     R2CApplication.getAppCtxt());

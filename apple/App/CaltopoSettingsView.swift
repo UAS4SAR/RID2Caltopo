@@ -581,6 +581,7 @@ struct CaltopoSettingsView: View {
             CaltopoTeamMapBrowser(settings: settings, onCredentialSelect: { profileID in
                 onSave(settings.disconnectMap())
                 settings.usesPersonalCredentials = profileID == "personal"
+                settings.rememberBrowseProfile(profileID)
                 if profileID != "personal" {
                     Task {
                         _ = await importer.activateProfile(profileID, caltopoSettings: settings, orgSettings: orgSettings)
@@ -1004,11 +1005,30 @@ struct CaltopoTeamMapBrowser: View {
     }
 
     private func loadSelectedMaps() async {
-        if settings.usesPersonalCredentials {
-            if settings.personalLoginMode == .credentials {
-                await settings.loadCredentialPersonalMaps()
+        let activeTeam = profiles.activeProfileID
+        let knownTeams = profiles.availableProfiles.map(\.id)
+        if settings.personalLoginMode == .credentials {
+            let personalAvailable = await Task.detached(priority: .utility) {
+                CaltopoPersonalAccountConnection.shared.reconnect(host: "caltopo.com") != nil
+            }.value
+            let target = settings.restoreRememberedBrowseProfile(
+                personalCredentialAvailable: personalAvailable,
+                activeTeamProfileID: activeTeam,
+                knownTeamProfileIDs: knownTeams
+            )
+            if target == MapBrowserProfilePreference.personalProfileID {
+                if personalAvailable {
+                    await settings.loadCredentialPersonalMaps()
+                } else {
+                    settings.fallBackFromMissingPersonalCredential(activeTeamProfileID: activeTeam)
+                    await settings.loadTeamMaps()
+                }
                 return
             }
+            await settings.loadTeamMaps()
+            return
+        }
+        if settings.usesPersonalCredentials {
             let loaded = await settings.loadPersonalMaps()
             guard settings.usesPersonalCredentials else { return }
             if !loaded, settings.personalLoginRequired {

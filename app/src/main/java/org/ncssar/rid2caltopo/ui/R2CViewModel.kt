@@ -33,6 +33,7 @@ import org.ncssar.rid2caltopo.data.CaltopoMap
 import org.ncssar.rid2caltopo.data.CaltopoNode
 import org.ncssar.rid2caltopo.data.CtDroneSpec
 import org.ncssar.rid2caltopo.data.DelayedExec
+import org.ncssar.rid2caltopo.data.MapBrowserProfilePreference
 import org.ncssar.rid2caltopo.data.R2CMqttManager
 import org.ncssar.rid2caltopo.data.R2cRuntimeRegistry
 import org.ncssar.rid2caltopo.data.SimpleTimer
@@ -291,12 +292,18 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
      * Loads the stored personal catalog on the view-model scope. The map browser is recreated
      * when its list changes, so a load started inside that composable is cancelled before it
      * can keep the personal selection.
+     *
+     * When [restoreRemembered] is true, a missing credential falls back to the active team
+     * profile instead of prompting to sync a new personal account.
      */
-    fun loadStoredPersonalCatalog() {
+    fun loadStoredPersonalCatalog(restoreRemembered: Boolean = false) {
         if (storedPersonalCatalogLoad?.isActive == true) return
         personalSyncPrompt = false
         CaltopoPersonalSession.catalogLoading = true
-        android.util.Log.i("CaltopoPersonalAuth", "selection load stored personal")
+        android.util.Log.i(
+            "CaltopoPersonalAuth",
+            "selection load stored personal restore=$restoreRemembered"
+        )
         storedPersonalCatalogLoad = viewModelScope.launch {
             try {
                 val loaded = kotlinx.coroutines.withContext(Dispatchers.IO) {
@@ -305,12 +312,17 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                 when (loaded) {
                     is org.ncssar.rid2caltopo.data.StoredPersonalLoad.Ready -> {
                         org.ncssar.rid2caltopo.data.CaltopoPersonalCredentialSignIn.publishCatalog(loaded.catalog.catalog)
-                        onUIEvent(UIEvent.BrowseProfileSelected("personal"))
+                        MapBrowserProfilePreference.remember(MapBrowserProfilePreference.PERSONAL_PROFILE_ID)
+                        onUIEvent(UIEvent.BrowseProfileSelected(MapBrowserProfilePreference.PERSONAL_PROFILE_ID))
                     }
                     org.ncssar.rid2caltopo.data.StoredPersonalLoad.Rejected,
                     org.ncssar.rid2caltopo.data.StoredPersonalLoad.Missing -> {
                         CaltopoPersonalSession.suspendPersonalSelection()
-                        personalSyncPrompt = true
+                        if (restoreRemembered) {
+                            fallBackToDefaultBrowseProfile()
+                        } else {
+                            personalSyncPrompt = true
+                        }
                     }
                     is org.ncssar.rid2caltopo.data.StoredPersonalLoad.Failed ->
                         CaltopoClient.ShowToast(loaded.message)
@@ -325,9 +337,46 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         onUIEvent(UIEvent.BrowseProfileSelected(profileId, openMapBrowser = false))
     }
 
+    private fun rememberBrowseProfile(profileId: String) {
+        MapBrowserProfilePreference.remember(profileId)
+    }
+
+    private fun fallBackToDefaultBrowseProfile() {
+        val fallback = CaltopoClient.GetActiveCaltopoProfileId().orEmpty()
+        if (fallback.isNotEmpty()) {
+            rememberBrowseProfile(fallback)
+            android.util.Log.i("CaltopoPersonalAuth", "selection restore fell back to team profile")
+        }
+        refreshMapBrowserProfiles()
+    }
+
+    /** After a restart, reopen the last Map Browser credential once personal storage is ready. */
+    private fun restoreRememberedBrowseProfileIfNeeded() {
+        val last = MapBrowserProfilePreference.lastSelectedProfileId()
+        val current = if (CaltopoPersonalSession.browsingPersonal) {
+            MapBrowserProfilePreference.PERSONAL_PROFILE_ID
+        } else {
+            CaltopoClient.GetActiveCaltopoProfileId().orEmpty()
+        }
+        val target = MapBrowserProfilePreference.resolveRestoredProfileId(
+            lastSelectedProfileId = last,
+            // Availability is confirmed by openStored(); treat a remembered personal
+            // selection as a request to load it. Missing credentials fall back there.
+            personalCredentialAvailable = last == MapBrowserProfilePreference.PERSONAL_PROFILE_ID,
+            defaultTeamProfileId = CaltopoClient.GetActiveCaltopoProfileId().orEmpty(),
+            knownTeamProfileIds = mapBrowserProfiles.map { it.profileId }
+        )
+        if (target == MapBrowserProfilePreference.PERSONAL_PROFILE_ID &&
+            current != MapBrowserProfilePreference.PERSONAL_PROFILE_ID
+        ) {
+            android.util.Log.i("CaltopoPersonalAuth", "selection restore remembered personal")
+            loadStoredPersonalCatalog(restoreRemembered = true)
+        }
+    }
+
     private fun performMapBrowserProfileSwitch(profileId: String, openMapBrowser: Boolean = true) {
         openBrowserAfterCredentialCheck = openMapBrowser
-        if (profileId == "personal") {
+        if (profileId == MapBrowserProfilePreference.PERSONAL_PROFILE_ID) {
             if (!CaltopoPersonalSession.catalogReady) {
                 android.util.Log.i("CaltopoPersonalAuth", "selection skipped; personal catalog not ready")
                 return
@@ -336,6 +385,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             if (!CaltopoPersonalSession.browsingPersonal &&
                 CaltopoMap.GetMapStatus() != CaltopoMap.MapStatusListener.mapStatus.down) CaltopoMap.OpenMap(null)
             CaltopoPersonalSession.browsingPersonal = true
+            rememberBrowseProfile(MapBrowserProfilePreference.PERSONAL_PROFILE_ID)
             refreshMapBrowserProfiles()
             mapHierarchy = CaltopoPersonalSession.maps
             overlay = if (openMapBrowser) OverlayState.MapBrowser else OverlayState.None
@@ -346,6 +396,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         }
         if (CaltopoClient.SetActiveCaltopoProfileId(profileId, false)) {
             CaltopoPersonalSession.browsingPersonal = false
+            rememberBrowseProfile(profileId)
             refreshMapBrowserProfiles()
             overlay = if (openMapBrowser) OverlayState.Connecting else OverlayState.None
             CaltopoMap.Init()
@@ -355,7 +406,10 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
     fun returnToTeamCredential(openBrowser: Boolean) {
         CaltopoPersonalSession.suspendPersonalSelection()
         val teamId = CaltopoClient.GetActiveCaltopoProfileId().orEmpty()
-        if (teamId.isNotEmpty()) CaltopoClient.SetActiveCaltopoProfileId(teamId, false)
+        if (teamId.isNotEmpty()) {
+            CaltopoClient.SetActiveCaltopoProfileId(teamId, false)
+            rememberBrowseProfile(teamId)
+        }
         refreshMapBrowserProfiles()
         mapHierarchy = null
         android.util.Log.i("CaltopoPersonalAuth", "selection team profile=${teamId.ifEmpty { "none" }}")
@@ -403,6 +457,9 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             is UIEvent.HeaderClicked -> {
                 openBrowserAfterCredentialCheck = true
                 refreshMapBrowserProfiles()
+                val restorePersonal = MapBrowserProfilePreference.lastSelectedProfileId() ==
+                    MapBrowserProfilePreference.PERSONAL_PROFILE_ID &&
+                    !CaltopoPersonalSession.browsingPersonal
                 if ((connectionState is CaltopoConnectionState.StandAlone ||
                         connectionState is CaltopoConnectionState.NoNetwork) &&
                     !CaltopoPersonalSession.browsingPersonal && hasCredentials) {
@@ -410,20 +467,28 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                     // Show the picker while saved credentials load its hierarchy.
                     mapHierarchy = null
                     overlay = OverlayState.MapBrowser
-                    CaltopoMap.Init()?.let { overlay = OverlayState.Error(it) }
-                } else overlay = when (connectionState) {
-                    is CaltopoConnectionState.StandAlone -> if (CaltopoPersonalSession.browsingPersonal) OverlayState.MapBrowser else OverlayState.ConnectionSetup
-                    is CaltopoConnectionState.NoNetwork -> {
-                        if (R2CMqttManager.GetMyIpAddress().isEmpty()) {
-                            OverlayState.ConnectionSetup
-                        } else {
-                            OverlayState.None
-                        }
+                    if (restorePersonal) {
+                        restoreRememberedBrowseProfileIfNeeded()
                     }
-                    is CaltopoConnectionState.CredentialsLoaded -> OverlayState.MapBrowser
-                    is CaltopoConnectionState.CredentialsVerified -> OverlayState.MapBrowser
-                    is CaltopoConnectionState.MapSelected -> OverlayState.Management
-                    else -> overlay // do nothing if busy
+                    CaltopoMap.Init()?.let { overlay = OverlayState.Error(it) }
+                } else {
+                    overlay = when (connectionState) {
+                        is CaltopoConnectionState.StandAlone -> if (CaltopoPersonalSession.browsingPersonal) OverlayState.MapBrowser else OverlayState.ConnectionSetup
+                        is CaltopoConnectionState.NoNetwork -> {
+                            if (R2CMqttManager.GetMyIpAddress().isEmpty()) {
+                                OverlayState.ConnectionSetup
+                            } else {
+                                OverlayState.None
+                            }
+                        }
+                        is CaltopoConnectionState.CredentialsLoaded -> OverlayState.MapBrowser
+                        is CaltopoConnectionState.CredentialsVerified -> OverlayState.MapBrowser
+                        is CaltopoConnectionState.MapSelected -> OverlayState.Management
+                        else -> overlay // do nothing if busy
+                    }
+                    if (overlay == OverlayState.MapBrowser) {
+                        restoreRememberedBrowseProfileIfNeeded()
+                    }
                 }
             }
             is UIEvent.NotAbleToReadConfigFile -> {
@@ -469,6 +534,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             is UIEvent.SwitchMapRequested -> {
                 refreshMapBrowserProfiles()
                 overlay = OverlayState.MapBrowser // Close the management dialog and open the browser
+                restoreRememberedBrowseProfileIfNeeded()
             }
 
             is UIEvent.LoadStoredPersonal -> loadStoredPersonalCatalog()
@@ -514,6 +580,12 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                 }
                 val account = if (credential == "team") CaltopoClient.GetCaltopoCredentials().teamId.orEmpty()
                     else CaltopoPersonalSession.accountID
+                val selectedProfile = if (CaltopoPersonalSession.browsingPersonal || credential == "personal") {
+                    MapBrowserProfilePreference.PERSONAL_PROFILE_ID
+                } else {
+                    CaltopoClient.GetActiveCaltopoProfileId().orEmpty()
+                }
+                if (selectedProfile.isNotEmpty()) rememberBrowseProfile(selectedProfile)
                 CaltopoPersonalAccountConnection.logState(
                     "map open picked map=${map.id} account=$account credential=$credential grant=${CaltopoPersonalAccountConnection.grantKind(map.personalSessionID)} browsingPersonal=${CaltopoPersonalSession.browsingPersonal}"
                 )
@@ -551,6 +623,9 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                         }
                         refreshMapBrowserProfiles()
                         overlay = if (openBrowserAfterCredentialCheck) OverlayState.MapBrowser else OverlayState.None
+                        if (overlay == OverlayState.MapBrowser) {
+                            restoreRememberedBrowseProfileIfNeeded()
+                        }
                         CaltopoConnectionState.CredentialsVerified
                     }
                     CaltopoMap.MapStatusListener.mapStatus.up -> {
