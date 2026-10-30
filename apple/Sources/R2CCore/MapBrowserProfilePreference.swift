@@ -57,4 +57,49 @@ public struct MapBrowserProfilePreference {
         }
         return defaultTeamProfileID
     }
+
+    /// Selecting the already-active Map Browser profile is a session no-op.
+    public static func isActiveBrowseProfile(
+        requestedProfileID: String,
+        usesPersonalCredentials: Bool,
+        activeTeamProfileID: String
+    ) -> Bool {
+        let requested = requestedProfileID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let current = usesPersonalCredentials ? personalProfileID : activeTeamProfileID
+        return !requested.isEmpty && requested == current
+    }
+
+    /// Only an open incident map needs disconnect when switching browse credentials.
+    public static func shouldDisconnectMapForBrowseProfileSwitch(mapID: String) -> Bool {
+        !mapID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Internal profile-switch disconnect must keep Map Browser presented.
+    public static func shouldKeepMapBrowserOpenAfterProfileDisconnect(
+        browserPresented: Bool,
+        disconnectCausedByProfileSwitch: Bool
+    ) -> Bool {
+        browserPresented && disconnectCausedByProfileSwitch
+    }
+
+    /// Opening Map Browser should restore the remembered profile without treating it as a switch
+    /// when that profile is already active.
+    public static func browseProfileToActivateOnOpen(
+        rememberedProfileID: String,
+        usesPersonalCredentials: Bool,
+        activeTeamProfileID: String,
+        teamCredentialsPresent: Bool
+    ) -> String? {
+        let remembered = rememberedProfileID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if usesPersonalCredentials ||
+            remembered == personalProfileID ||
+            !teamCredentialsPresent {
+            let current = usesPersonalCredentials ? personalProfileID : activeTeamProfileID
+            if current == personalProfileID {
+                return nil // already personal; just present the browser
+            }
+            return personalProfileID
+        }
+        return nil // team credentials; present browser on the active team profile
+    }
 }

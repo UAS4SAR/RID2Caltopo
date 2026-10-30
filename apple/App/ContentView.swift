@@ -2595,11 +2595,15 @@ struct ContentView: View {
     }
 
     private func requestCredentialProfileSwitch(_ profileID: String) {
-        if profileID == "personal", caltopoSettings.usesPersonalCredentials {
+        // Re-selecting the active/remembered profile is a session no-op.
+        if MapBrowserProfilePreference.isActiveBrowseProfile(
+            requestedProfileID: profileID,
+            usesPersonalCredentials: caltopoSettings.usesPersonalCredentials,
+            activeTeamProfileID: profileLifecycle.activeProfileID
+        ) {
             showTeamMaps = true
             return
         }
-        guard profileID != (caltopoSettings.usesPersonalCredentials ? "personal" : profileLifecycle.activeProfileID) else { return }
         if ridTracks.tracks.isEmpty {
             activateCredentialProfile(profileID)
         } else {
@@ -2613,9 +2617,24 @@ struct ContentView: View {
     }
 
     private func activateCredentialProfileOnWorker(_ profileID: String) async {
-        showTeamMaps = false
-        if profileID == "personal" {
+        if MapBrowserProfilePreference.isActiveBrowseProfile(
+            requestedProfileID: profileID,
+            usesPersonalCredentials: caltopoSettings.usesPersonalCredentials,
+            activeTeamProfileID: profileLifecycle.activeProfileID
+        ) {
+            showTeamMaps = true
+            return
+        }
+        // Keep Map Browser open across a real credential switch and reload its list.
+        // Only disconnect when an incident map is actually open — credentialsVerified /
+        // remembered-profile restore must not tear the session down.
+        let shouldDisconnect = MapBrowserProfilePreference.shouldDisconnectMapForBrowseProfileSwitch(
+            mapID: caltopoSettings.mapID
+        )
+        if shouldDisconnect {
             applyCaltopoConfiguration(caltopoSettings.disconnectMap())
+        }
+        if profileID == MapBrowserProfilePreference.personalProfileID {
             caltopoSettings.usesPersonalCredentials = true
             caltopoSettings.rememberBrowseProfile(MapBrowserProfilePreference.personalProfileID)
             // The native browser restores saved login offscreen. It opens the
@@ -2624,7 +2643,6 @@ struct ContentView: View {
             return
         }
         if caltopoSettings.usesPersonalCredentials {
-            applyCaltopoConfiguration(caltopoSettings.disconnectMap())
             caltopoSettings.usesPersonalCredentials = false
         }
         caltopoSettings.rememberBrowseProfile(profileID)
@@ -2632,8 +2650,12 @@ struct ContentView: View {
             profileID,
             caltopoSettings: caltopoSettings,
             orgSettings: orgConfigSettings
-        ) else { return }
+        ) else {
+            showTeamMaps = true
+            return
+        }
         applyCaltopoConfiguration(caltopoSettings.configuration)
+        showTeamMaps = true
     }
 
     private func enforceMutualAidExpiryAtDeadline() async {
@@ -2659,11 +2681,15 @@ struct ContentView: View {
 
     private func openMapBrowser() {
         let remembered = MapBrowserProfilePreference(defaults: .standard).lastSelectedProfileID()
-        if caltopoSettings.usesPersonalCredentials ||
-            remembered == MapBrowserProfilePreference.personalProfileID ||
-            caltopoSettings.credentialID.isEmpty ||
-            caltopoSettings.credentialSecret.isEmpty {
-            activateCredentialProfile("personal")
+        let teamCredentialsPresent =
+            !caltopoSettings.credentialID.isEmpty && !caltopoSettings.credentialSecret.isEmpty
+        if let profileToActivate = MapBrowserProfilePreference.browseProfileToActivateOnOpen(
+            rememberedProfileID: remembered,
+            usesPersonalCredentials: caltopoSettings.usesPersonalCredentials,
+            activeTeamProfileID: profileLifecycle.activeProfileID,
+            teamCredentialsPresent: teamCredentialsPresent
+        ) {
+            activateCredentialProfile(profileToActivate)
         } else {
             showTeamMaps = true
         }

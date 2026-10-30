@@ -62,4 +62,80 @@ final class MapBrowserProfilePreferenceTests: XCTestCase {
             "home-default"
         )
     }
+
+    func testActiveBrowseProfileReselectionIsNoOp() {
+        XCTAssertTrue(
+            MapBrowserProfilePreference.isActiveBrowseProfile(
+                requestedProfileID: MapBrowserProfilePreference.personalProfileID,
+                usesPersonalCredentials: true,
+                activeTeamProfileID: "home"
+            )
+        )
+        XCTAssertTrue(
+            MapBrowserProfilePreference.isActiveBrowseProfile(
+                requestedProfileID: "home",
+                usesPersonalCredentials: false,
+                activeTeamProfileID: "home"
+            )
+        )
+        XCTAssertFalse(
+            MapBrowserProfilePreference.isActiveBrowseProfile(
+                requestedProfileID: MapBrowserProfilePreference.personalProfileID,
+                usesPersonalCredentials: false,
+                activeTeamProfileID: "home"
+            )
+        )
+    }
+
+    func testOnlyOpenMapRequiresDisconnectForBrowseProfileSwitch() {
+        XCTAssertFalse(
+            MapBrowserProfilePreference.shouldDisconnectMapForBrowseProfileSwitch(mapID: "")
+        )
+        XCTAssertFalse(
+            MapBrowserProfilePreference.shouldDisconnectMapForBrowseProfileSwitch(mapID: "  ")
+        )
+        XCTAssertTrue(
+            MapBrowserProfilePreference.shouldDisconnectMapForBrowseProfileSwitch(mapID: "4J0LF02")
+        )
+        XCTAssertTrue(
+            MapBrowserProfilePreference.shouldKeepMapBrowserOpenAfterProfileDisconnect(
+                browserPresented: true,
+                disconnectCausedByProfileSwitch: true
+            )
+        )
+        XCTAssertFalse(
+            MapBrowserProfilePreference.shouldKeepMapBrowserOpenAfterProfileDisconnect(
+                browserPresented: true,
+                disconnectCausedByProfileSwitch: false
+            )
+        )
+    }
+
+    func testOpeningBrowserDoesNotReactivateAlreadySelectedPersonalProfile() {
+        XCTAssertNil(
+            MapBrowserProfilePreference.browseProfileToActivateOnOpen(
+                rememberedProfileID: MapBrowserProfilePreference.personalProfileID,
+                usesPersonalCredentials: true,
+                activeTeamProfileID: "home",
+                teamCredentialsPresent: true
+            )
+        )
+        XCTAssertEqual(
+            MapBrowserProfilePreference.browseProfileToActivateOnOpen(
+                rememberedProfileID: MapBrowserProfilePreference.personalProfileID,
+                usesPersonalCredentials: false,
+                activeTeamProfileID: "home",
+                teamCredentialsPresent: true
+            ),
+            MapBrowserProfilePreference.personalProfileID
+        )
+        XCTAssertNil(
+            MapBrowserProfilePreference.browseProfileToActivateOnOpen(
+                rememberedProfileID: "home",
+                usesPersonalCredentials: false,
+                activeTeamProfileID: "home",
+                teamCredentialsPresent: true
+            )
+        )
+    }
 }

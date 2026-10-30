@@ -284,6 +284,8 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
     }
 
     private var openBrowserAfterCredentialCheck = true
+    /** Set when a Map Browser profile switch disconnects an open map; down must not close the browser. */
+    private var keepMapBrowserOpenAcrossProfileDisconnect = false
     private var storedPersonalCatalogLoad: kotlinx.coroutines.Job? = null
     var personalSyncPrompt by mutableStateOf(false)
         private set
@@ -375,6 +377,12 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         }
     }
 
+    private fun resetOpenMapForBrowseProfileSwitch(openMapBrowser: Boolean) {
+        if (!shouldResetMapConnectionForBrowseProfileSwitch(CaltopoMap.GetMapStatus())) return
+        if (openMapBrowser) keepMapBrowserOpenAcrossProfileDisconnect = true
+        CaltopoMap.OpenMap(null)
+    }
+
     private fun performMapBrowserProfileSwitch(profileId: String, openMapBrowser: Boolean = true) {
         openBrowserAfterCredentialCheck = openMapBrowser
         if (profileId == MapBrowserProfilePreference.PERSONAL_PROFILE_ID) {
@@ -383,8 +391,11 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                 return
             }
             android.util.Log.i("CaltopoPersonalAuth", "selection personal roots=${CaltopoPersonalSession.maps.size}")
-            if (!CaltopoPersonalSession.browsingPersonal &&
-                CaltopoMap.GetMapStatus() != CaltopoMap.MapStatusListener.mapStatus.down) CaltopoMap.OpenMap(null)
+            // credentialsVerified is not an open map — re-applying remembered personal must not
+            // reset/disconnect that session, or the resulting down closes Map Browser.
+            if (!CaltopoPersonalSession.browsingPersonal) {
+                resetOpenMapForBrowseProfileSwitch(openMapBrowser)
+            }
             CaltopoPersonalSession.browsingPersonal = true
             rememberBrowseProfile(MapBrowserProfilePreference.PERSONAL_PROFILE_ID)
             refreshMapBrowserProfiles()
@@ -392,14 +403,18 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             overlay = if (openMapBrowser) OverlayState.MapBrowser else OverlayState.None
             return
         }
-        if (CaltopoMap.GetMapStatus() != CaltopoMap.MapStatusListener.mapStatus.down) {
-            CaltopoMap.OpenMap(null)
-        }
+        resetOpenMapForBrowseProfileSwitch(openMapBrowser)
         if (CaltopoClient.SetActiveCaltopoProfileId(profileId, false)) {
             CaltopoPersonalSession.browsingPersonal = false
             rememberBrowseProfile(profileId)
             refreshMapBrowserProfiles()
-            overlay = if (openMapBrowser) OverlayState.Connecting else OverlayState.None
+            // Keep the browser visible while the new credential list reloads.
+            if (openMapBrowser) {
+                mapHierarchy = null
+                overlay = OverlayState.MapBrowser
+            } else {
+                overlay = OverlayState.None
+            }
             CaltopoMap.Init()
         }
     }
@@ -543,12 +558,24 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             is UIEvent.PersonalCredentialLoggedOut -> returnToTeamCredential(openBrowser = true)
 
             is UIEvent.BrowseProfileSelected -> {
-                val currentProfile = if (CaltopoPersonalSession.browsingPersonal) "personal" else CaltopoClient.GetActiveCaltopoProfileId().orEmpty()
+                val currentProfile = if (CaltopoPersonalSession.browsingPersonal) {
+                    MapBrowserProfilePreference.PERSONAL_PROFILE_ID
+                } else {
+                    CaltopoClient.GetActiveCaltopoProfileId().orEmpty()
+                }
                 android.util.Log.i(
                     "CaltopoPersonalAuth",
                     "selection request=${uiEvent.profileId} current=$currentProfile catalogReady=${CaltopoPersonalSession.catalogReady} roots=${CaltopoPersonalSession.maps.size}"
                 )
-                if (uiEvent.profileId != currentProfile) {
+                // Active/remembered profile re-selection is a session no-op: no reset/disconnect.
+                if (uiEvent.profileId == currentProfile) {
+                    if (uiEvent.openMapBrowser) overlay = OverlayState.MapBrowser
+                    if (uiEvent.profileId == MapBrowserProfilePreference.PERSONAL_PROFILE_ID &&
+                        CaltopoPersonalSession.catalogReady
+                    ) {
+                        mapHierarchy = CaltopoPersonalSession.maps
+                    }
+                } else {
                     val activeFlightCount = CaltopoClient.GetActiveFlightCount()
                     val targetOption = mapBrowserProfiles.firstOrNull { it.profileId == uiEvent.profileId }
                     if (activeFlightCount > 0 &&
@@ -643,7 +670,17 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                         CaltopoConnectionState.MapSelected(CaltopoMap.GetMapNode())
                     }
                     CaltopoMap.MapStatusListener.mapStatus.down -> {
-                        overlay = OverlayState.None
+                        if (shouldKeepMapBrowserOpenAfterConnectionDown(
+                                overlay,
+                                keepMapBrowserOpenAcrossProfileDisconnect
+                            )
+                        ) {
+                            keepMapBrowserOpenAcrossProfileDisconnect = false
+                            overlay = OverlayState.MapBrowser
+                        } else {
+                            keepMapBrowserOpenAcrossProfileDisconnect = false
+                            overlay = OverlayState.None
+                        }
                         CaltopoConnectionState.StandAlone
                     }
                     CaltopoMap.MapStatusListener.mapStatus.connecting -> {
@@ -1184,6 +1221,22 @@ internal fun shouldResumeMapConnectionAfterCredentialRestore(
     overlay: OverlayState,
     hasCredentials: Boolean
 ): Boolean = overlay is OverlayState.RequestConfigFile && hasCredentials
+
+/** Only an open/connecting map needs a reset when switching Map Browser credentials. */
+internal fun shouldResetMapConnectionForBrowseProfileSwitch(
+    status: CaltopoMap.MapStatusListener.mapStatus
+): Boolean =
+    status == CaltopoMap.MapStatusListener.mapStatus.up ||
+        status == CaltopoMap.MapStatusListener.mapStatus.connecting
+
+/**
+ * An internal profile-switch disconnect must not dismiss Map Browser; operator dismiss
+ * and real standalone disconnects still clear the overlay.
+ */
+internal fun shouldKeepMapBrowserOpenAfterConnectionDown(
+    overlay: OverlayState,
+    keepOpenForProfileSwitch: Boolean
+): Boolean = keepOpenForProfileSwitch && overlay is OverlayState.MapBrowser
 
 class R2CViewModelFactory(private val uptimeTimer: SimpleTimer) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
