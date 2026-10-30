@@ -2898,7 +2898,7 @@ class StreamsViewModel(
     private val clueUploadStartedAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val clueUploadStaleAfterMs = 180_000L
     private val clueRetryLoggedAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
-    private val clueUploadBackoff = org.ncssar.rid2caltopo.data.ClueUploadBackoff()
+    private val clueUploadBackoff = org.ncssar.rid2caltopo.data.ClueUploadBackoffTable()
     private var clueUploadOwner: kotlinx.coroutines.Job? = null
 
     /** Default logging is Debug. Info is Ludicrous, so skip lines must not use CTInfo. */
@@ -2940,10 +2940,13 @@ class StreamsViewModel(
             logClueRetry("publication-team-blank", "retryPendingClues: skip reason=publication-team-blank")
             return
         }
-        // One owner owns upload and backoff. Concurrent Submit/map/timer callers must not
-        // stack PublishStoredPhoto on top of an in-flight attempt.
-        if (clueUploadOwner?.isActive == true || clueUploadStartedAtMs.isNotEmpty()) {
-            logClueRetry("upload-in-flight", "retryPendingClues: skip reason=upload-in-flight ids=$clueUploadStartedAtMs")
+        // One serial owner; per-clue backoff must not block other pending ids. Skip only while
+        // that owner is alive — never because of a stale empty in-flight map.
+        if (clueUploadOwner?.isActive == true) {
+            logClueRetry(
+                "upload-in-flight",
+                "retryPendingClues: skip reason=upload-in-flight ids=$clueUploadStartedAtMs",
+            )
             return
         }
         val mapKey = currentLocalClueMapKey()
@@ -2981,17 +2984,28 @@ class StreamsViewModel(
                         return@launch
                     }
                     if (visibleIds != localMapMarkers.map { it.id }.toSet()) hydrateLocalClues(mapKey)
-                    val record = pending.firstOrNull()
-                    if (record == null) {
-                        clueUploadBackoff.reset()
+                    if (pending.isEmpty()) {
+                        clueUploadBackoff.clearAll()
                         val queryTeam = org.ncssar.rid2caltopo.data.CluePublicationIdentity.normalizeTeamId(teamId)
                         val message = "retryPendingClues: skip reason=no-matching-pending queryMap=map:$mapId queryTeam=$queryTeam pending=$pendingSummary"
                         logClueRetry("no-matching-pending", message, warn = pendingSummary != "none")
                         return@launch
                     }
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    // Freshly submitted clues first; skip ids still in per-clue backoff.
+                    val ready = pending
+                        .filter { clueUploadBackoff.isReady(it.id, now) && !clueUploadStartedAtMs.containsKey(it.id) }
+                        .sortedByDescending { it.createdAtMs }
+                    val record = ready.firstOrNull()
+                    if (record == null) {
+                        val wakeAt = pending.minOf { clueUploadBackoff.readyAt(it.id) }
+                        val waitMs = (wakeAt - now).coerceAtLeast(50L).coerceAtMost(60_000L)
+                        kotlinx.coroutines.delay(waitMs)
+                        continue
+                    }
                     if (!beginClueUpload(record.id)) {
                         logClueRetry("already-in-flight:${record.id}", "retryPendingClues: skip reason=already-in-flight id=${record.id}")
-                        return@launch
+                        continue
                     }
                     logClueRetry(
                         "uploading:${record.id}",
@@ -3000,14 +3014,11 @@ class StreamsViewModel(
                     val outcome = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
                     try {
                         withContext(Dispatchers.IO) {
-                            val published = publishFirstPendingClue(
-                                localClueStore, mapId, teamId, folder,
-                                { localClueStore.imageFile(it).readBytes() },
+                            org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
+                                mapId, teamId, record.id, record.lat, record.lng, record.title,
+                                record.publishedDescription, folder, record.createdAtMs,
+                                localClueStore.imageFile(record).readBytes(),
                             ) { result -> outcome.complete(result) }
-                            if (published == null) {
-                                endClueUpload(record.id)
-                                return@withContext
-                            }
                             val result = outcome.await()
                             val permanent = result.responseCode in listOf(400, 401, 403, 404, 413, 422)
                             clueStorage {
@@ -3022,17 +3033,19 @@ class StreamsViewModel(
                             }
                             endClueUpload(record.id)
                             if (result.success()) {
-                                clueUploadBackoff.reset()
+                                clueUploadBackoff.reset(record.id)
                                 return@withContext
                             }
-                            val delayMs = clueUploadBackoff.nextDelayMs()
+                            val delayMs = clueUploadBackoff.nextDelayMs(record.id)
+                            clueUploadBackoff.markDelayedUntil(
+                                record.id,
+                                android.os.SystemClock.elapsedRealtime() + delayMs,
+                            )
                             logClueRetry(
                                 "backoff:${record.id}",
                                 "retryPendingClues: backoffMs=$delayMs id=${record.id} code=${result.responseCode}",
                                 warn = true,
                             )
-                            // Auth and transport failures share exponential backoff. Do not spin.
-                            kotlinx.coroutines.delay(delayMs)
                         }
                     } catch (cancelled: kotlinx.coroutines.CancellationException) {
                         endClueUpload(record.id)
@@ -3040,8 +3053,11 @@ class StreamsViewModel(
                     } catch (error: Exception) {
                         endClueUpload(record.id)
                         CTError(tag, "Pending clue remains local", error)
-                        val delayMs = clueUploadBackoff.nextDelayMs()
-                        kotlinx.coroutines.delay(delayMs)
+                        val delayMs = clueUploadBackoff.nextDelayMs(record.id)
+                        clueUploadBackoff.markDelayedUntil(
+                            record.id,
+                            android.os.SystemClock.elapsedRealtime() + delayMs,
+                        )
                     }
                 }
             } finally {

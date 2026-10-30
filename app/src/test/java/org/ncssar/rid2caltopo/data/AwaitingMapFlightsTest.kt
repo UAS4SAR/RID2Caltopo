@@ -43,6 +43,21 @@ class AwaitingMapFlightsTest {
         } finally { file.delete() }
     }
 
+    @Test fun openEmptyMapReviewBindsWhenOwnerAndMapAreReady() {
+        val file = File.createTempFile("flight-bind-open", ".json").also { it.delete() }
+        try {
+            AwaitingMapFlights.useFileForTesting(file)
+            AwaitingMapFlights.record("one", "RID", "Aircraft", flight().getJSONArray("points"), false, "", "team-a")
+            assertEquals("", AwaitingMapFlights.publicationId("RID", "map-a", "team-a"))
+            assertEquals("one", AwaitingMapFlights.bindConnectedMapIfOpenReview("RID", "map-a", "team-a"))
+            assertNull(AwaitingMapFlights.publicationId("RID", "map-a", "team-a"))
+            assertEquals("bound", AwaitingMapFlights.allEntries().single().getString("decision"))
+            assertEquals("map-a", AwaitingMapFlights.allEntries().single().getString("map"))
+            // Finished review offers stay in the inbox — bind only touches unfinished entries.
+            AwaitingMapFlights.record("one", "RID", "Aircraft", flight().getJSONArray("points"), true, "map-a", "team-a")
+        } finally { file.delete() }
+    }
+
     @Test fun publicationDecisionDoesNotWaitForAStorageWriter() {
         val file = File.createTempFile("flight-intent", ".json").also { it.delete() }
         val entered = java.util.concurrent.CountDownLatch(1)

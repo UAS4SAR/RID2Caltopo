@@ -62,10 +62,11 @@ class OperationalStorageTest {
     @Test fun conflictDoesNotRemoveEitherOriginal() = fixture { context, archive ->
         val original = write(context.filesDir, "clues/picture.jpg", "local original")
         val retained = write(archive, "application-logs/operational/clues/picture.jpg", "different retained original")
-        assertThrows(IllegalStateException::class.java) { OperationalStorage.prepare(context, DocumentFile.fromFile(archive)) }
-        assertEquals("local original", original.readText())
+        // Clues hydrate merges; mismatched copies are kept and preparation still succeeds.
+        OperationalStorage.prepare(context, DocumentFile.fromFile(archive))
+        assertEquals("local original", File(context.filesDir, "clues/picture.jpg").readText())
         assertEquals("different retained original", retained.readText())
-        assertFalse(OperationalStorage.ready())
+        assertTrue(OperationalStorage.ready())
     }
     @Test fun missingDisposableWorkspaceIsRebuiltFromArchive() = fixture { context, archive ->
         val file = write(context.filesDir, "clues/picture.jpg", "durable clue")

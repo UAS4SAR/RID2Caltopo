@@ -1,6 +1,8 @@
 package org.ncssar.rid2caltopo.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ClueUploadBackoffTest {
@@ -17,14 +19,13 @@ class ClueUploadBackoffTest {
         assertEquals(2_000L, backoff.nextDelayMs())
     }
 
-    @Test fun authFailureSharesSingleOwnerBackoffSchedule() {
-        // A local auth miss and a transport failure both advance the same schedule so
-        // concurrent callers cannot spin once the single upload owner owns the delay.
-        val backoff = ClueUploadBackoff()
-        val first = backoff.nextDelayMs()
-        val second = backoff.nextDelayMs()
-        assertEquals(2_000L, first)
-        assertEquals(4_000L, second)
-        assertEquals(8_000L, backoff.peekMs())
+    @Test fun perClueBackoffDoesNotBlockOtherIds() {
+        val table = ClueUploadBackoffTable()
+        assertEquals(2_000L, table.nextDelayMs("old"))
+        table.markDelayedUntil("old", 10_000L)
+        assertFalse(table.isReady("old", 5_000L))
+        assertTrue(table.isReady("fresh", 5_000L))
+        assertEquals(2_000L, table.nextDelayMs("fresh"))
+        assertEquals(4_000L, table.backoff("old").peekMs())
     }
 }

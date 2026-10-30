@@ -105,6 +105,28 @@ object AwaitingMapFlights {
             else -> ""
         }
     }
+
+    /**
+     * An in-progress flight that captured an empty-map review intent before the map connected
+     * must bind to the now-connected map when local ownership is granted, so LiveTrack can start
+     * without waiting for the review inbox. Finished review offers stay in the inbox.
+     */
+    @JvmStatic @JvmOverloads @Synchronized fun bindConnectedMapIfOpenReview(
+        remote: String, map: String, team: String = selectedPublicationScope(),
+    ): String? {
+        if (map.isEmpty()) return null
+        load()
+        reservedPublicationId(remote)?.let { return it }
+        val item = all().lastOrNull { it.optString("remote") == remote && !it.optBoolean("finished") } ?: return null
+        if (item.optString("decision") != "review") return null
+        if (item.optString("map").isNotEmpty()) return null
+        item.put("map", map).put("team", team).put("decision", "bound")
+        save()
+        publishChoices()
+        CaltopoClient.CTDebug("AwaitingMapFlights",
+            "Bound open review intent remote=$remote map=$map id=${item.optString("id")}")
+        return item.optString("id").ifEmpty { null }
+    }
     @JvmStatic @Synchronized fun notePublication(remote: String, map: String) {
         load()
         val entry = all().lastOrNull { it.optString("remote") == remote && !it.optBoolean("finished") && it.optString("map") == map } ?: return

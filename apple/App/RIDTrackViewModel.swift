@@ -1022,13 +1022,17 @@ final class RIDTrackViewModel: ObservableObject {
                         // Start as soon as ownership is granted while the map is already up;
                         // keep the short delay only as a second chance after peer settle.
                         if coordinator.publicationAllowed(remoteID: remoteID) {
-                            self.flushPendingPublication(remoteID: remoteID)
+                            Task { [weak self] in
+                                await self?.bindOpenReviewIfNeeded(remoteID: remoteID)
+                                self?.flushPendingPublication(remoteID: remoteID)
+                            }
                         }
                         self.ownershipActivationTasks[remoteID] = Task { [weak self, coordinator] in
                             try? await Task.sleep(for: .seconds(2))
                             guard !Task.isCancelled, let self,
                                   coordinator.publicationAllowed(remoteID: remoteID)
                             else { return }
+                            await self.bindOpenReviewIfNeeded(remoteID: remoteID)
                             self.flushPendingPublication(remoteID: remoteID)
                             self.ownershipActivationTasks.removeValue(forKey: remoteID)
                         }
@@ -1478,6 +1482,20 @@ final class RIDTrackViewModel: ObservableObject {
         }
     }
 
+    /// Empty-map review intents captured before connect must bind once owner+map are ready.
+    private func bindOpenReviewIfNeeded(remoteID: String) async {
+        guard !publicationMapID.isEmpty else { return }
+        let deferred = awaitingOpenFlights[remoteID]
+        guard let deferred, deferred.decision == "review", deferred.mapID.isEmpty else { return }
+        do {
+            _ = try await awaitingMapJournal.bindOpenReviewToConnectedMap(
+                remoteID: remoteID, mapID: publicationMapID, teamID: publicationTeamID)
+            await refreshAwaitingMapState()
+        } catch {
+            archiveStatus = "Publication intent could not bind to the connected map"
+        }
+    }
+
     @discardableResult
     private func enqueuePublication(
         remoteID: String,
@@ -1486,6 +1504,13 @@ final class RIDTrackViewModel: ObservableObject {
     ) -> Task<Void, Never> {
         guard awaitingMapHistoryReady, awaitingMapHistoryError == nil else { return Task { } }
         let deferred = awaitingOpenFlights[remoteID]
+        if let deferred, deferred.decision == "review", deferred.mapID.isEmpty, !publicationMapID.isEmpty {
+            return Task { [weak self] in
+                await self?.bindOpenReviewIfNeeded(remoteID: remoteID)
+                guard let self else { return }
+                _ = self.enqueuePublication(remoteID: remoteID, label: label, observation: observation)
+            }
+        }
         if let deferred, !["publish", "bound"].contains(deferred.decision) || deferred.mapID != publicationMapID || deferred.teamID != publicationTeamID {
             return Task { }
         }

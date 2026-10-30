@@ -354,6 +354,10 @@ internal object OperationalStorage {
         CaltopoClient.CTDebug("OperationalStorage", "Verified sources area=${area.id} elapsedMs=${android.os.SystemClock.elapsedRealtime() - sourceStarted}")
     }
     private fun prepareAreaProjection(context: Context, value: Store, area: Area, hydrationScratch: File, checkSelection: () -> Unit) {
+        if (area.id == "clues") {
+            prepareCluesProjection(context, value, area, hydrationScratch, checkSelection)
+            return
+        }
         val work = value.work
         val hydrationStarted = android.os.SystemClock.elapsedRealtime()
         checkSelection()
@@ -368,7 +372,7 @@ internal object OperationalStorage {
             hydrate(value, area.retained, staged, reuse, hydrationScratch, checkSelection)
         } catch (error: IllegalStateException) {
             if (!isTransientPrepareFailure(error) || !reuse) throw error
-            // Working copy changed under us (clue delete/upload). Rebuild that area once.
+            // Working copy changed under us. Rebuild non-clue areas once from archive.
             CaltopoClient.CTWarn("OperationalStorage", "Retrying ${area.id} hydrate without reuse: ${error.message}")
             value.tree.refresh()
             if (staged != destination && staged.exists()) removeTree(staged)
@@ -393,6 +397,85 @@ internal object OperationalStorage {
         if (area.id == "queue-state") for (name in queueNames) File(context.filesDir, name).let { if (it.exists()) check(it.delete()) }
         if (area.id == "review-annotations") context.cacheDir.listFiles().orEmpty().filter { it.isFile && it.name.endsWith(".review.json") }.forEach { check(it.delete()) }
         CaltopoClient.CTDebug("OperationalStorage", "Prepared area=${area.id} reused=$reuse elapsedMs=${android.os.SystemClock.elapsedRealtime() - hydrationStarted}")
+    }
+
+    /**
+     * Clues hydrate is always a union merge. Never replace the working projection with the
+     * archive, and never delete clue images or index entries during prepare/retry/reconcile.
+     */
+    private fun prepareCluesProjection(context: Context, value: Store, area: Area, hydrationScratch: File, checkSelection: () -> Unit) {
+        val work = value.work
+        val hydrationStarted = android.os.SystemClock.elapsedRealtime()
+        checkSelection()
+        val destination = File(work, area.id)
+        check(destination.isDirectory || destination.mkdirs())
+        val archiveStage = File(work.parentFile, ".clues-archive-${UUID.randomUUID()}")
+        check(archiveStage.isDirectory || archiveStage.mkdirs())
+        try {
+            try {
+                hydrate(value, area.retained, archiveStage, reuse = false, hydrationScratch, checkSelection)
+            } catch (error: IllegalStateException) {
+                if (!isTransientPrepareFailure(error)) throw error
+                CaltopoClient.CTWarn(
+                    "OperationalStorage",
+                    "Clues archive hydrate deferred; keeping working projection: ${error.message}",
+                )
+                value.tree.refresh()
+            }
+            // Working projection and any still-materialized app-private source trees win per id.
+            val workingRoots = buildList {
+                add(destination)
+                for (source in area.sources) {
+                    if (!source.exists()) continue
+                    if (Files.isSymbolicLink(source.toPath())) continue
+                    if (source.canonicalFile == destination.canonicalFile) continue
+                    if (source.isDirectory) add(source)
+                }
+            }
+            ClueProjectionMerge.mergeTree(archiveStage, destination, preferExisting = true) { relative ->
+                CaltopoClient.CTWarn(
+                    "OperationalStorage",
+                    "Clues hydrate kept both copies for mismatched path=$relative",
+                )
+            }
+            for (root in workingRoots) {
+                if (root.canonicalFile == destination.canonicalFile) continue
+                ClueProjectionMerge.mergeTree(root, destination, preferExisting = false) { relative ->
+                    CaltopoClient.CTWarn(
+                        "OperationalStorage",
+                        "Clues hydrate kept both copies for mismatched path=$relative",
+                    )
+                }
+            }
+            verifyHydratedProjection(area, value, destination)
+            checkSelection()
+            for (source in area.sources) {
+                if (Files.isSymbolicLink(source.toPath())) {
+                    Files.delete(source.toPath())
+                } else if (source.exists() && source.canonicalFile != destination.canonicalFile) {
+                    // Content already merged into destination; replace the material tree with the alias.
+                    val aside = File(source.parentFile, ".${source.name}-merged-${UUID.randomUUID()}")
+                    check(source.renameTo(aside)) { "Cannot retire merged clues source." }
+                    removeTree(aside)
+                }
+            }
+            area.alias.parentFile!!.mkdirs()
+            if (Files.isSymbolicLink(area.alias.toPath())) Files.delete(area.alias.toPath())
+            else if (area.alias.exists() && area.alias.canonicalFile != destination.canonicalFile) {
+                val aside = File(area.alias.parentFile, ".${area.alias.name}-merged-${UUID.randomUUID()}")
+                check(area.alias.renameTo(aside))
+                removeTree(aside)
+            }
+            if (!Files.isSymbolicLink(area.alias.toPath())) {
+                Os.symlink(destination.absolutePath, area.alias.absolutePath)
+            }
+            CaltopoClient.CTDebug(
+                "OperationalStorage",
+                "Prepared area=clues reused=merge elapsedMs=${android.os.SystemClock.elapsedRealtime() - hydrationStarted}",
+            )
+        } finally {
+            if (archiveStage.exists()) removeTree(archiveStage)
+        }
     }
     private fun unavailable(message: String): IllegalStateException {
         state.value = Status(message = message)
@@ -437,9 +520,16 @@ internal object OperationalStorage {
                         )
                         continue
                     }
-                    ClueHydrationReconcile.Verdict.MISMATCH -> error(
-                        "Archive hydration did not preserve ${area.id}; original copies were retained.",
-                    )
+                    ClueHydrationReconcile.Verdict.MISMATCH -> {
+                        // Keep both working and archive copies; never discard clue bytes on verify.
+                        CaltopoClient.CTWarn(
+                            "OperationalStorage",
+                            "Clues hydrate verification mismatch kept both copies path=$path",
+                        )
+                        if (archiveHash != null) value.migrated[path] = archiveHash
+                        else value.migrated.remove(path)
+                        continue
+                    }
                 }
             }
             check(copied.isFile && copied.inputStream().use { VerifiedArchiveTree.digest(it) } == hash) {

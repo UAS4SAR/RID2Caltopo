@@ -1568,14 +1568,24 @@ public class CaltopoSession {
         op.quietErrorCodes = quietErrorCodes;
         BgSendRequest(op);
         if (op.success()) {
+            String body = op.response == null ? "" : op.response;
             try {
-                JSONObject envelope = new JSONObject(op.response);
+                JSONObject envelope = new JSONObject(body);
                 if (!"ok".equals(envelope.optString("status")) || envelope.has("error")) throw new JSONException("Invalid response");
             } catch (JSONException error) {
+                // Preserve the server body for diagnosis; callers may still recover when the
+                // Marker already exists and only media/link remain.
+                CTDebug(TAG, "PhotoOp() unexpected envelope method=" + method + " path=" + path +
+                        " http=" + op.responseCode + " body=" + SafeResponseText(body));
                 op.responseCode = 502;
-                op.response = "Photo upload was not acknowledged; retained for retry.";
+                op.response = body.isEmpty()
+                        ? "Photo upload was not acknowledged; retained for retry."
+                        : body;
                 op.setOperationIsDone(false);
             }
+        } else if (op.responseCode == 502 || op.responseCode >= 500) {
+            CTDebug(TAG, "PhotoOp() server error method=" + method + " path=" + path +
+                    " http=" + op.responseCode + " body=" + SafeResponseText(op.response));
         }
         return op;
     }
@@ -1631,8 +1641,21 @@ public class CaltopoSession {
                     .put("marker-symbol", "Drone").put("marker-color", "#FF0000");
                 JSONObject marker = new JSONObject().put("id", markerId).put("type", "Feature").put("geometry", geometry).put("properties", props);
                 result = PhotoOp(personal, teamId, CtsMethod_t.POST, CALTOPO_MAP_API_V1 + mapId + "/Marker/" + markerId, marker, false);
+                boolean markerPresent = result.success();
+                if (!markerPresent) {
+                    // A prior attempt may have created the Marker then failed media. Attach to it.
+                    CaltopoOp existingMarker = PhotoOp(personal, teamId, CtsMethod_t.GET,
+                            CALTOPO_MAP_API_V1 + mapId + "/Marker/" + markerId, null, false, new int[] {400, 404});
+                    CTDebug(TAG, "PublishStoredPhoto() marker POST failed code=" + result.responseCode +
+                            " body=" + SafeResponseText(result.response) +
+                            "; existing GET code=" + existingMarker.responseCode);
+                    if (existingMarker.success()) {
+                        markerPresent = true;
+                        result = existingMarker;
+                    }
+                }
                 boolean mediaReady = false;
-                if (result.success()) {
+                if (markerPresent) {
                     // Absent media is an expected 400/404 probe miss before create; quiet it.
                     CaltopoOp existing = PhotoOp(personal, teamId, CtsMethod_t.GET, CALTOPO_MEDIA_API_V1 + mediaId,
                             null, false, new int[] {400, 404});

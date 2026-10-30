@@ -135,6 +135,44 @@ class CaltopoLiveTrackTest {
         assertTrue(track.publishingLocally())
     }
 
+    @Test fun mapUpThreeSecondsBeforeOwner_startsDespiteEmptyMapReviewIntent() {
+        val awaiting = java.io.File.createTempFile("awaiting-map-before-owner-", ".json").also { it.delete() }
+        try {
+            AwaitingMapFlights.useFileForTesting(awaiting)
+            // Flight started before map connect — durable intent has empty map / review.
+            AwaitingMapFlights.record(
+                "flight-pre-map",
+                "RIDMAPFIRST",
+                "RIDMAPFIRST_120300Sep25",
+                org.json.JSONArray().put(org.json.JSONArray().put(-121.1).put(39.1).put(500)),
+                false,
+                "",
+                "team-a",
+            )
+            assertEquals("", AwaitingMapFlights.publicationId("RIDMAPFIRST", "map-test", "team-a"))
+
+            val drone = CtDroneSpec("RID-MAP-FIRST")
+            assertEquals("RIDMAPFIRST", drone.remoteId)
+            setDroneTrackLabel(drone, "RIDMAPFIRST_120300Sep25")
+            val track = CaltopoLiveTrack(drone, 39.1, -121.1, 500.0, 1_000L)
+            // Exact A5 ordering: map up, then owner=true three seconds later.
+            track.mapStatusUpdate(CaltopoMap.MapStatusListener.mapStatus.up, null, null)
+            drainRecovery()
+            assertEquals(0, fixture.calTopoSessionGateway.countOperations("startLiveTrack"))
+
+            Thread.sleep(3_000L)
+            track.setLocalOwner(true)
+            drainRecovery()
+            assertEquals(1, fixture.calTopoSessionGateway.countOperations("startLiveTrack"))
+            val start = fixture.calTopoSessionGateway.snapshotOperations().first { it.kind == "startLiveTrack" }
+            assertEquals("flight-pre-map", start.payload!!.getString("id"))
+            assertTrue(track.publishingLocally())
+        } finally {
+            AwaitingMapFlights.useFileForTesting(null)
+            awaiting.delete()
+        }
+    }
+
     @Test fun reservedPublicationIntentWhileMapUp_stillStartsLiveTrack() {
         val awaiting = java.io.File.createTempFile("awaiting-live-", ".json").also { it.delete() }
         try {

@@ -615,8 +615,9 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     }
 
     public synchronized boolean hasOwnedActivePublication() {
+        // Owned queued geometry must finish as a Shape even when LiveTrack never received an id.
         return active && ownsPublication()
-                && (liveTrackId != null || requestedLiveTrackId != null);
+                && (liveTrackId != null || requestedLiveTrackId != null || !linePoints.isEmpty());
     }
 
     private static final class ShutdownWork {
@@ -753,6 +754,21 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     private DisconnectFinishWork prepareDisconnectFinishLocked(@Nullable String destinationMap) {
         shuttingDown = true;
         boolean wasActive = active;
+        // Owned queued points must still publish a finished Shape when LiveTrack never started.
+        if (active && ownsPublication() && liveTrackId == null && requestedLiveTrackId == null
+                && !linePoints.isEmpty()
+                && destinationMap != null && !destinationMap.isEmpty()) {
+            String deferredId = AwaitingMapFlights.publicationId(myRemoteId, destinationMap);
+            if (deferredId != null && deferredId.isEmpty()) {
+                String reserved = AwaitingMapFlights.reservedPublicationId(myRemoteId);
+                if (reserved != null) deferredId = reserved;
+                else deferredId = AwaitingMapFlights.bindConnectedMapIfOpenReview(myRemoteId, destinationMap);
+            }
+            if (deferredId == null || !deferredId.isEmpty()) {
+                requestedLiveTrackId = deferredId != null ? deferredId : java.util.UUID.randomUUID().toString();
+                publicationMapId = destinationMap;
+            }
+        }
         String archiveId = liveTrackId != null ? liveTrackId : requestedLiveTrackId;
         if (active && archiveId != null) {
             CTDebug(TAG, String.format(Locale.US, "disconnect-finish. Terminating '%s'",
@@ -1114,13 +1130,23 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         if (System.currentTimeMillis() < nextStartAttemptAtMs) return null;
 
         String mapId = CaltopoMap.GetMapId();
+        if (mapId == null || mapId.isEmpty()) return null;
         String deferredId = AwaitingMapFlights.publicationId(myRemoteId, mapId);
         if (deferredId != null && deferredId.isEmpty()) {
-            // Intent write still pending, or destination mismatched. A connected map with a
-            // reserved id may still start; an empty/undecided map must wait.
+            // Intent write still pending, or an empty-map review was captured before connect.
             String reserved = AwaitingMapFlights.reservedPublicationId(myRemoteId);
-            if (reserved == null || mapId == null || mapId.isEmpty()) return null;
-            deferredId = reserved;
+            if (reserved != null) {
+                deferredId = reserved;
+            } else {
+                deferredId = AwaitingMapFlights.bindConnectedMapIfOpenReview(myRemoteId, mapId);
+                if (deferredId == null) {
+                    // Still blocked (decided for another map, or unfinished writer).
+                    CTDebug(TAG, String.format(Locale.US,
+                            "ensureLiveTrackStarted(%s): deferred publication still blocking map=%s",
+                            droneSpec.trackLabel(), mapId));
+                    return null;
+                }
+            }
         }
         if (requestedLiveTrackId == null) {
             requestedLiveTrackId = deferredId != null ? deferredId : java.util.UUID.randomUUID().toString();
@@ -1135,14 +1161,12 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     }
 
     private void startLiveTrackAfterPersist(@NonNull LiveTrackStartRequest request) {
+        // Journal persistence must not gate the LiveTrack POST. Publication and archive
+        // hydration are independent lanes; a transient journal miss is retried later.
         if (!persistInterruptedPublication("", true)) {
-            synchronized (this) {
-                if (request.generation != publicationGeneration
-                        || !request.requestedId.equals(requestedLiveTrackId)) return;
-                startInFlight = false;
-                nextStartAttemptAtMs = System.currentTimeMillis() + 20_000L;
-            }
-            return;
+            CTWarn(TAG, String.format(Locale.US,
+                    "startNewTrack(%s): interrupted journal not durable yet; starting LiveTrack anyway",
+                    request.trackLabel));
         }
         synchronized (this) {
             if (request.generation != publicationGeneration
@@ -1217,7 +1241,8 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             String deferredId = AwaitingMapFlights.publicationId(myRemoteId, destinationMap);
             if (deferredId != null && deferredId.isEmpty()) {
                 String reserved = AwaitingMapFlights.reservedPublicationId(myRemoteId);
-                deferredId = reserved != null ? reserved : null;
+                if (reserved != null) deferredId = reserved;
+                else deferredId = AwaitingMapFlights.bindConnectedMapIfOpenReview(myRemoteId, destinationMap);
             }
             if (deferredId == null || !deferredId.isEmpty()) {
                 requestedLiveTrackId = deferredId != null ? deferredId : java.util.UUID.randomUUID().toString();
