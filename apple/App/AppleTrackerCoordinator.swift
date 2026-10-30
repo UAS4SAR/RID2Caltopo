@@ -587,6 +587,8 @@ final class AppleTrackerCoordinator: ObservableObject {
     private var firstSightingsSent: Set<String> = []
     private var seenVideoStreamRequestIDs: [String] = []
     private var pendingConfirmations: [String: TrackerCoordinationIdentity] = [:]
+    /// Saves made before coordination starts. configure() resets protocol state and replays these.
+    private var rememberedConfirmations: [String: TrackerCoordinationIdentity] = [:]
     private var lastSightingSentAt: [String: Date] = [:]
     private let trafficSourceEpoch = UUID().uuidString
     private var trafficSequenceByKey: [String: Int64] = [:]
@@ -847,6 +849,7 @@ final class AppleTrackerCoordinator: ObservableObject {
         pendingConfirmations.removeAll()
         fallbackTasks.values.forEach { $0.cancel() }
         fallbackTasks.removeAll()
+        replayRememberedConfirmations()
 
         guard usePeers else {
             status = .standalone
@@ -974,6 +977,7 @@ final class AppleTrackerCoordinator: ObservableObject {
         observedSightings[track.aircraftID] = sighting
         sendTrafficPositionIfEligible(sighting, source: "rid")
         if isFirst {
+            seedRememberedConfirmation(remoteID: track.aircraftID)
             wakeForCoordinationActivity(reason: "first sighting")
             scheduleFallbackOwnership(remoteID: track.aircraftID)
             sendFirstSightingIfNeeded(remoteID: track.aircraftID)
@@ -983,14 +987,38 @@ final class AppleTrackerCoordinator: ObservableObject {
     }
 
     func confirm(_ identity: RidAircraftIdentity) {
-        guard coordinationRequired else { return }
         let trackerIdentity = Self.trackerIdentity(identity)
+        rememberedConfirmations[identity.remoteID] = trackerIdentity
         pendingConfirmations[identity.remoteID] = trackerIdentity
-        wakeForCoordinationActivity(reason: "drone confirmation")
         if let event = protocolState.confirmLocally(remoteID: identity.remoteID) {
             publish(event)
         }
+        guard coordinationRequired else {
+            AppleLog.info(
+                "TrackerPeer",
+                "Queued confirmation until coordination starts remoteId=\(identity.remoteID)"
+            )
+            return
+        }
+        wakeForCoordinationActivity(reason: "drone confirmation")
         flushPendingConfirmations()
+    }
+
+    private func replayRememberedConfirmations() {
+        guard coordinationRequired, !rememberedConfirmations.isEmpty else { return }
+        for remoteID in rememberedConfirmations.keys.sorted() {
+            seedRememberedConfirmation(remoteID: remoteID)
+        }
+        flushPendingConfirmations()
+    }
+
+    private func seedRememberedConfirmation(remoteID: String) {
+        guard let identity = rememberedConfirmations[remoteID] else { return }
+        pendingConfirmations[remoteID] = identity
+        if let event = protocolState.confirmLocally(remoteID: remoteID) {
+            publish(event)
+        }
+        AppleLog.info("TrackerPeer", "Replayed stored confirmation remoteId=\(remoteID)")
     }
 
     /// Configuration resets transport state. Reapply only approvals that the

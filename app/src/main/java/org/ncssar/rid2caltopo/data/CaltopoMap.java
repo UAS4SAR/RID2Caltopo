@@ -24,6 +24,7 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.os.Bundle;
+import android.os.Looper;
 import android.provider.Settings;
 
 import androidx.annotation.NonNull;
@@ -2003,6 +2004,82 @@ public class CaltopoMap {
      */
     @Nullable
     public static String GetFolderId() { return FolderId; }
+
+    /**
+     * Track folder for a clue upload. Map status can be up before this id exists
+     * (a refresh promotes status, and reset clears the id). Lookup or create it
+     * here. Call from a worker: folder creation waits on the CalTopo request.
+     */
+    @Nullable
+    public static String resolveTrackFolderIdForClue() {
+        String existing = GetFolderId();
+        if (existing != null && !existing.isEmpty()) return existing;
+        if (onAndroidUiThread()) {
+            CTWarn(TAG, "resolveTrackFolderIdForClue(): refused on the UI thread");
+            return null;
+        }
+        String found = folderIdInArtifacts(FolderName);
+        if (found != null) {
+            FolderId = found;
+            CTInfo(TAG, "resolveTrackFolderIdForClue(): found existing folder id=" + found);
+            return found;
+        }
+        if (GetMapId().isEmpty()) {
+            CTWarn(TAG, "resolveTrackFolderIdForClue(): map id is blank");
+            return null;
+        }
+        CTInfo(TAG, "resolveTrackFolderIdForClue(): creating '" + FolderName + "'");
+        CaltopoOp created = getCurrentRuntime().getCalTopoSessionGateway()
+                .addFolder(FolderName, true, true, null);
+        if (created == null) {
+            CTWarn(TAG, "resolveTrackFolderIdForClue(): folder create was not started");
+            return null;
+        }
+        try {
+            created.get(30, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception error) {
+            CTWarn(TAG, "resolveTrackFolderIdForClue(): folder create did not finish", error);
+            return blankToNull(GetFolderId());
+        }
+        if (created.fail()) {
+            CTWarn(TAG, "resolveTrackFolderIdForClue(): folder create failed " + created.responseString());
+            return blankToNull(GetFolderId());
+        }
+        String createdId = created.id();
+        if (createdId != null && !createdId.isEmpty() &&
+                (GetFolderId() == null || GetFolderId().isEmpty())) {
+            FolderId = createdId;
+        }
+        String resolved = blankToNull(GetFolderId());
+        if (resolved == null) {
+            CTWarn(TAG, "resolveTrackFolderIdForClue(): folder create returned no id");
+        }
+        return resolved;
+    }
+
+    @Nullable
+    private static String blankToNull(@Nullable String value) {
+        return value == null || value.isEmpty() ? null : value;
+    }
+
+    private static boolean onAndroidUiThread() {
+        Looper main = Looper.getMainLooper();
+        return main != null && main.getThread() == Thread.currentThread();
+    }
+
+    @Nullable
+    private static String folderIdInArtifacts(@Nullable String title) {
+        if (title == null || title.isEmpty()) return null;
+        for (JSONObject feature : GetArtifactFeatureSnapshot()) {
+            JSONObject properties = feature.optJSONObject("properties");
+            if (properties == null) continue;
+            if (!"Folder".equals(properties.optString("class", ""))) continue;
+            if (!title.equals(properties.optString("title", ""))) continue;
+            String id = feature.optString("id", "");
+            if (!id.isEmpty()) return id;
+        }
+        return null;
+    }
     @Nullable
     public static String GetArchiveFolderId() { return ArchiveFolderId; }
 

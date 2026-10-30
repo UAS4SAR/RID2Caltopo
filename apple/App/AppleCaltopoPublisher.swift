@@ -170,12 +170,13 @@ actor AppleCaltopoPublisher {
             do {
                 try await ensureFolders(client: configuredClient)
                 await removeStaleR2CDeviceMarkers(client: configuredClient)
-                await recoverInterruptedPublications(client: configuredClient)
                 mapOpenRetry?.cancel()
                 mapOpenRetry = nil
                 mapOpenRetryAttempt = 0
                 deviceMarkerPublishingSuspended = false
+                // Clues and the connected map must not wait on interrupted LiveTrack recovery.
                 continuation.yield(.ready)
+                await recoverInterruptedPublications(client: configuredClient)
             } catch {
                 if let message = CaltopoServerAvailability.retryMessage(error) {
                     continuation.yield(.failed(message))
@@ -208,9 +209,9 @@ actor AppleCaltopoPublisher {
             do {
                 try await self.ensureFolders(client: client)
                 await self.removeStaleR2CDeviceMarkers(client: client)
-                await self.recoverInterruptedPublications(client: client)
                 await self.finishMapOpenRetry()
                 self.continuation.yield(.ready)
+                await self.recoverInterruptedPublications(client: client)
             } catch {
                 guard !Task.isCancelled, await self.configurationGeneration == generation else { return }
                 if let message = CaltopoServerAvailability.retryMessage(error) {

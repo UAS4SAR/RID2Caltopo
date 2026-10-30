@@ -2024,6 +2024,7 @@ class StreamsViewModel(
                 if (activeLocalClueMapKey != mapKey) {
                     hydrateLocalClues(mapKey)
                 }
+                retryPendingClues()
                 if (!oldName.equals(newName)) {
                     CTDebug(tag, "Connected to ${newName}")
                     _mapName.value = newName
@@ -2735,20 +2736,43 @@ class StreamsViewModel(
         val acceptedDestination: Pair<String, String>? = null,
     )
 
+    /** Personal clues use personal:<account>. A blank authorization snapshot uses the live account. */
+    private fun publicationTeamId(): String {
+        val personal = org.ncssar.rid2caltopo.data.CaltopoPersonalSession.capture("")
+        if (personal == null) return CaltopoClient.GetCaltopoCredentials().teamId.orEmpty()
+        val account = personal.accountID.trim().ifEmpty {
+            org.ncssar.rid2caltopo.data.CaltopoPersonalSession.accountID.trim()
+        }
+        return if (account.isNotEmpty()) "personal:$account"
+        else CaltopoClient.GetCaltopoCredentials().teamId.orEmpty()
+    }
+
     private fun captureClueSaveContext(): ClueSaveContext {
         val personal = org.ncssar.rid2caltopo.data.CaltopoPersonalSession.capture("")
-        return ClueSaveContext(personal?.let { it.mapID to it.credentialKey }, currentLocalClueMapKey(),
-            CaltopoClient.GetCaltopoCredentials().teamId.orEmpty(), coordinateDisplayFormat)
+        val teamId = publicationTeamId()
+        val personalMapId = personal?.mapID?.trim().orEmpty()
+        return ClueSaveContext(
+            if (personal != null && personalMapId.isNotEmpty() && teamId.isNotBlank()) personalMapId to teamId else null,
+            currentLocalClueMapKey(),
+            teamId,
+            coordinateDisplayFormat,
+        )
     }
 
     private suspend fun freezeClueDestination(
         context: ClueSaveContext, clue: PendingClue, publish: Boolean,
     ): ClueSaveContext = withContext(Dispatchers.IO) {
+        // A connected map publishes immediately. Awaiting-map review is only for clues
+        // saved while no map is connected.
+        val connectedMapId = context.fallbackMapKey.removePrefix("map:")
+            .takeIf { context.fallbackMapKey.startsWith("map:") && it.isNotBlank() }
+        val connected = context.personalDestination
+            ?: connectedMapId?.takeIf { context.fallbackTeam.isNotBlank() }?.let { it to context.fallbackTeam }
         val flightId = clue.binding?.flightId
-        val destination = if (publish && context.personalDestination != null) context.personalDestination
-        else if (publish) (flightId?.takeIf { org.ncssar.rid2caltopo.data.AwaitingMapFlights.hasEntry(it) }
+        val destination = if (!publish) null
+        else connected ?: (flightId?.takeIf { org.ncssar.rid2caltopo.data.AwaitingMapFlights.hasEntry(it) }
             ?.let { org.ncssar.rid2caltopo.data.AwaitingMapFlights.clueDestinationForFlight(it) }
-            ?: org.ncssar.rid2caltopo.data.AwaitingMapFlights.clueDestination(clue.droneSpec.remoteId)) else null
+            ?: org.ncssar.rid2caltopo.data.AwaitingMapFlights.clueDestination(clue.droneSpec.remoteId))
         context.copy(acceptedDestination = destination)
     }
 
@@ -2876,31 +2900,86 @@ class StreamsViewModel(
         }?.also { requestDemClueProjectionRefresh(it.designator) }
     }
 
-    private val clueUploadsInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val clueUploadStartedAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val clueUploadStaleAfterMs = 180_000L
+
+    private fun endClueUpload(id: String) {
+        clueUploadStartedAtMs.remove(id)
+    }
+
+    private fun beginClueUpload(id: String): Boolean {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val startedAt = clueUploadStartedAtMs.putIfAbsent(id, now)
+        if (startedAt == null) return true
+        if (now - startedAt < clueUploadStaleAfterMs) return false
+        if (!clueUploadStartedAtMs.replace(id, startedAt, now)) return false
+        CTWarn(tag, "retryPendingClues: cleared stale in-flight clue id=$id ageMs=${now - startedAt}")
+        return true
+    }
 
     private fun retryPendingClues() {
-        if (CaltopoMap.GetMapStatus() != mapStatus.up) return
-        val mapId = CaltopoMap.GetMapId()
-        val teamId = org.ncssar.rid2caltopo.data.CaltopoPersonalSession.capture("")?.credentialKey
-            ?: CaltopoClient.GetCaltopoCredentials().teamId.orEmpty()
-        val folder = CaltopoMap.GetFolderId() ?: return
-        // One photo at a time; the next poll advances the remaining queue.
-        if (clueUploadsInFlight.isNotEmpty()) return
+        val status = CaltopoMap.GetMapStatus()
+        if (status != mapStatus.up) {
+            CTInfo(tag, "retryPendingClues: skip reason=map-not-up status=$status")
+            return
+        }
+        val mapId = CaltopoMap.GetMapId().trim()
+        if (mapId.isEmpty()) {
+            CTInfo(tag, "retryPendingClues: skip reason=map-id-blank")
+            return
+        }
+        val teamId = publicationTeamId()
+        if (teamId.isBlank()) {
+            CTInfo(tag, "retryPendingClues: skip reason=publication-team-blank")
+            return
+        }
+        val stale = clueUploadStartedAtMs.entries.filter {
+            android.os.SystemClock.elapsedRealtime() - it.value >= clueUploadStaleAfterMs
+        }.map { it.key }
+        stale.forEach { id ->
+            val startedAt = clueUploadStartedAtMs[id] ?: return@forEach
+            if (clueUploadStartedAtMs.remove(id, startedAt)) {
+                CTWarn(tag, "retryPendingClues: cleared stale in-flight clue id=$id")
+            }
+        }
+        if (clueUploadStartedAtMs.isNotEmpty()) {
+            CTInfo(tag, "retryPendingClues: skip reason=upload-in-flight ids=$clueUploadStartedAtMs")
+            return
+        }
         val mapKey = currentLocalClueMapKey()
         viewModelScope.launch {
-            val (pending, visibleIds) = clueStorage {
-                clueDiskMutex.withLock {
-                    localClueStore.pendingForMap(mapId, teamId) to
-                        localClueStore.recordsForMap(mapKey).map { it.id }.toSet()
-                }
-            }.getOrElse { error ->
-                CTError(tag, "Pending clue storage unavailable; will retry", Exception(error))
+            val folder = withContext(Dispatchers.IO) { CaltopoMap.resolveTrackFolderIdForClue() }
+            if (folder.isNullOrBlank()) {
+                CTWarn(tag, "retryPendingClues: skip reason=track-folder-unresolved mapId=$mapId teamId=$teamId")
                 return@launch
             }
-            if (mapKey != currentLocalClueMapKey()) return@launch
+            val (pending, visibleIds, pendingSummary) = clueStorage {
+                clueDiskMutex.withLock {
+                    Triple(
+                        localClueStore.pendingForMap(mapId, teamId),
+                        localClueStore.recordsForMap(mapKey).map { it.id }.toSet(),
+                        localClueStore.pendingPublishSummary(),
+                    )
+                }
+            }.getOrElse { error ->
+                CTError(tag, "retryPendingClues: skip reason=storage-unavailable", Exception(error))
+                return@launch
+            }
+            if (mapKey != currentLocalClueMapKey()) {
+                CTInfo(tag, "retryPendingClues: skip reason=map-changed")
+                return@launch
+            }
             if (visibleIds != localMapMarkers.map { it.id }.toSet()) hydrateLocalClues(mapKey)
-            val record = pending.firstOrNull() ?: return@launch
-            if (!clueUploadsInFlight.add(record.id)) return@launch
+            val record = pending.firstOrNull()
+            if (record == null) {
+                CTInfo(tag, "retryPendingClues: skip reason=no-matching-pending mapId=$mapId teamId=$teamId pending=$pendingSummary")
+                return@launch
+            }
+            if (!beginClueUpload(record.id)) {
+                CTInfo(tag, "retryPendingClues: skip reason=already-in-flight id=${record.id}")
+                return@launch
+            }
+            CTInfo(tag, "retryPendingClues: uploading id=${record.id} mapId=$mapId teamId=$teamId folder=$folder")
             withContext(Dispatchers.IO) {
                 try {
                     val jpeg = localClueStore.imageFile(record).readBytes()
@@ -2920,15 +2999,26 @@ class StreamsViewModel(
                                     CTError(tag, "Clue upload result could not be saved; retained for retry", Exception(error))
                                     CaltopoClient.ShowToast("Clue upload status could not be saved. Local photo retained; check storage. R2C will retry.")
                                 }
-                            } finally { clueUploadsInFlight.remove(record.id) }
+                            } finally {
+                                endClueUpload(record.id)
+                                if (result.success()) retryPendingClues()
+                                else viewModelScope.launch {
+                                    kotlinx.coroutines.delay(5_000)
+                                    retryPendingClues()
+                                }
+                            }
                         }
                     }
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                    clueUploadsInFlight.remove(record.id)
+                    endClueUpload(record.id)
                     throw cancelled
                 } catch (error: Exception) {
-                    clueUploadsInFlight.remove(record.id)
+                    endClueUpload(record.id)
                     CTError(tag, "Pending clue remains local", error)
+                    viewModelScope.launch {
+                        kotlinx.coroutines.delay(5_000)
+                        retryPendingClues()
+                    }
                 }
             }
         }

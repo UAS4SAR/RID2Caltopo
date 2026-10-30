@@ -232,6 +232,16 @@ class AndroidClueStore private constructor(
             mapId.isNotBlank() && teamId.isNotBlank() && it.mapKey == "map:$mapId" && it.destinationTeamId == teamId }
     }
 
+    /** Pending publishes that did not match the connected map, for the retry log. */
+    @Synchronized
+    fun pendingPublishSummary(): String {
+        if (!loaded) loadIndex()
+        return records.values
+            .filter { it.publishToCaltopo && (it.uploadState == "pending" || it.uploadState == "uploading") }
+            .joinToString(limit = 8) { "${it.id.take(8)} map=${it.mapKey} team=${it.destinationTeamId} state=${it.uploadState}" }
+            .ifEmpty { "none" }
+    }
+
     @Synchronized
     fun recordUploadResult(id: String, success: Boolean, error: String = "", terminal: Boolean = false) {
         val record = records[id] ?: return

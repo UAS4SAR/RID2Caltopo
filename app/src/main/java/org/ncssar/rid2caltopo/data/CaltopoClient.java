@@ -3023,6 +3023,19 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         return CurrentPeerConfirmedDroneRemoteIds.contains(remoteId);
     }
 
+    /** Confirmations saved before the tracker coordinator exists. The caller replays them. */
+    @NonNull
+    public static java.util.List<CtDroneSpec> SnapshotCurrentPeerConfirmedDroneSpecs() {
+        String[] ids = CurrentPeerConfirmedDroneRemoteIds.toArray(new String[0]);
+        java.util.ArrayList<CtDroneSpec> specs = new java.util.ArrayList<>(ids.length);
+        for (String remoteId : ids) {
+            if (!IsCurrentPeerDroneConfirmed(remoteId)) continue;
+            CtDroneSpec spec = GetDroneSpec(remoteId);
+            if (spec != null && !spec.isLocalArchiveOnly()) specs.add(spec);
+        }
+        return specs;
+    }
+
     public static void ClearCurrentPeerDroneConfirmation(@NonNull String remoteId) {
         if (RejectNonCanonicalRemoteId("ClearCurrentPeerDroneConfirmation()", remoteId)) return;
         CurrentPeerConfirmedDroneRemoteIds.remove(remoteId);

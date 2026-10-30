@@ -276,6 +276,38 @@ class DefaultPeerCoordinatorTest {
     }
 
     @Test
+    fun confirmationBeforeTrackerStart_replaysSaveAndLocalOwnership() {
+        TrackerPeerCoordinator.setHandoffDelayMsForTesting(0L)
+        val coordinator = DefaultPeerCoordinator.getInstance()
+        CaltopoClient.SaveDroneSpecConfirmation(
+            "DRONE1", "NCSSAR", "DJI Mini 4 Pro", "1sar7", "1sar7DjMn4Pr"
+        )
+        val drone = CaltopoClient.GetDroneSpec("DRONE1")
+        assertTrue(drone != null)
+        val confirmedDrone = drone!!
+        var localOwner = false
+        val track = object : LiveTrackOwnerDelegate {
+            override fun getRemoteId(): String = "DRONE1"
+            override fun setLocalOwner(isOwner: Boolean) {
+                localOwner = isOwner
+            }
+        }
+        coordinator.onDroneConfirmed(
+            "DRONE1", "NCSSAR", "DJI Mini 4 Pro", "1sar7", "1sar7DjMn4Pr"
+        )
+        coordinator.onLiveTrackCreated(track, confirmedDrone, 42.0, 1234L)
+
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+
+        assertTrue(localOwner)
+        val sentMessages = synchronized(transport.sentMessages) { transport.sentMessages.toList() }
+        assertTrue(sentMessages.any {
+            val message = JSONObject(it)
+            message.optString("type") == "drone_confirmed" && message.optString("remoteId") == "DRONE1"
+        })
+    }
+
+    @Test
     fun droneConfirmed_forwardsToActiveCoordinator() {
         val coordinator = DefaultPeerCoordinator.getInstance()
         CaltopoClient.SetTrackerApiKey("")

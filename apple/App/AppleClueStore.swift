@@ -105,6 +105,10 @@ final class AppleClueStore: ObservableObject {
 
     private func resumePendingUploads(generation: Int) async {
         await initialLoad?.value
+        guard generation == configurationGeneration else { return }
+        // Publish connected-map clues before awaiting-map binding. A journal failure must not pause them.
+        records.filter { $0.uploadState == .pending || $0.uploadState == .failed || $0.uploadState == .uploading }
+            .forEach { enqueueUpload($0.id) }
         let decisions: [AwaitingMapFlight]
         do {
             decisions = try await disk.run {
@@ -112,7 +116,11 @@ final class AppleClueStore: ObservableObject {
                 return try AwaitingMapFlightJournal.readSavedEntries(fileURL: journalURL)
             }
         } catch {
-            status = "Saved flight choices are unavailable; clue publication is paused."
+            AppleLog.warning(
+                "Clue",
+                "Awaiting-map journal unavailable; connected-map clues still upload. \(error.localizedDescription)"
+            )
+            updateStatus()
             return
         }
         guard generation == configurationGeneration else { return }
@@ -120,9 +128,6 @@ final class AppleClueStore: ObservableObject {
             guard generation == configurationGeneration else { return }
             await bindAwaitingFlight(flight, mapID: mapID, teamID: teamID)
         }
-        guard generation == configurationGeneration else { return }
-        records.filter { $0.uploadState == .pending || $0.uploadState == .failed || $0.uploadState == .uploading }
-            .forEach { enqueueUpload($0.id) }
         updateStatus()
     }
 
@@ -202,21 +207,32 @@ final class AppleClueStore: ObservableObject {
         try? await persistIndex()
     }
 
-    /// The map of the flight the clue is bound to; falls back to the ownership rule, then the current map.
+    /// A connected map publishes immediately. Awaiting-map review applies only while no map is connected.
     private func publicationDestination(for draft: AppleClueDraft) async throws -> (map: String?, team: String?) {
         let generation = configurationGeneration
         let selectedMap = mapID, selectedTeam = teamID
-        if personalLogin { return (selectedMap.isEmpty ? nil : selectedMap, selectedTeam) }
-        let result = try await disk.run {
-            let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("awaiting-map-flights.json")
-            let flights = try AwaitingMapFlightJournal.readSavedEntries(fileURL: url)
-            let captured = draft.binding.map { Date(timeIntervalSince1970: Double($0.captureTimeMs) / 1_000) } ?? draft.capturedAt
-            let owner = AwaitingMapClueMatch.owner(clueAircraftID: draft.aircraftID, capturedAt: captured,
-                                                  boundFlightID: draft.binding?.flightID, flights: flights)
-            if let flight = owner, !flight.finished || flight.id == draft.binding?.flightID, flight.decision != "local" {
-                return (map: flight.mapID.isEmpty ? nil : flight.mapID, team: flight.teamID.isEmpty ? nil : flight.teamID)
+        if !selectedMap.isEmpty && !selectedTeam.isEmpty {
+            return (selectedMap, selectedTeam)
+        }
+        let result: (map: String?, team: String?)
+        do {
+            result = try await disk.run {
+                let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("awaiting-map-flights.json")
+                let flights = try AwaitingMapFlightJournal.readSavedEntries(fileURL: url)
+                let captured = draft.binding.map { Date(timeIntervalSince1970: Double($0.captureTimeMs) / 1_000) } ?? draft.capturedAt
+                let owner = AwaitingMapClueMatch.owner(clueAircraftID: draft.aircraftID, capturedAt: captured,
+                                                      boundFlightID: draft.binding?.flightID, flights: flights)
+                if let flight = owner, !flight.finished || flight.id == draft.binding?.flightID, flight.decision != "local" {
+                    return (map: flight.mapID.isEmpty ? nil : flight.mapID, team: flight.teamID.isEmpty ? nil : flight.teamID)
+                }
+                return (map: selectedMap.isEmpty ? nil : selectedMap, team: selectedTeam.isEmpty ? nil : selectedTeam)
             }
-            return (map: selectedMap.isEmpty ? nil : selectedMap, team: selectedTeam.isEmpty ? nil : selectedTeam)
+        } catch {
+            AppleLog.warning(
+                "Clue",
+                "Awaiting-map destination unavailable; clue keeps the connected map. \(error.localizedDescription)"
+            )
+            return (selectedMap.isEmpty ? nil : selectedMap, selectedTeam.isEmpty ? nil : selectedTeam)
         }
         guard generation == configurationGeneration else { throw CancellationError() }
         return result
@@ -321,6 +337,11 @@ final class AppleClueStore: ObservableObject {
         guard uploadTasks[id] == nil else { return }
         guard let record = records.first(where: { $0.id == id }),
               record.canAutomaticallyPublish(mapID: mapID, teamID: teamID) else {
+            let stored = records.first(where: { $0.id == id })
+            AppleLog.warning(
+                "Clue",
+                "Clue upload skipped id=\(id) reason=destination-mismatch mapId=\(mapID) teamId=\(teamID) storedMap=\(stored?.destinationMapID ?? "nil") storedTeam=\(stored?.destinationTeamID ?? "nil") state=\(stored?.uploadState.rawValue ?? "missing")"
+            )
             mutate(id) { $0.lastUploadError = "Waiting for the original map, or review to choose a destination." }
             Task { try? await persistIndex() }
             updateStatus()
@@ -329,6 +350,10 @@ final class AppleClueStore: ObservableObject {
         let generation = configurationGeneration
         let destinationTeamID = teamID
         guard client != nil, !teamID.isEmpty else {
+            AppleLog.warning(
+                "Clue",
+                "Clue upload skipped id=\(id) reason=caltopo-not-configured mapId=\(mapID) teamId=\(teamID)"
+            )
             mutate(id) { record in
                 record.uploadState = .pending
                 record.lastUploadError = "CalTopo credentials, team ID, or map are not configured."

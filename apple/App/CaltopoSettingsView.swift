@@ -1905,7 +1905,7 @@ struct AppleSettingsUnitsUIProbe: View {
     @StateObject private var organization = AppleOrgConfigSettings()
     @StateObject private var location = AppleLocationProvider()
     @StateObject private var importer = AppleOrgConfigImporter()
-    @StateObject private var identities = AppleDroneConfirmationStore()
+    @StateObject private var identities = AppleDroneConfirmationStore(snapshot: AircraftMappingSnapshot(records: []))
     @StateObject private var tracks = RIDTrackViewModel()
     @StateObject private var proximity = AppleProximityAlertCenter()
     @StateObject private var bridge = AppleDroneScoutBridgeAlertCenter()
