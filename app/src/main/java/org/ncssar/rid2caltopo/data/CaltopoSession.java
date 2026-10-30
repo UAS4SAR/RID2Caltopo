@@ -1597,7 +1597,11 @@ public class CaltopoSession {
                         || mediaOwner.isEmpty()))
                     throw new IllegalStateException("Original personal account and map must be selected");
                 String mediaId = UUID.nameUUIDFromBytes((markerId + ":media").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
-                if (personal != null) CaltopoPersonalSession.authorizeMedia(personal, mediaId);
+                // Live track already uses the signed personal HMAC. Clues must use that same
+                // grant; the cookie media probe only knows browser-session UUID tokens.
+                if (CluePublicationAuth.requiresCookieMediaAuthorization(personal)) {
+                    CaltopoPersonalSession.authorizeMedia(personal, mediaId);
+                }
                 String linkId = UUID.nameUUIDFromBytes((markerId + ":link").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
                 JSONObject geometry = new JSONObject().put("type", "Point").put("coordinates", new JSONArray().put(lng).put(lat));
                 JSONObject props = new JSONObject().put("class", "Marker").put("title", title)
@@ -1626,7 +1630,8 @@ public class CaltopoSession {
                         new JSONObject().put("id", linkId).put("type", "Feature").put("geometry", geometry).put("properties", linkProps), false);
                 }
                 outer.responseCode = result.responseCode;
-                outer.response = result.response;
+                String loginExpired = CluePublicationAuth.loginExpiredMessage(result.responseCode);
+                outer.response = loginExpired != null ? loginExpired : result.response;
                 CTDebug(TAG, "PublishStoredPhoto() result markerId='" + markerId + "' success=" +
                         result.success() + " code=" + result.responseCode);
                 outer.setOperationIsDone(result.success());

@@ -419,8 +419,12 @@ final class AppleClueStore: ObservableObject {
                     try? await self.persistIndex()
                     self.updateStatus()
                     if case let CaltopoLiveClientError.httpStatus(code, _) = error,
-                       [400, 401, 403, 404, 413, 422].contains(code) { break }
-                    let delay = [2.0, 5.0, 15.0, 30.0, 60.0][min(max(attempts - 1, 0), 4)]
+                       [400, 401, 403, 404, 413, 422].contains(code) {
+                        // Real auth failures stop. Do not spin on 401/403.
+                        break
+                    }
+                    // Match Android: 2 s doubling, capped at 60 s. One uploadTasks owner per id.
+                    let delay = min(60.0, 2.0 * pow(2.0, Double(max(attempts - 1, 0))))
                     AppleLog.warning(
                         "Clue",
                         "CalTopo clue upload failed id=\(id) attempt=\(attempts) retry=\(Int(delay))s error=\(error.localizedDescription)"

@@ -44,6 +44,11 @@ internal object OperationalStorage {
     private val recorderAreas = setOf("unfinished-recordings", "recording-work")
     private data class PreparedRecorder(val value: Store, val generation: Long)
     @Volatile private var preparedRecorder: PreparedRecorder? = null
+    private const val CLUES_JOURNAL = "application-logs/storage-recovery/clues"
+    private data class PreparedClues(val value: Store, val generation: Long)
+    @Volatile private var preparedClues: PreparedClues? = null
+    private val cluesPrepare = java.util.concurrent.locks.ReentrantLock()
+    private val cluesGate = Any()
     private var recoveredUri: String? = null
     @Volatile private var store: Store? = null
     private val selectionGeneration = java.util.concurrent.atomic.AtomicLong()
@@ -579,6 +584,16 @@ internal object OperationalStorage {
             if (path != null) commitRetained(queue.value, file, path) { synchronized(queueGate) { checkQueue(queue) } }
             return
         }
+        preparedClues?.takeIf { mapping(file, it.value) != null }?.let { clues ->
+            worker()
+            val path = synchronized(cluesGate) {
+                checkClues(clues)
+                val (area, relative) = requireNotNull(mapping(file, clues.value))
+                if (relative.isNotEmpty() && allowed(area, relative)) "${area.retained}/$relative" else null
+            }
+            if (path != null) commitRetained(clues.value, file, path) { synchronized(cluesGate) { checkClues(clues) } }
+            return
+        }
         val current = store
         if (current == null) {
             deferRetain(file)
@@ -766,9 +781,9 @@ internal object OperationalStorage {
     fun resetForTesting() {
         worker(); check(org.ncssar.rid2caltopo.BuildConfig.DEBUG)
         startup.submit {}.get()
-        synchronized(gate) { synchronized(queueGate) { synchronized(recorderGate) {
-            store = null; preparedQueue = null; preparedRecorder = null; recoveredUri = null; state.value = Status()
-        } } }
+        synchronized(gate) { synchronized(queueGate) { synchronized(recorderGate) { synchronized(cluesGate) {
+            store = null; preparedQueue = null; preparedRecorder = null; preparedClues = null; recoveredUri = null; state.value = Status()
+        } } } }
     }
     fun workspace(context: Context): File { requireReady(context); return synchronized(gate) { requireNotNull(store).work } }
     private val queueNames = listOf("awaiting-map-flights.json", "flight-archive-journal.json", "flight-kmz-rewrites.json", "caltopo-interrupted-tracks.json", "device-marker-cleanup.json")
@@ -797,6 +812,8 @@ internal object OperationalStorage {
     fun removeIfManaged(file: File): Boolean {
         if (preparedRecorder?.let { mapping(file, it.value) } != null) { remove(file); return true }
         if (preparedQueue?.let { mapping(file, it.value) } != null) { remove(file); return true }
+        if (preparedClues?.let { mapping(file, it.value) } != null) { remove(file); return true }
+        if (isClueAppPrivate(file)) { remove(file); return true }
         val value = store
         if (value == null || mapping(file, value) == null) return !file.exists() || file.delete()
         remove(file); return true
@@ -864,6 +881,85 @@ internal object OperationalStorage {
         return removed
     }
 
+    private fun isClueAppPrivate(file: File): Boolean {
+        val context = org.ncssar.rid2caltopo.app.R2CApplication.getAppCtxt() ?: return false
+        val base = context.applicationInfo.dataDir
+        val path = file.absolutePath
+        return path == "$base/files/clues" || path.startsWith("$base/files/clues/")
+    }
+
+    private fun checkClues(current: PreparedClues) {
+        check(selectionGeneration.get() == current.generation && preparedClues === current) {
+            "Archive Dir changed; restart the app before deleting clues."
+        }
+    }
+
+    /**
+     * Clue photos are app-private until retain. Prepare only the clues lane when Archive Dir
+     * is still hydrating bulk areas, then delete. Independent of prepareBody so clue delete
+     * never waits on layers/DEM/recordings.
+     */
+    private fun prepareClues(context: Context): PreparedClues {
+        worker()
+        val uri = CaltopoClient.GetArchiveUri()?.toString()
+            ?: error("Choose or reconnect Archive Dir before deleting retained clues.")
+        synchronized(gate) {
+            store?.takeIf { state.value.ready && it.uri == uri }?.let {
+                return PreparedClues(it, selectionGeneration.get())
+            }
+        }
+        synchronized(cluesGate) {
+            preparedClues?.let { check(it.value.uri == uri); checkClues(it); return it }
+        }
+        if (!cluesPrepare.tryLock()) {
+            cluesPrepare.lock()
+            cluesPrepare.unlock()
+            return synchronized(cluesGate) { preparedClues ?: error("Clue storage is no longer available.") }
+        }
+        try {
+            synchronized(cluesGate) {
+                preparedClues?.let { check(it.value.uri == uri); checkClues(it); return it }
+            }
+            synchronized(gate) {
+                store?.takeIf { state.value.ready && it.uri == uri }?.let {
+                    return PreparedClues(it, selectionGeneration.get())
+                }
+            }
+            val generation = selectionGeneration.get()
+            fun checkSelection() = check(selectionGeneration.get() == generation) { "Archive Dir changed during clues preparation." }
+            val root = CaltopoClient.GetArchiveDir() ?: error("Archive Dir is unavailable.")
+            check(root.isDirectory && root.canRead() && root.canWrite()) { "Archive Dir is not readable and writable." }
+            // Do not publish through state.value here. Bulk prepare owns that flow; the
+            // ViewModel shows "Preparing clue storage…" while this worker runs.
+            val tree = DocumentArchiveTree(context, root)
+            val writer = VerifiedArchiveTree(tree, journalDirectory = CLUES_JOURNAL, cancelled = ::checkSelection)
+            val selected = areas(context)
+            val name = VerifiedArchiveTree.digest(uri.byteInputStream()).take(16)
+            val work = File(TemporaryStorage.workspaceRoot(context, root.uri), "operational-work/$name")
+            recoverArchive(Store(uri, work, tree, writer, selected))
+            tree.refresh()
+            tree.mkdirs(CLUES_JOURNAL)
+            writer.recover()
+            val area = selected.single { it.id == "clues" }
+            val value = Store(uri, work, tree, writer, listOf(area))
+            val scratch = TemporaryStorage.directory(context, "archive-hydration", root.uri)
+            migrateAreaSources(context, value, area, ::checkSelection)
+            prepareAreaProjection(context, value, area, scratch, ::checkSelection)
+            checkSelection()
+            check(root.isDirectory && root.canRead() && root.canWrite()) { "Archive Dir became unavailable during clues preparation." }
+            value.migrated.clear()
+            val prepared = PreparedClues(value, generation)
+            synchronized(cluesGate) {
+                preparedClues?.let { return it }
+                preparedClues = prepared
+            }
+            CaltopoClient.CTDebug("OperationalStorage", "Clue storage ready independently of bulk storage")
+            return prepared
+        } finally {
+            cluesPrepare.unlock()
+        }
+    }
+
     /** Durable deletion intent prevents an interrupted deletion reappearing from old workspace bytes. */
     fun remove(file: File) {
         worker()
@@ -873,6 +969,38 @@ internal object OperationalStorage {
         }
         preparedQueue?.takeIf { mapping(file, it.value) != null }?.let { current ->
             synchronized(queueGate) { checkQueue(current); removeOnStore(current.value, file); checkQueue(current) }
+            return
+        }
+        preparedClues?.takeIf { mapping(file, it.value) != null }?.let { current ->
+            synchronized(cluesGate) { checkClues(current); removeOnStore(current.value, file); checkClues(current) }
+            return
+        }
+        if (isClueAppPrivate(file)) {
+            synchronized(deferredRetains) {
+                deferredRetains.removeAll { it.absolutePath == file.absolutePath }
+            }
+            val context = org.ncssar.rid2caltopo.app.R2CApplication.getAppCtxt()
+            val current = store
+            if (current != null && state.value.ready && mapping(file, current) != null) {
+                synchronized(gate) {
+                    val value = store ?: error("Archive storage is not prepared")
+                    kotlin.check(state.value.ready) { state.value.message.ifEmpty { "Archive Dir is unavailable." } }
+                    removeOnStore(value, file)
+                }
+                return
+            }
+            if (context != null && CaltopoClient.GetArchiveUri() != null) {
+                // Prepare only the clues area; do not wait for layers/DEM/recordings.
+                val clues = prepareClues(context.applicationContext)
+                synchronized(cluesGate) {
+                    checkClues(clues)
+                    if (mapping(file, clues.value) != null) {
+                        removeOnStore(clues.value, file)
+                        return
+                    }
+                }
+            }
+            if (file.exists()) check(file.delete()) { "Could not delete local clue file" }
             return
         }
         synchronized(gate) {

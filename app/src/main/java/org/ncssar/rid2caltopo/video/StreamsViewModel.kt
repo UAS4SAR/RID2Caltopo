@@ -42,6 +42,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -2896,6 +2897,8 @@ class StreamsViewModel(
     private val clueUploadStartedAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val clueUploadStaleAfterMs = 180_000L
     private val clueRetryLoggedAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val clueUploadBackoff = org.ncssar.rid2caltopo.data.ClueUploadBackoff()
+    private var clueUploadOwner: kotlinx.coroutines.Job? = null
 
     /** Default logging is Debug. Info is Ludicrous, so skip lines must not use CTInfo. */
     private fun logClueRetry(reason: String, message: String, warn: Boolean = false) {
@@ -2936,99 +2939,112 @@ class StreamsViewModel(
             logClueRetry("publication-team-blank", "retryPendingClues: skip reason=publication-team-blank")
             return
         }
-        val stale = clueUploadStartedAtMs.entries.filter {
-            android.os.SystemClock.elapsedRealtime() - it.value >= clueUploadStaleAfterMs
-        }.map { it.key }
-        stale.forEach { id ->
-            val startedAt = clueUploadStartedAtMs[id] ?: return@forEach
-            if (clueUploadStartedAtMs.remove(id, startedAt)) {
-                CTWarn(tag, "retryPendingClues: cleared stale in-flight clue id=$id")
-            }
-        }
-        if (clueUploadStartedAtMs.isNotEmpty()) {
+        // One owner owns upload and backoff. Concurrent Submit/map/timer callers must not
+        // stack PublishStoredPhoto on top of an in-flight attempt.
+        if (clueUploadOwner?.isActive == true || clueUploadStartedAtMs.isNotEmpty()) {
             logClueRetry("upload-in-flight", "retryPendingClues: skip reason=upload-in-flight ids=$clueUploadStartedAtMs")
             return
         }
         val mapKey = currentLocalClueMapKey()
-        viewModelScope.launch {
-            val folder = withContext(Dispatchers.IO) { CaltopoMap.resolveTrackFolderIdForClue() }
-            if (folder.isNullOrBlank()) {
-                logClueRetry("track-folder-unresolved", "retryPendingClues: skip reason=track-folder-unresolved mapId=$mapId teamId=$teamId")
-                return@launch
-            }
-            val (pending, visibleIds, pendingSummary) = clueStorage {
-                clueDiskMutex.withLock {
-                    Triple(
-                        localClueStore.pendingForMap(mapId, teamId),
-                        localClueStore.recordsForMap(mapKey).map { it.id }.toSet(),
-                        localClueStore.pendingPublishSummary(),
-                    )
-                }
-            }.getOrElse { error ->
-                CTError(tag, "retryPendingClues: skip reason=storage-unavailable", Exception(error))
-                return@launch
-            }
-            if (mapKey != currentLocalClueMapKey()) {
-                logClueRetry("map-changed", "retryPendingClues: skip reason=map-changed")
-                return@launch
-            }
-            if (visibleIds != localMapMarkers.map { it.id }.toSet()) hydrateLocalClues(mapKey)
-            val record = pending.firstOrNull()
-            if (record == null) {
-                val queryTeam = org.ncssar.rid2caltopo.data.CluePublicationIdentity.normalizeTeamId(teamId)
-                val message = "retryPendingClues: skip reason=no-matching-pending queryMap=map:$mapId queryTeam=$queryTeam pending=$pendingSummary"
-                logClueRetry("no-matching-pending", message, warn = pendingSummary != "none")
-                return@launch
-            }
-            if (!beginClueUpload(record.id)) {
-                logClueRetry("already-in-flight:${record.id}", "retryPendingClues: skip reason=already-in-flight id=${record.id}")
-                return@launch
-            }
-            logClueRetry(
-                "uploading:${record.id}",
-                "retryPendingClues: uploading id=${record.id} mapId=$mapId teamId=$teamId folder=$folder",
-            )
-            withContext(Dispatchers.IO) {
-                try {
-                    val published = publishFirstPendingClue(
-                        localClueStore, mapId, teamId, folder,
-                        { localClueStore.imageFile(it).readBytes() },
-                    ) { result ->
-                        val permanent = result.responseCode in listOf(400, 401, 403, 404, 413, 422)
-                        viewModelScope.launch {
-                            try {
-                                clueStorage {
-                                    clueDiskMutex.withLock {
-                                        localClueStore.recordUploadResult(record.id, result.success(), result.responseString(), permanent)
-                                    }
-                                }.onSuccess {
-                                    hydrateLocalClues(currentLocalClueMapKey())
-                                }.onFailure { error ->
-                                    CTError(tag, "Clue upload result could not be saved; retained for retry", Exception(error))
-                                    CaltopoClient.ShowToast("Clue upload status could not be saved. Local photo retained; check storage. R2C will retry.")
-                                }
-                            } finally {
-                                endClueUpload(record.id)
-                                if (result.success()) retryPendingClues()
-                                else viewModelScope.launch {
-                                    kotlinx.coroutines.delay(5_000)
-                                    retryPendingClues()
-                                }
-                            }
+        clueUploadOwner = viewModelScope.launch {
+            val owner = coroutineContext[kotlinx.coroutines.Job]
+            try {
+                while (isActive) {
+                    if (CaltopoMap.GetMapStatus() != mapStatus.up || CaltopoMap.GetMapId().trim() != mapId) {
+                        logClueRetry("map-not-up", "retryPendingClues: skip reason=map-not-up status=${CaltopoMap.GetMapStatus()}")
+                        return@launch
+                    }
+                    if (publicationTeamId() != teamId) {
+                        logClueRetry("publication-team-blank", "retryPendingClues: skip reason=publication-team-changed")
+                        return@launch
+                    }
+                    val folder = withContext(Dispatchers.IO) { CaltopoMap.resolveTrackFolderIdForClue() }
+                    if (folder.isNullOrBlank()) {
+                        logClueRetry("track-folder-unresolved", "retryPendingClues: skip reason=track-folder-unresolved mapId=$mapId teamId=$teamId")
+                        return@launch
+                    }
+                    val (pending, visibleIds, pendingSummary) = clueStorage {
+                        clueDiskMutex.withLock {
+                            Triple(
+                                localClueStore.pendingForMap(mapId, teamId),
+                                localClueStore.recordsForMap(mapKey).map { it.id }.toSet(),
+                                localClueStore.pendingPublishSummary(),
+                            )
                         }
+                    }.getOrElse { error ->
+                        CTError(tag, "retryPendingClues: skip reason=storage-unavailable", Exception(error))
+                        return@launch
                     }
-                    if (published == null) endClueUpload(record.id)
-                } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                    endClueUpload(record.id)
-                    throw cancelled
-                } catch (error: Exception) {
-                    endClueUpload(record.id)
-                    CTError(tag, "Pending clue remains local", error)
-                    viewModelScope.launch {
-                        kotlinx.coroutines.delay(5_000)
-                        retryPendingClues()
+                    if (mapKey != currentLocalClueMapKey()) {
+                        logClueRetry("map-changed", "retryPendingClues: skip reason=map-changed")
+                        return@launch
+                    }
+                    if (visibleIds != localMapMarkers.map { it.id }.toSet()) hydrateLocalClues(mapKey)
+                    val record = pending.firstOrNull()
+                    if (record == null) {
+                        clueUploadBackoff.reset()
+                        val queryTeam = org.ncssar.rid2caltopo.data.CluePublicationIdentity.normalizeTeamId(teamId)
+                        val message = "retryPendingClues: skip reason=no-matching-pending queryMap=map:$mapId queryTeam=$queryTeam pending=$pendingSummary"
+                        logClueRetry("no-matching-pending", message, warn = pendingSummary != "none")
+                        return@launch
+                    }
+                    if (!beginClueUpload(record.id)) {
+                        logClueRetry("already-in-flight:${record.id}", "retryPendingClues: skip reason=already-in-flight id=${record.id}")
+                        return@launch
+                    }
+                    logClueRetry(
+                        "uploading:${record.id}",
+                        "retryPendingClues: uploading id=${record.id} mapId=$mapId teamId=$teamId folder=$folder",
+                    )
+                    val outcome = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
+                    try {
+                        withContext(Dispatchers.IO) {
+                            val published = publishFirstPendingClue(
+                                localClueStore, mapId, teamId, folder,
+                                { localClueStore.imageFile(it).readBytes() },
+                            ) { result -> outcome.complete(result) }
+                            if (published == null) {
+                                endClueUpload(record.id)
+                                return@withContext
+                            }
+                            val result = outcome.await()
+                            val permanent = result.responseCode in listOf(400, 401, 403, 404, 413, 422)
+                            clueStorage {
+                                clueDiskMutex.withLock {
+                                    localClueStore.recordUploadResult(record.id, result.success(), result.responseString(), permanent)
+                                }
+                            }.onSuccess {
+                                hydrateLocalClues(currentLocalClueMapKey())
+                            }.onFailure { error ->
+                                CTError(tag, "Clue upload result could not be saved; retained for retry", Exception(error))
+                                CaltopoClient.ShowToast("Clue upload status could not be saved. Local photo retained; check storage. R2C will retry.")
+                            }
+                            endClueUpload(record.id)
+                            if (result.success()) {
+                                clueUploadBackoff.reset()
+                                return@withContext
+                            }
+                            val delayMs = clueUploadBackoff.nextDelayMs()
+                            logClueRetry(
+                                "backoff:${record.id}",
+                                "retryPendingClues: backoffMs=$delayMs id=${record.id} code=${result.responseCode}",
+                                warn = true,
+                            )
+                            // Auth and transport failures share exponential backoff. Do not spin.
+                            kotlinx.coroutines.delay(delayMs)
+                        }
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        endClueUpload(record.id)
+                        throw cancelled
+                    } catch (error: Exception) {
+                        endClueUpload(record.id)
+                        CTError(tag, "Pending clue remains local", error)
+                        val delayMs = clueUploadBackoff.nextDelayMs()
+                        kotlinx.coroutines.delay(delayMs)
                     }
                 }
+            } finally {
+                if (clueUploadOwner === owner) clueUploadOwner = null
             }
         }
     }
@@ -3215,6 +3231,11 @@ class StreamsViewModel(
         viewModelScope.launch {
             val marker = localMapMarkers.firstOrNull { it.id == markerId } ?: return@launch
             val deletedRecord = localClueRecordsById[markerId]
+            // Archive Dir bulk hydration can take minutes. Clue delete prepares only the
+            // clues area on a worker; show progress while that lane comes up.
+            if (!org.ncssar.rid2caltopo.storage.OperationalStorage.ready()) {
+                CaltopoClient.ShowToast("Preparing clue storage…")
+            }
             val removed = try {
                 withContext(Dispatchers.IO) { clueDiskMutex.withLock { localClueStore.delete(markerId) } }
             } catch (error: Exception) {

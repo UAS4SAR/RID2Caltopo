@@ -136,9 +136,16 @@ object CaltopoPersonalSession {
         if (path.startsWith("/api/v1/acct/")) null else selected
     @JvmStatic fun mediaID(path: String): String? = Regex("^/api/v1/media/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:/(?:data|original))?$").matchEntire(path)?.groupValues?.get(1)?.lowercase()
     @JvmStatic fun authorizeMedia(auth: Authorization, mediaID: String) {
+        // Signed-account grants never use this probe. Callers must skip it for HMAC.
+        check(!CaltopoPersonalAccountConnection.usesSignedCredential(auth.token)) {
+            "Signed personal credentials do not use the cookie media probe."
+        }
         val result = context?.contentResolver?.call(Uri.parse("content://org.ncssar.rid2caltopo.personal-session"), "authorizeMedia", auth.token,
             Bundle().apply { putString("mediaID", mediaID) })
-        check(result?.getBoolean("authorized") == true) { "Personal login expired; photo remains queued." }
+        // Reserve "login expired" for a real CalTopo 401/403. A missing local grant is not that.
+        check(result?.getBoolean("authorized") == true) {
+            "Personal session cannot authorize media; photo remains queued."
+        }
     }
     @JvmStatic fun requireValid(auth: Authorization, path: String) {
         val result = context?.contentResolver?.call(Uri.parse("content://org.ncssar.rid2caltopo.personal-session"), "valid", auth.token,
