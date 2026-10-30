@@ -162,7 +162,7 @@ final class AppleCaltopoSettings: ObservableObject {
         usesPersonalCredentials = defaults.bool(forKey: "caltopo.usesPersonalCredentials")
         // Seed the last-profile preference from the legacy personal flag on first launch
         // after this change, so a previous personal choice is restored in Map Browser.
-        if usesPersonalCredentials,
+        if defaults.bool(forKey: "caltopo.usesPersonalCredentials"),
            MapBrowserProfilePreference(defaults: defaults).lastSelectedProfileID().isEmpty {
             MapBrowserProfilePreference(defaults: defaults).remember(MapBrowserProfilePreference.personalProfileID)
         }

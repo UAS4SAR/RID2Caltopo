@@ -1,7 +1,7 @@
 import Foundation
 
 /// Remembers the Map Browser credential profile across launches, including personal.
-public struct MapBrowserProfilePreference: Sendable {
+public struct MapBrowserProfilePreference {
     public static let personalProfileID = "personal"
     public static let storageKey = "caltopo.lastMapBrowserProfileId"
     /// Legacy Apple bool that already persisted a personal Map Browser choice.
