@@ -465,12 +465,27 @@ public actor CaltopoLiveClient {
             else { throw CaltopoLiveClientError.httpStatus(502, "Photo upload was not acknowledged; retained for retry.") }
             return data
         }
-        _ = try await acknowledged(requests[0])
+        do {
+            _ = try await acknowledged(requests[0])
+        } catch let markerPostError {
+            // Prior attempt may have created the Marker then failed media. Attach to it.
+            do {
+                _ = try await acknowledged(makeMarkerSnapshotRequest(
+                    markerID: clue.markerID.uuidString.lowercased(), now: now))
+            } catch {
+                throw markerPostError
+            }
+        }
         var mediaExists = false
         var mediaReady = false
         let mediaOwner = configuration.authorizesAsPersonalAccount ? configuration.personalMediaOwnerID : clue.teamID
         do {
-            let data = try await acknowledged(makeMediaSnapshotRequest(mediaID: clue.mediaID, now: now))
+            // Probe with perform — not acknowledged — so a CalTopo 400/404 "absent"
+            // stays 400/404 instead of being rewritten into a false 502 envelope failure.
+            let data = try await perform(makeMediaSnapshotRequest(mediaID: clue.mediaID, now: now))
+            guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  envelope["status"] as? String == "ok", envelope["error"] == nil
+            else { throw CaltopoLiveClientError.httpStatus(502, "Photo upload was not acknowledged; retained for retry.") }
             mediaReady = try CaltopoPhotoMediaState.isReady(data, mediaID: clue.mediaID, ownerID: mediaOwner)
             mediaExists = true
         } catch CaltopoLiveClientError.httpStatus(let code, _) where code == 400 || code == 404 {
@@ -568,13 +583,26 @@ public actor CaltopoLiveClient {
     }
 
     func makeMediaSnapshotRequest(mediaID: UUID, now: Date) throws -> URLRequest {
-        let path = "/api/v1/media/\(mediaID.uuidString.lowercased())"
+        try makeSignedGetRequest(path: "/api/v1/media/\(mediaID.uuidString.lowercased())", now: now)
+    }
+
+    func makeMarkerSnapshotRequest(markerID: String, now: Date) throws -> URLRequest {
+        try makeSignedGetRequest(path: "/api/v1/map/\(configuration.mapID)/Marker/\(markerID)", now: now)
+    }
+
+    private func makeSignedGetRequest(path: String, now: Date) throws -> URLRequest {
         guard let url = httpsURL(path: path), var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         else { throw CaltopoLiveClientError.invalidURL }
         if configuration.personalSessionID == nil {
             let expires = Int64(now.timeIntervalSince1970 * 1000) + CaltopoRequestSigner.validityMilliseconds
-            let signature = try CaltopoRequestSigner.signature(method: "GET", path: path, expiresMilliseconds: expires, payload: "", credentialSecretBase64: configuration.credentialSecretBase64)
-            components.percentEncodedQuery = CaltopoRequestSigner.percentEncodedQuery([("id", configuration.credentialID), ("expires", String(expires)), ("signature", signature)])
+            let signature = try CaltopoRequestSigner.signature(
+                method: "GET", path: path, expiresMilliseconds: expires, payload: "",
+                credentialSecretBase64: configuration.credentialSecretBase64)
+            components.percentEncodedQuery = CaltopoRequestSigner.percentEncodedQuery([
+                ("id", configuration.credentialID),
+                ("expires", String(expires)),
+                ("signature", signature),
+            ])
         }
         return URLRequest(url: components.url!)
     }

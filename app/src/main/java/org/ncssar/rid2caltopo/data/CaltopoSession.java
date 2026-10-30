@@ -448,7 +448,6 @@ public class CaltopoSession {
 	// this needs to be run in background thread to prevent blocking the app thread.
 	private static CaltopoOp BgSendRequest(CaltopoOp op) {
         boolean goodResponse = false;
-        boolean quietFailure = false;
         final boolean fullMapRead = CaltopoFullMapReads.isFullMapRead(op.method.toString(), op.url);
         final CaltopoCredentials fullReadCredentials = Cred;
         final String fullReadDomain = DomainAndPort;
@@ -604,11 +603,10 @@ public class CaltopoSession {
                         op.response = "CalTopo object is already absent.";
                         CTInfo(TAG, "BgSendRequest() treating code " + op.responseCode + " as 'already gone'");
                     } else if (isQuietErrorCode(op)) {
-                        // Expected probe miss (e.g. media not created yet). Keep failure for
-                        // success() so callers can POST-create, but do not alarm the user.
+                        // Expected probe miss (e.g. media not created yet). Leave goodResponse
+                        // false so callers can POST-create; only suppress CaltopoOpFailed noise.
                         boolean personal = op.personalAuthorization != null;
                         op.response = CaltopoServerAvailability.message(op.responseCode, personal, false);
-                        quietFailure = true;
                         CTDebug(TAG, "BgSendRequest() expected probe code " + op.responseCode);
                     } else {
                         boolean personal = op.personalAuthorization != null;
@@ -667,7 +665,10 @@ public class CaltopoSession {
         }
 
         op.goodResponse = goodResponse;
-        op.setOperationIsDone(goodResponse || quietFailure);
+        // setOperationIsDone always marks the Future complete; the boolean is success,
+        // not "done". Quiet probe misses (media GET 400/404) stay fail() so
+        // PublishStoredPhoto can POST-create.
+        op.setOperationIsDone(goodResponse);
         if (!goodResponse && op.responseCode > 0 && op.response.isEmpty()) {
             op.response = SafeResponseText(op.response);
         }
@@ -1566,7 +1567,13 @@ public class CaltopoSession {
         op.url = path;
         op.payload = payload;
         op.quietErrorCodes = quietErrorCodes;
-        BgSendRequest(op);
+        PhotoExchangeForTesting exchange = photoExchangeForTesting;
+        if (exchange != null) {
+            exchange.apply(op);
+        } else {
+            BgSendRequest(op);
+        }
+        // Probe misses stay fail() with their HTTP code. Only acknowledged successes need an ok envelope.
         if (op.success()) {
             String body = op.response == null ? "" : op.response;
             try {
@@ -1598,6 +1605,16 @@ public class CaltopoSession {
 
     public static void setStoredPhotoProbeForTesting(@androidx.annotation.Nullable StoredPhotoProbe probe) {
         storedPhotoProbeForTesting = probe;
+    }
+
+    /** Unit tests script each PhotoOp HTTP exchange without contacting CalTopo. */
+    public interface PhotoExchangeForTesting {
+        void apply(@NonNull CaltopoOp op);
+    }
+    @androidx.annotation.Nullable private static volatile PhotoExchangeForTesting photoExchangeForTesting;
+
+    public static void setPhotoExchangeForTesting(@androidx.annotation.Nullable PhotoExchangeForTesting exchange) {
+        photoExchangeForTesting = exchange;
     }
 
     public static CaltopoOp PublishStoredPhoto(String mapId, String teamId, String markerId,
