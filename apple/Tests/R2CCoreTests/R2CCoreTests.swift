@@ -6435,6 +6435,14 @@ private func writeInt32(_ value: Int32, into bytes: inout [UInt8], at offset: In
     )
     #expect(contentView.contains("configureCaltopoAwaiting"))
     #expect(contentView.contains("caltopoSettings.disconnectMap()"))
+    // Map Options Disconnect must not await finish on MainActor (ANR/hang risk).
+    #expect(contentView.contains("applyCaltopoConfiguration(caltopoSettings.disconnectMap())"))
+    let viewModel = try String(
+        contentsOf: appleRoot.appendingPathComponent("App/RIDTrackViewModel.swift"),
+        encoding: .utf8
+    )
+    #expect(viewModel.contains("mapDisconnectProgress"))
+    #expect(viewModel.contains("Never await the publisher on MainActor"))
 }
 
 @Test func disconnectThenFlightEndsOfflineLeavesExactlyOnePendingFinishForReconnect() async throws {

@@ -1836,6 +1836,16 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         androidRestrictionStrip
                         androidOperationsHeader
+                        if let disconnectProgress = ridTracks.mapDisconnectProgress {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                Text(disconnectProgress)
+                                    .font(.subheadline)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .padding(8)
+                            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 6))
+                        }
                         if ridTracks.caltopoStatus.hasPrefix("CalTopo server unavailable") {
                             HStack(alignment: .center, spacing: 8) {
                                 Text(ridTracks.caltopoStatus)

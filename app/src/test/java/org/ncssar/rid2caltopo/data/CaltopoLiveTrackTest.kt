@@ -442,6 +442,94 @@ class CaltopoLiveTrackTest {
         assertTrue(drone.isCurrentFlightConfirmed)
     }
 
+    @Test fun hasOwnedActivePublicationIsLockFreeWhileTrackMonitorHeld() {
+        val drone = CtDroneSpec("RID-LOCKFREE-CHECK")
+        setDroneTrackLabel(drone, "1sar7LockFree_111500Oct30")
+        drone.setOwner("1sar7")
+        drone.setCurrentFlightConfirmed(true)
+        val track = ownedActiveTrack(drone, "lockfree-check-live-track")
+        assertTrue(track.hasOwnedActivePublication())
+
+        val hold = CountDownLatch(1)
+        val holding = CountDownLatch(1)
+        Thread({
+            synchronized(track) {
+                holding.countDown()
+                hold.await(5, TimeUnit.SECONDS)
+            }
+        }, "hold-livetrack-monitor").start()
+        assertTrue(holding.await(2, TimeUnit.SECONDS))
+
+        val startedAtNs = System.nanoTime()
+        val owned = track.hasOwnedActivePublication()
+        val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNs)
+        hold.countDown()
+
+        assertTrue(owned)
+        assertTrue(
+            "hasOwnedActivePublication blocked on track monitor for ${elapsedMs}ms",
+            elapsedMs < 100L,
+        )
+        assertTrue(CaltopoMap.hasOwnedActivePublications())
+    }
+
+    @Test fun disconnectWhileFinishInFlightCompletesWithoutWaitingOnArchive() {
+        val drone = CtDroneSpec("RID-DISCONNECT-INFLIGHT")
+        setDroneTrackLabel(drone, "1sar7InFlight_111500Oct30")
+        drone.setOwner("1sar7")
+        drone.setCurrentFlightConfirmed(true)
+        val track = ownedActiveTrack(drone, "disconnect-inflight-live-track")
+        fixture.calTopoSessionGateway.holdRecoveryEdits = true
+
+        track.finishTrack("finish still archiving")
+        val cleared = CountDownLatch(1)
+        Thread({
+            val deadline = System.currentTimeMillis() + 3_000L
+            while (System.currentTimeMillis() < deadline) {
+                if (!track.hasOwnedActivePublication()) {
+                    cleared.countDown()
+                    return@Thread
+                }
+                try {
+                    Thread.sleep(10L)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return@Thread
+                }
+            }
+        }, "wait-finish-cleared").start()
+        assertTrue(
+            "finishTrack did not clear owned publication promptly",
+            cleared.await(3, TimeUnit.SECONDS),
+        )
+
+        val checkStartedAtNs = System.nanoTime()
+        val stillOwned = CaltopoMap.hasOwnedActivePublications()
+        val checkElapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - checkStartedAtNs)
+        assertFalse(stillOwned)
+        assertTrue(
+            "hasOwnedActivePublications blocked during in-flight finish for ${checkElapsedMs}ms",
+            checkElapsedMs < 100L,
+        )
+
+        val done = CountDownLatch(1)
+        val disconnectStartedAtMs = System.currentTimeMillis()
+        CaltopoMap.DisconnectAfterFinishingOwned(CaltopoMap.DISCONNECT_FINISH_TIMEOUT_MS) {
+            done.countDown()
+        }
+        assertTrue(done.await(5, TimeUnit.SECONDS))
+        assertTrue(
+            "disconnect waited on in-flight archive: ${System.currentTimeMillis() - disconnectStartedAtMs}ms",
+            System.currentTimeMillis() - disconnectStartedAtMs < 3_000L,
+        )
+        assertEquals(CaltopoMap.MapStatusListener.mapStatus.down, CaltopoMap.GetMapStatus())
+
+        while (fixture.calTopoSessionGateway.recoveryEditCallbacks.isNotEmpty()) {
+            fixture.calTopoSessionGateway.completeRecoveryEdit(true)
+        }
+        drainRecovery()
+    }
+
     @Test fun disconnectWhenCalTopoUnreachableJournalsOfflineFallback() {
         val drone = CtDroneSpec("RID-DISCONNECT-OFFLINE")
         setDroneTrackLabel(drone, "1sar7Offline_111500Oct30")

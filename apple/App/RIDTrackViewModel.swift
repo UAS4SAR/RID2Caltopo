@@ -164,6 +164,8 @@ final class RIDTrackViewModel: ObservableObject {
     @Published private(set) var trackerArchiveStatus = "Tracker archive not configured"
     @Published private(set) var latestArchiveURL: URL?
     @Published private(set) var caltopoStatus = "Publishing disabled"
+    /// Non-nil while Map Options Disconnect finishes owned LiveTracks off the main actor.
+    @Published private(set) var mapDisconnectProgress: String?
     @Published private(set) var caltopoRTTMilliseconds: Int64?
     private var aolLoggedReasons: [String:String] = [:]
     private var aolRequests: [String: UUID] = [:]
@@ -887,6 +889,7 @@ final class RIDTrackViewModel: ObservableObject {
     ) {
         publicationMapID = configuration.mapID
         publicationTeamID = configuration.publicationScope
+        // Never await the publisher on MainActor — finish/archive can take seconds.
         Task { [caltopoPublisher] in
             await self.applyCaltopoConfiguration(
                 configuration,
@@ -896,8 +899,9 @@ final class RIDTrackViewModel: ObservableObject {
         }
     }
 
-    /// Awaitable map configure/disconnect used by quit and Disconnect so owned LiveTracks
-    /// finish before the CalTopo client and tracker websocket are torn down.
+    /// Awaitable map configure/disconnect used by quit / scene teardown so owned LiveTracks
+    /// finish before the CalTopo client and tracker websocket are torn down. UI Disconnect
+    /// must use configureCaltopo so MainActor stays responsive.
     func configureCaltopoAwaiting(
         _ configuration: AppleCaltopoConfiguration,
         trackFolderName: String = "Drone Tracks"
@@ -916,6 +920,15 @@ final class RIDTrackViewModel: ObservableObject {
         trackFolderName: String,
         publisher: AppleCaltopoPublisher
     ) async {
+        let disconnecting = configuration.liveConfiguration == nil
+        if disconnecting {
+            await MainActor.run { self.mapDisconnectProgress = "Finishing live track…" }
+        }
+        defer {
+            if disconnecting {
+                Task { @MainActor in self.mapDisconnectProgress = nil }
+            }
+        }
         await awaitingMapJournal.ready()
         await refreshAwaitingMapState()
         await publisher.configure(
