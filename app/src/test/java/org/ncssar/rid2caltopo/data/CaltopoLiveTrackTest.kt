@@ -77,6 +77,7 @@ class CaltopoLiveTrackTest {
 
     @After
     fun tearDown() {
+        CaltopoNetworkReachability.setAvailableForTesting(null)
         CaltopoRecoveryWork.startWorker.submit {}.get(3, java.util.concurrent.TimeUnit.SECONDS)
         CaltopoRecoveryWork.archiveWorker.submit {}.get(3, java.util.concurrent.TimeUnit.SECONDS)
         mapNodeField.set(null, previousMapNode)
@@ -412,6 +413,60 @@ class CaltopoLiveTrackTest {
         CaltopoInterruptedTrackJournal.recover("map-test", "archive-folder-test", fixture.runtime)
         assertEquals(1, fixture.calTopoSessionGateway.countOperations("editObject"))
         assertEquals(1, fixture.calTopoSessionGateway.countOperations("deleteLiveTrack"))
+    }
+
+    @Test fun archiveStartedOffline_retriesWithinSecondsOfConnectivityRestore() {
+        CaltopoNetworkReachability.setAvailableForTesting(false)
+        try {
+            val drone = CtDroneSpec("RID-OFFLINE-ARCHIVE")
+            setDroneTrackLabel(drone, "1sar7DjMn4Pr_172238Oct30")
+            drone.setOwner("1sar7")
+            drone.setCurrentFlightConfirmed(true)
+            val track = CaltopoLiveTrack(drone, 39.153, -121.133, 527.0, 1_000L)
+            track.mapStatusUpdate(CaltopoMap.MapStatusListener.mapStatus.up, null, null)
+            track.setLocalOwner(true)
+            forceLiveTrackId(track, "e6f36aea-1779-49af-bcb1-e54a82a65f0c")
+            track.publishDirect(39.154, -121.134, 528L, 2_000L)
+            drainRecovery()
+
+            // Flight ends while Internet is lost/unvalidated: journal only, no Shape POST.
+            val finished = CountDownLatch(1)
+            val listener = CaltopoLiveTrack.LocalTrackFinishedListener { remote, _, _ ->
+                if (remote == drone.remoteId) finished.countDown()
+            }
+            CaltopoLiveTrack.AddLocalTrackFinishedListener(listener)
+            try {
+                track.finishTrack("RID/peer idle while offline")
+                assertTrue(finished.await(3, TimeUnit.SECONDS))
+                drainRecovery()
+            } finally {
+                CaltopoLiveTrack.RemoveLocalTrackFinishedListener(listener)
+            }
+            assertEquals(
+                "offline finish must not attempt Shape POST",
+                0,
+                fixture.calTopoSessionGateway.countOperations("editObject"),
+            )
+            assertEquals(1, CaltopoInterruptedTrackJournal.pendingCount())
+            assertEquals(
+                "e6f36aea-1779-49af-bcb1-e54a82a65f0c",
+                CaltopoInterruptedTrackJournal.entriesForTesting().getJSONObject(0).getString("liveTrackId"),
+            )
+
+            // Connectivity restored → cancel + flush recovers the finished-track archive promptly.
+            CaltopoNetworkReachability.setAvailableForTesting(true)
+            CaltopoInterruptedTrackJournal.clearInFlightForConnectivityRestore()
+            val startedAtNs = System.nanoTime()
+            CaltopoMap.recoverInterruptedTracksOnInternetRestored()
+            drainRecovery()
+            val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNs)
+            assertTrue("connectivity restore flush took ${elapsedMs}ms", elapsedMs < 5_000L)
+            assertEquals(1, fixture.calTopoSessionGateway.countOperations("editObject"))
+            assertEquals(1, fixture.calTopoSessionGateway.countOperations("deleteLiveTrack"))
+            assertEquals(0, CaltopoInterruptedTrackJournal.pendingCount())
+        } finally {
+            CaltopoNetworkReachability.setAvailableForTesting(null)
+        }
     }
 
     @Test fun disconnectWithOwnedActiveLiveTrackPublishesArchiveOnceThenMapDown() {

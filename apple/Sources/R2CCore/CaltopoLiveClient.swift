@@ -220,11 +220,13 @@ public actor CaltopoLiveClient {
     })
     private var positionReportKeys: Set<String> = []
     private var stoppedLiveTrackIDs: Set<String> = []
-    public static let requestTimeoutSeconds: TimeInterval = 20
+    /// Bound archive/clue/LiveTrack attempts so a dead path cannot stall for minutes.
+    public static let requestTimeoutSeconds: TimeInterval = 15
+    private let ownsSession: Bool
 
     public init(
         configuration: CaltopoLiveConfiguration,
-        session: URLSession = .shared,
+        session: URLSession? = nil,
         fullMapReads: CaltopoFullMapReads = .shared,
         snapshotReads: CaltopoSnapshotReads? = nil
     ) throws {
@@ -239,16 +241,29 @@ public actor CaltopoLiveClient {
             throw CaltopoLiveClientError.invalidConfiguration
         }
         self.configuration = configuration
-        self.session = session
-        self.fullMapReads = fullMapReads
-        self.snapshotReads = snapshotReads ?? (session === URLSession.shared ? .shared : CaltopoSnapshotReads())
-        self.startLane = CaltopoNetworkLane(session: session)
-        self.archiveLane = CaltopoNetworkLane(session: session)
-        self.clueLane = CaltopoNetworkLane(session: session)
-        if configuration.personalSessionID != nil {
-            let transport = session.configuration
+        let resolvedSession: URLSession
+        if let session {
+            resolvedSession = session
+            ownsSession = false
+        } else {
+            let transport = URLSessionConfiguration.ephemeral
             transport.timeoutIntervalForRequest = Self.requestTimeoutSeconds
-            transport.timeoutIntervalForResource = Self.requestTimeoutSeconds * 2
+            transport.timeoutIntervalForResource = Self.requestTimeoutSeconds
+            transport.waitsForConnectivity = false
+            resolvedSession = URLSession(configuration: transport)
+            ownsSession = true
+        }
+        self.session = resolvedSession
+        self.fullMapReads = fullMapReads
+        self.snapshotReads = snapshotReads ?? (resolvedSession === URLSession.shared ? .shared : CaltopoSnapshotReads())
+        self.startLane = CaltopoNetworkLane(session: resolvedSession)
+        self.archiveLane = CaltopoNetworkLane(session: resolvedSession)
+        self.clueLane = CaltopoNetworkLane(session: resolvedSession)
+        if configuration.personalSessionID != nil {
+            let transport = URLSessionConfiguration.ephemeral
+            transport.timeoutIntervalForRequest = Self.requestTimeoutSeconds
+            transport.timeoutIntervalForResource = Self.requestTimeoutSeconds
+            transport.waitsForConnectivity = false
             transport.httpCookieStorage = nil
             transport.httpShouldSetCookies = false
             transport.urlCache = nil
@@ -256,7 +271,23 @@ public actor CaltopoLiveClient {
         } else { personalTransport = nil }
     }
 
-    deinit { personalTransport?.invalidateAndCancel() }
+    deinit {
+        personalTransport?.invalidateAndCancel()
+        if ownsSession { session.invalidateAndCancel() }
+    }
+
+    /// Connectivity restored: cancel hung archive/clue/LiveTrack tasks started on a dead path.
+    public func cancelInFlightForConnectivityRestore() async {
+        await startLane.cancelOutstanding()
+        await archiveLane.cancelOutstanding()
+        await clueLane.cancelOutstanding()
+        if let personalTransport {
+            let tasks = await personalTransport.allTasks
+            tasks.forEach { $0.cancel() }
+        }
+        let tasks = await session.allTasks
+        tasks.forEach { $0.cancel() }
+    }
 
     public func startLiveTrack(
         liveTrackID: String,
@@ -1104,12 +1135,23 @@ public actor CaltopoLiveClient {
 /// Dedicated network executor so LiveTrack start/point POSTs never wait behind archive/DELETE.
 actor CaltopoNetworkLane {
     private let session: URLSession
+    private var generation = 0
 
     init(session: URLSession) {
         self.session = session
     }
 
+    func cancelOutstanding() {
+        generation &+= 1
+        // URLSession tasks for this lane's session are cancelled by the client.
+    }
+
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-        try await session.data(for: request)
+        let startGeneration = generation
+        let result = try await session.data(for: request)
+        if startGeneration != generation {
+            throw CancellationError()
+        }
+        return result
     }
 }

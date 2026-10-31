@@ -1158,7 +1158,12 @@ struct ContentView: View {
                     }
                 }
                 // Resume clue uploads and interrupted LiveTrack recovery when connectivity returns.
-                // Heavy network work stays off MainActor inside those helpers.
+                // Heavy network work stays off MainActor inside those helpers
+                // (publisher logs archive/liveTrack flush counts after cancel).
+                AppleLog.info(
+                    "NetworkChecks",
+                    "connectivity restored → flush clues=\(clueStore.pendingUploadCount)"
+                )
                 clueStore.resume()
                 ridTracks.retryInterruptedLiveTrackRecovery()
             }

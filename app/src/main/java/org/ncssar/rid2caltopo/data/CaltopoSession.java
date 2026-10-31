@@ -12,6 +12,7 @@ package org.ncssar.rid2caltopo.data;
 import static org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug;
 import static org.ncssar.rid2caltopo.data.CaltopoClient.CTError;
 import static org.ncssar.rid2caltopo.data.CaltopoClient.CTInfo;
+import static org.ncssar.rid2caltopo.data.CaltopoClient.CTWarn;
 import static org.ncssar.rid2caltopo.data.CaltopoClient.GetTodaysTrackDir;
 import static java.lang.Math.round;
 import java.util.regex.Matcher;
@@ -165,7 +166,12 @@ public class CaltopoSession {
 	}
 
     private static final String TAG = "CaltopoSession";
+    /** HMAC expires window; per-call OkHttp bounds are tighter (see MyOkHttpClient). */
     private static final int DEFAULT_TIMEOUT_MS = 2 * 60 * 1000;
+    /** Bound archive/clue/LiveTrack attempts so a dead link cannot stall for minutes. */
+    public static final int HTTP_CONNECT_TIMEOUT_SECONDS = 10;
+    public static final int HTTP_READ_TIMEOUT_SECONDS = 15;
+    public static final int HTTP_CALL_TIMEOUT_SECONDS = 15;
     private static final int MAX_RETRY_ATTEMPTS = 4;
     private static final long BASE_RETRY_DELAY_MS = 1000;
     private static final long MAX_RETRY_DELAY_MS = 8000;
@@ -194,10 +200,27 @@ public class CaltopoSession {
     }
 
     public static final OkHttpClient MyOkHttpClient = new OkHttpClient.Builder()
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
+            .connectTimeout(HTTP_CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .readTimeout(HTTP_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .writeTimeout(HTTP_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .callTimeout(HTTP_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .dns(Dns.SYSTEM) // This uses OkHttp's more robust DNS logic
             .build();
+
+    /**
+     * Connectivity restored: drop stale sockets and cancel calls started while the
+     * path was dead so pending archive/clue/LiveTrack work can retry immediately.
+     * Derived personal-session clients share this dispatcher and connection pool.
+     */
+    public static void cancelInFlightRequestsForConnectivityRestore() {
+        try {
+            MyOkHttpClient.dispatcher().cancelAll();
+            MyOkHttpClient.connectionPool().evictAll();
+            CTDebug(TAG, "cancelInFlightRequestsForConnectivityRestore(): cancelled OkHttp calls and evicted pool");
+        } catch (Exception error) {
+            CTWarn(TAG, "cancelInFlightRequestsForConnectivityRestore() raised", error);
+        }
+    }
 
     public static void Init(@NonNull CaltopoCredentials cred, @NonNull String domainAndPort) {
         Cred = cred;

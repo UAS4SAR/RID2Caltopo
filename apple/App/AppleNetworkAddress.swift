@@ -98,6 +98,8 @@ final class AppleNetworkDiagnosticCenter: ObservableObject {
 
     @Published private(set) var currentSnapshotID = "none"
     @Published private(set) var checkRecoveryGeneration = 0
+    /// NWPath.satisfied when known; true before the first path update so startup is not blocked.
+    @Published private(set) var internetAvailable = true
     private var checkRecoveryGate = NetworkCheckRecoveryGate()
     @Published private(set) var currentWiFiSSID: String?
     @Published private(set) var currentControllerIPv4Address: String?
@@ -121,7 +123,9 @@ final class AppleNetworkDiagnosticCenter: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.latestPath = path
-                if self.checkRecoveryGate.update(available: path.status == .satisfied) {
+                let available = path.status == .satisfied
+                self.internetAvailable = available
+                if self.checkRecoveryGate.update(available: available) {
                     self.checkRecoveryGeneration += 1
                 }
                 await self.record(path: path, reason: .networkPathChanged)

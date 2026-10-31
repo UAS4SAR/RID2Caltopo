@@ -655,9 +655,25 @@ actor AppleCaltopoPublisher {
         }
         guard generation == configurationGeneration,
               let client = finishingClient,
-              let configuration = finishingConfiguration else {
+              finishingConfiguration != nil else {
             // Ended offline after disconnect: the journal upsert above is the
             // durable pending finish; reconnect recovery loads it once.
+            return nil
+        }
+        // Lost/unvalidated Internet: durable journal only — do not start a Shape POST
+        // that can hang on a dead path and hide the entry from connectivity-restore flush.
+        let internetAvailable = await MainActor.run {
+            AppleNetworkDiagnosticCenter.shared.internetAvailable
+        }
+        if !internetAvailable {
+            if generation == configurationGeneration {
+                pendingInterruptedRecoveries.removeAll { $0.liveTrackID == id }
+                pendingInterruptedRecoveries.append(entry)
+            }
+            AppleLog.info(
+                "CalTopo",
+                "archiveLiveTrack(\(label)): deferred offline points=\(saved.count) liveTrackId=\(id)"
+            )
             return nil
         }
         do {
@@ -811,10 +827,18 @@ actor AppleCaltopoPublisher {
         }
     }
 
-    /// Network-path wake: retry interrupted LiveTrack archive recovery without waiting on clue work.
+    /// Network-path wake: cancel hung CalTopo calls, then retry interrupted archives.
     func retryInterruptedPublications() async {
+        await client?.cancelInFlightForConnectivityRestore()
+        let archives = pendingInterruptedRecoveries.count
+        AppleLog.info(
+            "NetworkChecks",
+            "connectivity restored → flush archives=\(archives) liveTracks=\(liveTrackIDs.count) clues=wake"
+        )
         await retryInterruptedPublications(generation: configurationGeneration)
     }
+
+    var pendingInterruptedArchiveCount: Int { pendingInterruptedRecoveries.count }
 
     private func retryInterruptedPublications(generation: Int) async {
         if generation == configurationGeneration && !configurationTransitionInFlight { await retryMarkerCleanup() }

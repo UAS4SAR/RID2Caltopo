@@ -212,6 +212,22 @@ public final class CaltopoInterruptedTrackJournal {
         }
     }
 
+    /** Pending finished-track / interrupted Shape archives awaiting upload. */
+    public static int pendingCount() {
+        synchronized (LOCK) {
+            JSONArray entries = readRoot().optJSONArray("entries");
+            return entries == null ? 0 : entries.length();
+        }
+    }
+
+    /**
+     * Clear recover() in-flight markers so a connectivity-restore flush can retry
+     * after canceling a hung Shape POST that never completed its callback.
+     */
+    public static void clearInFlightForConnectivityRestore() {
+        inFlight.clear();
+    }
+
     @NonNull
     private static JSONObject archiveFeature(@NonNull JSONObject entry,
                                              @NonNull String archiveFolderId) throws Exception {

@@ -3048,6 +3048,10 @@ class StreamsViewModel(
             logClueRetry("map-not-up", "retryPendingClues: skip reason=map-not-up status=$status")
             return
         }
+        if (!org.ncssar.rid2caltopo.data.CaltopoNetworkReachability.hasValidatedInternet()) {
+            logClueRetry("deferred-offline", "retryPendingClues: deferred offline")
+            return
+        }
         val mapId = CaltopoMap.GetMapId().trim()
         if (mapId.isEmpty()) {
             logClueRetry("map-id-blank", "retryPendingClues: skip reason=map-id-blank")

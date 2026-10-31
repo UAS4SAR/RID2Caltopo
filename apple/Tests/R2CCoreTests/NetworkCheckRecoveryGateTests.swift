@@ -15,3 +15,7 @@ import Testing
     #expect(first)
     #expect(!second)
 }
+
+@Test func caltopoLiveClientRequestTimeoutIsBoundedForArchiveAndClues() {
+    #expect(CaltopoLiveClient.requestTimeoutSeconds == 15)
+}

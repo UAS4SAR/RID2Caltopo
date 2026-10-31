@@ -60,8 +60,10 @@ Runs off the UI thread at launch (`ClueTrackDurabilityIntegrity`):
 
 | Platform | Trigger | Action (off Main / MainActor) |
 | --- | --- | --- |
-| Android | `NetworkCheckRecovery` validated Internet | Flush pending clues; recover interrupted LiveTracks; wake LiveTrack start/forward |
-| Apple | `NWPathMonitor` → `checkRecoveryGeneration` | `resumePendingUploads`; `retryInterruptedPublications` |
+| Android | `NetworkCheckRecovery` validated Internet | Cancel OkHttp in-flight + evict pool; log `connectivity restored → flush` counts; flush pending clues; recover interrupted **and finished-track** archives; wake LiveTrack start/forward |
+| Apple | `NWPathMonitor` → `checkRecoveryGeneration` | Cancel in-flight URLSession tasks; log flush counts; `resumePendingUploads`; `retryInterruptedPublications` |
+
+Lost / unvalidated Internet must **not** start CalTopo archive or clue POSTs (`deferred offline`); journal/queue durably and wait for the wake above. Archive/clue HTTP uses ~10–15 s connect/read/call timeouts.
 
 Also: map reconnect, 30s owner poll (Android), publisher recovery task (Apple), app launch.
 

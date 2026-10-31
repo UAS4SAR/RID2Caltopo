@@ -109,8 +109,15 @@ final class AppleClueStore: ObservableObject {
     /// Network-path wake and startup: re-enqueue pending/failed uploads without reconfiguring.
     func resume() {
         guard client != nil, !teamID.isEmpty else { return }
+        if !AppleNetworkDiagnosticCenter.shared.internetAvailable {
+            AppleLog.info("Clue", "resumePendingUploads: deferred offline")
+            return
+        }
         let generation = configurationGeneration
-        Task { await resumePendingUploads(generation: generation) }
+        Task {
+            await client?.cancelInFlightForConnectivityRestore()
+            await resumePendingUploads(generation: generation)
+        }
     }
 
     func resumePendingUploads(generation: Int) async {

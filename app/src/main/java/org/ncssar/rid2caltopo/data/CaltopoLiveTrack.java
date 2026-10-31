@@ -37,6 +37,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug;
 import static org.ncssar.rid2caltopo.data.CaltopoClient.CTError;
+import static org.ncssar.rid2caltopo.data.CaltopoClient.CTInfo;
 import static org.ncssar.rid2caltopo.data.CaltopoClient.CTWarn;
 
 import androidx.annotation.NonNull;
@@ -77,7 +78,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     private static final long DEFERRED_VIDEO_LINK_RETRY_MS = 2_000L;
     private static final long DEFERRED_VIDEO_LINK_WINDOW_MS = 30_000L;
     /** Bound Shape POST wait so one flight's archive cannot occupy the archive lane indefinitely. */
-    private static final long ARCHIVE_NETWORK_TIMEOUT_MS = 20_000L;
+    private static final long ARCHIVE_NETWORK_TIMEOUT_MS = 15_000L;
     private static final long SEI_POSITION_PUBLISH_INTERVAL_MS = 1_000L;
     private static final ScheduledExecutorService DeferredVideoLinkExecutor =
             Executors.newSingleThreadScheduledExecutor(runnable -> {
@@ -766,6 +767,12 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                 && destinationMap != null && !destinationMap.isEmpty()
                 && destinationFolder != null && !destinationFolder.isEmpty()) {
             final String archivedLiveTrackId = work.archiveId;
+            if (!CaltopoNetworkReachability.hasValidatedInternet()) {
+                CTInfo(TAG, String.format(Locale.US,
+                        "disconnect-finish(%s): deferred offline liveTrackId=%s",
+                        work.snapshot != null ? work.snapshot.label : archivedLiveTrackId,
+                        archivedLiveTrackId));
+            } else {
             CountDownLatch done = new CountDownLatch(1);
             AtomicBoolean archived = new AtomicBoolean(false);
             try {
@@ -803,6 +810,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                 CTWarn(TAG, "disconnect-finish(): interrupted; journal retained");
             } catch (Exception e) {
                 CTError(TAG, "disconnect-finish(): archive raised", e);
+            }
             }
         }
         if (work.notifyPeer) notifyPeerCoordinatorTrackEnded(true);
@@ -1110,6 +1118,14 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             }
         }
         String archivedLiveTrackId = work.archiveId;
+        // Lost/unvalidated Internet: durable journal only. Do not start a Shape POST that
+        // can hang on a dead socket and hide the entry from connectivity-restore flush.
+        if (!CaltopoNetworkReachability.hasValidatedInternet()) {
+            CTInfo(TAG, String.format(Locale.US,
+                    "archiveTrackOnCaltopo(%s): deferred offline points=%d liveTrackId=%s",
+                    work.trackLabel, work.pointCount, archivedLiveTrackId));
+            return;
+        }
         final java.util.function.BiFunction<JSONObject, java.util.function.Consumer<CaltopoOp>, CaltopoOp> updateArchivedTrack =
                 runtime.getCalTopoSessionGateway().prepareArchivedTrackUpdate(destinationMap, archivedLiveTrackId);
         final long archivedTrackStartedAtMs = work.trackStartedAtMs;
@@ -1300,6 +1316,11 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         if (mapStatus != CaltopoMap.MapStatusListener.mapStatus.up) return null;
         if (!ownsPublication()) return null;
         if (liveTrackId != null || startInFlight) return null;
+        if (!CaltopoNetworkReachability.hasValidatedInternet()) {
+            CTDebug(TAG, String.format(Locale.US,
+                    "ensureLiveTrackStarted(%s): deferred offline", droneSpec.trackLabel()));
+            return null;
+        }
         if (System.currentTimeMillis() < nextStartAttemptAtMs) return null;
 
         String mapId = CaltopoMap.GetMapId();
@@ -1538,6 +1559,15 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                         + liveTrack.myRemoteId, error);
             }
         }
+    }
+
+    /** Owned active LiveTracks that still need start/point flush after reconnect. */
+    public static int countOwnedActivePublications() {
+        int count = 0;
+        for (CaltopoLiveTrack liveTrack : LiveTrackByRemoteId.values()) {
+            if (liveTrack.hasOwnedActivePublication()) count++;
+        }
+        return count;
     }
 
     private synchronized void startLiveTrackComplete(CaltopoOp op) {
@@ -1823,6 +1853,10 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     }
 
     private void forwardNextWaypointsOnWorker(@Nullable CaltopoOp lastOp) {
+        if (!CaltopoNetworkReachability.hasValidatedInternet()) {
+            CTDebug(TAG, "forwardNextWaypoints(): deferred offline");
+            return;
+        }
         final QueuedPoint pointToSend;
         final long generation;
         final int sentOrdinal;

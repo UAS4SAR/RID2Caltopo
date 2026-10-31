@@ -20,9 +20,6 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.location.Location;
-import android.net.ConnectivityManager;
-import android.net.Network;
-import android.net.NetworkCapabilities;
 import android.os.Bundle;
 import android.os.Looper;
 import android.provider.Settings;
@@ -950,11 +947,39 @@ public class CaltopoMap {
         flushPendingCluesBestEffort();
     }
 
-    /** Internet restored: retry interrupted LiveTrack archive recovery when a map is up. */
+    /**
+     * Internet restored: retry interrupted / finished-track Shape archives.
+     * Uses stored map + archive folder even if MapStatus has not flipped to up yet
+     * (validated Internet often precedes the next successful map poll).
+     */
     public static void recoverInterruptedTracksOnInternetRestored() {
-        if (GetMapStatus() != MapStatusListener.mapStatus.up) return;
-        if (ArchiveFolderId == null || ArchiveFolderId.isEmpty()) return;
-        LookForExistingLiveTracks();
+        CaltopoInterruptedTrackJournal.clearInFlightForConnectivityRestore();
+        String mapId = GetMapId();
+        String archiveFolder = ArchiveFolderId;
+        if (mapId == null || mapId.isEmpty() || archiveFolder == null || archiveFolder.isEmpty()) {
+            CTDebug(TAG, "recoverInterruptedTracksOnInternetRestored(): skip — map/archive folder not ready");
+            return;
+        }
+        if (GetMapStatus() == MapStatusListener.mapStatus.up) {
+            LookForExistingLiveTracks();
+            return;
+        }
+        // Map not yet "up", but folders from the prior session are still known — recover
+        // finished-track journals immediately so a hung offline POST cannot delay them.
+        final R2cRuntime runtime = getCurrentRuntime();
+        final java.util.List<JSONObject> features = GetArtifactFeatureSnapshot();
+        CaltopoRecoveryWork.execute(() -> {
+            try {
+                CaltopoInterruptedTrackJournal.recover(mapId, archiveFolder, runtime, features);
+            } catch (Exception error) {
+                CTWarn(TAG, "Interrupted LiveTrack recovery after reconnect raised", error);
+            }
+        });
+    }
+
+    /** Pending finished-track archives + owned LiveTracks for connectivity-flush logging. */
+    public static int pendingInterruptedArchiveCount() {
+        return CaltopoInterruptedTrackJournal.pendingCount();
     }
 
     private static void publishDisconnectProgress(@NonNull String message) {
@@ -2631,21 +2656,7 @@ public class CaltopoMap {
     }
 
     private static boolean shouldWaitForMarkerDeleteAck() {
-        Context context = R2CApplication.getAppCtxt();
-        if (context == null) return false;
-        try {
-            ConnectivityManager cm = context.getSystemService(ConnectivityManager.class);
-            if (cm == null) return false;
-            Network activeNetwork = cm.getActiveNetwork();
-            if (activeNetwork == null) return false;
-            NetworkCapabilities caps = cm.getNetworkCapabilities(activeNetwork);
-            if (caps == null) return false;
-            return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
-        } catch (Exception e) {
-            CTWarn(TAG, "shouldWaitForMarkerDeleteAck() raised", e);
-            return false;
-        }
+        return CaltopoNetworkReachability.hasValidatedInternet();
     }
 
     @NonNull
