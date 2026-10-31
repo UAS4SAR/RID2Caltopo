@@ -488,9 +488,10 @@ final class MediaMTXViewModel: ObservableObject {
 
     /// Probe the RTMP ingest listener, not HLS. Live playback uses RTSP; polling
     /// `http://127.0.0.1:8888/` only produced 404 spam when nothing needed HLS.
-    private static func localListenerAvailable() async -> Bool {
+    /// nonisolated so the DispatchQueue work item is not a @MainActor-isolated closure.
+    private nonisolated static func localListenerAvailable() async -> Bool {
         await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
+            let work: @Sendable () -> Void = {
                 let socket = socket(AF_INET, SOCK_STREAM, 0)
                 guard socket >= 0 else {
                     continuation.resume(returning: false)
@@ -520,6 +521,7 @@ final class MediaMTXViewModel: ObservableObject {
                 }
                 continuation.resume(returning: connectResult == 0)
             }
+            DispatchQueue.global(qos: .utility).async(execute: work)
         }
     }
 

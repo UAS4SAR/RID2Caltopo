@@ -299,6 +299,19 @@ final class RIDTrackViewModel: ObservableObject {
         observationTasks[sourceID] = Task.detached { [weak self] in
             for await observation in observations {
                 guard !Task.isCancelled else { return }
+                // SEI gate must run before store.ingest; it reads MainActor UI state only.
+                let shouldIngest = await MainActor.run { [weak self] () -> Bool in
+                    guard let self else { return false }
+                    if observation.source != .djiVideo,
+                       let accepted = self.lastAcceptedStreamAt[observation.aircraftId],
+                       Date().timeIntervalSince(accepted) >= 0,
+                       Date().timeIntervalSince(accepted) <= 3,
+                       self.validatedSEIPositionProvider?(self.tracks, Date())[observation.aircraftId] != nil {
+                        return false
+                    }
+                    return true
+                }
+                guard shouldIngest else { continue }
                 let ingestStartedAt = Date()
                 let result = await trackStore.ingest(observation)
                 await self?.applyIngestResult(
