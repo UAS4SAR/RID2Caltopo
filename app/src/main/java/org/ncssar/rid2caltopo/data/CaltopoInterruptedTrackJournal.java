@@ -244,6 +244,23 @@ public final class CaltopoInterruptedTrackJournal {
     }
 
     /** Pending finished-track / interrupted Shape archives awaiting upload. */
+    /** True when this map has durable interrupted LiveTracks awaiting archive recovery. */
+    public static boolean hasPendingForMap(@NonNull String mapId) {
+        if (mapId.isEmpty()) return false;
+        synchronized (LOCK) {
+            JSONArray entries = mutableRootLocked().optJSONArray("entries");
+            if (entries == null) return false;
+            for (int index = 0; index < entries.length(); index++) {
+                JSONObject entry = entries.optJSONObject(index);
+                if (entry != null && mapId.equals(entry.optString("mapId"))) {
+                    JSONArray points = entry.optJSONArray("points");
+                    if (points != null && points.length() > 0) return true;
+                }
+            }
+            return false;
+        }
+    }
+
     public static int pendingCount() {
         synchronized (LOCK) {
             JSONArray entries = mutableRootLocked().optJSONArray("entries");

@@ -943,7 +943,7 @@ func caltopoFolderResolutionCoalescesConcurrentPublishers() async throws {
     )
 
     let results = try await [first, second]
-    #expect(results[0] == CaltopoTrackFolderIDs(active: "active-created", archive: "archive-created"))
+    #expect(results[0] == CaltopoTrackFolderIDs(active: "active-created", archive: "archive-created", created: true))
     #expect(results[1] == results[0])
     let counts = await probe.counts()
     #expect(counts.fetches == 2)
@@ -1031,7 +1031,7 @@ func caltopoFolderResolutionDeletesOnlyItsOwnUnusedRaceLosers() async throws {
         }
     )
 
-    #expect(result == CaltopoTrackFolderIDs(active: "active-other", archive: "archive-other"))
+    #expect(result == CaltopoTrackFolderIDs(active: "active-other", archive: "archive-other", created: true))
     #expect(Set(await probe.deletions()) == Set(["active-created", "archive-created"]))
 }
 

@@ -56,6 +56,8 @@ final class AppleClueStore: ObservableObject {
     private var folderResolver = CaltopoTrackFolderResolver()
     private var uploadTasks: [UUID: Task<Void, Never>] = [:]
     private var integrityScanDone = false
+    /// Shared with the track publisher so clue and track folder creation stay one path.
+    var ensureMapArtifacts: ((CaltopoMapArtifactReason) async throws -> String)?
     /// Called after a clue is saved or deleted, so a finished flight's KMZ can be rebuilt.
     var clueChanged: ((OperationalClueRecord) -> Void)?
 
@@ -766,8 +768,14 @@ final class AppleClueStore: ObservableObject {
 
     private func resolveTrackFolder(using client: CaltopoLiveClient) async throws -> String {
         if let trackFolderID { return trackFolderID }
-        let folderName = trackFolderName
         let generation = configurationGeneration
+        if let ensureMapArtifacts {
+            let folderID = try await ensureMapArtifacts(.clue)
+            if generation == configurationGeneration { trackFolderID = folderID }
+            return folderID
+        }
+        // Fallback for unit tests that do not wire the shared publisher path.
+        let folderName = trackFolderName
         let resolver = folderResolver
         let resolved = try await resolver.resolve(
             trackFolderName: folderName,
@@ -790,6 +798,12 @@ final class AppleClueStore: ObservableObject {
                 )
             }
         )
+        if resolved.created {
+            AppleLog.info(
+                "CalTopo",
+                "Created map artifacts reason=clue active=\(resolved.active) archive=\(resolved.archive) folder='\(folderName)'"
+            )
+        }
         if generation == configurationGeneration { trackFolderID = resolved.active }
         return resolved.active
     }

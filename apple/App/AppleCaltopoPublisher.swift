@@ -41,6 +41,8 @@ actor AppleCaltopoPublisher {
     private var lastDeviceMarkerPublishedAt: Date?
     private var publishedDeviceMarkerID: String?
     private var ownedDeviceMarkerID = ""
+    /// Set when the first live track starts for this map session. Connect/open must not publish.
+    private var deviceMarkerAllowed = false
     private var mapOpenRetry: Task<Void, Never>?
     private var mapOpenRetryAttempt = 0
     private var deviceMarkerGeneration = 0
@@ -156,6 +158,7 @@ actor AppleCaltopoPublisher {
         self.trackFolderName = normalizedFolderName
         trackFolderID = nil
         archiveFolderID = nil
+        deviceMarkerAllowed = false
         lastDeviceMarkerPublishedAt = nil
         guard let liveConfiguration = configuration.liveConfiguration else {
             client = nil
@@ -177,7 +180,9 @@ actor AppleCaltopoPublisher {
             pendingInterruptedRecoveries = await interruptedJournal.entries(mapID: configuration.mapID)
             await retryMarkerCleanup()
             do {
-                try await ensureFolders(client: configuredClient)
+                // Connect must not create folders or a device marker. Probe the map, remove
+                // leftovers, then recover interrupted tracks (lazily ensures folders if needed).
+                _ = try await configuredClient.fetchMapArtifacts(refresh: true)
                 await removeStaleR2CDeviceMarkers(client: configuredClient)
                 mapOpenRetry?.cancel()
                 mapOpenRetry = nil
@@ -185,7 +190,7 @@ actor AppleCaltopoPublisher {
                 deviceMarkerPublishingSuspended = false
                 // Clues and the connected map must not wait on interrupted LiveTrack recovery.
                 continuation.yield(.ready)
-                await recoverInterruptedPublications(client: configuredClient)
+                await retryInterruptedPublications(generation: configurationGeneration)
             } catch {
                 if let message = CaltopoServerAvailability.retryMessage(error) {
                     continuation.yield(.failed(message))
@@ -193,10 +198,11 @@ actor AppleCaltopoPublisher {
                 } else {
                     AppleLog.warning(
                         "CalTopo",
-                        "Interrupted LiveTrack recovery will retry after map reconnect: \(error.localizedDescription)"
+                        "Map open probe deferred; will retry after reconnect: \(error.localizedDescription)"
                     )
                     deviceMarkerPublishingSuspended = false
                     continuation.yield(.ready)
+                    await retryInterruptedPublications(generation: configurationGeneration)
                 }
             }
         } catch {
@@ -216,11 +222,12 @@ actor AppleCaltopoPublisher {
             guard !Task.isCancelled, let self else { return }
             guard await self.configurationGeneration == generation else { return }
             do {
-                try await self.ensureFolders(client: client)
+                // Probe the map without creating folders/markers; recovery ensures lazily.
+                _ = try await client.fetchMapArtifacts(refresh: true)
                 await self.removeStaleR2CDeviceMarkers(client: client)
                 await self.finishMapOpenRetry()
                 self.continuation.yield(.ready)
-                await self.recoverInterruptedPublications(client: client)
+                await self.retryInterruptedPublications(generation: generation)
             } catch {
                 guard !Task.isCancelled, await self.configurationGeneration == generation else { return }
                 if let message = CaltopoServerAvailability.retryMessage(error) {
@@ -238,7 +245,7 @@ actor AppleCaltopoPublisher {
     }
 
     func publishDeviceMarker(_ marker: CaltopoDeviceMarker, force: Bool = false, consent: AppleLocationConsent, consentGeneration: UInt) async {
-        guard consent.allows(consentGeneration), !deviceMarkerPublishingSuspended, client != nil else { return }
+        guard consent.allows(consentGeneration), !deviceMarkerPublishingSuspended, deviceMarkerAllowed, client != nil else { return }
         if deviceMarkerPublishInFlight {
             let pendingForce = pendingDeviceMarkerPublication?.force ?? false
             pendingDeviceMarkerPublication = (marker, force || pendingForce, consent, consentGeneration)
@@ -258,7 +265,7 @@ actor AppleCaltopoPublisher {
     }
 
     private func performDeviceMarkerPublication(_ marker: CaltopoDeviceMarker, force: Bool, consent: AppleLocationConsent, consentGeneration: UInt) async {
-        guard consent.allows(consentGeneration), !deviceMarkerPublishingSuspended, !markerCleanupInFlight, let client,
+        guard consent.allows(consentGeneration), !deviceMarkerPublishingSuspended, deviceMarkerAllowed, !markerCleanupInFlight, let client,
               let markerConfiguration = configuredConfiguration?.liveConfiguration else { return }
         let generation = deviceMarkerGeneration
         let now = Date()
@@ -267,10 +274,11 @@ actor AppleCaltopoPublisher {
             return
         }
         do {
-            try await ensureFolders(client: client)
+            _ = try await ensureMapArtifacts(reason: .firstTrack)
             await recoverInterruptedPublications(client: client)
             await retryMarkerCleanup()
-            guard consent.allows(consentGeneration), generation == deviceMarkerGeneration, !deviceMarkerPublishingSuspended else { return }
+            guard consent.allows(consentGeneration), generation == deviceMarkerGeneration,
+                  !deviceMarkerPublishingSuspended, deviceMarkerAllowed else { return }
             let ownership = try markerJournal.arm(domain: markerConfiguration.domainAndPort, map: markerConfiguration.mapID, marker: marker.id)
             publishedMarkerOwnership = ownership
             try await client.publishDeviceMarker(marker, folderID: trackFolderID, now: now)
@@ -524,7 +532,9 @@ actor AppleCaltopoPublisher {
             guard generation == configurationGeneration,
                   requestedLiveTrackIDs[remoteID] == requestedID,
                   !finishingRemoteIDs.contains(remoteID) else { return }
-            try await ensureFolders(client: client)
+            _ = try await ensureMapArtifacts(reason: .firstTrack)
+            // First live-track create for this map session may publish the device marker.
+            deviceMarkerAllowed = true
             guard generation == configurationGeneration,
                   requestedLiveTrackIDs[remoteID] == requestedID,
                   !finishingRemoteIDs.contains(remoteID) else { return }
@@ -681,7 +691,7 @@ actor AppleCaltopoPublisher {
             // prevent conversion because the durable identity is already known.
             if let pendingStart { _ = try? await pendingStart.value }
             guard generation == configurationGeneration else { return nil }
-            try await ensureFolders(client: client)
+            _ = try await ensureMapArtifacts(reason: .firstTrack)
             guard generation == configurationGeneration, let archiveFolderID else { return nil }
             try await client.archiveLiveTrack(
                 liveTrackID: id, label: label, observations: saved,
@@ -765,8 +775,14 @@ actor AppleCaltopoPublisher {
         }
     }
 
-    private func ensureFolders(client: CaltopoLiveClient) async throws {
-        guard trackFolderID == nil || archiveFolderID == nil else { return }
+    /// Lazily creates or reuses Drone Tracks folders. Idempotent and coalesced under concurrency.
+    /// Does not publish the device marker; callers enable that only for a live-track start.
+    @discardableResult
+    func ensureMapArtifacts(reason: CaltopoMapArtifactReason) async throws -> CaltopoTrackFolderIDs {
+        guard let client else { throw CancellationError() }
+        if let trackFolderID, let archiveFolderID {
+            return CaltopoTrackFolderIDs(active: trackFolderID, archive: archiveFolderID, created: false)
+        }
         let generation = configurationGeneration
         let resolver = folderResolver
         let folderName = trackFolderName
@@ -795,6 +811,13 @@ actor AppleCaltopoPublisher {
         guard generation == configurationGeneration else { throw CancellationError() }
         trackFolderID = resolved.active
         archiveFolderID = resolved.archive
+        if resolved.created {
+            AppleLog.info(
+                "CalTopo",
+                "Created map artifacts reason=\(reason.rawValue) active=\(resolved.active) archive=\(resolved.archive) folder='\(folderName)'"
+            )
+        }
+        return resolved
     }
 
     private func persistInterruptedPublication(
@@ -845,7 +868,7 @@ actor AppleCaltopoPublisher {
         guard generation == configurationGeneration, !configurationTransitionInFlight,
               !pendingInterruptedRecoveries.isEmpty, let client else { return }
         do {
-            try await ensureFolders(client: client)
+            _ = try await ensureMapArtifacts(reason: .firstTrack)
             guard generation == configurationGeneration else { return }
             await recoverInterruptedPublications(client: client)
         } catch {

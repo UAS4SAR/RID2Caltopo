@@ -945,8 +945,14 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
      */
     public void archiveTrackOnCaltopo(long maxWaitInMilliseconds) {
         final String destinationMap = CaltopoMap.GetMapId();
-        final String destinationFolder = CaltopoMap.GetArchiveFolderId();
-        CaltopoRecoveryWork.offMainArchive(() -> archiveTrackOnWorker(maxWaitInMilliseconds, destinationMap, destinationFolder));
+        CaltopoRecoveryWork.offMainArchive(() -> {
+            String destinationFolder = CaltopoMap.GetArchiveFolderId();
+            if (destinationFolder == null || destinationFolder.isEmpty()) {
+                CaltopoMap.ensureMapArtifacts("first-track");
+                destinationFolder = CaltopoMap.GetArchiveFolderId();
+            }
+            archiveTrackOnWorker(maxWaitInMilliseconds, destinationMap, destinationFolder);
+        });
     }
 
     private void archiveTrackOnWorker(long maxWaitInMilliseconds, String destinationMap, String destinationFolder) {
@@ -1289,14 +1295,14 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             trackLabelForLog = droneSpec.trackLabel();
         }
         // AwaitingMap may fsync — never hold the track monitor across it (8222efe9 class).
-        String deferredId = AwaitingMapFlights.publicationId(remoteId, mapId);
-        if (deferredId != null && deferredId.isEmpty()) {
+        String resolvedDeferredId = AwaitingMapFlights.publicationId(remoteId, mapId);
+        if (resolvedDeferredId != null && resolvedDeferredId.isEmpty()) {
             String reserved = AwaitingMapFlights.reservedPublicationId(remoteId);
             if (reserved != null) {
-                deferredId = reserved;
+                resolvedDeferredId = reserved;
             } else {
-                deferredId = AwaitingMapFlights.bindConnectedMapIfOpenReview(remoteId, mapId);
-                if (deferredId == null) {
+                resolvedDeferredId = AwaitingMapFlights.bindConnectedMapIfOpenReview(remoteId, mapId);
+                if (resolvedDeferredId == null) {
                     CTDebug(TAG, String.format(Locale.US,
                             "ensureLiveTrackStarted(%s): deferred publication still blocking map=%s",
                             trackLabelForLog, mapId));
@@ -1304,15 +1310,31 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                 }
             }
         }
-        final LiveTrackStartRequest request;
-        synchronized (this) {
-            request = claimLiveTrackStartLocked(mapId, deferredId);
-        }
-        if (request != null) {
-            // Always queue: callers may still hold the track monitor (queueWaypoint) or be
-            // on the recovery worker where offMain would run inline under that monitor.
-            CaltopoRecoveryWork.executeStart(() -> startLiveTrackAfterPersist(request));
-        }
+        final String deferredId = resolvedDeferredId;
+        // Always queue: callers may still hold the track monitor (queueWaypoint) or be
+        // on the recovery worker where offMain would run inline under that monitor.
+        // Folder ensure and LiveTrack start stay off the track monitor.
+        CaltopoRecoveryWork.executeStart(() -> {
+            String ensuredFolderId = CaltopoMap.ensureMapArtifacts("first-track");
+            if (ensuredFolderId == null || ensuredFolderId.isEmpty()) {
+                synchronized (CaltopoLiveTrack.this) {
+                    nextStartAttemptAtMs = System.currentTimeMillis() + 5_000L;
+                }
+                CTWarn(TAG, String.format(Locale.US,
+                        "ensureLiveTrackStarted(%s): track folders unavailable; will retry",
+                        trackLabelForLog));
+                return;
+            }
+            final LiveTrackStartRequest request;
+            synchronized (CaltopoLiveTrack.this) {
+                this.folderId = ensuredFolderId;
+                request = claimLiveTrackStartLocked(mapId, deferredId);
+            }
+            if (request != null) {
+                CaltopoMap.noteFirstLiveTrackStarted();
+                startLiveTrackAfterPersist(request);
+            }
+        });
     }
 
     private void startNewTrack() {
@@ -1445,8 +1467,14 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
 
     public void finishTrack(@NonNull String reason) {
         final String destinationMap = CaltopoMap.GetMapId();
-        final String destinationFolder = CaltopoMap.GetArchiveFolderId();
-        CaltopoRecoveryWork.offMainArchive(() -> finishTrackOnWorker(reason, destinationMap, destinationFolder));
+        CaltopoRecoveryWork.offMainArchive(() -> {
+            String destinationFolder = CaltopoMap.GetArchiveFolderId();
+            if (destinationFolder == null || destinationFolder.isEmpty()) {
+                CaltopoMap.ensureMapArtifacts("first-track");
+                destinationFolder = CaltopoMap.GetArchiveFolderId();
+            }
+            finishTrackOnWorker(reason, destinationMap, destinationFolder);
+        });
     }
 
     private void finishTrackOnWorker(@NonNull String reason, String destinationMap, String destinationFolder) {

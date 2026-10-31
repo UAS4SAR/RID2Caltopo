@@ -167,6 +167,11 @@ public class CaltopoMap {
     private static final DelayedExec InitialMarkerPublishDelay = new DelayedExec();
     private static String FolderId;
     private static volatile String ArchiveFolderId;
+    /** Serializes lazy Drone Tracks folder creation across track/clue callers. */
+    private static final Object MapArtifactsLock = new Object();
+    private static volatile boolean MapArtifactsEnsureInFlight = false;
+    /** True only after the first live track starts for this map session. */
+    private static volatile boolean DeviceMarkerAllowed = false;
     private static volatile CaltopoNode.MapNode MapNode;
     private static String FolderName = "DroneTracks";
     private static MapStatusListener.mapStatus MapStatus = MapStatusListener.mapStatus.down;
@@ -1066,6 +1071,7 @@ public class CaltopoMap {
         PeerIdMap.clear();
         FolderId = null;
         ArchiveFolderId = null;
+        DeviceMarkerAllowed = false;
         LastErrorString = null;
     }
 
@@ -1134,8 +1140,8 @@ public class CaltopoMap {
 
     private static void FinishInitialMapSetup() {
         if (ShutdownInProgress || DisconnectInProgress || MapNode == null ||
-                MapStatus != MapStatusListener.mapStatus.connecting ||
-                FolderId == null || ArchiveFolderId == null) return;
+                MapStatus != MapStatusListener.mapStatus.connecting) return;
+        // Folders and the device marker are created lazily on first track / clue.
         // The initial response already established connectivity and loaded artifacts.
         // Recovery stays on its ordered worker; neither it nor the next 20-second
         // incremental poll should keep the connection dialog open.
@@ -1170,7 +1176,7 @@ public class CaltopoMap {
             }
             String thisFolderId = prop.optString("folderId");
             String classStr = prop.optString("class");
-            if (!FolderId.equals(thisFolderId) && !classStr.equals("Folder")) {
+            if (FolderId == null || (!FolderId.equals(thisFolderId) && !classStr.equals("Folder"))) {
                 if (CaltopoClient.DebugLevel > CaltopoClient.DebugLevelDebug) {
                     CTInfo(TAG, "parseMapUpdate(): feature belongs to a different folder.");
                 }
@@ -1311,29 +1317,16 @@ public class CaltopoMap {
             }
         }
 
-        // Request the directories to be created if they weren't found in the existing map:
-        if (null == FolderId) {
+        // Connecting must not create folders. Reuse any that already exist on the map;
+        // ensureMapArtifacts creates them lazily on first track or clue upload.
+        if (FolderId != null && ArchiveFolderId != null) {
+            LookForExistingLiveTracks();
+        } else {
             CTInfo(TAG, String.format(Locale.US,
-                    "parseMap() '%s' folder not found - creating...", FolderName));
-            final String mapId = GetMapId();
-            final long generation = MapRefreshGeneration;
-            getCurrentRuntime().getCalTopoSessionGateway()
-                    .addFolder(FolderName, true, true, op -> {
-                        if (recoveryContextIsCurrent(mapId, generation)) CreateTrackDirFinished(op);
-                    });
+                    "parseMap() folders not complete yet active=%s archive=%s; deferring creation until first track/clue",
+                    FolderId != null ? FolderId : "missing",
+                    ArchiveFolderId != null ? ArchiveFolderId : "missing"));
         }
-        // Peer discovery is now MQTT-based; no marker scanning needed.
-
-        if (null == ArchiveFolderId) {
-            CTInfo(TAG, String.format(Locale.US,
-                    "parseMap() '%s' folder not found - creating...", archiveFolderName));
-            final String mapId = GetMapId();
-            final long generation = MapRefreshGeneration;
-            getCurrentRuntime().getCalTopoSessionGateway()
-                    .addFolder(archiveFolderName, false, false, op -> {
-                        if (recoveryContextIsCurrent(mapId, generation)) CreateArchiveDirFinished(op);
-                    });
-        } else LookForExistingLiveTracks();
     }
 
     static String normalizedTrackFolderName(@Nullable String name) {
@@ -1436,8 +1429,7 @@ public class CaltopoMap {
             publishMyDeviceMarkerIfPossible(GetMyLocation());
         }
         SetMapStatus(MapStatusListener.mapStatus.up, null);
-        final String archiveFolder = ArchiveFolderId;
-        if (!DisconnectInProgress && archiveFolder != null) {
+        if (!DisconnectInProgress) {
             final R2cRuntime runtime = getCurrentRuntime();
             final String scope = AwaitingMapFlights.selectedPublicationScope();
             // Keep this refresh in flight until recovery finishes: slow storage cannot
@@ -1447,6 +1439,18 @@ public class CaltopoMap {
                     if (!recoveryContextIsCurrent(requestMapId, refreshGeneration)) return;
                     AwaitingMapFlights.reconcile(requestMapId, scope);
                     if (!recoveryContextIsCurrent(requestMapId, refreshGeneration)) return;
+                    String archiveFolder = ArchiveFolderId;
+                    if (archiveFolder == null || archiveFolder.isEmpty()) {
+                        // Reuse a folder already on the map; create only for journaled recovery.
+                        adoptExistingTrackFoldersFromArtifacts();
+                        archiveFolder = ArchiveFolderId;
+                    }
+                    if ((archiveFolder == null || archiveFolder.isEmpty()) &&
+                            CaltopoInterruptedTrackJournal.hasPendingForMap(requestMapId)) {
+                        ensureMapArtifacts("first-track");
+                        archiveFolder = ArchiveFolderId;
+                    }
+                    if (archiveFolder == null || archiveFolder.isEmpty()) return;
                     CaltopoInterruptedTrackJournal.recover(
                             requestMapId, archiveFolder, runtime, GetArtifactFeatureSnapshot());
                 } catch (Exception error) {
@@ -1595,10 +1599,9 @@ public class CaltopoMap {
                             MyLocation != null ? MyLocation.getLatitude()  : 0,
                             MyLocation != null ? MyLocation.getLongitude() : 0);
                     removeStaleMyDeviceMarkers();
-                    scheduleInitialDeviceMarkerPublish();
+                    // Do not publish a device marker until the first live track starts.
                 } else {
                     CTWarn(TAG, "SetMapStatus(up): peer coordination disabled by developer override.");
-                    scheduleInitialDeviceMarkerPublish();
                 }
             }
             while (!RogueFeaturesPendingDeletes.isEmpty()) {
@@ -2052,6 +2055,7 @@ public class CaltopoMap {
     }
 
     private static void LookForExistingLiveTracksFinished(java.util.Set<String> recoveringTrackIds) {
+        // Device marker stays unpublished until the first live track starts.
         publishMyDeviceMarkerIfPossible(GetMyLocation());
         long timeNowInMilliseconds = System.currentTimeMillis();
         long maxTrackAgeInMilliseconds = CaltopoClient.GetNewTrackDelayInSeconds() * 1000;
@@ -2208,55 +2212,127 @@ public class CaltopoMap {
     public static String GetFolderId() { return FolderId; }
 
     /**
-     * Track folder for a clue upload. Map status can be up before this id exists
-     * (a refresh promotes status, and reset clears the id). Lookup or create it
-     * here. Call from a worker: folder creation waits on the CalTopo request.
+     * Track folder for a clue upload. Map status can be up before this id exists.
+     * Goes through {@link #ensureMapArtifacts(String)} so clue and track share one path.
+     * Call from a worker: folder creation waits on the CalTopo request.
+     * Does not delay clue Submit — callers invoke this only on the upload worker.
      */
     @Nullable
     public static String resolveTrackFolderIdForClue() {
-        String existing = GetFolderId();
-        if (existing != null && !existing.isEmpty()) return existing;
+        return ensureMapArtifacts("clue");
+    }
+
+    /**
+     * Lazily create or reuse Drone Tracks folders for this map session.
+     * Idempotent and safe under concurrency. Does not publish the device marker;
+     * call {@link #noteFirstLiveTrackStarted()} when a live track begins.
+     *
+     * @param reason {@code first-track} or {@code clue} (logged when folders are created)
+     * @return active track folder id, or null when unavailable
+     */
+    @Nullable
+    public static String ensureMapArtifacts(@NonNull String reason) {
         if (onAndroidUiThread()) {
-            CTWarn(TAG, "resolveTrackFolderIdForClue(): refused on the UI thread");
+            CTWarn(TAG, "ensureMapArtifacts(): refused on the UI thread reason=" + reason);
             return null;
         }
-        String found = folderIdInArtifacts(FolderName);
-        if (found != null) {
-            FolderId = found;
-            CTInfo(TAG, "resolveTrackFolderIdForClue(): found existing folder id=" + found);
-            return found;
-        }
-        if (GetMapId().isEmpty()) {
-            CTWarn(TAG, "resolveTrackFolderIdForClue(): map id is blank");
+        if (ShutdownInProgress || DisconnectInProgress || GetMapId().isEmpty()) {
+            CTWarn(TAG, "ensureMapArtifacts(): map unavailable reason=" + reason);
             return null;
         }
-        CTInfo(TAG, "resolveTrackFolderIdForClue(): creating '" + FolderName + "'");
+        synchronized (MapArtifactsLock) {
+            while (MapArtifactsEnsureInFlight) {
+                try {
+                    MapArtifactsLock.wait(30_000L);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return blankToNull(GetFolderId());
+                }
+            }
+            if (foldersReady()) {
+                return FolderId;
+            }
+            MapArtifactsEnsureInFlight = true;
+        }
+        boolean createdAny = false;
+        try {
+            adoptExistingTrackFoldersFromArtifacts();
+            if (!foldersReady()) {
+                String archiveName = archiveFolderName(FolderName, new Date());
+                if (blankToNull(FolderId) == null) {
+                    String created = createFolderBlocking(FolderName, true, true);
+                    if (created != null) {
+                        FolderId = created;
+                        createdAny = true;
+                    }
+                }
+                if (blankToNull(ArchiveFolderId) == null) {
+                    String created = createFolderBlocking(archiveName, false, false);
+                    if (created != null) {
+                        ArchiveFolderId = created;
+                        createdAny = true;
+                    }
+                }
+                // Another publisher may have won the race; prefer existing titles.
+                adoptExistingTrackFoldersFromArtifacts();
+            }
+            if (createdAny && foldersReady()) {
+                CTInfo(TAG, String.format(Locale.US,
+                        "Created map artifacts reason=%s active=%s archive=%s folder='%s'",
+                        reason, FolderId, ArchiveFolderId, FolderName));
+            }
+            return blankToNull(GetFolderId());
+        } finally {
+            synchronized (MapArtifactsLock) {
+                MapArtifactsEnsureInFlight = false;
+                MapArtifactsLock.notifyAll();
+            }
+        }
+    }
+
+    /** Enable periodic device-marker publication after the first live track starts. */
+    public static void noteFirstLiveTrackStarted() {
+        if (DeviceMarkerAllowed) return;
+        DeviceMarkerAllowed = true;
+        scheduleInitialDeviceMarkerPublish();
+    }
+
+    private static boolean foldersReady() {
+        return blankToNull(FolderId) != null && blankToNull(ArchiveFolderId) != null;
+    }
+
+    private static void adoptExistingTrackFoldersFromArtifacts() {
+        if (blankToNull(FolderId) == null) {
+            String found = folderIdInArtifacts(FolderName);
+            if (found != null) FolderId = found;
+        }
+        if (blankToNull(ArchiveFolderId) == null) {
+            String found = folderIdInArtifacts(archiveFolderName(FolderName, new Date()));
+            if (found != null) ArchiveFolderId = found;
+        }
+    }
+
+    @Nullable
+    private static String createFolderBlocking(
+            @NonNull String title, boolean visible, boolean labelVisible) {
         CaltopoOp created = getCurrentRuntime().getCalTopoSessionGateway()
-                .addFolder(FolderName, true, true, null);
+                .addFolder(title, visible, labelVisible, null);
         if (created == null) {
-            CTWarn(TAG, "resolveTrackFolderIdForClue(): folder create was not started");
+            CTWarn(TAG, "ensureMapArtifacts(): folder create was not started title='" + title + "'");
             return null;
         }
         try {
             created.get(30, java.util.concurrent.TimeUnit.SECONDS);
         } catch (Exception error) {
-            CTWarn(TAG, "resolveTrackFolderIdForClue(): folder create did not finish", error);
-            return blankToNull(GetFolderId());
+            CTWarn(TAG, "ensureMapArtifacts(): folder create did not finish title='" + title + "'", error);
+            return null;
         }
         if (created.fail()) {
-            CTWarn(TAG, "resolveTrackFolderIdForClue(): folder create failed " + created.responseString());
-            return blankToNull(GetFolderId());
+            CTWarn(TAG, "ensureMapArtifacts(): folder create failed title='" + title + "' " +
+                    created.responseString());
+            return null;
         }
-        String createdId = created.id();
-        if (createdId != null && !createdId.isEmpty() &&
-                (GetFolderId() == null || GetFolderId().isEmpty())) {
-            FolderId = createdId;
-        }
-        String resolved = blankToNull(GetFolderId());
-        if (resolved == null) {
-            CTWarn(TAG, "resolveTrackFolderIdForClue(): folder create returned no id");
-        }
-        return resolved;
+        return blankToNull(created.id());
     }
 
     @Nullable
@@ -2532,7 +2608,8 @@ public class CaltopoMap {
     }
 
     private static void publishMyDeviceMarkerIfPossible(@Nullable Location location) {
-        if (ShutdownInProgress || DisconnectInProgress || MapStatus != MapStatusListener.mapStatus.up ||
+        if (ShutdownInProgress || DisconnectInProgress || !DeviceMarkerAllowed ||
+                MapStatus != MapStatusListener.mapStatus.up ||
                 MapNode == null || FolderId == null || FolderId.isEmpty() || location == null) return;
         final String markerId = GetMyUUID();
         if (markerId.isEmpty()) return;

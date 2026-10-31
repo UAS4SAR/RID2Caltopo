@@ -1,12 +1,20 @@
 import Foundation
 
+public enum CaltopoMapArtifactReason: String, Sendable, Equatable {
+    case firstTrack = "first-track"
+    case clue = "clue"
+}
+
 public struct CaltopoTrackFolderIDs: Sendable, Equatable {
     public let active: String
     public let archive: String
+    /// True when this resolution POSTed at least one new folder.
+    public let created: Bool
 
-    public init(active: String, archive: String) {
+    public init(active: String, archive: String, created: Bool = false) {
         self.active = active
         self.archive = archive
+        self.created = created
     }
 }
 
@@ -114,7 +122,11 @@ public actor CaltopoTrackFolderResolver {
                 // publisher won the race.
                 try? await deleteFolder(createdID)
             }
-            return CaltopoTrackFolderIDs(active: chosenActiveID, archive: chosenArchiveID)
+            return CaltopoTrackFolderIDs(
+                active: chosenActiveID,
+                archive: chosenArchiveID,
+                created: createdFolder
+            )
         }
         resolutionID = taskID
         resolutionTask = task

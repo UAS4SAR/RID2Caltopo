@@ -391,6 +391,10 @@ final class RIDTrackViewModel: ObservableObject {
                     self.activeCaltopoRemoteIDs.insert(id)
                     self.updateCaltopoThumbnailRefreshTargets()
                     self.caltopoStatus = "Started \(id)"
+                    // First live track for this map session may now publish the device marker.
+                    if let marker = self.localDeviceMarker {
+                        self.publishLocalDeviceMarker(marker, force: true)
+                    }
                 case let .pointPublished(id, rttMilliseconds):
                     self.caltopoStatus = "Published \(id)"
                     self.caltopoRTTMilliseconds = rttMilliseconds
@@ -624,6 +628,10 @@ final class RIDTrackViewModel: ObservableObject {
     func attachClueStore(_ store: AppleClueStore) {
         clueStore = store
         store.clueChanged = { [weak self] record in self?.clueChangedAfterFlight(record) }
+        store.ensureMapArtifacts = { [weak self] reason in
+            guard let self else { throw CancellationError() }
+            return try await self.ensureMapArtifacts(reason: reason)
+        }
         Task { [archiveStore] in
             await archiveStore.launchSweep()
             self.scheduleArchiveRewrites()
@@ -1257,6 +1265,11 @@ final class RIDTrackViewModel: ObservableObject {
         Task { [caltopoPublisher] in
             await caltopoPublisher.publishDeviceMarker(marker, force: force, consent: consent, consentGeneration: generation)
         }
+    }
+
+    /// Shared lazy folder ensure for tracks and clues. Safe under concurrency.
+    func ensureMapArtifacts(reason: CaltopoMapArtifactReason) async throws -> String {
+        try await caltopoPublisher.ensureMapArtifacts(reason: reason).active
     }
 
     func setLocalDeviceMarkerPublishingEnabled(_ enabled: Bool) async {

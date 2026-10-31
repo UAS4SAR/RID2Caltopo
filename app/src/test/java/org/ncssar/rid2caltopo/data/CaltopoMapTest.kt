@@ -164,28 +164,46 @@ class CaltopoMapTest {
         assertTrue(fixture.calTopoSessionGateway.snapshotOperations().none { it.kind == "openMap" })
     }
 
-    @Test fun initialMapWaitsForBothFoldersInEitherCompletionOrder() {
-        for (first in listOf("Track", "Archive")) {
-            mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.connecting)
-            folderIdField.set(null, null)
-            archiveFolderIdField.set(null, null)
-            invokeInitialMapResponse(successfulMapResponse())
-            assertEquals(CaltopoMap.MapStatusListener.mapStatus.connecting, CaltopoMap.GetMapStatus())
+    @Test fun initialMapGoesUpWithoutCreatingFolders() {
+        mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.connecting)
+        folderIdField.set(null, null)
+        archiveFolderIdField.set(null, null)
+        invokeInitialMapResponse(successfulMapResponse())
+        assertEquals(CaltopoMap.MapStatusListener.mapStatus.up, CaltopoMap.GetMapStatus())
+        assertEquals(null, CaltopoMap.GetFolderId())
+        assertEquals(null, CaltopoMap.GetArchiveFolderId())
+        assertTrue(fixture.calTopoSessionGateway.snapshotOperations().none { it.kind == "addFolder" })
+        CaltopoRecoveryWork.worker.submit {}.get(3, java.util.concurrent.TimeUnit.SECONDS)
+    }
 
-            fun completeFolder(kind: String) {
-                val op = CaltopoOp(null)
-                op.responseJson = JSONObject().put("id", "$kind-folder")
-                op.setOperationIsDone(true)
-                CaltopoMap::class.java.getDeclaredMethod("Create${kind}DirFinished", CaltopoOp::class.java)
-                    .apply { isAccessible = true }.invoke(null, op)
-            }
-            completeFolder(first)
-            assertEquals(CaltopoMap.MapStatusListener.mapStatus.connecting, CaltopoMap.GetMapStatus())
-            completeFolder(if (first == "Track") "Archive" else "Track")
-            assertEquals(CaltopoMap.MapStatusListener.mapStatus.up, CaltopoMap.GetMapStatus())
-            CaltopoRecoveryWork.worker.submit {}.get(3, java.util.concurrent.TimeUnit.SECONDS)
+    @Test fun ensureMapArtifactsCreatesFoldersLazilyForFirstTrack() {
+        folderIdField.set(null, null)
+        archiveFolderIdField.set(null, null)
+        mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.up)
+        val folderNameField = CaltopoMap::class.java.getDeclaredField("FolderName").apply { isAccessible = true }
+        val previousName = folderNameField.get(null)
+        val allowedField = CaltopoMap::class.java.getDeclaredField("DeviceMarkerAllowed").apply { isAccessible = true }
+        val previousAllowed = allowedField.getBoolean(null)
+        try {
+            folderNameField.set(null, "Drone Tracks")
+            allowedField.setBoolean(null, false)
+            val activeName = "Drone Tracks"
+            val archiveName = CaltopoMap.archiveFolderName(activeName, java.util.Date())
+            val folderId = CaltopoMap.ensureMapArtifacts("first-track")
+            assertEquals("folder-$activeName", folderId)
+            assertEquals("folder-$activeName", CaltopoMap.GetFolderId())
+            assertEquals("folder-$archiveName", CaltopoMap.GetArchiveFolderId())
+            assertEquals(2, fixture.calTopoSessionGateway.countOperations("addFolder"))
+            // Idempotent: second call must not create again.
+            assertEquals("folder-$activeName", CaltopoMap.ensureMapArtifacts("clue"))
+            assertEquals(2, fixture.calTopoSessionGateway.countOperations("addFolder"))
+            assertFalse(allowedField.getBoolean(null))
+            CaltopoMap.noteFirstLiveTrackStarted()
+            assertTrue(allowedField.getBoolean(null))
+        } finally {
+            folderNameField.set(null, previousName)
+            allowedField.setBoolean(null, previousAllowed)
         }
-        assertTrue(fixture.calTopoSessionGateway.snapshotOperations().none { it.kind == "openMap" })
     }
 
     @Test fun reusedStartupSnapshotKeepsItsCursorForTheNextIncrementalPoll() {
@@ -636,6 +654,8 @@ class CaltopoMapTest {
         mapNodeField.set(null, CaltopoNode.MapNode("map-test", "Map Test", 0L))
         folderIdField.set(null, "folder-test")
         archiveFolderIdField.set(null, "archive-folder-test")
+        CaltopoMap::class.java.getDeclaredField("DeviceMarkerAllowed").apply { isAccessible = true }
+            .setBoolean(null, true)
         myUuidField.set(null, "marker-guid-test")
         resolvedMarkerIdField.set(null, "marker-guid-test")
         shutdownInProgressField.setBoolean(null, false)
