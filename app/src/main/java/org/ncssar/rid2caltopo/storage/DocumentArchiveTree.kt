@@ -20,7 +20,14 @@ internal class DocumentArchiveTree(private val context: Context, private val roo
     private val rootNode = Node(root.uri, true)
     private val children = mutableMapOf<String, MutableMap<String, Node>>()
     private var rootCheckedAt = 0L
-    override fun refresh() { children.clear(); rootCheckedAt = 0 }
+    /** After a successful prepare, skip periodic root probes until refresh/storage loss. */
+    @Volatile private var sessionTrusted = false
+    override fun refresh() { children.clear(); rootCheckedAt = 0; sessionTrusted = false }
+    /** Call after verify/prepare succeeds; cleared by refresh or discarding this tree. */
+    fun trustRootForSession() {
+        sessionTrusted = true
+        rootCheckedAt = android.os.SystemClock.elapsedRealtime()
+    }
     private fun isMissingDocument(error: Throwable): Boolean {
         var current: Throwable? = error
         while (current != null) {
@@ -39,6 +46,7 @@ internal class DocumentArchiveTree(private val context: Context, private val roo
         children[parent]?.remove(path.substringAfterLast('/'))
     }
     private fun checkRoot() {
+        if (sessionTrusted) return
         val now = android.os.SystemClock.elapsedRealtime()
         if (now - rootCheckedAt >= 1000 || rootCheckedAt == 0L) {
             check(root.exists() && root.isDirectory && root.canRead()) { "Archive Dir is unavailable; reconnect its storage." }

@@ -3409,17 +3409,24 @@ class StreamsViewModel(
         viewModelScope.launch {
             val marker = localMapMarkers.firstOrNull { it.id == markerId } ?: return@launch
             val deletedRecord = localClueRecordsById[markerId]
-            // Archive Dir bulk hydration can take minutes. Clue delete prepares only the
-            // clues area on a worker; show progress while that lane comes up.
-            if (!org.ncssar.rid2caltopo.storage.OperationalStorage.ready()) {
-                CaltopoClient.ShowToast("Preparing clue storage…")
+            // Clue storage is session-cached after the first verify/prepare. Only announce when
+            // a genuine first-time open is still running after ~1s; never toast on later deletes.
+            val openingToast = launch {
+                if (org.ncssar.rid2caltopo.storage.OperationalStorage.cluesReady()) return@launch
+                delay(1_000L)
+                if (!isActive) return@launch
+                CaltopoClient.ShowToast("Opening clue storage…")
             }
             val removed = try {
-                withContext(Dispatchers.IO) { clueDiskMutex.withLock { localClueStore.delete(markerId) } }
+                withContext(Dispatchers.IO) {
+                    clueDiskMutex.withLock { localClueStore.delete(markerId) }
+                }
             } catch (error: Exception) {
                 CTError(tag, "deleteLocalMapMarker: unable to delete id=$markerId", error)
                 CaltopoClient.ShowToast("Local clue copy could not be deleted.")
                 false
+            } finally {
+                openingToast.cancel()
             }
             if (!removed) return@launch
             ++clueHydrationGeneration

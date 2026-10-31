@@ -47,6 +47,11 @@ internal object OperationalStorage {
     private const val CLUES_JOURNAL = "application-logs/storage-recovery/clues"
     private data class PreparedClues(val value: Store, val generation: Long)
     @Volatile private var preparedClues: PreparedClues? = null
+    /**
+     * Generation for which clues verify/prepare already completed this session.
+     * Cleared only on Archive Dir change / storage loss; avoids re-hydrating on every delete.
+     */
+    @Volatile private var cluesPreparedGeneration: Long = -1L
     private val cluesPrepare = java.util.concurrent.locks.ReentrantLock()
     private val cluesGate = Any()
     private var recoveredUri: String? = null
@@ -156,6 +161,7 @@ internal object OperationalStorage {
                     // still holds a stale directory listing from migrate.
                     tree.refresh()
                     prepareAreaProjection(context, value, area, hydrationScratch, ::checkSelection)
+                    if (area.id == "clues") markCluesPrepared(generation)
                 }
                 importLegacyCaches(context, root, value)
                 checkSelection()
@@ -231,7 +237,7 @@ internal object OperationalStorage {
             val area = selected.single { it.id == "queue-state" }
             val value = Store(uri, work, tree, writer, listOf(area))
             val scratch = TemporaryStorage.directory(context, "archive-hydration", root.uri)
-            migrateAreaSources(context, value, area, ::checkSelection)
+            migrateAreaSources(context, value, area, ::checkSelection, announce = false)
             prepareAreaProjection(context, value, area, scratch, ::checkSelection)
             checkSelection()
             check(root.isDirectory && root.canRead() && root.canWrite()) { "Archive Dir became unavailable during operational-state preparation." }
@@ -283,7 +289,7 @@ internal object OperationalStorage {
             val value = Store(uri, work, tree, writer, selected.filter { it.id in recorderAreas })
             val scratch = TemporaryStorage.directory(context, "archive-hydration", root.uri)
             for (area in value.areas) {
-                migrateAreaSources(context, value, area, ::checkSelection)
+                migrateAreaSources(context, value, area, ::checkSelection, announce = false)
                 prepareAreaProjection(context, value, area, scratch, ::checkSelection)
             }
             checkSelection()
@@ -327,11 +333,18 @@ internal object OperationalStorage {
             archiveCommit.unlock()
         }
     }
-    private fun migrateAreaSources(context: Context, value: Store, area: Area, checkSelection: () -> Unit) {
+    private fun migrateAreaSources(
+        context: Context,
+        value: Store,
+        area: Area,
+        checkSelection: () -> Unit,
+        announce: Boolean = true,
+    ) {
         val work = value.work
         val sourceStarted = android.os.SystemClock.elapsedRealtime()
         checkSelection()
-        state.value = Status(busy = true, message = "Moving retained ${area.id} to Archive Dir…")
+        // Independent lanes must not clobber bulk prepare's status / ready bit.
+        if (announce) state.value = Status(busy = true, message = "Moving retained ${area.id} to Archive Dir…")
         for (source in area.sources) {
             val link = Files.isSymbolicLink(source.toPath())
             val projection = if (link) projectedRoot(context, area, source) else null
@@ -946,12 +959,33 @@ internal object OperationalStorage {
         }
     }
     fun ready(): Boolean = state.value.ready
+
+    /** True when clues lane verify/prepare already completed for this Archive Dir selection. */
+    fun cluesReady(): Boolean {
+        val generation = selectionGeneration.get()
+        if (cluesPreparedGeneration == generation) return true
+        preparedClues?.let { if (it.generation == generation) return true }
+        return state.value.ready && store != null
+    }
+
+    /** Ensure the clues lane is usable without waiting on bulk layers/DEM hydration. */
+    fun ensureCluesReady(context: Context) {
+        worker()
+        if (cluesReady() && preparedClues != null) {
+            preparedClues?.let { checkClues(it) }
+            return
+        }
+        if (state.value.ready && store != null) return
+        prepareClues(context.applicationContext)
+    }
+
     @androidx.annotation.VisibleForTesting
     fun resetForTesting() {
         worker(); check(org.ncssar.rid2caltopo.BuildConfig.DEBUG)
         startup.submit {}.get()
         synchronized(gate) { synchronized(queueGate) { synchronized(recorderGate) { synchronized(cluesGate) {
-            store = null; preparedQueue = null; preparedRecorder = null; preparedClues = null; recoveredUri = null; state.value = Status()
+            store = null; preparedQueue = null; preparedRecorder = null; preparedClues = null
+            cluesPreparedGeneration = -1L; recoveredUri = null; state.value = Status()
         } } } }
     }
     fun workspace(context: Context): File { requireReady(context); return synchronized(gate) { requireNotNull(store).work } }
@@ -975,8 +1009,24 @@ internal object OperationalStorage {
         pending.forEach { retained -> runCatching { retain(retained) } }
     }
     @JvmStatic fun archiveChanged(uri: String) {
+        // Storage loss / Archive Dir change: drop session caches so the next use re-verifies.
         selectionGeneration.incrementAndGet()
+        synchronized(cluesGate) { preparedClues = null }
+        cluesPreparedGeneration = -1L
         store?.let { if (it.uri != uri) state.value = Status(message = "Restart the app after changing Archive Dir.") }
+    }
+
+    private fun markCluesPrepared(generation: Long) {
+        cluesPreparedGeneration = generation
+    }
+
+    private fun cluesProjectionReusable(context: Context, work: File, area: Area): Boolean {
+        val destination = File(work, area.id)
+        if (!destination.isDirectory) return false
+        if (!Files.isSymbolicLink(area.alias.toPath())) return false
+        return runCatching {
+            projectedRoot(context, area, area.alias) == destination.canonicalFile.toPath()
+        }.getOrDefault(false)
     }
     fun removeIfManaged(file: File): Boolean {
         if (preparedRecorder?.let { mapping(file, it.value) } != null) { remove(file); return true }
@@ -1066,19 +1116,27 @@ internal object OperationalStorage {
     /**
      * Clue photos are app-private until retain. Prepare only the clues lane when Archive Dir
      * is still hydrating bulk areas, then delete. Independent of prepareBody so clue delete
-     * never waits on layers/DEM/recordings.
+     * never waits on layers/DEM/recordings. Once verified this session, reuse without re-hydrate.
      */
     private fun prepareClues(context: Context): PreparedClues {
         worker()
         val uri = CaltopoClient.GetArchiveUri()?.toString()
             ?: error("Choose or reconnect Archive Dir before deleting retained clues.")
+        // Bulk ready means clues were already verified this selection; keep an independent
+        // lane Store for deletes so we never share the bulk writer's verification lock.
         synchronized(gate) {
             store?.takeIf { state.value.ready && it.uri == uri }?.let {
-                return PreparedClues(it, selectionGeneration.get())
+                markCluesPrepared(selectionGeneration.get())
             }
         }
         synchronized(cluesGate) {
-            preparedClues?.let { check(it.value.uri == uri); checkClues(it); return it }
+            preparedClues?.let { current ->
+                if (current.value.uri == uri && current.generation == selectionGeneration.get()) {
+                    checkClues(current)
+                    return current
+                }
+                preparedClues = null
+            }
         }
         if (!cluesPrepare.tryLock()) {
             cluesPrepare.lock()
@@ -1087,11 +1145,17 @@ internal object OperationalStorage {
         }
         try {
             synchronized(cluesGate) {
-                preparedClues?.let { check(it.value.uri == uri); checkClues(it); return it }
+                preparedClues?.let { current ->
+                    if (current.value.uri == uri && current.generation == selectionGeneration.get()) {
+                        checkClues(current)
+                        return current
+                    }
+                    preparedClues = null
+                }
             }
             synchronized(gate) {
                 store?.takeIf { state.value.ready && it.uri == uri }?.let {
-                    return PreparedClues(it, selectionGeneration.get())
+                    markCluesPrepared(selectionGeneration.get())
                 }
             }
             val generation = selectionGeneration.get()
@@ -1099,7 +1163,7 @@ internal object OperationalStorage {
             val root = CaltopoClient.GetArchiveDir() ?: error("Archive Dir is unavailable.")
             check(root.isDirectory && root.canRead() && root.canWrite()) { "Archive Dir is not readable and writable." }
             // Do not publish through state.value here. Bulk prepare owns that flow; the
-            // ViewModel shows "Preparing clue storage…" while this worker runs.
+            // ViewModel may show "Opening clue storage…" only if this first prepare is slow.
             val tree = DocumentArchiveTree(context, root)
             val writer = VerifiedArchiveTree(tree, journalDirectory = CLUES_JOURNAL, cancelled = ::checkSelection)
             val selected = areas(context)
@@ -1111,17 +1175,24 @@ internal object OperationalStorage {
             writer.recover()
             val area = selected.single { it.id == "clues" }
             val value = Store(uri, work, tree, writer, listOf(area))
-            val scratch = TemporaryStorage.directory(context, "archive-hydration", root.uri)
-            migrateAreaSources(context, value, area, ::checkSelection)
-            prepareAreaProjection(context, value, area, scratch, ::checkSelection)
+            val reuseProjection = cluesPreparedGeneration == generation && cluesProjectionReusable(context, work, area)
+            if (!reuseProjection) {
+                val scratch = TemporaryStorage.directory(context, "archive-hydration", root.uri)
+                migrateAreaSources(context, value, area, ::checkSelection, announce = false)
+                prepareAreaProjection(context, value, area, scratch, ::checkSelection)
+            } else {
+                CaltopoClient.CTDebug("OperationalStorage", "Reused session-prepared clues projection")
+            }
             checkSelection()
             check(root.isDirectory && root.canRead() && root.canWrite()) { "Archive Dir became unavailable during clues preparation." }
             value.migrated.clear()
+            tree.trustRootForSession()
             val prepared = PreparedClues(value, generation)
             synchronized(cluesGate) {
                 preparedClues?.let { return it }
                 preparedClues = prepared
             }
+            markCluesPrepared(generation)
             CaltopoClient.CTDebug("OperationalStorage", "Clue storage ready independently of bulk storage")
             return prepared
         } finally {
