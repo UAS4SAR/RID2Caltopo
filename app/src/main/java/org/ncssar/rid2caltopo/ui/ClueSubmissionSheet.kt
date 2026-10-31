@@ -285,7 +285,9 @@ fun ClueSheetContent (
 
                 clue.preview?.let { bitmap ->
                     val config by org.ncssar.rid2caltopo.video.CrosshairPreferences.configuration.collectAsState()
-                    val marked = remember(bitmap, clue.lat, clue.lng, clue.showCrosshairCoordinates, coordinateDisplayFormat, config) {
+                    // Stamp once per preview bitmap/config. Re-stamping on every DEM/binding
+                    // lat/lng change copied full bitmaps on the composition thread (main hitches).
+                    val marked = remember(bitmap, clue.showCrosshairCoordinates, coordinateDisplayFormat, config) {
                         org.ncssar.rid2caltopo.video.stampClueCrosshair(bitmap,
                             if (clue.showCrosshairCoordinates) org.ncssar.rid2caltopo.video.CoordinateFormatter.format(clue.lat, clue.lng, coordinateDisplayFormat) else null)
                     }

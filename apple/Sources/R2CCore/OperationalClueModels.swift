@@ -221,6 +221,64 @@ public enum OperationalClueProjectionLog {
     }
 }
 
+/// Upload/local marker position must be the projected clue point; drone stays metadata only.
+public enum ClueUploadPosition {
+    /// `terrain-raymarch`, `nadir`, or `flat` for the upload position log (no absolute coords).
+    public static func source(
+        terrainProjectionApplied: Bool,
+        gimbalPitchDegrees: Double
+    ) -> String {
+        if !terrainProjectionApplied { return "flat" }
+        if gimbalPitchDegrees.isFinite && gimbalPitchDegrees <= -89.9 { return "nadir" }
+        return "terrain-raymarch"
+    }
+
+    /// Great-circle offset from drone to clue in metres (nil when inputs are non-finite).
+    public static func offsetMeters(
+        clueLatitude: Double,
+        clueLongitude: Double,
+        droneLatitude: Double,
+        droneLongitude: Double
+    ) -> Double? {
+        RidGeometry.relativePosition(
+            fromLatitude: droneLatitude,
+            longitude: droneLongitude,
+            toLatitude: clueLatitude,
+            longitude: clueLongitude
+        )?.distanceMeters
+    }
+
+    public static func logLine(
+        id: String,
+        source: String,
+        offsetMeters: Double?
+    ) -> String {
+        let offset = offsetMeters.map {
+            String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), $0)
+        } ?? "nil"
+        return "Clue upload position id=\(id) source=\(source) offsetM=\(offset)"
+    }
+
+    /// Non-nadir clues with a usable height must not store/upload the drone as the clue.
+    public static func isDistinctFromDrone(
+        clueLatitude: Double,
+        clueLongitude: Double,
+        droneLatitude: Double,
+        droneLongitude: Double,
+        gimbalPitchDegrees: Double,
+        minimumOffsetMeters: Double = 1.0
+    ) -> Bool {
+        if gimbalPitchDegrees.isFinite && gimbalPitchDegrees <= -89.9 { return true }
+        guard let offset = offsetMeters(
+            clueLatitude: clueLatitude,
+            clueLongitude: clueLongitude,
+            droneLatitude: droneLatitude,
+            droneLongitude: droneLongitude
+        ) else { return false }
+        return offset >= minimumOffsetMeters
+    }
+}
+
 public struct OperationalClueHeadingSelection: Sendable, Equatable {
     public let degrees: Double?
     public let sourceLabel: String?

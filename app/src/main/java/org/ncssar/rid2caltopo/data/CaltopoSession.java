@@ -1695,8 +1695,9 @@ public class CaltopoSession {
     }
 
     /**
-     * Returns success when Marker/{markerId} (stable client clue UUID) already exists on the map.
-     * Used after timeouts / 4xx so a prior client-lost success clears pending without duplicating.
+     * Probe Marker + media readiness + MapMediaObject. Success only when all three are present.
+     * Marker-only or link-only must not clear pending — the caller completes missing parts.
+     * Response body is "marker=ok|missing media=ok|missing link=ok|missing".
      */
     public static CaltopoOp ReconcileStoredPhoto(String mapId, String teamId, String markerId,
             String linkId, Consumer<CaltopoOp> done) {
@@ -1706,29 +1707,47 @@ public class CaltopoSession {
         final CaltopoPersonalSession.Authorization personal = CaltopoPersonalSession.capture("");
         SubmitPhotoRequest(outer, () -> {
             try {
+                String mediaId = UUID.nameUUIDFromBytes((markerId + ":media")
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+                String mediaOwner = personal != null ? personal.getMediaOwnerID() : teamId;
+                if ((mediaOwner == null || mediaOwner.isEmpty()) && teamId != null
+                        && teamId.startsWith("personal:")) {
+                    mediaOwner = teamId.substring("personal:".length()).trim();
+                }
                 CaltopoOp marker = PhotoOp(personal, teamId, CtsMethod_t.GET,
                         CALTOPO_MAP_API_V1 + mapId + "/Marker/" + markerId, null, false, new int[] {400, 404});
-                if (marker.success()) {
-                    outer.responseCode = 200;
-                    outer.response = "reconciled-marker";
-                    CTInfo(TAG, "Clue upload reconciled id=" + markerId + " featureId=" + markerId);
-                    outer.setOperationIsDone(true);
-                    return outer;
+                boolean markerOk = marker.success();
+                boolean mediaOk = false;
+                CaltopoOp media = PhotoOp(personal, teamId, CtsMethod_t.GET, CALTOPO_MEDIA_API_V1 + mediaId,
+                        null, false, new int[] {400, 404});
+                if (media.success()) {
+                    mediaOk = CaltopoPhotoMediaState.isReady(media.responseJson, mediaId, mediaOwner);
                 }
+                boolean linkOk = false;
                 if (linkId != null && !linkId.isEmpty()) {
                     CaltopoOp link = PhotoOp(personal, teamId, CtsMethod_t.GET,
-                            CALTOPO_MAP_API_V1 + mapId + "/MapMediaObject/" + linkId, null, false, new int[] {400, 404});
-                    if (link.success()) {
-                        outer.responseCode = 200;
-                        outer.response = "reconciled-link";
-                        CTInfo(TAG, "Clue upload reconciled id=" + markerId + " featureId=" + markerId);
-                        outer.setOperationIsDone(true);
-                        return outer;
-                    }
+                            CALTOPO_MAP_API_V1 + mapId + "/MapMediaObject/" + linkId, null, false,
+                            new int[] {400, 404});
+                    linkOk = link.success();
                 }
-                outer.responseCode = marker.responseCode;
-                outer.response = SafeResponseText(marker.response);
-                outer.setOperationIsDone(false);
+                String parts = "marker=" + (markerOk ? "ok" : "missing")
+                        + " media=" + (mediaOk ? "ok" : "missing")
+                        + " link=" + (linkOk ? "ok" : "missing");
+                outer.response = parts;
+                if (markerOk && mediaOk && linkOk) {
+                    outer.responseCode = 200;
+                    CTInfo(TAG, "Clue reconcile parts " + parts);
+                    CTInfo(TAG, "Clue upload reconciled id=" + markerId + " featureId=" + markerId);
+                    outer.setOperationIsDone(true);
+                } else if (markerOk || mediaOk || linkOk) {
+                    // Partial presence: caller must complete missing parts before clearing pending.
+                    outer.responseCode = 409;
+                    CTInfo(TAG, "Clue reconcile parts " + parts);
+                    outer.setOperationIsDone(false);
+                } else {
+                    outer.responseCode = marker.responseCode;
+                    outer.setOperationIsDone(false);
+                }
             } catch (Exception error) {
                 outer.response = error.getMessage();
                 outer.setOperationIsDone(false);

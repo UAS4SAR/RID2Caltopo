@@ -2962,17 +2962,23 @@ private struct ClueSubmissionView: View {
         )
     }
     private var projection: OperationalClueProjection? { terrainProjection ?? flatProjection }
-    /// Capture-frozen DEM-task identity. Binding refresh must not restart S1M / EPQS walks.
+    /// DEM origin: SEI/frame-positioned clues stay on the photograph; waypoint-origin clues follow
+    /// the bound waypoint so a nearer rebind recomputes instead of translating an old hit.
+    private var terrainOriginObservation: RidObservation? {
+        if binding?.originIsWaypoint == true { return observation }
+        return pending.observation
+    }
+
+    /// DEM-task identity. Waypoint-origin rebinds restart the walk; SEI stays capture-frozen.
     /// Manual pitch: nil until the operator commits the gimbal field (SEI commits at open).
     private var terrainTaskKey: ClueTerrainTaskKey? {
         guard gimbalPitchCommitted else { return nil }
-        // Always key off the photograph's aircraft position, never the live-rebinding origin.
-        let capture = pending.observation
+        let origin = terrainOriginObservation ?? pending.observation
         return ClueTerrainTaskKey(
             aircraftID: selectedAircraftID,
-            latitudeE5: Int((capture.latitude * 100_000).rounded()),
-            longitudeE5: Int((capture.longitude * 100_000).rounded()),
-            altitudeDm: capture.altitudeMeters.map { Int(($0 * 10).rounded()) },
+            latitudeE5: Int((origin.latitude * 100_000).rounded()),
+            longitudeE5: Int((origin.longitude * 100_000).rounded()),
+            altitudeDm: origin.altitudeMeters.map { Int(($0 * 10).rounded()) },
             headingDeg: heading.degrees.map { Int($0.rounded()) } ?? Int.min,
             gimbalDeg: Int(gimbalAngle.rounded()),
             frozenHeightCm: pending.frozenProjectionHeight.map { Int(($0.meters * 100).rounded()) }
@@ -3156,10 +3162,13 @@ private struct ClueSubmissionView: View {
                     Text("Close discards this report. Submit sends it to the Incident Map. Mark Local Only saves it on this device without uploading it.")
                 }
             }
-            .task(id: clueImageCoordinates) {
-                let data = pending.snapshot.jpegData, coordinates = clueImageCoordinates
+            .task(id: pending.snapshot.capturedAt) {
+                // Decode+downsample once per capture. Re-stamping on every projection/binding
+                // update was decoding full-res JPEGs on the form and driving mainHitchCount.
+                let data = pending.snapshot.jpegData
+                let coordinates = clueImageCoordinates
                 let preview = await Task.detached(priority: .userInitiated) {
-                    UIImage(data: data).map { stampClueCrosshair($0, coordinates: coordinates) }
+                    clueFormPreviewImage(jpegData: data, coordinates: coordinates)
                 }.value
                 if !Task.isCancelled { stampedPreview = preview }
             }
@@ -3262,8 +3271,10 @@ private struct ClueSubmissionView: View {
                     terrainProjectionPending = false
                     return
                 }
-                // Photograph position — never the live-rebinding origin.
-                let captureObservation = pending.observation
+                guard let originObservation = terrainOriginObservation else {
+                    terrainProjectionPending = false
+                    return
+                }
                 terrainProjectionPending = true
                 defer {
                     if terrainTaskKey == key { terrainProjectionPending = false }
@@ -3277,10 +3288,10 @@ private struct ClueSubmissionView: View {
 
                 var heightMeters = input.projectionHeightMeters
                 var recoveredHeight: OperationalClueProjectionHeightSelection?
-                if let demRef, let droneAlt = captureObservation.altitudeMeters {
+                if let demRef, let droneAlt = originObservation.altitudeMeters {
                     let localSample = await model.sampleLocalTerrainElevation(
-                        latitude: captureObservation.latitude,
-                        longitude: captureObservation.longitude
+                        latitude: originObservation.latitude,
+                        longitude: originObservation.longitude
                     )
                     if let localSample, !localSample.stale,
                        let recovered = demRef.heightMeters(
@@ -3304,7 +3315,7 @@ private struct ClueSubmissionView: View {
 
                 // ~300 ms hard wall-clock local bind try (detached race, not cooperative-only).
                 let quick = await model.projectClueWithTerrainBounded(
-                    observation: captureObservation,
+                    observation: originObservation,
                     headingDegrees: input.headingDegrees,
                     aglMeters: heightMeters,
                     gimbalAngleDegrees: input.gimbalAngleDegrees,
@@ -3321,8 +3332,8 @@ private struct ClueSubmissionView: View {
                         "Clue",
                         OperationalClueProjectionLog.line(
                             projection: quick,
-                            aircraftLatitude: captureObservation.latitude,
-                            aircraftLongitude: captureObservation.longitude,
+                            aircraftLatitude: originObservation.latitude,
+                            aircraftLongitude: originObservation.longitude,
                             gimbalPitchDegrees: input.gimbalAngleDegrees,
                             gimbalYawDegrees: input.headingDegrees,
                             tileHit: true
@@ -3334,7 +3345,7 @@ private struct ClueSubmissionView: View {
                 guard !Task.isCancelled, !submitting, terrainTaskKey == key else { return }
                 // Longer local-only pass still hard-capped; Submit never waits on this task.
                 let refined = await model.projectClueWithTerrainBounded(
-                    observation: captureObservation,
+                    observation: originObservation,
                     headingDegrees: input.headingDegrees,
                     aglMeters: heightMeters,
                     gimbalAngleDegrees: input.gimbalAngleDegrees,
@@ -3362,8 +3373,8 @@ private struct ClueSubmissionView: View {
                             format: "Clue DEM miss reason=%@ lat=%.6f lon=%.6f demSource=%@",
                             locale: Locale(identifier: "en_US_POSIX"),
                             reason,
-                            captureObservation.latitude,
-                            captureObservation.longitude,
+                            originObservation.latitude,
+                            originObservation.longitude,
                             refined.demSource ?? "none"
                         )
                     )
@@ -3372,8 +3383,8 @@ private struct ClueSubmissionView: View {
                     "Clue",
                     OperationalClueProjectionLog.line(
                         projection: refined,
-                        aircraftLatitude: captureObservation.latitude,
-                        aircraftLongitude: captureObservation.longitude,
+                        aircraftLatitude: originObservation.latitude,
+                        aircraftLongitude: originObservation.longitude,
                         gimbalPitchDegrees: input.gimbalAngleDegrees,
                         gimbalYawDegrees: input.headingDegrees
                     )
@@ -3558,18 +3569,22 @@ private struct ClueSubmissionView: View {
         var observation = shownObservation
         var projection = shownProjection
         if let shift = ClueBinder.originShift(shown: binding, submitted: submittedBinding) {
-            let moved = ClueBinder.translated(latitude: projection.latitude, longitude: projection.longitude,
-                                              from: shift.from, to: shift.to)
-            // Translate the projected point with the waypoint; keep DEM flags when terrain already applied.
-            projection = OperationalClueProjection(
-                latitude: moved.latitude, longitude: moved.longitude, altitudeMeters: projection.altitudeMeters,
-                terrainProjectionApplied: projection.terrainProjectionApplied,
-                demSource: projection.demSource,
-                demResolutionMeters: projection.demResolutionMeters,
-                demSampleStale: projection.demSampleStale,
-                flatFallbackReason: projection.flatFallbackReason)
-            observation = observation.relocated(latitude: shift.to.latitude, longitude: shift.to.longitude,
-                                                altitudeMeters: shift.to.altitudeMeters ?? observation.altitudeMeters)
+            // Recompute from the new waypoint (same gimbal/heading). Never translate an old hit and
+            // never substitute the drone/waypoint as the clue — that collapsed C6 onto the aircraft.
+            observation = observation.relocated(
+                latitude: shift.to.latitude,
+                longitude: shift.to.longitude,
+                altitudeMeters: shift.to.altitudeMeters ?? observation.altitudeMeters
+            )
+            projection = OperationalClueGeometry.project(
+                droneLatitude: observation.latitude,
+                droneLongitude: observation.longitude,
+                droneAltitudeMeters: observation.altitudeMeters,
+                headingDegrees: heading.degrees,
+                aglMeters: projectionHeight?.meters,
+                gimbalAngleDegrees: gimbalAngle,
+                knownGroundElevationMeters: knownDemGroundMeters
+            )
             AppleLog.info("Clue", "Submit re-bound to a nearer waypoint \(ClueBindingText.formSummary(submittedBinding))")
         }
         AppleLog.info(
@@ -3712,6 +3727,27 @@ private struct ClueSubmissionView: View {
         }
         return String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), rounded)
     }
+
+}
+
+/// Form preview only: downsample off the main thread so SwiftUI never holds a full-res UIImage.
+private func clueFormPreviewImage(jpegData: Data, coordinates: String?) -> UIImage? {
+    guard let image = UIImage(data: jpegData) else { return nil }
+    let maxDimension: CGFloat = 1024
+    let longest = max(image.size.width, image.size.height)
+    let scaled: UIImage
+    if longest > maxDimension, longest > 0 {
+        let scale = maxDimension / longest
+        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        scaled = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
+        }
+    } else {
+        scaled = image
+    }
+    return stampClueCrosshair(scaled, coordinates: coordinates)
 }
 
 private struct ClueProjectionInput: Hashable {

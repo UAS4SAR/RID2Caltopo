@@ -137,9 +137,25 @@ private func record(capture: Date = Date(timeIntervalSince1970: 1_790_553_873), 
     let shift = try #require(ClueBinder.originShift(shown: shown, submitted: submitted))
     #expect(shift.from.timeMs == t0 - 1_000)
     #expect(shift.to.timeMs == t0 + 300)
-    let moved = ClueBinder.translated(latitude: 39.0005, longitude: -121.0005, from: shift.from, to: shift.to)
-    #expect(abs(moved.latitude - 39.0006) < 1e-9)
-    #expect(abs(moved.longitude - (-121.0007)) < 1e-7)
+    // Submit recomputes from the new waypoint — it must not collapse onto the drone when the
+    // previous hit happened to land near the old waypoint (C6 / 28DED277 failure mode).
+    let recomputed = OperationalClueGeometry.project(
+        droneLatitude: shift.to.latitude,
+        droneLongitude: shift.to.longitude,
+        droneAltitudeMeters: shift.to.altitudeMeters,
+        headingDegrees: 255.6,
+        aglMeters: 28.2,
+        gimbalAngleDegrees: -43
+    )
+    #expect(
+        ClueUploadPosition.isDistinctFromDrone(
+            clueLatitude: recomputed.latitude,
+            clueLongitude: recomputed.longitude,
+            droneLatitude: shift.to.latitude,
+            droneLongitude: shift.to.longitude,
+            gimbalPitchDegrees: -43
+        )
+    )
     // Same waypoint: no shift.
     #expect(ClueBinder.originShift(shown: submitted, submitted: submitted) == nil)
     // A frame-positioned (SEI) clue keeps its projection.

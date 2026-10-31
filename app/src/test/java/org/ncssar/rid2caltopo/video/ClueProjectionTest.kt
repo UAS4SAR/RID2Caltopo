@@ -488,4 +488,47 @@ class ClueProjectionTest {
         assertTrue(northMeters < flatNorth - 2.0)
         assertTrue(northMeters > flatNorth * 0.3)
     }
+
+    @Test
+    fun nonNadirUploadedPositionMustNotEqualDrone() {
+        val droneLat = 39.154044
+        val droneLng = -121.0
+        val projected = projectClueLocation(
+            droneLat = droneLat,
+            droneLng = droneLng,
+            droneAlt = 560.0,
+            headingDeg = 255.6,
+            aglMeters = 28.2,
+            gimbalAngleDeg = -43.0,
+        )
+        assertTrue(
+            "uploaded non-nadir clue must not equal the drone position",
+            clueUploadPositionDistinctFromDrone(
+                clueLat = projected.lat,
+                clueLng = projected.lng,
+                droneLat = droneLat,
+                droneLng = droneLng,
+                gimbalPitchDeg = -43.0,
+            ),
+        )
+        assertFalse(
+            "guard must fail when clue coords equal the drone for non-nadir",
+            clueUploadPositionDistinctFromDrone(
+                clueLat = droneLat,
+                clueLng = droneLng,
+                droneLat = droneLat,
+                droneLng = droneLng,
+                gimbalPitchDeg = -43.0,
+            ),
+        )
+        val line = clueUploadPositionLogLine(
+            id = "28DED277",
+            source = clueUploadPositionSource(terrainProjectionApplied = true, gimbalPitchDeg = -43.0),
+            offsetMeters = clueUploadOffsetMeters(projected.lat, projected.lng, droneLat, droneLng),
+        )
+        assertTrue(line.contains("source=terrain-raymarch"))
+        assertTrue(line.contains("offsetM="))
+        assertFalse(line.contains("39."))
+        assertFalse(line.contains("-121."))
+    }
 }

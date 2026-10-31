@@ -3284,6 +3284,10 @@ class StreamsViewModel(
         clueUploadOwner = viewModelScope.launch {
             val owner = coroutineContext[kotlinx.coroutines.Job]
             try {
+                val folder = withContext(Dispatchers.IO) { CaltopoMap.resolveTrackFolderIdForClue() }
+                if (!folder.isNullOrBlank()) {
+                    reverifyRecentPublishedClues(mapId, teamId, folder)
+                }
                 while (isActive) {
                     if (CaltopoMap.GetMapStatus() != mapStatus.up || CaltopoMap.GetMapId().trim() != mapId) {
                         logClueRetry("map-not-up", "retryPendingClues: skip reason=map-not-up status=${CaltopoMap.GetMapStatus()}")
@@ -3293,11 +3297,12 @@ class StreamsViewModel(
                         logClueRetry("publication-team-blank", "retryPendingClues: skip reason=publication-team-changed")
                         return@launch
                     }
-                    val folder = withContext(Dispatchers.IO) { CaltopoMap.resolveTrackFolderIdForClue() }
-                    if (folder.isNullOrBlank()) {
+                    val folderAgain = withContext(Dispatchers.IO) { CaltopoMap.resolveTrackFolderIdForClue() }
+                    if (folderAgain.isNullOrBlank()) {
                         logClueRetry("track-folder-unresolved", "retryPendingClues: skip reason=track-folder-unresolved mapId=$mapId teamId=$teamId")
                         return@launch
                     }
+                    val folder = folderAgain
                     val (pending, visibleIds, pendingSummary) = clueStorage {
                         clueDiskMutex.withLock {
                             Triple(
@@ -3378,8 +3383,10 @@ class StreamsViewModel(
             "Clue upload start id=${record.id} attempt=$attempt mapId=$mapId teamId=$teamId",
         )
         try {
-            // Startup and retries: a prior client timeout may already have landed the Marker.
-            if (reconcilePendingClue(mapId, teamId, record)) {
+            val jpeg = localClueStore.imageFile(record).readBytes()
+            android.util.Log.i(tag, clueUploadPositionLogLineForRecord(record))
+            // Startup and retries: complete any partial prior POST (marker/media/link).
+            if (reconcilePendingClue(mapId, teamId, folder, record, jpeg)) {
                 endClueUpload(record.id)
                 clueUploadBackoff.reset(record.id)
                 return
@@ -3388,7 +3395,7 @@ class StreamsViewModel(
             org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
                 mapId, teamId, record.id, record.lat, record.lng, record.title,
                 record.publishedDescription, folder, record.createdAtMs,
-                localClueStore.imageFile(record).readBytes(),
+                jpeg,
             ) { result -> outcome.complete(result) }
             val result = outcome.await()
             if (!result.success() &&
@@ -3399,7 +3406,7 @@ class StreamsViewModel(
                     "Clue upload failed id=${record.id} attempt=$attempt reason=http-${result.responseCode} " +
                         "error=${result.responseString().take(300)}",
                 )
-                if (reconcilePendingClue(mapId, teamId, record)) {
+                if (reconcilePendingClue(mapId, teamId, folder, record, jpeg)) {
                     endClueUpload(record.id)
                     clueUploadBackoff.reset(record.id)
                     return
@@ -3458,23 +3465,125 @@ class StreamsViewModel(
         }
     }
 
+    /** Re-verify published clues from the last 24 h and repair missing photos/links. */
+    private suspend fun reverifyRecentPublishedClues(mapId: String, teamId: String, folder: String) {
+        val cutoff = System.currentTimeMillis() - 24L * 60L * 60L * 1000L
+        val recent = clueStorage {
+            clueDiskMutex.withLock {
+                localClueStore.recentlyPublishedForMap(mapId, teamId, cutoff)
+            }
+        }.getOrElse { emptyList() }
+        for (record in recent) {
+            val jpeg = try {
+                withContext(Dispatchers.IO) { localClueStore.imageFile(record).readBytes() }
+            } catch (_: Exception) {
+                continue
+            }
+            val linkId = java.util.UUID.nameUUIDFromBytes(
+                (record.id + ":link").toByteArray(Charsets.UTF_8),
+            ).toString()
+            val probe = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
+            org.ncssar.rid2caltopo.data.CaltopoSession.ReconcileStoredPhoto(
+                mapId, teamId, record.id, linkId,
+            ) { result -> probe.complete(result) }
+            val probed = probe.await()
+            if (probed.success()) continue
+            // Nothing visible may be transient — only repair clear partial presence (HTTP 409).
+            if (probed.responseCode != 409) continue
+            if (reconcilePendingClue(mapId, teamId, folder, record, jpeg)) continue
+            clueStorage {
+                clueDiskMutex.withLock {
+                    localClueStore.recordUploadResult(
+                        record.id,
+                        false,
+                        "Re-verify found incomplete CalTopo parts; repairing.",
+                        terminal = false,
+                    )
+                }
+            }
+            android.util.Log.i(tag, "Clue re-verify queued repair id=${record.id}")
+        }
+    }
+
+    private fun clueUploadPositionLogLineForRecord(record: AndroidClueRecord): String {
+        val drone = record.binding?.waypoint ?: record.binding?.nearest
+        val offset = drone?.let {
+            clueUploadOffsetMeters(record.lat, record.lng, it.latitude, it.longitude)
+        }
+        val terrainApplied = record.description.contains(
+            "DEM terrain projection applied",
+            ignoreCase = true,
+        )
+        val source = when {
+            record.description.contains(FLAT_SURFACE_LOCATION_NOTE) -> "flat"
+            terrainApplied && (offset == null || offset < 1.0) -> "nadir"
+            terrainApplied -> "terrain-raymarch"
+            offset == null || offset < 1.0 -> "nadir"
+            else -> "flat"
+        }
+        return clueUploadPositionLogLine(record.id, source, offset)
+    }
+
+    /**
+     * Probe marker/media/link. When all present, clear pending. When partial, complete missing
+     * parts via PublishStoredPhoto before clearing. Marker-only must not mark published.
+     */
     private suspend fun reconcilePendingClue(
         mapId: String,
         teamId: String,
+        folder: String,
         record: AndroidClueRecord,
+        jpeg: ByteArray,
     ): Boolean {
         val linkId = java.util.UUID.nameUUIDFromBytes(
             (record.id + ":link").toByteArray(Charsets.UTF_8),
         ).toString()
-        val outcome = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
+        val probe = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
         org.ncssar.rid2caltopo.data.CaltopoSession.ReconcileStoredPhoto(
             mapId,
             teamId,
             record.id,
             linkId,
-        ) { result -> outcome.complete(result) }
-        val result = outcome.await()
-        if (!result.success()) return false
+        ) { result -> probe.complete(result) }
+        val probed = probe.await()
+        val partsBefore = probed.responseString().orEmpty()
+        if (probed.success()) {
+            clueStorage {
+                clueDiskMutex.withLock {
+                    localClueStore.recordUploadResult(record.id, true, "", terminal = false)
+                }
+            }.onSuccess {
+                hydrateLocalClues(currentLocalClueMapKey())
+            }
+            android.util.Log.i(tag, "Clue reconcile parts ${partsBefore.ifBlank { "marker=ok media=ok link=ok" }}")
+            android.util.Log.i(
+                tag,
+                "Clue upload reconciled id=${record.id} featureId=${record.id}",
+            )
+            return true
+        }
+        // 409 = partial presence: complete missing media/link (or marker) idempotently.
+        if (probed.responseCode != 409 && !partsBefore.contains("ok")) return false
+        val publish = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
+        org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
+            mapId, teamId, record.id, record.lat, record.lng, record.title,
+            record.publishedDescription, folder, record.createdAtMs, jpeg,
+        ) { result -> publish.complete(result) }
+        val published = publish.await()
+        val after = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
+        org.ncssar.rid2caltopo.data.CaltopoSession.ReconcileStoredPhoto(
+            mapId, teamId, record.id, linkId,
+        ) { result -> after.complete(result) }
+        val verified = after.await()
+        val partsAfter = verified.responseString().orEmpty()
+        val mediaToken = reconcilePartTransition(partsBefore, partsAfter, "media", "uploaded")
+        val linkToken = reconcilePartTransition(partsBefore, partsAfter, "link", "linked")
+        val markerToken = reconcilePartTransition(partsBefore, partsAfter, "marker", "created")
+        android.util.Log.i(
+            tag,
+            "Clue reconcile parts marker=$markerToken media=$mediaToken link=$linkToken",
+        )
+        if (!verified.success()) return false
         clueStorage {
             clueDiskMutex.withLock {
                 localClueStore.recordUploadResult(record.id, true, "", terminal = false)
@@ -3486,7 +3595,23 @@ class StreamsViewModel(
             tag,
             "Clue upload reconciled id=${record.id} featureId=${record.id}",
         )
-        return true
+        return published.success() || verified.success()
+    }
+
+    private fun reconcilePartTransition(
+        before: String,
+        after: String,
+        key: String,
+        createdLabel: String,
+    ): String {
+        val beforeOk = before.contains("$key=ok")
+        val afterOk = after.contains("$key=ok")
+        return when {
+            beforeOk && afterOk -> "ok"
+            !beforeOk && afterOk -> "missing->$createdLabel"
+            beforeOk && !afterOk -> "ok->missing"
+            else -> "missing"
+        }
     }
 
     /** Opens the Drone Confirmation Panel for a drone (set by the activity). */
@@ -3767,19 +3892,42 @@ class StreamsViewModel(
 
     /**
      * Submit binds once more to the waypoint nearest the capture among those available now; that
-     * binding is final (never revisited after Submit). A clue projected from its waypoint follows a
-     * nearer origin by translation, then requires a new DEM intersection for that origin.
+     * binding is final (never revisited after Submit). A clue projected from its waypoint
+     * recomputes the projection from the new origin (same gimbal/heading); never translates an old
+     * hit and never substitutes the drone/waypoint as the clue position.
      */
     private fun bindAtSubmit(clue: PendingClue): PendingClue {
         val submitted = currentBinding(clue) ?: return clue
         val shift = org.ncssar.rid2caltopo.data.ClueBinder.originShift(clue.binding, submitted)
             ?: return clue.copy(binding = submitted)
-        val (from, to) = shift
-        val (lat, lng) = org.ncssar.rid2caltopo.data.ClueBinder.translated(clue.lat, clue.lng, from, to)
-        CTDebug(tag, "Submit re-bound to a nearer waypoint " + org.ncssar.rid2caltopo.data.ClueBindingText.formSummary(submitted))
-        return clue.copy(binding = submitted, lat = lat, lng = lng, droneLat = to.latitude, droneLng = to.longitude,
+        val (_, to) = shift
+        val knownGround = clue.knownDemGroundMeters
+            ?: clue.alt.takeIf { clue.terrainProjectionApplied || clue.demSource != null }
+        val projection = projectClueLocation(
+            droneLat = to.latitude,
+            droneLng = to.longitude,
             droneAlt = to.altitudeMeters ?: clue.droneAlt,
-            terrainProjectionApplied = false, demSource = null, demResolutionMeters = null, demSampleStale = false)
+            headingDeg = clue.headingDeg,
+            aglMeters = clue.projectionHeightMeters,
+            gimbalAngleDeg = clue.gimbalAngleDeg,
+            knownGroundElevationMeters = knownGround,
+        )
+        CTDebug(tag, "Submit re-bound to a nearer waypoint " + org.ncssar.rid2caltopo.data.ClueBindingText.formSummary(submitted))
+        return clue.copy(
+            binding = submitted,
+            lat = projection.lat,
+            lng = projection.lng,
+            alt = projection.alt,
+            droneLat = to.latitude,
+            droneLng = to.longitude,
+            droneAlt = to.altitudeMeters ?: clue.droneAlt,
+            // Flat recompute keeps Submit unblocked; post-save DEM refine updates from this origin.
+            terrainProjectionApplied = false,
+            demSource = null,
+            demResolutionMeters = null,
+            demSampleStale = false,
+            knownDemGroundMeters = knownGround,
+        )
     }
 
     /** While the form is open, re-binds as waypoints arrive and re-projects from a nearer waypoint origin. */

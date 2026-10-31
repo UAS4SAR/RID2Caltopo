@@ -32,6 +32,51 @@ internal fun clueProjectionMethod(
     return if (isNadirGimbal(gimbalAngleDeg)) "nadir-DEM" else "terrain-raymarch"
 }
 
+/** Upload/local marker position source for logs (no absolute coords). */
+internal fun clueUploadPositionSource(
+    terrainProjectionApplied: Boolean,
+    gimbalPitchDeg: Double,
+): String {
+    if (!terrainProjectionApplied) return "flat"
+    return if (isNadirGimbal(gimbalPitchDeg)) "nadir" else "terrain-raymarch"
+}
+
+/** Great-circle offset from drone to clue in metres. */
+internal fun clueUploadOffsetMeters(
+    clueLat: Double,
+    clueLng: Double,
+    droneLat: Double,
+    droneLng: Double,
+): Double? = org.ncssar.rid2caltopo.data.RidGeometry
+    .relativePosition(droneLat, droneLng, clueLat, clueLng)
+    ?.distanceMeters
+
+internal fun clueUploadPositionLogLine(
+    id: String,
+    source: String,
+    offsetMeters: Double?,
+): String {
+    val offset = offsetMeters?.let { String.format(Locale.US, "%.1f", it) } ?: "nil"
+    return "Clue upload position id=$id source=$source offsetM=$offset"
+}
+
+/**
+ * Non-nadir clues must not store/upload the drone position as the clue.
+ * Used by unit tests and as a submit-time sanity check.
+ */
+internal fun clueUploadPositionDistinctFromDrone(
+    clueLat: Double,
+    clueLng: Double,
+    droneLat: Double,
+    droneLng: Double,
+    gimbalPitchDeg: Double,
+    minimumOffsetMeters: Double = 1.0,
+): Boolean {
+    if (isNadirGimbal(gimbalPitchDeg)) return true
+    val offset = clueUploadOffsetMeters(clueLat, clueLng, droneLat, droneLng) ?: return false
+    return offset >= minimumOffsetMeters
+}
+
 /** One line per clue: method, tile hit/miss/timeout, gimbal pitch/yaw, lat/lon delta from aircraft. */
 internal fun clueProjectionMethodLogLine(
     clueLat: Double,

@@ -104,6 +104,53 @@ private func report(heading: Double? = 273.2, telemetry: OperationalClueReportTe
     #expect(line.contains("gimbalYaw=90.0"))
 }
 
+@Test func nonNadirUploadedPositionMustNotEqualDrone() {
+    let droneLatitude = 39.154044
+    let droneLongitude = -121.0
+    let projected = OperationalClueGeometry.project(
+        droneLatitude: droneLatitude,
+        droneLongitude: droneLongitude,
+        droneAltitudeMeters: 560,
+        headingDegrees: 255.6,
+        aglMeters: 28.2,
+        gimbalAngleDegrees: -43
+    )
+    // Uploaded non-nadir clue must not equal the drone position.
+    #expect(
+        ClueUploadPosition.isDistinctFromDrone(
+            clueLatitude: projected.latitude,
+            clueLongitude: projected.longitude,
+            droneLatitude: droneLatitude,
+            droneLongitude: droneLongitude,
+            gimbalPitchDegrees: -43
+        )
+    )
+    // Translating a capture-hit that landed on the old waypoint would wrongly equal the new drone.
+    #expect(
+        !ClueUploadPosition.isDistinctFromDrone(
+            clueLatitude: droneLatitude,
+            clueLongitude: droneLongitude,
+            droneLatitude: droneLatitude,
+            droneLongitude: droneLongitude,
+            gimbalPitchDegrees: -43
+        )
+    )
+    let line = ClueUploadPosition.logLine(
+        id: "28DED277",
+        source: ClueUploadPosition.source(terrainProjectionApplied: true, gimbalPitchDegrees: -43),
+        offsetMeters: ClueUploadPosition.offsetMeters(
+            clueLatitude: projected.latitude,
+            clueLongitude: projected.longitude,
+            droneLatitude: droneLatitude,
+            droneLongitude: droneLongitude
+        )
+    )
+    #expect(line.contains("source=terrain-raymarch"))
+    #expect(line.contains("offsetM="))
+    #expect(!line.contains("39."))
+    #expect(!line.contains("-121."))
+}
+
 @Test func timedOutTerrainProjectionLogsTileTimeoutNotMiss() {
     let timedOut = OperationalClueProjectionLog.line(
         projection: OperationalClueProjection(

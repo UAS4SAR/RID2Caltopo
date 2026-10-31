@@ -261,9 +261,9 @@ object ClueBinder {
     }
 
     /**
-     * Moves a clue that was projected from the bound waypoint when a nearer waypoint replaces it at
-     * Submit: the camera vector (bearing, range) is unchanged, so the clue shifts by the origin's
-     * displacement.
+     * Legacy lat/lon translation of an already-projected clue when the origin moves.
+     * Submit must not use this: recompute the projection from the new waypoint (same gimbal/heading)
+     * so a capture-origin hit that landed near the old waypoint cannot collapse onto the new drone.
      */
     fun translated(latitude: Double, longitude: Double, from: ClueBindingPoint, to: ClueBindingPoint): Pair<Double, Double> {
         val originCos = cos(Math.toRadians(from.latitude))

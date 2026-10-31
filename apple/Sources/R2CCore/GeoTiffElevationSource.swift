@@ -188,6 +188,15 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
         }
     }
 
+    /// Drop prior warm/nested-session accumulation so the next take is per-march only.
+    public func resetClueSamplingTiming() {
+        lock.r2cWithLock {
+            timingCatalogNs = 0
+            timingTileOpenDecodeNs = 0
+            timingSampleCount = 0
+        }
+    }
+
     public var isCatalogReady: Bool { lock.r2cWithLock { catalogReady } }
 
     public var catalogDirectoryPath: String { directory.path }

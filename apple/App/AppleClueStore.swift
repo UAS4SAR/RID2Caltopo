@@ -143,6 +143,9 @@ final class AppleClueStore: ObservableObject {
     func resumePendingUploads(generation: Int) async {
         await initialLoad?.value
         guard generation == configurationGeneration else { return }
+        // Repair recently published clues that reconciled marker-only (missing photo/link).
+        await reverifyRecentPublishedClues()
+        guard generation == configurationGeneration else { return }
         // Reconcile before enqueue so a prior client timeout that still landed on CalTopo
         // clears "1 clue pending" without risking a duplicate feature.
         let pendingIDs = records
@@ -598,8 +601,28 @@ final class AppleClueStore: ObservableObject {
                         "Clue",
                         "Clue upload start id=\(id) attempt=\(attempt) mapId=\(self.mapID) teamId=\(destinationTeamID)"
                     )
+                    let terrainApplied = record.clueDescription
+                        .localizedCaseInsensitiveContains("DEM used:")
+                        && !record.clueDescription
+                            .localizedCaseInsensitiveContains("DEM used: none")
+                    AppleLog.info(
+                        "Clue",
+                        ClueUploadPosition.logLine(
+                            id: id.uuidString,
+                            source: ClueUploadPosition.source(
+                                terrainProjectionApplied: terrainApplied,
+                                gimbalPitchDegrees: record.gimbalAngleDegrees
+                            ),
+                            offsetMeters: ClueUploadPosition.offsetMeters(
+                                clueLatitude: record.clueLatitude,
+                                clueLongitude: record.clueLongitude,
+                                droneLatitude: record.droneLatitude,
+                                droneLongitude: record.droneLongitude
+                            )
+                        )
+                    )
                     // Before a retry, reconcile: a prior timed-out POST may already be on the map.
-                    if attempt > 1, await self.reconcileUploadedClue(id: id) {
+                    if attempt > 1, await self.reconcileUploadedClue(id: id, jpeg: jpeg, teamID: destinationTeamID) {
                         terminalReason = "reconciled"
                         break
                     }
@@ -653,7 +676,7 @@ final class AppleClueStore: ObservableObject {
                     break
                 } catch is ClueUploadAttemptTimeout {
                     let attempts = self.records.first(where: { $0.id == id })?.uploadAttempts ?? 1
-                    if await self.reconcileUploadedClue(id: id) {
+                    if await self.reconcileUploadedClue(id: id, jpeg: jpeg, teamID: destinationTeamID) {
                         terminalReason = "reconciled-after-timeout"
                         break
                     }
@@ -692,7 +715,7 @@ final class AppleClueStore: ObservableObject {
                             "Clue",
                             "Clue upload failed id=\(id) attempt=\(attempts) reason=http-\(code) error=\(message)"
                         )
-                        if await self.reconcileUploadedClue(id: id) {
+                        if await self.reconcileUploadedClue(id: id, jpeg: jpeg, teamID: destinationTeamID) {
                             terminalReason = "reconciled-after-http-\(code)"
                             break
                         }
@@ -736,25 +759,49 @@ final class AppleClueStore: ObservableObject {
         }
     }
 
-    /// Returns true when the clue Marker (stable client UUID) is already on the connected map.
+    /// Returns true only when marker + media + link are all present (completing any missing part).
     @discardableResult
-    private func reconcileUploadedClue(id: UUID) async -> Bool {
+    private func reconcileUploadedClue(id: UUID, jpeg: Data? = nil, teamID: String? = nil) async -> Bool {
         guard let client, let record = records.first(where: { $0.id == id }) else { return false }
+        let destinationTeamID = teamID
+            ?? record.destinationTeamID
+            ?? self.teamID
+        guard !destinationTeamID.isEmpty else { return false }
         do {
-            guard let featureID = try await client.reconcilePhotoClue(
-                markerID: id,
-                mediaID: record.caltopoMediaID
+            let jpegData: Data
+            if let jpeg {
+                jpegData = jpeg
+            } else {
+                let imageURL = self.imageURL(for: record)
+                guard let loaded = try? await disk.run({ try Data(contentsOf: imageURL) }) else { return false }
+                jpegData = loaded
+            }
+            let folderID = try? await resolveTrackFolder(using: client)
+            guard let result = try await client.reconcilePhotoClue(
+                CaltopoPhotoClue(
+                    markerID: id,
+                    mediaID: record.caltopoMediaID,
+                    latitude: record.clueLatitude,
+                    longitude: record.clueLongitude,
+                    title: record.title,
+                    description: record.publishedDescription,
+                    createdMilliseconds: Int64(record.capturedAt.timeIntervalSince1970 * 1_000),
+                    jpegData: jpegData,
+                    teamID: destinationTeamID,
+                    folderID: folderID
+                )
             ) else { return false }
             mutate(id) { value in
                 value.uploadState = .published
-                value.caltopoMarkerID = featureID
+                value.caltopoMarkerID = result.featureID
                 value.lastUploadError = nil
             }
             try? await persistIndex()
             updateStatus()
+            AppleLog.info("Clue", result.partsLog)
             AppleLog.info(
                 "Clue",
-                "Clue upload reconciled id=\(id) featureId=\(featureID)"
+                "Clue upload reconciled id=\(id) featureId=\(result.featureID)"
             )
             return true
         } catch {
@@ -764,6 +811,46 @@ final class AppleClueStore: ObservableObject {
             )
             return false
         }
+    }
+
+    /// Re-verify recently published clues (last 24 h) and repair missing photos/links.
+    func reverifyRecentPublishedClues() async {
+        guard let client, !teamID.isEmpty else { return }
+        await initialLoad?.value
+        let cutoff = Date().addingTimeInterval(-24 * 60 * 60)
+        let recent = records.filter {
+            $0.uploadState == .published && $0.capturedAt >= cutoff
+        }
+        for record in recent {
+            do {
+                let parts = try await client.probePhotoClueParts(
+                    markerID: record.id,
+                    mediaID: record.caltopoMediaID,
+                    teamID: record.destinationTeamID ?? teamID
+                )
+                if parts.allPresent { continue }
+                // Nothing visible may be a transient map/auth miss — do not demote published.
+                if !parts.anyPresent { continue }
+                if await reconcileUploadedClue(id: record.id) { continue }
+                // Still incomplete after repair: re-queue without losing the local clue.
+                mutate(record.id) { value in
+                    value.uploadState = .pending
+                    value.lastUploadError = "Re-verify found incomplete CalTopo parts; repairing."
+                }
+                try? await persistIndex()
+                enqueueUpload(record.id)
+                AppleLog.info(
+                    "Clue",
+                    "Clue re-verify queued repair id=\(record.id)"
+                )
+            } catch {
+                AppleLog.warning(
+                    "Clue",
+                    "Clue re-verify skipped id=\(record.id) error=\(error.localizedDescription)"
+                )
+            }
+        }
+        updateStatus()
     }
 
     private func resolveTrackFolder(using client: CaltopoLiveClient) async throws -> String {

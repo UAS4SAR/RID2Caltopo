@@ -286,6 +286,24 @@ class AndroidClueStore private constructor(
         }
     }
 
+    /** Recently published clues for startup re-verify of marker/media/link completeness. */
+    fun recentlyPublishedForMap(
+        mapId: String,
+        teamId: String,
+        newerThanMs: Long,
+    ): List<AndroidClueRecord> {
+        ensureLoaded()
+        return synchronized(this) {
+            storedRecords.values.filter {
+                it.publishToCaltopo &&
+                    it.uploadState == "published" &&
+                    it.createdAtMs >= newerThanMs &&
+                    mapId.isNotBlank() && teamId.isNotBlank() && it.mapKey == "map:$mapId" &&
+                    org.ncssar.rid2caltopo.data.CluePublicationIdentity.sameTeam(it.destinationTeamId, teamId)
+            }
+        }
+    }
+
     /** Pending publishes that did not match the connected map, for the retry log. */
     fun pendingPublishSummary(): String {
         ensureLoaded()

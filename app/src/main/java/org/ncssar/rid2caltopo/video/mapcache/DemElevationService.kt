@@ -91,6 +91,8 @@ internal class DemElevationService(context: Context) {
         block: (sampleLocal: (Double, Double) -> DemElevationSample?) -> T,
     ): Pair<T, Triple<Double, Double, Int>> = withContext(Dispatchers.IO) {
         localGeoTiff.beginClueSamplingSession()
+        // Nested flight-warm / prior loser sessions must not inflate this march's tileOpenDecodeMs.
+        localGeoTiff.resetClueSamplingTiming()
         try {
             val result = terrainReads.read { checkCancelled ->
                 localGeoTiff.withS1mSamplingSession { elev ->

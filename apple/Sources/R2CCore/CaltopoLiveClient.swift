@@ -619,49 +619,126 @@ public actor CaltopoLiveClient {
         return markerID
     }
 
-    /// Cheap presence check: Marker with the stable client clue id already on the map.
+    public struct PhotoClueParts: Sendable, Equatable {
+        public var markerPresent: Bool
+        public var mediaReady: Bool
+        public var linkPresent: Bool
+
+        public var allPresent: Bool { markerPresent && mediaReady && linkPresent }
+        public var anyPresent: Bool { markerPresent || mediaReady || linkPresent }
+    }
+
+    /// Probe Marker + media readiness + MapMediaObject link without mutating the map.
+    public func probePhotoClueParts(
+        markerID: UUID,
+        mediaID: UUID,
+        teamID: String,
+        now: Date = Date()
+    ) async throws -> PhotoClueParts {
+        let featureID = markerID.uuidString.lowercased()
+        let mediaKey = mediaID.uuidString.lowercased()
+        var markerPresent = false
+        do {
+            _ = try await perform(makeMarkerSnapshotRequest(markerID: featureID, now: now), lane: clueLane)
+            markerPresent = true
+        } catch CaltopoLiveClientError.httpStatus(let code, _) where code == 400 || code == 404 {
+            markerPresent = false
+        }
+        if !markerPresent {
+            let snapshot = try await fetchMapArtifacts(now: now, refresh: true)
+            let clueTag = markerID.uuidString.uppercased()
+            markerPresent = snapshot.items.contains(where: {
+                $0.className == "Marker" && $0.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == featureID
+            }) || snapshot.points.contains(where: { point in
+                let id = point.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if id == featureID { return true }
+                let description = point.description ?? ""
+                return description.localizedCaseInsensitiveContains(clueTag)
+                    || description.localizedCaseInsensitiveContains("r2c-clue-id:\(featureID)")
+            })
+        }
+        var mediaReady = false
+        let mediaOwner = configuration.authorizesAsPersonalAccount ? configuration.personalMediaOwnerID : teamID
+        do {
+            let data = try await perform(makeMediaSnapshotRequest(mediaID: mediaID, now: now), lane: clueLane)
+            mediaReady = try CaltopoPhotoMediaState.isReady(data, mediaID: mediaID, ownerID: mediaOwner)
+        } catch CaltopoLiveClientError.httpStatus(let code, _) where code == 400 || code == 404 {
+            mediaReady = false
+        }
+        var linkPresent = false
+        do {
+            _ = try await perform(
+                makeMapMediaObjectSnapshotRequest(mediaID: mediaKey, now: now),
+                lane: clueLane
+            )
+            linkPresent = true
+        } catch CaltopoLiveClientError.httpStatus(let code, _) where code == 400 || code == 404 {
+            linkPresent = false
+        }
+        return PhotoClueParts(markerPresent: markerPresent, mediaReady: mediaReady, linkPresent: linkPresent)
+    }
+
+    /// Verify every part; when anything is already on the map, complete missing parts idempotently.
+    /// Returns nil only when nothing of this clue exists yet (caller should publish from scratch).
+    public func reconcilePhotoClue(
+        _ clue: CaltopoPhotoClue,
+        now: Date = Date()
+    ) async throws -> (featureID: String, partsLog: String)? {
+        let before = try await probePhotoClueParts(
+            markerID: clue.markerID,
+            mediaID: clue.mediaID,
+            teamID: clue.teamID,
+            now: now
+        )
+        if !before.anyPresent { return nil }
+        if !before.allPresent {
+            _ = try await publishPhotoClue(clue, now: now)
+        }
+        let after = try await probePhotoClueParts(
+            markerID: clue.markerID,
+            mediaID: clue.mediaID,
+            teamID: clue.teamID,
+            now: now
+        )
+        guard after.markerPresent else { return nil }
+        let mediaToken = partTransition(before: before.mediaReady, after: after.mediaReady, uploadedLabel: "uploaded")
+        let linkToken = partTransition(before: before.linkPresent, after: after.linkPresent, uploadedLabel: "linked")
+        let markerToken = after.markerPresent ? (before.markerPresent ? "ok" : "created") : "missing"
+        let partsLog =
+            "Clue reconcile parts marker=\(markerToken) media=\(mediaToken) link=\(linkToken)"
+        guard after.mediaReady, after.linkPresent else {
+            // Marker alone must not clear pending — photo/link still missing.
+            return nil
+        }
+        return (clue.markerID.uuidString.lowercased(), partsLog)
+    }
+
+    private func partTransition(before: Bool, after: Bool, uploadedLabel: String) -> String {
+        switch (before, after) {
+        case (true, true): return "ok"
+        case (false, true): return "missing->\(uploadedLabel)"
+        case (true, false): return "ok->missing"
+        case (false, false): return "missing"
+        }
+    }
+
+    /// Compatibility wrapper used by older call sites that only knew the ids.
     public func reconcilePhotoClue(
         markerID: UUID,
         mediaID: UUID,
         now: Date = Date()
     ) async throws -> String? {
-        let featureID = markerID.uuidString.lowercased()
-        do {
-            _ = try await perform(
-                makeMarkerSnapshotRequest(markerID: featureID, now: now),
-                lane: clueLane
-            )
-            return featureID
-        } catch CaltopoLiveClientError.httpStatus(let code, _) where code == 400 || code == 404 {
-            // Fall through to a signed map features scan for older markers / UUID casing.
-        }
-        let snapshot = try await fetchMapArtifacts(now: now, refresh: true)
-        let needle = featureID
-        let clueTag = markerID.uuidString.uppercased()
-        if snapshot.items.contains(where: {
-            $0.className == "Marker" && $0.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle
-        }) {
-            return featureID
-        }
-        if snapshot.points.contains(where: { point in
-            let id = point.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if id == needle { return true }
-            let description = point.description ?? ""
-            return description.localizedCaseInsensitiveContains(clueTag)
-                || description.localizedCaseInsensitiveContains("r2c-clue-id:\(needle)")
-        }) {
-            return featureID
-        }
-        // Photo may exist under MapMediaObject even if Marker GET is weirdly gated.
-        do {
-            _ = try await perform(
-                makeMapMediaObjectSnapshotRequest(mediaID: mediaID.uuidString.lowercased(), now: now),
-                lane: clueLane
-            )
-            return featureID
-        } catch CaltopoLiveClientError.httpStatus(let code, _) where code == 400 || code == 404 {
-            return nil
-        }
+        let parts = try await probePhotoClueParts(
+            markerID: markerID,
+            mediaID: mediaID,
+            teamID: configuration.authorizesAsPersonalAccount
+                ? "personal:" + configuration.personalAccountID
+                : "",
+            now: now
+        )
+        // Marker-only is not success — media/link must also be present.
+        guard parts.allPresent else { return nil }
+        return markerID.uuidString.lowercased()
     }
 
     public func publishDeviceMarker(

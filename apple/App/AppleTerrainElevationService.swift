@@ -80,6 +80,8 @@ actor AppleTerrainElevationService {
         }
         let dem = localDEM
         dem.beginClueSamplingSession()
+        // Nested flight-warm / prior loser sessions must not inflate this march's tileOpenDecodeMs.
+        dem.resetClueSamplingTiming()
         let timing = OperationalClueRayMarchTiming()
         let child = Task.detached(priority: .userInitiated) { () -> OperationalClueProjection in
             guard !Task.isCancelled else {

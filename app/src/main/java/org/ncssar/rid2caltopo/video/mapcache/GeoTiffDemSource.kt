@@ -167,6 +167,13 @@ internal class GeoTiffDemSource(context: Context) {
         Triple(catalogMs, tileMs, samples)
     }
 
+    /** Drop prior warm/nested-session accumulation so the next take is per-march only. */
+    fun resetClueSamplingTiming() = synchronized(lock) {
+        timingCatalogNs = 0L
+        timingTileOpenDecodeNs = 0L
+        timingSampleCount = 0
+    }
+
     /** True after at least one catalog scan has published tiles (possibly empty). */
     fun isCatalogReady(): Boolean = catalogReady
 
