@@ -120,7 +120,13 @@ class AndroidClueStore private constructor(
         require(thumbnailBytes.isNotEmpty()) { "Clue thumbnail is empty" }
         ensureLoaded()
         val directory = synchronized(this) { selectRoot(); root }
-        context?.let { org.ncssar.rid2caltopo.app.FlightStorage.prepareWrite(it, imageBytes.size.toLong() + thumbnailBytes.size) }
+        // App-private clue bytes must not wait on Archive Dir hydration.
+        context?.let {
+            org.ncssar.rid2caltopo.app.FlightStorage.prepareAppPrivateWrite(
+                it,
+                imageBytes.size.toLong() + thumbnailBytes.size,
+            )
+        }
         directory.mkdirs()
         val imageFile = File(directory, record.imageFilename)
         val thumbnailFile = File(directory, record.thumbnailFilename)

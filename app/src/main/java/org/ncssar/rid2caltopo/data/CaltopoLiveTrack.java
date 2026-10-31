@@ -1278,9 +1278,35 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
      * Journal I/O and the create POST run outside the track monitor.
      */
     private void ensureLiveTrackStarted() {
+        final String mapId;
+        final String remoteId;
+        final String trackLabelForLog;
+        synchronized (this) {
+            if (!canBeginLiveTrackStartLocked()) return;
+            mapId = CaltopoMap.GetMapId();
+            if (mapId == null || mapId.isEmpty()) return;
+            remoteId = myRemoteId;
+            trackLabelForLog = droneSpec.trackLabel();
+        }
+        // AwaitingMap may fsync — never hold the track monitor across it (8222efe9 class).
+        String deferredId = AwaitingMapFlights.publicationId(remoteId, mapId);
+        if (deferredId != null && deferredId.isEmpty()) {
+            String reserved = AwaitingMapFlights.reservedPublicationId(remoteId);
+            if (reserved != null) {
+                deferredId = reserved;
+            } else {
+                deferredId = AwaitingMapFlights.bindConnectedMapIfOpenReview(remoteId, mapId);
+                if (deferredId == null) {
+                    CTDebug(TAG, String.format(Locale.US,
+                            "ensureLiveTrackStarted(%s): deferred publication still blocking map=%s",
+                            trackLabelForLog, mapId));
+                    return;
+                }
+            }
+        }
         final LiveTrackStartRequest request;
         synchronized (this) {
-            request = beginLiveTrackStartLocked();
+            request = claimLiveTrackStartLocked(mapId, deferredId);
         }
         if (request != null) {
             // Always queue: callers may still hold the track monitor (queueWaypoint) or be
@@ -1309,39 +1335,27 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         }
     }
 
-    /** @return start request when this call claimed the in-flight slot; null when nothing to do. */
-    @Nullable
-    private LiveTrackStartRequest beginLiveTrackStartLocked() {
-        if (shuttingDown || !active) return null;
-        if (mapStatus != CaltopoMap.MapStatusListener.mapStatus.up) return null;
-        if (!ownsPublication()) return null;
-        if (liveTrackId != null || startInFlight) return null;
+    /** Pre-flight gates that need the track monitor but no AwaitingMap I/O. */
+    private boolean canBeginLiveTrackStartLocked() {
+        if (shuttingDown || !active) return false;
+        if (mapStatus != CaltopoMap.MapStatusListener.mapStatus.up) return false;
+        if (!ownsPublication()) return false;
+        if (liveTrackId != null || startInFlight) return false;
         if (!CaltopoNetworkReachability.hasValidatedInternet()) {
             CTDebug(TAG, String.format(Locale.US,
                     "ensureLiveTrackStarted(%s): deferred offline", droneSpec.trackLabel()));
-            return null;
+            return false;
         }
-        if (System.currentTimeMillis() < nextStartAttemptAtMs) return null;
+        return System.currentTimeMillis() >= nextStartAttemptAtMs;
+    }
 
-        String mapId = CaltopoMap.GetMapId();
-        if (mapId == null || mapId.isEmpty()) return null;
-        String deferredId = AwaitingMapFlights.publicationId(myRemoteId, mapId);
-        if (deferredId != null && deferredId.isEmpty()) {
-            // Intent write still pending, or an empty-map review was captured before connect.
-            String reserved = AwaitingMapFlights.reservedPublicationId(myRemoteId);
-            if (reserved != null) {
-                deferredId = reserved;
-            } else {
-                deferredId = AwaitingMapFlights.bindConnectedMapIfOpenReview(myRemoteId, mapId);
-                if (deferredId == null) {
-                    // Still blocked (decided for another map, or unfinished writer).
-                    CTDebug(TAG, String.format(Locale.US,
-                            "ensureLiveTrackStarted(%s): deferred publication still blocking map=%s",
-                            droneSpec.trackLabel(), mapId));
-                    return null;
-                }
-            }
-        }
+    /** @return start request when this call claimed the in-flight slot; null when nothing to do. */
+    @Nullable
+    private LiveTrackStartRequest claimLiveTrackStartLocked(
+            @NonNull String mapId, @Nullable String deferredId) {
+        if (!canBeginLiveTrackStartLocked()) return null;
+        String currentMap = CaltopoMap.GetMapId();
+        if (currentMap == null || currentMap.isEmpty() || !currentMap.equals(mapId)) return null;
         if (requestedLiveTrackId == null) {
             requestedLiveTrackId = deferredId != null ? deferredId : java.util.UUID.randomUUID().toString();
             publicationMapId = mapId;
@@ -1839,7 +1853,11 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         CaltopoRecoveryWork.requireOffMain();
         long now = System.currentTimeMillis();
         if (!force && now - lastInterruptedJournalWriteMs < 5_000L) return false;
-        JournalSnapshot snapshot = journalSnapshot(description);
+        final JournalSnapshot snapshot;
+        synchronized (this) {
+            // Copy linePoints under the track monitor — queueWaypoint mutates it concurrently.
+            snapshot = journalSnapshot(description);
+        }
         if (snapshot == null || !saveJournalSnapshot(snapshot)) return false;
         lastInterruptedJournalWriteMs = now;
         return true;

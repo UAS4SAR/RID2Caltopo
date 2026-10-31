@@ -148,6 +148,9 @@ public class CaltopoMap {
                 return thread;
             });
     private static final AtomicBoolean DisconnectFinishInFlight = new AtomicBoolean(false);
+    /** Completions queued while a finish is already running (e.g. OpenMap after Disconnect). */
+    private static final AtomicReference<Runnable> PendingDisconnectCompletion =
+            new AtomicReference<>();
     @Nullable private static volatile Consumer<String> disconnectProgressHandler = null;
     @Nullable private static volatile Runnable pendingClueFlushHandler = null;
     @NonNull private static volatile TimeSource timeSource = System::currentTimeMillis;
@@ -886,7 +889,14 @@ public class CaltopoMap {
         }
         if (!DisconnectFinishInFlight.compareAndSet(false, true)) {
             CTDebug(TAG, "DisconnectAfterFinishingOwned(): finish already in flight.");
-            if (onComplete != null) CaltopoRecoveryWork.onMain(onComplete);
+            // Do not OpenMap / run completion while the first finish still archives —
+            // chain after that worker's disconnect completes.
+            if (onComplete != null) {
+                PendingDisconnectCompletion.updateAndGet(prior -> () -> {
+                    if (prior != null) prior.run();
+                    onComplete.run();
+                });
+            }
             return;
         }
         publishDisconnectProgress("Finishing live track…");
@@ -895,7 +905,11 @@ public class CaltopoMap {
                 finishOwnedTracksOnWorker(tracks, destinationMap, destinationFolder, budgetMs);
             } finally {
                 DisconnectFinishInFlight.set(false);
-                CaltopoRecoveryWork.onMain(complete);
+                final Runnable chained = PendingDisconnectCompletion.getAndSet(null);
+                CaltopoRecoveryWork.onMain(() -> {
+                    complete.run();
+                    if (chained != null) chained.run();
+                });
             }
         });
     }

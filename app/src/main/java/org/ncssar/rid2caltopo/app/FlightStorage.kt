@@ -208,6 +208,22 @@ object FlightStorage {
             callback?.run()
         }
     }
+
+    /**
+     * Allowance check for app-private writes (clues). Must not wait on Archive Dir
+     * hydration — OperationalStorage already exempts the clues lane; prepareWrite's
+     * storageIo path does not.
+     */
+    @JvmStatic fun prepareAppPrivateWrite(context: Context, incoming: Long) {
+        val needed = synchronized(stateLock) { !initialized || (!captureBlocked && needsDemandCheck(context, incoming)) }
+        if (!needed) return
+        storageMetadata(context) {
+            synchronized(lock) { scanOnWorker(context, false, incoming.coerceAtLeast(0), seedEstimate = true) }
+        }
+        requestCheck(context, true)
+        val callback = synchronized(stateLock) { listener }
+        callback?.run()
+    }
     private var transientCheckAttempt = 0
     private var transientRetryQueued = false
     internal fun isTransientStorageCheckFailure(error: Throwable): Boolean {

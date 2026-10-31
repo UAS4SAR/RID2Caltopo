@@ -144,19 +144,36 @@ object AwaitingMapFlights {
     }
     @Synchronized fun hasEntry(id: String): Boolean { load(); return all().any { it.optString("id") == id } }
     @Synchronized fun pending(): List<JSONObject> { load(); return all().filter { it.optString("decision") == "review" }.map { JSONObject(it.toString()) } }
-    @Synchronized fun decide(id: String, map: String?, team: String) {
-        load()
-        val item = all().firstOrNull { it.optString("id") == id && it.optString("decision") == "review" } ?: return
-        if (map != null) require(map.isNotBlank() && team.isNotBlank())
-        val prior = entries.toString()
-        item.put("decision", if (map == null) "local" else "publish").put("map", map ?: "").put("team", team)
-        try { save() } catch (error: Exception) { entries = JSONArray(prior); throw error }
-        publishChoices()
-        if (map != null) {
+    fun decide(id: String, map: String?, team: String) {
+        val bindItem: JSONObject?
+        val bindOthers: List<JSONObject>?
+        val finishedPublish: JSONObject?
+        synchronized(this) {
+            load()
+            val item = all().firstOrNull { it.optString("id") == id && it.optString("decision") == "review" } ?: return
+            if (map != null) require(map.isNotBlank() && team.isNotBlank())
+            val prior = entries.toString()
+            item.put("decision", if (map == null) "local" else "publish").put("map", map ?: "").put("team", team)
+            try { save() } catch (error: Exception) { entries = JSONArray(prior); throw error }
+            publishChoices()
+            if (map != null) {
+                bindItem = JSONObject(item.toString())
+                bindOthers = all().map { JSONObject(it.toString()) }
+                finishedPublish = if (item.optBoolean("finished")) JSONObject(item.toString()) else null
+            } else {
+                bindItem = null
+                bindOthers = null
+                finishedPublish = null
+            }
+        }
+        // Clue-store / interrupted-journal I/O must not run under the AwaitingMap monitor.
+        if (map != null && bindItem != null && bindOthers != null) {
             val ctxt = R2CApplication.getAppCtxt()
-            if (ctxt != null) org.ncssar.rid2caltopo.video.AndroidClueStore.shared(ctxt).bindAwaitingFlight(
-                JSONObject(item.toString()), all().map { JSONObject(it.toString()) }, map, team)
-            if (item.optBoolean("finished")) queueCompleted(item)
+            if (ctxt != null) {
+                org.ncssar.rid2caltopo.video.AndroidClueStore.shared(ctxt)
+                    .bindAwaitingFlight(bindItem, bindOthers, map, team)
+            }
+            if (finishedPublish != null) queueCompleted(finishedPublish)
         }
     }
     private fun queueCompleted(item: JSONObject) {
