@@ -63,6 +63,8 @@ object ManagedVideoSessionRecordingCatalog {
     @Volatile private var publishedCatalog = PublishedCatalog("", emptyList())
 
     private val metadataScanThreads = AtomicInteger()
+    /** True while running inside MetadataScanExecutor — never submit().get() re-entrantly. */
+    private val onMetadataScanThread = ThreadLocal.withInitial { false }
     private val MetadataScanExecutor = Executors.newFixedThreadPool(
         2,
         ThreadFactory { runnable ->
@@ -439,10 +441,21 @@ object ManagedVideoSessionRecordingCatalog {
      * Bound MediaMetadataRetriever / MediaExtractor work so one incomplete MediaMTX
      * file cannot stall retain, archive, or track association. Timed-out workers may
      * remain busy in native code; the pool is small and daemon-backed.
+     * Never submit().get() from a MetadataScanExecutor thread (pool deadlock).
      */
     private fun readRecordingWithTimeout(file: File): ManagedVideoSessionRecording? {
+        if (onMetadataScanThread.get() == true) {
+            return readRecording(file)
+        }
         val future: Future<ManagedVideoSessionRecording?> =
-            MetadataScanExecutor.submit<ManagedVideoSessionRecording?> { readRecording(file) }
+            MetadataScanExecutor.submit<ManagedVideoSessionRecording?> {
+                onMetadataScanThread.set(true)
+                try {
+                    readRecording(file)
+                } finally {
+                    onMetadataScanThread.set(false)
+                }
+            }
         return try {
             future.get(METADATA_SCAN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         } catch (_: TimeoutException) {

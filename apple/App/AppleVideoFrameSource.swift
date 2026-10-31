@@ -119,7 +119,8 @@ enum AppleAnomalyMode: String, CaseIterable, Identifiable, Sendable {
 /// When analysis cannot keep up, the live path drops analysis work instead of
 /// building latency while video rendering continues.
 final class AppleAnomalyProcessor: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "org.ncssar.rid2caltopo.anomaly", qos: .userInitiated)
+    private static let queueKey = DispatchSpecificKey<UInt8>()
+    private let queue: DispatchQueue
     private let stateLock = NSLock()
     private var busy = false
     private var mode: AppleAnomalyMode
@@ -129,6 +130,9 @@ final class AppleAnomalyProcessor: @unchecked Sendable {
     private var conversionBuffer: CVPixelBuffer?
 
     init(mode: AppleAnomalyMode, configuration: AppleAnomalyConfiguration) {
+        let queue = DispatchQueue(label: "org.ncssar.rid2caltopo.anomaly", qos: .userInitiated)
+        queue.setSpecific(key: Self.queueKey, value: 1)
+        self.queue = queue
         self.mode = mode
         self.configuration = configuration
         runtime = R2CAnomalyCreate(configuration.algorithmMask(for: mode), 30)
@@ -136,11 +140,17 @@ final class AppleAnomalyProcessor: @unchecked Sendable {
     }
 
     deinit {
-        // Drain the process queue before freeing the C runtime — submit/configure/reset
-        // may still be inside R2CAnomalyProcessBGRA on that queue.
-        queue.sync {
+        // Drain outstanding submit/configure/reset before freeing the C runtime.
+        // Strong [self] captures mean the last release can happen while already on
+        // this queue (block teardown) — never queue.sync onto a queue we own.
+        if DispatchQueue.getSpecific(key: Self.queueKey) != nil {
             R2CAnomalyDestroy(runtime)
             runtime = nil
+        } else {
+            queue.sync {
+                R2CAnomalyDestroy(runtime)
+                runtime = nil
+            }
         }
     }
 

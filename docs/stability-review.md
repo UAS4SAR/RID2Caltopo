@@ -120,7 +120,7 @@ Additional P0/P1 items from the [Android crash/deadlock audit](d7ce8ee2-d32e-486
 |---|---|
 | **Where** | `AppleAnomalyProcessor.deinit` |
 | **Severity** | Crash |
-| **Change** | `queue.sync { R2CAnomalyDestroy; runtime = nil }`. |
+| **Change** | Drain the anomaly queue before `R2CAnomalyDestroy`. See §21 — the first form used bare `queue.sync` and crashed when deinit ran on that queue. |
 
 ### 13. iOS — Background live video FFmpeg pops on MainActor
 | | |
@@ -180,6 +180,17 @@ Additional P0/P1 items from the [Android crash/deadlock audit](d7ce8ee2-d32e-486
 | **Severity** | Hang / abandoned normalize on quit |
 | **Why** | Quit cancelled the event loop immediately, abandoning in-flight localize/normalize, or could wait without a bound while durable work still contended with Flight Storage walks. |
 | **Change** | Full cleanup cancels Flight Storage maintenance first, finishes durable track/clue shutdown, then MediaMTX: stop native server → drain finalizers with a 5s hard timeout → cancel event loop → discard remaining tokens. Unfinished recordings stay on disk for next-launch recovery. |
+
+---
+
+### 21. iOS — `AppleAnomalyProcessor.deinit` `dispatch_sync` onto its own queue
+| | |
+|---|---|
+| **Where** | `apple/App/AppleVideoFrameSource.swift` `AppleAnomalyProcessor.deinit` (introduced in `aca29bfc`) |
+| **Severity** | Crash (`BUG IN CLIENT OF LIBDISPATCH: dispatch_sync called on queue already owned by current thread`) |
+| **Why** | `submit` / `configure` / `reset` capture strong `[self]` on `org.ncssar.rid2caltopo.anomaly`. When the last external reference drops, the final release runs during that queue block’s teardown, so `deinit` itself runs on the anomaly queue and then called `queue.sync` — libdispatch aborts. |
+| **Change** | Mark the queue with `DispatchSpecificKey`. In `deinit`, destroy the C runtime inline when already on the queue; otherwise `queue.sync`. Same reentrancy pattern as `AppleFlightStorage.runOnWorkQueue`. |
+| **Audit** | Only other production Apple `DispatchQueue.sync` is Flight Storage (already key-guarded). Other deinits/closes from `aca29bfc`/`62445740` do not sync onto their own queues. Android: `ManagedVideoSessionRecordingCatalog.readRecordingWithTimeout` now refuses `submit().get()` re-entry on a MetadataScanExecutor thread (`ThreadLocal`); no equivalent anomaly-queue sync on Kotlin. |
 
 ---
 
