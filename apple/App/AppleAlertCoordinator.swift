@@ -59,34 +59,42 @@ final class AppleAlertCoordinator {
         self.scanner = scanner
         inBackground = UIApplication.shared.applicationState == .background
 
+        // receive(on: main) — never MainActor.assumeIsolated on Combine delivery.
+        // @Published usually emits on MainActor today, but NotificationCenter.publisher
+        // follows the posting thread; assumeIsolated traps if that is ever off-main.
         tracks
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] snapshot in
-                MainActor.assumeIsolated { self?.hooks?.tracks(snapshot) }
+                self?.hooks?.tracks(snapshot)
             }
             .store(in: &cancellables)
 
         scanner.$ingressDiagnostic
             .compactMap { $0 }
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] diagnostic in
-                MainActor.assumeIsolated { self?.logIngress(diagnostic) }
+                self?.logIngress(diagnostic)
             }
             .store(in: &cancellables)
 
         scanner.$scanRestartCount
             .filter { $0 > 0 }
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] count in
-                MainActor.assumeIsolated { self?.logScanRestart(count) }
+                self?.logScanRestart(count)
             }
             .store(in: &cancellables)
 
         NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                MainActor.assumeIsolated { self?.setBackground(true) }
+                self?.setBackground(true)
             }
             .store(in: &cancellables)
         NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                MainActor.assumeIsolated { self?.setBackground(false) }
+                self?.setBackground(false)
             }
             .store(in: &cancellables)
 

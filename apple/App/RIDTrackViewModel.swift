@@ -945,7 +945,7 @@ final class RIDTrackViewModel: ObservableObject {
 
     private func scheduleTerrain(remoteID: String, coordinator: OperationalAltitudeCoordinator) {
         guard let current = coordinator.currentCoordinate, let takeoff = coordinator.takeoffCoordinate else { return }
-        let requestKey = terrainRequestKey(for: coordinator)!
+        guard let requestKey = terrainRequestKey(for: coordinator) else { return }
         if terrainResolvedKeyByAircraftID[remoteID] == requestKey { return }
         if terrainTasks[remoteID] != nil, terrainRequestKeyByAircraftID[remoteID] == requestKey { return }
         terrainTasks.removeValue(forKey: remoteID)?.cancel()

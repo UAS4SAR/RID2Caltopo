@@ -119,33 +119,43 @@ final class AppleNetworkDiagnosticCenter: ObservableObject {
         guard monitor == nil else { return }
         let pathMonitor = NWPathMonitor()
         monitor = pathMonitor
-        pathMonitor.pathUpdateHandler = { [weak self] path in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.latestPath = path
-                let available = path.status == .satisfied
-                self.internetAvailable = available
-                if self.checkRecoveryGate.update(available: available) {
-                    self.checkRecoveryGeneration += 1
-                }
-                await self.record(path: path, reason: .networkPathChanged)
+        // Form the handler in a nonisolated helper so it does not inherit @MainActor
+        // from start() — NWPathMonitor delivers on monitorQueue and would trap
+        // (same class of isolation inheritance as the live-video display-feed timer).
+        pathMonitor.pathUpdateHandler = Self.makePathUpdateHandler { [weak self] path in
+            guard let self else { return }
+            self.latestPath = path
+            let available = path.status == .satisfied
+            self.internetAvailable = available
+            if self.checkRecoveryGate.update(available: available) {
+                self.checkRecoveryGeneration += 1
             }
+            await self.record(path: path, reason: .networkPathChanged)
         }
         pathMonitor.start(queue: monitorQueue)
         // Observe local-only links even when Wi-Fi/cellular remains the Internet route.
         for type in [NWInterface.InterfaceType.wiredEthernet, .wifi] {
             let localMonitor = NWPathMonitor(requiredInterfaceType: type)
-            localMonitor.pathUpdateHandler = { [weak self] path in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    self.localPaths[type] = path
-                    if let latestPath = self.latestPath {
-                        await self.record(path: latestPath, reason: .networkPathChanged)
-                    }
+            localMonitor.pathUpdateHandler = Self.makePathUpdateHandler { [weak self] path in
+                guard let self else { return }
+                self.localPaths[type] = path
+                if let latestPath = self.latestPath {
+                    await self.record(path: latestPath, reason: .networkPathChanged)
                 }
             }
             localMonitors.append(localMonitor)
             localMonitor.start(queue: monitorQueue)
+        }
+    }
+
+    /// Builds an NWPathMonitor handler whose closure is not @MainActor-isolated.
+    private nonisolated static func makePathUpdateHandler(
+        apply: @escaping @MainActor @Sendable (NWPath) async -> Void
+    ) -> @Sendable (NWPath) -> Void {
+        { path in
+            Task { @MainActor in
+                await apply(path)
+            }
         }
     }
 
