@@ -60,6 +60,22 @@ internal fun clueUploadPositionLogLine(
     return "Clue upload position id=$id source=$source offsetM=$offset"
 }
 
+/** Privacy-safe post-save refine confirmation (no absolute coordinates). */
+internal fun clueTerrainRefineAppliedLogLine(
+    id: String,
+    offsetMeters: Double?,
+): String {
+    val offset = offsetMeters?.let { String.format(Locale.US, "%.1f", it) } ?: "nil"
+    return "Clue terrain refine applied id=$id offsetM=$offset"
+}
+
+/** True when the stored clue description already reflects a DEM hit (not flat-ground). */
+internal fun descriptionIndicatesTerrainApplied(description: String): Boolean {
+    val demUsed = description.contains("DEM used:", ignoreCase = true)
+    val demNone = description.contains("DEM used: none", ignoreCase = true)
+    return demUsed && !demNone
+}
+
 /**
  * Non-nadir clues must not store/upload the drone position as the clue.
  * Used by unit tests and as a submit-time sanity check.

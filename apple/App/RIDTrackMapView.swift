@@ -626,6 +626,8 @@ struct RIDTrackMapView: View {
     @State private var mapTileNotice: String?
     @State private var selectedPilotSettings: PilotDisplaySelection?
     @State private var focusedAircraftID: String?
+    /// Bumped when the operator re-selects a drone or re-enables follow so full-screen map recenters immediately.
+    @State private var followResumeEpoch = 0
     private var operatorAdjustedViewport: Bool {
         get { viewportMemory.operatorAdjustedViewport }
         nonmutating set { viewportMemory.operatorAdjustedViewport = newValue }
@@ -1386,6 +1388,7 @@ struct RIDTrackMapView: View {
                 predictiveHeadEnabled: orgSettings.predictiveHeadEnabled,
                 focusedAircraftID: presentationFocus,
                 followFocusedDrone: followFocusedDrone,
+                followResumeEpoch: followResumeEpoch,
                 artifactZoomRequest: artifacts.zoomRequest,
                 notamZoomRequest: notams.mapFocusRequest,
                 onNotamZoomConsumed: { notams.consumeMapFocus($0) },
@@ -1405,7 +1408,10 @@ struct RIDTrackMapView: View {
                     selectedArtifactInspection = ArtifactInspection(title: title, description: description, notice: notice)
                 },
                 onSelectAircraft: { remoteID in
-                    if !inset && followFocusedDrone { operatorAdjustedViewport = false }
+                    if followFocusedDrone {
+                        operatorAdjustedViewport = false
+                        followResumeEpoch &+= 1
+                    }
                     if OperationalWorkspacePolicy.droneAction(known: !identityStore.isUnassociated(remoteID), publishing: identityStore.isCurrentFlightConfirmed(remoteID)) != .inspect, !inset {
                         focusedAircraftID = remoteID
                         onDroneAction(remoteID)
@@ -1726,7 +1732,9 @@ struct RIDTrackMapView: View {
             set: { enabled in
                 followFocusedDrone = enabled
                 guard enabled else { return }
+                // Clear the pan gate before focus so full-screen shouldFollow sees adjusted=false.
                 operatorAdjustedViewport = false
+                followResumeEpoch &+= 1
                 if let aircraftID { focusedAircraftID = aircraftID }
                 AppleLog.info("MapFocus", "Operator enabled follow aircraft=\(focusedAircraftID ?? "automatic")")
             }
@@ -1737,8 +1745,12 @@ struct RIDTrackMapView: View {
         guard notams.mapFocusRequest == nil else { return }
         if let arrivingAircraft = viewportMemory.streamFocusArrival.observe(
             resolvedAircraftIDs: state.liveStreamAircraftIDs, flightIDs: state.liveStreamFlightIDs) {
+            // Clear adjusted before assigning focus so the first full-screen update can center.
+            if state.followEnabled {
+                operatorAdjustedViewport = false
+                followResumeEpoch &+= 1
+            }
             focusedAircraftID = arrivingAircraft
-            if state.followEnabled { operatorAdjustedViewport = false }
             AppleLog.info("MapFocus", "Live video gained telemetry aircraft=\(arrivingAircraft)")
             return
         }
@@ -1746,6 +1758,10 @@ struct RIDTrackMapView: View {
         let focus = state.focusedAircraftID ?? "none"
         AppleLog.info("MapFocus", "Automatic focus evaluation follow=\(state.followEnabled) adjusted=\(state.operatorAdjustedViewport) focused=\(focus) streams=\(streams)")
         if let candidate = state.candidate {
+            if state.followEnabled {
+                operatorAdjustedViewport = false
+                followResumeEpoch &+= 1
+            }
             focusedAircraftID = candidate
             AppleLog.info("MapFocus", "Selected sole live stream aircraft=\(candidate)")
         }
@@ -4587,6 +4603,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
     let predictiveHeadEnabled: Bool
     let focusedAircraftID: String?
     let followFocusedDrone: Bool
+    let followResumeEpoch: Int
     let artifactZoomRequest: ArtifactZoomRequest?
     let notamZoomRequest: AppleNotamMapFocusRequest?
     let onNotamZoomConsumed: (UUID) -> Void
@@ -4633,7 +4650,9 @@ private struct OperationalMKMapView: UIViewRepresentable {
             scale.heightAnchor.constraint(equalToConstant: 32),
         ])
         map.pointOfInterestFilter = .excludingAll
+        context.coordinator.beginProgrammaticViewportChangeForSetup()
         map.setRegion(viewportMemory.region, animated: false)
+        context.coordinator.endProgrammaticViewportChangeForSetup()
         if !inset {
             let compass = MKCompassButton(mapView: map)
             compass.compassVisibility = .adaptive
@@ -4747,7 +4766,9 @@ private struct OperationalMKMapView: UIViewRepresentable {
             inset: inset,
             predictiveHeadEnabled: predictiveHeadEnabled,
             focusedAircraftID: focusedAircraftID,
-            followFocusedDrone: followFocusedDrone
+            followFocusedDrone: followFocusedDrone,
+            followResumeEpoch: followResumeEpoch,
+            operatorAdjustedViewportSnapshot: operatorAdjustedViewport
         )
         if let artifactZoomRequest {
             context.coordinator.zoomToArtifact(artifactZoomRequest, on: map)
@@ -4788,12 +4809,19 @@ private struct OperationalMKMapView: UIViewRepresentable {
         }
         private var initialViewportSource: InitialViewportSource
         private var updating = false
+        /// Nested programmatic region changes must not be treated as operator pans.
+        private var programmaticViewportChangeDepth = 0
         private var currentInset = false
         private var lastCenteredFocusedAircraftID: String?
+        private var lastFollowCenterAt: TimeInterval = 0
+        private var lastFollowCenterCoordinate: CLLocationCoordinate2D?
+        private var appliedFollowResumeEpoch = -1
         private var currentFocusedAircraftID: String?
         private let pendingVisibleMapRect: MKMapRect?
         private var restoredViewportBounds = false
         private var regionChangeWasUserGesture = false
+        private static let followCenterMinInterval: TimeInterval = 0.5
+        private static let followCenterMinMoveMeters: CLLocationDistance = 1.0
         var onSelectClue: ([UUID]) -> Void
         var onSelectArtifact: (String, String?, OperationalNotam?) -> Void
         var onSelectAircraft: (String) -> Void
@@ -4801,6 +4829,20 @@ private struct OperationalMKMapView: UIViewRepresentable {
         var onAttributionViewportChanged: (EsriImageryViewport) -> Void
         private var lastAttributionViewport: EsriImageryViewport?
         var onLongPressTile: (Int, Int, Int) -> Void
+
+        private var isProgrammaticViewportChange: Bool { programmaticViewportChangeDepth > 0 }
+
+        private func beginProgrammaticViewportChange() {
+            programmaticViewportChangeDepth += 1
+        }
+
+        private func endProgrammaticViewportChange() {
+            programmaticViewportChangeDepth = max(0, programmaticViewportChangeDepth - 1)
+        }
+
+        /// makeUIView initial region must not look like an operator pan.
+        func beginProgrammaticViewportChangeForSetup() { beginProgrammaticViewportChange() }
+        func endProgrammaticViewportChangeForSetup() { endProgrammaticViewportChange() }
 
         init(
             viewport: Binding<MKCoordinateRegion>,
@@ -4963,7 +5005,9 @@ private struct OperationalMKMapView: UIViewRepresentable {
                     center: operatorCoordinate,
                     span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
                 )
+                beginProgrammaticViewportChange()
                 map.setRegion(region, animated: false)
+                endProgrammaticViewportChange()
                 viewport = region
                 viewportMemory.region = region
                 viewportMemory.visibleMapRect = validVisibleMapRect(from: map)
@@ -4986,6 +5030,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
             ) { partial, point in
                 partial.union(MKMapRect(origin: point, size: MKMapSize(width: 0, height: 0)))
             }
+            beginProgrammaticViewportChange()
             if points.count > 1, rect.width > 0 || rect.height > 0 {
                 if rect.width == 0 { rect = rect.insetBy(dx: -max(1, rect.height * 0.05), dy: 0) }
                 if rect.height == 0 { rect = rect.insetBy(dx: 0, dy: -max(1, rect.width * 0.05)) }
@@ -5007,6 +5052,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 viewportMemory.visibleMapRect = validVisibleMapRect(from: map)
                 viewportMemory.hasOperationalViewport = true
             }
+            endProgrammaticViewportChange()
             AppleLog.info("MapViewport", "Initial center set from available operational coordinates")
         }
 
@@ -5026,7 +5072,9 @@ private struct OperationalMKMapView: UIViewRepresentable {
             inset: Bool,
             predictiveHeadEnabled: Bool,
             focusedAircraftID: String?,
-            followFocusedDrone: Bool
+            followFocusedDrone: Bool,
+            followResumeEpoch: Int,
+            operatorAdjustedViewportSnapshot: Bool
         ) {
             updating = true
             currentInset = inset
@@ -5111,7 +5159,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 predictiveHeadEnabled: predictiveHeadEnabled,
                 focusedAircraftID: focusedAircraftID,
                 followFocusedDrone: followFocusedDrone,
-                operatorAdjustedViewport: operatorAdjustedViewport,
+                operatorAdjustedViewport: operatorAdjustedViewportSnapshot,
                 predictionSecond: nil,
                 positionIconAlphaByAircraftID: positionIconAlphaByAircraftID
             )
@@ -5315,22 +5363,23 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 }
                 map.removeAnnotation(annotation)
             }
-            if OperationalMapFocusPolicy.shouldFollow(inset: inset, enabled: followFocusedDrone,
-                                                       operatorAdjustedViewport: operatorAdjustedViewport),
-               let focusedAircraftID,
-               let coordinate = renderCoordinates[focusedAircraftID] {
-                if !hasActiveViewportGesture(in: map) {
-                    if inset { map.setCenter(coordinate, animated: false) }
-                    else { setCenterAndPersist(coordinate, on: map) }
-                }
-                if lastCenteredFocusedAircraftID != focusedAircraftID {
-                    AppleLog.info("MapFocus", "Centered focused aircraft=\(focusedAircraftID) inset=\(inset)")
-                    lastCenteredFocusedAircraftID = focusedAircraftID
-                }
-            } else {
-                lastCenteredFocusedAircraftID = nil
             }
+
+            // Follow centering is independent of annotation Equatable so resume-epoch /
+            // adjusted clears still recentre the full-screen map.
+            let followCoordinate: CLLocationCoordinate2D? = focusedAircraftID.flatMap { focusID in
+                guard let latest = renderInputByAircraftID[focusID]?.points.last else { return nil }
+                return CLLocationCoordinate2D(latitude: latest.latitude, longitude: latest.longitude)
             }
+            centerFollowedAircraftIfNeeded(
+                on: map,
+                inset: inset,
+                focusedAircraftID: focusedAircraftID,
+                followFocusedDrone: followFocusedDrone,
+                operatorAdjusted: operatorAdjustedViewportSnapshot,
+                coordinate: followCoordinate,
+                followResumeEpoch: followResumeEpoch
+            )
 
             updateCameraFov(
                 on: map,
@@ -5523,7 +5572,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
             reportAttributionViewport(mapView)
             footprintView.refreshForMapMovement()
-            guard !updating else { return }
+            guard !updating, !isProgrammaticViewportChange else { return }
             persistViewport(from: mapView)
             regionChangeWasUserGesture = false
         }
@@ -5532,7 +5581,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
             reportAttributionViewport(mapView)
             (mapView.subviews.first { $0 is UnitMapScaleView } as? UnitMapScaleView)?.refresh(on: mapView)
             footprintView.refreshForMapMovement()
-            guard !updating, hasActiveViewportGesture(in: mapView) else { return }
+            guard !updating, !isProgrammaticViewportChange, hasActiveViewportGesture(in: mapView) else { return }
             if !currentInset {
                 releaseFocusedAircraftForOperatorGesture()
                 operatorAdjustedViewport = true
@@ -5541,13 +5590,68 @@ private struct OperationalMKMapView: UIViewRepresentable {
             persistViewport(from: mapView)
         }
 
+        func centerFollowedAircraftIfNeeded(
+            on map: MKMapView,
+            inset: Bool,
+            focusedAircraftID: String?,
+            followFocusedDrone: Bool,
+            operatorAdjusted: Bool,
+            coordinate: CLLocationCoordinate2D?,
+            followResumeEpoch: Int
+        ) {
+            guard OperationalMapFocusPolicy.shouldFollow(
+                inset: inset,
+                enabled: followFocusedDrone,
+                operatorAdjustedViewport: operatorAdjusted
+            ),
+            let focusedAircraftID,
+            let coordinate,
+            CLLocationCoordinate2DIsValid(coordinate)
+            else {
+                lastCenteredFocusedAircraftID = nil
+                return
+            }
+            let force = followResumeEpoch != appliedFollowResumeEpoch
+            let now = ProcessInfo.processInfo.systemUptime
+            let movedEnough: Bool = {
+                guard let previous = lastFollowCenterCoordinate else { return true }
+                let from = CLLocation(latitude: previous.latitude, longitude: previous.longitude)
+                let to = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+                return from.distance(from: to) >= Self.followCenterMinMoveMeters
+            }()
+            let intervalElapsed = now - lastFollowCenterAt >= Self.followCenterMinInterval
+            guard force || (intervalElapsed && movedEnough) else { return }
+            if !hasActiveViewportGesture(in: map) {
+                if inset {
+                    beginProgrammaticViewportChange()
+                    map.setCenter(coordinate, animated: false)
+                    endProgrammaticViewportChange()
+                } else {
+                    setCenterAndPersist(coordinate, on: map)
+                }
+            }
+            if force || lastCenteredFocusedAircraftID != focusedAircraftID {
+                AppleLog.info("MapFocus", "Centered focused aircraft=\(focusedAircraftID) inset=\(inset)")
+                lastCenteredFocusedAircraftID = focusedAircraftID
+            }
+            appliedFollowResumeEpoch = followResumeEpoch
+            lastFollowCenterAt = now
+            lastFollowCenterCoordinate = coordinate
+        }
+
         func setCenterAndPersist(_ coordinate: CLLocationCoordinate2D, on map: MKMapView) {
             guard CLLocationCoordinate2DIsValid(coordinate) else { return }
+            // Preserve outer `updating` — clearing it mid-overlay update lets MapKit
+            // region callbacks mis-detect programmatic follow centers as operator pans.
+            beginProgrammaticViewportChange()
+            let wasUpdating = updating
             updating = true
             map.setCenter(coordinate, animated: false)
-            updating = false
+            updating = wasUpdating
+            endProgrammaticViewportChange()
             guard !currentInset, restoredViewportBounds, map.bounds.width >= 32, map.bounds.height >= 32 else { return }
-            viewport.center = coordinate
+            // Update memory only. Writing the SwiftUI viewport Binding every RID tick
+            // re-enters updateUIView and can hitch the main thread.
             viewportMemory.region.center = coordinate
             viewportMemory.visibleMapRect = validVisibleMapRect(from: map)
             viewportMemory.hasOperationalViewport = true
@@ -5569,6 +5673,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
             let coordinates = request.coordinates.map(\.clCoordinate).filter(CLLocationCoordinate2DIsValid)
             guard let first = coordinates.first else { return }
             lastArtifactZoomRequestID = request.id
+            beginProgrammaticViewportChange()
             updating = true
             if coordinates.count == 1 {
                 map.setRegion(
@@ -5599,6 +5704,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 )
             }
             updating = false
+            endProgrammaticViewportChange()
             guard !currentInset, restoredViewportBounds else { return }
             viewport = map.region
             viewportMemory.region = map.region
@@ -5663,9 +5769,11 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 return
             }
             restoredViewportBounds = true
+            beginProgrammaticViewportChange()
             updating = true
             map.setVisibleMapRect(rect, animated: false)
             updating = false
+            endProgrammaticViewportChange()
             persistViewport(from: map)
         }
 
@@ -5680,6 +5788,10 @@ private struct OperationalMKMapView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, regionWillChangeAnimated animated: Bool) {
+            if isProgrammaticViewportChange {
+                regionChangeWasUserGesture = false
+                return
+            }
             let userGesture = hasActiveViewportGesture(in: mapView)
             regionChangeWasUserGesture = userGesture
             guard userGesture, !currentInset else { return }

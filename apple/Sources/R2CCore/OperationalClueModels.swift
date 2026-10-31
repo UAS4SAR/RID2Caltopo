@@ -259,6 +259,23 @@ public enum ClueUploadPosition {
         return "Clue upload position id=\(id) source=\(source) offsetM=\(offset)"
     }
 
+    /// Privacy-safe post-save refine confirmation (no absolute coordinates).
+    public static func terrainRefineAppliedLogLine(
+        id: String,
+        offsetMeters: Double?
+    ) -> String {
+        let offset = offsetMeters.map {
+            String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), $0)
+        } ?? "nil"
+        return "Clue terrain refine applied id=\(id) offsetM=\(offset)"
+    }
+
+    /// True when the stored clue description already reflects a DEM hit (not flat-ground).
+    public static func descriptionIndicatesTerrainApplied(_ description: String) -> Bool {
+        description.localizedCaseInsensitiveContains("DEM used:")
+            && !description.localizedCaseInsensitiveContains("DEM used: none")
+    }
+
     /// Non-nadir clues with a usable height must not store/upload the drone as the clue.
     public static func isDistinctFromDrone(
         clueLatitude: Double,

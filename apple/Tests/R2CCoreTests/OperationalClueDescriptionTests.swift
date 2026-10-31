@@ -149,6 +149,20 @@ private func report(heading: Double? = 273.2, telemetry: OperationalClueReportTe
     #expect(line.contains("offsetM="))
     #expect(!line.contains("39."))
     #expect(!line.contains("-121."))
+    let refineLine = ClueUploadPosition.terrainRefineAppliedLogLine(
+        id: "28DED277",
+        offsetMeters: ClueUploadPosition.offsetMeters(
+            clueLatitude: projected.latitude,
+            clueLongitude: projected.longitude,
+            droneLatitude: droneLatitude,
+            droneLongitude: droneLongitude
+        )
+    )
+    #expect(refineLine.hasPrefix("Clue terrain refine applied id=28DED277 offsetM="))
+    #expect(!refineLine.contains("lat="))
+    #expect(!refineLine.contains("39."))
+    #expect(ClueUploadPosition.descriptionIndicatesTerrainApplied("  DEM used: local USGS GeoTIFF (1 m grid)"))
+    #expect(!ClueUploadPosition.descriptionIndicatesTerrainApplied("  DEM used: none (flat-ground estimate)"))
 }
 
 @Test func timedOutTerrainProjectionLogsTileTimeoutNotMiss() {

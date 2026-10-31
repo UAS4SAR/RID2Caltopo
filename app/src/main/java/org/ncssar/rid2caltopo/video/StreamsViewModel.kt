@@ -1594,6 +1594,8 @@ class StreamsViewModel(
     private val clueDiskMutex = kotlinx.coroutines.sync.Mutex()
     private val localClueRecordsById = mutableMapOf<String, AndroidClueRecord>()
     private val localClueSnapshotsById = mutableMapOf<String, ClueSnapshotRef>()
+    /** Local terrain refine landed while POST was in flight; edit CalTopo after publish. */
+    private val pendingCaltopoTerrainEdits = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private var clueHydrationGeneration = 0L
     var clueSaveInProgress by mutableStateOf(false)
         private set
@@ -3384,17 +3386,24 @@ class StreamsViewModel(
         )
         try {
             val jpeg = localClueStore.imageFile(record).readBytes()
-            android.util.Log.i(tag, clueUploadPositionLogLineForRecord(record))
+            // Prefer the latest local projection (post-save terrain may have landed during image I/O).
+            val latest = clueStorage {
+                clueDiskMutex.withLock {
+                    localClueStore.recordsForMap(record.mapKey).firstOrNull { it.id == record.id } ?: record
+                }
+            }.getOrDefault(record)
+            android.util.Log.i(tag, clueUploadPositionLogLineForRecord(latest))
             // Startup and retries: complete any partial prior POST (marker/media/link).
-            if (reconcilePendingClue(mapId, teamId, folder, record, jpeg)) {
+            if (reconcilePendingClue(mapId, teamId, folder, latest, jpeg)) {
                 endClueUpload(record.id)
                 clueUploadBackoff.reset(record.id)
+                flushPendingClueTerrainMarkerEdit(latest.id, latest.mapKey)
                 return
             }
             val outcome = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
             org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
-                mapId, teamId, record.id, record.lat, record.lng, record.title,
-                record.publishedDescription, folder, record.createdAtMs,
+                mapId, teamId, latest.id, latest.lat, latest.lng, latest.title,
+                latest.publishedDescription, folder, latest.createdAtMs,
                 jpeg,
             ) { result -> outcome.complete(result) }
             val result = outcome.await()
@@ -3435,6 +3444,7 @@ class StreamsViewModel(
                     tag,
                     "Clue upload success id=${record.id} attempt=$attempt status=${result.responseCode}",
                 )
+                flushPendingClueTerrainMarkerEdit(record.id, record.mapKey)
                 return
             }
             val delayMs = clueUploadBackoff.nextDelayMs(record.id)
@@ -3510,10 +3520,7 @@ class StreamsViewModel(
         val offset = drone?.let {
             clueUploadOffsetMeters(record.lat, record.lng, it.latitude, it.longitude)
         }
-        val terrainApplied = record.description.contains(
-            "DEM terrain projection applied",
-            ignoreCase = true,
-        )
+        val terrainApplied = descriptionIndicatesTerrainApplied(record.description)
         val source = when {
             record.description.contains(FLAT_SURFACE_LOCATION_NOTE) -> "flat"
             terrainApplied && (offset == null || offset < 1.0) -> "nadir"
@@ -4205,14 +4212,20 @@ class StreamsViewModel(
                     ) + " stage=post-save id=${record.id}"
                 )
                 if (!refined.terrainProjectionApplied) return@launch
-                val moved = cluePositionMoved(record.lat, record.lng, refined.lat, refined.lng)
+                val baseline = clueStorage {
+                    clueDiskMutex.withLock {
+                        localClueStore.recordsForMap(record.mapKey).firstOrNull { it.id == record.id } ?: record
+                    }
+                }.getOrDefault(record)
+                val moved = cluePositionMoved(baseline.lat, baseline.lng, refined.lat, refined.lng)
                 val updatedDescription = applyingTerrainProjectionDescription(
-                    description = record.description,
+                    description = baseline.description,
                     demSource = refined.demSource,
                     demResolutionMeters = refined.demResolutionMeters,
                     demSampleStale = refined.demSampleStale,
                 )
-                val updated = record.copy(
+                // Preserve uploadState from the live store so a concurrent publish is not rolled back.
+                val updated = baseline.copy(
                     lat = refined.lat,
                     lng = refined.lng,
                     alt = refined.alt,
@@ -4226,13 +4239,24 @@ class StreamsViewModel(
                         val index = localMapMarkers.indexOfFirst { it.id == updated.id }
                         if (index >= 0) localMapMarkers[index] = updated.toLocalMapMarker()
                     }
+                    val offset = clueUploadOffsetMeters(
+                        updated.lat,
+                        updated.lng,
+                        refined.droneLat,
+                        refined.droneLng,
+                    )
                     android.util.Log.i(
                         tag,
-                        "Clue terrain refine applied id=${updated.id} lat=${updated.lat} lng=${updated.lng} " +
-                            "previousLat=${record.lat} previousLng=${record.lng} demSource=${refined.demSource ?: "none"} moved=$moved"
+                        clueTerrainRefineAppliedLogLine(updated.id, offset),
                     )
                     if (moved && publishToCaltopo) {
-                        editPublishedClueMarkerPosition(updated)
+                        // Marker may not exist yet if upload is still in flight.
+                        if (updated.uploadState.equals("published", ignoreCase = true)) {
+                            pendingCaltopoTerrainEdits.remove(updated.id)
+                            editPublishedClueMarkerPosition(updated)
+                        } else {
+                            pendingCaltopoTerrainEdits.add(updated.id)
+                        }
                     }
                 }.onFailure { error ->
                     CTError(tag, "Clue terrain refine could not update local record id=${record.id}", Exception(error))
@@ -4241,6 +4265,16 @@ class StreamsViewModel(
                 ClueTerrainDiagnostics.endClueTerrainTask()
             }
         }
+    }
+
+    private suspend fun flushPendingClueTerrainMarkerEdit(clueId: String, mapKey: String) {
+        if (!pendingCaltopoTerrainEdits.remove(clueId)) return
+        val latest = localClueRecordsById[clueId] ?: clueStorage {
+            clueDiskMutex.withLock {
+                localClueStore.recordsForMap(mapKey).firstOrNull { it.id == clueId }
+            }
+        }.getOrNull() ?: return
+        editPublishedClueMarkerPosition(latest)
     }
 
     private suspend fun editPublishedClueMarkerPosition(record: AndroidClueRecord) {
@@ -4257,7 +4291,7 @@ class StreamsViewModel(
         ) { result -> outcome.complete(result) }
         val result = outcome.await()
         if (result.success()) {
-            android.util.Log.i(tag, "CalTopo marker position edited id=${record.id} lat=${record.lat} lng=${record.lng}")
+            android.util.Log.i(tag, "CalTopo marker position edited id=${record.id}")
         } else {
             CTWarn(tag, "CalTopo marker position edit failed id=${record.id} code=${result.responseCode}")
         }

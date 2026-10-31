@@ -289,6 +289,9 @@ final class AppleClueStore: ObservableObject {
         return record
     }
 
+    /// Clues whose local position was refined while a POST was in flight; edit CalTopo after publish.
+    private var pendingCaltopoTerrainEdits: Set<UUID> = []
+
     /// After Submit published a flat-ground estimate, apply a later S1M ray-march to the local clue and CalTopo marker (edit, not duplicate).
     func applyTerrainProjectionRefine(
         id: UUID,
@@ -312,24 +315,23 @@ final class AppleClueStore: ObservableObject {
         records[index] = record
         try? await persistIndex()
         clueChanged?(record)
+        let offset = ClueUploadPosition.offsetMeters(
+            clueLatitude: projection.latitude,
+            clueLongitude: projection.longitude,
+            droneLatitude: record.droneLatitude,
+            droneLongitude: record.droneLongitude
+        )
         AppleLog.info(
             "Clue",
-            String(
-                format: "Clue terrain refine applied id=%@ lat=%.6f lng=%.6f previousLat=%.6f previousLng=%.6f demSource=%@ moved=%@",
-                locale: Locale(identifier: "en_US_POSIX"),
-                id.uuidString,
-                projection.latitude,
-                projection.longitude,
-                previousLat,
-                previousLon,
-                projection.demSource ?? "none",
-                moved ? "true" : "false"
-            )
+            ClueUploadPosition.terrainRefineAppliedLogLine(id: id.uuidString, offsetMeters: offset)
         )
         guard moved else { return }
-        // Pending uploads pick up the new coordinates on the next POST. Published markers need an edit.
+        // Pending uploads re-read coords before POST. In-flight/published markers need an edit.
         if record.uploadState == .published || record.caltopoMarkerID != nil {
+            pendingCaltopoTerrainEdits.remove(id)
             await updatePublishedMarkerPosition(record)
+        } else {
+            pendingCaltopoTerrainEdits.insert(id)
         }
     }
 
@@ -353,7 +355,7 @@ final class AppleClueStore: ObservableObject {
             )
             AppleLog.info(
                 "Clue",
-                "CalTopo marker position edited id=\(record.id) marker=\(markerID) lat=\(record.clueLatitude) lng=\(record.clueLongitude)"
+                "CalTopo marker position edited id=\(record.id) marker=\(markerID)"
             )
         } catch {
             AppleLog.warning(
@@ -597,27 +599,29 @@ final class AppleClueStore: ObservableObject {
                 self.updateStatus()
                 let attempt = self.records.first(where: { $0.id == id })?.uploadAttempts ?? 1
                 do {
+                    // Prefer the latest local projection (post-save terrain may have landed during image I/O).
+                    guard let latest = self.records.first(where: { $0.id == id }) else {
+                        terminalReason = "record-missing"
+                        break
+                    }
                     AppleLog.info(
                         "Clue",
                         "Clue upload start id=\(id) attempt=\(attempt) mapId=\(self.mapID) teamId=\(destinationTeamID)"
                     )
-                    let terrainApplied = record.clueDescription
-                        .localizedCaseInsensitiveContains("DEM used:")
-                        && !record.clueDescription
-                            .localizedCaseInsensitiveContains("DEM used: none")
+                    let terrainApplied = ClueUploadPosition.descriptionIndicatesTerrainApplied(latest.clueDescription)
                     AppleLog.info(
                         "Clue",
                         ClueUploadPosition.logLine(
                             id: id.uuidString,
                             source: ClueUploadPosition.source(
                                 terrainProjectionApplied: terrainApplied,
-                                gimbalPitchDegrees: record.gimbalAngleDegrees
+                                gimbalPitchDegrees: latest.gimbalAngleDegrees
                             ),
                             offsetMeters: ClueUploadPosition.offsetMeters(
-                                clueLatitude: record.clueLatitude,
-                                clueLongitude: record.clueLongitude,
-                                droneLatitude: record.droneLatitude,
-                                droneLongitude: record.droneLongitude
+                                clueLatitude: latest.clueLatitude,
+                                clueLongitude: latest.clueLongitude,
+                                droneLatitude: latest.droneLatitude,
+                                droneLongitude: latest.droneLongitude
                             )
                         )
                     )
@@ -628,6 +632,12 @@ final class AppleClueStore: ObservableObject {
                     }
                     // Per-request timeout is 15s; multi-step clue publish gets a 45s attempt budget.
                     let attemptBudgetSeconds: Double = 45
+                    let publishLatitude = latest.clueLatitude
+                    let publishLongitude = latest.clueLongitude
+                    let publishTitle = latest.title
+                    let publishDescription = latest.publishedDescription
+                    let publishMediaID = latest.caltopoMediaID
+                    let publishCreatedMs = Int64(latest.capturedAt.timeIntervalSince1970 * 1_000)
                     let markerID: String = try await {
                         try await withThrowingTaskGroup(of: String.self) { group in
                             group.addTask {
@@ -635,12 +645,12 @@ final class AppleClueStore: ObservableObject {
                                 try Task.checkCancellation()
                                 return try await client.publishPhotoClue(CaltopoPhotoClue(
                                     markerID: id,
-                                    mediaID: record.caltopoMediaID,
-                                    latitude: record.clueLatitude,
-                                    longitude: record.clueLongitude,
-                                    title: record.title,
-                                    description: record.publishedDescription,
-                                    createdMilliseconds: Int64(record.capturedAt.timeIntervalSince1970 * 1_000),
+                                    mediaID: publishMediaID,
+                                    latitude: publishLatitude,
+                                    longitude: publishLongitude,
+                                    title: publishTitle,
+                                    description: publishDescription,
+                                    createdMilliseconds: publishCreatedMs,
                                     jpegData: jpeg,
                                     teamID: destinationTeamID,
                                     folderID: folderID
@@ -672,6 +682,11 @@ final class AppleClueStore: ObservableObject {
                         "Clue",
                         "Clue upload success id=\(id) attempt=\(attempt) status=200 marker=\(markerID)"
                     )
+                    // Terrain may have refined local coords while the flat POST was in flight.
+                    if self.pendingCaltopoTerrainEdits.remove(id) != nil,
+                       let published = self.records.first(where: { $0.id == id }) {
+                        await self.updatePublishedMarkerPosition(published)
+                    }
                     terminalReason = "published"
                     break
                 } catch is ClueUploadAttemptTimeout {

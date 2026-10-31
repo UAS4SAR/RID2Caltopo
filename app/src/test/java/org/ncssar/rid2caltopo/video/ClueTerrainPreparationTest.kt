@@ -131,5 +131,10 @@ class ClueTerrainPreparationTest {
         assertTrue(updated.contains("DEM used: local USGS GeoTIFF"))
         assertTrue(cluePositionMoved(39.0, -121.0, 39.001, -121.0))
         assertFalse(cluePositionMoved(39.0, -121.0, 39.0, -121.0))
+        assertTrue(descriptionIndicatesTerrainApplied(updated))
+        assertFalse(descriptionIndicatesTerrainApplied(body))
+        val refineLine = clueTerrainRefineAppliedLogLine("28DED277", 25.1)
+        assertTrue(refineLine.startsWith("Clue terrain refine applied id=28DED277 offsetM="))
+        assertFalse(refineLine.contains("lat="))
     }
 }

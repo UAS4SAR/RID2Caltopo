@@ -4619,6 +4619,12 @@ internal fun SplitMapPane(
                             if (!isInsetMode) {
                                 persistFullMapViewport(mapView)
                             }
+                            if (focusChanged || lastInsetFollowDesignator == null) {
+                                CTInfo(
+                                    MAP_PANE_TAG,
+                                    "Centered focused aircraft=$focusDesignator inset=$isInsetMode"
+                                )
+                            }
                             lastInsetFollowDesignator = focusDesignator
                             lastInsetFollowPoint = target
                         }
