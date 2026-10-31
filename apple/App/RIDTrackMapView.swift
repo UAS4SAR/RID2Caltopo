@@ -2008,19 +2008,36 @@ struct RIDTrackMapView: View {
                 }
                 let flightID = model.liveFlightID(aircraftID: defaultAircraftID)
                 let fallbackPoints = captureTrack.points.map(ClueBindingPoint.init(trackPoint:))
-                // Provisional bind from in-memory points only — form opens before live store scan.
-                let provisionalBinding = await Task.detached(priority: .utility) {
-                    ClueBinder.bind(
-                        aircraftID: defaultAircraftID,
+                // Provisional bind must not share the utility pool with GeoTIFF loads (38b387bb starvation).
+                // Hard wall-clock race; form opens with a short suffix bind if the full scan is busy.
+                let bindAircraftID = defaultAircraftID
+                let bindCaptureSource: String = snapshot.droneCapturedAtMs == nil ? "app-receive" : "stream-pts"
+                let quickFallbackPoints = Array(fallbackPoints.suffix(32))
+                let provisionalBinding = await ClueHardTimeout.race(
+                    milliseconds: 100,
+                    operation: {
+                        ClueBinder.bind(
+                            aircraftID: bindAircraftID,
+                            flightID: flightID,
+                            captureTimeMs: captureTimeMs,
+                            captureTimeSource: bindCaptureSource,
+                            captureReceivedAtMs: captureReceivedMs,
+                            points: fallbackPoints,
+                            framePosition: framePosition,
+                            originIsWaypoint: framePosition == nil
+                        )
+                    },
+                    fallback: ClueBinder.bind(
+                        aircraftID: bindAircraftID,
                         flightID: flightID,
                         captureTimeMs: captureTimeMs,
-                        captureTimeSource: snapshot.droneCapturedAtMs == nil ? "app-receive" : "stream-pts",
+                        captureTimeSource: bindCaptureSource,
                         captureReceivedAtMs: captureReceivedMs,
-                        points: fallbackPoints,
+                        points: quickFallbackPoints,
                         framePosition: framePosition,
                         originIsWaypoint: framePosition == nil
                     )
-                }.value
+                )
                 let waypointOrigin = framePosition == nil ? provisionalBinding.nearest : nil
                 let captureObservation = RidObservation(
                     source: ridCaptureObservation.source,
@@ -2923,15 +2940,15 @@ private struct ClueSubmissionView: View {
         )
     }
     private var projection: OperationalClueProjection? { terrainProjection ?? flatProjection }
-    /// Stable DEM-task identity. Excludes recovered height so DEM height recovery cannot cancel the ray-march mid-flight.
+    /// Capture-frozen DEM-task identity. Binding refresh must not restart S1M / EPQS walks.
     private var terrainTaskKey: ClueTerrainTaskKey? {
-        guard let observation else { return nil }
+        // Always key off the photograph's aircraft position, never the live-rebinding origin.
+        let capture = pending.observation
         return ClueTerrainTaskKey(
             aircraftID: selectedAircraftID,
-            // ~1 m quantization absorbs binding micro-jitter without restarting S1M walks.
-            latitudeE5: Int((observation.latitude * 100_000).rounded()),
-            longitudeE5: Int((observation.longitude * 100_000).rounded()),
-            altitudeDm: observation.altitudeMeters.map { Int(($0 * 10).rounded()) },
+            latitudeE5: Int((capture.latitude * 100_000).rounded()),
+            longitudeE5: Int((capture.longitude * 100_000).rounded()),
+            altitudeDm: capture.altitudeMeters.map { Int(($0 * 10).rounded()) },
             headingDeg: heading.degrees.map { Int($0.rounded()) } ?? Int.min,
             gimbalDeg: Int(gimbalAngle.rounded()),
             frozenHeightCm: pending.frozenProjectionHeight.map { Int(($0.meters * 100).rounded()) }
@@ -3172,38 +3189,33 @@ private struct ClueSubmissionView: View {
                 cameraHeadingSource = Self.headingSourceLabel(selection)
             }
             .task(id: terrainTaskKey) {
-                // Keep the last terrain result visible while the slider settles; only clear
-                // after a debounced DEM pass so Submit still has the best available point.
-                // Never leave terrainProjectionPending stuck on cancel (binding thrash).
-                // Height recovery must not retarget this task (see ClueTerrainTaskKey).
-                guard let key = terrainTaskKey, let input = projectionInput, let observation else {
+                // Form path is local-S1M only with hard timeouts. EPQS belongs in post-save refine.
+                // Capture-frozen key: binding refresh must not restart this work (DEM recovered storm).
+                guard let key = terrainTaskKey, let input = projectionInput else {
                     terrainProjectionPending = false
                     terrainProjection = nil
                     return
                 }
+                // Photograph position — never the live-rebinding origin.
+                let captureObservation = pending.observation
                 terrainProjectionPending = true
+                defer {
+                    if terrainTaskKey == key { terrainProjectionPending = false }
+                }
                 let demRef = input.demAltitudeReference
                 let aircraftID = input.aircraftID
 
-                // Prefer DEM recovery whenever demRef exists (Android refineCapturedClueTerrain).
-                // Keep the recovered meters local until the walk finishes so @State cannot cancel us.
                 var heightMeters = input.projectionHeightMeters
                 var recoveredHeight: OperationalClueProjectionHeightSelection?
-                if let demRef, let droneAlt = observation.altitudeMeters {
+                if let demRef, let droneAlt = captureObservation.altitudeMeters {
                     let localSample = await model.sampleLocalTerrainElevation(
-                        latitude: observation.latitude,
-                        longitude: observation.longitude
+                        latitude: captureObservation.latitude,
+                        longitude: captureObservation.longitude
                     )
-                    let sample = if let localSample { localSample } else {
-                        await model.sampleTerrainElevation(
-                            latitude: observation.latitude,
-                            longitude: observation.longitude
-                        )
-                    }
-                    if let sample, !sample.stale,
+                    if let localSample, !localSample.stale,
                        let recovered = demRef.heightMeters(
                         droneAltitudeMeters: droneAlt,
-                        groundRaw: sample.elevationMeters
+                        groundRaw: localSample.elevationMeters
                        ) {
                         heightMeters = recovered
                         recoveredHeight = OperationalClueProjectionHeightSelection(
@@ -3216,14 +3228,11 @@ private struct ClueSubmissionView: View {
                         )
                     }
                 }
-                guard !Task.isCancelled, terrainTaskKey == key else {
-                    terrainProjectionPending = false
-                    return
-                }
+                guard !Task.isCancelled, terrainTaskKey == key else { return }
 
-                // Bind-time parity: try S1M ray-march for ~300 ms off the UI wait path before the slider debounce.
+                // ~300 ms hard wall-clock local bind try (detached race, not cooperative-only).
                 let quick = await model.projectClueWithTerrainBounded(
-                    observation: observation,
+                    observation: captureObservation,
                     headingDegrees: input.headingDegrees,
                     aglMeters: heightMeters,
                     gimbalAngleDegrees: input.gimbalAngleDegrees,
@@ -3232,10 +3241,7 @@ private struct ClueSubmissionView: View {
                     relativeUpMeters: input.relativeUpMeters,
                     timeoutMilliseconds: 300
                 )
-                guard !Task.isCancelled, terrainTaskKey == key else {
-                    terrainProjectionPending = false
-                    return
-                }
+                guard !Task.isCancelled, terrainTaskKey == key else { return }
                 if quick.terrainProjectionApplied {
                     if let recoveredHeight { recoveredProjectionHeight = recoveredHeight }
                     terrainProjection = quick
@@ -3244,8 +3250,8 @@ private struct ClueSubmissionView: View {
                         "Clue",
                         OperationalClueProjectionLog.line(
                             projection: quick,
-                            aircraftLatitude: observation.latitude,
-                            aircraftLongitude: observation.longitude,
+                            aircraftLatitude: captureObservation.latitude,
+                            aircraftLongitude: captureObservation.longitude,
                             gimbalPitchDegrees: input.gimbalAngleDegrees,
                             gimbalYawDegrees: input.headingDegrees,
                             tileHit: true
@@ -3254,23 +3260,19 @@ private struct ClueSubmissionView: View {
                 }
 
                 try? await Task.sleep(for: .milliseconds(200))
-                guard !Task.isCancelled, terrainTaskKey == key else {
-                    terrainProjectionPending = false
-                    return
-                }
-                let refined = await model.projectClueWithTerrain(
-                    observation: observation,
+                guard !Task.isCancelled, terrainTaskKey == key else { return }
+                // Longer local-only pass still hard-capped; Submit never waits on this task.
+                let refined = await model.projectClueWithTerrainBounded(
+                    observation: captureObservation,
                     headingDegrees: input.headingDegrees,
                     aglMeters: heightMeters,
                     gimbalAngleDegrees: input.gimbalAngleDegrees,
                     terrainReferenceLatitude: input.terrainReferenceLatitude,
                     terrainReferenceLongitude: input.terrainReferenceLongitude,
-                    relativeUpMeters: input.relativeUpMeters
+                    relativeUpMeters: input.relativeUpMeters,
+                    timeoutMilliseconds: 2_000
                 )
-                guard !Task.isCancelled, terrainTaskKey == key else {
-                    terrainProjectionPending = false
-                    return
-                }
+                guard !Task.isCancelled, terrainTaskKey == key else { return }
                 if let recoveredHeight { recoveredProjectionHeight = recoveredHeight }
                 terrainProjection = refined
                 if refined.terrainProjectionApplied, let alt = refined.altitudeMeters, alt.isFinite {
@@ -3278,7 +3280,6 @@ private struct ClueSubmissionView: View {
                 } else if let alt = refined.altitudeMeters, alt.isFinite, refined.demSource != nil {
                     knownDemGroundMeters = alt
                 }
-                terrainProjectionPending = false
                 if !refined.terrainProjectionApplied {
                     AppleLog.info(
                         "Clue",
@@ -3289,8 +3290,8 @@ private struct ClueSubmissionView: View {
                     "Clue",
                     OperationalClueProjectionLog.line(
                         projection: refined,
-                        aircraftLatitude: observation.latitude,
-                        aircraftLongitude: observation.longitude,
+                        aircraftLatitude: captureObservation.latitude,
+                        aircraftLongitude: captureObservation.longitude,
                         gimbalPitchDegrees: input.gimbalAngleDegrees,
                         gimbalYawDegrees: input.headingDegrees
                     )
@@ -3379,28 +3380,40 @@ private struct ClueSubmissionView: View {
         let saveStarted = Date()
         let submittedAircraftID = selectedAircraftID
         let existingBinding = binding ?? pending.binding
-        let submittedBinding: ClueBinding = await {
-            let result = await withTaskGroup(of: ClueBinding?.self) { group in
-                group.addTask { await self.currentBinding() }
-                group.addTask {
-                    try? await Task.sleep(for: .milliseconds(200))
-                    return nil
+        let captureMs = captureTimeMs
+        let receivedMs = ClueBindingPoint.milliseconds(pending.snapshot.capturedAt)
+        let captureSource = pending.binding?.captureTimeSource ?? "app-receive"
+        let framePosition = usesCaptureTelemetry ? pending.binding?.framePosition : nil
+        let flightID = model.liveFlightID(aircraftID: submittedAircraftID)
+        let inMemoryPoints = (track?.points ?? []).map(ClueBindingPoint.init(trackPoint:))
+        let submittedBinding: ClueBinding = await ClueHardTimeout.race(
+            milliseconds: 200,
+            operation: {
+                if let existingBinding, existingBinding.aircraftID == submittedAircraftID {
+                    return ClueBinder.refresh(existingBinding, points: inMemoryPoints)
                 }
-                let first = await group.next() ?? nil
-                group.cancelAll()
-                return first
-            }
-            return result ?? existingBinding ?? ClueBinder.bind(
+                return ClueBinder.bind(
+                    aircraftID: submittedAircraftID,
+                    flightID: flightID,
+                    captureTimeMs: captureMs,
+                    captureTimeSource: captureSource,
+                    captureReceivedAtMs: receivedMs,
+                    points: inMemoryPoints,
+                    framePosition: framePosition,
+                    originIsWaypoint: framePosition == nil
+                )
+            },
+            fallback: existingBinding ?? ClueBinder.bind(
                 aircraftID: submittedAircraftID,
-                flightID: nil,
-                captureTimeMs: captureTimeMs,
-                captureTimeSource: pending.binding?.captureTimeSource ?? "app-receive",
-                captureReceivedAtMs: ClueBindingPoint.milliseconds(pending.snapshot.capturedAt),
-                points: (track?.points ?? []).map(ClueBindingPoint.init(trackPoint:)),
-                framePosition: pending.binding?.framePosition,
-                originIsWaypoint: pending.binding?.framePosition == nil
+                flightID: flightID,
+                captureTimeMs: captureMs,
+                captureTimeSource: captureSource,
+                captureReceivedAtMs: receivedMs,
+                points: Array(inMemoryPoints.suffix(32)),
+                framePosition: framePosition,
+                originIsWaypoint: framePosition == nil
             )
-        }()
+        )
         AppleLog.info(
             "Clue",
             "Clue save stage=bound elapsedMs=\(Int(Date().timeIntervalSince(saveStarted) * 1_000)) publishWithoutTerrainWait=true"
@@ -3570,7 +3583,8 @@ private struct ClueProjectionInput: Hashable {
     let demAltitudeReference: ClueDemAltitudeReference?
 }
 
-/// DEM `.task` identity. Intentionally omits recovered height / demRef so height recovery cannot self-cancel the ray-march.
+/// DEM `.task` identity from capture-frozen aircraft pose + operator gimbal/heading.
+/// Omits recovered height and live binding origin so neither can restart the walk.
 private struct ClueTerrainTaskKey: Hashable {
     let aircraftID: String
     let latitudeE5: Int

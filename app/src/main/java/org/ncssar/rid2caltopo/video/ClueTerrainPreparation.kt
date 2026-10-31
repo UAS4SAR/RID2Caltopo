@@ -14,6 +14,12 @@ internal const val FLAT_SURFACE_LOCATION_NOTE =
 /** Bind-time S1M try; Submit never waits longer than this for terrain. */
 internal const val CLUE_BIND_TERRAIN_TIMEOUT_MS = 300L
 
+/** Form-open async local refine cap (hard withTimeoutOrNull). Post-save uses [CLUE_POST_SAVE_TERRAIN_TIMEOUT_MS]. */
+internal const val CLUE_FORM_TERRAIN_TIMEOUT_MS = 2_000L
+
+/** Detached post-save S1M refine hard wall-clock cap. */
+internal const val CLUE_POST_SAVE_TERRAIN_TIMEOUT_MS = 8_000L
+
 /** Straight down. Matches the projection cutoff so a nadir sightline is not called an estimate. */
 internal fun isNadirGimbal(gimbalAngleDeg: Double): Boolean =
     gimbalAngleDeg.isFinite() && gimbalAngleDeg <= -89.9

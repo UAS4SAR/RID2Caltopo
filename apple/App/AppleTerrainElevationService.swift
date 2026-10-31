@@ -25,6 +25,7 @@ actor AppleTerrainElevationService {
     private var prefetchFailureCounts: [String: Int] = [:]
     private var prefetchRetryAfter: [String: Date] = [:]
     private var prefetchWorkerRunning = false
+    private var lastLocalMissLogAt = Date.distantPast
 
     init(session: URLSession = URLSession(configuration: .ephemeral)) {
         self.session = session
@@ -33,9 +34,8 @@ actor AppleTerrainElevationService {
         // Version 2 preserves the dynamic service's best-available resolution instead of
         // reusing legacy EPQS values quantized into approximately 30 m cells.
         cacheDirectory = root.appendingPathComponent("RID2Caltopo/TerrainV2", isDirectory: true)
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        localDEM = GeoTiffElevationSource(directory: support.appendingPathComponent("RID2Caltopo/DEM", isDirectory: true))
+        // Must match AppleDEMDownloadCoordinator / TerrainPrefetch destination.
+        localDEM = GeoTiffElevationSource(directory: AppleMapCachePaths.demRoot)
         // Altitude / AOL / clue projection must not wait for a map view to open.
         let dem = localDEM
         Task.detached(priority: .utility) { dem.warmCatalog() }
@@ -51,16 +51,30 @@ actor AppleTerrainElevationService {
             budgetGeneration = AppleUnifiedMapCache.generation
         }
         let localDEM = self.localDEM
-        // Clue ray-march must not miss S1M because the catalog was still cold after TerrainPrefetch.
-        guard let localSample = await Task.detached(priority: .utility, operation: {
-            if !localDEM.isCatalogReady { localDEM.warmCatalog() }
+        // Clue ray-march must not miss S1M because the catalog was still cold/stale after TerrainPrefetch.
+        let localSample = await Task.detached(priority: .utility, operation: {
+            localDEM.ensureCatalogCurrent()
             return localDEM.sample(latitude: latitude, longitude: longitude)
-        }).value else { return nil }
-        return OperationalTerrainSample(
-            elevationMeters: localSample.elevationMeters,
-            source: "usgs-geotiff-local-\(Int(localSample.horizontalResolutionMeters.rounded()))m",
-            horizontalResolutionMeters: localSample.horizontalResolutionMeters
-        )
+        }).value
+        if let localSample {
+            return OperationalTerrainSample(
+                elevationMeters: localSample.elevationMeters,
+                source: "usgs-geotiff-local-\(Int(localSample.horizontalResolutionMeters.rounded()))m",
+                horizontalResolutionMeters: localSample.horizontalResolutionMeters
+            )
+        }
+        // Ray-march can miss at many steps; keep the path dump, but not once per metre.
+        if Date().timeIntervalSince(lastLocalMissLogAt) >= 2 {
+            lastLocalMissLogAt = Date()
+            let tried = localDEM.candidateTilePaths(latitude: latitude, longitude: longitude)
+            AppleLog.info(
+                "Terrain",
+                "DEM sampleLocal miss lat=\(latitude) lon=\(longitude) catalogReady=\(localDEM.isCatalogReady) " +
+                    "tiles=\(localDEM.catalogTileCount) dir=\(localDEM.catalogDirectoryPath) " +
+                    "tried=\(tried.isEmpty ? "none" : tried.joined(separator: "|"))"
+            )
+        }
+        return nil
     }
 
     func sample(latitude: Double, longitude: Double) async -> OperationalTerrainSample? {
@@ -75,9 +89,9 @@ actor AppleTerrainElevationService {
         let key = OperationalAltitudeCoordinator.terrainCacheKey(coordinate)
         prefetch(latitude: latitude, longitude: longitude)
         let localDEM = self.localDEM
-        // Warm synchronously before falling through to EPQS so S1M tiles already on disk are used.
+        // Rebuild catalog when invalidate is pending so S1M tiles already on disk are used before EPQS.
         if let localSample = await Task.detached(priority: .utility, operation: {
-            if !localDEM.isCatalogReady { localDEM.warmCatalog() }
+            localDEM.ensureCatalogCurrent()
             return localDEM.sample(latitude: latitude, longitude: longitude)
         }).value {
             return OperationalTerrainSample(

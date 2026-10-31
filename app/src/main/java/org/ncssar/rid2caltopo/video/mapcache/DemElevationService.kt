@@ -16,6 +16,7 @@ import java.util.LinkedHashMap
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.roundToInt
 
 internal data class DemElevationSample(
@@ -50,6 +51,7 @@ internal class DemElevationService(context: Context) {
 
     private val demHttpCodeRegex = Regex("""dem http-fail code=(\d{3})""")
     private val networkFailCount = AtomicInteger(0)
+    private val lastLocalMissLogAtMs = AtomicLong(0L)
     private val localGeoTiff = GeoTiffDemSource(context.applicationContext)
     private val terrainReads = TerrainReadWorker()
     // Construction occurs on the UI thread; opening the store may wait for cache maintenance.
@@ -80,8 +82,8 @@ internal class DemElevationService(context: Context) {
      */
     suspend fun sampleLocalElevationMeters(lat: Double, lng: Double): DemElevationSample? = withContext(Dispatchers.IO) {
         if (!lat.isFinite() || !lng.isFinite()) return@withContext null
-        // Clue ray-march must not miss S1M because the catalog was still cold after TerrainPrefetch.
-        if (!localGeoTiff.isCatalogReady()) localGeoTiff.warmCatalog()
+        // Clue ray-march must not miss S1M because the catalog was still cold/stale after TerrainPrefetch.
+        localGeoTiff.ensureCatalogCurrent()
         val localTiff = terrainReads.read { checkCancelled -> localGeoTiff.sample(lat, lng, checkCancelled) }
         if (localTiff != null && localTiff.elevationMeters.isFinite() &&
             localTiff.elevationMeters >= -500.0 && localTiff.elevationMeters <= 10_000.0
@@ -91,6 +93,16 @@ internal class DemElevationService(context: Context) {
                 stale = false,
                 source = "usgs-geotiff-local-${localTiff.horizontalResolutionMeters.roundToInt()}m",
                 horizontalResolutionMeters = localTiff.horizontalResolutionMeters,
+            )
+        }
+        val now = android.os.SystemClock.elapsedRealtime()
+        val previous = lastLocalMissLogAtMs.get()
+        if (now - previous >= 2_000L && lastLocalMissLogAtMs.compareAndSet(previous, now)) {
+            val tried = localGeoTiff.candidateTilePaths(lat, lng)
+            MapCacheDebug.log(
+                "dem sampleLocal miss lat=$lat lng=$lng catalogReady=${localGeoTiff.isCatalogReady()} " +
+                    "tiles=${localGeoTiff.catalogTileCount()} " +
+                    "tried=${if (tried.isEmpty()) "none" else tried.joinToString("|")}",
             )
         }
         null

@@ -59,6 +59,8 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
     private var catalogDate = Date.distantPast
     private var catalogReady = false
     private var catalogWarmInFlight = false
+    private var catalogInvalidations: UInt64 = 0
+    private var catalogInvalidationLoaded: UInt64 = 0
     private var metadataCache: [URL: Metadata] = [:]
     private var fileCache: [URL: Data] = [:]
     private var blockCache: [String: Data] = [:]
@@ -70,13 +72,33 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
 
     public var isCatalogReady: Bool { lock.r2cWithLock { catalogReady } }
 
+    public var catalogDirectoryPath: String { directory.path }
+
+    public var catalogTileCount: Int { lock.r2cWithLock { tiles.count } }
+
+    /// True when a TerrainPrefetch / download invalidate has not yet been scanned into `tiles`.
+    public var needsCatalogRefresh: Bool {
+        lock.r2cWithLock {
+            !catalogReady
+                || catalogInvalidationLoaded != catalogInvalidations
+                || Date().timeIntervalSince(catalogDate) >= 60
+                || tiles.isEmpty
+        }
+    }
+
     /// Scan the DEM directory without waiting for a map view. Catalog I/O never holds [lock].
     public func warmCatalog() {
         refreshCatalogFromDisk()
     }
 
+    /// Synchronous catalog rebuild when clue sampling must see tiles TerrainPrefetch just wrote.
+    public func ensureCatalogCurrent() {
+        if needsCatalogRefresh { refreshCatalogFromDisk() }
+    }
+
     public func invalidateCatalog() {
         lock.r2cWithLock {
+            catalogInvalidations &+= 1
             catalogDate = .distantPast
             coarseTileURLs.removeAll()
         }
@@ -85,6 +107,14 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
 
     public func sampleElevationMeters(latitude: Double, longitude: Double) -> Double? {
         sample(latitude: latitude, longitude: longitude)?.elevationMeters
+    }
+
+    /// Paths considered for a local sample (bounds hit or nil-bounds wildcard). For miss diagnostics.
+    public func candidateTilePaths(latitude: Double, longitude: Double) -> [String] {
+        let snapshot = lock.r2cWithLock { tiles }
+        return snapshot
+            .filter { $0.bounds?.contains(latitude: latitude, longitude: longitude) != false }
+            .map(\.url.path)
     }
 
     /// `maximumHorizontalResolutionMeters` drops coarser rasters before any block is decoded.
@@ -100,7 +130,9 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
         let needsRefresh: Bool
         lock.lock()
         ready = catalogReady
-        needsRefresh = Date().timeIntervalSince(catalogDate) >= 60 || tiles.isEmpty
+        needsRefresh = catalogInvalidationLoaded != catalogInvalidations
+            || Date().timeIntervalSince(catalogDate) >= 60
+            || tiles.isEmpty
         snapshot = tiles
         lock.unlock()
         if !ready {
@@ -243,7 +275,9 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
             guard let self else { return }
             let again = self.lock.r2cWithLock { () -> Bool in
                 self.catalogWarmInFlight = false
-                return Date().timeIntervalSince(self.catalogDate) >= 60 || !self.catalogReady
+                return !self.catalogReady
+                    || self.catalogInvalidationLoaded != self.catalogInvalidations
+                    || Date().timeIntervalSince(self.catalogDate) >= 60
             }
             if again { self.scheduleWarmCatalog() }
         }
@@ -251,6 +285,7 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
 
     /// Directory listing happens with no lock held.
     private func refreshCatalogFromDisk() {
+        let invalidation = lock.r2cWithLock { catalogInvalidations }
         let urls = (try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]
         )) ?? []
@@ -264,6 +299,7 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
         lock.r2cWithLock {
             tiles = built
             catalogDate = Date()
+            catalogInvalidationLoaded = invalidation
             catalogReady = true
         }
     }

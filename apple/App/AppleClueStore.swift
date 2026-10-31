@@ -3,6 +3,8 @@ import ImageIO
 import R2CCore
 import UIKit
 
+private struct ClueUploadAttemptTimeout: Error {}
+
 struct AppleClueDraft: Sendable {
     let capturedAt: Date
     let aircraftID: String
@@ -537,16 +539,43 @@ final class AppleClueStore: ObservableObject {
         }
         uploadTasks[id] = Task { [weak self] in
             guard let self else { return }
+            var terminalReason = "loop-exit"
             while !Task.isCancelled && generation == self.configurationGeneration {
-                guard let record = self.records.first(where: { $0.id == id }),
-                      record.uploadState != .published,
-                      record.uploadState != .localOnly,
-                      let client = self.client
-                else { break }
+                guard let record = self.records.first(where: { $0.id == id }) else {
+                    terminalReason = "record-missing"
+                    break
+                }
+                if record.uploadState == .published {
+                    terminalReason = "already-published"
+                    break
+                }
+                if record.uploadState == .localOnly {
+                    terminalReason = "local-only"
+                    break
+                }
+                guard let client = self.client else {
+                    terminalReason = "client-nil"
+                    break
+                }
                 let imageURL = self.imageURL(for: record)
-                guard let jpeg = try? await self.disk.run({ try Data(contentsOf: imageURL) }),
-                      !Task.isCancelled, generation == self.configurationGeneration,
-                      self.records.contains(where: { $0.id == id }) else { break }
+                guard let jpeg = try? await self.disk.run({ try Data(contentsOf: imageURL) }) else {
+                    terminalReason = "image-unreadable"
+                    self.mutate(id) { value in
+                        value.uploadState = .failed
+                        value.lastUploadError = "Clue photo could not be read for upload."
+                    }
+                    try? await self.persistIndex()
+                    self.updateStatus()
+                    AppleLog.warning("Clue", "Clue upload failed id=\(id) reason=image-unreadable")
+                    break
+                }
+                guard !Task.isCancelled, generation == self.configurationGeneration,
+                      self.records.contains(where: { $0.id == id }) else {
+                    terminalReason = Task.isCancelled || generation != self.configurationGeneration
+                        ? "cancelled-or-reconfigured"
+                        : "record-removed"
+                    break
+                }
                 self.mutate(id) { value in
                     value.uploadState = .uploading
                     value.uploadAttempts += 1
@@ -554,25 +583,46 @@ final class AppleClueStore: ObservableObject {
                 }
                 try? await self.persistIndex()
                 self.updateStatus()
+                let attempt = self.records.first(where: { $0.id == id })?.uploadAttempts ?? 1
                 do {
-                    AppleLog.debug(
+                    AppleLog.info(
                         "Clue",
-                        "Clue upload start id=\(id) mapId=\(self.mapID) teamId=\(destinationTeamID)"
+                        "Clue upload start id=\(id) attempt=\(attempt) mapId=\(self.mapID) teamId=\(destinationTeamID)"
                     )
-                    let folderID = try await self.resolveTrackFolder(using: client)
-                    guard !Task.isCancelled, generation == self.configurationGeneration else { break }
-                    let markerID = try await client.publishPhotoClue(CaltopoPhotoClue(
-                        markerID: id,
-                        mediaID: record.caltopoMediaID,
-                        latitude: record.clueLatitude,
-                        longitude: record.clueLongitude,
-                        title: record.title,
-                        description: record.publishedDescription,
-                        createdMilliseconds: Int64(record.capturedAt.timeIntervalSince1970 * 1_000),
-                        jpegData: jpeg,
-                        teamID: destinationTeamID,
-                        folderID: folderID
-                    ))
+                    // Folder resolve + media POST must not hang forever without a terminal log.
+                    let markerID: String = try await {
+                        try await withThrowingTaskGroup(of: String.self) { group in
+                            group.addTask {
+                                let folderID = try await self.resolveTrackFolder(using: client)
+                                try Task.checkCancellation()
+                                return try await client.publishPhotoClue(CaltopoPhotoClue(
+                                    markerID: id,
+                                    mediaID: record.caltopoMediaID,
+                                    latitude: record.clueLatitude,
+                                    longitude: record.clueLongitude,
+                                    title: record.title,
+                                    description: record.publishedDescription,
+                                    createdMilliseconds: Int64(record.capturedAt.timeIntervalSince1970 * 1_000),
+                                    jpegData: jpeg,
+                                    teamID: destinationTeamID,
+                                    folderID: folderID
+                                ))
+                            }
+                            group.addTask {
+                                await Task.detached {
+                                    try? await Task.sleep(for: .seconds(90))
+                                }.value
+                                throw ClueUploadAttemptTimeout()
+                            }
+                            let first = try await group.next()!
+                            group.cancelAll()
+                            return first
+                        }
+                    }()
+                    guard !Task.isCancelled, generation == self.configurationGeneration else {
+                        terminalReason = "cancelled-after-publish-race"
+                        break
+                    }
                     self.mutate(id) { value in
                         value.uploadState = .published
                         value.caltopoMarkerID = markerID
@@ -580,10 +630,39 @@ final class AppleClueStore: ObservableObject {
                     }
                     try? await self.persistIndex()
                     self.updateStatus()
-                    AppleLog.debug("Clue", "CalTopo clue published id=\(id) marker=\(markerID)")
+                    AppleLog.info("Clue", "CalTopo clue published id=\(id) marker=\(markerID) attempt=\(attempt)")
+                    terminalReason = "published"
                     break
+                } catch is ClueUploadAttemptTimeout {
+                    let attempts = self.records.first(where: { $0.id == id })?.uploadAttempts ?? 1
+                    self.mutate(id) { value in
+                        value.uploadState = .failed
+                        value.lastUploadError = "Upload timed out after 90s; will retry."
+                    }
+                    try? await self.persistIndex()
+                    self.updateStatus()
+                    let delay = min(60.0, 2.0 * pow(2.0, Double(max(attempts - 1, 0))))
+                    AppleLog.warning(
+                        "Clue",
+                        "Clue upload failed id=\(id) attempt=\(attempts) retry=\(Int(delay))s error=timeout-90s"
+                    )
+                    terminalReason = "timeout-retrying"
+                    try? await Task.sleep(for: .seconds(delay))
                 } catch {
-                    guard !Task.isCancelled, generation == self.configurationGeneration else { break }
+                    guard !Task.isCancelled, generation == self.configurationGeneration else {
+                        terminalReason = "cancelled-or-reconfigured"
+                        self.mutate(id) { value in
+                            if value.uploadState == .uploading { value.uploadState = .pending }
+                            value.lastUploadError = "Upload interrupted; will retry."
+                        }
+                        try? await self.persistIndex()
+                        self.updateStatus()
+                        AppleLog.warning(
+                            "Clue",
+                            "Clue upload interrupted id=\(id) attempt=\(attempt) reason=cancelled-or-reconfigured error=\(error.localizedDescription)"
+                        )
+                        break
+                    }
                     let attempts = self.records.first(where: { $0.id == id })?.uploadAttempts ?? 1
                     self.mutate(id) { value in
                         value.uploadState = .failed
@@ -593,18 +672,24 @@ final class AppleClueStore: ObservableObject {
                     self.updateStatus()
                     if case let CaltopoLiveClientError.httpStatus(code, _) = error,
                        ClueTrackDurabilityIntegrity.isPermanentClientFailure(statusCode: code) {
-                        // Keep the record as failed; never delete. Media-probe 400/404
-                        // is handled inside publishPhotoClue and does not reach here as stop.
+                        AppleLog.warning(
+                            "Clue",
+                            "Clue upload failed id=\(id) attempt=\(attempts) reason=permanent-http-\(code) error=\(error.localizedDescription)"
+                        )
+                        terminalReason = "permanent-failure"
                         break
                     }
-                    // Match Android: 2 s doubling, capped at 60 s. One uploadTasks owner per id.
                     let delay = min(60.0, 2.0 * pow(2.0, Double(max(attempts - 1, 0))))
                     AppleLog.warning(
                         "Clue",
-                        "CalTopo clue upload failed id=\(id) attempt=\(attempts) retry=\(Int(delay))s error=\(error.localizedDescription)"
+                        "Clue upload failed id=\(id) attempt=\(attempts) retry=\(Int(delay))s error=\(error.localizedDescription)"
                     )
+                    terminalReason = "failed-retrying"
                     try? await Task.sleep(for: .seconds(delay))
                 }
+            }
+            if terminalReason != "published" && terminalReason != "already-published" {
+                AppleLog.info("Clue", "Clue upload end id=\(id) reason=\(terminalReason)")
             }
             if generation == self.configurationGeneration {
                 self.uploadTasks.removeValue(forKey: id)

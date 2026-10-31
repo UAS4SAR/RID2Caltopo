@@ -72,12 +72,29 @@ internal class GeoTiffDemSource(context: Context) {
     /** True after at least one catalog scan has published tiles (possibly empty). */
     fun isCatalogReady(): Boolean = catalogReady
 
+    /** True when a TerrainPrefetch / download invalidate has not yet been scanned into tiles. */
+    fun needsCatalogRefresh(): Boolean = synchronized(lock) {
+        !catalogReady || catalogNeedsRefreshLocked()
+    }
+
+    fun catalogTileCount(): Int = synchronized(lock) { tiles.size }
+
+    /** Paths/URIs considered for a local sample (bounds hit or nil-bounds wildcard). */
+    fun candidateTilePaths(lat: Double, lng: Double): List<String> = synchronized(lock) {
+        tiles.filter { it.bounds?.contains(lat, lng) != false }.map { it.displayName ?: it.id }
+    }
+
     /**
      * Scan Archive Dir for GeoTIFF tiles on a worker. Safe to call before SplitMapPane opens.
      * Never holds [lock] across SAF listing.
      */
     fun warmCatalog() {
         refreshCatalogFromDisk()
+    }
+
+    /** Synchronous catalog rebuild when clue sampling must see tiles TerrainPrefetch just wrote. */
+    fun ensureCatalogCurrent() {
+        if (needsCatalogRefresh()) refreshCatalogFromDisk()
     }
 
     /** Force a background rebuild of the tile catalog; existing tiles stay queryable until replaced. */

@@ -3570,7 +3570,13 @@ class StreamsViewModel(
                     } else {
                         clue.copy(binding = next)
                     }
-                    if (moveOrigin) requestDemClueProjectionRefresh(clue.designator)
+                    // Origin moves get a hard-capped local bind try only; never an unbounded EPQS walk.
+                    if (moveOrigin) {
+                        requestDemClueProjectionRefresh(
+                            clue.designator,
+                            bindTimeoutMs = CLUE_BIND_TERRAIN_TIMEOUT_MS,
+                        )
+                    }
                 }
                 kotlinx.coroutines.delay(500L)
             }
@@ -3630,37 +3636,37 @@ class StreamsViewModel(
         val snapshotHeading = clue.headingDeg
         clueProjectionJob = viewModelScope.launch(Dispatchers.Default) {
             val dem = altitudeCoordinator.demElevationService
-            // Prefer local S1M for the aircraft sample so ray-march stays on GeoTIFF, not EPQS.
-            val localPrefer: suspend (Double, Double) -> org.ncssar.rid2caltopo.video.mapcache.DemElevationSample? =
-                { lat, lng -> dem.sampleLocalElevationMeters(lat, lng) ?: dem.sampleElevationMeters(lat, lng) }
+            // Form path is local S1M only with hard timeouts. EPQS belongs in post-save refine.
             val localOnly: suspend (Double, Double) -> org.ncssar.rid2caltopo.video.mapcache.DemElevationSample? =
                 { lat, lng -> dem.sampleLocalElevationMeters(lat, lng) }
-            if (bindTimeoutMs != null) {
-                val quick = withTimeoutOrNull(bindTimeoutMs) {
-                    refineCapturedClueTerrain(
-                        clue,
-                        sampleElevation = localOnly,
-                        sampleLocalElevation = localOnly,
-                    )
-                }
-                if (quick != null && quick.terrainProjectionApplied) {
-                    applyPendingClueTerrainRefine(
-                        designator = designator,
-                        original = clue,
-                        refined = quick,
-                        snapshotGimbal = snapshotGimbal,
-                        snapshotHeading = snapshotHeading,
-                        stage = "bind-${bindTimeoutMs}ms",
-                    )
-                }
+            val quickTimeout = bindTimeoutMs ?: CLUE_BIND_TERRAIN_TIMEOUT_MS
+            val quick = withTimeoutOrNull(quickTimeout) {
+                refineCapturedClueTerrain(
+                    clue,
+                    sampleElevation = localOnly,
+                    sampleLocalElevation = localOnly,
+                )
             }
-            val refined = refineCapturedClueTerrain(
-                clue = _pendingClue.value?.takeIf {
-                    it.designator == clue.designator && it.timestamp == clue.timestamp
-                } ?: clue,
-                sampleElevation = localPrefer,
-                sampleLocalElevation = localOnly,
-            )
+            if (quick != null && quick.terrainProjectionApplied) {
+                applyPendingClueTerrainRefine(
+                    designator = designator,
+                    original = clue,
+                    refined = quick,
+                    snapshotGimbal = snapshotGimbal,
+                    snapshotHeading = snapshotHeading,
+                    stage = "bind-${quickTimeout}ms",
+                )
+            }
+            // Longer local-only pass still hard-capped; Submit never waits on this job.
+            val refined = withTimeoutOrNull(CLUE_FORM_TERRAIN_TIMEOUT_MS) {
+                refineCapturedClueTerrain(
+                    clue = _pendingClue.value?.takeIf {
+                        it.designator == clue.designator && it.timestamp == clue.timestamp
+                    } ?: clue,
+                    sampleElevation = localOnly,
+                    sampleLocalElevation = localOnly,
+                )
+            } ?: return@launch
             applyPendingClueTerrainRefine(
                 designator = designator,
                 original = clue,
@@ -3743,13 +3749,19 @@ class StreamsViewModel(
     ) {
         viewModelScope.launch(Dispatchers.Default) {
             val dem = altitudeCoordinator.demElevationService
-            val refined = refineCapturedClueTerrain(
-                clue,
-                sampleElevation = { lat, lng ->
-                    dem.sampleLocalElevationMeters(lat, lng) ?: dem.sampleElevationMeters(lat, lng)
-                },
-                sampleLocalElevation = { lat, lng -> dem.sampleLocalElevationMeters(lat, lng) },
-            )
+            val refined = withTimeoutOrNull(CLUE_POST_SAVE_TERRAIN_TIMEOUT_MS) {
+                refineCapturedClueTerrain(
+                    clue,
+                    sampleElevation = { lat, lng -> dem.sampleLocalElevationMeters(lat, lng) },
+                    sampleLocalElevation = { lat, lng -> dem.sampleLocalElevationMeters(lat, lng) },
+                )
+            } ?: run {
+                android.util.Log.i(
+                    tag,
+                    "Clue terrain refine timed out stage=post-save id=${record.id} timeoutMs=$CLUE_POST_SAVE_TERRAIN_TIMEOUT_MS",
+                )
+                return@launch
+            }
             android.util.Log.i(
                 tag,
                 clueProjectionMethodLogLine(

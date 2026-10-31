@@ -794,25 +794,37 @@ final class RIDTrackViewModel: ObservableObject {
         let terrainService = self.terrainService
         let height = draft.projectionHeightMeters ?? draft.aglMeters ?? draft.atoMeters
         Task.detached(priority: .utility) {
-            let projection = await OperationalClueGeometry.projectWithTerrain(
+            let flat = OperationalClueGeometry.project(
                 droneLatitude: draft.droneLatitude,
                 droneLongitude: draft.droneLongitude,
                 droneAltitudeMeters: draft.droneAltitudeMeters,
                 headingDegrees: draft.headingDegrees,
                 aglMeters: height,
-                gimbalAngleDegrees: draft.gimbalAngleDegrees,
-                terrainReferenceLatitude: draft.terrainReferenceLatitude,
-                terrainReferenceLongitude: draft.terrainReferenceLongitude,
-                relativeUpMeters: draft.relativeUpMeters,
-                sampleElevationMeters: { latitude, longitude in
-                    if let local = await terrainService.sampleLocal(latitude: latitude, longitude: longitude) {
-                        return local
-                    }
-                    return await terrainService.sample(latitude: latitude, longitude: longitude)
+                gimbalAngleDegrees: draft.gimbalAngleDegrees
+            )
+            // Hard wall-clock cap: cancellation alone cannot stop a stuck GeoTIFF decode.
+            let projection = await ClueHardTimeout.race(
+                milliseconds: 8_000,
+                operation: {
+                    await OperationalClueGeometry.projectWithTerrain(
+                        droneLatitude: draft.droneLatitude,
+                        droneLongitude: draft.droneLongitude,
+                        droneAltitudeMeters: draft.droneAltitudeMeters,
+                        headingDegrees: draft.headingDegrees,
+                        aglMeters: height,
+                        gimbalAngleDegrees: draft.gimbalAngleDegrees,
+                        terrainReferenceLatitude: draft.terrainReferenceLatitude,
+                        terrainReferenceLongitude: draft.terrainReferenceLongitude,
+                        relativeUpMeters: draft.relativeUpMeters,
+                        sampleElevationMeters: { latitude, longitude in
+                            await terrainService.sampleLocal(latitude: latitude, longitude: longitude)
+                        },
+                        sampleLocalElevationMeters: { latitude, longitude in
+                            await terrainService.sampleLocal(latitude: latitude, longitude: longitude)
+                        }
+                    )
                 },
-                sampleLocalElevationMeters: { latitude, longitude in
-                    await terrainService.sampleLocal(latitude: latitude, longitude: longitude)
-                }
+                fallback: flat
             )
             AppleLog.info(
                 "Clue",
@@ -848,27 +860,31 @@ final class RIDTrackViewModel: ObservableObject {
             aglMeters: aglMeters,
             gimbalAngleDegrees: gimbalAngleDegrees
         )
-        return await withTaskGroup(of: OperationalClueProjection?.self) { group in
-            group.addTask {
-                await self.projectClueWithTerrain(
-                    observation: observation,
+        let terrainService = self.terrainService
+        // Detached race: MainActor-inherited task groups cannot wake the timeout while work is hopping back.
+        return await ClueHardTimeout.race(
+            milliseconds: timeoutMilliseconds,
+            operation: {
+                await OperationalClueGeometry.projectWithTerrain(
+                    droneLatitude: observation.latitude,
+                    droneLongitude: observation.longitude,
+                    droneAltitudeMeters: observation.altitudeMeters,
                     headingDegrees: headingDegrees,
                     aglMeters: aglMeters,
                     gimbalAngleDegrees: gimbalAngleDegrees,
                     terrainReferenceLatitude: terrainReferenceLatitude,
                     terrainReferenceLongitude: terrainReferenceLongitude,
                     relativeUpMeters: relativeUpMeters,
-                    localOnly: true
+                    sampleElevationMeters: { latitude, longitude in
+                        await terrainService.sampleLocal(latitude: latitude, longitude: longitude)
+                    },
+                    sampleLocalElevationMeters: { latitude, longitude in
+                        await terrainService.sampleLocal(latitude: latitude, longitude: longitude)
+                    }
                 )
-            }
-            group.addTask {
-                try? await Task.sleep(for: .milliseconds(timeoutMilliseconds))
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first ?? flat
-        }
+            },
+            fallback: flat
+        )
     }
 
     func prefetchTerrainForDeviceLocation(latitude: Double, longitude: Double) {
@@ -1941,6 +1957,32 @@ final class RIDTrackViewModel: ObservableObject {
             "CalTopo",
             "Recording did not become linkable before the deferred CalTopo link deadline."
         )
+    }
+}
+
+/// Wall-clock timeout race that does not inherit caller actor isolation (see 980e4a00).
+enum ClueHardTimeout {
+    static func race<T: Sendable>(
+        milliseconds: UInt64,
+        operation: @escaping @Sendable () async -> T,
+        fallback: T
+    ) async -> T {
+        await withTaskGroup(of: T?.self) { group in
+            group.addTask {
+                await Task.detached(priority: .userInitiated) {
+                    await operation()
+                }.value
+            }
+            group.addTask {
+                await Task.detached {
+                    try? await Task.sleep(for: .milliseconds(milliseconds))
+                }.value
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first ?? fallback
+        }
     }
 }
 
