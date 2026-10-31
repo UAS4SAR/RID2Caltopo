@@ -1458,6 +1458,7 @@ struct ContentView: View {
                         await ridTracks.setLocalDeviceMarkerPublishingEnabled(false)
                         // Finish owned LiveTracks, then close the CalTopo map before
                         // tearing down the tracker websocket on quit / scene termination.
+                        clueStore.flushPendingBestEffort()
                         let disconnected = caltopoSettings.disconnectMap()
                         await ridTracks.configureCaltopoAwaiting(
                             disconnected,
@@ -2730,6 +2731,10 @@ struct ContentView: View {
 
     private func applyCaltopoConfiguration(_ configuration: AppleCaltopoConfiguration) {
         guard !credentialMutations.isBusy else { return }
+        if configuration.liveConfiguration == nil {
+            // Wake pending clue uploads while the map client is still configured.
+            clueStore.flushPendingBestEffort()
+        }
         ridTracks.configureCaltopo(
             configuration,
             trackFolderName: orgConfigSettings.trackFolder

@@ -784,9 +784,10 @@ final class AppleVideoFrameSource: ObservableObject {
             if currentPath == nil || currentPath == path {
                 sessionLagEstimator.publisherStarted(atMilliseconds: Self.nowMilliseconds)
             }
-        case let .hlsStreamStarted(path):
-            eventPath = path
-            publisherAvailable = true
+        case .hlsStreamStarted:
+            // On-demand HLS muxer creation is not proof an RTMP publisher exists.
+            // Treating it as Publishing caused reconnect/HLS loops after path destroy.
+            return
         case let .streamStopped(path, _):
             eventPath = path
             publisherAvailable = false
@@ -1310,13 +1311,21 @@ final class AppleVideoFrameSource: ObservableObject {
         nativeFailureHandled = true
         let message = String(decoding: detail.prefix { $0 != 0 }.map(UInt8.init(bitPattern:)), as: UTF8.self)
         let nativeDecodedFrames = R2CFFmpegSessionDecodedFrameCount(ffmpegSession)
-        decoderSelectionPolicy.nativeDecoderFailed(decodedFramesThisAttempt: nativeDecodedFrames)
+        decoderSelectionPolicy.nativeDecoderFailed(
+            decodedFramesThisAttempt: nativeDecodedFrames,
+            detail: message
+        )
         AppleLog.warning(
             "Video",
             "Native decoder failed path=\(currentPath ?? "unknown") detail=\(message) " +
                 "networkSnapshotId=\(AppleNetworkDiagnosticCenter.shared.currentSnapshotID)"
         )
-        if decoderSelectionPolicy.requiresHLSFallback, let currentURL {
+        if decoderSelectionPolicy.publisherPathAbsent {
+            mediaPublisherStatus = "Unavailable"
+            tearDownNativeDecoder()
+            handleRecoveryDecision(recoveryPolicy.setPublisherAvailable(false))
+            handleRecoveryDecision(recoveryPolicy.playerFailed(detail: message))
+        } else if decoderSelectionPolicy.requiresHLSFallback, let currentURL {
             tearDownNativeDecoder()
             installPlayer(url: currentURL, beginsRecoveryAttempt: false)
         } else {

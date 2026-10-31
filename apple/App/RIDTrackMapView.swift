@@ -2066,6 +2066,22 @@ struct RIDTrackMapView: View {
                     reportTelemetry.referenceLongitude = completeSEITelemetry.referenceLongitudeDegrees
                     reportTelemetry.referenceAltitudeMeters = completeSEITelemetry.referenceAltitudeMeters
                 }
+                let captureAGLMeters = captureAltitudeDisplay?.aglStale == true
+                    ? nil
+                    : captureAltitudeDisplay?.aglFeet.map { $0 * 0.3048 }
+                let captureATOMeters = captureAltitudeDisplay?.atoFeet.map { $0 * 0.3048 }
+                    ?? (ridCaptureObservation.heightReference == .takeoff
+                        ? ridCaptureObservation.heightMeters : nil)
+                let frozenProjectionHeight = OperationalClueGeometry.selectedProjectionHeight(
+                    freshAGLMeters: captureAGLMeters,
+                    atoMeters: captureATOMeters,
+                    validatedDJIRelativeUpMeters: completeSEITelemetry?.relativeUpMeters
+                )
+                // Match Android: stash DEM datum when SEI position is absent so DEM can
+                // recover height from waypoint altitude even while AGL display is pending.
+                let demAltitudeReference = completeSEITelemetry == nil
+                    ? model.clueDemAltitudeReference(aircraftID: defaultAircraftID)
+                    : nil
                 pendingSnapshot = PendingClueSnapshot(
                     snapshot: snapshot,
                     defaultAircraftID: defaultAircraftID,
@@ -2081,10 +2097,14 @@ struct RIDTrackMapView: View {
                     binding: binding,
                     tracksAtCapture: tracksAtCapture,
                     altitudeDisplaysAtCapture: altitudeDisplaysAtCapture,
+                    frozenProjectionHeight: frozenProjectionHeight,
+                    demAltitudeReference: demAltitudeReference,
                     showCrosshairCoordinates: session.model.crosshairReadoutActive && frameTelemetry != nil
                 )
                 AppleLog.info("Clue", "Snapshot bound aircraft=\(defaultAircraftID) \(ClueBindingText.formSummary(binding)) " +
-                    "captureSource=\(binding.captureTimeSource) origin=\(framePosition == nil ? "waypoint" : "frame")")
+                    "captureSource=\(binding.captureTimeSource) origin=\(framePosition == nil ? "waypoint" : "frame") " +
+                    "height=\(frozenProjectionHeight.map { String(format: "%.1f(%@)", $0.meters, $0.sourceLabel) } ?? "nil") " +
+                    "demRef=\(demAltitudeReference != nil)")
             } catch {
                 clueError = error.localizedDescription
             }
@@ -2664,6 +2684,10 @@ private struct PendingClueSnapshot: Identifiable {
     let binding: ClueBinding?
     let tracksAtCapture: [RidAircraftTrack]
     let altitudeDisplaysAtCapture: [String: OperationalAircraftAltitudeDisplay]
+    /// Capture-time projection height (may be nil when AGL/ATO are pending).
+    let frozenProjectionHeight: OperationalClueProjectionHeightSelection?
+    /// DEM datum for recovering height when SEI/AGL are absent (Android parity).
+    let demAltitudeReference: ClueDemAltitudeReference?
 
     init(
         snapshot: AppleVideoSnapshot,
@@ -2678,11 +2702,15 @@ private struct PendingClueSnapshot: Identifiable {
         binding: ClueBinding? = nil,
         tracksAtCapture: [RidAircraftTrack],
         altitudeDisplaysAtCapture: [String: OperationalAircraftAltitudeDisplay],
+        frozenProjectionHeight: OperationalClueProjectionHeightSelection? = nil,
+        demAltitudeReference: ClueDemAltitudeReference? = nil,
         showCrosshairCoordinates: Bool = false
     ) {
         self.binding = binding
         self.tracksAtCapture = tracksAtCapture
         self.altitudeDisplaysAtCapture = altitudeDisplaysAtCapture
+        self.frozenProjectionHeight = frozenProjectionHeight
+        self.demAltitudeReference = demAltitudeReference
         self.snapshot = snapshot
         self.showCrosshairCoordinates = showCrosshairCoordinates
         self.defaultAircraftID = defaultAircraftID
@@ -2733,6 +2761,8 @@ private struct ClueSubmissionView: View {
     @State private var terrainProjection: OperationalClueProjection?
     @State private var knownDemGroundMeters: Double?
     @State private var terrainProjectionPending = false
+    /// DEM-recovered height when capture-time AGL/ATO were unavailable (Android refine parity).
+    @State private var recoveredProjectionHeight: OperationalClueProjectionHeightSelection?
     @State private var submissionFeedback: String?
     @State private var submitting = false
     @State private var stampedPreview: UIImage?
@@ -2845,7 +2875,9 @@ private struct ClueSubmissionView: View {
     }
     private var atoMeters: Double? { display?.atoFeet.map { $0 * 0.3048 } }
     private var projectionHeight: OperationalClueProjectionHeightSelection? {
-        OperationalClueGeometry.selectedProjectionHeight(
+        if let recoveredProjectionHeight { return recoveredProjectionHeight }
+        if usesCaptureTelemetry, let frozen = pending.frozenProjectionHeight { return frozen }
+        return OperationalClueGeometry.selectedProjectionHeight(
             freshAGLMeters: display?.aglStale == true ? nil : aglMeters,
             atoMeters: atoMeters,
             validatedDJIRelativeUpMeters: usesCaptureTelemetry
@@ -2853,34 +2885,35 @@ private struct ClueSubmissionView: View {
         )
     }
     private var flatProjection: OperationalClueProjection? {
-        guard let observation, let projectionHeight else { return nil }
+        guard let observation else { return nil }
         return OperationalClueGeometry.project(
             droneLatitude: observation.latitude,
             droneLongitude: observation.longitude,
             droneAltitudeMeters: observation.altitudeMeters,
             headingDegrees: heading.degrees,
-            aglMeters: projectionHeight.meters,
+            aglMeters: projectionHeight?.meters,
             gimbalAngleDegrees: gimbalAngle,
             knownGroundElevationMeters: knownDemGroundMeters
         )
     }
     private var projection: OperationalClueProjection? { terrainProjection ?? flatProjection }
     private var projectionInput: ClueProjectionInput? {
-        guard let observation, let projectionHeight else { return nil }
+        guard let observation else { return nil }
         return ClueProjectionInput(
             aircraftID: selectedAircraftID,
             latitude: observation.latitude,
             longitude: observation.longitude,
             altitudeMeters: observation.altitudeMeters,
             headingDegrees: heading.degrees,
-            projectionHeightMeters: projectionHeight.meters,
+            projectionHeightMeters: projectionHeight?.meters,
             gimbalAngleDegrees: gimbalAngle,
             terrainReferenceLatitude: usesCaptureTelemetry
                 ? pending.djiCameraTelemetry?.referenceLatitudeDegrees : nil,
             terrainReferenceLongitude: usesCaptureTelemetry
                 ? pending.djiCameraTelemetry?.referenceLongitudeDegrees : nil,
             relativeUpMeters: usesCaptureTelemetry
-                ? pending.djiCameraTelemetry?.relativeUpMeters : nil
+                ? pending.djiCameraTelemetry?.relativeUpMeters : nil,
+            demAltitudeReference: usesCaptureTelemetry ? pending.demAltitudeReference : nil
         )
     }
     private var clueDistanceFeet: Double? {
@@ -2954,23 +2987,30 @@ private struct ClueSubmissionView: View {
                     Text("-90° is straight down; 0° is the horizon; positive angles look upward.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    if terrainProjectionPending {
-                        ProgressView("Intersecting camera sightline with DEM…")
-                    } else if let terrainProjection, terrainProjection.terrainProjectionApplied {
+                    if let terrainProjection, terrainProjection.terrainProjectionApplied {
                         Label(demProjectionLabel(terrainProjection), systemImage: "mountain.2")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                    } else if terrainProjection != nil {
-                        Label("Flat-ground estimate; no DEM intersection", systemImage: "exclamationmark.triangle")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else if projectionHeight == nil {
+                    } else if terrainProjection != nil || projectionHeight != nil {
                         Label(
-                            "Clue projection unavailable: no fresh AGL or relative altitude.",
-                            systemImage: "exclamationmark.triangle.fill"
+                            terrainProjectionPending
+                                ? "Refining with DEM in background…"
+                                : "Flat-ground estimate; no DEM intersection",
+                            systemImage: "exclamationmark.triangle"
                         )
                         .font(.caption)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(.secondary)
+                    } else if terrainProjectionPending {
+                        Label("Recovering projection height from DEM…", systemImage: "mountain.2")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Label(
+                            "No AGL yet — clue will be placed at the aircraft position (approximate).",
+                            systemImage: "exclamationmark.triangle"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                     }
                 }
                 Section("Report") {
@@ -3013,11 +3053,9 @@ private struct ClueSubmissionView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(projectionHeight == nil)
                     Button("Mark Local Only", systemImage: "mappin.and.ellipse") {
                         Task { await submit(publish: false) }
                     }
-                    .disabled(projectionHeight == nil)
                 } footer: {
                     Text("Close discards this report. Submit sends it to the Incident Map. Mark Local Only saves it on this device without uploading it.")
                 }
@@ -3096,23 +3134,58 @@ private struct ClueSubmissionView: View {
             .task(id: projectionInput) {
                 // Keep the last terrain result visible while the slider settles; only clear
                 // after a debounced DEM pass so Submit still has the best available point.
+                // Never leave terrainProjectionPending stuck on cancel (binding thrash).
                 guard let input = projectionInput, let observation else {
+                    terrainProjectionPending = false
                     terrainProjection = nil
                     return
                 }
                 terrainProjectionPending = true
                 try? await Task.sleep(for: .milliseconds(200))
-                guard !Task.isCancelled, projectionInput == input else { return }
+                guard !Task.isCancelled, projectionInput == input else {
+                    terrainProjectionPending = false
+                    return
+                }
+                var heightMeters = input.projectionHeightMeters
+                if heightMeters == nil, let demRef = input.demAltitudeReference,
+                   let droneAlt = observation.altitudeMeters {
+                    let sample = await model.sampleTerrainElevation(
+                        latitude: observation.latitude,
+                        longitude: observation.longitude
+                    )
+                    if let sample, !sample.stale,
+                       let recovered = demRef.heightMeters(
+                        droneAltitudeMeters: droneAlt,
+                        groundRaw: sample.elevationMeters
+                       ) {
+                        heightMeters = recovered
+                        recoveredProjectionHeight = OperationalClueProjectionHeightSelection(
+                            meters: recovered,
+                            sourceLabel: "DEM at captured position"
+                        )
+                        AppleLog.info(
+                            "Clue",
+                            String(format: "DEM recovered projection height=%.1f m aircraft=%@", recovered, input.aircraftID)
+                        )
+                    }
+                }
+                guard !Task.isCancelled, projectionInput == input else {
+                    terrainProjectionPending = false
+                    return
+                }
                 let refined = await model.projectClueWithTerrain(
                     observation: observation,
                     headingDegrees: input.headingDegrees,
-                    aglMeters: input.projectionHeightMeters,
+                    aglMeters: heightMeters,
                     gimbalAngleDegrees: input.gimbalAngleDegrees,
                     terrainReferenceLatitude: input.terrainReferenceLatitude,
                     terrainReferenceLongitude: input.terrainReferenceLongitude,
                     relativeUpMeters: input.relativeUpMeters
                 )
-                guard !Task.isCancelled, projectionInput == input else { return }
+                guard !Task.isCancelled, projectionInput == input else {
+                    terrainProjectionPending = false
+                    return
+                }
                 terrainProjection = refined
                 if refined.terrainProjectionApplied, let alt = refined.altitudeMeters, alt.isFinite {
                     knownDemGroundMeters = alt
@@ -3134,7 +3207,7 @@ private struct ClueSubmissionView: View {
                         refined.latitude,
                         refined.longitude,
                         input.headingDegrees.map { String(format: "%.1f", $0) } ?? "nil",
-                        input.projectionHeightMeters.map { String(format: "%.1f", $0) } ?? "nil",
+                        heightMeters.map { String(format: "%.1f", $0) } ?? "nil",
                         input.gimbalAngleDegrees,
                         refined.terrainProjectionApplied ? "true" : "false",
                         refined.demSource ?? "none",
@@ -3174,21 +3247,34 @@ private struct ClueSubmissionView: View {
                 break
             }
         }
-        guard let projectionHeight else {
-            submissionFeedback = "Clue projection needs fresh AGL or a valid relative altitude. Wait for altitude telemetry and try again."
-            AppleLog.warning(
-                "Clue",
-                "Clue form submission blocked because projection height is unavailable aircraft=\(selectedAircraftID)"
-            )
-            return
-        }
-        guard let shownObservation = observation, let shownProjection = projection else {
+        guard let shownObservation = observation else {
             submissionFeedback = "Aircraft telemetry is unavailable. Select an active aircraft and try again."
             AppleLog.error(
                 "Clue",
                 "Clue form submission blocked because aircraft telemetry is no longer available aircraft=\(selectedAircraftID)"
             )
             return
+        }
+        // Best available location immediately: DEM/flat when height exists, otherwise the
+        // aircraft/waypoint position flagged approximate. Never refuse Submit for lack of AGL.
+        let resolvedHeight = projectionHeight ?? OperationalClueProjectionHeightSelection(
+            meters: 1,
+            sourceLabel: "aircraft position (approximate)"
+        )
+        let shownProjection = projection ?? OperationalClueGeometry.project(
+            droneLatitude: shownObservation.latitude,
+            droneLongitude: shownObservation.longitude,
+            droneAltitudeMeters: shownObservation.altitudeMeters,
+            headingDegrees: heading.degrees,
+            aglMeters: projectionHeight?.meters,
+            gimbalAngleDegrees: gimbalAngle,
+            knownGroundElevationMeters: knownDemGroundMeters
+        )
+        if projectionHeight == nil {
+            AppleLog.warning(
+                "Clue",
+                "Clue submit using aircraft position approximate (no AGL/ATO/DEM height) aircraft=\(selectedAircraftID)"
+            )
         }
         submissionFeedback = nil
         // Bind once more to the nearest waypoint available now; this binding is final and the
@@ -3215,12 +3301,18 @@ private struct ClueSubmissionView: View {
         let reportTelemetry = usesCaptureTelemetry ? pending.reportTelemetry : OperationalClueReportTelemetry(
             observation: observation, aglMeters: aglMeters, atoMeters: atoMeters
         )
+        var descriptionForPublish = description
+        if projectionHeight == nil {
+            let note = "Location approximate: placed at aircraft/waypoint position (no AGL or relative altitude)."
+            let trimmed = descriptionForPublish.trimmingCharacters(in: .whitespacesAndNewlines)
+            descriptionForPublish = trimmed.isEmpty ? note : "\(trimmed)\n\n\(note)"
+        }
         let finalDescription = OperationalClueDescription.build(
-            description: description, designator: designator,
+            description: descriptionForPublish, designator: designator,
             projection: projection, format: coordinateDisplayFormat,
             heading: heading, gimbalAngleDegrees: gimbalAngle,
             aglMeters: aglMeters, atoMeters: atoMeters,
-            projectionHeight: projectionHeight,
+            projectionHeight: resolvedHeight,
             aircraftPositionSource: usesCaptureTelemetry && pending.djiCameraTelemetry != nil
                 ? "DJI SEI local displacement" : (observation.source == .djiVideo ? "stream" : "RID"),
             distanceMeters: clueDistanceFeet.map { $0 * 0.3048 },
@@ -3312,6 +3404,7 @@ private struct ClueProjectionInput: Hashable {
     let terrainReferenceLatitude: Double?
     let terrainReferenceLongitude: Double?
     let relativeUpMeters: Double?
+    let demAltitudeReference: ClueDemAltitudeReference?
 }
 
 private struct ClueDetailView: View {

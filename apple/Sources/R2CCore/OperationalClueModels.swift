@@ -161,6 +161,27 @@ public struct OperationalClueProjectionHeightSelection: Sendable, Equatable {
     }
 }
 
+/// Immutable datum correction captured with a RID/waypoint frame; never consults later aircraft state.
+public struct ClueDemAltitudeReference: Sendable, Equatable, Hashable {
+    public let correctionMeters: Double
+    public let scaleToMeters: Double
+
+    public init(correctionMeters: Double, scaleToMeters: Double = 1.0) {
+        self.correctionMeters = correctionMeters
+        self.scaleToMeters = scaleToMeters
+    }
+
+    public func heightMeters(droneAltitudeMeters: Double, groundRaw: Double) -> Double? {
+        guard droneAltitudeMeters.isFinite, droneAltitudeMeters > -1000,
+              groundRaw.isFinite,
+              correctionMeters.isFinite,
+              scaleToMeters.isFinite, scaleToMeters > 0
+        else { return nil }
+        let height = droneAltitudeMeters - groundRaw * scaleToMeters - correctionMeters
+        return height.isFinite && height > 0 && height <= 10_000 ? height : nil
+    }
+}
+
 public struct OperationalDJIVideoPosition: Sendable, Equatable {
     public let latitude: Double
     public let longitude: Double

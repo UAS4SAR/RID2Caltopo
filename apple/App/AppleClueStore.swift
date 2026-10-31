@@ -120,6 +120,14 @@ final class AppleClueStore: ObservableObject {
         }
     }
 
+    /// Best-effort pending-clue upload wake before map disconnect drops the client
+    /// (matches Android `flushPendingCluesBestEffort`).
+    func flushPendingBestEffort() {
+        guard client != nil, !teamID.isEmpty else { return }
+        AppleLog.info("Clue", "flushPendingBestEffort pending=\(pendingUploadCount)")
+        resume()
+    }
+
     func resumePendingUploads(generation: Int) async {
         await initialLoad?.value
         guard generation == configurationGeneration else { return }

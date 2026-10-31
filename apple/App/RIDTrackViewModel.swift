@@ -673,6 +673,16 @@ final class RIDTrackViewModel: ObservableObject {
         AppleLog.info("Terrain", "Manual ATO/AGL calibration remoteId=\(remoteID) targetFt=50")
     }
 
+    /// Snapshot-only DEM datum for clue height recovery (matches Android `clueDemAltitudeReference`).
+    func clueDemAltitudeReference(aircraftID: String) -> ClueDemAltitudeReference? {
+        altitudeCoordinatorByAircraftID[aircraftID]?.clueDemAltitudeReference
+    }
+
+    /// Off-main DEM sample for clue height recovery; never blocks the UI thread.
+    func sampleTerrainElevation(latitude: Double, longitude: Double) async -> OperationalTerrainSample? {
+        await terrainService.sample(latitude: latitude, longitude: longitude)
+    }
+
     func projectClueWithTerrain(
         observation: RidObservation,
         headingDegrees: Double?,

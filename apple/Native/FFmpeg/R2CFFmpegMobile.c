@@ -200,14 +200,34 @@ static void set_ffmpeg_error(
     set_status(session, R2C_FFMPEG_STATUS_FAILED, detail);
 }
 
-static bool retry_live_decode(R2CFFmpegSession *session, R2CDecodeRecovery *recovery, int error) {
+static bool retry_live_decode(
+    R2CFFmpegSession *session,
+    R2CDecodeRecovery *recovery,
+    AVCodecContext *codec,
+    int error,
+    int packetFlags
+) {
+    int64_t nowMs = av_gettime_relative() / 1000;
+    bool recoverable = error == AVERROR_UNKNOWN || error == AVERROR_INVALIDDATA;
     if (!R2CDecodeRecoveryRetry(recovery, !session->localPlayback,
             R2CFFmpegSessionDecodedFrameCount(session) > 0,
-            error == AVERROR_UNKNOWN || error == AVERROR_INVALIDDATA,
-            av_gettime_relative() / 1000)) return false;
-    /* VideoToolbox marks a malfunction/invalid session for reconfiguration on
-     * the next packet. Keep consuming the existing RTSP connection so it can do
-     * so, rather than adding reconnect, keyframe and buffer-start delays. */
+            recoverable,
+            nowMs)) return false;
+    /* After a hardware-accelerator fault, flush and wait for the next IDR so
+     * VideoToolbox can rebuild its reference chain instead of failing the session
+     * into an HLS fallback that 404s when the publisher is already gone. */
+    if (codec != NULL && recoverable && !recovery->waitForKeyframe) {
+        avcodec_flush_buffers(codec);
+        R2CDecodeRecoveryBeginKeyframeWait(recovery, nowMs);
+    }
+    if (recovery->waitForKeyframe && (packetFlags & AV_PKT_FLAG_KEY) == 0) {
+        pthread_mutex_lock(&session->lock);
+        session->decodeRecoveries += 1;
+        snprintf(session->lastDecodeRecovery, sizeof(session->lastDecodeRecovery),
+            "Waiting for H.264 IDR after VideoToolbox fault");
+        pthread_mutex_unlock(&session->lock);
+        return true;
+    }
     pthread_mutex_lock(&session->lock);
     session->decodeRecoveries += 1;
     snprintf(session->lastDecodeRecovery, sizeof(session->lastDecodeRecovery), "%s",
@@ -622,6 +642,23 @@ static void *decode_worker(void *opaque) {
         pthread_mutex_lock(&session->lock);
         session->lastHardwareError[0] = '\0';
         pthread_mutex_unlock(&session->lock);
+        if (decodeRecovery.waitForKeyframe && (packetFlags & AV_PKT_FLAG_KEY) == 0) {
+            int64_t nowMs = av_gettime_relative() / 1000;
+            if (!R2CDecodeRecoveryRetry(&decodeRecovery, !session->localPlayback,
+                    R2CFFmpegSessionDecodedFrameCount(session) > 0, true, nowMs)) {
+                set_status(session, R2C_FFMPEG_STATUS_FAILED,
+                    "Timed out waiting for H.264 IDR after VideoToolbox fault");
+                av_packet_unref(packet);
+                break;
+            }
+            pthread_mutex_lock(&session->lock);
+            session->decodeRecoveries += 1;
+            snprintf(session->lastDecodeRecovery, sizeof(session->lastDecodeRecovery),
+                "Dropping non-IDR packet while resyncing VideoToolbox");
+            pthread_mutex_unlock(&session->lock);
+            av_packet_unref(packet);
+            continue;
+        }
         result = avcodec_send_packet(codec, packet);
         av_packet_unref(packet);
         if (result < 0 && result != AVERROR(EAGAIN)) {
@@ -643,7 +680,7 @@ static void *decode_worker(void *opaque) {
                 set_status(session, R2C_FFMPEG_STATUS_CONNECTING, detail);
                 continue;
             }
-            if (retry_live_decode(session, &decodeRecovery, result)) continue;
+            if (retry_live_decode(session, &decodeRecovery, codec, result, packetFlags)) continue;
             set_ffmpeg_error(session, "H.264 packet rejected", result);
             break;
         }
@@ -654,7 +691,7 @@ static void *decode_worker(void *opaque) {
                 break;
             }
             if (result < 0) {
-                if (retry_live_decode(session, &decodeRecovery, result)) break;
+                if (retry_live_decode(session, &decodeRecovery, codec, result, packetFlags)) break;
                 set_ffmpeg_error(session, "VideoToolbox decode failed", result);
                 goto finished;
             }

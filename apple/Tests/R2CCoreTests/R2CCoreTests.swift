@@ -3755,6 +3755,7 @@ private func proximityDrone(
 
     policy.nativeDecoderFailed(decodedFramesThisAttempt: 0)
     #expect(policy.requiresHLSFallback)
+    #expect(!policy.publisherPathAbsent)
 
     // Frames decoded by the HLS backend must not make the next recovery retry
     // the already-incompatible native backend.
@@ -3768,6 +3769,18 @@ private func proximityDrone(
     var policy = LiveVideoDecoderSelectionPolicy()
 
     policy.nativeDecoderFailed(decodedFramesThisAttempt: 42)
+    #expect(!policy.requiresHLSFallback)
+    #expect(!policy.publisherPathAbsent)
+}
+
+@Test func liveVideoDecoderSelectionWaitsWhenPublisherPathIsAbsent() {
+    var policy = LiveVideoDecoderSelectionPolicy()
+
+    policy.nativeDecoderFailed(
+        decodedFramesThisAttempt: 0,
+        detail: "RTSP open failed: Server returned 404 Not Found (-875574520)"
+    )
+    #expect(policy.publisherPathAbsent)
     #expect(!policy.requiresHLSFallback)
 }
 

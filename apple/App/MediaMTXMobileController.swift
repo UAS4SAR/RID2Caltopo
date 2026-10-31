@@ -177,28 +177,37 @@ final class MediaMTXViewModel: ObservableObject {
                         await storageControl.perform { AppleFlightStorage.protect(AppleFlightStorage.dayName(date), owner: storageOwner) }
                     }
                     defer { storageControl.enqueue { AppleFlightStorage.release(owner: storageOwner) } }
-                    let localizedEvent = await Task.detached(priority: .utility) { Self.localizeCompletedRecordingIfNeeded(event) }.value
-                    let deliveredEvent = await Self.normalizeCompletedRecordingIfNeeded(localizedEvent)
-                    eventHandler?(deliveredEvent)
-                    switch deliveredEvent {
+                    // Deliver publisher lifecycle immediately. Recording normalize is slow
+                    // and must not block streamStopped / path-destroy delivery (which keeps
+                    // the UI stuck on Publishing and drives HLS 404 reconnect loops).
+                    let localizedEvent = await Task.detached(priority: .utility) {
+                        Self.localizeCompletedRecordingIfNeeded(event)
+                    }.value
+                    switch localizedEvent {
                     case let .serverStarted(version):
                         AppleStreamsServerStatus.shared.version = version
                         AppleStreamsServerStatus.shared.startedAt = Date()
                         status = "Running \(version)"
+                        eventHandler?(localizedEvent)
                     case let .streamStarted(path, _):
                         activePublisherPaths.insert(path)
                         status = "Streaming \(path)"
+                        eventHandler?(localizedEvent)
                     case let .streamStopped(path, _):
                         activePublisherPaths.remove(path)
                         status = "Stopped stream \(path)"
+                        eventHandler?(localizedEvent)
                     case let .streamError(path, _, detail):
                         if let path { activePublisherPaths.remove(path) }
                         status = "Error \(path ?? "stream"): \(detail)"
+                        eventHandler?(localizedEvent)
                     case let .recordFileCompleted(path, filePath, _):
                         status = "Recorded \(path)"
                         AppleLog.info("MediaMTX", "Recording file complete path=\(filePath)")
+                        let deliveredEvent = await Self.normalizeCompletedRecordingIfNeeded(localizedEvent)
+                        eventHandler?(deliveredEvent)
                     default:
-                        break
+                        eventHandler?(localizedEvent)
                     }
                 }
             }

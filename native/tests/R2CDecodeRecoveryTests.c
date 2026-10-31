@@ -31,6 +31,15 @@ int main(void) {
     R2CDecodeRecoveryFrameDecoded(&state);
     assert(R2CDecodeRecoveryRetry(&state, true, true, true, 0));
     assert(!R2CDecodeRecoveryRetry(&state, true, true, true, 2501));
+
+    R2CDecodeRecoveryFrameDecoded(&state);
+    R2CDecodeRecoveryBeginKeyframeWait(&state, 10000);
+    assert(state.waitForKeyframe);
+    assert(R2CDecodeRecoveryRetry(&state, true, true, true, 10000));
+    assert(R2CDecodeRecoveryRetry(&state, true, true, true, 17999));
+    assert(!R2CDecodeRecoveryRetry(&state, true, true, true, 18001));
+    R2CDecodeRecoveryFrameDecoded(&state);
+    assert(!state.waitForKeyframe);
     puts("R2CDecodeRecoveryTests passed");
     return 0;
 }
