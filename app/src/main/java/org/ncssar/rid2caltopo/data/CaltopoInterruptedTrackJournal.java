@@ -20,6 +20,8 @@ public final class CaltopoInterruptedTrackJournal {
     private static final Object LOCK = new Object();
     private static final Set<String> inFlight = java.util.concurrent.ConcurrentHashMap.newKeySet();
     @Nullable private static File testFile;
+    /** In-memory journal mirror; disk I/O must not run while LOCK is held. */
+    @Nullable private static JSONObject cachedRoot;
 
     private CaltopoInterruptedTrackJournal() { }
 
@@ -31,9 +33,10 @@ public final class CaltopoInterruptedTrackJournal {
                             @NonNull JSONArray points) {
         CaltopoRecoveryWork.requireOffMain();
         if (mapId.isEmpty() || liveTrackId.isEmpty()) return false;
+        final JSONObject toWrite;
         synchronized (LOCK) {
             try {
-                JSONObject root = readRoot();
+                JSONObject root = mutableRootLocked();
                 JSONArray entries = root.optJSONArray("entries");
                 if (entries == null) {
                     entries = new JSONArray();
@@ -57,12 +60,20 @@ public final class CaltopoInterruptedTrackJournal {
                 entry.put("label", label);
                 entry.put("description", description);
                 entry.put("points", new JSONArray(points.toString()));
-                writeRoot(root);
-                return true;
+                cachedRoot = root;
+                toWrite = copyRoot(root);
             } catch (Exception error) {
                 CaltopoClient.CTError(TAG, "Could not persist interrupted LiveTrack", error);
                 return false;
             }
+        }
+        try {
+            writeRoot(toWrite);
+            return true;
+        } catch (Exception error) {
+            synchronized (LOCK) { cachedRoot = null; }
+            CaltopoClient.CTError(TAG, "Could not persist interrupted LiveTrack", error);
+            return false;
         }
     }
 
@@ -89,7 +100,7 @@ public final class CaltopoInterruptedTrackJournal {
         Set<String> recovering = new HashSet<>();
         JSONArray entries;
         synchronized (LOCK) {
-            entries = readRoot().optJSONArray("entries");
+            entries = mutableRootLocked().optJSONArray("entries");
             if (entries == null) return recovering;
             entries = copyArray(entries);
         }
@@ -148,8 +159,9 @@ public final class CaltopoInterruptedTrackJournal {
         try {
             // Persist completion before cleanup: a cleanup retry must never POST
             // the Shape again, including after a restart or manual map deletion.
+            final JSONObject toWrite;
             synchronized (LOCK) {
-                JSONObject root = readRoot();
+                JSONObject root = mutableRootLocked();
                 JSONArray entries = root.optJSONArray("entries");
                 if (entries == null) { inFlight.remove(liveTrackId); return; }
                 for (int i = 0; i < entries.length(); i++) {
@@ -158,7 +170,14 @@ public final class CaltopoInterruptedTrackJournal {
                         entry.put("archiveUploaded", true);
                     }
                 }
-                writeRoot(root);
+                cachedRoot = root;
+                toWrite = copyRoot(root);
+            }
+            try {
+                writeRoot(toWrite);
+            } catch (Exception writeError) {
+                synchronized (LOCK) { cachedRoot = null; }
+                throw writeError;
             }
             AwaitingMapFlights.published(liveTrackId);
             runtime.getCalTopoSessionGateway().deleteLiveTrackOnMap(mapId, liveTrackId, deleteOp -> CaltopoRecoveryWork.offMainArchive(() -> {
@@ -180,9 +199,10 @@ public final class CaltopoInterruptedTrackJournal {
 
     public static void remove(@NonNull String liveTrackId) {
         CaltopoRecoveryWork.requireOffMain();
+        final JSONObject toWrite;
         synchronized (LOCK) {
             try {
-                JSONObject root = readRoot();
+                JSONObject root = mutableRootLocked();
                 JSONArray entries = root.optJSONArray("entries");
                 if (entries == null) return;
                 JSONArray kept = new JSONArray();
@@ -193,21 +213,32 @@ public final class CaltopoInterruptedTrackJournal {
                     }
                 }
                 root.put("entries", kept);
-                writeRoot(root);
+                cachedRoot = root;
+                toWrite = copyRoot(root);
             } catch (Exception error) {
                 CaltopoClient.CTError(TAG, "Could not clear interrupted LiveTrack " + liveTrackId, error);
+                return;
             }
+        }
+        try {
+            writeRoot(toWrite);
+        } catch (Exception error) {
+            synchronized (LOCK) { cachedRoot = null; }
+            CaltopoClient.CTError(TAG, "Could not clear interrupted LiveTrack " + liveTrackId, error);
         }
     }
 
     static void setFileForTesting(@Nullable File file) {
-        synchronized (LOCK) { testFile = file; }
+        synchronized (LOCK) {
+            testFile = file;
+            cachedRoot = null;
+        }
     }
 
     @NonNull
     static JSONArray entriesForTesting() {
         synchronized (LOCK) {
-            JSONArray entries = readRoot().optJSONArray("entries");
+            JSONArray entries = mutableRootLocked().optJSONArray("entries");
             return entries == null ? new JSONArray() : copyArray(entries);
         }
     }
@@ -215,7 +246,7 @@ public final class CaltopoInterruptedTrackJournal {
     /** Pending finished-track / interrupted Shape archives awaiting upload. */
     public static int pendingCount() {
         synchronized (LOCK) {
-            JSONArray entries = readRoot().optJSONArray("entries");
+            JSONArray entries = mutableRootLocked().optJSONArray("entries");
             return entries == null ? 0 : entries.length();
         }
     }
@@ -259,8 +290,21 @@ public final class CaltopoInterruptedTrackJournal {
         return feature;
     }
 
+    /** Caller holds LOCK. Cold-start disk read is the only I/O under LOCK. */
     @NonNull
-    private static JSONObject readRoot() {
+    private static JSONObject mutableRootLocked() {
+        if (cachedRoot != null) return cachedRoot;
+        cachedRoot = readRootFromDisk();
+        return cachedRoot;
+    }
+
+    @NonNull
+    private static JSONObject copyRoot(@NonNull JSONObject root) throws Exception {
+        return new JSONObject(root.toString());
+    }
+
+    @NonNull
+    private static JSONObject readRootFromDisk() {
         try {
             File file = journalFile();
             if (file == null || !file.isFile()) return emptyRoot();

@@ -571,22 +571,36 @@ fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
     val overlay = viewModel.overlay
     val pendingProfileSwitch = viewModel.pendingProfileSwitch
     val context = androidx.compose.ui.platform.LocalContext.current
+    val overlayScope = rememberCoroutineScope()
     val configPicker = rememberLauncherForActivityResult(FreshOpenDocument()) { uri ->
         if (uri == null) {
             viewModel.onUIEvent(UIEvent.DismissRequested)
         } else {
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+            // SAF + LoadConfigFile are disk/ContentResolver work — never on Main.
+            overlayScope.launch {
+                val outcome = withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.takePersistableUriPermission(
+                            uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        )
+                        CaltopoClient.LoadConfigFile(uri)
+                    }
+                }
+                outcome.fold(
+                    onSuccess = { loaded ->
+                        viewModel.onUIEvent(
+                            if (loaded) UIEvent.ConfigFileLoaded else UIEvent.NotAbleToReadConfigFile
+                        )
+                    },
+                    onFailure = { e ->
+                        CaltopoClient.CTError(
+                            "MapConnectionOverlayHost",
+                            "Config read failed: ",
+                            e as? Exception ?: Exception(e),
+                        )
+                        viewModel.onUIEvent(UIEvent.NotAbleToReadConfigFile)
+                    },
                 )
-                viewModel.onUIEvent(if (CaltopoClient.LoadConfigFile(uri)) {
-                    UIEvent.ConfigFileLoaded
-                } else {
-                    UIEvent.NotAbleToReadConfigFile
-                })
-            } catch (e: Exception) {
-                CaltopoClient.CTError("MapConnectionOverlayHost", "Config read failed: ", e)
-                viewModel.onUIEvent(UIEvent.NotAbleToReadConfigFile)
             }
         }
     }
