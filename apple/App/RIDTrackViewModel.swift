@@ -807,8 +807,10 @@ final class RIDTrackViewModel: ObservableObject {
         let terrainService = self.terrainService
         let height = draft.projectionHeightMeters ?? draft.aglMeters ?? draft.atoMeters
         Task.detached(priority: .utility) {
+            let catalogStarted = ContinuousClock.now
             await terrainService.prepareLocalCatalogForClueSampling()
             guard !Task.isCancelled else { return }
+            let catalogMs = clueElapsedMilliseconds(since: catalogStarted)
             let flat = OperationalClueGeometry.project(
                 droneLatitude: draft.droneLatitude,
                 droneLongitude: draft.droneLongitude,
@@ -824,10 +826,10 @@ final class RIDTrackViewModel: ObservableObject {
                 flatFallbackReason: "terrain refine timed out"
             )
             // Hard wall-clock cap: cancellation alone cannot stop a stuck GeoTIFF decode.
-            let projection = await ClueHardTimeout.race(
+            let (projection, timing) = await ClueHardTimeout.race(
                 milliseconds: 8_000,
                 operation: {
-                    await OperationalClueGeometry.projectWithTerrain(
+                    var result = await terrainService.projectLocalClueRayMarch(
                         droneLatitude: draft.droneLatitude,
                         droneLongitude: draft.droneLongitude,
                         droneAltitudeMeters: draft.droneAltitudeMeters,
@@ -836,17 +838,14 @@ final class RIDTrackViewModel: ObservableObject {
                         gimbalAngleDegrees: draft.gimbalAngleDegrees,
                         terrainReferenceLatitude: draft.terrainReferenceLatitude,
                         terrainReferenceLongitude: draft.terrainReferenceLongitude,
-                        relativeUpMeters: draft.relativeUpMeters,
-                        sampleElevationMeters: { latitude, longitude in
-                            await terrainService.sampleLocal(latitude: latitude, longitude: longitude)
-                        },
-                        sampleLocalElevationMeters: { latitude, longitude in
-                            await terrainService.sampleLocal(latitude: latitude, longitude: longitude)
-                        }
+                        relativeUpMeters: draft.relativeUpMeters
                     )
+                    result.1.catalogMs += catalogMs
+                    return result
                 },
-                fallback: timedOutFlat
+                fallback: (timedOutFlat, OperationalClueRayMarchTiming())
             )
+            AppleLog.info("Clue", timing.infoLine + " stage=post-save id=\(recordID)")
             AppleLog.info(
                 "Clue",
                 OperationalClueProjectionLog.line(
@@ -905,15 +904,20 @@ final class RIDTrackViewModel: ObservableObject {
             flatFallbackReason: "terrain refine timed out"
         )
         let terrainService = self.terrainService
+        let preparedCatalogMs: Double
         if prepareCatalog {
+            let catalogStarted = ContinuousClock.now
             await terrainService.prepareLocalCatalogForClueSampling()
+            preparedCatalogMs = clueElapsedMilliseconds(since: catalogStarted)
             if Task.isCancelled { return flat }
+        } else {
+            preparedCatalogMs = 0
         }
         // Detached race: MainActor-inherited task groups cannot wake the timeout while work is hopping back.
-        return await ClueHardTimeout.race(
+        let (projection, timing) = await ClueHardTimeout.race(
             milliseconds: timeoutMilliseconds,
             operation: {
-                await OperationalClueGeometry.projectWithTerrain(
+                var result = await terrainService.projectLocalClueRayMarch(
                     droneLatitude: observation.latitude,
                     droneLongitude: observation.longitude,
                     droneAltitudeMeters: observation.altitudeMeters,
@@ -922,17 +926,15 @@ final class RIDTrackViewModel: ObservableObject {
                     gimbalAngleDegrees: gimbalAngleDegrees,
                     terrainReferenceLatitude: terrainReferenceLatitude,
                     terrainReferenceLongitude: terrainReferenceLongitude,
-                    relativeUpMeters: relativeUpMeters,
-                    sampleElevationMeters: { latitude, longitude in
-                        await terrainService.sampleLocal(latitude: latitude, longitude: longitude)
-                    },
-                    sampleLocalElevationMeters: { latitude, longitude in
-                        await terrainService.sampleLocal(latitude: latitude, longitude: longitude)
-                    }
+                    relativeUpMeters: relativeUpMeters
                 )
+                result.1.catalogMs += preparedCatalogMs
+                return result
             },
-            fallback: timedOutFlat
+            fallback: (timedOutFlat, OperationalClueRayMarchTiming())
         )
+        AppleLog.info("Clue", timing.infoLine + " stage=bounded-\(timeoutMilliseconds)ms")
+        return projection
     }
 
     func prefetchTerrainForDeviceLocation(latitude: Double, longitude: Double) {
@@ -2118,6 +2120,12 @@ enum ClueTerrainDiagnostics {
             )
         }
     }
+}
+
+private func clueElapsedMilliseconds(since start: ContinuousClock.Instant) -> Double {
+    let duration = start.duration(to: .now)
+    return Double(duration.components.seconds) * 1_000
+        + Double(duration.components.attoseconds) / 1e15
 }
 
 /// Wall-clock timeout race that does not inherit caller actor isolation (see 980e4a00).

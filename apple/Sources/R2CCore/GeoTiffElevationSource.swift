@@ -67,8 +67,59 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
     private var blockOrder: [String] = []
     /// Tiles already known to be coarser than a footprint's S1M limit. Avoids remapping them on every ray step.
     private var coarseTileURLs: Set<URL> = []
+    /// Shared decoded-block budget. Clue ray-marches raise this so a 2-tile walk stays hot.
+    private var maxCachedFiles = 2
+    private var maxCachedBlocks = 8
+    private var clueSessionDepth = 0
+    private var timingCatalogNs: Int64 = 0
+    private var timingTileOpenDecodeNs: Int64 = 0
+    private var timingSampleCount = 0
 
     public init(directory: URL) { self.directory = directory }
+
+    /// Keep decoded S1M tiles/blocks in memory for a clue walk. Nested; thread-safe.
+    public func beginClueSamplingSession() {
+        lock.r2cWithLock {
+            clueSessionDepth += 1
+            if clueSessionDepth == 1 {
+                maxCachedFiles = 8
+                maxCachedBlocks = 64
+                timingCatalogNs = 0
+                timingTileOpenDecodeNs = 0
+                timingSampleCount = 0
+            }
+        }
+    }
+
+    public func endClueSamplingSession() {
+        lock.r2cWithLock {
+            guard clueSessionDepth > 0 else { return }
+            clueSessionDepth -= 1
+            if clueSessionDepth == 0 {
+                maxCachedFiles = 2
+                maxCachedBlocks = 8
+                while fileCache.count > maxCachedFiles, let key = fileCache.keys.first {
+                    fileCache.removeValue(forKey: key)
+                }
+                while blockOrder.count > maxCachedBlocks {
+                    blockCache.removeValue(forKey: blockOrder.removeFirst())
+                }
+            }
+        }
+    }
+
+    /// Snapshot and reset session counters (catalog lookup + tile open/decode + samples).
+    public func takeClueSamplingTiming() -> (catalogMs: Double, tileOpenDecodeMs: Double, sampleCount: Int) {
+        lock.r2cWithLock {
+            let catalogMs = Double(timingCatalogNs) / 1_000_000
+            let tileMs = Double(timingTileOpenDecodeNs) / 1_000_000
+            let samples = timingSampleCount
+            timingCatalogNs = 0
+            timingTileOpenDecodeNs = 0
+            timingSampleCount = 0
+            return (catalogMs, tileMs, samples)
+        }
+    }
 
     public var isCatalogReady: Bool { lock.r2cWithLock { catalogReady } }
 
@@ -172,6 +223,7 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
     ) -> Sample? {
         guard latitude.isFinite, longitude.isFinite else { return nil }
         if isCancelled() { return nil }
+        let catalogStarted = DispatchTime.now().uptimeNanoseconds
         let snapshot: [Tile]
         let ready: Bool
         let needsRefresh: Bool
@@ -182,6 +234,11 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
             || tiles.isEmpty
         snapshot = tiles
         lock.unlock()
+        let catalogElapsed = Int64(DispatchTime.now().uptimeNanoseconds &- catalogStarted)
+        lock.r2cWithLock {
+            timingCatalogNs += catalogElapsed
+            timingSampleCount += 1
+        }
         if !ready {
             scheduleWarmCatalog()
             return nil
@@ -190,8 +247,9 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
 
         var best: Sample?
         var newlyCoarse: [URL] = []
+        let decodeStarted = DispatchTime.now().uptimeNanoseconds
         for tile in snapshot where tile.bounds?.contains(latitude: latitude, longitude: longitude) != false {
-            if isCancelled() { return best }
+            if isCancelled() { break }
             let skipCoarse = lock.r2cWithLock { coarseTileURLs.contains(tile.url) }
             if maximumHorizontalResolutionMeters.isFinite, skipCoarse { continue }
             guard let data = loadFileUnlocked(tile.url),
@@ -204,7 +262,7 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
                 }
                 continue
             }
-            if isCancelled() { return best }
+            if isCancelled() { break }
             guard let value = sample(tile: tile, data: data, metadata: metadata, latitude: latitude, longitude: longitude),
                   value.isFinite, (-500 ... 10_000).contains(value)
             else { continue }
@@ -213,6 +271,8 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
                 best = candidate
             }
         }
+        let decodeElapsed = Int64(DispatchTime.now().uptimeNanoseconds &- decodeStarted)
+        lock.r2cWithLock { timingTileOpenDecodeNs += decodeElapsed }
         if !newlyCoarse.isEmpty {
             lock.r2cWithLock {
                 for url in newlyCoarse {
@@ -357,7 +417,10 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
         if let value = lock.r2cWithLock({ fileCache[url] }) { return value }
         guard let value = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
         lock.r2cWithLock {
-            if fileCache.count >= 2, let key = fileCache.keys.first { fileCache.removeValue(forKey: key) }
+            let limit = maxCachedFiles
+            while fileCache.count >= limit, let key = fileCache.keys.first {
+                fileCache.removeValue(forKey: key)
+            }
             fileCache[url] = value
         }
         return value
@@ -474,7 +537,10 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
         guard let decoded = decodeBlock(raw, metadata: metadata, width: blockWidth, height: blockHeight) else { return nil }
         lock.r2cWithLock {
             blockCache[cacheKey] = decoded; blockOrder.append(cacheKey)
-            if blockOrder.count > 8 { blockCache.removeValue(forKey: blockOrder.removeFirst()) }
+            let limit = maxCachedBlocks
+            while blockOrder.count > limit {
+                blockCache.removeValue(forKey: blockOrder.removeFirst())
+            }
         }
         return extractSample(block: decoded, metadata: metadata, blockWidth: blockWidth,
                              localColumn: localColumn, localRow: localRow)

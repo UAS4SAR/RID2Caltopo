@@ -32,7 +32,7 @@ internal fun clueProjectionMethod(
     return if (isNadirGimbal(gimbalAngleDeg)) "nadir-DEM" else "terrain-raymarch"
 }
 
-/** One line per clue: method, tile hit/miss, gimbal pitch/yaw, lat/lon delta from aircraft. */
+/** One line per clue: method, tile hit/miss/timeout, gimbal pitch/yaw, lat/lon delta from aircraft. */
 internal fun clueProjectionMethodLogLine(
     clueLat: Double,
     clueLng: Double,
@@ -43,9 +43,11 @@ internal fun clueProjectionMethodLogLine(
     terrainProjectionApplied: Boolean,
     demSource: String?,
     tileHit: Boolean? = null,
+    flatFallbackReason: String? = null,
 ): String {
     val method = clueProjectionMethod(terrainProjectionApplied, gimbalPitchDeg)
     val hit = when {
+        flatFallbackReason?.contains("timed out", ignoreCase = true) == true -> "timeout"
         tileHit != null -> if (tileHit) "hit" else "miss"
         demSource?.startsWith("usgs-geotiff-local-") == true -> "hit"
         terrainProjectionApplied -> "hit"
@@ -62,6 +64,31 @@ internal fun clueProjectionMethodLogLine(
         clueLat - droneLat,
         clueLng - droneLng,
         demSource ?: "none",
+    )
+}
+
+/** Per-walk timing for one S1M ray-march (logged as a single INFO line). */
+internal data class ClueRayMarchTiming(
+    var catalogMs: Double = 0.0,
+    var tileOpenDecodeMs: Double = 0.0,
+    var sampleCount: Int = 0,
+    var stepMs: Double = 0.0,
+    var totalMs: Double = 0.0,
+    var maxRangeM: Double = 0.0,
+    var coarseStepM: Double = 0.0,
+    var hit: Boolean = false,
+) {
+    fun infoLine(): String = String.format(
+        Locale.US,
+        "Clue ray-march totalMs=%.1f catalogMs=%.1f tileOpenDecodeMs=%.1f stepMs=%.1f samples=%d maxRangeM=%.0f coarseStepM=%.0f hit=%s",
+        totalMs,
+        catalogMs,
+        tileOpenDecodeMs,
+        stepMs,
+        sampleCount,
+        maxRangeM,
+        coarseStepM,
+        if (hit) "true" else "false",
     )
 }
 
@@ -115,6 +142,7 @@ internal suspend fun refineCapturedClueTerrain(
     clue: PendingClue,
     sampleElevation: suspend (Double, Double) -> DemElevationSample?,
     sampleLocalElevation: suspend (Double, Double) -> DemElevationSample? = sampleElevation,
+    rayMarchTiming: ClueRayMarchTiming? = null,
 ): PendingClue = withContext(Dispatchers.Default) {
     val freshElevation: suspend (Double, Double) -> DemElevationSample? = { lat, lng ->
         sampleElevation(lat, lng)?.takeUnless { it.stale }
@@ -135,6 +163,7 @@ internal suspend fun refineCapturedClueTerrain(
         seiRelativeUpMeters = clue.seiRelativeUpMeters,
         sampleElevationMeters = freshElevation,
         sampleLocalElevationMeters = freshLocal,
+        rayMarchTiming = rayMarchTiming,
     )
     val knownGround = when {
         projection.terrainProjectionApplied && projection.alt.isFinite() -> projection.alt
@@ -171,6 +200,88 @@ internal suspend fun refineCapturedClueTerrain(
             )
         }
     }
+}
+
+/**
+ * Local S1M session refine: one mutex + open tiles for the whole walk.
+ * Prefer this for form/post-save paths that already prepared the catalog.
+ * Must not hop dispatchers while the TerrainReadWorker lock is held.
+ */
+internal suspend fun refineCapturedClueTerrainLocalSession(
+    clue: PendingClue,
+    dem: org.ncssar.rid2caltopo.video.mapcache.DemElevationService,
+    rayMarchTiming: ClueRayMarchTiming = ClueRayMarchTiming(),
+): PendingClue {
+    val (result, geoTiming) = dem.withLocalClueSamplingSession { sampleLocal ->
+        // Unconfined: drive the suspend state machine on this worker without stealing another pool
+        // thread while the DEM mutex is held. Samples themselves never suspend.
+        kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.Unconfined) {
+            val syncSample: suspend (Double, Double) -> DemElevationSample? = { lat, lng ->
+                sampleLocal(lat, lng)?.takeUnless { it.stale }
+            }
+            val capturedHeight = clue.demAltitudeReference?.let { reference ->
+                syncSample(clue.droneLat, clue.droneLng)
+                    ?.let { reference.heightMeters(clue.droneAlt, it.elevationMeters) }
+            }
+            val height = capturedHeight ?: clue.projectionHeightMeters
+            val projection = projectClueLocationWithDemSamples(
+                droneLat = clue.droneLat, droneLng = clue.droneLng, droneAlt = clue.droneAlt,
+                headingDeg = clue.headingDeg, aglMeters = height, gimbalAngleDeg = clue.gimbalAngleDeg,
+                terrainReferenceLatitude = clue.terrainReferenceLatitude,
+                terrainReferenceLongitude = clue.terrainReferenceLongitude,
+                seiRelativeUpMeters = clue.seiRelativeUpMeters,
+                sampleElevationMeters = syncSample,
+                sampleLocalElevationMeters = syncSample,
+                rayMarchTiming = rayMarchTiming,
+            )
+            val knownGround = when {
+                projection.terrainProjectionApplied && projection.alt.isFinite() -> projection.alt
+                projection.demSource != null && projection.alt.isFinite() -> projection.alt
+                else -> clue.knownDemGroundMeters
+            }
+            clue.copy(
+                lat = projection.lat, lng = projection.lng, alt = projection.alt,
+                aglMeters = height, projectionHeightMeters = height,
+                aglSourceLabel = if (capturedHeight != null) "DEM at captured position" else clue.aglSourceLabel,
+                projectionHeightSourceLabel = if (capturedHeight != null) {
+                    "DEM at captured position"
+                } else {
+                    clue.projectionHeightSourceLabel
+                },
+                terrainProjectionApplied = projection.terrainProjectionApplied,
+                demSource = projection.demSource, demResolutionMeters = projection.demResolutionMeters,
+                demSampleStale = projection.demSampleStale,
+                knownDemGroundMeters = knownGround,
+            ) to projection
+        }
+    }
+    val (refined, projection) = result
+    rayMarchTiming.catalogMs += geoTiming.first
+    rayMarchTiming.tileOpenDecodeMs += geoTiming.second
+    if (geoTiming.third > rayMarchTiming.sampleCount) {
+        rayMarchTiming.sampleCount = geoTiming.third
+    }
+    rayMarchTiming.hit = refined.terrainProjectionApplied
+    if (!projection.terrainProjectionApplied) {
+        val reason = projection.flatFallbackReason ?: "DEM terrain unavailable"
+        org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug(
+            "StreamsViewModel",
+            "refineCapturedClueTerrain: flat fallback reason=$reason designator=${clue.designator}",
+        )
+        android.util.Log.i(
+            "Clue",
+            String.format(
+                Locale.US,
+                "Clue DEM miss reason=%s lat=%.6f lon=%.6f demSource=%s designator=%s",
+                reason,
+                clue.droneLat,
+                clue.droneLng,
+                projection.demSource ?: "none",
+                clue.designator,
+            ),
+        )
+    }
+    return refined
 }
 
 /**

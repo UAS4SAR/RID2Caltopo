@@ -62,12 +62,50 @@ internal class GeoTiffDemSource(context: Context) {
      */
     private val blockCacheDir by lazy { File(appContext.noBackupFilesDir, "dem_blocks_v2") }
 
-    /** In-memory LRU of recently decoded blocks (max 8 ≈ 8 MB). Keyed by "$tileName|$blockIndex". */
+    /** In-memory LRU of recently decoded blocks. Keyed by "$tileName|$blockIndex". */
+    @Volatile private var maxCachedBlocks = 8
+    private var clueSessionDepth = 0
+    private var timingCatalogNs = 0L
+    private var timingTileOpenDecodeNs = 0L
+    private var timingSampleCount = 0
     private val blockMemCache = object : LinkedHashMap<String, ByteArray>(16, 0.75f, true) {
-        override fun removeEldestEntry(e: MutableMap.MutableEntry<String, ByteArray>?) = size > 8
+        override fun removeEldestEntry(e: MutableMap.MutableEntry<String, ByteArray>?) = size > maxCachedBlocks
     }
     /** Eviction only cares that a tile was used in the last minute, so once per half-minute is enough. */
     private val terrainTouchAtMs = HashMap<String, Long>()
+
+    /** Keep decoded S1M blocks hot for a clue walk. Nested; thread-safe. */
+    fun beginClueSamplingSession() {
+        synchronized(lock) {
+            clueSessionDepth += 1
+            if (clueSessionDepth == 1) {
+                maxCachedBlocks = 64
+                timingCatalogNs = 0L
+                timingTileOpenDecodeNs = 0L
+                timingSampleCount = 0
+            }
+        }
+    }
+
+    fun endClueSamplingSession() {
+        synchronized(lock) {
+            if (clueSessionDepth <= 0) return
+            clueSessionDepth -= 1
+            if (clueSessionDepth == 0) {
+                maxCachedBlocks = 8
+            }
+        }
+    }
+
+    fun takeClueSamplingTiming(): Triple<Double, Double, Int> = synchronized(lock) {
+        val catalogMs = timingCatalogNs / 1_000_000.0
+        val tileMs = timingTileOpenDecodeNs / 1_000_000.0
+        val samples = timingSampleCount
+        timingCatalogNs = 0L
+        timingTileOpenDecodeNs = 0L
+        timingSampleCount = 0
+        Triple(catalogMs, tileMs, samples)
+    }
 
     /** True after at least one catalog scan has published tiles (possibly empty). */
     fun isCatalogReady(): Boolean = catalogReady
@@ -170,9 +208,12 @@ internal class GeoTiffDemSource(context: Context) {
         checkCancelled()
         // Never wait for OperationalStorage bulk prepare. Decoded-block writes retain later if ready.
         if (!lat.isFinite() || !lng.isFinite()) return null
+        val catalogStartedNs = System.nanoTime()
         val candidates = synchronized(lock) {
+            timingSampleCount += 1
             if (!catalogReady) {
                 scheduleWarmCatalog()
+                timingCatalogNs += System.nanoTime() - catalogStartedNs
                 return null
             }
             if (catalogNeedsRefreshLocked()) {
@@ -180,8 +221,10 @@ internal class GeoTiffDemSource(context: Context) {
             }
             tiles.filter { tile -> tile.bounds?.contains(lat, lng) != false }
         }
+        synchronized(lock) { timingCatalogNs += System.nanoTime() - catalogStartedNs }
         if (candidates.isEmpty()) return null
 
+        val decodeStartedNs = System.nanoTime()
         val eligible = ArrayList<Triple<DemTile, GeoTiffMetadata, Double>>()
         for (tile in candidates) {
             checkCancelled()
@@ -190,7 +233,7 @@ internal class GeoTiffDemSource(context: Context) {
             if (resolution > maximumResolution) continue
             eligible += Triple(tile, metadata, resolution)
         }
-        return firstValidTerrainSample(eligible, { it.third }, checkCancelled) { (tile, metadata, resolution) ->
+        val result = firstValidTerrainSample(eligible, { it.third }, checkCancelled) { (tile, metadata, resolution) ->
             val value = trySampleFromTile(tile, metadata, lat, lng, sources, logSamples)
             if (value != null && value.isFinite()) {
                 Sample(value, resolution)
@@ -198,6 +241,8 @@ internal class GeoTiffDemSource(context: Context) {
                 null
             }
         }
+        synchronized(lock) { timingTileOpenDecodeNs += System.nanoTime() - decodeStartedNs }
+        return result
     }
 
     private var budgetGeneration = -1L

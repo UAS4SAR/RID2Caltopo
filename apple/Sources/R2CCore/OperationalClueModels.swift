@@ -147,8 +147,37 @@ public struct OperationalClueProjection: Sendable, Equatable {
     }
 }
 
+/// Per-walk timing for one S1M ray-march (logged as a single INFO line).
+public final class OperationalClueRayMarchTiming: @unchecked Sendable {
+    public var catalogMs: Double = 0
+    public var tileOpenDecodeMs: Double = 0
+    public var sampleCount: Int = 0
+    public var stepMs: Double = 0
+    public var totalMs: Double = 0
+    public var maxRangeM: Double = 0
+    public var coarseStepM: Double = 0
+    public var hit: Bool = false
+
+    public init() {}
+
+    public var infoLine: String {
+        String(
+            format: "Clue ray-march totalMs=%.1f catalogMs=%.1f tileOpenDecodeMs=%.1f stepMs=%.1f samples=%d maxRangeM=%.0f coarseStepM=%.0f hit=%@",
+            locale: Locale(identifier: "en_US_POSIX"),
+            totalMs,
+            catalogMs,
+            tileOpenDecodeMs,
+            stepMs,
+            sampleCount,
+            maxRangeM,
+            coarseStepM,
+            hit ? "true" : "false"
+        )
+    }
+}
+
 public enum OperationalClueProjectionLog {
-    /// One line per clue: method, tile hit/miss, gimbal pitch/yaw, lat/lon delta from aircraft.
+    /// One line per clue: method, tile hit/miss/timeout, gimbal pitch/yaw, lat/lon delta from aircraft.
     public static func line(
         projection: OperationalClueProjection,
         aircraftLatitude: Double,
@@ -159,6 +188,9 @@ public enum OperationalClueProjectionLog {
     ) -> String {
         let method = projection.projectionMethod(gimbalPitchDegrees: gimbalPitchDegrees)
         let hit: String = {
+            if let reason = projection.flatFallbackReason, reason.localizedCaseInsensitiveContains("timed out") {
+                return "timeout"
+            }
             if let tileHit { return tileHit ? "hit" : "miss" }
             if projection.demSource?.hasPrefix("usgs-geotiff-local-") == true { return "hit" }
             if projection.terrainProjectionApplied { return "hit" }
@@ -488,8 +520,11 @@ public enum OperationalClueGeometry {
         terrainReferenceLongitude: Double? = nil,
         relativeUpMeters: Double? = nil,
         sampleElevationMeters: @escaping @Sendable (Double, Double) async -> OperationalTerrainSample?,
-        sampleLocalElevationMeters: (@Sendable (Double, Double) async -> OperationalTerrainSample?)? = nil
+        sampleLocalElevationMeters: (@Sendable (Double, Double) async -> OperationalTerrainSample?)? = nil,
+        timing: OperationalClueRayMarchTiming? = nil
     ) async -> OperationalClueProjection {
+        let walkStarted = ContinuousClock.now
+        defer { timing?.totalMs = elapsedMilliseconds(since: walkStarted) }
         let networkSample = sampleElevationMeters
         let localSample: @Sendable (Double, Double) async -> OperationalTerrainSample? = { latitude, longitude in
             if let sampleLocalElevationMeters {
@@ -631,11 +666,17 @@ public enum OperationalClueGeometry {
         if droneDEMSample == nil, knownDemGround == nil {
             return flatEstimate(knownGround: knownDemGround, reason: "DEM sample unavailable at aircraft")
         }
-        // A shallow sightline over falling terrain may stay above the ground for kilometres.
-        // Do not derive the terrain-search limit from the short flat-ground estimate.
+        // Coarse steps + bisection: few GeoTIFF samples, then refine the hit bracket.
+        // Cap range from the flat-ground estimate so shallow sightlines still reach distant
+        // rising terrain without walking 10 km one sample at a time.
         let usingLocalDEM = droneDEMSample?.source?.hasPrefix("usgs-geotiff-local-") == true
-        let maximumDistance = usingLocalDEM ? 10_000.0 : 2_500.0
-        let step = usingLocalDEM ? 50.0 : 100.0
+        let absoluteCap = usingLocalDEM ? 5_000.0 : 2_500.0
+        let minimumSearch = usingLocalDEM ? 1_500.0 : 800.0
+        let maximumDistance = min(absoluteCap, max(flatDistance * 12.0, minimumSearch))
+        let step = usingLocalDEM ? 200.0 : 100.0
+        timing?.maxRangeM = maximumDistance
+        timing?.coarseStepM = step
+        let stepStarted = ContinuousClock.now
 
         var previousDistance = 0.0
         var previousGround = knownDemGround ?? flatGround
@@ -643,6 +684,7 @@ public enum OperationalClueGeometry {
         var distance = step
         while distance <= maximumDistance + 0.001 {
             if Task.isCancelled {
+                timing?.stepMs = elapsedMilliseconds(since: stepStarted)
                 return flatEstimate(
                     knownGround: knownDemGround,
                     reason: "terrain refine cancelled",
@@ -661,6 +703,7 @@ public enum OperationalClueGeometry {
             } else {
                 candidateDEMSample = await networkSample(candidate.latitude, candidate.longitude)
             }
+            timing?.sampleCount += 1
             if usingLocalDEM, candidateDEMSample?.source?.hasPrefix("usgs-geotiff-local-") != true {
                 coverageEnded = true
                 break
@@ -683,8 +726,10 @@ public enum OperationalClueGeometry {
                 var highDistance = distance
                 var highPoint = candidate
                 var highGround = ground
-                for _ in 0 ..< 6 {
+                // Eight bisect steps with a 200 m coarse bracket ≈ 0.8 m ground resolution.
+                for _ in 0 ..< 8 {
                     if Task.isCancelled {
+                        timing?.stepMs = elapsedMilliseconds(since: stepStarted)
                         return flatEstimate(
                             knownGround: knownDemGround,
                             reason: "terrain refine cancelled",
@@ -704,6 +749,7 @@ public enum OperationalClueGeometry {
                     } else {
                         midDEM = await networkSample(midPoint.latitude, midPoint.longitude)?.elevationMeters
                     }
+                    timing?.sampleCount += 1
                     let midGround = normalizedDEMGroundMeters(
                         candidateDEM: midDEM,
                         droneDEM: droneDEM,
@@ -719,6 +765,8 @@ public enum OperationalClueGeometry {
                         lowGround = midGround
                     }
                 }
+                timing?.stepMs = elapsedMilliseconds(since: stepStarted)
+                timing?.hit = true
                 return OperationalClueProjection(
                     latitude: highPoint.latitude,
                     longitude: highPoint.longitude,
@@ -733,6 +781,7 @@ public enum OperationalClueGeometry {
             previousGround = ground
             distance += step
         }
+        timing?.stepMs = elapsedMilliseconds(since: stepStarted)
         return flatEstimate(
             knownGround: knownDemGround,
             reason: coverageEnded
@@ -740,6 +789,12 @@ public enum OperationalClueGeometry {
                 : "ray did not intersect DEM within search distance",
             dem: droneDEMSample
         )
+    }
+
+    private static func elapsedMilliseconds(since start: ContinuousClock.Instant) -> Double {
+        let duration = start.duration(to: .now)
+        return Double(duration.components.seconds) * 1_000
+            + Double(duration.components.attoseconds) / 1e15
     }
 
     private static func inferDEMScaleToMeters(

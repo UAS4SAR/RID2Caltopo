@@ -107,6 +107,14 @@ class ClueTerrainPreparationTest {
         assertTrue(flat.contains("method=flat"))
         assertTrue(flat.contains("tile=miss"))
         assertTrue(flat.contains("gimbalYaw=nil"))
+        val timedOut = clueProjectionMethodLogLine(
+            clueLat = 39.001, clueLng = -121.0, droneLat = 39.001, droneLng = -121.0,
+            gimbalPitchDeg = -25.0, gimbalYawDeg = 15.5,
+            terrainProjectionApplied = false, demSource = null,
+            flatFallbackReason = "terrain refine timed out",
+        )
+        assertTrue(timedOut.contains("tile=timeout"))
+        assertTrue(!timedOut.contains("tile=miss"))
         assertEquals("nadir-DEM", clueProjectionMethod(true, -90.0))
     }
 

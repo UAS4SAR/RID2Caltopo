@@ -61,6 +61,83 @@ actor AppleTerrainElevationService {
         }
     }
 
+    /// Entire clue ray-march on one background queue with sync GeoTIFF samples (no per-step actor hop).
+    /// Caller must have prepared the catalog. Returns projection + timing for one INFO log line.
+    func projectLocalClueRayMarch(
+        droneLatitude: Double,
+        droneLongitude: Double,
+        droneAltitudeMeters: Double?,
+        headingDegrees: Double?,
+        aglMeters: Double?,
+        gimbalAngleDegrees: Double,
+        terrainReferenceLatitude: Double? = nil,
+        terrainReferenceLongitude: Double? = nil,
+        relativeUpMeters: Double? = nil
+    ) async -> (OperationalClueProjection, OperationalClueRayMarchTiming) {
+        if budgetGeneration != AppleUnifiedMapCache.generation {
+            localDEM.invalidateCatalog()
+            budgetGeneration = AppleUnifiedMapCache.generation
+        }
+        let dem = localDEM
+        dem.beginClueSamplingSession()
+        let timing = OperationalClueRayMarchTiming()
+        let child = Task.detached(priority: .userInitiated) { () -> OperationalClueProjection in
+            guard !Task.isCancelled else {
+                return OperationalClueGeometry.project(
+                    droneLatitude: droneLatitude,
+                    droneLongitude: droneLongitude,
+                    droneAltitudeMeters: droneAltitudeMeters,
+                    headingDegrees: headingDegrees,
+                    aglMeters: aglMeters,
+                    gimbalAngleDegrees: gimbalAngleDegrees
+                )
+            }
+            let syncSample: @Sendable (Double, Double) -> OperationalTerrainSample? = { latitude, longitude in
+                guard !Task.isCancelled else { return nil }
+                guard let sample = dem.sample(
+                    latitude: latitude,
+                    longitude: longitude,
+                    isCancelled: { Task.isCancelled }
+                ) else { return nil }
+                return OperationalTerrainSample(
+                    elevationMeters: sample.elevationMeters,
+                    source: "usgs-geotiff-local-\(Int(sample.horizontalResolutionMeters.rounded()))m",
+                    horizontalResolutionMeters: sample.horizontalResolutionMeters
+                )
+            }
+            // Async sampler closures that never await: each step stays on this worker.
+            return await OperationalClueGeometry.projectWithTerrain(
+                droneLatitude: droneLatitude,
+                droneLongitude: droneLongitude,
+                droneAltitudeMeters: droneAltitudeMeters,
+                headingDegrees: headingDegrees,
+                aglMeters: aglMeters,
+                gimbalAngleDegrees: gimbalAngleDegrees,
+                terrainReferenceLatitude: terrainReferenceLatitude,
+                terrainReferenceLongitude: terrainReferenceLongitude,
+                relativeUpMeters: relativeUpMeters,
+                sampleElevationMeters: { latitude, longitude in syncSample(latitude, longitude) },
+                sampleLocalElevationMeters: { latitude, longitude in syncSample(latitude, longitude) },
+                timing: timing
+            )
+        }
+        let projection = await withTaskCancellationHandler {
+            await child.value
+        } onCancel: {
+            child.cancel()
+        }
+        let geoTiming = dem.takeClueSamplingTiming()
+        dem.endClueSamplingSession()
+        timing.catalogMs = geoTiming.catalogMs
+        timing.tileOpenDecodeMs = geoTiming.tileOpenDecodeMs
+        // Prefer GeoTIFF sample count when present; ray-march also tracks logical steps.
+        if geoTiming.sampleCount > timing.sampleCount {
+            timing.sampleCount = geoTiming.sampleCount
+        }
+        timing.hit = projection.terrainProjectionApplied
+        return (projection, timing)
+    }
+
     /// Local GeoTIFF only. Does not consult EPQS or the point cache.
     /// Does not rescan the DEM directory — call [prepareLocalCatalogForClueSampling] once before a clue walk.
     func sampleLocal(latitude: Double, longitude: Double) async -> OperationalTerrainSample? {

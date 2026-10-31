@@ -2971,21 +2971,35 @@ internal fun SplitMapPane(
     }
 
     LaunchedEffect(Unit) {
-        // One serial/coalesced preparation; no background writer ever mutates a
-        // Polyline already attached to MapView.
+        // ≥1 s coalesce: full-flight geometry must not rebuild on every RID/SEI point.
+        // Prefix growth reuses the Polyline via addPoint; flight-set/epoch changes recreate.
+        var lastPrepareAtMs = 0L
+        var lastPreparedEpoch = localTrackEpoch
         snapshotFlow { Triple(trackOverlayRefreshToken, positionFreshnessRefreshToken, localTrackEpoch) }
             .conflate().collect {
                 val epoch = localTrackEpoch
+                val flightSetChanged = epoch != lastPreparedEpoch
+                val nowMs = android.os.SystemClock.elapsedRealtime()
+                if (!flightSetChanged) {
+                    val waitMs = lastPrepareAtMs + 1_000L - nowMs
+                    if (waitMs > 0L) delay(waitMs)
+                }
+                lastPrepareAtMs = android.os.SystemClock.elapsedRealtime()
+                lastPreparedEpoch = epoch
                 val flightInputs = currentFlightTrackPointsByMappedId.mapValues { it.value.toList() }
                 val recentInputs = localTrackPointsByMappedId.mapValues { it.value.toList() }
                 val oldFlight = preparedFlightLines
                 val oldRecent = preparedRecentLines
                 val cutoff = System.currentTimeMillis() - CaltopoClient.GetNewTrackDelayInSeconds() * 1000L
                 val density = context.resources.displayMetrics.density
+                val attachStartedNs = System.nanoTime()
                 val prepared = withContext(Dispatchers.Default) {
                     val create: (List<LocalTrackPoint>) -> Polyline = { points ->
                         WorkerPreparedPolyline(density).apply { setPoints(points.map { GeoPoint(it.lat, it.lng) }) }
                     }
+                    // Never mutate a Polyline that may already be attached to MapView from a
+                    // background dispatcher. Prefix growth still rebuilds the line, but ≥1 s
+                    // throttle keeps that off the hot path; Main attach reuses the new instance.
                     val recent = recentInputs.mapValues { (_, points) -> points.filter { it.receivedAtMsec > cutoff } }
                     prepareTrackRenders(flightInputs, oldFlight, create) to
                         prepareTrackRenders(recent, oldRecent, create)
@@ -2993,6 +3007,9 @@ internal fun SplitMapPane(
                 if (epoch == localTrackEpoch) {
                     preparedFlightLines = prepared.first
                     preparedRecentLines = prepared.second
+                    ClueTerrainDiagnostics.noteMapOverlayAttach(
+                        (System.nanoTime() - attachStartedNs) / 1_000_000L,
+                    )
                 }
             }
     }

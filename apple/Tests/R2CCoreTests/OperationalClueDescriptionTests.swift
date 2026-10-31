@@ -104,6 +104,22 @@ private func report(heading: Double? = 273.2, telemetry: OperationalClueReportTe
     #expect(line.contains("gimbalYaw=90.0"))
 }
 
+@Test func timedOutTerrainProjectionLogsTileTimeoutNotMiss() {
+    let timedOut = OperationalClueProjectionLog.line(
+        projection: OperationalClueProjection(
+            latitude: 39.0, longitude: -121.0, altitudeMeters: 90,
+            flatFallbackReason: "terrain refine timed out"
+        ),
+        aircraftLatitude: 39.0,
+        aircraftLongitude: -121.0,
+        gimbalPitchDegrees: -25.0,
+        gimbalYawDegrees: 15.5
+    )
+    #expect(timedOut.contains("tile=timeout"))
+    #expect(!timedOut.contains("tile=miss"))
+    #expect(timedOut.contains("method=flat"))
+}
+
 @Test func clueDescriptionDoesNotInventMissingTelemetry() {
     let observation = RidObservation(source: .bluetoothLegacy, aircraftId: "RID123", receivedAt: .distantPast,
                                     latitude: 39, longitude: -75)

@@ -83,6 +83,42 @@ internal class DemElevationService(context: Context) {
     }
 
     /**
+     * Entire clue ray-march under one TerrainReadWorker lock + open S1M sources.
+     * Avoids per-step mutex/withContext hops. [block] receives a sync local-only sampler.
+     * Returns the block result plus (catalogMs, tileOpenDecodeMs, sampleCount).
+     */
+    suspend fun <T> withLocalClueSamplingSession(
+        block: (sampleLocal: (Double, Double) -> DemElevationSample?) -> T,
+    ): Pair<T, Triple<Double, Double, Int>> = withContext(Dispatchers.IO) {
+        localGeoTiff.beginClueSamplingSession()
+        try {
+            val result = terrainReads.read { checkCancelled ->
+                localGeoTiff.withS1mSamplingSession { elev ->
+                    val sampleLocal: (Double, Double) -> DemElevationSample? = sample@{ lat, lng ->
+                        checkCancelled()
+                        if (!lat.isFinite() || !lng.isFinite()) return@sample null
+                        val meters = elev(lat, lng)
+                        if (meters != null && meters.isFinite() && meters in -500.0..10_000.0) {
+                            DemElevationSample(
+                                elevationMeters = meters,
+                                stale = false,
+                                source = "usgs-geotiff-local-1m",
+                                horizontalResolutionMeters = 1.0,
+                            )
+                        } else {
+                            null
+                        }
+                    }
+                    block(sampleLocal)
+                }
+            }
+            result to localGeoTiff.takeClueSamplingTiming()
+        } finally {
+            localGeoTiff.endClueSamplingSession()
+        }
+    }
+
+    /**
      * Local GeoTIFF only. Does not consult EPQS or the point cache. Used by clue ray walks
      * once the aircraft sample is known to be a local raster so out-of-coverage steps end
      * immediately instead of blocking on network elevation lookups.

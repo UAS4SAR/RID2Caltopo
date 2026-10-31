@@ -753,6 +753,42 @@ internal suspend fun projectClueLocationWithDemSamples(
      * Defaults to [sampleElevationMeters] for unit tests that inject a single fake DEM.
      */
     sampleLocalElevationMeters: suspend (Double, Double) -> DemElevationSample? = sampleElevationMeters,
+    rayMarchTiming: ClueRayMarchTiming? = null,
+): ClueProjection {
+    val walkStartedNs = System.nanoTime()
+    try {
+        return projectClueLocationWithDemSamplesBody(
+            droneLat = droneLat,
+            droneLng = droneLng,
+            droneAlt = droneAlt,
+            headingDeg = headingDeg,
+            aglMeters = aglMeters,
+            gimbalAngleDeg = gimbalAngleDeg,
+            terrainReferenceLatitude = terrainReferenceLatitude,
+            terrainReferenceLongitude = terrainReferenceLongitude,
+            seiRelativeUpMeters = seiRelativeUpMeters,
+            sampleElevationMeters = sampleElevationMeters,
+            sampleLocalElevationMeters = sampleLocalElevationMeters,
+            rayMarchTiming = rayMarchTiming,
+        )
+    } finally {
+        rayMarchTiming?.totalMs = (System.nanoTime() - walkStartedNs) / 1_000_000.0
+    }
+}
+
+private suspend fun projectClueLocationWithDemSamplesBody(
+    droneLat: Double,
+    droneLng: Double,
+    droneAlt: Double,
+    headingDeg: Double?,
+    aglMeters: Double?,
+    gimbalAngleDeg: Double,
+    terrainReferenceLatitude: Double?,
+    terrainReferenceLongitude: Double?,
+    seiRelativeUpMeters: Double?,
+    sampleElevationMeters: suspend (Double, Double) -> DemElevationSample?,
+    sampleLocalElevationMeters: suspend (Double, Double) -> DemElevationSample?,
+    rayMarchTiming: ClueRayMarchTiming?,
 ): ClueProjection {
     suspend fun checkedSample(lat: Double, lng: Double): DemElevationSample? {
         currentCoroutineContext().ensureActive()
@@ -924,12 +960,16 @@ internal suspend fun projectClueLocationWithDemSamples(
         return flatWithKnownGround("DEM sample unavailable at aircraft")
     }
 
-    // A shallow sightline over falling terrain may stay above the ground for kilometres.
-    // Search far enough to reach the visible terrain instead of sizing the DEM walk from
-    // the flat-ground answer, which is shortest exactly when the terrain drops away.
+    // Coarse steps + bisection. Cap range from the flat-ground estimate so shallow
+    // sightlines still reach distant rising terrain without a 10 km fine walk.
     val usingLocalDem = droneDemSample?.source?.startsWith("usgs-geotiff-local-") == true
-    val maxDistanceM = if (usingLocalDem) 10_000.0 else 2_500.0
-    val stepM = if (usingLocalDem) 50.0 else 100.0
+    val absoluteCapM = if (usingLocalDem) 5_000.0 else 2_500.0
+    val minimumSearchM = if (usingLocalDem) 1_500.0 else 800.0
+    val maxDistanceM = minOf(absoluteCapM, maxOf(flatDistanceM * 12.0, minimumSearchM))
+    val stepM = if (usingLocalDem) 200.0 else 100.0
+    rayMarchTiming?.maxRangeM = maxDistanceM
+    rayMarchTiming?.coarseStepM = stepM
+    val stepStartedNs = System.nanoTime()
 
     var previousDistanceM = 0.0
     var previousPoint = Pair(droneLat, droneLng)
@@ -949,6 +989,7 @@ internal suspend fun projectClueLocationWithDemSamples(
         } else {
             checkedSample(candidate.first, candidate.second)
         }
+        rayMarchTiming?.sampleCount = (rayMarchTiming?.sampleCount ?: 0) + 1
         if (usingLocalDem && sampledCandidate?.source?.startsWith("usgs-geotiff-local-") != true) {
             coverageEnded = true
             break
@@ -978,7 +1019,8 @@ internal suspend fun projectClueLocationWithDemSamples(
             var highPoint = candidate
             var highGroundM = groundM
 
-            repeat(6) {
+            // Eight bisect steps with a 200 m coarse bracket ≈ 0.8 m ground resolution.
+            repeat(8) {
                 val midDistanceM = (lowDistanceM + highDistanceM) / 2.0
                 val midPoint = destinationPoint(
                     startLat = droneLat,
@@ -991,6 +1033,7 @@ internal suspend fun projectClueLocationWithDemSamples(
                 } else {
                     checkedSample(midPoint.first, midPoint.second)
                 }
+                rayMarchTiming?.sampleCount = (rayMarchTiming?.sampleCount ?: 0) + 1
                 val midGroundM = normalizeDemGroundMeters(
                     candidateDemRaw = midDemSample?.elevationMeters,
                     droneDemRaw = droneDemRaw,
@@ -1008,6 +1051,8 @@ internal suspend fun projectClueLocationWithDemSamples(
                 }
             }
 
+            rayMarchTiming?.stepMs = (System.nanoTime() - stepStartedNs) / 1_000_000.0
+            rayMarchTiming?.hit = true
             return ClueProjection(
                 lat = highPoint.first,
                 lng = highPoint.second,
@@ -1024,6 +1069,7 @@ internal suspend fun projectClueLocationWithDemSamples(
         distanceM += stepM
     }
 
+    rayMarchTiming?.stepMs = (System.nanoTime() - stepStartedNs) / 1_000_000.0
     return flatWithKnownGround(
         if (coverageEnded) "local DEM coverage ended before ray intersection"
         else "ray did not intersect DEM within search distance",
@@ -3787,19 +3833,16 @@ class StreamsViewModel(
             try {
                 val dem = altitudeCoordinator.demElevationService
                 // One catalog rebuild for this form walk — never per ray-march step.
+                val catalogStartedNs = System.nanoTime()
                 dem.prepareLocalCatalogForClueSampling()
+                val catalogMs = (System.nanoTime() - catalogStartedNs) / 1_000_000.0
                 ensureActive()
-                // Form path is local S1M only with hard timeouts. EPQS belongs in post-save refine.
-                val localOnly: suspend (Double, Double) -> org.ncssar.rid2caltopo.video.mapcache.DemElevationSample? =
-                    { lat, lng -> dem.sampleLocalElevationMeters(lat, lng) }
                 val quickTimeout = bindTimeoutMs ?: CLUE_BIND_TERRAIN_TIMEOUT_MS
+                val quickTiming = ClueRayMarchTiming(catalogMs = catalogMs)
                 val quick = withTimeoutOrNull(quickTimeout) {
-                    refineCapturedClueTerrain(
-                        clue,
-                        sampleElevation = localOnly,
-                        sampleLocalElevation = localOnly,
-                    )
+                    refineCapturedClueTerrainLocalSession(clue, dem, quickTiming)
                 }
+                android.util.Log.i(tag, quickTiming.infoLine() + " stage=bind-${quickTimeout}ms")
                 if (quick != null && quick.terrainProjectionApplied) {
                     applyPendingClueTerrainRefine(
                         designator = designator,
@@ -3812,15 +3855,34 @@ class StreamsViewModel(
                 }
                 ensureActive()
                 // Longer local-only pass still hard-capped; Submit never waits on this job.
+                val asyncTiming = ClueRayMarchTiming(catalogMs = catalogMs)
                 val refined = withTimeoutOrNull(CLUE_FORM_TERRAIN_TIMEOUT_MS) {
-                    refineCapturedClueTerrain(
+                    refineCapturedClueTerrainLocalSession(
                         clue = _pendingClue.value?.takeIf {
                             it.designator == clue.designator && it.timestamp == clue.timestamp
                         } ?: clue,
-                        sampleElevation = localOnly,
-                        sampleLocalElevation = localOnly,
+                        dem = dem,
+                        rayMarchTiming = asyncTiming,
                     )
-                } ?: return@launch
+                }
+                android.util.Log.i(tag, asyncTiming.infoLine() + " stage=async")
+                if (refined == null) {
+                    android.util.Log.i(
+                        tag,
+                        clueProjectionMethodLogLine(
+                            clueLat = clue.lat,
+                            clueLng = clue.lng,
+                            droneLat = clue.droneLat,
+                            droneLng = clue.droneLng,
+                            gimbalPitchDeg = clue.gimbalAngleDeg,
+                            gimbalYawDeg = clue.headingDeg,
+                            terrainProjectionApplied = false,
+                            demSource = null,
+                            flatFallbackReason = "terrain refine timed out",
+                        ) + " stage=async",
+                    )
+                    return@launch
+                }
                 applyPendingClueTerrainRefine(
                     designator = designator,
                     original = clue,
@@ -3908,21 +3970,36 @@ class StreamsViewModel(
             ClueTerrainDiagnostics.beginClueTerrainTask()
             try {
                 val dem = altitudeCoordinator.demElevationService
+                val catalogStartedNs = System.nanoTime()
                 dem.prepareLocalCatalogForClueSampling()
+                val catalogMs = (System.nanoTime() - catalogStartedNs) / 1_000_000.0
                 ensureActive()
+                val timing = ClueRayMarchTiming(catalogMs = catalogMs)
                 val refined = withTimeoutOrNull(CLUE_POST_SAVE_TERRAIN_TIMEOUT_MS) {
-                    refineCapturedClueTerrain(
-                        clue,
-                        sampleElevation = { lat, lng -> dem.sampleLocalElevationMeters(lat, lng) },
-                        sampleLocalElevation = { lat, lng -> dem.sampleLocalElevationMeters(lat, lng) },
-                    )
+                    refineCapturedClueTerrainLocalSession(clue, dem, timing)
                 } ?: run {
+                    android.util.Log.i(tag, timing.infoLine() + " stage=post-save id=${record.id}")
+                    android.util.Log.i(
+                        tag,
+                        clueProjectionMethodLogLine(
+                            clueLat = clue.lat,
+                            clueLng = clue.lng,
+                            droneLat = clue.droneLat,
+                            droneLng = clue.droneLng,
+                            gimbalPitchDeg = clue.gimbalAngleDeg,
+                            gimbalYawDeg = clue.headingDeg,
+                            terrainProjectionApplied = false,
+                            demSource = null,
+                            flatFallbackReason = "terrain refine timed out",
+                        ) + " stage=post-save id=${record.id}",
+                    )
                     android.util.Log.i(
                         tag,
                         "Clue terrain refine timed out stage=post-save id=${record.id} timeoutMs=$CLUE_POST_SAVE_TERRAIN_TIMEOUT_MS",
                     )
                     return@launch
                 }
+                android.util.Log.i(tag, timing.infoLine() + " stage=post-save id=${record.id}")
                 android.util.Log.i(
                     tag,
                     clueProjectionMethodLogLine(
@@ -3934,6 +4011,7 @@ class StreamsViewModel(
                         gimbalYawDeg = refined.headingDeg,
                         terrainProjectionApplied = refined.terrainProjectionApplied,
                         demSource = refined.demSource,
+                        flatFallbackReason = null,
                     ) + " stage=post-save id=${record.id}"
                 )
                 if (!refined.terrainProjectionApplied) return@launch
