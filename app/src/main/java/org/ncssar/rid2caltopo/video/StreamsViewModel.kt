@@ -484,11 +484,15 @@ internal fun capturedVideoPlaybackPlan(
 
 private val clueTimeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 private const val DEFAULT_CLUE_GIMBAL_ANGLE_DEG = -90.0
+/** Operator-entered / SEI gimbal pitch allowed range (matches capture clamp). */
+internal const val CLUE_GIMBAL_PITCH_MIN_DEG = -90.0
+internal const val CLUE_GIMBAL_PITCH_MAX_DEG = 90.0
 /** Shown when a second snapshot is requested while a clue form is open (same wording as Apple). */
 private const val METERS_TO_FEET = 3.28084
 private const val RID_INVALID_ALTITUDE_METERS = -1000.0
-/** Let gimbal/heading sliders settle before starting another DEM ray walk. */
-private const val CLUE_DEM_REFRESH_DEBOUNCE_MS = 200L
+
+internal fun clampClueGimbalPitchDeg(value: Double): Double =
+    value.coerceIn(CLUE_GIMBAL_PITCH_MIN_DEG, CLUE_GIMBAL_PITCH_MAX_DEG)
 
 internal data class ClueProjection(
     val lat: Double,
@@ -1551,7 +1555,6 @@ class StreamsViewModel(
     internal val mapStreamFocusArrival = StreamFocusArrival()
     private var persistedMapViewportState: MapViewportState? = null
     private var clueProjectionJob: Job? = null
-    private var clueProjectionDebounceJob: Job? = null
     private val mutedComplianceAlertDesignators = mutableStateSetOf<String>()
     private val _overLimitDrones = MutableStateFlow<List<OverLimitDroneUiState>>(emptyList())
     val overLimitDrones: StateFlow<List<OverLimitDroneUiState>> = _overLimitDrones.asStateFlow()
@@ -2802,8 +2805,20 @@ class StreamsViewModel(
         if (isFlightIgnored(droneSpec)) CTDebug(tag, "Clue captured on an ignored flight remoteId=${droneSpec.remoteId}; asking to publish it")
         startPendingBindingRefresh()
 
-        // ~300 ms local S1M try off main before the unbounded async refine. Flat only if tiles miss/timeout.
-        requestDemClueProjectionRefresh(designator, bindTimeoutMs = CLUE_BIND_TERRAIN_TIMEOUT_MS)
+        // SEI pitch is authoritative: project once immediately. Manual pitch waits for form commit.
+        if (capturedGimbalAngle != null) {
+            android.util.Log.i(
+                tag,
+                String.format(
+                    Locale.US,
+                    "Clue gimbal committed designator=%s gimbalSource=sei pitch=%.1f",
+                    designator,
+                    clueGimbalAngle,
+                ),
+            )
+            // ~300 ms local S1M try off main before the unbounded async refine. Flat only if tiles miss/timeout.
+            requestDemClueProjectionRefresh(designator, bindTimeoutMs = CLUE_BIND_TERRAIN_TIMEOUT_MS)
+        }
 
         viewModelScope.launch(Dispatchers.Default) {
             val width = 600
@@ -3020,6 +3035,8 @@ class StreamsViewModel(
 
     fun updateClueGimbalAngle(gimbalAngleDeg: Double) {
         if (clueSaveInProgress) return
+        val clamped = clampClueGimbalPitchDeg(gimbalAngleDeg)
+        if (!clamped.isFinite()) return
         _pendingClue.value = _pendingClue.value?.let { clue ->
             val knownGround = clue.knownDemGroundMeters
                 ?: clue.alt.takeIf { clue.terrainProjectionApplied || clue.demSource != null }
@@ -3029,7 +3046,7 @@ class StreamsViewModel(
                 droneAlt = clue.droneAlt,
                 headingDeg = clue.headingDeg,
                 aglMeters = clue.projectionHeightMeters,
-                gimbalAngleDeg = gimbalAngleDeg,
+                gimbalAngleDeg = clamped,
                 knownGroundElevationMeters = knownGround,
             )
             CTDebug(tag, String.format(
@@ -3038,25 +3055,37 @@ class StreamsViewModel(
                 clue.designator,
                 clue.headingDeg?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
                 clue.projectionHeightMeters?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
-                gimbalAngleDeg,
+                clamped,
                 projection.lat,
                 projection.lng,
                 projection.alt,
                 knownGround?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
             ))
+            android.util.Log.i(
+                tag,
+                String.format(
+                    Locale.US,
+                    "Clue gimbal committed designator=%s gimbalSource=manual pitch=%.1f",
+                    clue.designator,
+                    clamped,
+                ),
+            )
             clue.copy(
                 lat = projection.lat,
                 lng = projection.lng,
                 alt = projection.alt,
-                gimbalAngleDeg = gimbalAngleDeg,
-                gimbalAngleConfirmed = gimbalAngleDeg.isFinite() && gimbalAngleDeg in -90.0..90.0,
+                gimbalAngleDeg = clamped,
+                gimbalAngleConfirmed = true,
                 terrainProjectionApplied = false,
                 demSource = null,
                 demResolutionMeters = null,
                 demSampleStale = false,
                 knownDemGroundMeters = knownGround,
             )
-        }?.also { scheduleDemClueProjectionRefresh(it.designator) }
+        }?.also {
+            // Commit-only: one DEM walk per accepted pitch (no slider debounce).
+            requestDemClueProjectionRefresh(it.designator)
+        }
     }
 
     fun updateClueCameraHeading(headingDeg: Double) {
@@ -3086,7 +3115,12 @@ class StreamsViewModel(
                 demSampleStale = false,
                 knownDemGroundMeters = knownGround,
             )
-        }?.also { scheduleDemClueProjectionRefresh(it.designator) }
+        }?.also { updated ->
+            // Terrain only after SEI pitch or a committed manual pitch.
+            if (updated.gimbalAngleConfirmed) {
+                requestDemClueProjectionRefresh(updated.designator)
+            }
+        }
     }
 
     private val clueUploadStartedAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
@@ -3388,7 +3422,6 @@ class StreamsViewModel(
         // report so edits and waypoint refreshes cannot change it during the save.
         // Submit publishes the nearest-waypoint position immediately. DEM refinement stays on the preview.
         clueSaveInProgress = true
-        clueProjectionDebounceJob?.cancel()
         clueProjectionJob?.cancel()
         pendingBindingJob?.cancel()
         viewModelScope.launch {
@@ -3469,9 +3502,13 @@ class StreamsViewModel(
             } finally {
                 clueSaveInProgress = false
                 // Failure keeps the form and allows a retry. Success clears only this report.
-                if (pendingClue?.timestamp == clue.timestamp && pendingClue?.designator == clue.designator) {
+                val stillOpen = pendingClue?.timestamp == clue.timestamp &&
+                    pendingClue?.designator == clue.designator
+                if (stillOpen) {
                     startPendingBindingRefresh()
-                    requestDemClueProjectionRefresh(clue.designator)
+                    if (pendingClue?.gimbalAngleConfirmed == true) {
+                        requestDemClueProjectionRefresh(clue.designator)
+                    }
                 }
             }
         }
@@ -3555,8 +3592,6 @@ class StreamsViewModel(
     private fun clearPendingClue() {
         clueCaptureJob?.cancel()
         clueCaptureJob = null
-        clueProjectionDebounceJob?.cancel()
-        clueProjectionDebounceJob = null
         clueProjectionJob?.cancel()
         clueProjectionJob = null
         pendingBindingJob?.cancel()
@@ -3640,7 +3675,8 @@ class StreamsViewModel(
                         clue.copy(binding = next)
                     }
                     // Origin moves get a hard-capped local bind try only; never an unbounded EPQS walk.
-                    if (moveOrigin) {
+                    // Wait for SEI pitch or a committed manual pitch before terrain.
+                    if (moveOrigin && clue.gimbalAngleConfirmed) {
                         requestDemClueProjectionRefresh(
                             clue.designator,
                             bindTimeoutMs = CLUE_BIND_TERRAIN_TIMEOUT_MS,
@@ -3678,19 +3714,6 @@ class StreamsViewModel(
             } catch (error: Exception) {
                 CTError(tag, "Flight KMZ rewrite failed; it stays queued", error)
             }
-        }
-    }
-
-    /**
-     * Debounced DEM refresh for slider-driven gimbal/heading edits. Capture and binding
-     * origin moves still call [requestDemClueProjectionRefresh] immediately.
-     */
-    private fun scheduleDemClueProjectionRefresh(designator: String) {
-        clueProjectionDebounceJob?.cancel()
-        clueProjectionDebounceJob = viewModelScope.launch {
-            delay(CLUE_DEM_REFRESH_DEBOUNCE_MS)
-            if (!isActive) return@launch
-            requestDemClueProjectionRefresh(designator)
         }
     }
 

@@ -2785,9 +2785,14 @@ private struct ClueDroneConfirmationRequest: Identifiable {
 private struct ClueSubmissionView: View {
     @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     private enum FocusedField: Hashable {
+        case gimbal
         case title
         case description
     }
+
+    /// Operator / SEI gimbal pitch allowed range (matches OperationalClueGeometry clamp).
+    private static let gimbalPitchMinDegrees = -90.0
+    private static let gimbalPitchMaxDegrees = 90.0
 
     let pending: PendingClueSnapshot
     let model: RIDTrackViewModel
@@ -2805,8 +2810,14 @@ private struct ClueSubmissionView: View {
     @State private var description: String
     @State private var gimbalAngle: Double
     @State private var gimbalAngleConfirmed: Bool
+    /// False until SEI pitch is accepted at open, or the operator commits the manual pitch field.
+    @State private var gimbalPitchCommitted: Bool
+    @State private var gimbalPitchText: String
+    @State private var gimbalFieldSeenFocus = false
     @State private var cameraHeadingDegrees: Double
     @State private var cameraHeadingSource: String
+    @State private var headingDraft: Double
+    @State private var headingEditing = false
     @State private var terrainProjection: OperationalClueProjection?
     @State private var knownDemGroundMeters: Double?
     @State private var terrainProjectionPending = false
@@ -2824,6 +2835,9 @@ private struct ClueSubmissionView: View {
     @State private var keptIgnoredAircraftIDs: Set<String> = []
     @State private var droneConfirmation: ClueDroneConfirmationRequest?
     @FocusState private var focusedField: FocusedField?
+
+    /// Capture-time SEI presence; do not flip the form mode after a manual pitch commit.
+    private var gimbalFromSei: Bool { pending.gimbalAngleConfirmed }
 
     init(
         pending: PendingClueSnapshot,
@@ -2850,11 +2864,13 @@ private struct ClueSubmissionView: View {
         _selectedAircraftID = State(initialValue: pending.defaultAircraftID)
         _gimbalAngle = State(initialValue: pending.gimbalAngleDegrees)
         _gimbalAngleConfirmed = State(initialValue: pending.gimbalAngleConfirmed)
+        _gimbalPitchCommitted = State(initialValue: pending.gimbalAngleConfirmed)
+        _gimbalPitchText = State(initialValue: Self.formatGimbalPitchText(pending.gimbalAngleDegrees))
         _cameraHeadingDegrees = State(initialValue: pending.heading.degrees ?? 0)
         _cameraHeadingSource = State(initialValue: Self.headingSourceLabel(pending.heading))
-        // Android deliberately opens on an empty, focused title so the
-        // operator can immediately type the clue name without clearing a
-        // generated value.
+        _headingDraft = State(initialValue: pending.heading.degrees ?? 0)
+        // Android: SEI → focused title; manual pitch → focused gimbal field first.
+        // Title still opens empty so the operator types the clue name without clearing a generated value.
         _title = State(initialValue: "")
         _description = State(initialValue: Self.clueDescriptionTemplate(pending.snapshot.capturedAt, pilot: identityStore.identity(for: pending.defaultAircraftID)?.pilotCallsign ?? ""))
         _binding = State(initialValue: pending.binding)
@@ -2947,7 +2963,9 @@ private struct ClueSubmissionView: View {
     }
     private var projection: OperationalClueProjection? { terrainProjection ?? flatProjection }
     /// Capture-frozen DEM-task identity. Binding refresh must not restart S1M / EPQS walks.
+    /// Manual pitch: nil until the operator commits the gimbal field (SEI commits at open).
     private var terrainTaskKey: ClueTerrainTaskKey? {
+        guard gimbalPitchCommitted else { return nil }
         // Always key off the photograph's aircraft position, never the live-rebinding origin.
         let capture = pending.observation
         return ClueTerrainTaskKey(
@@ -3037,17 +3055,32 @@ private struct ClueSubmissionView: View {
                     }
                 }
                 Section("Camera projection") {
-                    LabeledContent("Camera heading", value: headingMeasurement(cameraHeadingDegrees))
-                    Slider(value: Binding(
-                        get: { cameraHeadingDegrees },
-                        set: { value in
-                            cameraHeadingDegrees = RidHeading.normalized(value) ?? 0
-                            cameraHeadingSource = "Operator adjusted"
+                    LabeledContent(
+                        "Camera heading",
+                        value: headingMeasurement(headingEditing ? headingDraft : cameraHeadingDegrees)
+                    )
+                    Slider(
+                        value: $headingDraft,
+                        in: 0 ... 359,
+                        step: 1,
+                        onEditingChanged: { editing in
+                            headingEditing = editing
+                            guard !editing else { return }
+                            commitCameraHeading(headingDraft)
                         }
-                    ), in: 0 ... 359, step: 1)
-                    LabeledContent("Gimbal angle", value: "\(Int(gimbalAngle.rounded()))°")
-                    Slider(value: Binding(get: { gimbalAngle }, set: { gimbalAngle = $0; gimbalAngleConfirmed = true }), in: -90 ... 90, step: 1)
-                    Text("-90° is straight down; 0° is the horizon; positive angles look upward.")
+                    )
+                    if gimbalFromSei {
+                        LabeledContent("Gimbal pitch", value: "\(Self.formatGimbalPitchText(gimbalAngle))° (from camera)")
+                    } else {
+                        TextField("Gimbal pitch (°)", text: $gimbalPitchText)
+                            .keyboardType(.numbersAndPunctuation)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .focused($focusedField, equals: .gimbal)
+                            .submitLabel(.next)
+                            .onSubmit { commitGimbalPitch(advanceToTitle: true, force: true) }
+                    }
+                    Text("-90° is straight down; 0° is the horizon; positive angles look upward. Allowed range \(Int(Self.gimbalPitchMinDegrees))° to \(Int(Self.gimbalPitchMaxDegrees))°.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if let terrainProjection, terrainProjection.terrainProjectionApplied {
@@ -3103,8 +3136,8 @@ private struct ClueSubmissionView: View {
                             .foregroundStyle(.orange)
                             .accessibilityIdentifier("ignored-flight-local-only")
                     }
-                    if !gimbalAngleConfirmed {
-                        Label("No current camera angle telemetry. Assuming −90° (straight down). Adjust the gimbal angle if needed.", systemImage: "exclamationmark.triangle")
+                    if !gimbalFromSei {
+                        Label("No current camera angle telemetry. Enter gimbal pitch (preset −90° straight down), then Next.", systemImage: "exclamationmark.triangle")
                             .font(.caption)
                             .foregroundStyle(.orange)
                     }
@@ -3139,11 +3172,29 @@ private struct ClueSubmissionView: View {
             }
             .onAppear {
                 DispatchQueue.main.async {
-                    focusedField = .title
+                    focusedField = gimbalFromSei ? .title : .gimbal
+                }
+                if gimbalFromSei {
+                    AppleLog.info(
+                        "Clue",
+                        String(
+                            format: "Clue gimbal committed gimbalSource=sei pitch=%.1f aircraft=%@",
+                            locale: Locale(identifier: "en_US_POSIX"),
+                            gimbalAngle,
+                            selectedAircraftID
+                        )
+                    )
                 }
                 if identityStore.isIgnored(selectedAircraftID) {
                     AppleLog.info("Clue", "Clue captured on an ignored flight remoteId=\(selectedAircraftID); asking to publish it")
                     showIgnoredFlightPrompt = true
+                }
+            }
+            .onChange(of: focusedField) {
+                if focusedField == .gimbal {
+                    gimbalFieldSeenFocus = true
+                } else if gimbalFieldSeenFocus && !gimbalFromSei {
+                    commitGimbalPitch(advanceToTitle: false, force: false)
                 }
             }
             .alert(IgnoredFlightClue.title, isPresented: $showIgnoredFlightPrompt) {
@@ -3193,17 +3244,18 @@ private struct ClueSubmissionView: View {
                 )
                 cameraHeadingDegrees = selection.degrees ?? 0
                 cameraHeadingSource = Self.headingSourceLabel(selection)
+                headingDraft = cameraHeadingDegrees
+                headingEditing = false
             }
             .task(id: terrainTaskKey) {
                 // Form path is local-S1M only with hard timeouts. EPQS belongs in post-save refine.
-                // Debounce heading/gimbal slider ticks (Android CLUE_DEM_REFRESH_DEBOUNCE_MS parity)
-                // so each degree change does not cancel an in-flight S1M walk.
+                // Projection runs once per committed gimbal/heading (no per-tick / debounce).
                 guard let key = terrainTaskKey, let input = projectionInput else {
                     terrainProjectionPending = false
-                    terrainProjection = nil
+                    // Keep any prior DEM result until a committed pose replaces it.
+                    if !gimbalPitchCommitted { terrainProjection = nil }
                     return
                 }
-                try? await Task.sleep(for: .milliseconds(200))
                 guard !Task.isCancelled, terrainTaskKey == key else { return }
                 // Submit owns the critical path; do not compete with durable save/upload.
                 guard !submitting else {
@@ -3345,8 +3397,59 @@ private struct ClueSubmissionView: View {
         }
     }
 
+    private func commitCameraHeading(_ value: Double) {
+        let normalized = RidHeading.normalized(value) ?? 0
+        cameraHeadingDegrees = normalized
+        cameraHeadingSource = "Operator adjusted"
+        headingDraft = normalized
+    }
+
+    @discardableResult
+    private func commitGimbalPitch(advanceToTitle: Bool, force: Bool) -> Bool {
+        guard !gimbalFromSei else { return true }
+        let trimmed = gimbalPitchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let parsed = Double(trimmed), parsed.isFinite else {
+            gimbalPitchText = Self.formatGimbalPitchText(gimbalAngle)
+            return false
+        }
+        let clamped = min(Self.gimbalPitchMaxDegrees, max(Self.gimbalPitchMinDegrees, parsed))
+        gimbalPitchText = Self.formatGimbalPitchText(clamped)
+        let changed = !gimbalPitchCommitted || abs(clamped - gimbalAngle) > 0.05
+        if force || changed {
+            gimbalAngle = clamped
+            gimbalAngleConfirmed = true
+            gimbalPitchCommitted = true
+            AppleLog.info(
+                "Clue",
+                String(
+                    format: "Clue gimbal committed gimbalSource=manual pitch=%.1f aircraft=%@",
+                    locale: Locale(identifier: "en_US_POSIX"),
+                    clamped,
+                    selectedAircraftID
+                )
+            )
+        }
+        if advanceToTitle {
+            focusedField = .title
+        }
+        return true
+    }
+
     private func submit(publish: Bool) async {
         guard !submitting else { return }
+        if !gimbalFromSei {
+            guard commitGimbalPitch(advanceToTitle: false, force: true) else {
+                submissionFeedback =
+                    "Enter a gimbal pitch between \(Int(Self.gimbalPitchMinDegrees))° and \(Int(Self.gimbalPitchMaxDegrees))°."
+                focusedField = .gimbal
+                AppleLog.warning("Clue", "Clue form submission needs a valid gimbal pitch")
+                return
+            }
+        }
+        if headingEditing {
+            commitCameraHeading(headingDraft)
+            headingEditing = false
+        }
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         AppleLog.info(
             "Clue",
@@ -3600,6 +3703,14 @@ private struct ClueSubmissionView: View {
 
     private static func clueDescriptionTemplate(_ date: Date, pilot: String = "") -> String {
         "time: \(timestampFormatter.string(from: date))\nfound by: \(pilot.trimmingCharacters(in: .whitespacesAndNewlines))\nreported to IC: yes|no\n"
+    }
+
+    private static func formatGimbalPitchText(_ degrees: Double) -> String {
+        let rounded = (degrees * 10).rounded() / 10
+        if abs(rounded - rounded.rounded()) < 0.05 {
+            return String(Int(rounded.rounded()))
+        }
+        return String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), rounded)
     }
 }
 

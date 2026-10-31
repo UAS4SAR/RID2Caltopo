@@ -4,6 +4,7 @@ import org.ncssar.rid2caltopo.data.Units
 import org.ncssar.rid2caltopo.data.DisplayUnits
 
 import PendingClue
+import clueProjectionIssue
 import formatClueHeading
 import projectionIssue
 import androidx.compose.foundation.Image
@@ -37,6 +38,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -46,15 +48,20 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import CLUE_GIMBAL_PITCH_MAX_DEG
+import CLUE_GIMBAL_PITCH_MIN_DEG
+import clampClueGimbalPitchDeg
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.platform.testTag
@@ -143,8 +150,11 @@ fun ClueSheetContent (
     val keyboardController = LocalSoftwareKeyboardController.current
     val descriptionFocusRequester = remember { FocusRequester() }
     val titleFocusRequester = remember { FocusRequester() }
+    val gimbalFocusRequester = remember { FocusRequester() }
     val configuration = LocalConfiguration.current
     val maxSheetHeight = configuration.screenHeightDp.dp * 0.7f
+    // Capture-time SEI presence; do not flip UI mode after a manual pitch commit.
+    val gimbalFromSei = remember(clue.designator) { clue.gimbalAngleConfirmed }
     var descriptionFieldValue by remember(clue.designator) {
         mutableStateOf(
             TextFieldValue(
@@ -154,16 +164,56 @@ fun ClueSheetContent (
         )
     }
     var submissionFeedback by remember(clue.designator) { mutableStateOf<String?>(null) }
+    var gimbalPitchText by remember(clue.designator) {
+        mutableStateOf(formatClueGimbalPitchText(clue.gimbalAngleDeg))
+    }
+    var gimbalFieldSeenFocus by remember(clue.designator) { mutableStateOf(false) }
+    var headingDraft by remember(clue.designator) {
+        mutableFloatStateOf((clue.headingDeg ?: 0.0).toFloat())
+    }
+    var headingDragging by remember(clue.designator) { mutableStateOf(false) }
+
+    fun commitGimbalPitch(advanceToTitle: Boolean, force: Boolean): Boolean {
+        if (saving || gimbalFromSei) return true
+        val parsed = gimbalPitchText.trim().toDoubleOrNull()
+        if (parsed == null || !parsed.isFinite()) {
+            gimbalPitchText = formatClueGimbalPitchText(clue.gimbalAngleDeg)
+            return false
+        }
+        val clamped = clampClueGimbalPitchDeg(parsed)
+        gimbalPitchText = formatClueGimbalPitchText(clamped)
+        if (force || clamped != clue.gimbalAngleDeg || !clue.gimbalAngleConfirmed) {
+            onGimbalAngleChange(clamped)
+        }
+        if (advanceToTitle) {
+            titleFocusRequester.requestFocus()
+        }
+        return true
+    }
 
     fun submitWhenValid(action: () -> Unit) {
         if (saving) return
+        var pitchForIssue = clue.gimbalAngleDeg
+        if (!gimbalFromSei) {
+            val parsed = gimbalPitchText.trim().toDoubleOrNull()
+            if (parsed == null || !parsed.isFinite()) {
+                submissionFeedback =
+                    "Enter a gimbal pitch between ${CLUE_GIMBAL_PITCH_MIN_DEG.toInt()}° and ${CLUE_GIMBAL_PITCH_MAX_DEG.toInt()}°."
+                gimbalFocusRequester.requestFocus()
+                keyboardController?.show()
+                return
+            }
+            pitchForIssue = clampClueGimbalPitchDeg(parsed)
+            gimbalPitchText = formatClueGimbalPitchText(pitchForIssue)
+            onGimbalAngleChange(pitchForIssue)
+        }
         if (clue.title.isBlank()) {
             submissionFeedback = "Title required."
             titleFocusRequester.requestFocus()
             keyboardController?.show()
             return
         }
-        clue.projectionIssue?.let { issue ->
+        clueProjectionIssue(clue.projectionHeightMeters, clue.headingDeg, pitchForIssue)?.let { issue ->
             submissionFeedback = issue
             return
         }
@@ -174,7 +224,23 @@ fun ClueSheetContent (
     }
 
     LaunchedEffect(Unit) {
-        titleFocusRequester.requestFocus()
+        if (gimbalFromSei) {
+            titleFocusRequester.requestFocus()
+        } else {
+            gimbalFocusRequester.requestFocus()
+        }
+    }
+
+    LaunchedEffect(clue.headingDeg) {
+        if (!headingDragging) {
+            headingDraft = (clue.headingDeg ?: 0.0).toFloat()
+        }
+    }
+
+    LaunchedEffect(clue.gimbalAngleDeg) {
+        if (gimbalFromSei || !gimbalFieldSeenFocus) {
+            gimbalPitchText = formatClueGimbalPitchText(clue.gimbalAngleDeg)
+        }
     }
 
     LaunchedEffect(clue.description) {
@@ -330,31 +396,59 @@ fun ClueSheetContent (
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
-                    text = formatClueHeading(clue.headingDeg)?.let { "Camera heading: $it°" } ?: "Camera heading unavailable",
+                    text = formatClueHeading(headingDraft.toDouble())?.let { "Camera heading: $it°" }
+                        ?: "Camera heading unavailable",
                     style = MaterialTheme.typography.bodyLarge
                 )
                 Slider(
                     enabled = !saving,
-                    value = (clue.headingDeg ?: 0.0).toFloat(),
-                    onValueChange = { onCameraHeadingChange(it.toDouble()) },
+                    value = headingDraft,
+                    onValueChange = {
+                        headingDragging = true
+                        headingDraft = it
+                    },
+                    onValueChangeFinished = {
+                        headingDragging = false
+                        onCameraHeadingChange(headingDraft.toDouble())
+                    },
                     valueRange = 0f..359f,
                     steps = 358,
                     modifier = Modifier.fillMaxWidth()
                 )
+                if (gimbalFromSei) {
+                    Text(
+                        text = "Gimbal pitch: ${formatClueGimbalPitchText(clue.gimbalAngleDeg)}° (from camera)",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                } else {
+                    OutlinedTextField(
+                        enabled = !saving,
+                        value = gimbalPitchText,
+                        onValueChange = { gimbalPitchText = it },
+                        label = { Text("Gimbal pitch (°)") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(gimbalFocusRequester)
+                            .onFocusChanged { focusState ->
+                                if (focusState.isFocused) {
+                                    gimbalFieldSeenFocus = true
+                                } else if (gimbalFieldSeenFocus) {
+                                    commitGimbalPitch(advanceToTitle = false, force = false)
+                                }
+                            },
+                        keyboardOptions = KeyboardOptions(
+                            // Ascii keeps '-' available; Number/Decimal keyboards often omit the sign.
+                            keyboardType = KeyboardType.Ascii,
+                            imeAction = ImeAction.Next,
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onNext = { commitGimbalPitch(advanceToTitle = true, force = true) },
+                        ),
+                    )
+                }
                 Text(
-                    text = "Gimbal angle: ${clue.gimbalAngleDeg.toInt()}°",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                Slider(
-                    enabled = !saving,
-                    value = clue.gimbalAngleDeg.toFloat(),
-                    onValueChange = { onGimbalAngleChange(it.toDouble()) },
-                    valueRange = -90f..90f,
-                    steps = 89,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Text(
-                    text = "-90° = straight down. 0° = horizon. Positive angles look upward.",
+                    text = "-90° = straight down. 0° = horizon. Positive angles look upward. Allowed range ${CLUE_GIMBAL_PITCH_MIN_DEG.toInt()}° to ${CLUE_GIMBAL_PITCH_MAX_DEG.toInt()}°.",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -453,9 +547,9 @@ fun ClueSheetContent (
                         modifier = Modifier.testTag("ignored-flight-local-only"),
                     )
                 }
-                if (!clue.gimbalAngleConfirmed) {
+                if (!gimbalFromSei) {
                     Text(
-                        text = "No current camera angle telemetry. Assuming −90° (straight down). Adjust the gimbal angle if needed.",
+                        text = "No current camera angle telemetry. Enter gimbal pitch (preset −90° straight down), then Next.",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color(0xFFFF9800)
                     )
@@ -502,3 +596,10 @@ private fun ObserveSheetInput() {
         onDispose { remove() }
     }
 }
+
+private fun formatClueGimbalPitchText(degrees: Double): String =
+    if (degrees == degrees.toInt().toDouble()) {
+        degrees.toInt().toString()
+    } else {
+        String.format(Locale.US, "%.1f", degrees)
+    }
