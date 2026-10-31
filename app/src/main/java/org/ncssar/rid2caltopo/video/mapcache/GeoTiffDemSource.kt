@@ -84,6 +84,48 @@ internal class GeoTiffDemSource(context: Context) {
         tiles.filter { it.bounds?.contains(lat, lng) != false }.map { it.displayName ?: it.id }
     }
 
+    /** Concise nearest-tile summary for miss diagnostics: `name south..north/west..east` or `none`. */
+    fun nearestTileBoundsSummary(lat: Double, lng: Double): String = synchronized(lock) {
+        if (tiles.isEmpty()) return@synchronized "none"
+        var bestName = ""
+        var bestBounds: TileBounds? = null
+        var bestDistance = Double.POSITIVE_INFINITY
+        for (tile in tiles) {
+            val name = tile.displayName.ifBlank { tile.id }
+            val bounds = tile.bounds
+            if (bounds == null) {
+                if (bestBounds == null) {
+                    bestName = name
+                    bestDistance = 0.0
+                }
+                continue
+            }
+            if (bounds.contains(lat, lng)) {
+                return@synchronized String.format(
+                    Locale.US,
+                    "%s %.5f..%.5f/%.5f..%.5f",
+                    name, bounds.minLat, bounds.maxLat, bounds.minLon, bounds.maxLon,
+                )
+            }
+            val clampedLat = lat.coerceIn(bounds.minLat, bounds.maxLat)
+            val clampedLon = lng.coerceIn(bounds.minLon, bounds.maxLon)
+            val dLat = (lat - clampedLat) * 111_195.0
+            val dLon = (lng - clampedLon) * 111_195.0 * maxOf(0.1, cos(Math.toRadians(lat)))
+            val distance = sqrt(dLat * dLat + dLon * dLon)
+            if (distance < bestDistance) {
+                bestDistance = distance
+                bestName = name
+                bestBounds = bounds
+            }
+        }
+        val bounds = bestBounds ?: return@synchronized bestName.ifEmpty { "none" }
+        String.format(
+            Locale.US,
+            "%s %.5f..%.5f/%.5f..%.5f",
+            bestName, bounds.minLat, bounds.maxLat, bounds.minLon, bounds.maxLon,
+        )
+    }
+
     /**
      * Scan Archive Dir for GeoTIFF tiles on a worker. Safe to call before SplitMapPane opens.
      * Never holds [lock] across SAF listing.

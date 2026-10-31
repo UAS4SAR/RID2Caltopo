@@ -15,6 +15,9 @@ import java.util.concurrent.atomic.AtomicLong
 internal object ClueTerrainDiagnostics {
     private val activeClueTerrainTasks = AtomicInteger(0)
     private val mainHitchCount = AtomicLong(0)
+    private val mapOverlayAttachCount = AtomicLong(0)
+    private val lastMapOverlayAttachMs = AtomicLong(0)
+    private val lastHitchSourceLogAtMs = AtomicLong(0)
     private val monitorStarted = AtomicBoolean(false)
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -27,6 +30,11 @@ internal object ClueTerrainDiagnostics {
         activeClueTerrainTasks.updateAndGet { current -> (current - 1).coerceAtLeast(0) }
     }
 
+    fun noteMapOverlayAttach(elapsedMs: Long) {
+        mapOverlayAttachCount.incrementAndGet()
+        lastMapOverlayAttachMs.set(elapsedMs)
+    }
+
     private fun startMonitorIfNeeded() {
         if (!monitorStarted.compareAndSet(false, true)) return
         mainHandler.post {
@@ -35,7 +43,19 @@ internal object ClueTerrainDiagnostics {
                 override fun doFrame(frameTimeNanos: Long) {
                     val now = SystemClock.uptimeMillis()
                     if (now - lastFrameAtMs > 50L) {
-                        mainHitchCount.incrementAndGet()
+                        val hitches = mainHitchCount.incrementAndGet()
+                        val previousLog = lastHitchSourceLogAtMs.get()
+                        if (now - previousLog >= 1_000L &&
+                            lastHitchSourceLogAtMs.compareAndSet(previousLog, now)
+                        ) {
+                            android.util.Log.i(
+                                "ClueTerrain",
+                                "hitch sources mainHitchCount=$hitches " +
+                                    "activeClueTerrainTasks=${activeClueTerrainTasks.get()} " +
+                                    "mapOverlayAttaches=${mapOverlayAttachCount.get()} " +
+                                    "lastMapOverlayMs=${lastMapOverlayAttachMs.get()}",
+                            )
+                        }
                     }
                     lastFrameAtMs = now
                     Choreographer.getInstance().postFrameCallback(this)
@@ -47,7 +67,8 @@ internal object ClueTerrainDiagnostics {
                     android.util.Log.i(
                         "ClueTerrain",
                         "diag activeClueTerrainTasks=${activeClueTerrainTasks.get()} " +
-                            "mainHitchCount=${mainHitchCount.get()}",
+                            "mainHitchCount=${mainHitchCount.get()} " +
+                            "mapOverlayAttaches=${mapOverlayAttachCount.get()}",
                     )
                     mainHandler.postDelayed(this, 30_000L)
                 }

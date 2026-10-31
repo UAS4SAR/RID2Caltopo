@@ -3238,6 +3238,34 @@ private func proximityDrone(
     #expect((projected.altitudeMeters ?? 9_999) < 200)
 }
 
+@Test func operationalClueProjectionFallsThroughWhenSEIHomeDEMMisses() async {
+    // Home/reference tile miss must not abort: aircraft-local S1M + AGL still ray-marches.
+    let homeLatitude = 39.0
+    let droneLatitude = homeLatitude + (20 / 111_195)
+    let projected = await OperationalClueGeometry.projectWithTerrain(
+        droneLatitude: droneLatitude,
+        droneLongitude: -105,
+        droneAltitudeMeters: 150,
+        headingDegrees: 0,
+        aglMeters: 50,
+        gimbalAngleDegrees: -45,
+        terrainReferenceLatitude: homeLatitude,
+        terrainReferenceLongitude: -105,
+        relativeUpMeters: 50,
+        sampleElevationMeters: { latitude, _ in
+            if abs(latitude - homeLatitude) < 1e-9 { return nil }
+            return OperationalTerrainSample(
+                elevationMeters: 100,
+                source: "usgs-geotiff-local-1m",
+                horizontalResolutionMeters: 1
+            )
+        }
+    )
+    #expect(projected.terrainProjectionApplied)
+    #expect(projected.demSource?.hasPrefix("usgs-geotiff-local-") == true)
+    #expect(projected.flatFallbackReason == nil)
+}
+
 @Test func centerpointElevationTapRequiresTheConfiguredCenterRadius() {
     #expect(OperationalCenterpointElevation.isNearCenter(
         x: 500, y: 300, width: 1_000, height: 600, radius: 80

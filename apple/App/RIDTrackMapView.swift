@@ -950,8 +950,10 @@ struct RIDTrackMapView: View {
             }
         }
         .task {
+            // 1 Hz: SEI map tails / FOV refresh. 250 ms previously forced MapKit full-track
+            // rebuilds during follow-mode and dominated mainHitchCount while streaming.
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(250))
+                try? await Task.sleep(for: .milliseconds(1_000))
                 guard !Task.isCancelled else { break }
                 streamRegistry.reconcileStaleSessions(activePublisherPaths: mediaServer.activePublisherPaths)
                 refreshSEIMapTails()
@@ -1972,6 +1974,8 @@ struct RIDTrackMapView: View {
         // Telemetry as of the capture; the form never reads live aircraft state.
         let tracksAtCapture = model.tracks
         let altitudeDisplaysAtCapture = model.altitudeDisplayByAircraftID
+        // Copy points off the live track before leaving Main — do not map the full history here.
+        let captureTrackPoints = captureTrack.points
         let captureStarted = Date()
         AppleLog.info("Clue", "Clue capture stage=tap aircraft=\(defaultAircraftID) stream=\(streamID)")
         capturingSnapshot = true
@@ -2007,37 +2011,39 @@ struct RIDTrackMapView: View {
                     return ClueBindingFramePosition(latitude: latitude, longitude: longitude)
                 }
                 let flightID = model.liveFlightID(aircraftID: defaultAircraftID)
-                let fallbackPoints = captureTrack.points.map(ClueBindingPoint.init(trackPoint:))
-                // Provisional bind must not share the utility pool with GeoTIFF loads (38b387bb starvation).
-                // Hard wall-clock race; form opens with a short suffix bind if the full scan is busy.
+                // Bind entirely off MainActor. ClueHardTimeout.race takes an eager fallback value —
+                // evaluating it on Main under MapKit/video load delayed form-open by seconds.
                 let bindAircraftID = defaultAircraftID
                 let bindCaptureSource: String = snapshot.droneCapturedAtMs == nil ? "app-receive" : "stream-pts"
-                let quickFallbackPoints = Array(fallbackPoints.suffix(32))
-                let provisionalBinding = await ClueHardTimeout.race(
-                    milliseconds: 100,
-                    operation: {
-                        ClueBinder.bind(
+                let provisionalBinding = await Task.detached(priority: .userInitiated) {
+                    let fallbackPoints = captureTrackPoints.map(ClueBindingPoint.init(trackPoint:))
+                    let quickFallbackPoints = Array(fallbackPoints.suffix(32))
+                    return await ClueHardTimeout.race(
+                        milliseconds: 100,
+                        operation: {
+                            ClueBinder.bind(
+                                aircraftID: bindAircraftID,
+                                flightID: flightID,
+                                captureTimeMs: captureTimeMs,
+                                captureTimeSource: bindCaptureSource,
+                                captureReceivedAtMs: captureReceivedMs,
+                                points: fallbackPoints,
+                                framePosition: framePosition,
+                                originIsWaypoint: framePosition == nil
+                            )
+                        },
+                        fallback: ClueBinder.bind(
                             aircraftID: bindAircraftID,
                             flightID: flightID,
                             captureTimeMs: captureTimeMs,
                             captureTimeSource: bindCaptureSource,
                             captureReceivedAtMs: captureReceivedMs,
-                            points: fallbackPoints,
+                            points: quickFallbackPoints,
                             framePosition: framePosition,
                             originIsWaypoint: framePosition == nil
                         )
-                    },
-                    fallback: ClueBinder.bind(
-                        aircraftID: bindAircraftID,
-                        flightID: flightID,
-                        captureTimeMs: captureTimeMs,
-                        captureTimeSource: bindCaptureSource,
-                        captureReceivedAtMs: captureReceivedMs,
-                        points: quickFallbackPoints,
-                        framePosition: framePosition,
-                        originIsWaypoint: framePosition == nil
                     )
-                )
+                }.value
                 let waypointOrigin = framePosition == nil ? provisionalBinding.nearest : nil
                 let captureObservation = RidObservation(
                     source: ridCaptureObservation.source,
@@ -3190,12 +3196,15 @@ private struct ClueSubmissionView: View {
             }
             .task(id: terrainTaskKey) {
                 // Form path is local-S1M only with hard timeouts. EPQS belongs in post-save refine.
-                // Capture-frozen key: binding refresh must not restart this work (DEM recovered storm).
+                // Debounce heading/gimbal slider ticks (Android CLUE_DEM_REFRESH_DEBOUNCE_MS parity)
+                // so each degree change does not cancel an in-flight S1M walk.
                 guard let key = terrainTaskKey, let input = projectionInput else {
                     terrainProjectionPending = false
                     terrainProjection = nil
                     return
                 }
+                try? await Task.sleep(for: .milliseconds(200))
+                guard !Task.isCancelled, terrainTaskKey == key else { return }
                 // Submit owns the critical path; do not compete with durable save/upload.
                 guard !submitting else {
                     terrainProjectionPending = false
@@ -3231,6 +3240,8 @@ private struct ClueSubmissionView: View {
                             meters: recovered,
                             sourceLabel: "DEM at captured position"
                         )
+                        // Publish immediately so Submit can use the height even if ray-march is cancelled.
+                        recoveredProjectionHeight = recoveredHeight
                         AppleLog.info(
                             "Clue",
                             String(format: "DEM recovered projection height=%.1f m aircraft=%@", recovered, aircraftID)
@@ -3252,7 +3263,6 @@ private struct ClueSubmissionView: View {
                 )
                 guard !Task.isCancelled, terrainTaskKey == key else { return }
                 if quick.terrainProjectionApplied {
-                    if let recoveredHeight { recoveredProjectionHeight = recoveredHeight }
                     terrainProjection = quick
                     if let alt = quick.altitudeMeters, alt.isFinite { knownDemGroundMeters = alt }
                     AppleLog.info(
@@ -3282,7 +3292,6 @@ private struct ClueSubmissionView: View {
                     timeoutMilliseconds: 2_000
                 )
                 guard !Task.isCancelled, terrainTaskKey == key else { return }
-                if let recoveredHeight { recoveredProjectionHeight = recoveredHeight }
                 terrainProjection = refined
                 if refined.terrainProjectionApplied, let alt = refined.altitudeMeters, alt.isFinite {
                     knownDemGroundMeters = alt
@@ -3290,9 +3299,21 @@ private struct ClueSubmissionView: View {
                     knownDemGroundMeters = alt
                 }
                 if !refined.terrainProjectionApplied {
+                    let reason = refined.flatFallbackReason ?? "DEM terrain unavailable"
                     AppleLog.info(
                         "Clue",
-                        "DEM projection flat fallback reason=\(refined.flatFallbackReason ?? "DEM terrain unavailable") aircraft=\(aircraftID)"
+                        "DEM projection flat fallback reason=\(reason) aircraft=\(aircraftID)"
+                    )
+                    AppleLog.info(
+                        "Clue",
+                        String(
+                            format: "Clue DEM miss reason=%@ lat=%.6f lon=%.6f demSource=%@",
+                            locale: Locale(identifier: "en_US_POSIX"),
+                            reason,
+                            captureObservation.latitude,
+                            captureObservation.longitude,
+                            refined.demSource ?? "none"
+                        )
                     )
                 }
                 AppleLog.info(
@@ -3395,24 +3416,8 @@ private struct ClueSubmissionView: View {
         let framePosition = usesCaptureTelemetry ? pending.binding?.framePosition : nil
         let flightID = model.liveFlightID(aircraftID: submittedAircraftID)
         let inMemoryPoints = (track?.points ?? []).map(ClueBindingPoint.init(trackPoint:))
-        let submittedBinding: ClueBinding = await ClueHardTimeout.race(
-            milliseconds: 200,
-            operation: {
-                if let existingBinding, existingBinding.aircraftID == submittedAircraftID {
-                    return ClueBinder.refresh(existingBinding, points: inMemoryPoints)
-                }
-                return ClueBinder.bind(
-                    aircraftID: submittedAircraftID,
-                    flightID: flightID,
-                    captureTimeMs: captureMs,
-                    captureTimeSource: captureSource,
-                    captureReceivedAtMs: receivedMs,
-                    points: inMemoryPoints,
-                    framePosition: framePosition,
-                    originIsWaypoint: framePosition == nil
-                )
-            },
-            fallback: existingBinding ?? ClueBinder.bind(
+        let submittedBinding: ClueBinding = await Task.detached(priority: .userInitiated) {
+            let fallback = existingBinding ?? ClueBinder.bind(
                 aircraftID: submittedAircraftID,
                 flightID: flightID,
                 captureTimeMs: captureMs,
@@ -3422,7 +3427,26 @@ private struct ClueSubmissionView: View {
                 framePosition: framePosition,
                 originIsWaypoint: framePosition == nil
             )
-        )
+            return await ClueHardTimeout.race(
+                milliseconds: 200,
+                operation: {
+                    if let existingBinding, existingBinding.aircraftID == submittedAircraftID {
+                        return ClueBinder.refresh(existingBinding, points: inMemoryPoints)
+                    }
+                    return ClueBinder.bind(
+                        aircraftID: submittedAircraftID,
+                        flightID: flightID,
+                        captureTimeMs: captureMs,
+                        captureTimeSource: captureSource,
+                        captureReceivedAtMs: receivedMs,
+                        points: inMemoryPoints,
+                        framePosition: framePosition,
+                        originIsWaypoint: framePosition == nil
+                    )
+                },
+                fallback: fallback
+            )
+        }.value
         AppleLog.info(
             "Clue",
             "Clue save stage=bound elapsedMs=\(Int(Date().timeIntervalSince(saveStarted) * 1_000)) publishWithoutTerrainWait=true"
@@ -3494,7 +3518,8 @@ private struct ClueSubmissionView: View {
             description: finalDescription,
             binding: submittedBinding,
             terrainProjectionApplied: projection.terrainProjectionApplied,
-            projectionHeightMeters: resolvedHeight.meters,
+            // Never invent a 1 m AGL for post-save; only a real capture/DEM height can ray-march.
+            projectionHeightMeters: projectionHeight?.meters,
             terrainReferenceLatitude: usesCaptureTelemetry
                 ? pending.djiCameraTelemetry?.referenceLatitudeDegrees : nil,
             terrainReferenceLongitude: usesCaptureTelemetry
@@ -4188,12 +4213,8 @@ private struct AircraftMapRenderState: Equatable {
     let focusedAircraftID: String?
     let followFocusedDrone: Bool
     let operatorAdjustedViewport: Bool
-    let centerLatitude: Double
-    let centerLongitude: Double
-    let latitudeDelta: Double
-    let longitudeDelta: Double
-    let width: Double
-    let height: Double
+    // Viewport center/span intentionally omitted: follow-mode region updates must not
+    // rebuild full-flight polylines on Main every tick (field mainHitchCount spike).
     let predictionSecond: Int?
     let positionIconAlphaByAircraftID: [String: Double]
 }
@@ -4857,7 +4878,6 @@ private struct OperationalMKMapView: UIViewRepresentable {
             }
 
             let now = Date()
-            let region = map.region
             let renderInputs = tracks.map { track in
                 AircraftTrackRenderInput(
                     track: track,
@@ -4890,22 +4910,21 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 focusedAircraftID: focusedAircraftID,
                 followFocusedDrone: followFocusedDrone,
                 operatorAdjustedViewport: operatorAdjustedViewport,
-                centerLatitude: region.center.latitude,
-                centerLongitude: region.center.longitude,
-                latitudeDelta: region.span.latitudeDelta,
-                longitudeDelta: region.span.longitudeDelta,
-                width: map.bounds.width,
-                height: map.bounds.height,
                 predictionSecond: nil,
                 positionIconAlphaByAircraftID: positionIconAlphaByAircraftID
             )
             let aircraftChanged = nextAircraftState != aircraftRenderState
             if aircraftChanged {
+                let rebuildStarted = ProcessInfo.processInfo.systemUptime
                 aircraftRenderState = nextAircraftState
                 map.removeOverlays(map.overlays.filter { overlay in
                     (overlay as? StyledPolyline)?.layer == .aircraft
                         || (overlay as? StyledPolygon)?.layer == .aircraft
                 })
+                ClueTerrainDiagnostics.noteMapOverlayRebuild(
+                    elapsedMs: (ProcessInfo.processInfo.systemUptime - rebuildStarted) * 1_000,
+                    pointCount: renderInputs.reduce(0) { $0 + $1.points.count }
+                )
             }
 
             if aircraftChanged {

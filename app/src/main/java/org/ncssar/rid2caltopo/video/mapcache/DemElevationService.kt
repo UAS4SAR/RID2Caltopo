@@ -105,9 +105,10 @@ internal class DemElevationService(context: Context) {
         val previous = lastLocalMissLogAtMs.get()
         if (now - previous >= 2_000L && lastLocalMissLogAtMs.compareAndSet(previous, now)) {
             val tried = localGeoTiff.candidateTilePaths(lat, lng)
+            val nearest = localGeoTiff.nearestTileBoundsSummary(lat, lng)
             MapCacheDebug.log(
                 "dem sampleLocal miss lat=$lat lng=$lng catalogReady=${localGeoTiff.isCatalogReady()} " +
-                    "tiles=${localGeoTiff.catalogTileCount()} " +
+                    "tiles=${localGeoTiff.catalogTileCount()} nearest=$nearest " +
                     "tried=${if (tried.isEmpty()) "none" else tried.joinToString("|")}",
             )
         }

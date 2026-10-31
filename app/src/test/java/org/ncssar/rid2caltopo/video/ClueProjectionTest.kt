@@ -359,4 +359,36 @@ class ClueProjectionTest {
         assertTrue(projection.terrainProjectionApplied)
         assertTrue("RID-like altitude must not leak into result", projection.alt < 200.0)
     }
+
+    @Test
+    fun projectClueLocationWithDemSamples_fallsThroughWhenSeiHomeDemMisses() = runBlocking {
+        val homeLat = 39.0
+        val droneLat = homeLat + (20.0 / 111_195.0)
+        val projection = projectClueLocationWithDemSamples(
+            droneLat = droneLat,
+            droneLng = -105.0,
+            droneAlt = 150.0,
+            headingDeg = 0.0,
+            aglMeters = 50.0,
+            gimbalAngleDeg = -45.0,
+            terrainReferenceLatitude = homeLat,
+            terrainReferenceLongitude = -105.0,
+            seiRelativeUpMeters = 50.0,
+            sampleElevationMeters = { lat: Double, _: Double ->
+                if (kotlin.math.abs(lat - homeLat) < 1e-9) {
+                    null
+                } else {
+                    DemElevationSample(
+                        elevationMeters = 100.0,
+                        stale = false,
+                        source = "usgs-geotiff-local-1m",
+                        horizontalResolutionMeters = 1.0,
+                    )
+                }
+            },
+        )
+        assertTrue(projection.terrainProjectionApplied)
+        assertTrue(projection.demSource?.startsWith("usgs-geotiff-local-") == true)
+        assertEquals(null, projection.flatFallbackReason)
+    }
 }

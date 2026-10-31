@@ -809,6 +809,12 @@ final class RIDTrackViewModel: ObservableObject {
                 aglMeters: height,
                 gimbalAngleDegrees: draft.gimbalAngleDegrees
             )
+            let timedOutFlat = OperationalClueProjection(
+                latitude: flat.latitude,
+                longitude: flat.longitude,
+                altitudeMeters: flat.altitudeMeters,
+                flatFallbackReason: "terrain refine timed out"
+            )
             // Hard wall-clock cap: cancellation alone cannot stop a stuck GeoTIFF decode.
             let projection = await ClueHardTimeout.race(
                 milliseconds: 8_000,
@@ -831,7 +837,7 @@ final class RIDTrackViewModel: ObservableObject {
                         }
                     )
                 },
-                fallback: flat
+                fallback: timedOutFlat
             )
             AppleLog.info(
                 "Clue",
@@ -843,7 +849,22 @@ final class RIDTrackViewModel: ObservableObject {
                     gimbalYawDegrees: draft.headingDegrees
                 ) + " stage=post-save id=\(recordID)"
             )
-            guard projection.terrainProjectionApplied else { return }
+            if !projection.terrainProjectionApplied {
+                let reason = projection.flatFallbackReason ?? "DEM terrain unavailable"
+                AppleLog.info(
+                    "Clue",
+                    String(
+                        format: "Clue DEM miss reason=%@ lat=%.6f lon=%.6f demSource=%@ stage=post-save id=%@",
+                        locale: Locale(identifier: "en_US_POSIX"),
+                        reason,
+                        draft.droneLatitude,
+                        draft.droneLongitude,
+                        projection.demSource ?? "none",
+                        recordID.uuidString
+                    )
+                )
+                return
+            }
             await store.applyTerrainProjectionRefine(id: recordID, projection: projection, format: format)
         }
     }
@@ -868,6 +889,12 @@ final class RIDTrackViewModel: ObservableObject {
             headingDegrees: headingDegrees,
             aglMeters: aglMeters,
             gimbalAngleDegrees: gimbalAngleDegrees
+        )
+        let timedOutFlat = OperationalClueProjection(
+            latitude: flat.latitude,
+            longitude: flat.longitude,
+            altitudeMeters: flat.altitudeMeters,
+            flatFallbackReason: "terrain refine timed out"
         )
         let terrainService = self.terrainService
         if prepareCatalog {
@@ -896,7 +923,7 @@ final class RIDTrackViewModel: ObservableObject {
                     }
                 )
             },
-            fallback: flat
+            fallback: timedOutFlat
         )
     }
 
@@ -1986,6 +2013,10 @@ enum ClueTerrainDiagnostics {
         let lock = NSLock()
         var activeClueTerrainTasks = 0
         var mainHitchCount: UInt64 = 0
+        var mapOverlayRebuildCount: UInt64 = 0
+        var lastMapOverlayRebuildMs: Double = 0
+        var lastMapOverlayPointCount: Int = 0
+        var lastHitchSourceLogAt: TimeInterval = 0
         var monitorStarted = false
     }
 
@@ -2007,12 +2038,37 @@ enum ClueTerrainDiagnostics {
     static func noteMainHitch() {
         state.lock.lock()
         state.mainHitchCount &+= 1
+        let hitches = state.mainHitchCount
+        let tasks = state.activeClueTerrainTasks
+        let mapRebuilds = state.mapOverlayRebuildCount
+        let mapMs = state.lastMapOverlayRebuildMs
+        let mapPoints = state.lastMapOverlayPointCount
+        let now = ProcessInfo.processInfo.systemUptime
+        let shouldLogSources = now - state.lastHitchSourceLogAt >= 1.0
+        if shouldLogSources { state.lastHitchSourceLogAt = now }
+        state.lock.unlock()
+        guard shouldLogSources else { return }
+        AppleLog.info(
+            "ClueTerrain",
+            String(
+                format: "hitch sources mainHitchCount=%llu activeClueTerrainTasks=%d mapOverlayRebuilds=%llu lastMapOverlayMs=%.1f lastMapOverlayPoints=%d",
+                locale: Locale(identifier: "en_US_POSIX"),
+                hitches, tasks, mapRebuilds, mapMs, mapPoints
+            )
+        )
+    }
+
+    static func noteMapOverlayRebuild(elapsedMs: Double, pointCount: Int) {
+        state.lock.lock()
+        state.mapOverlayRebuildCount &+= 1
+        state.lastMapOverlayRebuildMs = elapsedMs
+        state.lastMapOverlayPointCount = pointCount
         state.lock.unlock()
     }
 
-    private static func snapshot() -> (tasks: Int, hitches: UInt64) {
+    private static func snapshot() -> (tasks: Int, hitches: UInt64, mapRebuilds: UInt64) {
         state.lock.lock()
-        let value = (state.activeClueTerrainTasks, state.mainHitchCount)
+        let value = (state.activeClueTerrainTasks, state.mainHitchCount, state.mapOverlayRebuildCount)
         state.lock.unlock()
         return value
     }
@@ -2038,14 +2094,14 @@ enum ClueTerrainDiagnostics {
                 let snap = snapshot()
                 AppleLog.info(
                     "ClueTerrain",
-                    "diag activeClueTerrainTasks=\(snap.tasks) mainHitchCount=\(snap.hitches)"
+                    "diag activeClueTerrainTasks=\(snap.tasks) mainHitchCount=\(snap.hitches) mapOverlayRebuilds=\(snap.mapRebuilds)"
                 )
             }
             RunLoop.main.add(report, forMode: .common)
             let snap = snapshot()
             AppleLog.info(
                 "ClueTerrain",
-                "diag activeClueTerrainTasks=\(snap.tasks) mainHitchCount=\(snap.hitches)"
+                "diag activeClueTerrainTasks=\(snap.tasks) mainHitchCount=\(snap.hitches) mapOverlayRebuilds=\(snap.mapRebuilds)"
             )
         }
     }

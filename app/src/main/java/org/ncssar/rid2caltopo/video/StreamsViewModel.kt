@@ -772,10 +772,13 @@ internal suspend fun projectClueLocationWithDemSamples(
     } else null
     val anchoredRelativeUp = seiRelativeUpMeters?.takeIf { it.isFinite() && it > 0.0 }
     val referenceGround = referenceDemSample?.elevationMeters?.takeIf { it.isFinite() }
-    val effectiveDroneAlt = if (referenceGround != null && anchoredRelativeUp != null) {
-        referenceGround + anchoredRelativeUp
+    // SEI relative-up only anchors when the home/reference DEM sample hits. A miss must not
+    // abort ray-march: fall through with AGL/ATO so local S1M at the aircraft can still run.
+    val useRelativeUpAnchor = anchoredRelativeUp != null && referenceGround != null
+    val effectiveDroneAlt = if (useRelativeUpAnchor) {
+        referenceGround!! + anchoredRelativeUp!!
     } else droneAlt
-    val effectiveAgl = anchoredRelativeUp ?: aglMeters
+    val effectiveAgl = if (useRelativeUpAnchor) anchoredRelativeUp else aglMeters
     // A vertical sightline needs neither heading nor AGL: terrain directly below is the target.
     if (gimbalAngleDeg.isFinite() && gimbalAngleDeg <= -89.9 &&
         droneLat.isFinite() && droneLng.isFinite() && droneLat in -90.0..90.0 && droneLng in -180.0..180.0
@@ -791,28 +794,36 @@ internal suspend fun projectClueLocationWithDemSamples(
         return projectClueLocation(
             droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
             headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
-        ).copy(flatFallbackReason = "nadir DEM sample unavailable")
-    }
-    if (anchoredRelativeUp != null && terrainReferenceLatitude != null &&
-        terrainReferenceLongitude != null && referenceGround == null
-    ) {
-        return projectClueLocation(
-            droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
-            headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
-        ).copy(flatFallbackReason = "SEI relative-up reference DEM unavailable")
+            knownGroundElevationMeters = referenceGround,
+        ).copy(
+            demSource = referenceDemSample?.source,
+            demResolutionMeters = referenceDemSample?.horizontalResolutionMeters,
+            demSampleStale = referenceDemSample?.stale == true,
+            flatFallbackReason = "nadir DEM sample unavailable",
+        )
     }
     val validHeading = headingDeg?.takeIf { it.isFinite() }
         ?: return projectClueLocation(
             droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
             headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
             knownGroundElevationMeters = referenceGround,
-        ).copy(flatFallbackReason = "heading unavailable")
+        ).copy(
+            demSource = referenceDemSample?.source,
+            demResolutionMeters = referenceDemSample?.horizontalResolutionMeters,
+            demSampleStale = referenceDemSample?.stale == true,
+            flatFallbackReason = "heading unavailable",
+        )
     val validAgl = effectiveAgl?.takeIf { it.isFinite() && it > 0.0 }
         ?: return projectClueLocation(
             droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
             headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
             knownGroundElevationMeters = referenceGround,
-        ).copy(flatFallbackReason = "AGL unavailable")
+        ).copy(
+            demSource = referenceDemSample?.source,
+            demResolutionMeters = referenceDemSample?.horizontalResolutionMeters,
+            demSampleStale = referenceDemSample?.stale == true,
+            flatFallbackReason = "AGL unavailable",
+        )
     val clampedAngle = gimbalAngleDeg
         .takeIf { it.isFinite() }
         ?.coerceIn(-90.0, 90.0)
@@ -822,7 +833,12 @@ internal suspend fun projectClueLocationWithDemSamples(
             droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
             headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
             knownGroundElevationMeters = referenceGround,
-        ).copy(flatFallbackReason = "gimbal at or above horizon")
+        ).copy(
+            demSource = referenceDemSample?.source,
+            demResolutionMeters = referenceDemSample?.horizontalResolutionMeters,
+            demSampleStale = referenceDemSample?.stale == true,
+            flatFallbackReason = "gimbal at or above horizon",
+        )
     }
     val tiltFromHorizonDeg = abs(clampedAngle).coerceIn(0.1, 90.0)
     if (tiltFromHorizonDeg >= 89.9) {
@@ -830,7 +846,12 @@ internal suspend fun projectClueLocationWithDemSamples(
             droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
             headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
             knownGroundElevationMeters = referenceGround,
-        ).copy(flatFallbackReason = "gimbal treated as nadir without DEM")
+        ).copy(
+            demSource = referenceDemSample?.source,
+            demResolutionMeters = referenceDemSample?.horizontalResolutionMeters,
+            demSampleStale = referenceDemSample?.stale == true,
+            flatFallbackReason = "gimbal treated as nadir without DEM",
+        )
     }
 
     val slopeDown = tan(Math.toRadians(tiltFromHorizonDeg))
@@ -839,7 +860,12 @@ internal suspend fun projectClueLocationWithDemSamples(
             droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
             headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
             knownGroundElevationMeters = referenceGround,
-        ).copy(flatFallbackReason = "invalid sightline slope")
+        ).copy(
+            demSource = referenceDemSample?.source,
+            demResolutionMeters = referenceDemSample?.horizontalResolutionMeters,
+            demSampleStale = referenceDemSample?.stale == true,
+            flatFallbackReason = "invalid sightline slope",
+        )
     }
 
     val flatDistanceM = validAgl / slopeDown
@@ -848,20 +874,28 @@ internal suspend fun projectClueLocationWithDemSamples(
             droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
             headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
             knownGroundElevationMeters = referenceGround,
-        ).copy(flatFallbackReason = "non-positive flat distance")
+        ).copy(
+            demSource = referenceDemSample?.source,
+            demResolutionMeters = referenceDemSample?.horizontalResolutionMeters,
+            demSampleStale = referenceDemSample?.stale == true,
+            flatFallbackReason = "non-positive flat distance",
+        )
     }
 
-    val droneDemSample = referenceDemSample ?: checkedSample(droneLat, droneLng)
-    val droneDemRaw = referenceGround ?: droneDemSample?.elevationMeters?.takeIf { it.isFinite() }
+    // Only reuse the home/reference sample when the SEI altitude anchor is active.
+    val droneDemSample = if (useRelativeUpAnchor) referenceDemSample else checkedSample(droneLat, droneLng)
+    val droneDemRaw = (if (useRelativeUpAnchor) referenceGround else null)
+        ?: droneDemSample?.elevationMeters?.takeIf { it.isFinite() }
     // ATO/AGL flat ground anchors foot-vs-metre DEM scale detection; do not feed raw DEM
     // elevations here or a feet-encoded GeoTIFF looks like metres and the ray walk breaks.
-    val atoFlatGroundM = referenceGround ?: (effectiveDroneAlt - validAgl)
-    val demScaleToMeters = if (referenceGround == null) inferDemScaleToMeters(
+    val atoFlatGroundM = (if (useRelativeUpAnchor) referenceGround else null) ?: (effectiveDroneAlt - validAgl)
+    val demScaleToMeters = if (useRelativeUpAnchor) 1.0 else inferDemScaleToMeters(
         droneAltMeters = effectiveDroneAlt,
         knownGroundMeters = atoFlatGroundM,
         droneDemRaw = droneDemRaw,
-    ) else 1.0
-    val knownDemGroundM = referenceGround ?: droneDemRaw?.let { it * demScaleToMeters }
+    )
+    val knownDemGroundM = (if (useRelativeUpAnchor) referenceGround else null)
+        ?: droneDemRaw?.let { it * demScaleToMeters }
     val flatGroundM = knownDemGroundM ?: atoFlatGroundM
 
     fun flatWithKnownGround(reason: String): ClueProjection {
@@ -882,7 +916,7 @@ internal suspend fun projectClueLocationWithDemSamples(
         )
     }
 
-    if (droneDemSample == null && referenceGround == null) {
+    if (droneDemSample == null && knownDemGroundM == null) {
         return flatWithKnownGround("DEM sample unavailable at aircraft")
     }
 
@@ -3056,6 +3090,7 @@ class StreamsViewModel(
     }
 
     private val clueUploadStartedAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val clueUploadAttemptCounts = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
     private val clueUploadStaleAfterMs = 180_000L
     private val clueRetryLoggedAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val clueUploadBackoff = org.ncssar.rid2caltopo.data.ClueUploadBackoffTable()
@@ -3213,6 +3248,13 @@ class StreamsViewModel(
         folder: String,
         record: AndroidClueRecord,
     ) {
+        val attempt = clueUploadAttemptCounts
+            .getOrPut(record.id) { java.util.concurrent.atomic.AtomicInteger(0) }
+            .incrementAndGet()
+        android.util.Log.i(
+            tag,
+            "Clue upload start id=${record.id} attempt=$attempt mapId=$mapId teamId=$teamId",
+        )
         val outcome = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
         try {
             org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
@@ -3235,12 +3277,20 @@ class StreamsViewModel(
             endClueUpload(record.id)
             if (result.success()) {
                 clueUploadBackoff.reset(record.id)
+                android.util.Log.i(
+                    tag,
+                    "Clue upload success id=${record.id} attempt=$attempt status=${result.responseCode}",
+                )
                 return
             }
             val delayMs = clueUploadBackoff.nextDelayMs(record.id)
             clueUploadBackoff.markDelayedUntil(
                 record.id,
                 android.os.SystemClock.elapsedRealtime() + delayMs,
+            )
+            android.util.Log.w(
+                tag,
+                "Clue upload failed id=${record.id} attempt=$attempt status=${result.responseCode} retry=${delayMs / 1000}s",
             )
             logClueRetry(
                 "backoff:${record.id}",

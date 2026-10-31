@@ -157,6 +157,18 @@ internal suspend fun refineCapturedClueTerrain(
                 "StreamsViewModel",
                 "refineCapturedClueTerrain: flat fallback reason=$reason designator=${clue.designator}",
             )
+            android.util.Log.i(
+                "Clue",
+                String.format(
+                    Locale.US,
+                    "Clue DEM miss reason=%s lat=%.6f lon=%.6f demSource=%s designator=%s",
+                    reason,
+                    clue.droneLat,
+                    clue.droneLng,
+                    projection.demSource ?: "none",
+                    clue.designator,
+                ),
+            )
         }
     }
 }

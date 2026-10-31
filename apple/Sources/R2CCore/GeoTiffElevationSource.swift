@@ -117,6 +117,50 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
             .map(\.url.path)
     }
 
+    /// Concise nearest-tile summary for miss diagnostics: `name south..north/west..east` or `none`.
+    public func nearestTileBoundsSummary(latitude: Double, longitude: Double) -> String {
+        let snapshot = lock.r2cWithLock { tiles }
+        guard !snapshot.isEmpty else { return "none" }
+        var bestName = ""
+        var bestBounds: Bounds?
+        var bestDistance = Double.infinity
+        for tile in snapshot {
+            let name = tile.url.lastPathComponent
+            guard let bounds = tile.bounds else {
+                if bestBounds == nil {
+                    bestName = name
+                    bestDistance = 0
+                }
+                continue
+            }
+            if bounds.contains(latitude: latitude, longitude: longitude) {
+                return String(
+                    format: "%@ %.5f..%.5f/%.5f..%.5f",
+                    locale: Locale(identifier: "en_US_POSIX"),
+                    name, bounds.minLatitude, bounds.maxLatitude, bounds.minLongitude, bounds.maxLongitude
+                )
+            }
+            let clampedLat = min(max(latitude, bounds.minLatitude), bounds.maxLatitude)
+            let clampedLon = min(max(longitude, bounds.minLongitude), bounds.maxLongitude)
+            let dLat = (latitude - clampedLat) * 111_195
+            let dLon = (longitude - clampedLon) * 111_195 * max(0.1, cos(latitude * .pi / 180))
+            let distance = (dLat * dLat + dLon * dLon).squareRoot()
+            if distance < bestDistance {
+                bestDistance = distance
+                bestName = name
+                bestBounds = bounds
+            }
+        }
+        guard let bounds = bestBounds else {
+            return bestName.isEmpty ? "none" : bestName
+        }
+        return String(
+            format: "%@ %.5f..%.5f/%.5f..%.5f",
+            locale: Locale(identifier: "en_US_POSIX"),
+            bestName, bounds.minLatitude, bounds.maxLatitude, bounds.minLongitude, bounds.maxLongitude
+        )
+    }
+
     /// `maximumHorizontalResolutionMeters` drops coarser rasters before any block is decoded.
     /// The footprint asks for S1M (1.5 m) and must not spend the pass inflating 10 m / 30 m tiles.
     /// `isCancelled` is checked between tiles so a timed-out clue ray-march can stop mid-walk.

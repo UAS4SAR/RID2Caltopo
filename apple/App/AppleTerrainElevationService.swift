@@ -98,10 +98,11 @@ actor AppleTerrainElevationService {
         if Date().timeIntervalSince(lastLocalMissLogAt) >= 2 {
             lastLocalMissLogAt = Date()
             let tried = localDEM.candidateTilePaths(latitude: latitude, longitude: longitude)
+            let nearest = localDEM.nearestTileBoundsSummary(latitude: latitude, longitude: longitude)
             AppleLog.info(
                 "Terrain",
                 "DEM sampleLocal miss lat=\(latitude) lon=\(longitude) catalogReady=\(localDEM.isCatalogReady) " +
-                    "tiles=\(localDEM.catalogTileCount) dir=\(localDEM.catalogDirectoryPath) " +
+                    "tiles=\(localDEM.catalogTileCount) nearest=\(nearest) " +
                     "tried=\(tried.isEmpty ? "none" : tried.joined(separator: "|"))"
             )
         }

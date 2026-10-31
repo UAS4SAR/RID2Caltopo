@@ -630,7 +630,10 @@ final class AppleClueStore: ObservableObject {
                     }
                     try? await self.persistIndex()
                     self.updateStatus()
-                    AppleLog.info("Clue", "CalTopo clue published id=\(id) marker=\(markerID) attempt=\(attempt)")
+                    AppleLog.info(
+                        "Clue",
+                        "Clue upload success id=\(id) attempt=\(attempt) status=200 marker=\(markerID)"
+                    )
                     terminalReason = "published"
                     break
                 } catch is ClueUploadAttemptTimeout {

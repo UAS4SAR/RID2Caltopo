@@ -513,13 +513,20 @@ public enum OperationalClueGeometry {
         let referenceGround = referenceDEMSample.flatMap { sample in
             sample.elevationMeters.isFinite ? sample.elevationMeters : nil
         }
-        let effectiveAltitude = if let referenceGround, let anchoredRelativeUp {
+        // SEI relative-up only anchors when the home/reference DEM sample hits. A miss must not
+        // abort ray-march: fall through with AGL/ATO so local S1M at the aircraft can still run.
+        let useRelativeUpAnchor = anchoredRelativeUp != nil && referenceGround != nil
+        let effectiveAltitude = if useRelativeUpAnchor, let referenceGround, let anchoredRelativeUp {
             referenceGround + anchoredRelativeUp
         } else {
             droneAltitudeMeters
         }
-        let effectiveAGL = anchoredRelativeUp ?? aglMeters
-        func flatEstimate(knownGround: Double?, reason: String) -> OperationalClueProjection {
+        let effectiveAGL = useRelativeUpAnchor ? anchoredRelativeUp : aglMeters
+        func flatEstimate(
+            knownGround: Double?,
+            reason: String,
+            dem: OperationalTerrainSample? = nil
+        ) -> OperationalClueProjection {
             var projection = project(
                 droneLatitude: droneLatitude,
                 droneLongitude: droneLongitude,
@@ -533,9 +540,9 @@ public enum OperationalClueGeometry {
                 latitude: projection.latitude,
                 longitude: projection.longitude,
                 altitudeMeters: projection.altitudeMeters,
-                demSource: nil,
-                demResolutionMeters: nil,
-                demSampleStale: false,
+                demSource: dem?.source,
+                demResolutionMeters: dem?.horizontalResolutionMeters,
+                demSampleStale: dem?.stale ?? false,
                 flatFallbackReason: reason
             )
             return projection
@@ -551,58 +558,77 @@ public enum OperationalClueGeometry {
                     demResolutionMeters: ground.horizontalResolutionMeters, demSampleStale: ground.stale
                 )
             }
-            return flatEstimate(knownGround: referenceGround, reason: "nadir DEM sample unavailable")
-        }
-        if anchoredRelativeUp != nil,
-           terrainReferenceLatitude != nil,
-           terrainReferenceLongitude != nil,
-           referenceGround == nil {
-            return flatEstimate(knownGround: nil, reason: "SEI relative-up reference DEM unavailable")
+            return flatEstimate(
+                knownGround: referenceGround,
+                reason: "nadir DEM sample unavailable",
+                dem: referenceDEMSample
+            )
         }
         guard let droneAltitudeMeters = effectiveAltitude, droneAltitudeMeters.isFinite,
               let headingDegrees, headingDegrees.isFinite,
               let aglMeters = effectiveAGL, aglMeters.isFinite, aglMeters > 0
         else {
-            return flatEstimate(knownGround: referenceGround, reason: "heading or AGL unavailable")
+            return flatEstimate(
+                knownGround: referenceGround,
+                reason: "heading or AGL unavailable",
+                dem: referenceDEMSample
+            )
         }
 
         let angle = min(90, max(-90, gimbalAngleDegrees))
         guard angle < -0.1 else {
-            return flatEstimate(knownGround: referenceGround, reason: "gimbal at or above horizon")
+            return flatEstimate(
+                knownGround: referenceGround,
+                reason: "gimbal at or above horizon",
+                dem: referenceDEMSample
+            )
         }
         let tiltFromHorizon = max(0.1, min(90, abs(angle)))
         guard tiltFromHorizon < 89.9 else {
-            return flatEstimate(knownGround: referenceGround, reason: "gimbal treated as nadir without DEM")
+            return flatEstimate(
+                knownGround: referenceGround,
+                reason: "gimbal treated as nadir without DEM",
+                dem: referenceDEMSample
+            )
         }
         let slopeDown = tan(tiltFromHorizon * .pi / 180)
         guard slopeDown.isFinite, slopeDown > 0 else {
-            return flatEstimate(knownGround: referenceGround, reason: "invalid sightline slope")
+            return flatEstimate(
+                knownGround: referenceGround,
+                reason: "invalid sightline slope",
+                dem: referenceDEMSample
+            )
         }
         let flatDistance = aglMeters / slopeDown
         guard flatDistance.isFinite, flatDistance > 0 else {
-            return flatEstimate(knownGround: referenceGround, reason: "non-positive flat distance")
+            return flatEstimate(
+                knownGround: referenceGround,
+                reason: "non-positive flat distance",
+                dem: referenceDEMSample
+            )
         }
 
-        let droneDEMSample: OperationalTerrainSample? = if let referenceDEMSample {
+        // Only reuse the home/reference sample when the SEI altitude anchor is active.
+        let droneDEMSample: OperationalTerrainSample? = if useRelativeUpAnchor, let referenceDEMSample {
             referenceDEMSample
         } else {
             await networkSample(droneLatitude, droneLongitude)
         }
-        let droneDEM = referenceGround ?? droneDEMSample?.elevationMeters
+        let droneDEM = (useRelativeUpAnchor ? referenceGround : nil) ?? droneDEMSample?.elevationMeters
         // ATO/AGL flat ground anchors foot-vs-metre DEM scale detection.
-        let atoFlatGround = referenceGround ?? (droneAltitudeMeters - aglMeters)
-        let scale: Double = if referenceGround == nil {
+        let atoFlatGround = (useRelativeUpAnchor ? referenceGround : nil) ?? (droneAltitudeMeters - aglMeters)
+        let scale: Double = if useRelativeUpAnchor {
+            1
+        } else {
             inferDEMScaleToMeters(
                 droneAltitudeMeters: droneAltitudeMeters,
                 knownGroundMeters: atoFlatGround,
                 droneDEM: droneDEM
             )
-        } else {
-            1
         }
-        let knownDemGround = referenceGround ?? droneDEM.map { $0 * scale }
+        let knownDemGround = (useRelativeUpAnchor ? referenceGround : nil) ?? droneDEM.map { $0 * scale }
         let flatGround = knownDemGround ?? atoFlatGround
-        if droneDEMSample == nil, referenceGround == nil {
+        if droneDEMSample == nil, knownDemGround == nil {
             return flatEstimate(knownGround: knownDemGround, reason: "DEM sample unavailable at aircraft")
         }
         // A shallow sightline over falling terrain may stay above the ground for kilometres.
@@ -617,7 +643,11 @@ public enum OperationalClueGeometry {
         var distance = step
         while distance <= maximumDistance + 0.001 {
             if Task.isCancelled {
-                return flatEstimate(knownGround: knownDemGround, reason: "terrain refine cancelled")
+                return flatEstimate(
+                    knownGround: knownDemGround,
+                    reason: "terrain refine cancelled",
+                    dem: droneDEMSample
+                )
             }
             let candidate = destinationPoint(
                 latitude: droneLatitude,
@@ -655,7 +685,11 @@ public enum OperationalClueGeometry {
                 var highGround = ground
                 for _ in 0 ..< 6 {
                     if Task.isCancelled {
-                        return flatEstimate(knownGround: knownDemGround, reason: "terrain refine cancelled")
+                        return flatEstimate(
+                            knownGround: knownDemGround,
+                            reason: "terrain refine cancelled",
+                            dem: droneDEMSample
+                        )
                     }
                     let midDistance = (lowDistance + highDistance) / 2
                     let midPoint = destinationPoint(
@@ -703,7 +737,8 @@ public enum OperationalClueGeometry {
             knownGround: knownDemGround,
             reason: coverageEnded
                 ? "local DEM coverage ended before ray intersection"
-                : "ray did not intersect DEM within search distance"
+                : "ray did not intersect DEM within search distance",
+            dem: droneDEMSample
         )
     }
 
