@@ -277,6 +277,18 @@ internal class DemElevationService(context: Context) {
         sample != null && sample.elevationMeters.isFinite() && sample.horizontalResolutionMeters <= 1.5
     }
 
+    /**
+     * Low-priority flight-start warm: decode S1M tiles across the operating area into the
+     * bounded clue/flight cache so form and post-save ray-marches are hot.
+     */
+    suspend fun warmDecodedTilesForOperatingArea(lat: Double, lng: Double, radiusMeters: Double) =
+        withContext(Dispatchers.IO) {
+            if (!lat.isFinite() || !lng.isFinite() || radiusMeters <= 0.0) return@withContext
+            terrainReads.read { checkCancelled ->
+                localGeoTiff.warmDecodedTiles(lat, lng, radiusMeters, checkCancelled)
+            }
+        }
+
     fun hasCachedSample(lat: Double, lng: Double): Boolean {
         if (!lat.isFinite() || !lng.isFinite()) return false
         val key = cacheKey(lat, lng)

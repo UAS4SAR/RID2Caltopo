@@ -71,6 +71,8 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
     private var maxCachedFiles = 2
     private var maxCachedBlocks = 8
     private var clueSessionDepth = 0
+    /// Flight-start warm keeps elevated limits so form/post-save walks stay hot.
+    private var flightWarmRetained = false
     private var timingCatalogNs: Int64 = 0
     private var timingTileOpenDecodeNs: Int64 = 0
     private var timingSampleCount = 0
@@ -95,6 +97,31 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
         lock.r2cWithLock {
             guard clueSessionDepth > 0 else { return }
             clueSessionDepth -= 1
+            if clueSessionDepth == 0, !flightWarmRetained {
+                maxCachedFiles = 2
+                maxCachedBlocks = 8
+                while fileCache.count > maxCachedFiles, let key = fileCache.keys.first {
+                    fileCache.removeValue(forKey: key)
+                }
+                while blockOrder.count > maxCachedBlocks {
+                    blockCache.removeValue(forKey: blockOrder.removeFirst())
+                }
+            }
+        }
+    }
+
+    /// Raise decode-cache limits for the flight operating area (does not reset timing counters).
+    public func retainFlightWarmCache() {
+        lock.r2cWithLock {
+            flightWarmRetained = true
+            maxCachedFiles = max(maxCachedFiles, 8)
+            maxCachedBlocks = max(maxCachedBlocks, 64)
+        }
+    }
+
+    public func releaseFlightWarmCache() {
+        lock.r2cWithLock {
+            flightWarmRetained = false
             if clueSessionDepth == 0 {
                 maxCachedFiles = 2
                 maxCachedBlocks = 8
@@ -106,6 +133,46 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// Pre-decode S1M tiles covering [latitude]/[longitude] ± radius into the elevated cache.
+    /// Call from a background worker after TerrainPrefetch; low priority, cancel-aware.
+    public func warmDecodedTiles(
+        latitude: Double,
+        longitude: Double,
+        radiusMeters: Double,
+        isCancelled: () -> Bool = { false }
+    ) {
+        guard latitude.isFinite, longitude.isFinite, radiusMeters.isFinite, radiusMeters > 0 else { return }
+        retainFlightWarmCache()
+        beginClueSamplingSession()
+        defer { endClueSamplingSession() }
+        ensureCatalogCurrent()
+        // ~400 m grid over the operating circle (~1 mi → ~dozen samples) opens tile files + blocks.
+        let stepMeters = min(400.0, max(100.0, radiusMeters / 4.0))
+        let metersPerDegreeLat = 111_195.0
+        let metersPerDegreeLon = max(1.0, 111_195.0 * cos(latitude * .pi / 180))
+        var lat = latitude - radiusMeters / metersPerDegreeLat
+        let latMax = latitude + radiusMeters / metersPerDegreeLat
+        var warmed = 0
+        while lat <= latMax + 1e-9 {
+            if isCancelled() { return }
+            var lon = longitude - radiusMeters / metersPerDegreeLon
+            let lonMax = longitude + radiusMeters / metersPerDegreeLon
+            while lon <= lonMax + 1e-9 {
+                if isCancelled() { return }
+                let dLat = (lat - latitude) * metersPerDegreeLat
+                let dLon = (lon - longitude) * metersPerDegreeLon
+                if (dLat * dLat + dLon * dLon).squareRoot() <= radiusMeters + 1.0 {
+                    _ = sample(latitude: lat, longitude: lon, isCancelled: isCancelled)
+                    warmed += 1
+                }
+                lon += stepMeters / metersPerDegreeLon
+            }
+            lat += stepMeters / metersPerDegreeLat
+        }
+        // Always touch the center last so the aircraft cell is resident.
+        _ = sample(latitude: latitude, longitude: longitude, isCancelled: isCancelled)
     }
 
     /// Snapshot and reset session counters (catalog lookup + tile open/decode + samples).

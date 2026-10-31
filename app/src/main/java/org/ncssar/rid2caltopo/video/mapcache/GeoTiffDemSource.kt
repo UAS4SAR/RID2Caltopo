@@ -65,6 +65,8 @@ internal class GeoTiffDemSource(context: Context) {
     /** In-memory LRU of recently decoded blocks. Keyed by "$tileName|$blockIndex". */
     @Volatile private var maxCachedBlocks = 8
     private var clueSessionDepth = 0
+    /** Flight-start warm keeps elevated limits so form/post-save walks stay hot. */
+    @Volatile private var flightWarmRetained = false
     private var timingCatalogNs = 0L
     private var timingTileOpenDecodeNs = 0L
     private var timingSampleCount = 0
@@ -91,9 +93,67 @@ internal class GeoTiffDemSource(context: Context) {
         synchronized(lock) {
             if (clueSessionDepth <= 0) return
             clueSessionDepth -= 1
+            if (clueSessionDepth == 0 && !flightWarmRetained) {
+                maxCachedBlocks = 8
+            }
+        }
+    }
+
+    /** Raise decode-cache limits for the flight operating area. */
+    fun retainFlightWarmCache() {
+        synchronized(lock) {
+            flightWarmRetained = true
+            maxCachedBlocks = maxOf(maxCachedBlocks, 64)
+        }
+    }
+
+    fun releaseFlightWarmCache() {
+        synchronized(lock) {
+            flightWarmRetained = false
             if (clueSessionDepth == 0) {
                 maxCachedBlocks = 8
             }
+        }
+    }
+
+    /**
+     * Pre-decode S1M tiles covering [lat]/[lng] ± radius into the elevated in-memory cache
+     * (and persistent .f32raw blocks). Call from a background worker after TerrainPrefetch.
+     */
+    fun warmDecodedTiles(
+        lat: Double,
+        lng: Double,
+        radiusMeters: Double,
+        checkCancelled: () -> Unit = {},
+    ) {
+        if (!lat.isFinite() || !lng.isFinite() || !radiusMeters.isFinite() || radiusMeters <= 0.0) return
+        retainFlightWarmCache()
+        beginClueSamplingSession()
+        try {
+            ensureCatalogCurrent()
+            val stepMeters = minOf(400.0, maxOf(100.0, radiusMeters / 4.0))
+            val metersPerDegreeLat = 111_195.0
+            val metersPerDegreeLon = maxOf(1.0, 111_195.0 * cos(Math.toRadians(lat)))
+            var sampleLat = lat - radiusMeters / metersPerDegreeLat
+            val latMax = lat + radiusMeters / metersPerDegreeLat
+            while (sampleLat <= latMax + 1e-9) {
+                checkCancelled()
+                var sampleLng = lng - radiusMeters / metersPerDegreeLon
+                val lngMax = lng + radiusMeters / metersPerDegreeLon
+                while (sampleLng <= lngMax + 1e-9) {
+                    checkCancelled()
+                    val dLat = (sampleLat - lat) * metersPerDegreeLat
+                    val dLon = (sampleLng - lng) * metersPerDegreeLon
+                    if (sqrt(dLat * dLat + dLon * dLon) <= radiusMeters + 1.0) {
+                        sample(sampleLat, sampleLng, checkCancelled)
+                    }
+                    sampleLng += stepMeters / metersPerDegreeLon
+                }
+                sampleLat += stepMeters / metersPerDegreeLat
+            }
+            sample(lat, lng, checkCancelled)
+        } finally {
+            endClueSamplingSession()
         }
     }
 

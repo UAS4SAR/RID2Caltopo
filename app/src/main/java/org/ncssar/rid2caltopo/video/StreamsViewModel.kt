@@ -960,23 +960,49 @@ private suspend fun projectClueLocationWithDemSamplesBody(
         return flatWithKnownGround("DEM sample unavailable at aircraft")
     }
 
-    // Coarse steps + bisection. Cap range from the flat-ground estimate so shallow
-    // sightlines still reach distant rising terrain without a 10 km fine walk.
+    // DEM under the aircraft + AGL puts the ray in the DEM vertical datum by construction.
+    // Telemetry/RID altitudes may be ellipsoidal or takeoff-relative (geoid offset ~tens of m).
+    val demUnderDroneM = knownDemGroundM
+    val startAltitudeM: Double
+    val startDatum: String
+    if (demUnderDroneM != null) {
+        startAltitudeM = demUnderDroneM + validAgl
+        startDatum = "dem+agl"
+    } else if (useRelativeUpAnchor) {
+        startAltitudeM = referenceGround!! + anchoredRelativeUp!!
+        startDatum = "sei-dem+relative-up"
+    } else {
+        startAltitudeM = effectiveDroneAlt
+        startDatum = "telemetry-altitude"
+    }
+    rayMarchTiming?.startAltM = startAltitudeM
+    rayMarchTiming?.demUnderDroneM = demUnderDroneM ?: Double.NaN
+    rayMarchTiming?.aglM = validAgl
+    rayMarchTiming?.startDatum = startDatum
+    if (demUnderDroneM != null && startAltitudeM - demUnderDroneM < 1.0) {
+        return flatWithKnownGround("implausible-terrain-hit")
+    }
+
+    // Fine steps near the aircraft, then grow to a coarse step. Cap range from the
+    // flat-ground estimate so shallow sightlines still reach distant rising terrain.
     val usingLocalDem = droneDemSample?.source?.startsWith("usgs-geotiff-local-") == true
     val absoluteCapM = if (usingLocalDem) 5_000.0 else 2_500.0
     val minimumSearchM = if (usingLocalDem) 1_500.0 else 800.0
     val maxDistanceM = minOf(absoluteCapM, maxOf(flatDistanceM * 12.0, minimumSearchM))
-    val stepM = if (usingLocalDem) 200.0 else 100.0
+    val coarseStepM = if (usingLocalDem) 200.0 else 100.0
+    val fineStepM = maxOf(2.0, validAgl / 4.0)
+    val fineZoneM = maxOf(fineStepM * 4.0, validAgl * 4.0)
     rayMarchTiming?.maxRangeM = maxDistanceM
-    rayMarchTiming?.coarseStepM = stepM
+    rayMarchTiming?.coarseStepM = coarseStepM
     val stepStartedNs = System.nanoTime()
 
     var previousDistanceM = 0.0
-    var previousPoint = Pair(droneLat, droneLng)
     var previousGroundM = knownDemGroundM ?: flatGroundM
     var coverageEnded = false
+    var currentStepM = fineStepM
+    var distanceM = fineStepM
+    var sampleIndex = 0
 
-    var distanceM = stepM
     while (distanceM <= maxDistanceM + 0.001) {
         val candidate = destinationPoint(
             startLat = droneLat,
@@ -990,12 +1016,21 @@ private suspend fun projectClueLocationWithDemSamplesBody(
             checkedSample(candidate.first, candidate.second)
         }
         rayMarchTiming?.sampleCount = (rayMarchTiming?.sampleCount ?: 0) + 1
+        sampleIndex += 1
         if (usingLocalDem && sampledCandidate?.source?.startsWith("usgs-geotiff-local-") != true) {
             coverageEnded = true
             break
         }
+        fun advanceStep() {
+            if (distanceM < fineZoneM) {
+                currentStepM = minOf(coarseStepM, maxOf(fineStepM, currentStepM * 1.5))
+            } else {
+                currentStepM = coarseStepM
+            }
+            distanceM += currentStepM
+        }
         if (sampledCandidate == null) {
-            distanceM += stepM
+            advanceStep()
             continue
         }
         val candidateDemSample = sampledCandidate
@@ -1007,19 +1042,24 @@ private suspend fun projectClueLocationWithDemSamplesBody(
             demScaleToMeters = demScaleToMeters,
         )
         if (sampledGroundM == null) {
-            distanceM += stepM
+            advanceStep()
             continue
         }
         val groundM = checkNotNull(sampledGroundM)
-        val rayAltitudeM = effectiveDroneAlt - (slopeDown * distanceM)
+        val rayAltitudeM = startAltitudeM - (slopeDown * distanceM)
         if (rayAltitudeM <= groundM) {
+            // First sample already underground: datum/start error, not a real near-field hit.
+            if (sampleIndex <= 1 || previousDistanceM <= 0.001) {
+                rayMarchTiming?.stepMs = (System.nanoTime() - stepStartedNs) / 1_000_000.0
+                return flatWithKnownGround("implausible-terrain-hit")
+            }
             var lowDistanceM = previousDistanceM
             var lowGroundM = previousGroundM
             var highDistanceM = distanceM
             var highPoint = candidate
             var highGroundM = groundM
 
-            // Eight bisect steps with a 200 m coarse bracket ≈ 0.8 m ground resolution.
+            // Bisect between last-above and first-below.
             repeat(8) {
                 val midDistanceM = (lowDistanceM + highDistanceM) / 2.0
                 val midPoint = destinationPoint(
@@ -1040,7 +1080,7 @@ private suspend fun projectClueLocationWithDemSamplesBody(
                     flatGroundM = flatGroundM,
                     demScaleToMeters = demScaleToMeters,
                 ) ?: ((lowGroundM + highGroundM) / 2.0)
-                val midRayAltitudeM = effectiveDroneAlt - (slopeDown * midDistanceM)
+                val midRayAltitudeM = startAltitudeM - (slopeDown * midDistanceM)
                 if (midRayAltitudeM <= midGroundM) {
                     highDistanceM = midDistanceM
                     highPoint = midPoint
@@ -1052,6 +1092,9 @@ private suspend fun projectClueLocationWithDemSamplesBody(
             }
 
             rayMarchTiming?.stepMs = (System.nanoTime() - stepStartedNs) / 1_000_000.0
+            if (highDistanceM < flatDistanceM * 0.3) {
+                return flatWithKnownGround("implausible-terrain-hit")
+            }
             rayMarchTiming?.hit = true
             return ClueProjection(
                 lat = highPoint.first,
@@ -1064,9 +1107,8 @@ private suspend fun projectClueLocationWithDemSamplesBody(
             )
         }
         previousDistanceM = distanceM
-        previousPoint = candidate
         previousGroundM = groundM
-        distanceM += stepM
+        advanceStep()
     }
 
     rayMarchTiming?.stepMs = (System.nanoTime() - stepStartedNs) / 1_000_000.0

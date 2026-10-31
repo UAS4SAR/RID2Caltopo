@@ -1,4 +1,5 @@
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlinx.coroutines.runBlocking
@@ -390,5 +391,101 @@ class ClueProjectionTest {
         assertTrue(projection.terrainProjectionApplied)
         assertTrue(projection.demSource?.startsWith("usgs-geotiff-local-") == true)
         assertEquals(null, projection.flatFallbackReason)
+    }
+
+    @Test
+    fun projectClueLocationWithDemSamples_flatTerrainAt41PitchFrom19_5mAglIsAbout22m() = runBlocking {
+        val ground = 1_000.0
+        val agl = 19.5
+        val projection = projectClueLocationWithDemSamples(
+            droneLat = 39.0,
+            droneLng = -105.0,
+            droneAlt = ground + agl,
+            headingDeg = 0.0,
+            aglMeters = agl,
+            gimbalAngleDeg = -41.0,
+            sampleElevationMeters = { _, _ ->
+                DemElevationSample(ground, false, "usgs-geotiff-local-1m", 1.0)
+            },
+        )
+        val northMeters = (projection.lat - 39.0) * 111_195.0
+        assertTrue(projection.terrainProjectionApplied)
+        assertTrue("expected ~22 m horizontal range, got $northMeters", northMeters in 20.0..25.0)
+        assertEquals(null, projection.flatFallbackReason)
+    }
+
+    @Test
+    fun projectClueLocationWithDemSamples_rejectsFirstSampleUndergroundAsImplausible() = runBlocking {
+        val ground = 1_000.0
+        val agl = 19.5
+        val projection = projectClueLocationWithDemSamples(
+            droneLat = 39.0,
+            droneLng = -105.0,
+            droneAlt = ground + agl,
+            headingDeg = 0.0,
+            aglMeters = agl,
+            gimbalAngleDeg = -41.0,
+            sampleElevationMeters = { lat, _ ->
+                val northMeters = ((lat - 39.0) * 111_195.0).coerceAtLeast(0.0)
+                val elev = if (northMeters > 0.5) ground + 200.0 else ground
+                DemElevationSample(elev, false, "usgs-geotiff-local-1m", 1.0)
+            },
+        )
+        assertFalse(projection.terrainProjectionApplied)
+        assertEquals("implausible-terrain-hit", projection.flatFallbackReason)
+    }
+
+    @Test
+    fun projectClueLocationWithDemSamples_datumOffsetOf30mDoesNotMoveHitToDrone() = runBlocking {
+        val ground = 1_000.0
+        val agl = 19.5
+        val telemetryAltitude = ground + agl - 30.0
+        val projection = projectClueLocationWithDemSamples(
+            droneLat = 39.0,
+            droneLng = -105.0,
+            droneAlt = telemetryAltitude,
+            headingDeg = 0.0,
+            aglMeters = agl,
+            gimbalAngleDeg = -41.0,
+            sampleElevationMeters = { _, _ ->
+                DemElevationSample(ground, false, "usgs-geotiff-local-1m", 1.0)
+            },
+        )
+        val northMeters = (projection.lat - 39.0) * 111_195.0
+        assertTrue(projection.terrainProjectionApplied)
+        assertTrue("expected ~22 m range despite 30 m datum offset, got $northMeters", northMeters in 20.0..25.0)
+        assertTrue("must not collapse near the drone", northMeters > 5.0)
+    }
+
+    @Test
+    fun projectClueLocationWithDemSamples_slopedTerrainShortensThrowVersusFlat() = runBlocking {
+        val droneLat = 39.0
+        val ground = 1_000.0
+        val agl = 19.5
+        val projection = projectClueLocationWithDemSamples(
+            droneLat = droneLat,
+            droneLng = -105.0,
+            droneAlt = ground + agl,
+            headingDeg = 0.0,
+            aglMeters = agl,
+            gimbalAngleDeg = -41.0,
+            sampleElevationMeters = { lat, _ ->
+                val northMeters = ((lat - droneLat) * 111_195.0).coerceAtLeast(0.0)
+                DemElevationSample(ground + northMeters * 0.4, false, "usgs-geotiff-local-1m", 1.0)
+            },
+        )
+        val flat = projectClueLocation(
+            droneLat = droneLat,
+            droneLng = -105.0,
+            droneAlt = ground + agl,
+            headingDeg = 0.0,
+            aglMeters = agl,
+            gimbalAngleDeg = -41.0,
+        )
+        val northMeters = (projection.lat - droneLat) * 111_195.0
+        val flatNorth = (flat.lat - droneLat) * 111_195.0
+        assertTrue(projection.terrainProjectionApplied)
+        assertTrue(northMeters < flatNorth - 2.0)
+        assertTrue(northMeters > flatNorth * 0.3)
     }
 }

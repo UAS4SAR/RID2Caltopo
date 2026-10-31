@@ -3266,6 +3266,118 @@ private func proximityDrone(
     #expect(projected.flatFallbackReason == nil)
 }
 
+@Test func operationalClueProjectionFlatTerrainAt41PitchFrom19_5mAGLIsAbout22m() async {
+    let ground = 1_000.0
+    let agl = 19.5
+    let projected = await OperationalClueGeometry.projectWithTerrain(
+        droneLatitude: 39,
+        droneLongitude: -105,
+        droneAltitudeMeters: ground + agl,
+        headingDegrees: 0,
+        aglMeters: agl,
+        gimbalAngleDegrees: -41,
+        sampleElevationMeters: { _, _ in
+            OperationalTerrainSample(
+                elevationMeters: ground,
+                source: "usgs-geotiff-local-1m",
+                horizontalResolutionMeters: 1
+            )
+        }
+    )
+    let northMeters = (projected.latitude - 39) * 111_195
+    #expect(projected.terrainProjectionApplied)
+    #expect(northMeters > 20)
+    #expect(northMeters < 25)
+    #expect(projected.flatFallbackReason == nil)
+}
+
+@Test func operationalClueProjectionRejectsRayStartingBelowDEMSpikeOnFirstSample() async {
+    let ground = 1_000.0
+    let agl = 19.5
+    let projected = await OperationalClueGeometry.projectWithTerrain(
+        droneLatitude: 39,
+        droneLongitude: -105,
+        droneAltitudeMeters: ground + agl,
+        headingDegrees: 0,
+        aglMeters: agl,
+        gimbalAngleDegrees: -41,
+        sampleElevationMeters: { latitude, _ in
+            let northMeters = max(0, (latitude - 39) * 111_195)
+            // First fine step (~AGL/4) already taller than the ray → reject, keep flat.
+            let elev = northMeters > 0.5 ? ground + 200 : ground
+            return OperationalTerrainSample(
+                elevationMeters: elev,
+                source: "usgs-geotiff-local-1m",
+                horizontalResolutionMeters: 1
+            )
+        }
+    )
+    #expect(!projected.terrainProjectionApplied)
+    #expect(projected.flatFallbackReason == "implausible-terrain-hit")
+}
+
+@Test func operationalClueProjectionDatumOffsetOf30mDoesNotMoveHitToDrone() async {
+    let ground = 1_000.0
+    let agl = 19.5
+    // Ellipsoid-like telemetry ~30 m below orthometric DEM+AGL (geoid offset ≈ -30 m).
+    let telemetryAltitude = ground + agl - 30
+    let projected = await OperationalClueGeometry.projectWithTerrain(
+        droneLatitude: 39,
+        droneLongitude: -105,
+        droneAltitudeMeters: telemetryAltitude,
+        headingDegrees: 0,
+        aglMeters: agl,
+        gimbalAngleDegrees: -41,
+        sampleElevationMeters: { _, _ in
+            OperationalTerrainSample(
+                elevationMeters: ground,
+                source: "usgs-geotiff-local-1m",
+                horizontalResolutionMeters: 1
+            )
+        }
+    )
+    let northMeters = (projected.latitude - 39) * 111_195
+    #expect(projected.terrainProjectionApplied)
+    #expect(northMeters > 20)
+    #expect(northMeters < 25)
+    #expect(northMeters > 5) // must not collapse to the near-drone false hit
+}
+
+@Test func operationalClueProjectionSlopedTerrainShortensThrowVersusFlat() async {
+    let droneLatitude = 39.0
+    let ground = 1_000.0
+    let agl = 19.5
+    let projected = await OperationalClueGeometry.projectWithTerrain(
+        droneLatitude: droneLatitude,
+        droneLongitude: -105,
+        droneAltitudeMeters: ground + agl,
+        headingDegrees: 0,
+        aglMeters: agl,
+        gimbalAngleDegrees: -41,
+        sampleElevationMeters: { latitude, _ in
+            let northMeters = max(0, (latitude - droneLatitude) * 111_195)
+            return OperationalTerrainSample(
+                elevationMeters: ground + northMeters * 0.4,
+                source: "usgs-geotiff-local-1m",
+                horizontalResolutionMeters: 1
+            )
+        }
+    )
+    let flat = OperationalClueGeometry.project(
+        droneLatitude: droneLatitude,
+        droneLongitude: -105,
+        droneAltitudeMeters: ground + agl,
+        headingDegrees: 0,
+        aglMeters: agl,
+        gimbalAngleDegrees: -41
+    )
+    let northMeters = (projected.latitude - droneLatitude) * 111_195
+    let flatNorth = (flat.latitude - droneLatitude) * 111_195
+    #expect(projected.terrainProjectionApplied)
+    #expect(northMeters < flatNorth - 2)
+    #expect(northMeters > flatNorth * 0.3)
+}
+
 @Test func centerpointElevationTapRequiresTheConfiguredCenterRadius() {
     #expect(OperationalCenterpointElevation.isNearCenter(
         x: 500, y: 300, width: 1_000, height: 600, radius: 80

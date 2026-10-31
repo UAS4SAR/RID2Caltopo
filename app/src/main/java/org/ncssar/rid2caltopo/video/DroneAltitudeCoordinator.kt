@@ -559,6 +559,10 @@ internal class DroneAltitudeCoordinator(
                         lat, lng, applicationContext, terrainPrefetchClient, demElevationService, radiusMeters,
                     )
                     demElevationService.prewarmLocalForLocation(lat, lng)
+                    if (complete && radiusMeters > 0.0) {
+                        demElevationService.warmDecodedTilesForOperatingArea(lat, lng, radiusMeters)
+                        CTDebug("TerrainPrefetch", "S1M decode warm complete operatingRadiusM=$radiusMeters")
+                    }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e

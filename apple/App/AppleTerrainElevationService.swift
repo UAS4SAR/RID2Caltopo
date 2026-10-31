@@ -354,7 +354,25 @@ actor AppleTerrainElevationService {
             catch { complete = false }
         }
         _ = localDEM.sample(latitude: latitude, longitude: longitude)
-        AppleLog.info("TerrainPrefetch", "Terrain preparation complete=\(complete)")
+            AppleLog.info("TerrainPrefetch", "Terrain preparation complete=\(complete)")
+        if complete, radiusMeters > 0 {
+            let dem = localDEM
+            let centerLat = latitude
+            let centerLon = longitude
+            let warmRadius = radiusMeters
+            Task.detached(priority: .utility) {
+                dem.warmDecodedTiles(
+                    latitude: centerLat,
+                    longitude: centerLon,
+                    radiusMeters: warmRadius,
+                    isCancelled: { Task.isCancelled }
+                )
+                AppleLog.info(
+                    "TerrainPrefetch",
+                    "S1M decode warm complete operatingRadiusM=\(warmRadius)"
+                )
+            }
+        }
         return complete
     }
 

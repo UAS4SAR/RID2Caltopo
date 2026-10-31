@@ -4733,7 +4733,10 @@ private struct OperationalMKMapView: UIViewRepresentable {
         private var mappingBoundaryFingerprint: [Bool] = []
         private var staticRenderState: StaticMapRenderState?
         private var aircraftRenderState: AircraftMapRenderState?
-        private var lastAircraftPolylineRebuildAt: TimeInterval = 0
+        /// Full-flight + active polylines keyed by aircraft; swapped individually on append.
+        private var aircraftFlightPolylinesByID: [String: StyledPolyline] = [:]
+        private var aircraftActivePolylinesByID: [String: StyledPolyline] = [:]
+        private var aircraftBearingPolylinesByID: [String: StyledPolyline] = [:]
         private var aircraftAnnotationsByRemoteID: [String: AircraftAnnotation] = [:]
         private var positionTimingByAircraftID: [String: Date] = [:]
         private var operatorCoordinate: CLLocationCoordinate2D?
@@ -5084,12 +5087,9 @@ private struct OperationalMKMapView: UIViewRepresentable {
             let previous = aircraftRenderState
             let flightSetChanged = previous?.flightSet != nextFlightSet
             let annotationsChanged = previous?.annotations != nextAnnotations
-            let nowUptime = ProcessInfo.processInfo.systemUptime
-            let polylineThrottleElapsed = nowUptime - lastAircraftPolylineRebuildAt >= 1.0
-            // Full-flight polylines: rebuild only when the flight set changes, or ≥1 s with new points.
-            let shouldRebuildPolylines = flightSetChanged
-                || (polylineThrottleElapsed && annotationsChanged)
-                || previous == nil
+            // Full tear-down only when the flight set changes (or first paint). Point growth
+            // replaces individual aircraft polylines below without rebuilding the whole layer.
+            let shouldRebuildPolylines = flightSetChanged || previous == nil
             let aircraftChanged = shouldRebuildPolylines || annotationsChanged
             if shouldRebuildPolylines {
                 let rebuildStarted = ProcessInfo.processInfo.systemUptime
@@ -5097,7 +5097,9 @@ private struct OperationalMKMapView: UIViewRepresentable {
                     (overlay as? StyledPolyline)?.layer == .aircraft
                         || (overlay as? StyledPolygon)?.layer == .aircraft
                 })
-                lastAircraftPolylineRebuildAt = nowUptime
+                aircraftFlightPolylinesByID.removeAll()
+                aircraftActivePolylinesByID.removeAll()
+                aircraftBearingPolylinesByID.removeAll()
                 ClueTerrainDiagnostics.noteMapOverlayRebuild(
                     elapsedMs: (ProcessInfo.processInfo.systemUptime - rebuildStarted) * 1_000,
                     pointCount: renderInputs.reduce(0) { $0 + $1.points.count }
@@ -5177,52 +5179,64 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 let coordinates = renderedPoints.map {
                     CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)
                 }
-                if shouldRebuildPolylines {
+                let previousTrackPoints = previous?.tracks.first(where: { $0.aircraftID == track.aircraftID })?.points
+                let trackGrew = (previousTrackPoints?.count ?? 0) < renderedPoints.count
+                // MKPolyline is immutable: replace one aircraft's line when its point count grows.
+                // Do not tear down the whole aircraft layer on every RID tick (see mapOverlayRebuilds).
+                let shouldRefreshTrackPolylines = shouldRebuildPolylines || trackGrew
+                if shouldRefreshTrackPolylines {
+                    if let oldFlight = aircraftFlightPolylinesByID.removeValue(forKey: track.aircraftID) {
+                        map.removeOverlay(oldFlight)
+                    }
+                    if let oldActive = aircraftActivePolylinesByID.removeValue(forKey: track.aircraftID) {
+                        map.removeOverlay(oldActive)
+                    }
                     if display.showFullFlightTrack, coordinates.count > 1 {
-                        map.addOverlay(
-                            StyledPolyline(
-                                coordinates: coordinates,
-                                count: coordinates.count,
-                                color: archiveColor,
-                                width: inset ? 1 : 2,
-                                layer: .aircraft
-                            ),
-                            level: .aboveLabels
+                        let flightLine = StyledPolyline(
+                            coordinates: coordinates,
+                            count: coordinates.count,
+                            color: archiveColor,
+                            width: inset ? 1 : 2,
+                            layer: .aircraft
                         )
+                        aircraftFlightPolylinesByID[track.aircraftID] = flightLine
+                        map.addOverlay(flightLine, level: .aboveLabels)
                     }
                     let cutoff = Date().addingTimeInterval(-30)
                     let firstRecentIndex = renderedPoints.firstIndex { $0.receivedAt >= cutoff }
                     let activeStartIndex = max((firstRecentIndex ?? max(renderedPoints.count - 1, 0)) - 1, 0)
                     let activeCoordinates = Array(coordinates.dropFirst(activeStartIndex))
                     if activeCoordinates.count > 1 {
-                        map.addOverlay(
-                            StyledPolyline(
-                                coordinates: activeCoordinates,
-                                count: activeCoordinates.count,
-                                color: activeColor,
-                                width: inset ? 2 : 4,
-                                layer: .aircraft
-                            ),
-                            level: .aboveLabels
+                        let activeLine = StyledPolyline(
+                            coordinates: activeCoordinates,
+                            count: activeCoordinates.count,
+                            color: activeColor,
+                            width: inset ? 2 : 4,
+                            layer: .aircraft
                         )
+                        aircraftActivePolylinesByID[track.aircraftID] = activeLine
+                        map.addOverlay(activeLine, level: .aboveLabels)
                     }
                 }
                 if !renderedPoints.isEmpty,
                    let aircraftCoordinate = renderCoordinates[track.aircraftID] {
                     let travelBearingDegrees = aircraftTravelBearingDegrees(points: renderedPoints)
-                    if shouldRebuildPolylines,
-                       display.preference.bearingEnabled,
-                       let end = bearingEndpoint(on: map, from: aircraftCoordinate, headingDegrees: travelBearingDegrees) {
-                        map.addOverlay(
-                            StyledPolyline(
+                    if shouldRefreshTrackPolylines || shouldRebuildPolylines {
+                        if let oldBearing = aircraftBearingPolylinesByID.removeValue(forKey: track.aircraftID) {
+                            map.removeOverlay(oldBearing)
+                        }
+                        if display.preference.bearingEnabled,
+                           let end = bearingEndpoint(on: map, from: aircraftCoordinate, headingDegrees: travelBearingDegrees) {
+                            let bearingLine = StyledPolyline(
                                 coordinates: [aircraftCoordinate, end],
                                 count: 2,
                                 color: UIColor(hex: display.preference.resolvedBearingColor) ?? activeColor,
                                 width: inset ? 1 : 2,
                                 layer: .aircraft
-                            ),
-                            level: .aboveLabels
-                        )
+                            )
+                            aircraftBearingPolylinesByID[track.aircraftID] = bearingLine
+                            map.addOverlay(bearingLine, level: .aboveLabels)
+                        }
                     }
                     let anchorPoint = map.convert(aircraftCoordinate, toPointTo: map)
                     let annotation = aircraftAnnotationsByRemoteID[track.aircraftID]

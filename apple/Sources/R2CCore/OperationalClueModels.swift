@@ -157,12 +157,16 @@ public final class OperationalClueRayMarchTiming: @unchecked Sendable {
     public var maxRangeM: Double = 0
     public var coarseStepM: Double = 0
     public var hit: Bool = false
+    public var startAltM: Double = .nan
+    public var demUnderDroneM: Double = .nan
+    public var aglM: Double = .nan
+    public var startDatum: String = ""
 
     public init() {}
 
     public var infoLine: String {
         String(
-            format: "Clue ray-march totalMs=%.1f catalogMs=%.1f tileOpenDecodeMs=%.1f stepMs=%.1f samples=%d maxRangeM=%.0f coarseStepM=%.0f hit=%@",
+            format: "Clue ray-march totalMs=%.1f catalogMs=%.1f tileOpenDecodeMs=%.1f stepMs=%.1f samples=%d maxRangeM=%.0f coarseStepM=%.0f hit=%@ startAltM=%.1f demUnderDroneM=%.1f aglM=%.1f datum=%@",
             locale: Locale(identifier: "en_US_POSIX"),
             totalMs,
             catalogMs,
@@ -171,7 +175,11 @@ public final class OperationalClueRayMarchTiming: @unchecked Sendable {
             sampleCount,
             maxRangeM,
             coarseStepM,
-            hit ? "true" : "false"
+            hit ? "true" : "false",
+            startAltM,
+            demUnderDroneM,
+            aglM,
+            startDatum.isEmpty ? "none" : startDatum
         )
     }
 }
@@ -666,22 +674,51 @@ public enum OperationalClueGeometry {
         if droneDEMSample == nil, knownDemGround == nil {
             return flatEstimate(knownGround: knownDemGround, reason: "DEM sample unavailable at aircraft")
         }
-        // Coarse steps + bisection: few GeoTIFF samples, then refine the hit bracket.
-        // Cap range from the flat-ground estimate so shallow sightlines still reach distant
-        // rising terrain without walking 10 km one sample at a time.
+        // DEM under the aircraft + AGL puts the ray in the DEM vertical datum by construction.
+        // Telemetry/RID altitudes may be ellipsoidal or takeoff-relative (geoid offset ~tens of m).
+        let demUnderDroneM = knownDemGround
+        let startAltitudeMeters: Double
+        let startDatum: String
+        if let demUnderDroneM {
+            startAltitudeMeters = demUnderDroneM + aglMeters
+            startDatum = "dem+agl"
+        } else if useRelativeUpAnchor, let referenceGround, let anchoredRelativeUp {
+            startAltitudeMeters = referenceGround + anchoredRelativeUp
+            startDatum = "sei-dem+relative-up"
+        } else {
+            startAltitudeMeters = droneAltitudeMeters
+            startDatum = "telemetry-altitude"
+        }
+        timing?.startAltM = startAltitudeMeters
+        timing?.demUnderDroneM = demUnderDroneM ?? .nan
+        timing?.aglM = aglMeters
+        timing?.startDatum = startDatum
+        if let demUnderDroneM, startAltitudeMeters - demUnderDroneM < 1.0 {
+            return flatEstimate(
+                knownGround: knownDemGround,
+                reason: "implausible-terrain-hit",
+                dem: droneDEMSample
+            )
+        }
+        // Fine steps near the aircraft, then grow to a coarse step. Cap range from the
+        // flat-ground estimate so shallow sightlines still reach distant rising terrain.
         let usingLocalDEM = droneDEMSample?.source?.hasPrefix("usgs-geotiff-local-") == true
         let absoluteCap = usingLocalDEM ? 5_000.0 : 2_500.0
         let minimumSearch = usingLocalDEM ? 1_500.0 : 800.0
         let maximumDistance = min(absoluteCap, max(flatDistance * 12.0, minimumSearch))
-        let step = usingLocalDEM ? 200.0 : 100.0
+        let coarseStep = usingLocalDEM ? 200.0 : 100.0
+        let fineStep = max(2.0, aglMeters / 4.0)
+        let fineZone = max(fineStep * 4.0, aglMeters * 4.0)
         timing?.maxRangeM = maximumDistance
-        timing?.coarseStepM = step
+        timing?.coarseStepM = coarseStep
         let stepStarted = ContinuousClock.now
 
         var previousDistance = 0.0
         var previousGround = knownDemGround ?? flatGround
         var coverageEnded = false
-        var distance = step
+        var currentStep = fineStep
+        var distance = fineStep
+        var sampleIndex = 0
         while distance <= maximumDistance + 0.001 {
             if Task.isCancelled {
                 timing?.stepMs = elapsedMilliseconds(since: stepStarted)
@@ -704,6 +741,7 @@ public enum OperationalClueGeometry {
                 candidateDEMSample = await networkSample(candidate.latitude, candidate.longitude)
             }
             timing?.sampleCount += 1
+            sampleIndex += 1
             if usingLocalDEM, candidateDEMSample?.source?.hasPrefix("usgs-geotiff-local-") != true {
                 coverageEnded = true
                 break
@@ -716,17 +754,31 @@ public enum OperationalClueGeometry {
                 scaleToMeters: scale
             )
             guard let ground, let candidateDEMSample else {
-                distance += step
+                distance += currentStep
+                if distance < fineZone {
+                    currentStep = min(coarseStep, max(fineStep, currentStep * 1.5))
+                } else {
+                    currentStep = coarseStep
+                }
                 continue
             }
-            let rayAltitude = droneAltitudeMeters - slopeDown * distance
+            let rayAltitude = startAltitudeMeters - slopeDown * distance
             if rayAltitude <= ground {
+                // First sample already underground: datum/start error, not a real near-field hit.
+                if sampleIndex <= 1 || previousDistance <= 0.001 {
+                    timing?.stepMs = elapsedMilliseconds(since: stepStarted)
+                    return flatEstimate(
+                        knownGround: knownDemGround,
+                        reason: "implausible-terrain-hit",
+                        dem: droneDEMSample
+                    )
+                }
                 var lowDistance = previousDistance
                 var lowGround = previousGround
                 var highDistance = distance
                 var highPoint = candidate
                 var highGround = ground
-                // Eight bisect steps with a 200 m coarse bracket ≈ 0.8 m ground resolution.
+                // Bisect between last-above and first-below (~0.8 m with an 200 m bracket).
                 for _ in 0 ..< 8 {
                     if Task.isCancelled {
                         timing?.stepMs = elapsedMilliseconds(since: stepStarted)
@@ -756,7 +808,7 @@ public enum OperationalClueGeometry {
                         flatGroundMeters: flatGround,
                         scaleToMeters: scale
                     ) ?? ((lowGround + highGround) / 2)
-                    if droneAltitudeMeters - slopeDown * midDistance <= midGround {
+                    if startAltitudeMeters - slopeDown * midDistance <= midGround {
                         highDistance = midDistance
                         highPoint = midPoint
                         highGround = midGround
@@ -766,6 +818,15 @@ public enum OperationalClueGeometry {
                     }
                 }
                 timing?.stepMs = elapsedMilliseconds(since: stepStarted)
+                // Reject near-drone hits that flat geometry cannot explain (slope can shorten,
+                // but not to a few metres when flat range is tens of metres).
+                if highDistance < flatDistance * 0.3 {
+                    return flatEstimate(
+                        knownGround: knownDemGround,
+                        reason: "implausible-terrain-hit",
+                        dem: droneDEMSample
+                    )
+                }
                 timing?.hit = true
                 return OperationalClueProjection(
                     latitude: highPoint.latitude,
@@ -779,7 +840,12 @@ public enum OperationalClueGeometry {
             }
             previousDistance = distance
             previousGround = ground
-            distance += step
+            if distance < fineZone {
+                currentStep = min(coarseStep, max(fineStep, currentStep * 1.5))
+            } else {
+                currentStep = coarseStep
+            }
+            distance += currentStep
         }
         timing?.stepMs = elapsedMilliseconds(since: stepStarted)
         return flatEstimate(

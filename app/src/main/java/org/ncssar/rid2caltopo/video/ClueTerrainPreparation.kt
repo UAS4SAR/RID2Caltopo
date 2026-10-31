@@ -77,10 +77,14 @@ internal data class ClueRayMarchTiming(
     var maxRangeM: Double = 0.0,
     var coarseStepM: Double = 0.0,
     var hit: Boolean = false,
+    var startAltM: Double = Double.NaN,
+    var demUnderDroneM: Double = Double.NaN,
+    var aglM: Double = Double.NaN,
+    var startDatum: String = "",
 ) {
     fun infoLine(): String = String.format(
         Locale.US,
-        "Clue ray-march totalMs=%.1f catalogMs=%.1f tileOpenDecodeMs=%.1f stepMs=%.1f samples=%d maxRangeM=%.0f coarseStepM=%.0f hit=%s",
+        "Clue ray-march totalMs=%.1f catalogMs=%.1f tileOpenDecodeMs=%.1f stepMs=%.1f samples=%d maxRangeM=%.0f coarseStepM=%.0f hit=%s startAltM=%.1f demUnderDroneM=%.1f aglM=%.1f datum=%s",
         totalMs,
         catalogMs,
         tileOpenDecodeMs,
@@ -89,6 +93,10 @@ internal data class ClueRayMarchTiming(
         maxRangeM,
         coarseStepM,
         if (hit) "true" else "false",
+        startAltM,
+        demUnderDroneM,
+        aglM,
+        startDatum.ifEmpty { "none" },
     )
 }
 
