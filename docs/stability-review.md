@@ -104,16 +104,73 @@ Reference patterns already fixed on this branch:
 
 ---
 
+## Follow-up pass (audit agents)
+
+Additional P0/P1 items from the [Android crash/deadlock audit](d7ce8ee2-d32e-486d-b2c1-73d87ef68764) and [iOS crash/deadlock audit](a481eaa6-2bd7-4ea3-ad2e-fa55ff90d3d9):
+
+### 11. iOS — MediaMTX log callback use-after-free on stop
+| | |
+|---|---|
+| **Where** | `MediaMTXMobileController.swift` log callback; Go `forwardLogLines` |
+| **Severity** | Crash |
+| **Change** | Retain/release around the actor Task hop so `stop()` cannot free the controller mid-invoke. |
+
+### 12. iOS — Anomaly processor destroy races queue work
+| | |
+|---|---|
+| **Where** | `AppleAnomalyProcessor.deinit` |
+| **Severity** | Crash |
+| **Change** | `queue.sync { R2CAnomalyDestroy; runtime = nil }`. |
+
+### 13. iOS — Background live video FFmpeg pops on MainActor
+| | |
+|---|---|
+| **Where** | `AppleVideoFrameSource` background path |
+| **Severity** | Hang |
+| **Change** | Keep `NativeDisplayFeed` running while backgrounded for live native; main timer only for file/AVPlayer. |
+
+### 14. iOS — DeviceMarkerJournal / PilotCloud timer / quit journals
+| | |
+|---|---|
+| **Where** | `DeviceMarkerJournal.swift`, `PilotCloudServer.start`, `RIDTrackViewModel.shutdown` |
+| **Severity** | Hang / data-loss |
+| **Change** | Separate write gate (reads never wait on fsync); form keepalive timer off MainActor; await `awaitingFlightWrites` before CalTopo teardown. |
+
+### 15. Android — LiveTrack AwaitingMap under track monitor + journalSnapshot races
+| | |
+|---|---|
+| **Where** | `CaltopoLiveTrack.ensureLiveTrackStarted`, `persistInterruptedPublication` |
+| **Severity** | Hang / crash (`ConcurrentModificationException`) |
+| **Change** | Resolve AwaitingMap publication ids outside the track monitor; always snapshot `linePoints` under the monitor. |
+
+### 16. Android — Disconnect completion while finish in flight
+| | |
+|---|---|
+| **Where** | `CaltopoMap.DisconnectAfterFinishingOwned` |
+| **Severity** | Data-loss / race |
+| **Change** | Chain subsequent completions via `PendingDisconnectCompletion` after the in-flight finish. |
+
+### 17. Android — Clue save waited on Archive Dir hydrate; AwaitingMap held lock across ClueStore
+| | |
+|---|---|
+| **Where** | `FlightStorage.prepareAppPrivateWrite`, `SnapshotStore.saveEncoded`, `AwaitingMapFlights.decide` |
+| **Severity** | Hang |
+| **Change** | Metadata-only allowance for app-private writes; bind clues / `queueCompleted` outside the AwaitingMap monitor. |
+
+---
+
 ## Open risks (deliberately left)
 
-1. **Interrupted journal cold-start read under `LOCK`** — first `mutableRootLocked()` may still read disk once under the monitor. Subsequent ops are memory-only under the lock. Further work: hydrate cache on a worker before first use.
-2. **`group.next()!` timeout helpers** (`AppleClueStore.withTimeout`, clue JPEG encode in `AppleVideoFrameSource`) — force-unwrap is safe while both tasks are added first; left as-is.
-3. **`Timer` + `MainActor.assumeIsolated` on main RunLoop** (`AppleVideoFrameSource` background pull, `RIDTrackMapView` clearance timer) — fire on `RunLoop.main`; acceptable. Prefer `Task { @MainActor }` if these timers move off main.
-4. **`@unchecked Sendable` types with `NSLock`** (GeoTIFF, credentials, video peers) — locks are short for memory; GeoTIFF already unlocks before file decode. No change.
-5. **Mapping / surface `!!` and `parentFile!!`** — mostly processing paths with prior guards; not clue/track critical path.
-6. **Bluetooth LE `onScanResult` on binder thread** — parse is bounded; toast on failure already hops to a worker. Left open.
-7. **FFmpeg pointer lifetimes** — `NativeDisplayFeed.stopAndDestroy` serializes destroy with ticks (from `980e4a00`); no additional defect found this pass.
-8. **Apple `OperationalWorkQueue` / Android dual-writer clue index** — two concurrent `persistIndexSnapshot` calls can race last-writer-wins; memory state remains correct and next mutation rewrites. Acceptable; serializing writers would be a larger change.
+1. **Interrupted journal cold-start read under `LOCK`** — first `mutableRootLocked()` may still read disk once under the monitor.
+2. **`group.next()!` timeout helpers** — safe while both tasks are added first.
+3. **`RIDTrackMapView` clearance `Timer` + `assumeIsolated`** — fires on `RunLoop.main`.
+4. **Recording catalog `MediaMetadataRetriever` under catalog lock** — incomplete MediaMTX files can stall retain; bound/timeout left for a dedicated change.
+5. **`AppleFlightStorage.maintain` lock across directory walks** — still can stall `prepareWrite` under storage pressure; clue path now uses `prepareAppPrivateWrite`.
+6. **Quit MediaMTX event drain** — recording normalize may still be cut short on kill; journals are awaited.
+7. **Mapping / surface `!!`** — not clue/track critical path.
+8. **Bluetooth LE `onScanResult` on binder** — bounded parse.
+9. **Clue index dual-writer last-writer-wins** — memory state remains correct.
+10. **File/AVPlayer background pull still on main** — live native is off-main; file review is secondary.
 
 ---
 
