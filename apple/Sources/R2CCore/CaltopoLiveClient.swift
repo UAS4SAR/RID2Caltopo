@@ -259,7 +259,10 @@ public actor CaltopoLiveClient {
         self.startLane = CaltopoNetworkLane(session: resolvedSession)
         self.archiveLane = CaltopoNetworkLane(session: resolvedSession)
         self.clueLane = CaltopoNetworkLane(session: resolvedSession)
-        if configuration.personalSessionID != nil {
+        if configuration.personalSessionID != nil, session == nil {
+            // Production: cookie-isolated ephemeral session. Injected test sessions
+            // must keep their protocolClasses, so personalTransport stays nil and
+            // perform() uses the caller-provided session (personalTransport ?? session).
             let transport = URLSessionConfiguration.ephemeral
             transport.timeoutIntervalForRequest = Self.requestTimeoutSeconds
             transport.timeoutIntervalForResource = Self.requestTimeoutSeconds

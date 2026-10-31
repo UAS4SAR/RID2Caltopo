@@ -20,13 +20,21 @@ class AndroidClueStoreTest {
         val index = java.io.File(root, "clues.json")
         val original = index.readBytes()
         index.writeText("{damaged original")
-        org.junit.Assert.assertThrows(java.io.IOException::class.java) { store.pendingForMap("alpha", "team-a") }
-        org.junit.Assert.assertThrows(java.io.IOException::class.java) { store.recordUploadResult(record.id, true) }
-        assertEquals("{damaged original", index.readText())
-        assertTrue(store.imageFile(record).isFile)
-        index.writeBytes(original)
+        // Already-loaded process memory remains authoritative; a fresh open must refuse.
         assertEquals(record, store.pendingForMap("alpha", "team-a").single())
-        store.recordUploadResult(record.id, true)
+        assertTrue(store.imageFile(record).isFile)
+        org.junit.Assert.assertThrows(java.io.IOException::class.java) {
+            AndroidClueStore.forDirectory(root).pendingForMap("alpha", "team-a")
+        }
+        org.junit.Assert.assertThrows(java.io.IOException::class.java) {
+            AndroidClueStore.forDirectory(root).recordUploadResult(record.id, true)
+        }
+        assertEquals("{damaged original", index.readText())
+        assertTrue(java.io.File(root, record.imageFilename).isFile)
+        index.writeBytes(original)
+        val recovered = AndroidClueStore.forDirectory(root)
+        assertEquals(record, recovered.pendingForMap("alpha", "team-a").single())
+        recovered.recordUploadResult(record.id, true)
     }
 
     @Test fun unrelatedIndexWriteRetainsMetadataForTemporarilyMissingImage() {
@@ -66,16 +74,18 @@ class AndroidClueStoreTest {
     @Test
     fun mapAssignmentRefreshesPhotoEvenWhenUploadAlreadyFinished() {
         val root = temporaryFolder.newFolder("published-refresh")
-        val writer = AndroidClueStore.forDirectory(root)
+        // Production uses one shared store; assignment must refresh that same process memory.
+        val store = AndroidClueStore.forDirectory(root)
         val record = clueRecord("photo", "unassigned").copy(destinationTeamId = "team-a")
-        writer.saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
-        val viewer = AndroidClueStore.forDirectory(root)
-        assertTrue(viewer.recordsForMap("map:alpha").isEmpty())
+        store.saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
+        assertTrue(store.recordsForMap("map:alpha").isEmpty())
         val published = record.copy(mapKey = "map:alpha", uploadState = "published")
-        writer.saveEncoded(published, byteArrayOf(1), byteArrayOf(2))
-        assertTrue(viewer.pendingForMap("alpha", "team-a").isEmpty())
-        assertEquals(listOf(published), viewer.recordsForMap("map:alpha"))
-        assertTrue(viewer.imageFile(viewer.record(record.id)!!).isFile)
+        store.saveEncoded(published, byteArrayOf(1), byteArrayOf(2))
+        assertTrue(store.pendingForMap("alpha", "team-a").isEmpty())
+        assertEquals(listOf(published), store.recordsForMap("map:alpha"))
+        assertTrue(store.imageFile(store.record(record.id)!!).isFile)
+        // Durable index: a later open also sees the published assignment.
+        assertEquals(listOf(published), AndroidClueStore.forDirectory(root).recordsForMap("map:alpha"))
     }
 
     @Test fun localOnlyShareReportPreservesPrivacyAndUploadState() {

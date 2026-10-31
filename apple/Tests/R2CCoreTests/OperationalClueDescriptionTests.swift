@@ -82,7 +82,16 @@ private func report(heading: Double? = 273.2, telemetry: OperationalClueReportTe
 
 @Test func lateTerrainRewriteRemovesFlatNoteAndUpdatesDemLine() {
     let note = OperationalClueDescription.flatSurfaceLocationNote
-    let body = "Photo\n\n  DEM used: none (flat-ground estimate)\n\n\(note)"
+    // Capture summaries always include Position/Decimal; late refine rewrites those lines.
+    let body = """
+    Photo
+
+      Position (Decimal): 39.000000, -121.000000 alt 295'
+      Decimal: 39.000000, -121.000000
+      DEM used: none (flat-ground estimate)
+
+    \(note)
+    """
     let projection = OperationalClueProjection(
         latitude: 39.001, longitude: -120.999, altitudeMeters: 90,
         terrainProjectionApplied: true, demSource: "usgs-geotiff-local-1m", demResolutionMeters: 1

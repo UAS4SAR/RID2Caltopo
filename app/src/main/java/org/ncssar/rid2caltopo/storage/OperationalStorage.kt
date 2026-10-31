@@ -642,7 +642,17 @@ internal object OperationalStorage {
         } else {
             val relative = source.relativeTo(base).invariantSeparatorsPath
             if (!allowed(area, relative)) return
-            commit(value, source, "${area.retained}/$relative", replace)
+            try {
+                commit(value, source, "${area.retained}/$relative", replace)
+            } catch (error: IllegalStateException) {
+                // Clues hydrate unions working + archive; mismatched same-path copies must
+                // both survive migrate so prepareCluesProjection can merge them.
+                if (area.id == "clues" && !replace &&
+                    error.message?.startsWith("Conflicting archive file:") == true) {
+                    return
+                }
+                throw error
+            }
         }
     }
     private fun commit(value: Store, source: File, path: String, replace: Boolean = true) {

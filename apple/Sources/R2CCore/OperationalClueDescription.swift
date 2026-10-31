@@ -103,17 +103,18 @@ public enum OperationalClueDescription {
         var text = description.replacingOccurrences(of: "\n\n" + flatSurfaceLocationNote, with: "")
         text = text.replacingOccurrences(of: flatSurfaceLocationNote, with: "")
         let demLine = demSummary(projection)
-        if let range = text.range(of: #"  DEM used:.*$"#, options: .regularExpression) {
+        // Match a single line — `$` is end-of-string, not end-of-line, in Foundation regex.
+        if let range = text.range(of: #"  DEM used:[^\n]*"#, options: .regularExpression) {
             text.replaceSubrange(range, with: demLine)
         } else if !text.contains(demLine) {
             text = text.trimmingCharacters(in: .whitespacesAndNewlines) + "\n" + demLine
         }
         let decimal = "  Decimal: \(decimal(projection.latitude, projection.longitude))"
-        if let range = text.range(of: #"  Decimal: .+$"#, options: .regularExpression) {
+        if let range = text.range(of: #"  Decimal: [^\n]+"#, options: .regularExpression) {
             text.replaceSubrange(range, with: decimal)
         }
         let position = "  Position (\(format.label)): \(self.position(projection.latitude, projection.longitude, format)) alt \(number(projection.altitudeMeters.map { $0 * feetPerMeter }, "%.0f'"))"
-        if let range = text.range(of: #"  Position \([^)]+\): .+$"#, options: .regularExpression) {
+        if let range = text.range(of: #"  Position \([^)]+\): [^\n]+"#, options: .regularExpression) {
             text.replaceSubrange(range, with: position)
         }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
