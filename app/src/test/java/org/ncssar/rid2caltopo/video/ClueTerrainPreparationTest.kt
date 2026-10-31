@@ -87,4 +87,41 @@ class ClueTerrainPreparationTest {
         val prepared = prepareClueTerrainForSave(clue) { _, _ -> null }
         assertFalse(prepared.terrainProjectionApplied)
     }
+
+    @Test fun projectionMethodLogLineCoversTerrainFlatAndNadir() {
+        val ray = clueProjectionMethodLogLine(
+            clueLat = 39.002, clueLng = -120.999, droneLat = 39.001, droneLng = -121.0,
+            gimbalPitchDeg = -26.2, gimbalYawDeg = 90.0,
+            terrainProjectionApplied = true, demSource = "usgs-geotiff-local-1m",
+        )
+        assertTrue(ray.contains("method=terrain-raymarch"))
+        assertTrue(ray.contains("tile=hit"))
+        assertTrue(ray.contains("gimbalPitch=-26.2"))
+        assertTrue(ray.contains("gimbalYaw=90.0"))
+        assertTrue(ray.contains("deltaLat=0.001000"))
+        val flat = clueProjectionMethodLogLine(
+            clueLat = 39.001, clueLng = -121.0, droneLat = 39.001, droneLng = -121.0,
+            gimbalPitchDeg = -26.2, gimbalYawDeg = null,
+            terrainProjectionApplied = false, demSource = null, tileHit = false,
+        )
+        assertTrue(flat.contains("method=flat"))
+        assertTrue(flat.contains("tile=miss"))
+        assertTrue(flat.contains("gimbalYaw=nil"))
+        assertEquals("nadir-DEM", clueProjectionMethod(true, -90.0))
+    }
+
+    @Test fun lateTerrainRewriteRemovesFlatNoteAndUpdatesDemLine() {
+        val note = FLAT_SURFACE_LOCATION_NOTE
+        val body = "Photo\n\n  DEM used: none (flat-ground estimate)\n\n$note"
+        val updated = applyingTerrainProjectionDescription(
+            description = body,
+            demSource = "usgs-geotiff-local-1m",
+            demResolutionMeters = 1.0,
+            demSampleStale = false,
+        )
+        assertFalse(updated.contains(note))
+        assertTrue(updated.contains("DEM used: local USGS GeoTIFF"))
+        assertTrue(cluePositionMoved(39.0, -121.0, 39.001, -121.0))
+        assertFalse(cluePositionMoved(39.0, -121.0, 39.0, -121.0))
+    }
 }

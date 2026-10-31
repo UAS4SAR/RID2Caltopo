@@ -18,7 +18,7 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
     public let droneAltitudeMeters: Double?
     public var clueLatitude: Double
     public var clueLongitude: Double
-    public let clueAltitudeMeters: Double?
+    public var clueAltitudeMeters: Double?
     public let headingDegrees: Double?
     public let aglMeters: Double?
     public let atoMeters: Double?
@@ -138,6 +138,46 @@ public struct OperationalClueProjection: Sendable, Equatable {
         self.demResolutionMeters = demResolutionMeters
         self.demSampleStale = demSampleStale
         self.flatFallbackReason = flatFallbackReason
+    }
+
+    /// `terrain-raymarch`, `nadir-DEM`, or `flat` for per-clue projection logs.
+    public func projectionMethod(gimbalPitchDegrees: Double) -> String {
+        guard terrainProjectionApplied else { return "flat" }
+        return gimbalPitchDegrees.isFinite && gimbalPitchDegrees <= -89.9 ? "nadir-DEM" : "terrain-raymarch"
+    }
+}
+
+public enum OperationalClueProjectionLog {
+    /// One line per clue: method, tile hit/miss, gimbal pitch/yaw, lat/lon delta from aircraft.
+    public static func line(
+        projection: OperationalClueProjection,
+        aircraftLatitude: Double,
+        aircraftLongitude: Double,
+        gimbalPitchDegrees: Double,
+        gimbalYawDegrees: Double?,
+        tileHit: Bool? = nil
+    ) -> String {
+        let method = projection.projectionMethod(gimbalPitchDegrees: gimbalPitchDegrees)
+        let hit: String = {
+            if let tileHit { return tileHit ? "hit" : "miss" }
+            if projection.demSource?.hasPrefix("usgs-geotiff-local-") == true { return "hit" }
+            if projection.terrainProjectionApplied { return "hit" }
+            return "miss"
+        }()
+        let deltaLat = projection.latitude - aircraftLatitude
+        let deltaLon = projection.longitude - aircraftLongitude
+        let yaw = gimbalYawDegrees.map { String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), $0) } ?? "nil"
+        return String(
+            format: "Clue projection method=%@ tile=%@ gimbalPitch=%.1f gimbalYaw=%@ deltaLat=%.6f deltaLon=%.6f demSource=%@",
+            locale: Locale(identifier: "en_US_POSIX"),
+            method,
+            hit,
+            gimbalPitchDegrees,
+            yaw,
+            deltaLat,
+            deltaLon,
+            projection.demSource ?? "none"
+        )
     }
 }
 

@@ -496,6 +496,52 @@ public actor CaltopoLiveClient {
         ), lane: archiveLane)
     }
 
+    /// Edit an already-published photo-clue marker position (same marker id; never duplicates).
+    public func updatePhotoClueMarker(
+        markerID: String,
+        latitude: Double,
+        longitude: Double,
+        title: String,
+        description: String,
+        folderID: String?,
+        createdMilliseconds: Int64,
+        now: Date = Date()
+    ) async throws {
+        let normalizedID = markerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedID.isEmpty,
+              latitude.isFinite, longitude.isFinite,
+              !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { throw CaltopoLiveClientError.invalidConfiguration }
+        let markerPath = "/api/v1/map/\(configuration.mapID)/Marker/\(normalizedID)"
+        var markerProperties: [String: Any] = [
+            "class": "Marker",
+            "updated": Int64(now.timeIntervalSince1970 * 1_000),
+            "created": createdMilliseconds,
+            "title": title,
+            "description": description,
+            "marker-color": "#FF0000",
+            "marker-symbol": "Drone",
+            "marker-size": "1",
+            "marker-visibility": "visible",
+        ]
+        if let folderID = folderID?.trimmingCharacters(in: .whitespacesAndNewlines), !folderID.isEmpty {
+            markerProperties["folderId"] = folderID
+        }
+        let markerPayload: [String: Any] = [
+            "id": normalizedID,
+            "type": "Feature",
+            "geometry": [
+                "type": "Point",
+                "coordinates": [longitude, latitude],
+            ],
+            "properties": markerProperties,
+        ]
+        let data = try await perform(makeSignedPostRequest(path: markerPath, object: markerPayload, now: now), lane: clueLane)
+        guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              envelope["status"] as? String == "ok", envelope["error"] == nil
+        else { throw CaltopoLiveClientError.httpStatus(502, "Marker position edit was not acknowledged.") }
+    }
+
     public func publishPhotoClue(_ clue: CaltopoPhotoClue, now: Date = Date()) async throws -> String {
         let requests = try makePhotoClueRequests(clue, now: now)
         if let id = configuration.personalSessionID {

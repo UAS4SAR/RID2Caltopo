@@ -1641,6 +1641,51 @@ public class CaltopoSession {
         photoExchangeForTesting = exchange;
     }
 
+    /**
+     * Edit an existing photo-clue Marker position (same id). Does not re-upload media.
+     * Used when DEM ray-march resolves after a flat-ground Submit.
+     */
+    public static CaltopoOp UpdateStoredPhotoMarker(String mapId, String teamId, String markerId,
+            double lat, double lng, String title, String description, String folderId,
+            long createdAt, Consumer<CaltopoOp> done) {
+        CTDebug(TAG, "UpdateStoredPhotoMarker() start mapId='" + mapId + "' teamId='" + teamId +
+                "' markerId='" + markerId + "' folderId='" + folderId + "'");
+        CaltopoOp outer = new CaltopoOp(done);
+        StoredPhotoProbe probe = storedPhotoProbeForTesting;
+        if (probe != null) {
+            probe.onPublish(mapId, teamId, markerId);
+            outer.responseCode = 200;
+            outer.response = "test-probe-update";
+            outer.setOperationIsDone(true);
+            return outer;
+        }
+        final CaltopoPersonalSession.Authorization personal = CaltopoPersonalSession.capture("");
+        SubmitPhotoRequest(outer, () -> {
+            try {
+                JSONObject geometry = new JSONObject().put("type", "Point").put("coordinates", new JSONArray().put(lng).put(lat));
+                JSONObject props = new JSONObject().put("class", "Marker").put("title", title)
+                    .put("description", description).put("created", createdAt).put("updated", System.currentTimeMillis())
+                    .put("folderId", folderId)
+                    .put("marker-symbol", "Drone").put("marker-color", "#FF0000")
+                    .put("marker-size", "1").put("marker-visibility", "visible");
+                JSONObject marker = new JSONObject().put("id", markerId).put("type", "Feature").put("geometry", geometry).put("properties", props);
+                CaltopoOp result = PhotoOp(personal, teamId, CtsMethod_t.POST, CALTOPO_MAP_API_V1 + mapId + "/Marker/" + markerId, marker, false);
+                outer.responseCode = result.responseCode;
+                outer.response = result.response;
+                CTDebug(TAG, "UpdateStoredPhotoMarker() result markerId='" + markerId + "' success=" +
+                        result.success() + " code=" + result.responseCode);
+                outer.setOperationIsDone(result.success());
+            } catch (Exception error) {
+                outer.response = error.getMessage();
+                CTDebug(TAG, "UpdateStoredPhotoMarker() result markerId='" + markerId +
+                        "' success=false error=" + error.getMessage());
+                outer.setOperationIsDone(false);
+            }
+            return outer;
+        });
+        return outer;
+    }
+
     public static CaltopoOp PublishStoredPhoto(String mapId, String teamId, String markerId,
             double lat, double lng, String title, String description, String folderId,
             long createdAt, byte[] jpeg, Consumer<CaltopoOp> done) {

@@ -80,6 +80,30 @@ private func report(heading: Double? = 273.2, telemetry: OperationalClueReportTe
     #expect(usng.contains("  Drone position (USNG): 18S "))
 }
 
+@Test func lateTerrainRewriteRemovesFlatNoteAndUpdatesDemLine() {
+    let note = OperationalClueDescription.flatSurfaceLocationNote
+    let body = "Photo\n\n  DEM used: none (flat-ground estimate)\n\n\(note)"
+    let projection = OperationalClueProjection(
+        latitude: 39.001, longitude: -120.999, altitudeMeters: 90,
+        terrainProjectionApplied: true, demSource: "usgs-geotiff-local-1m", demResolutionMeters: 1
+    )
+    let updated = OperationalClueDescription.applyingTerrainProjection(body, projection: projection)
+    #expect(!updated.contains(note))
+    #expect(updated.contains("DEM used: local USGS GeoTIFF"))
+    #expect(updated.contains("Decimal: 39.001000, -120.999000") || updated.contains("39.001"))
+    let line = OperationalClueProjectionLog.line(
+        projection: projection,
+        aircraftLatitude: 39.0,
+        aircraftLongitude: -121.0,
+        gimbalPitchDegrees: -26.2,
+        gimbalYawDegrees: 90
+    )
+    #expect(line.contains("method=terrain-raymarch"))
+    #expect(line.contains("tile=hit"))
+    #expect(line.contains("gimbalPitch=-26.2"))
+    #expect(line.contains("gimbalYaw=90.0"))
+}
+
 @Test func clueDescriptionDoesNotInventMissingTelemetry() {
     let observation = RidObservation(source: .bluetoothLegacy, aircraftId: "RID123", receivedAt: .distantPast,
                                     latitude: 39, longitude: -75)

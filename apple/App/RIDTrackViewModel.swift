@@ -741,6 +741,12 @@ final class RIDTrackViewModel: ObservableObject {
         await terrainService.sample(latitude: latitude, longitude: longitude)
     }
 
+    /// Local S1M/GeoTIFF only — used for bind-time and ray-march steps so EPQS cannot poison `usingLocalDEM`.
+    func sampleLocalTerrainElevation(latitude: Double, longitude: Double) async -> OperationalTerrainSample? {
+        await terrainService.sampleLocal(latitude: latitude, longitude: longitude)
+    }
+
+    /// Prefer on-disk S1M for the aircraft sample so off-nadir walks ray-march local tiles, not EPQS.
     func projectClueWithTerrain(
         observation: RidObservation,
         headingDegrees: Double?,
@@ -748,7 +754,8 @@ final class RIDTrackViewModel: ObservableObject {
         gimbalAngleDegrees: Double,
         terrainReferenceLatitude: Double? = nil,
         terrainReferenceLongitude: Double? = nil,
-        relativeUpMeters: Double? = nil
+        relativeUpMeters: Double? = nil,
+        localOnly: Bool = false
     ) async -> OperationalClueProjection {
         let terrainService = self.terrainService
         return await OperationalClueGeometry.projectWithTerrain(
@@ -762,12 +769,106 @@ final class RIDTrackViewModel: ObservableObject {
             terrainReferenceLongitude: terrainReferenceLongitude,
             relativeUpMeters: relativeUpMeters,
             sampleElevationMeters: { latitude, longitude in
-                await terrainService.sample(latitude: latitude, longitude: longitude)
+                if let local = await terrainService.sampleLocal(latitude: latitude, longitude: longitude) {
+                    return local
+                }
+                if localOnly { return nil }
+                return await terrainService.sample(latitude: latitude, longitude: longitude)
             },
             sampleLocalElevationMeters: { latitude, longitude in
                 await terrainService.sampleLocal(latitude: latitude, longitude: longitude)
             }
         )
+    }
+
+    /// Post-save S1M refine for a flat-ground publish. Never blocks Submit; edits local + CalTopo when terrain hits.
+    func schedulePostSaveClueTerrainRefine(
+        recordID: UUID,
+        draft: AppleClueDraft,
+        store: AppleClueStore,
+        format: OperationalCoordinateDisplayFormat
+    ) {
+        guard !draft.terrainProjectionApplied,
+              !OperationalClueDescription.isNadirGimbal(draft.gimbalAngleDegrees)
+        else { return }
+        let terrainService = self.terrainService
+        let height = draft.projectionHeightMeters ?? draft.aglMeters ?? draft.atoMeters
+        Task.detached(priority: .utility) {
+            let projection = await OperationalClueGeometry.projectWithTerrain(
+                droneLatitude: draft.droneLatitude,
+                droneLongitude: draft.droneLongitude,
+                droneAltitudeMeters: draft.droneAltitudeMeters,
+                headingDegrees: draft.headingDegrees,
+                aglMeters: height,
+                gimbalAngleDegrees: draft.gimbalAngleDegrees,
+                terrainReferenceLatitude: draft.terrainReferenceLatitude,
+                terrainReferenceLongitude: draft.terrainReferenceLongitude,
+                relativeUpMeters: draft.relativeUpMeters,
+                sampleElevationMeters: { latitude, longitude in
+                    if let local = await terrainService.sampleLocal(latitude: latitude, longitude: longitude) {
+                        return local
+                    }
+                    return await terrainService.sample(latitude: latitude, longitude: longitude)
+                },
+                sampleLocalElevationMeters: { latitude, longitude in
+                    await terrainService.sampleLocal(latitude: latitude, longitude: longitude)
+                }
+            )
+            AppleLog.info(
+                "Clue",
+                OperationalClueProjectionLog.line(
+                    projection: projection,
+                    aircraftLatitude: draft.droneLatitude,
+                    aircraftLongitude: draft.droneLongitude,
+                    gimbalPitchDegrees: draft.gimbalAngleDegrees,
+                    gimbalYawDegrees: draft.headingDegrees
+                ) + " stage=post-save id=\(recordID)"
+            )
+            guard projection.terrainProjectionApplied else { return }
+            await store.applyTerrainProjectionRefine(id: recordID, projection: projection, format: format)
+        }
+    }
+
+    /// Best-effort S1M ray-march with a short deadline. Flat only when tiles miss or the walk does not finish in time.
+    func projectClueWithTerrainBounded(
+        observation: RidObservation,
+        headingDegrees: Double?,
+        aglMeters: Double?,
+        gimbalAngleDegrees: Double,
+        terrainReferenceLatitude: Double? = nil,
+        terrainReferenceLongitude: Double? = nil,
+        relativeUpMeters: Double? = nil,
+        timeoutMilliseconds: UInt64 = 300
+    ) async -> OperationalClueProjection {
+        let flat = OperationalClueGeometry.project(
+            droneLatitude: observation.latitude,
+            droneLongitude: observation.longitude,
+            droneAltitudeMeters: observation.altitudeMeters,
+            headingDegrees: headingDegrees,
+            aglMeters: aglMeters,
+            gimbalAngleDegrees: gimbalAngleDegrees
+        )
+        return await withTaskGroup(of: OperationalClueProjection?.self) { group in
+            group.addTask {
+                await self.projectClueWithTerrain(
+                    observation: observation,
+                    headingDegrees: headingDegrees,
+                    aglMeters: aglMeters,
+                    gimbalAngleDegrees: gimbalAngleDegrees,
+                    terrainReferenceLatitude: terrainReferenceLatitude,
+                    terrainReferenceLongitude: terrainReferenceLongitude,
+                    relativeUpMeters: relativeUpMeters,
+                    localOnly: true
+                )
+            }
+            group.addTask {
+                try? await Task.sleep(for: .milliseconds(timeoutMilliseconds))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first ?? flat
+        }
     }
 
     func prefetchTerrainForDeviceLocation(latitude: Double, longitude: Double) {

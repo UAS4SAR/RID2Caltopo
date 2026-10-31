@@ -51,8 +51,10 @@ actor AppleTerrainElevationService {
             budgetGeneration = AppleUnifiedMapCache.generation
         }
         let localDEM = self.localDEM
+        // Clue ray-march must not miss S1M because the catalog was still cold after TerrainPrefetch.
         guard let localSample = await Task.detached(priority: .utility, operation: {
-            localDEM.sample(latitude: latitude, longitude: longitude)
+            if !localDEM.isCatalogReady { localDEM.warmCatalog() }
+            return localDEM.sample(latitude: latitude, longitude: longitude)
         }).value else { return nil }
         return OperationalTerrainSample(
             elevationMeters: localSample.elevationMeters,
@@ -73,9 +75,10 @@ actor AppleTerrainElevationService {
         let key = OperationalAltitudeCoordinator.terrainCacheKey(coordinate)
         prefetch(latitude: latitude, longitude: longitude)
         let localDEM = self.localDEM
-        // Catalog-not-ready returns nil immediately; EPQS / point cache still apply.
+        // Warm synchronously before falling through to EPQS so S1M tiles already on disk are used.
         if let localSample = await Task.detached(priority: .utility, operation: {
-            localDEM.sample(latitude: latitude, longitude: longitude)
+            if !localDEM.isCatalogReady { localDEM.warmCatalog() }
+            return localDEM.sample(latitude: latitude, longitude: longitude)
         }).value {
             return OperationalTerrainSample(
                 elevationMeters: localSample.elevationMeters,

@@ -1,3 +1,5 @@
+import java.util.Locale
+import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -9,9 +11,53 @@ internal class ClueTerrainUnavailable(message: String) : IllegalStateException(m
 internal const val FLAT_SURFACE_LOCATION_NOTE =
     "Location approximated from a flat-surface estimate (terrain data not yet loaded)."
 
+/** Bind-time S1M try; Submit never waits longer than this for terrain. */
+internal const val CLUE_BIND_TERRAIN_TIMEOUT_MS = 300L
+
 /** Straight down. Matches the projection cutoff so a nadir sightline is not called an estimate. */
 internal fun isNadirGimbal(gimbalAngleDeg: Double): Boolean =
     gimbalAngleDeg.isFinite() && gimbalAngleDeg <= -89.9
+
+internal fun clueProjectionMethod(
+    terrainProjectionApplied: Boolean,
+    gimbalAngleDeg: Double,
+): String {
+    if (!terrainProjectionApplied) return "flat"
+    return if (isNadirGimbal(gimbalAngleDeg)) "nadir-DEM" else "terrain-raymarch"
+}
+
+/** One line per clue: method, tile hit/miss, gimbal pitch/yaw, lat/lon delta from aircraft. */
+internal fun clueProjectionMethodLogLine(
+    clueLat: Double,
+    clueLng: Double,
+    droneLat: Double,
+    droneLng: Double,
+    gimbalPitchDeg: Double,
+    gimbalYawDeg: Double?,
+    terrainProjectionApplied: Boolean,
+    demSource: String?,
+    tileHit: Boolean? = null,
+): String {
+    val method = clueProjectionMethod(terrainProjectionApplied, gimbalPitchDeg)
+    val hit = when {
+        tileHit != null -> if (tileHit) "hit" else "miss"
+        demSource?.startsWith("usgs-geotiff-local-") == true -> "hit"
+        terrainProjectionApplied -> "hit"
+        else -> "miss"
+    }
+    val yaw = gimbalYawDeg?.let { String.format(Locale.US, "%.1f", it) } ?: "nil"
+    return String.format(
+        Locale.US,
+        "Clue projection method=%s tile=%s gimbalPitch=%.1f gimbalYaw=%s deltaLat=%.6f deltaLon=%.6f demSource=%s",
+        method,
+        hit,
+        gimbalPitchDeg,
+        yaw,
+        clueLat - droneLat,
+        clueLng - droneLng,
+        demSource ?: "none",
+    )
+}
 
 /**
  * CalTopo description note for a published point that was not DEM-refined.
@@ -27,6 +73,36 @@ internal fun appendFlatSurfaceLocationNote(
     val trimmed = description.trimEnd()
     return if (trimmed.isEmpty()) FLAT_SURFACE_LOCATION_NOTE else "$trimmed\n\n$FLAT_SURFACE_LOCATION_NOTE"
 }
+
+/** After a late DEM hit, drop the flat-surface note and refresh the DEM-used line. */
+internal fun applyingTerrainProjectionDescription(
+    description: String,
+    demSource: String?,
+    demResolutionMeters: Double?,
+    demSampleStale: Boolean,
+): String {
+    var text = description
+        .replace("\n\n$FLAT_SURFACE_LOCATION_NOTE", "")
+        .replace(FLAT_SURFACE_LOCATION_NOTE, "")
+    val demLine = formatClueDemSummary(
+        terrainProjectionApplied = true,
+        demSource = demSource,
+        demResolutionMeters = demResolutionMeters,
+        demSampleStale = demSampleStale,
+    )
+    text = text.replace(Regex("""(?m)^  DEM used:.*$"""), demLine)
+    if (!text.contains(demLine)) {
+        text = text.trimEnd() + "\n" + demLine
+    }
+    return text.trim()
+}
+
+internal fun cluePositionMoved(
+    previousLat: Double,
+    previousLng: Double,
+    nextLat: Double,
+    nextLng: Double,
+): Boolean = abs(previousLat - nextLat) > 1e-7 || abs(previousLng - nextLng) > 1e-7
 
 /** Inputs belong to the captured photograph, never the current live aircraft. */
 internal suspend fun refineCapturedClueTerrain(

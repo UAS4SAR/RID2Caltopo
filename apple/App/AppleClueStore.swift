@@ -21,6 +21,13 @@ struct AppleClueDraft: Sendable {
     let description: String
     /// Waypoint binding computed by the clue form (nil only for demo clues).
     var binding: ClueBinding? = nil
+    /// True when Submit already published a DEM ray-march / nadir-DEM point.
+    var terrainProjectionApplied: Bool = false
+    /// Projection height used at Submit (AGL/ATO/DEM-recovered); drives post-save refine.
+    var projectionHeightMeters: Double? = nil
+    var terrainReferenceLatitude: Double? = nil
+    var terrainReferenceLongitude: Double? = nil
+    var relativeUpMeters: Double? = nil
 }
 
 @MainActor
@@ -266,6 +273,80 @@ final class AppleClueStore: ObservableObject {
             AppleLog.info("Clue", "Clue save stage=thumb id=\(id) bytes=\(thumb.count)")
         }
         return record
+    }
+
+    /// After Submit published a flat-ground estimate, apply a later S1M ray-march to the local clue and CalTopo marker (edit, not duplicate).
+    func applyTerrainProjectionRefine(
+        id: UUID,
+        projection: OperationalClueProjection,
+        format: OperationalCoordinateDisplayFormat = .decimal
+    ) async {
+        guard projection.terrainProjectionApplied else { return }
+        guard let index = records.firstIndex(where: { $0.id == id }) else { return }
+        var record = records[index]
+        let previousLat = record.clueLatitude
+        let previousLon = record.clueLongitude
+        let moved = abs(previousLat - projection.latitude) > 1e-7 || abs(previousLon - projection.longitude) > 1e-7
+        record.clueLatitude = projection.latitude
+        record.clueLongitude = projection.longitude
+        record.clueAltitudeMeters = projection.altitudeMeters
+        record.clueDescription = OperationalClueDescription.applyingTerrainProjection(
+            record.clueDescription,
+            projection: projection,
+            format: format
+        )
+        records[index] = record
+        try? await persistIndex()
+        clueChanged?(record)
+        AppleLog.info(
+            "Clue",
+            String(
+                format: "Clue terrain refine applied id=%@ lat=%.6f lng=%.6f previousLat=%.6f previousLng=%.6f demSource=%@ moved=%@",
+                locale: Locale(identifier: "en_US_POSIX"),
+                id.uuidString,
+                projection.latitude,
+                projection.longitude,
+                previousLat,
+                previousLon,
+                projection.demSource ?? "none",
+                moved ? "true" : "false"
+            )
+        )
+        guard moved else { return }
+        // Pending uploads pick up the new coordinates on the next POST. Published markers need an edit.
+        if record.uploadState == .published || record.caltopoMarkerID != nil {
+            await updatePublishedMarkerPosition(record)
+        }
+    }
+
+    private func updatePublishedMarkerPosition(_ record: OperationalClueRecord) async {
+        guard let client,
+              let markerID = record.caltopoMarkerID ?? Optional(record.id.uuidString.lowercased()),
+              !markerID.isEmpty
+        else { return }
+        let generation = configurationGeneration
+        do {
+            let folderID = try? await resolveTrackFolder(using: client)
+            guard generation == configurationGeneration else { return }
+            try await client.updatePhotoClueMarker(
+                markerID: markerID,
+                latitude: record.clueLatitude,
+                longitude: record.clueLongitude,
+                title: record.title,
+                description: record.publishedDescription,
+                folderID: folderID,
+                createdMilliseconds: Int64(record.capturedAt.timeIntervalSince1970 * 1_000)
+            )
+            AppleLog.info(
+                "Clue",
+                "CalTopo marker position edited id=\(record.id) marker=\(markerID) lat=\(record.clueLatitude) lng=\(record.clueLongitude)"
+            )
+        } catch {
+            AppleLog.warning(
+                "Clue",
+                "CalTopo marker position edit failed id=\(record.id) error=\(error.localizedDescription)"
+            )
+        }
     }
 
     private func withTimeout<T: Sendable>(

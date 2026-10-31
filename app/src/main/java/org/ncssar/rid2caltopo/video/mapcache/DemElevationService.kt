@@ -80,6 +80,8 @@ internal class DemElevationService(context: Context) {
      */
     suspend fun sampleLocalElevationMeters(lat: Double, lng: Double): DemElevationSample? = withContext(Dispatchers.IO) {
         if (!lat.isFinite() || !lng.isFinite()) return@withContext null
+        // Clue ray-march must not miss S1M because the catalog was still cold after TerrainPrefetch.
+        if (!localGeoTiff.isCatalogReady()) localGeoTiff.warmCatalog()
         val localTiff = terrainReads.read { checkCancelled -> localGeoTiff.sample(lat, lng, checkCancelled) }
         if (localTiff != null && localTiff.elevationMeters.isFinite() &&
             localTiff.elevationMeters >= -500.0 && localTiff.elevationMeters <= 10_000.0
