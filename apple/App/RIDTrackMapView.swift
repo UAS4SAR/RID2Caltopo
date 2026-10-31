@@ -3196,6 +3196,11 @@ private struct ClueSubmissionView: View {
                     terrainProjection = nil
                     return
                 }
+                // Submit owns the critical path; do not compete with durable save/upload.
+                guard !submitting else {
+                    terrainProjectionPending = false
+                    return
+                }
                 // Photograph position — never the live-rebinding origin.
                 let captureObservation = pending.observation
                 terrainProjectionPending = true
@@ -3228,7 +3233,7 @@ private struct ClueSubmissionView: View {
                         )
                     }
                 }
-                guard !Task.isCancelled, terrainTaskKey == key else { return }
+                guard !Task.isCancelled, !submitting, terrainTaskKey == key else { return }
 
                 // ~300 ms hard wall-clock local bind try (detached race, not cooperative-only).
                 let quick = await model.projectClueWithTerrainBounded(
@@ -3260,7 +3265,7 @@ private struct ClueSubmissionView: View {
                 }
 
                 try? await Task.sleep(for: .milliseconds(200))
-                guard !Task.isCancelled, terrainTaskKey == key else { return }
+                guard !Task.isCancelled, !submitting, terrainTaskKey == key else { return }
                 // Longer local-only pass still hard-capped; Submit never waits on this task.
                 let refined = await model.projectClueWithTerrainBounded(
                     observation: captureObservation,

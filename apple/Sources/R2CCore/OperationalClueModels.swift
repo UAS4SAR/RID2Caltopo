@@ -616,6 +616,9 @@ public enum OperationalClueGeometry {
         var coverageEnded = false
         var distance = step
         while distance <= maximumDistance + 0.001 {
+            if Task.isCancelled {
+                return flatEstimate(knownGround: knownDemGround, reason: "terrain refine cancelled")
+            }
             let candidate = destinationPoint(
                 latitude: droneLatitude,
                 longitude: droneLongitude,
@@ -651,6 +654,9 @@ public enum OperationalClueGeometry {
                 var highPoint = candidate
                 var highGround = ground
                 for _ in 0 ..< 6 {
+                    if Task.isCancelled {
+                        return flatEstimate(knownGround: knownDemGround, reason: "terrain refine cancelled")
+                    }
                     let midDistance = (lowDistance + highDistance) / 2
                     let midPoint = destinationPoint(
                         latitude: droneLatitude,

@@ -1961,27 +1961,66 @@ final class RIDTrackViewModel: ObservableObject {
 }
 
 /// Wall-clock timeout race that does not inherit caller actor isolation (see 980e4a00).
+/// Unlike `withTaskGroup` + `cancelAll`, this returns as soon as either side finishes and does
+/// **not** wait for the loser (group exit would otherwise await a cancelled GeoTIFF walk).
 enum ClueHardTimeout {
+    private final class ResumeGate<T: Sendable>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var resumed = false
+        private let continuation: CheckedContinuation<T, Never>
+        private let work: Task<T, Never>
+        private let timer: Task<Void, any Error>
+
+        init(
+            continuation: CheckedContinuation<T, Never>,
+            work: Task<T, Never>,
+            timer: Task<Void, any Error>
+        ) {
+            self.continuation = continuation
+            self.work = work
+            self.timer = timer
+        }
+
+        func finish(_ value: T) {
+            lock.lock()
+            let shouldResume = !resumed
+            resumed = true
+            lock.unlock()
+            guard shouldResume else { return }
+            work.cancel()
+            timer.cancel()
+            continuation.resume(returning: value)
+        }
+    }
+
     static func race<T: Sendable>(
         milliseconds: UInt64,
         operation: @escaping @Sendable () async -> T,
         fallback: T
     ) async -> T {
-        await withTaskGroup(of: T?.self) { group in
-            group.addTask {
-                await Task.detached(priority: .userInitiated) {
-                    await operation()
-                }.value
+        let work = Task.detached(priority: .userInitiated) {
+            await operation()
+        }
+        let timer = Task.detached {
+            try await Task.sleep(for: .milliseconds(milliseconds))
+        }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<T, Never>) in
+                let resumeGate = ResumeGate(continuation: continuation, work: work, timer: timer)
+                Task.detached {
+                    let result = await work.result
+                    if case .success(let value) = result {
+                        resumeGate.finish(value)
+                    }
+                }
+                Task.detached {
+                    _ = await timer.result
+                    resumeGate.finish(fallback)
+                }
             }
-            group.addTask {
-                await Task.detached {
-                    try? await Task.sleep(for: .milliseconds(milliseconds))
-                }.value
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first ?? fallback
+        } onCancel: {
+            work.cancel()
+            timer.cancel()
         }
     }
 }
