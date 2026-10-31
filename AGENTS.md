@@ -11,6 +11,12 @@ This is an explicit, permanent requirement from the project owner.
 - Preserve ordered durable writes, consent-before-publication guarantees, cancellation, and stale-result checks when moving work off-thread. Do not replace blocking UI work with races or unbounded background jobs.
 - For performance-sensitive changes, trace the actual execution context and validate relevant behavior. A method named `async`, `load`, or `cache` is not proof that it is safe for the UI thread. If quick completion cannot be established, use a worker.
 
+# Locks and urgent publication
+
+- Never hold a lock, `synchronized` block, `Mutex`, `NSLock`, or serial queue across disk, SAF, network, decode, or other slow work. Take the lock only to read or publish in-memory state.
+- Clue publish, live-track upload, and CalTopo POSTs must not wait on archive hydration, bulk cache work, or any other worker's slow job. Write the app-private or in-memory result first. Copy it to Archive Dir afterward.
+- A single worker that both publishes and performs archive or recovery work will stall publication. Keep those jobs on separate workers.
+
 # Routine installs and physical-device testing
 
 This is an explicit requirement from the project owner (October 26, 2026).

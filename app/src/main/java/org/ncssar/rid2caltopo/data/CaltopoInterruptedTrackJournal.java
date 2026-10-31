@@ -10,7 +10,6 @@ import org.ncssar.rid2caltopo.app.R2CApplication;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -21,6 +20,8 @@ public final class CaltopoInterruptedTrackJournal {
     private static final Object LOCK = new Object();
     private static final Set<String> inFlight = java.util.concurrent.ConcurrentHashMap.newKeySet();
     @Nullable private static File testFile;
+    /** In-memory journal mirror; disk I/O must not run while LOCK is held. */
+    @Nullable private static JSONObject cachedRoot;
 
     private CaltopoInterruptedTrackJournal() { }
 
@@ -32,9 +33,10 @@ public final class CaltopoInterruptedTrackJournal {
                             @NonNull JSONArray points) {
         CaltopoRecoveryWork.requireOffMain();
         if (mapId.isEmpty() || liveTrackId.isEmpty()) return false;
+        final JSONObject toWrite;
         synchronized (LOCK) {
             try {
-                JSONObject root = readRoot();
+                JSONObject root = mutableRootLocked();
                 JSONArray entries = root.optJSONArray("entries");
                 if (entries == null) {
                     entries = new JSONArray();
@@ -58,12 +60,20 @@ public final class CaltopoInterruptedTrackJournal {
                 entry.put("label", label);
                 entry.put("description", description);
                 entry.put("points", new JSONArray(points.toString()));
-                writeRoot(root);
-                return true;
+                cachedRoot = root;
+                toWrite = copyRoot(root);
             } catch (Exception error) {
                 CaltopoClient.CTError(TAG, "Could not persist interrupted LiveTrack", error);
                 return false;
             }
+        }
+        try {
+            writeRoot(toWrite);
+            return true;
+        } catch (Exception error) {
+            synchronized (LOCK) { cachedRoot = null; }
+            CaltopoClient.CTError(TAG, "Could not persist interrupted LiveTrack", error);
+            return false;
         }
     }
 
@@ -90,7 +100,7 @@ public final class CaltopoInterruptedTrackJournal {
         Set<String> recovering = new HashSet<>();
         JSONArray entries;
         synchronized (LOCK) {
-            entries = readRoot().optJSONArray("entries");
+            entries = mutableRootLocked().optJSONArray("entries");
             if (entries == null) return recovering;
             entries = copyArray(entries);
         }
@@ -109,7 +119,7 @@ public final class CaltopoInterruptedTrackJournal {
                 }
                 JSONObject feature = archiveFeature(entry, archiveFolderId);
                 runtime.getCalTopoSessionGateway().editObjectOnMap(
-                        mapId, "Shape", liveTrackId, feature, editOp -> CaltopoRecoveryWork.offMain(() -> {
+                        mapId, "Shape", liveTrackId, feature, editOp -> CaltopoRecoveryWork.offMainArchive(() -> {
                             if (!editOp.success()) {
                                 inFlight.remove(liveTrackId);
                                 CaltopoClient.CTWarn(TAG, "Interrupted LiveTrack conversion deferred id=" + liveTrackId);
@@ -149,8 +159,9 @@ public final class CaltopoInterruptedTrackJournal {
         try {
             // Persist completion before cleanup: a cleanup retry must never POST
             // the Shape again, including after a restart or manual map deletion.
+            final JSONObject toWrite;
             synchronized (LOCK) {
-                JSONObject root = readRoot();
+                JSONObject root = mutableRootLocked();
                 JSONArray entries = root.optJSONArray("entries");
                 if (entries == null) { inFlight.remove(liveTrackId); return; }
                 for (int i = 0; i < entries.length(); i++) {
@@ -159,10 +170,17 @@ public final class CaltopoInterruptedTrackJournal {
                         entry.put("archiveUploaded", true);
                     }
                 }
-                writeRoot(root);
+                cachedRoot = root;
+                toWrite = copyRoot(root);
+            }
+            try {
+                writeRoot(toWrite);
+            } catch (Exception writeError) {
+                synchronized (LOCK) { cachedRoot = null; }
+                throw writeError;
             }
             AwaitingMapFlights.published(liveTrackId);
-            runtime.getCalTopoSessionGateway().deleteLiveTrackOnMap(mapId, liveTrackId, deleteOp -> CaltopoRecoveryWork.offMain(() -> {
+            runtime.getCalTopoSessionGateway().deleteLiveTrackOnMap(mapId, liveTrackId, deleteOp -> CaltopoRecoveryWork.offMainArchive(() -> {
                 // Match Apple's already-gone handling. Standalone archives never
                 // created a LiveTrack, for which CalTopo returns 400 (or 404).
                 if (deleteOp.success() || deleteOp.responseCode == 400 || deleteOp.responseCode == 404) {
@@ -181,9 +199,10 @@ public final class CaltopoInterruptedTrackJournal {
 
     public static void remove(@NonNull String liveTrackId) {
         CaltopoRecoveryWork.requireOffMain();
+        final JSONObject toWrite;
         synchronized (LOCK) {
             try {
-                JSONObject root = readRoot();
+                JSONObject root = mutableRootLocked();
                 JSONArray entries = root.optJSONArray("entries");
                 if (entries == null) return;
                 JSONArray kept = new JSONArray();
@@ -194,23 +213,50 @@ public final class CaltopoInterruptedTrackJournal {
                     }
                 }
                 root.put("entries", kept);
-                writeRoot(root);
+                cachedRoot = root;
+                toWrite = copyRoot(root);
             } catch (Exception error) {
                 CaltopoClient.CTError(TAG, "Could not clear interrupted LiveTrack " + liveTrackId, error);
+                return;
             }
+        }
+        try {
+            writeRoot(toWrite);
+        } catch (Exception error) {
+            synchronized (LOCK) { cachedRoot = null; }
+            CaltopoClient.CTError(TAG, "Could not clear interrupted LiveTrack " + liveTrackId, error);
         }
     }
 
     static void setFileForTesting(@Nullable File file) {
-        synchronized (LOCK) { testFile = file; }
+        synchronized (LOCK) {
+            testFile = file;
+            cachedRoot = null;
+        }
     }
 
     @NonNull
     static JSONArray entriesForTesting() {
         synchronized (LOCK) {
-            JSONArray entries = readRoot().optJSONArray("entries");
+            JSONArray entries = mutableRootLocked().optJSONArray("entries");
             return entries == null ? new JSONArray() : copyArray(entries);
         }
+    }
+
+    /** Pending finished-track / interrupted Shape archives awaiting upload. */
+    public static int pendingCount() {
+        synchronized (LOCK) {
+            JSONArray entries = mutableRootLocked().optJSONArray("entries");
+            return entries == null ? 0 : entries.length();
+        }
+    }
+
+    /**
+     * Clear recover() in-flight markers so a connectivity-restore flush can retry
+     * after canceling a hung Shape POST that never completed its callback.
+     */
+    public static void clearInFlightForConnectivityRestore() {
+        inFlight.clear();
     }
 
     @NonNull
@@ -244,8 +290,21 @@ public final class CaltopoInterruptedTrackJournal {
         return feature;
     }
 
+    /** Caller holds LOCK. Cold-start disk read is the only I/O under LOCK. */
     @NonNull
-    private static JSONObject readRoot() {
+    private static JSONObject mutableRootLocked() {
+        if (cachedRoot != null) return cachedRoot;
+        cachedRoot = readRootFromDisk();
+        return cachedRoot;
+    }
+
+    @NonNull
+    private static JSONObject copyRoot(@NonNull JSONObject root) throws Exception {
+        return new JSONObject(root.toString());
+    }
+
+    @NonNull
+    private static JSONObject readRootFromDisk() {
         try {
             File file = journalFile();
             if (file == null || !file.isFile()) return emptyRoot();
@@ -263,14 +322,9 @@ public final class CaltopoInterruptedTrackJournal {
         if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
             throw new IllegalStateException("Could not create journal directory");
         }
-        File temporary = new File(parent, file.getName() + ".tmp");
-        Files.write(temporary.toPath(), root.toString().getBytes(StandardCharsets.UTF_8));
-        try {
-            Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (Exception ignored) {
-            Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
-        }
-        org.ncssar.rid2caltopo.storage.OperationalStorage.INSTANCE.retain(file);
+        // .partial + fsync + verify + atomic move — same durability as flight archives.
+        PlainFileSafeWriter.replace(file, root.toString().getBytes(StandardCharsets.UTF_8), bytes -> bytes.length > 0);
+        org.ncssar.rid2caltopo.storage.OperationalStorage.INSTANCE.retainLater(file);
     }
 
     @Nullable

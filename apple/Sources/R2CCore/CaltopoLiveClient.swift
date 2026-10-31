@@ -40,6 +40,12 @@ public struct CaltopoLiveConfiguration: Sendable, Equatable, Hashable {
 
     public var authorizesAsPersonalAccount: Bool { personalSessionID != nil || personalSignedAccount }
 
+    public var credentialKind: String {
+        if personalSignedAccount { return "personal" }
+        if personalSessionID != nil { return "session" }
+        return "team"
+    }
+
     public init(
         domainAndPort: String = "caltopo.com",
         mapID: String,
@@ -63,6 +69,35 @@ public struct CaltopoLiveConfiguration: Sendable, Equatable, Hashable {
     }
 }
 
+public enum CaltopoServerAvailability {
+    public static func isUnavailable(status: Int, timedOut: Bool) -> Bool {
+        timedOut || status == 408 || status >= 500
+    }
+
+    public static func message(status: Int, personal: Bool, timedOut: Bool) -> String {
+        if status == 401 || status == 403 {
+            return personal
+                ? "Personal map request failed; check your login and map permissions. Team credentials were not used."
+                : "CalTopo request failed; check your login and map permissions."
+        }
+        if isUnavailable(status: status, timedOut: timedOut) {
+            let detail = timedOut && status <= 0 ? "timed out" : "HTTP \(status)"
+            return "CalTopo server unavailable (\(detail)), retrying..."
+        }
+        return personal ? "Personal map request failed." : "CalTopo request failed."
+    }
+
+    public static func retryMessage(_ error: Error) -> String? {
+        if let urlError = error as? URLError, urlError.code == .timedOut {
+            return message(status: 0, personal: false, timedOut: true)
+        }
+        guard case let CaltopoLiveClientError.httpStatus(code, text) = error else { return nil }
+        if text.hasPrefix("CalTopo server unavailable") { return text }
+        if isUnavailable(status: code, timedOut: false) { return message(status: code, personal: false, timedOut: false) }
+        return nil
+    }
+}
+
 public enum CaltopoLiveClientError: Error, Sendable, Equatable {
     case invalidConfiguration
     case invalidCredentialSecret
@@ -82,11 +117,14 @@ extension CaltopoLiveClientError: LocalizedError {
             return "The CalTopo credential secret is not valid Base64."
         case .invalidURL:
             return "The CalTopo server address is invalid."
-        case let .httpStatus(code, message):
+        case let .httpStatus(_, message):
             let detail = message.trimmingCharacters(in: .whitespacesAndNewlines)
-            return detail.isEmpty
-                ? "CalTopo returned HTTP \(code)."
-                : "CalTopo returned HTTP \(code): \(detail)"
+            if detail.hasPrefix("CalTopo server unavailable")
+                || detail.hasPrefix("Personal map request failed")
+                || detail.hasPrefix("CalTopo request failed") {
+                return detail
+            }
+            return detail.isEmpty ? "CalTopo returned an unexpected response." : detail
         case .missingResult:
             return "CalTopo returned a response without the expected result."
         case .mismatchedLiveTrackID:
@@ -171,15 +209,24 @@ public actor CaltopoLiveClient {
     private let personalTransport: URLSession?
     private let fullMapReads: CaltopoFullMapReads
     private let snapshotReads: CaltopoSnapshotReads
+    /// Separate lanes so Shape archive / DELETE and clue media POSTs cannot
+    /// occupy the same serial executor as LiveTrack create and position reports.
+    private let startLane: CaltopoNetworkLane
+    private let archiveLane: CaltopoNetworkLane
+    private let clueLane: CaltopoNetworkLane
     private static let positionReports = LatestPositionReports(intervalProvider: {
         let stored = UserDefaults.standard.object(forKey: OperationalThumbnailRefreshInterval.storageKey) as? Double
         return .seconds(OperationalThumbnailRefreshInterval.normalized(stored))
     })
     private var positionReportKeys: Set<String> = []
+    private var stoppedLiveTrackIDs: Set<String> = []
+    /// Bound archive/clue/LiveTrack attempts so a dead path cannot stall for minutes.
+    public static let requestTimeoutSeconds: TimeInterval = 15
+    private let ownsSession: Bool
 
     public init(
         configuration: CaltopoLiveConfiguration,
-        session: URLSession = .shared,
+        session: URLSession? = nil,
         fullMapReads: CaltopoFullMapReads = .shared,
         snapshotReads: CaltopoSnapshotReads? = nil
     ) throws {
@@ -194,11 +241,29 @@ public actor CaltopoLiveClient {
             throw CaltopoLiveClientError.invalidConfiguration
         }
         self.configuration = configuration
-        self.session = session
+        let resolvedSession: URLSession
+        if let session {
+            resolvedSession = session
+            ownsSession = false
+        } else {
+            let transport = URLSessionConfiguration.ephemeral
+            transport.timeoutIntervalForRequest = Self.requestTimeoutSeconds
+            transport.timeoutIntervalForResource = Self.requestTimeoutSeconds
+            transport.waitsForConnectivity = false
+            resolvedSession = URLSession(configuration: transport)
+            ownsSession = true
+        }
+        self.session = resolvedSession
         self.fullMapReads = fullMapReads
-        self.snapshotReads = snapshotReads ?? (session === URLSession.shared ? .shared : CaltopoSnapshotReads())
+        self.snapshotReads = snapshotReads ?? (resolvedSession === URLSession.shared ? .shared : CaltopoSnapshotReads())
+        self.startLane = CaltopoNetworkLane(session: resolvedSession)
+        self.archiveLane = CaltopoNetworkLane(session: resolvedSession)
+        self.clueLane = CaltopoNetworkLane(session: resolvedSession)
         if configuration.personalSessionID != nil {
-            let transport = session.configuration
+            let transport = URLSessionConfiguration.ephemeral
+            transport.timeoutIntervalForRequest = Self.requestTimeoutSeconds
+            transport.timeoutIntervalForResource = Self.requestTimeoutSeconds
+            transport.waitsForConnectivity = false
             transport.httpCookieStorage = nil
             transport.httpShouldSetCookies = false
             transport.urlCache = nil
@@ -206,7 +271,23 @@ public actor CaltopoLiveClient {
         } else { personalTransport = nil }
     }
 
-    deinit { personalTransport?.invalidateAndCancel() }
+    deinit {
+        personalTransport?.invalidateAndCancel()
+        if ownsSession { session.invalidateAndCancel() }
+    }
+
+    /// Connectivity restored: cancel hung archive/clue/LiveTrack tasks started on a dead path.
+    public func cancelInFlightForConnectivityRestore() async {
+        await startLane.cancelOutstanding()
+        await archiveLane.cancelOutstanding()
+        await clueLane.cancelOutstanding()
+        if let personalTransport {
+            let tasks = await personalTransport.allTasks
+            tasks.forEach { $0.cancel() }
+        }
+        let tasks = await session.allTasks
+        tasks.forEach { $0.cancel() }
+    }
 
     public func startLiveTrack(
         liveTrackID: String,
@@ -222,7 +303,7 @@ public actor CaltopoLiveClient {
             folderID: folderID,
             now: now
         )
-        let data = try await perform(request)
+        let data = try await perform(request, lane: startLane)
         let root = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         guard let result = root?["result"] as? [String: Any] else {
             throw CaltopoLiveClientError.missingResult
@@ -244,7 +325,7 @@ public actor CaltopoLiveClient {
         let key = positionReportKey(remoteID)
         positionReportKeys.insert(key)
         return try await Self.positionReports.submit(key: key) {
-            _ = try await self.perform(request)
+            _ = try await self.perform(request, lane: self.startLane)
         }
     }
 
@@ -262,10 +343,36 @@ public actor CaltopoLiveClient {
     }
 
     public func stopLiveTrack(liveTrackID: String, now: Date = Date()) async throws {
-        _ = try await perform(
-            makeStopLiveTrackRequest(liveTrackID: liveTrackID, now: now),
-            acceptedStatusCodes: [400, 404]
-        )
+        guard !liveTrackID.isEmpty else { throw CaltopoLiveClientError.missingLiveTrackID }
+        // Archive and interrupted-track recovery both stop the same LiveTrack.
+        // A second DELETE is the 400 that follows a successful 200.
+        guard reserveLiveTrackStop(liveTrackID: liveTrackID) else {
+            CaltopoPersonalAccountConnection.logState("live track delete already sent id=\(liveTrackID)")
+            return
+        }
+        do {
+            _ = try await perform(
+                makeStopLiveTrackRequest(liveTrackID: liveTrackID, now: now),
+                acceptedStatusCodes: [400, 404],
+                lane: archiveLane
+            )
+        } catch {
+            releaseLiveTrackStop(liveTrackID: liveTrackID)
+            throw error
+        }
+    }
+
+    /// Returns false when this LiveTrack DELETE was already sent or is in flight.
+    func reserveLiveTrackStop(liveTrackID: String) -> Bool {
+        let key = liveTrackID.lowercased()
+        if key.isEmpty || stoppedLiveTrackIDs.contains(key) { return false }
+        stoppedLiveTrackIDs.insert(key)
+        return true
+    }
+
+    /// Lets a failed DELETE be retried. Success and already-gone stay reserved.
+    func releaseLiveTrackStop(liveTrackID: String) {
+        stoppedLiveTrackIDs.remove(liveTrackID.lowercased())
     }
 
     public func fetchMapArtifacts(now: Date = Date(), refresh: Bool = false) async throws -> CaltopoArtifactSnapshot {
@@ -287,7 +394,9 @@ public actor CaltopoLiveClient {
             return try await snapshotReads.read(configuration: configuration, forceFull: forceFullRead, refresh: refresh,
                 validate: { try await self.validateSnapshotAccess() }, load: { cursor in
                     if cursor <= 500 {
-                        let mapURL = try await self.makeMapChangesRequest(sinceMilliseconds: 0, now: Date()).url!
+                        let mapRequest = try await self.makeMapChangesRequest(sinceMilliseconds: 0, now: Date())
+                        let mapURL = mapRequest.url!
+                        CaltopoPersonalAccountConnection.logState("map open dispatch GET \(mapURL.path) credential=\(self.configuration.credentialKind)")
                         return try await self.fullMapReads.perform(mapURL: mapURL) {
                             try Task.checkCancellation()
                             return try await self.sendMapRead(sinceMilliseconds: 0, now: Date())
@@ -300,10 +409,13 @@ public actor CaltopoLiveClient {
     }
     private func validateSnapshotAccess() async throws {
         try Task.checkCancellation()
-        if let token = configuration.personalSessionID {
-            let url = try makeMapChangesRequest(sinceMilliseconds: 0, now: Date()).url!
-            _ = try await CaltopoPersonalSessions.shared.cookie(token, url: url)
-        }
+        // A signed personal account is authorized by HMAC. The cookie session is not consulted.
+        guard CaltopoPersonalAccountConnection.requiresCookieValidation(
+            personalSessionID: configuration.personalSessionID,
+            personalSignedAccount: configuration.personalSignedAccount
+        ), let token = configuration.personalSessionID else { return }
+        let url = try makeMapChangesRequest(sinceMilliseconds: 0, now: Date()).url!
+        _ = try await CaltopoPersonalSessions.shared.cookie(token, url: url)
     }
     public func markerPresence(markerID: String, sinceMilliseconds: Int64) async throws -> (absent: Bool, present: Bool) {
         guard sinceMilliseconds > 500 else { throw CaltopoLiveClientError.invalidConfiguration }
@@ -361,7 +473,7 @@ public actor CaltopoLiveClient {
             folderID: folderID,
             description: description,
             now: now
-        ))
+        ), lane: archiveLane)
         try await stopLiveTrack(liveTrackID: liveTrackID, now: now)
     }
 
@@ -381,7 +493,53 @@ public actor CaltopoLiveClient {
             folderID: folderID,
             description: description,
             now: now
-        ))
+        ), lane: archiveLane)
+    }
+
+    /// Edit an already-published photo-clue marker position (same marker id; never duplicates).
+    public func updatePhotoClueMarker(
+        markerID: String,
+        latitude: Double,
+        longitude: Double,
+        title: String,
+        description: String,
+        folderID: String?,
+        createdMilliseconds: Int64,
+        now: Date = Date()
+    ) async throws {
+        let normalizedID = markerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedID.isEmpty,
+              latitude.isFinite, longitude.isFinite,
+              !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { throw CaltopoLiveClientError.invalidConfiguration }
+        let markerPath = "/api/v1/map/\(configuration.mapID)/Marker/\(normalizedID)"
+        var markerProperties: [String: Any] = [
+            "class": "Marker",
+            "updated": Int64(now.timeIntervalSince1970 * 1_000),
+            "created": createdMilliseconds,
+            "title": title,
+            "description": description,
+            "marker-color": "#FF0000",
+            "marker-symbol": "Drone",
+            "marker-size": "1",
+            "marker-visibility": "visible",
+        ]
+        if let folderID = folderID?.trimmingCharacters(in: .whitespacesAndNewlines), !folderID.isEmpty {
+            markerProperties["folderId"] = folderID
+        }
+        let markerPayload: [String: Any] = [
+            "id": normalizedID,
+            "type": "Feature",
+            "geometry": [
+                "type": "Point",
+                "coordinates": [longitude, latitude],
+            ],
+            "properties": markerProperties,
+        ]
+        let data = try await perform(makeSignedPostRequest(path: markerPath, object: markerPayload, now: now), lane: clueLane)
+        guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              envelope["status"] as? String == "ok", envelope["error"] == nil
+        else { throw CaltopoLiveClientError.httpStatus(502, "Marker position edit was not acknowledged.") }
     }
 
     public func publishPhotoClue(_ clue: CaltopoPhotoClue, now: Date = Date()) async throws -> String {
@@ -389,19 +547,36 @@ public actor CaltopoLiveClient {
         if let id = configuration.personalSessionID {
             try await CaltopoPersonalSessions.shared.authorizeMedia(id, mediaID: clue.mediaID)
         }
+        // Clue media must not share startLane: 502 retries would HOL-block LiveTrack create/points.
         func acknowledged(_ request: URLRequest) async throws -> Data {
-            let data = try await perform(request)
+            let data = try await perform(request, lane: clueLane)
             guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   envelope["status"] as? String == "ok", envelope["error"] == nil
             else { throw CaltopoLiveClientError.httpStatus(502, "Photo upload was not acknowledged; retained for retry.") }
             return data
         }
-        _ = try await acknowledged(requests[0])
+        do {
+            _ = try await acknowledged(requests[0])
+        } catch let markerPostError {
+            // Prior attempt may have created the Marker then failed media. Attach to it.
+            do {
+                _ = try await acknowledged(makeMarkerSnapshotRequest(
+                    markerID: clue.markerID.uuidString.lowercased(), now: now))
+            } catch {
+                throw markerPostError
+            }
+        }
         var mediaExists = false
         var mediaReady = false
         let mediaOwner = configuration.authorizesAsPersonalAccount ? configuration.personalMediaOwnerID : clue.teamID
         do {
-            let data = try await acknowledged(makeMediaSnapshotRequest(mediaID: clue.mediaID, now: now))
+            // Probe with perform — not acknowledged — so a CalTopo 400/404 "absent"
+            // stays 400/404 instead of being rewritten into a false 502 envelope failure.
+            // Probe 400/404 is not a store-level permanent stop; media is simply absent.
+            let data = try await perform(makeMediaSnapshotRequest(mediaID: clue.mediaID, now: now), lane: clueLane)
+            guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  envelope["status"] as? String == "ok", envelope["error"] == nil
+            else { throw CaltopoLiveClientError.httpStatus(502, "Photo upload was not acknowledged; retained for retry.") }
             mediaReady = try CaltopoPhotoMediaState.isReady(data, mediaID: clue.mediaID, ownerID: mediaOwner)
             mediaExists = true
         } catch CaltopoLiveClientError.httpStatus(let code, _) where code == 400 || code == 404 {
@@ -499,13 +674,26 @@ public actor CaltopoLiveClient {
     }
 
     func makeMediaSnapshotRequest(mediaID: UUID, now: Date) throws -> URLRequest {
-        let path = "/api/v1/media/\(mediaID.uuidString.lowercased())"
+        try makeSignedGetRequest(path: "/api/v1/media/\(mediaID.uuidString.lowercased())", now: now)
+    }
+
+    func makeMarkerSnapshotRequest(markerID: String, now: Date) throws -> URLRequest {
+        try makeSignedGetRequest(path: "/api/v1/map/\(configuration.mapID)/Marker/\(markerID)", now: now)
+    }
+
+    private func makeSignedGetRequest(path: String, now: Date) throws -> URLRequest {
         guard let url = httpsURL(path: path), var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         else { throw CaltopoLiveClientError.invalidURL }
         if configuration.personalSessionID == nil {
             let expires = Int64(now.timeIntervalSince1970 * 1000) + CaltopoRequestSigner.validityMilliseconds
-            let signature = try CaltopoRequestSigner.signature(method: "GET", path: path, expiresMilliseconds: expires, payload: "", credentialSecretBase64: configuration.credentialSecretBase64)
-            components.percentEncodedQuery = CaltopoRequestSigner.percentEncodedQuery([("id", configuration.credentialID), ("expires", String(expires)), ("signature", signature)])
+            let signature = try CaltopoRequestSigner.signature(
+                method: "GET", path: path, expiresMilliseconds: expires, payload: "",
+                credentialSecretBase64: configuration.credentialSecretBase64)
+            components.percentEncodedQuery = CaltopoRequestSigner.percentEncodedQuery([
+                ("id", configuration.credentialID),
+                ("expires", String(expires)),
+                ("signature", signature),
+            ])
         }
         return URLRequest(url: components.url!)
     }
@@ -759,6 +947,8 @@ public actor CaltopoLiveClient {
         return request
     }
 
+    /// The connect key in the path authorizes this GET for team and personal credentials.
+    /// Query `id` is the device id, so the request stays unsigned.
     func makePointRequest(
         remoteID: String,
         observation: RidObservation,
@@ -888,11 +1078,15 @@ public actor CaltopoLiveClient {
 
     private func perform(
         _ request: URLRequest,
-        acceptedStatusCodes: Set<Int> = []
+        acceptedStatusCodes: Set<Int> = [],
+        lane: CaltopoNetworkLane? = nil
     ) async throws -> Data {
         var request = request
+        request.timeoutInterval = Self.requestTimeoutSeconds
         var personalCookieURL: URL?
         var personalSendCookie = false
+        // A signed personal account has no browser cookie. Position reports stay
+        // unsigned connect-key GETs. Only a cookie session consults that cookie.
         if configuration.personalSessionID != nil {
             guard let url = request.url, url.scheme == "https", url.host == "caltopo.com", url.port == nil,
                   url.user == nil, url.password == nil,
@@ -912,21 +1106,47 @@ public actor CaltopoLiveClient {
         }
         let data: Data
         let response: URLResponse
-        if let personalID = configuration.personalSessionID, let cookieURL = personalCookieURL {
-            (data, response) = try await CaltopoPersonalSessions.shared.perform(personalID, cookieURL: cookieURL,
-                request: request, session: personalTransport ?? session, sendCookie: personalSendCookie)
-        } else {
-            (data, response) = try await session.data(for: request)
+        let credential = configuration.credentialKind
+        let method = request.httpMethod ?? "GET"
+        let path = request.url?.path ?? "/"
+        let logTransport = credential != "team" || !path.hasPrefix("/api/v1/position/report/")
+        let networkLane = lane ?? startLane
+        do {
+            if let personalID = configuration.personalSessionID, let cookieURL = personalCookieURL {
+                (data, response) = try await CaltopoPersonalSessions.shared.perform(personalID, cookieURL: cookieURL,
+                    request: request, session: personalTransport ?? session, sendCookie: personalSendCookie)
+            } else {
+                (data, response) = try await networkLane.data(for: request)
+            }
+        } catch {
+            if logTransport {
+                CaltopoPersonalAccountConnection.logRequest(method: method, path: path, status: 0, credential: credential)
+            }
+            if let urlError = error as? URLError, urlError.code == .timedOut {
+                throw CaltopoLiveClientError.httpStatus(0, CaltopoServerAvailability.message(
+                    status: 0, personal: configuration.authorizesAsPersonalAccount, timedOut: true))
+            }
+            throw error
         }
         guard let httpResponse = response as? HTTPURLResponse else {
+            if logTransport {
+                CaltopoPersonalAccountConnection.logRequest(method: method, path: path, status: 0, credential: credential)
+            }
             throw CaltopoLiveClientError.httpStatus(0, "Non-HTTP response")
+        }
+        if logTransport {
+            CaltopoPersonalAccountConnection.logRequest(
+                method: method, path: path, status: httpResponse.statusCode, credential: credential)
         }
         guard (200 ..< 300).contains(httpResponse.statusCode)
                 || acceptedStatusCodes.contains(httpResponse.statusCode)
         else {
             throw CaltopoLiveClientError.httpStatus(
                 httpResponse.statusCode,
-                configuration.personalSessionID == nil ? String(decoding: data.prefix(1_024), as: UTF8.self) : "Personal map request failed; check your login and map permissions."
+                CaltopoServerAvailability.message(
+                    status: httpResponse.statusCode,
+                    personal: configuration.authorizesAsPersonalAccount,
+                    timedOut: false)
             )
         }
         return data
@@ -955,5 +1175,29 @@ public actor CaltopoLiveClient {
             return "\(encodedKey)=\(encodedValue)"
         }.joined(separator: "&")
         return Data(body.utf8)
+    }
+}
+
+/// Dedicated network executor so LiveTrack start/point POSTs never wait behind archive/DELETE.
+actor CaltopoNetworkLane {
+    private let session: URLSession
+    private var generation = 0
+
+    init(session: URLSession) {
+        self.session = session
+    }
+
+    func cancelOutstanding() {
+        generation &+= 1
+        // URLSession tasks for this lane's session are cancelled by the client.
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let startGeneration = generation
+        let result = try await session.data(for: request)
+        if startGeneration != generation {
+            throw CancellationError()
+        }
+        return result
     }
 }

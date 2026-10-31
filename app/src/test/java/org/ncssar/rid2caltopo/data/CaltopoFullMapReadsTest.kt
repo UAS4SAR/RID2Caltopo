@@ -3,6 +3,26 @@ package org.ncssar.rid2caltopo.data
 import org.junit.Assert.*
 import org.junit.Test
 
+class CaltopoServerAvailabilityTest {
+    @Test fun loginWordingIsOnlyForUnauthorizedResponses() {
+        assertEquals(
+            "Personal map request failed; check your login and map permissions. Team credentials were not used.",
+            CaltopoServerAvailability.message(401, true, false)
+        )
+        assertEquals(
+            "CalTopo request failed; check your login and map permissions.",
+            CaltopoServerAvailability.message(403, false, false)
+        )
+    }
+
+    @Test fun serverFailuresNameTheStatusAndAskToRetry() {
+        assertEquals("CalTopo server unavailable (HTTP 502), retrying...", CaltopoServerAvailability.message(502, true, false))
+        assertEquals("CalTopo server unavailable (HTTP 504), retrying...", CaltopoServerAvailability.message(504, false, false))
+        assertEquals("CalTopo server unavailable (timed out), retrying...", CaltopoServerAvailability.message(0, true, true))
+        assertFalse(CaltopoServerAvailability.message(404, true, false).contains("login"))
+    }
+}
+
 class CaltopoFullMapReadsTest {
     @Test fun firstReadIsImmediateAndNextReadWaitsNinetySecondsAfterCompletion() {
         val gate = FullMapReadRateGate()
@@ -28,12 +48,13 @@ class CaltopoFullMapReadsTest {
         assertFalse(gate.finish("map-one", "one", 4))
         assertEquals(89_999L, gate.tryBegin("map-one", "two", 4))
     }
-    @Test fun retriesAndDifferentAccountsOnTheSameMapUseTheSameBudget() {
+    @Test fun failedReadDoesNotStartTheCooldown() {
         val gate = FullMapReadRateGate()
-        gate.tryBegin("map-one", "failed-attempt", 0); gate.finish("map-one", "failed-attempt", 100)
-        assertEquals(89_900L, gate.tryBegin("map-one", "retry", 200))
-        assertEquals(89_800L, gate.tryBegin("map-one", "another-account", 300))
-        assertEquals(0L, gate.tryBegin("map-one", "retry", 90_100))
+        assertEquals(0L, gate.tryBegin("map-one", "failed-attempt", 0))
+        assertTrue(gate.finish("map-one", "failed-attempt", 100, false))
+        assertEquals(0L, gate.tryBegin("map-one", "retry", 200))
+        assertTrue(gate.finish("map-one", "retry", 200))
+        assertEquals(89_900L, gate.tryBegin("map-one", "another-account", 300))
     }
     @Test fun monotonicClockRollbackNeverShortensTheCooldown() {
         val gate = FullMapReadRateGate()

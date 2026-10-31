@@ -156,10 +156,10 @@ internal class DroneAltitudeCoordinator(
                 if (_consumerCount.value > 0) droneStates.keys.toList().forEach { recomputeDisplayState(it) }
             }
         }
-        // Prewarm DEM cache proactively at ViewModel creation — same work MapPane used to do,
-        // now done once regardless of which view is open first.
+        // dem_point index + GeoTIFF catalog must be ready for AGL/AOL/clue projection before
+        // SplitMapPane opens. Never run this on Main; never wait on bulk Archive Dir hydration.
         scope.launch(Dispatchers.IO) {
-            try { demElevationService.prewarm() } catch (_: Exception) { }
+            try { demElevationService.warmCatalogAndIndex() } catch (_: Exception) { }
         }
 
         // Register / unregister LocalTrackListener on the 0 ↔ 1 consumer-count boundary.

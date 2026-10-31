@@ -88,6 +88,9 @@ class R2CApplication : Application() {
         org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.titleFailureLog = { message ->
             CaltopoClient.CTWarn("CaltopoPersonalAccount", message)
         }
+        org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.authLog = { message ->
+            android.util.Log.i(org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.AUTH_LOG_TAG, message)
+        }
         if (personalMode == org.ncssar.rid2caltopo.data.CaltopoPersonalLoginMode.CREDENTIALS) {
             runCatching { org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.status("caltopo.com") }
         }
@@ -105,6 +108,7 @@ class R2CApplication : Application() {
 
         initializeCrashlyticsProbe()
         org.ncssar.rid2caltopo.storage.OperationalStorage.start(this)
+        org.ncssar.rid2caltopo.storage.ClueTrackDurabilityIntegrity.runAtStartup(this)
         TrackerEnrollmentClient.retryManagedConfigurationBootstrap(this)
         FaaConfigManager.refreshIfNeededOnStartup(this)
         AirspaceCenter.initialize(this)

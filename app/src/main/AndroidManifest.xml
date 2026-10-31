@@ -51,6 +51,19 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.RID2Caltopo" >
         <activity android:name=".mapping.MappingSurfaceViewActivity" android:exported="false" android:theme="@style/Theme.AppCompat.DayNight.NoActionBar" />
+        <activity
+            android:name=".app.CaltopoPersonalAuthActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="rid2caltopo" android:host="caltopo-return" />
+            </intent-filter>
+        </activity>
         <meta-data android:name="com.google.android.gms.ads.AD_ID_DELIVERY" android:value="exclude_all" />
         <meta-data android:name="google_analytics_adid_collection_enabled" android:value="false" />
         <!-- Prefetch the permissionless scanner still used by RID aircraft mapping. -->
@@ -153,6 +166,10 @@
             android:stopWithTask="true"
             android:foregroundServiceType="dataSync" />
         <service
+            android:name=".app.CaltopoPersonalAuthService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <service
             android:name="com.google.firebase.sessions.SessionLifecycleService"
             tools:node="remove" />
         <provider
@@ -170,6 +187,9 @@
         <provider android:authorities="com.google.android.apps.docs.storage" />
         <intent>
             <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+        </intent>
+        <intent>
+            <action android:name="android.support.customtabs.action.CustomTabsService" />
         </intent>
         <package android:name="com.google.android.apps.docs" />
     </queries>

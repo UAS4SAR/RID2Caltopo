@@ -626,6 +626,26 @@ class TrackerPeerCoordinatorTest {
     }
 
     @Test
+    fun confirmationSavedBeforeCoordinatorStart_isReplayedAndPublishes() {
+        CaltopoClient.SaveDroneSpecConfirmation(
+            "DRONE1", "NCSSAR", "DJI Mini 4 Pro", "1sar7", "1sar7DjMn4Pr"
+        )
+
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+        val drone = CaltopoClient.GetDroneSpec("DRONE1")
+        assertTrue(drone != null)
+        val track = FakeLiveTrack("DRONE1")
+        coordinator.onLiveTrackCreated(track, drone!!, 50.0, 1234L)
+        coordinator.handleOwnerAssignedForTesting("DRONE1", "zone-alpha", 1L)
+
+        assertTrue(track.localOwnerFlag)
+        assertTrue(coordinator.isLocalAlertEligible("DRONE1"))
+        assertTrue(transport.sentMessages.map { JSONObject(it) }.any {
+            it.optString("type") == "drone_confirmed" && it.optString("remoteId") == "DRONE1"
+        })
+    }
+
+    @Test
     fun localSaveBeforeLiveTrackCreated_publishesWhenTrackStarts() {
         coordinator.start("MAP1", "zone-alpha", "Alpha", null)
 

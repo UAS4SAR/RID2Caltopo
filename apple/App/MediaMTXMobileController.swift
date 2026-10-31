@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import Darwin
 import MediaMTXMobile
 import R2CCore
 
@@ -71,6 +72,8 @@ actor MediaMTXMobileController: MediaServerController {
 
     func stop() async {
         guard running else { return }
+        // Close the log pipe first so forwardLogLines exits, then clear the callback
+        // before releasing the Unmanaged retain (callback invokes retain themselves).
         R2CMediaMTXStop()
         R2CMediaMTXSetLogCallback(nil, 0)
         retainedSelf?.release()
@@ -118,6 +121,10 @@ actor MediaMTXMobileController: MediaServerController {
         else { finalizationTokens[path] = tokens }
     }
 
+    func pendingFinalizationCount() -> Int {
+        finalizationTokens.values.reduce(0) { $0 + $1.count }
+    }
+
     func discardPendingRecordingEvents() {
         for token in finalizationTokens.values.flatMap({ $0 }) {
             RecordingFinalizationActivity.shared.finish(token)
@@ -131,12 +138,15 @@ private func mediaMTXSwiftLogCallback(
     line: UnsafePointer<CChar>?
 ) {
     guard context != 0, let line, let pointer = UnsafeRawPointer(bitPattern: context) else { return }
-    let controller = Unmanaged<MediaMTXMobileController>
-        .fromOpaque(pointer)
-        .takeUnretainedValue()
+    // Retain across the hop: stop() may release the start-time retain while this
+    // callback is still between Go's unlocked invoke and the actor Task.
+    let unmanaged = Unmanaged<MediaMTXMobileController>.fromOpaque(pointer)
+    unmanaged.retain()
+    let controller = unmanaged.takeUnretainedValue()
     let logLine = String(cString: line)
     Task {
         await controller.receive(logLine: logLine)
+        unmanaged.release()
     }
 }
 
@@ -177,28 +187,37 @@ final class MediaMTXViewModel: ObservableObject {
                         await storageControl.perform { AppleFlightStorage.protect(AppleFlightStorage.dayName(date), owner: storageOwner) }
                     }
                     defer { storageControl.enqueue { AppleFlightStorage.release(owner: storageOwner) } }
-                    let localizedEvent = await Task.detached(priority: .utility) { Self.localizeCompletedRecordingIfNeeded(event) }.value
-                    let deliveredEvent = await Self.normalizeCompletedRecordingIfNeeded(localizedEvent)
-                    eventHandler?(deliveredEvent)
-                    switch deliveredEvent {
+                    // Deliver publisher lifecycle immediately. Recording normalize is slow
+                    // and must not block streamStopped / path-destroy delivery (which keeps
+                    // the UI stuck on Publishing and drives HLS 404 reconnect loops).
+                    let localizedEvent = await Task.detached(priority: .utility) {
+                        Self.localizeCompletedRecordingIfNeeded(event)
+                    }.value
+                    switch localizedEvent {
                     case let .serverStarted(version):
                         AppleStreamsServerStatus.shared.version = version
                         AppleStreamsServerStatus.shared.startedAt = Date()
                         status = "Running \(version)"
+                        eventHandler?(localizedEvent)
                     case let .streamStarted(path, _):
                         activePublisherPaths.insert(path)
                         status = "Streaming \(path)"
+                        eventHandler?(localizedEvent)
                     case let .streamStopped(path, _):
                         activePublisherPaths.remove(path)
                         status = "Stopped stream \(path)"
+                        eventHandler?(localizedEvent)
                     case let .streamError(path, _, detail):
                         if let path { activePublisherPaths.remove(path) }
                         status = "Error \(path ?? "stream"): \(detail)"
+                        eventHandler?(localizedEvent)
                     case let .recordFileCompleted(path, filePath, _):
                         status = "Recorded \(path)"
                         AppleLog.info("MediaMTX", "Recording file complete path=\(filePath)")
+                        let deliveredEvent = await Self.normalizeCompletedRecordingIfNeeded(localizedEvent)
+                        eventHandler?(deliveredEvent)
                     default:
-                        break
+                        eventHandler?(localizedEvent)
                     }
                 }
             }
@@ -404,13 +423,24 @@ final class MediaMTXViewModel: ObservableObject {
         }
     }
 
+    /// Quit-time bound for finishing in-flight localize/normalize. Unfinished
+    /// recordings remain on disk and are recoverable on the next launch.
+    private static let quitRecordingDrainTimeoutSeconds: TimeInterval = 5
+
     func shutdown() async {
         storageControl.enqueue { AppleFlightStorage.stopObserving() }
+        AppleFlightStorage.cancelPendingMaintenance()
         healthCheckTask?.cancel()
         healthCheckTask = nil
+
+        // Stop the native server first so no new publishers/recordings start, but keep
+        // the event loop briefly so buffered recordFileCompleted work can finish.
+        await controller.stop()
+        await drainRecordingFinalizers(timeoutSeconds: Self.quitRecordingDrainTimeoutSeconds)
+
         eventTask?.cancel()
         eventTask = nil
-        await controller.stop()
+        // Remaining tokens / un-normalized files are left recoverable for next launch.
         await controller.discardPendingRecordingEvents()
         await storageControl.perform {
             AppleFlightStorage.release(owner: "recorder")
@@ -423,6 +453,23 @@ final class MediaMTXViewModel: ObservableObject {
         isRunning = false
         AppleStreamsServerStatus.shared.startedAt = nil
         status = "Stopped"
+    }
+
+    /// Wait briefly for outstanding recording finalizers. Never unbounded — quit and
+    /// durable track/clue work must not wait on MediaMTX normalize.
+    private func drainRecordingFinalizers(timeoutSeconds: TimeInterval) async {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            let controllerPending = await controller.pendingFinalizationCount()
+            if controllerPending == 0 && !RecordingFinalizationActivity.shared.hasPending {
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        AppleLog.warning(
+            "MediaMTX",
+            "Quit recording drain timed out after \(Int(timeoutSeconds))s; leaving recordings recoverable on next launch"
+        )
     }
 
     func restart(captureStreams: Bool) {
@@ -476,15 +523,42 @@ final class MediaMTXViewModel: ObservableObject {
     }
     #endif
 
-    private static func localListenerAvailable() async -> Bool {
-        guard let url = URL(string: "http://127.0.0.1:8888/") else { return false }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 2
-        do {
-            let (_, response) = try await URLSession.shared.data(for: request)
-            return response is HTTPURLResponse
-        } catch {
-            return false
+    /// Probe the RTMP ingest listener, not HLS. Live playback uses RTSP; polling
+    /// `http://127.0.0.1:8888/` only produced 404 spam when nothing needed HLS.
+    /// nonisolated so the DispatchQueue work item is not a @MainActor-isolated closure.
+    private nonisolated static func localListenerAvailable() async -> Bool {
+        await withCheckedContinuation { continuation in
+            let work: @Sendable () -> Void = {
+                let socket = socket(AF_INET, SOCK_STREAM, 0)
+                guard socket >= 0 else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                defer { close(socket) }
+                var addr = sockaddr_in()
+                addr.sin_family = sa_family_t(AF_INET)
+                addr.sin_port = in_port_t(1935).bigEndian
+                addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+                let connectResult: Int32 = withUnsafePointer(to: &addr) {
+                    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { pointer in
+                        // Non-blocking connect with a short poll so health checks stay off HLS.
+                        let flags = fcntl(socket, F_GETFL, 0)
+                        _ = fcntl(socket, F_SETFL, flags | O_NONBLOCK)
+                        let result = connect(socket, pointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+                        if result == 0 { return 0 }
+                        if errno != EINPROGRESS { return -1 }
+                        var pollFD = pollfd(fd: socket, events: Int16(POLLOUT), revents: 0)
+                        let polled = poll(&pollFD, 1, 400)
+                        guard polled > 0 else { return -1 }
+                        var soError: Int32 = 0
+                        var length = socklen_t(MemoryLayout<Int32>.size)
+                        getsockopt(socket, SOL_SOCKET, SO_ERROR, &soError, &length)
+                        return soError == 0 ? 0 : -1
+                    }
+                }
+                continuation.resume(returning: connectResult == 0)
+            }
+            DispatchQueue.global(qos: .utility).async(execute: work)
         }
     }
 

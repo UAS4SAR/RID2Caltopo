@@ -208,22 +208,68 @@ object FlightStorage {
             callback?.run()
         }
     }
-    @JvmStatic @JvmOverloads fun requestCheck(context: Context, force: Boolean = true) = synchronized(stateLock) {
-        forceQueued = forceQueued || force
-        if (checkQueued) return@synchronized
-        checkQueued = true
+
+    /**
+     * Allowance check for app-private writes (clues). Must not wait on Archive Dir
+     * hydration — OperationalStorage already exempts the clues lane; prepareWrite's
+     * storageIo path does not.
+     */
+    @JvmStatic fun prepareAppPrivateWrite(context: Context, incoming: Long) {
+        val needed = synchronized(stateLock) { !initialized || (!captureBlocked && needsDemandCheck(context, incoming)) }
+        if (!needed) return
+        storageMetadata(context) {
+            synchronized(lock) { scanOnWorker(context, false, incoming.coerceAtLeast(0), seedEstimate = true) }
+        }
+        requestCheck(context, true)
+        val callback = synchronized(stateLock) { listener }
+        callback?.run()
+    }
+    private var transientCheckAttempt = 0
+    private var transientRetryQueued = false
+    internal fun isTransientStorageCheckFailure(error: Throwable): Boolean {
+        if (OperationalStorage.isTransientPrepareFailure(error)) return true
+        val message = error.message.orEmpty()
+        return message.contains("Existing operational projection changed during preparation") ||
+            message.contains("Missing file") ||
+            message.contains("is child of") ||
+            message.contains("Archive file is unavailable")
+    }
+    @JvmStatic @JvmOverloads fun requestCheck(context: Context, force: Boolean = true) {
+        synchronized(stateLock) {
+            forceQueued = forceQueued || force
+            if (checkQueued) return
+            checkQueued = true
+        }
         worker.execute {
             val run = synchronized(stateLock) {
-                val force = forceQueued
+                val shouldForce = forceQueued
                 forceQueued = false; checkQueued = false
-                force || !initialized || (!captureBlocked && needsDemandCheck(context))
+                shouldForce || !initialized || (!captureBlocked && needsDemandCheck(context))
             }
             if (run) {
-                try { maintain(context) }
-                catch (error: Exception) {
-                    captureBlocked = true
-                    pressure.value = "Storage could not be checked. Restore archive access or free device space in Manage Storage."
-                    CaltopoClient.CTError("FlightStorage", "Demand cleanup failed", error)
+                try {
+                    maintain(context)
+                    synchronized(stateLock) { transientCheckAttempt = 0 }
+                } catch (error: Exception) {
+                    if (isTransientStorageCheckFailure(error)) {
+                        val attempt = synchronized(stateLock) { transientCheckAttempt++ }
+                        val delayMs = (1_000L shl attempt.coerceAtMost(4)).coerceAtMost(30_000L)
+                        CaltopoClient.CTWarn("FlightStorage",
+                            "Demand cleanup deferred (transient storage race); retry in ${delayMs}ms")
+                        val shouldSchedule = synchronized(stateLock) {
+                            if (transientRetryQueued) false else { transientRetryQueued = true; true }
+                        }
+                        if (shouldSchedule) {
+                            worker.schedule({
+                                synchronized(stateLock) { transientRetryQueued = false }
+                                requestCheck(context, true)
+                            }, delayMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+                        }
+                    } else {
+                        captureBlocked = true
+                        pressure.value = "Storage could not be checked. Restore archive access or free device space in Manage Storage."
+                        CaltopoClient.CTError("FlightStorage", "Demand cleanup failed", error)
+                    }
                 }
                 val callback = synchronized(stateLock) { listener }
                 callback?.run()

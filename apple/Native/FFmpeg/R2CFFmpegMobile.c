@@ -16,6 +16,8 @@
 #include <libavutil/pixfmt.h>
 #include <libavutil/time.h>
 
+#include <CoreFoundation/CoreFoundation.h>
+#include <CoreVideo/CoreVideo.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -163,6 +165,11 @@ static void capture_ffmpeg_log(void *context, int level, const char *format, va_
     }
 }
 
+static enum AVPixelFormat select_video_toolbox_format(
+    AVCodecContext *context,
+    const enum AVPixelFormat *formats
+);
+
 static void set_status(
     R2CFFmpegSession *session,
     R2CFFmpegStatus status,
@@ -200,20 +207,178 @@ static void set_ffmpeg_error(
     set_status(session, R2C_FFMPEG_STATUS_FAILED, detail);
 }
 
-static bool retry_live_decode(R2CFFmpegSession *session, R2CDecodeRecovery *recovery, int error) {
+static bool retry_live_decode(
+    R2CFFmpegSession *session,
+    R2CDecodeRecovery *recovery,
+    AVCodecContext *codec,
+    int error,
+    int packetFlags
+) {
+    int64_t nowMs = av_gettime_relative() / 1000;
+    bool recoverable = error == AVERROR_UNKNOWN || error == AVERROR_INVALIDDATA;
     if (!R2CDecodeRecoveryRetry(recovery, !session->localPlayback,
             R2CFFmpegSessionDecodedFrameCount(session) > 0,
-            error == AVERROR_UNKNOWN || error == AVERROR_INVALIDDATA,
-            av_gettime_relative() / 1000)) return false;
-    /* VideoToolbox marks a malfunction/invalid session for reconfiguration on
-     * the next packet. Keep consuming the existing RTSP connection so it can do
-     * so, rather than adding reconnect, keyframe and buffer-start delays. */
+            recoverable,
+            nowMs)) return false;
+    /* After a hardware-accelerator fault, flush and wait for the next IDR so
+     * VideoToolbox can rebuild its reference chain instead of failing the session
+     * into a multi-second RTSP reopen. */
+    if (codec != NULL && recoverable && !recovery->waitForKeyframe && !recovery->needsDecoderRecreate) {
+        avcodec_flush_buffers(codec);
+        R2CDecodeRecoveryBeginKeyframeWait(recovery, nowMs);
+    }
+    if (recovery->waitForKeyframe && (packetFlags & AV_PKT_FLAG_KEY) == 0) {
+        pthread_mutex_lock(&session->lock);
+        session->decodeRecoveries += 1;
+        snprintf(session->lastDecodeRecovery, sizeof(session->lastDecodeRecovery),
+            "Waiting for H.264 IDR after VideoToolbox fault");
+        pthread_mutex_unlock(&session->lock);
+        return true;
+    }
     pthread_mutex_lock(&session->lock);
     session->decodeRecoveries += 1;
-    snprintf(session->lastDecodeRecovery, sizeof(session->lastDecodeRecovery), "%s",
-        session->lastHardwareError[0] ? session->lastHardwareError : session->lastFFmpegLog);
+    if (recovery->needsDecoderRecreate) {
+        snprintf(session->lastDecodeRecovery, sizeof(session->lastDecodeRecovery),
+            "%s",
+            R2CDecodeRecoveryShouldPreferSoftware(recovery, nowMs)
+                ? "vt-session-reset escalating to software-fallback"
+                : "vt-session-reset");
+    } else {
+        snprintf(session->lastDecodeRecovery, sizeof(session->lastDecodeRecovery), "%s",
+            session->lastHardwareError[0] ? session->lastHardwareError : session->lastFFmpegLog);
+    }
     pthread_mutex_unlock(&session->lock);
     return true;
+}
+
+static enum AVPixelFormat select_software_format(
+    AVCodecContext *context,
+    const enum AVPixelFormat *formats
+) {
+    (void) context;
+    for (const enum AVPixelFormat *format = formats; *format != AV_PIX_FMT_NONE; ++format) {
+        if (*format == AV_PIX_FMT_NV12 || *format == AV_PIX_FMT_YUV420P) return *format;
+    }
+    return formats[0];
+}
+
+static bool open_h264_decoder(
+    AVCodecContext **codecOut,
+    AVBufferRef **hardwareDeviceOut,
+    AVStream *stream,
+    bool preferSoftware,
+    char *detail,
+    int detailCapacity
+) {
+    const AVCodec *decoder = avcodec_find_decoder(stream->codecpar->codec_id);
+    if (decoder == NULL) {
+        snprintf(detail, detailCapacity, "H.264 decoder unavailable");
+        return false;
+    }
+    AVCodecContext *codec = avcodec_alloc_context3(decoder);
+    if (codec == NULL) {
+        snprintf(detail, detailCapacity, "Could not allocate H.264 decoder");
+        return false;
+    }
+    int result = avcodec_parameters_to_context(codec, stream->codecpar);
+    if (result < 0) {
+        avcodec_free_context(&codec);
+        snprintf(detail, detailCapacity, "Decoder configuration failed (%d)", result);
+        return false;
+    }
+    AVBufferRef *hardwareDevice = NULL;
+    if (!preferSoftware) {
+        result = av_hwdevice_ctx_create(
+            &hardwareDevice,
+            AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+            NULL,
+            NULL,
+            0
+        );
+        if (result < 0) {
+            avcodec_free_context(&codec);
+            snprintf(detail, detailCapacity, "VideoToolbox device creation failed (%d)", result);
+            return false;
+        }
+        codec->hw_device_ctx = av_buffer_ref(hardwareDevice);
+        if (codec->hw_device_ctx == NULL) {
+            av_buffer_unref(&hardwareDevice);
+            avcodec_free_context(&codec);
+            snprintf(detail, detailCapacity, "VideoToolbox device reference failed");
+            return false;
+        }
+        codec->get_format = select_video_toolbox_format;
+    } else {
+        codec->get_format = select_software_format;
+    }
+    codec->thread_count = 1;
+    result = avcodec_open2(codec, decoder, NULL);
+    if (result < 0) {
+        av_buffer_unref(&hardwareDevice);
+        avcodec_free_context(&codec);
+        snprintf(detail, detailCapacity, "%s decoder open failed (%d)",
+            preferSoftware ? "Software" : "VideoToolbox", result);
+        return false;
+    }
+    *codecOut = codec;
+    *hardwareDeviceOut = hardwareDevice;
+    return true;
+}
+
+static CVPixelBufferRef cvpixelbuffer_from_software_frame(AVFrame *frame) {
+    if (frame == NULL || frame->width <= 0 || frame->height <= 0) return NULL;
+    OSType pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
+    CVPixelBufferRef buffer = NULL;
+    CFDictionaryRef empty = CFDictionaryCreate(kCFAllocatorDefault, NULL, NULL, 0,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFMutableDictionaryRef attrs = CFDictionaryCreateMutable(kCFAllocatorDefault, 1,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    if (empty != NULL && attrs != NULL) {
+        CFDictionarySetValue(attrs, kCVPixelBufferIOSurfacePropertiesKey, empty);
+    }
+    CVReturn created = CVPixelBufferCreate(
+        kCFAllocatorDefault,
+        frame->width,
+        frame->height,
+        pixelFormat,
+        attrs,
+        &buffer
+    );
+    if (empty) CFRelease(empty);
+    if (attrs) CFRelease(attrs);
+    if (created != kCVReturnSuccess || buffer == NULL) return NULL;
+    CVPixelBufferLockBaseAddress(buffer, 0);
+    uint8_t *yDest = CVPixelBufferGetBaseAddressOfPlane(buffer, 0);
+    uint8_t *uvDest = CVPixelBufferGetBaseAddressOfPlane(buffer, 1);
+    size_t yStride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0);
+    size_t uvStride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 1);
+    if (frame->format == AV_PIX_FMT_NV12) {
+        for (int row = 0; row < frame->height; ++row) {
+            memcpy(yDest + row * yStride, frame->data[0] + row * frame->linesize[0], (size_t) frame->width);
+        }
+        for (int row = 0; row < frame->height / 2; ++row) {
+            memcpy(uvDest + row * uvStride, frame->data[1] + row * frame->linesize[1], (size_t) frame->width);
+        }
+    } else if (frame->format == AV_PIX_FMT_YUV420P) {
+        for (int row = 0; row < frame->height; ++row) {
+            memcpy(yDest + row * yStride, frame->data[0] + row * frame->linesize[0], (size_t) frame->width);
+        }
+        for (int row = 0; row < frame->height / 2; ++row) {
+            uint8_t *dst = uvDest + row * uvStride;
+            const uint8_t *u = frame->data[1] + row * frame->linesize[1];
+            const uint8_t *v = frame->data[2] + row * frame->linesize[2];
+            for (int col = 0; col < frame->width / 2; ++col) {
+                dst[col * 2] = u[col];
+                dst[col * 2 + 1] = v[col];
+            }
+        }
+    } else {
+        CVPixelBufferUnlockBaseAddress(buffer, 0);
+        CVPixelBufferRelease(buffer);
+        return NULL;
+    }
+    CVPixelBufferUnlockBaseAddress(buffer, 0);
+    return buffer;
 }
 
 static int interrupt_callback(void *opaque) {
@@ -232,6 +397,34 @@ static enum AVPixelFormat select_video_toolbox_format(
         }
     }
     return AV_PIX_FMT_NONE;
+}
+
+static bool recreate_live_decoder(
+    R2CFFmpegSession *session,
+    R2CDecodeRecovery *recovery,
+    AVCodecContext **codec,
+    AVBufferRef **hardwareDevice,
+    AVStream *stream
+) {
+    int64_t nowMs = av_gettime_relative() / 1000;
+    bool preferSoftware = R2CDecodeRecoveryShouldPreferSoftware(recovery, nowMs);
+    avcodec_free_context(codec);
+    av_buffer_unref(hardwareDevice);
+    char detail[256] = {0};
+    if (!open_h264_decoder(codec, hardwareDevice, stream, preferSoftware, detail, (int) sizeof(detail))) {
+        set_status(session, R2C_FFMPEG_STATUS_FAILED, detail);
+        return false;
+    }
+    recovery->needsDecoderRecreate = false;
+    R2CDecodeRecoveryBeginKeyframeWait(recovery, nowMs);
+    pthread_mutex_lock(&session->lock);
+    session->decodeRecoveries += 1;
+    snprintf(session->lastDecodeRecovery, sizeof(session->lastDecodeRecovery),
+        "%s", preferSoftware ? "software-fallback" : "vt-session-reset");
+    snprintf(session->detail, sizeof(session->detail),
+        "%s", preferSoftware ? "Software H.264 decoding after VideoToolbox faults" : "VideoToolbox session reset; waiting for IDR");
+    pthread_mutex_unlock(&session->lock);
+    return true;
 }
 
 static bool metadata_key_contains(const char *key, const char *needle) {
@@ -419,44 +612,12 @@ static void *decode_worker(void *opaque) {
     }
     ingest_telemetry_metadata(session, format->metadata);
     ingest_telemetry_metadata(session, stream->metadata);
-    const AVCodec *decoder = avcodec_find_decoder(stream->codecpar->codec_id);
-    if (decoder == NULL) {
-        set_status(session, R2C_FFMPEG_STATUS_FAILED, "H.264 decoder unavailable");
-        goto finished;
-    }
-
-    codec = avcodec_alloc_context3(decoder);
-    if (codec == NULL) {
-        set_status(session, R2C_FFMPEG_STATUS_FAILED, "Could not allocate H.264 decoder");
-        goto finished;
-    }
-    result = avcodec_parameters_to_context(codec, stream->codecpar);
-    if (result < 0) {
-        set_ffmpeg_error(session, "Decoder configuration failed", result);
-        goto finished;
-    }
-    result = av_hwdevice_ctx_create(
-        &hardwareDevice,
-        AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
-        NULL,
-        NULL,
-        0
-    );
-    if (result < 0) {
-        set_ffmpeg_error(session, "VideoToolbox device creation failed", result);
-        goto finished;
-    }
-    codec->hw_device_ctx = av_buffer_ref(hardwareDevice);
-    if (codec->hw_device_ctx == NULL) {
-        set_status(session, R2C_FFMPEG_STATUS_FAILED, "VideoToolbox device reference failed");
-        goto finished;
-    }
-    codec->get_format = select_video_toolbox_format;
-    codec->thread_count = 1;
-    result = avcodec_open2(codec, decoder, NULL);
-    if (result < 0) {
-        set_ffmpeg_error(session, "VideoToolbox decoder open failed", result);
-        goto finished;
+    {
+        char openDetail[256] = {0};
+        if (!open_h264_decoder(&codec, &hardwareDevice, stream, false, openDetail, (int) sizeof(openDetail))) {
+            set_status(session, R2C_FFMPEG_STATUS_FAILED, openDetail);
+            goto finished;
+        }
     }
 
     packet = av_packet_alloc();
@@ -622,6 +783,39 @@ static void *decode_worker(void *opaque) {
         pthread_mutex_lock(&session->lock);
         session->lastHardwareError[0] = '\0';
         pthread_mutex_unlock(&session->lock);
+        if (decodeRecovery.needsDecoderRecreate) {
+            if (!recreate_live_decoder(session, &decodeRecovery, &codec, &hardwareDevice, stream)) {
+                av_packet_unref(packet);
+                break;
+            }
+            av_packet_unref(packet);
+            continue;
+        }
+        if (decodeRecovery.waitForKeyframe && (packetFlags & AV_PKT_FLAG_KEY) == 0) {
+            int64_t nowMs = av_gettime_relative() / 1000;
+            if (!R2CDecodeRecoveryRetry(&decodeRecovery, !session->localPlayback,
+                    R2CFFmpegSessionDecodedFrameCount(session) > 0, true, nowMs)) {
+                set_status(session, R2C_FFMPEG_STATUS_FAILED,
+                    "Timed out waiting for H.264 IDR after decoder reset");
+                av_packet_unref(packet);
+                break;
+            }
+            if (decodeRecovery.needsDecoderRecreate) {
+                if (!recreate_live_decoder(session, &decodeRecovery, &codec, &hardwareDevice, stream)) {
+                    av_packet_unref(packet);
+                    break;
+                }
+                av_packet_unref(packet);
+                continue;
+            }
+            pthread_mutex_lock(&session->lock);
+            session->decodeRecoveries += 1;
+            snprintf(session->lastDecodeRecovery, sizeof(session->lastDecodeRecovery),
+                "Dropping non-IDR packet while resyncing decoder");
+            pthread_mutex_unlock(&session->lock);
+            av_packet_unref(packet);
+            continue;
+        }
         result = avcodec_send_packet(codec, packet);
         av_packet_unref(packet);
         if (result < 0 && result != AVERROR(EAGAIN)) {
@@ -643,7 +837,13 @@ static void *decode_worker(void *opaque) {
                 set_status(session, R2C_FFMPEG_STATUS_CONNECTING, detail);
                 continue;
             }
-            if (retry_live_decode(session, &decodeRecovery, result)) continue;
+            if (retry_live_decode(session, &decodeRecovery, codec, result, packetFlags)) {
+                if (decodeRecovery.needsDecoderRecreate &&
+                    !recreate_live_decoder(session, &decodeRecovery, &codec, &hardwareDevice, stream)) {
+                    break;
+                }
+                continue;
+            }
             set_ffmpeg_error(session, "H.264 packet rejected", result);
             break;
         }
@@ -654,13 +854,27 @@ static void *decode_worker(void *opaque) {
                 break;
             }
             if (result < 0) {
-                if (retry_live_decode(session, &decodeRecovery, result)) break;
-                set_ffmpeg_error(session, "VideoToolbox decode failed", result);
+                if (retry_live_decode(session, &decodeRecovery, codec, result, packetFlags)) {
+                    if (decodeRecovery.needsDecoderRecreate &&
+                        !recreate_live_decoder(session, &decodeRecovery, &codec, &hardwareDevice, stream)) {
+                        goto finished;
+                    }
+                    break;
+                }
+                set_ffmpeg_error(session, "Video decode failed", result);
                 goto finished;
             }
-            if (frame->format != AV_PIX_FMT_VIDEOTOOLBOX || frame->data[3] == NULL) {
-                set_status(session, R2C_FFMPEG_STATUS_FAILED, "Decoder returned a non-VideoToolbox frame");
-                goto finished;
+            CVPixelBufferRef published = NULL;
+            bool releasePublished = false;
+            if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX && frame->data[3] != NULL) {
+                published = (CVPixelBufferRef) frame->data[3];
+            } else {
+                published = cvpixelbuffer_from_software_frame(frame);
+                releasePublished = published != NULL;
+                if (published == NULL) {
+                    set_status(session, R2C_FFMPEG_STATUS_FAILED, "Decoder returned an unsupported frame format");
+                    goto finished;
+                }
             }
             ingest_telemetry_metadata(session, frame->metadata);
             R2CDecodeRecoveryFrameDecoded(&decodeRecovery);
@@ -672,11 +886,8 @@ static void *decode_worker(void *opaque) {
                     (AVRational) {1, 1000000}
                 );
             }
-            publish_frame(
-                session,
-                (CVPixelBufferRef) frame->data[3],
-                ptsMicroseconds
-            );
+            publish_frame(session, published, ptsMicroseconds);
+            if (releasePublished) CVPixelBufferRelease(published);
             av_frame_unref(frame);
         }
     }

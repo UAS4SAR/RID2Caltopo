@@ -6,6 +6,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
@@ -86,30 +87,36 @@ internal fun rememberControllerNetwork(): ControllerNetworkState {
     var state by remember { mutableStateOf(ControllerNetworkState()) }
     DisposableEffect(context, lifecycle) {
         val manager = context.getSystemService(ConnectivityManager::class.java)
-        val handler = Handler(Looper.getMainLooper())
+        val mainHandler = Handler(Looper.getMainLooper())
+        // Connectivity + WiFi SSID probes must not run on Main (SSID lookup can stall).
+        val workerThread = HandlerThread("controller-network").also { it.start() }
+        val workerHandler = Handler(workerThread.looper)
         var active = true
         val lost = mutableSetOf<Network>()
         fun refresh() {
-            handler.post {
-                if (active) {
-                    val candidates = manager.allNetworks.filter { it !in lost }.flatMap { network ->
-                        val caps = manager.getNetworkCapabilities(network)
-                        val wired = caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
-                        val wifi = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
-                        if ((!wired && !wifi) || caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true) {
-                            emptyList()
-                        } else {
-                            manager.getLinkProperties(network)?.linkAddresses.orEmpty().mapNotNull {
-                                val address = it.address
-                                if (address is Inet4Address && !address.isLoopbackAddress &&
-                                    !address.isAnyLocalAddress && !address.isMulticastAddress) {
-                                    address.hostAddress?.let { host -> ControllerEndpoint(host, wired) }
-                                } else null
-                            }
+            workerHandler.post {
+                if (!active) return@post
+                val candidates = manager.allNetworks.filter { it !in lost }.flatMap { network ->
+                    val caps = manager.getNetworkCapabilities(network)
+                    val wired = caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
+                    val wifi = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+                    if ((!wired && !wifi) || caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true) {
+                        emptyList()
+                    } else {
+                        manager.getLinkProperties(network)?.linkAddresses.orEmpty().mapNotNull {
+                            val address = it.address
+                            if (address is Inet4Address && !address.isLoopbackAddress &&
+                                !address.isAnyLocalAddress && !address.isMulticastAddress) {
+                                address.hostAddress?.let { host -> ControllerEndpoint(host, wired) }
+                            } else null
                         }
                     }
-                    state = controllerNetworkState(candidates, runCatching { WiFiScanner.WiFiSSID(context) }.getOrNull())
                 }
+                val next = controllerNetworkState(
+                    candidates,
+                    runCatching { WiFiScanner.WiFiSSID(context) }.getOrNull(),
+                )
+                mainHandler.post { if (active) state = next }
             }
         }
         val callback = object : ConnectivityManager.NetworkCallback() {
@@ -122,25 +129,29 @@ internal fun rememberControllerNetwork(): ControllerNetworkState {
             .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET).build()
-        manager.registerNetworkCallback(request, callback, handler)
+        // Deliver callbacks on the worker — never Main — then hop for Compose state.
+        manager.registerNetworkCallback(request, callback, workerHandler)
         val identityRefresh = object : Runnable {
             override fun run() {
                 if (!active || !lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
                 refresh()
-                handler.postDelayed(this, 3_000)
+                workerHandler.postDelayed(this, 3_000)
             }
         }
         val observer = LifecycleEventObserver { _, _ ->
-            handler.removeCallbacks(identityRefresh)
-            if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) handler.post(identityRefresh)
+            workerHandler.removeCallbacks(identityRefresh)
+            if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                workerHandler.post(identityRefresh)
+            }
         }
         lifecycle.addObserver(observer)
         refresh()
         onDispose {
             active = false
             lifecycle.removeObserver(observer)
-            handler.removeCallbacks(identityRefresh)
+            workerHandler.removeCallbacks(identityRefresh)
             manager.unregisterNetworkCallback(callback)
+            workerThread.quitSafely()
         }
     }
     return state

@@ -24,12 +24,13 @@ final class CaltopoFullMapReadsTests: XCTestCase {
         XCTAssertEqual(one, 5); XCTAssertEqual(two, 95)
         XCTAssertEqual(clock.delays(), [5, 90])
     }
-    func testFailedAttemptStillConsumesBudget() async throws {
+    func testFailedAttemptDoesNotConsumeBudget() async throws {
         let clock = FullReadClock()
         let limiter = clock.limiter()
         do { let _: Int = try await limiter.perform(mapURL: testMapURL) { throw URLError(.timedOut) }; XCTFail("Expected failure") } catch { }
         let next = try await limiter.perform(mapURL: testMapURL) { clock.now() }
-        XCTAssertEqual(next, 90)
+        XCTAssertEqual(next, 0)
+        XCTAssertEqual(clock.delays(), [])
     }
     func testCancelledWaitNeverDispatchesAndDoesNotHoldGate() async throws {
         let gate = CaltopoFullMapReads()

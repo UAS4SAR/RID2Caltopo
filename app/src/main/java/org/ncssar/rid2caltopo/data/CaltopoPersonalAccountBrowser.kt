@@ -6,20 +6,15 @@
 
 package org.ncssar.rid2caltopo.data
 
-import android.content.Intent
-import android.net.Uri
+import android.content.Context
+import org.ncssar.rid2caltopo.app.CaltopoPersonalAuthActivity
 
 /**
- * Opens CalTopo account activation in the system browser.
- * Google sign-in is not allowed inside this app's embedded WebView.
- * ACTION_VIEW resolves to the user's browser, where Custom Tabs or the
- * browser's own window handles the CalTopo and identity-provider pages.
+ * Opens CalTopo account activation in an Auth Tab. Google sign-in stays in that
+ * Chrome surface, not in this app's embedded WebView.
  */
 object CaltopoPersonalAccountBrowser {
-    fun systemBrowserIntent(activationUrl: String): Intent {
-        require(CaltopoPersonalAccountConnection.isActivationUrl(activationUrl)) {
-            "Refusing to open a page that is not CalTopo account activation."
-        }
-        return Intent(Intent.ACTION_VIEW, Uri.parse(activationUrl)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    fun open(context: Context, activationUrl: String) {
+        context.startActivity(CaltopoPersonalAuthActivity.intent(context, activationUrl))
     }
 }

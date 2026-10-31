@@ -134,7 +134,7 @@ struct CaltopoSettingsView: View {
                 )
                 Button { showingIncidentSelection = true } label: {
                     LabeledContent("Incident", value: OperationalIncidentSelection.name(mapID: settings.mapID,
-                        mapTitle: settings.mapTitle, standaloneName: orgSettings.standaloneIncidentName))
+                        mapTitle: settings.displayMapTitle, standaloneName: orgSettings.standaloneIncidentName))
                 }
                 SettingsTextField(
                     "Operational period",
@@ -192,7 +192,7 @@ struct CaltopoSettingsView: View {
                     Label("No CalTopo map selected", systemImage: "map")
                         .foregroundStyle(.secondary)
                 } else {
-                    SettingsValue("Map / Incident name", value: settings.mapTitle.isEmpty ? "Map name unavailable" : settings.mapTitle)
+                    SettingsValue("Map / Incident name", value: settings.displayMapTitle.isEmpty ? "Map name unavailable" : settings.displayMapTitle)
                 }
                 Button { showingIncidentSelection = true } label: {
                     Label("Select Incident…", systemImage: "map.fill").font(.headline)
@@ -215,13 +215,26 @@ struct CaltopoSettingsView: View {
                 .disabled(settings.personalCredentialBusy || settings.isLoadingPersonalMaps)
                 if settings.personalLoginMode == .credentials {
                     SettingsValue("Account credential", value: settings.personalCredentialSummary)
-                    Button(settings.personalCredentialBusy ? "Waiting for the browser…" : "Sign in") {
-                        Task { await settings.signInWithPersonalCredential() }
+                    Text(CaltopoPersonalAccountConnection.activationPrompt)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button(settings.personalCredentialBusy ? "Waiting for CalTopo…" : "Sign in") {
+                        Task {
+                            if await Task.detached(priority: .userInitiated, operation: {
+                                CaltopoPersonalAccountConnection.shared.reconnect(host: "caltopo.com")
+                            }).value != nil {
+                                await settings.selectStoredPersonalAccount()
+                            } else {
+                                settings.showSyncAccountPrompt = true
+                            }
+                        }
                     }
                     .disabled(settings.personalCredentialBusy)
-                    Button("Log out") { Task { await settings.logOutPersonalCredential() } }
-                        .disabled(settings.personalCredentialBusy)
-                    Text("Log out removes the account credential from this device. The device stays listed on your CalTopo account until you delete it there.")
+                    if settings.personalCredentialSummary != "Not connected" {
+                        Button("Log out") { settings.showPersonalLogOutPrompt = true }
+                            .disabled(settings.personalCredentialBusy)
+                    }
+                    Text("Log out removes the account credential from this device and returns to the team account.")
                         .font(.footnote).foregroundStyle(.secondary)
                     Text("Switching to Session Cookies stops using this credential. A saved browser session is not used while Credentials is selected.")
                         .font(.footnote).foregroundStyle(.secondary)
@@ -547,7 +560,7 @@ struct CaltopoSettingsView: View {
             if connectMapAfterIncidentSelection { connectMapAfterIncidentSelection = false; showingTeamMaps = true }
         }) {
             IncidentSelectionPanel(currentName: OperationalIncidentSelection.name(mapID: settings.mapID,
-                mapTitle: settings.mapTitle, standaloneName: orgSettings.standaloneIncidentName),
+                mapTitle: settings.displayMapTitle, standaloneName: orgSettings.standaloneIncidentName),
                 initialName: orgSettings.standaloneIncidentName,
                 onConnectMap: { connectMapAfterIncidentSelection = true; showingIncidentSelection = false },
                 onUseName: { name in
@@ -556,10 +569,19 @@ struct CaltopoSettingsView: View {
                     showingIncidentSelection = false
                 })
         }
+        .onChange(of: settings.openAccountBrowserAfterCredentialSignIn) { _, open in
+            if open {
+                settings.openAccountBrowserAfterCredentialSignIn = false
+                showingTeamMaps = true
+            }
+        }
+        .caltopoSyncAccountPrompt(settings, presented: !showingTeamMaps)
+        .caltopoLogOutPrompt(settings, presented: !showingTeamMaps)
         .fullScreenCover(isPresented: $showingTeamMaps) {
             CaltopoTeamMapBrowser(settings: settings, onCredentialSelect: { profileID in
                 onSave(settings.disconnectMap())
                 settings.usesPersonalCredentials = profileID == "personal"
+                settings.rememberBrowseProfile(profileID)
                 if profileID != "personal" {
                     Task {
                         _ = await importer.activateProfile(profileID, caltopoSettings: settings, orgSettings: orgSettings)
@@ -983,11 +1005,30 @@ struct CaltopoTeamMapBrowser: View {
     }
 
     private func loadSelectedMaps() async {
-        if settings.usesPersonalCredentials {
-            if settings.personalLoginMode == .credentials {
-                await settings.loadCredentialPersonalMaps()
+        let activeTeam = profiles.activeProfileID
+        let knownTeams = profiles.availableProfiles.map(\.id)
+        if settings.personalLoginMode == .credentials {
+            let personalAvailable = await Task.detached(priority: .utility) {
+                CaltopoPersonalAccountConnection.shared.reconnect(host: "caltopo.com") != nil
+            }.value
+            let target = settings.restoreRememberedBrowseProfile(
+                personalCredentialAvailable: personalAvailable,
+                activeTeamProfileID: activeTeam,
+                knownTeamProfileIDs: knownTeams
+            )
+            if target == MapBrowserProfilePreference.personalProfileID {
+                if personalAvailable {
+                    await settings.loadCredentialPersonalMaps()
+                } else {
+                    settings.fallBackFromMissingPersonalCredential(activeTeamProfileID: activeTeam)
+                    await settings.loadTeamMaps()
+                }
                 return
             }
+            await settings.loadTeamMaps()
+            return
+        }
+        if settings.usesPersonalCredentials {
             let loaded = await settings.loadPersonalMaps()
             guard settings.usesPersonalCredentials else { return }
             if !loaded, settings.personalLoginRequired {
@@ -1054,21 +1095,30 @@ struct CaltopoTeamMapBrowser: View {
             .safeAreaInset(edge: .top) {
                 VStack(alignment: .leading, spacing: 8) {
                     Menu {
-                        Button("Personal: \(settings.personalUsername.isEmpty ? "Sign in" : settings.personalUsername)") {
-                            if settings.personalLoginMode == .credentials {
-                                Task { await settings.signInWithPersonalCredential() }
-                            } else {
+                        if settings.personalLoginMode == .credentials {
+                            Button(settings.storedPersonalMenuName.map { "Personal: \($0)" } ?? "Personal: Log In") {
+                                if settings.storedPersonalMenuName == nil {
+                                    settings.showSyncAccountPrompt = true
+                                } else {
+                                    Task { await settings.selectStoredPersonalAccount() }
+                                }
+                            }
+                            if settings.storedPersonalMenuName != nil {
+                                Button("Personal: Log out", role: .destructive) { settings.showPersonalLogOutPrompt = true }
+                            }
+                        } else {
+                            Button("Personal: \(settings.personalUsername.isEmpty ? "Sign in" : settings.personalUsername)") {
                                 onCredentialSelect?("personal")
                             }
-                        }
-                        if settings.personalLoginMode == .sessionCookies {
                             Button("Edit personal account", systemImage: "pencil") { showWebsite = true }
                         }
                         ForEach(profiles.availableProfiles) { profile in
-                            Button(profile.credentialLabel) { onCredentialSelect?(profile.id) }
+                            Button(settings.personalLoginMode == .credentials ? "Team: \(profile.credentialLabel)" : profile.credentialLabel) {
+                                onCredentialSelect?(profile.id)
+                            }
                         }
                     } label: {
-                        Label("Credentials: \(settings.usesPersonalCredentials ? "Personal: " + settings.personalUsername : profiles.activeCredentialLabel)", systemImage: "person.crop.circle.badge.checkmark")
+                        Label("Credentials: \(settings.usesPersonalCredentials ? "Personal: " + (settings.storedPersonalMenuName ?? settings.personalUsername) : (settings.personalLoginMode == .credentials ? "Team: " : "") + profiles.activeCredentialLabel)", systemImage: "person.crop.circle.badge.checkmark")
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1111,8 +1161,37 @@ struct CaltopoTeamMapBrowser: View {
             }
         }
         .task(id: settings.usesPersonalCredentials ? "personal" : profiles.activeProfileID) {
+            await settings.refreshStoredPersonalName()
             navigationStack = []; search = ""
             await loadSelectedMaps()
+        }
+        .caltopoSyncAccountPrompt(settings, presented: true)
+        .caltopoLogOutPrompt(settings, presented: true)
+    }
+}
+
+private extension View {
+    func caltopoLogOutPrompt(_ settings: AppleCaltopoSettings, presented: Bool) -> some View {
+        confirmationDialog("Log out", isPresented: Binding(
+            get: { presented && settings.showPersonalLogOutPrompt },
+            set: { if !$0 { settings.showPersonalLogOutPrompt = false } }
+        ), titleVisibility: .visible) {
+            Button("Log out", role: .destructive) { Task { await settings.logOutPersonalCredential() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(CaltopoPersonalAccountConnection.logOutPrompt)
+        }
+    }
+
+    func caltopoSyncAccountPrompt(_ settings: AppleCaltopoSettings, presented: Bool) -> some View {
+        confirmationDialog("CalTopo sign-in", isPresented: Binding(
+            get: { presented && settings.showSyncAccountPrompt },
+            set: { if !$0 { settings.showSyncAccountPrompt = false } }
+        ), titleVisibility: .visible) {
+            Button("Continue") { Task { await settings.signInWithPersonalCredential() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(CaltopoPersonalAccountConnection.activationPrompt)
         }
     }
 }
@@ -1846,7 +1925,7 @@ struct AppleSettingsUnitsUIProbe: View {
     @StateObject private var organization = AppleOrgConfigSettings()
     @StateObject private var location = AppleLocationProvider()
     @StateObject private var importer = AppleOrgConfigImporter()
-    @StateObject private var identities = AppleDroneConfirmationStore()
+    @StateObject private var identities = AppleDroneConfirmationStore(snapshot: AircraftMappingSnapshot(records: []))
     @StateObject private var tracks = RIDTrackViewModel()
     @StateObject private var proximity = AppleProximityAlertCenter()
     @StateObject private var bridge = AppleDroneScoutBridgeAlertCenter()

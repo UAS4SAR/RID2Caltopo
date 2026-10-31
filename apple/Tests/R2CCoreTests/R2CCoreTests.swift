@@ -1195,10 +1195,10 @@ func staleR2CDeviceMarkersRequireExplicitOwnershipAndExpiredHeartbeat() throws {
     """#.utf8)
     let snapshot = try CaltopoArtifactDecoder.decode(data: data)
 
-    #expect(snapshot.staleR2CDeviceMarkerIDs(
-        now: Date(timeIntervalSince1970: Double(nowMilliseconds) / 1_000),
-        staleAfter: 180
-    ) == ["stale"])
+    let now = Date(timeIntervalSince1970: Double(nowMilliseconds) / 1_000)
+    #expect(snapshot.staleR2CDeviceMarkerIDs(now: now, staleAfter: 180, ownedBy: "old-guid") == ["stale"])
+    #expect(snapshot.staleR2CDeviceMarkerIDs(now: now, staleAfter: 180, ownedBy: "new-guid") == [])
+    #expect(snapshot.staleR2CDeviceMarkerIDs(now: now, staleAfter: 180, ownedBy: "") == [])
 }
 
 @Test
@@ -1439,6 +1439,7 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
     #expect(bounds.south == 39 && bounds.north == 40)
     #expect(bounds.west == -105 && bounds.east == -104)
     let source = GeoTiffElevationSource(directory: directory)
+    source.warmCatalog()
     #expect(abs((source.sampleElevationMeters(latitude: 39.5, longitude: -104.5) ?? 0) - 250) < 0.001)
     #expect(source.sampleElevationMeters(latitude: 38, longitude: -104.5) == nil)
 }
@@ -1452,8 +1453,21 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
     try makeLZWFloatPredictorGeoTiff().write(to: tile)
 
     let source = GeoTiffElevationSource(directory: directory)
+    source.warmCatalog()
     let elevation = try #require(source.sampleElevationMeters(latitude: 39.5, longitude: -104.5))
     #expect(abs(elevation - 250) < 0.001)
+}
+
+@Test func geoTiffSampleWhileCatalogNotReadyReturnsImmediately() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("r2c-dem-not-ready-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let source = GeoTiffElevationSource(directory: directory)
+    #expect(!source.isCatalogReady)
+    let started = Date()
+    #expect(source.sample(latitude: 39.5, longitude: -104.5) == nil)
+    #expect(Date().timeIntervalSince(started) < 0.5)
 }
 
 @Test func operationalFacilityMapMatchesAndroidQueryParserAndPolicy() throws {
@@ -3108,6 +3122,66 @@ private func proximityDrone(
     #expect(projected.terrainProjectionApplied)
 }
 
+@Test func operationalClueProjectionObliqueGimbalIntersectsRisingSlopedDEM() async {
+    let droneLatitude = 39.0
+    let droneLongitude = -105.0
+    let droneAltitude = 1_050.0
+    let agl = 50.0
+    let projected = await OperationalClueGeometry.projectWithTerrain(
+        droneLatitude: droneLatitude,
+        droneLongitude: droneLongitude,
+        droneAltitudeMeters: droneAltitude,
+        headingDegrees: 0,
+        aglMeters: agl,
+        gimbalAngleDegrees: -30,
+        sampleElevationMeters: { latitude, _ in
+            let northMeters = max(0, (latitude - droneLatitude) * 111_195)
+            return OperationalTerrainSample(
+                elevationMeters: 1_000 + northMeters * 0.5,
+                source: "usgs-geotiff-local-1m",
+                horizontalResolutionMeters: 1
+            )
+        }
+    )
+    let flat = OperationalClueGeometry.project(
+        droneLatitude: droneLatitude,
+        droneLongitude: droneLongitude,
+        droneAltitudeMeters: droneAltitude,
+        headingDegrees: 0,
+        aglMeters: agl,
+        gimbalAngleDegrees: -30
+    )
+    let northMeters = (projected.latitude - droneLatitude) * 111_195
+    let flatNorthMeters = (flat.latitude - droneLatitude) * 111_195
+    #expect(projected.terrainProjectionApplied)
+    #expect(northMeters < flatNorthMeters - 5)
+    #expect(northMeters > 20)
+    #expect((projected.altitudeMeters ?? 0) > 1_000)
+    #expect(projected.flatFallbackReason == nil)
+}
+
+@Test func operationalClueProjectionFlatFallbackUsesKnownDEMGround() {
+    let withDEM = OperationalClueGeometry.project(
+        droneLatitude: 39,
+        droneLongitude: -105,
+        droneAltitudeMeters: 527,
+        headingDegrees: 0,
+        aglMeters: 6.1,
+        gimbalAngleDegrees: -30,
+        knownGroundElevationMeters: 539.1
+    )
+    #expect(withDEM.altitudeMeters == 539.1)
+    let withoutDEM = OperationalClueGeometry.project(
+        droneLatitude: 39,
+        droneLongitude: -105,
+        droneAltitudeMeters: 527,
+        headingDegrees: 0,
+        aglMeters: 6.1,
+        gimbalAngleDegrees: -30
+    )
+    #expect(abs((withoutDEM.altitudeMeters ?? 0) - 520.9) < 1e-9)
+}
+
 @Test func operationalClueProjectionFollowsShallowSightlineAcrossDescendingTerrain() async {
     let projected = await OperationalClueGeometry.projectWithTerrain(
         droneLatitude: 39,
@@ -3681,6 +3755,7 @@ private func proximityDrone(
 
     policy.nativeDecoderFailed(decodedFramesThisAttempt: 0)
     #expect(policy.requiresHLSFallback)
+    #expect(!policy.publisherPathAbsent)
 
     // Frames decoded by the HLS backend must not make the next recovery retry
     // the already-incompatible native backend.
@@ -3694,6 +3769,18 @@ private func proximityDrone(
     var policy = LiveVideoDecoderSelectionPolicy()
 
     policy.nativeDecoderFailed(decodedFramesThisAttempt: 42)
+    #expect(!policy.requiresHLSFallback)
+    #expect(!policy.publisherPathAbsent)
+}
+
+@Test func liveVideoDecoderSelectionWaitsWhenPublisherPathIsAbsent() {
+    var policy = LiveVideoDecoderSelectionPolicy()
+
+    policy.nativeDecoderFailed(
+        decodedFramesThisAttempt: 0,
+        detail: "RTSP open failed: Server returned 404 Not Found (-875574520)"
+    )
+    #expect(policy.publisherPathAbsent)
     #expect(!policy.requiresHLSFallback)
 }
 
@@ -4661,6 +4748,51 @@ private func proximityDrone(
         credentialSecretBase64: "c2VjcmV0"
     )
     #expect(signature == "4c5G2oSEYaecJyf81tFERXDlcClrG4EZZPYWysPN+4Q=")
+}
+
+@Test func signedPersonalPointReportStaysAnUnsignedConnectKeyGet() async throws {
+    let client = try CaltopoLiveClient(configuration: CaltopoLiveConfiguration(
+        domainAndPort: "caltopo.com",
+        mapID: "4J0LF02",
+        credentialID: "cred12345678",
+        credentialSecretBase64: "c2VjcmV0",
+        connectKey: "NCSSAR-UAS",
+        personalAccountID: "USER01",
+        personalSignedAccount: true
+    ))
+    let observation = RidObservation(
+        source: .bluetoothLegacy,
+        aircraftId: "RID01",
+        receivedAt: Date(timeIntervalSince1970: 1_700_000_000),
+        latitude: 39.7392,
+        longitude: -104.9903,
+        altitudeMeters: 1_600.8
+    )
+    let request = try await client.makePointRequest(remoteID: "RID01", observation: observation)
+    let url = try #require(request.url)
+    let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+    #expect(request.httpMethod == "GET")
+    #expect(components.path == "/api/v1/position/report/NCSSAR-UAS")
+    let values = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+    #expect(values["id"] == "RID01")
+    #expect(values["expires"] == nil)
+    #expect(values["signature"] == nil)
+    #expect(request.value(forHTTPHeaderField: "Cookie") == nil)
+}
+
+@Test func liveTrackStopIsReservedOnceUntilReleased() async throws {
+    let client = try CaltopoLiveClient(configuration: CaltopoLiveConfiguration(
+        domainAndPort: "caltopo.com",
+        mapID: "4J0LF02",
+        credentialID: "cred12345678",
+        credentialSecretBase64: "c2VjcmV0",
+        personalAccountID: "USER01",
+        personalSignedAccount: true
+    ))
+    #expect(await client.reserveLiveTrackStop(liveTrackID: "CC1A8356"))
+    #expect(await client.reserveLiveTrackStop(liveTrackID: "cc1a8356") == false)
+    await client.releaseLiveTrackStop(liveTrackID: "cc1a8356")
+    #expect(await client.reserveLiveTrackStop(liveTrackID: "cc1a8356"))
 }
 
 @Test func caltopoPointRequestMatchesAndroidPositionEndpoint() async throws {
@@ -6296,6 +6428,84 @@ private func writeInt32(_ value: Int32, into bytes: inout [UInt8], at offset: In
     try await relaunchedProcess.remove(liveTrackID: "live-recovery")
     let afterSuccessfulRecovery = CaltopoInterruptedPublicationJournal(fileURL: fileURL)
     #expect(await afterSuccessfulRecovery.entries(mapID: "map-a").isEmpty)
+}
+
+@Test func applePublisherFinishesOwnedLiveTracksBeforeDisconnectingMap() throws {
+    let appleRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let publisher = try String(
+        contentsOf: appleRoot.appendingPathComponent("App/AppleCaltopoPublisher.swift"),
+        encoding: .utf8
+    )
+    #expect(publisher.contains("finishOwnedLiveTracksForDisconnect"))
+    #expect(publisher.contains("disconnectFinishTimeout"))
+    #expect(publisher.contains("finishOwnedLiveTracksForDisconnect(timeout:"))
+    let contentView = try String(
+        contentsOf: appleRoot.appendingPathComponent("App/ContentView.swift"),
+        encoding: .utf8
+    )
+    #expect(contentView.contains("configureCaltopoAwaiting"))
+    #expect(contentView.contains("caltopoSettings.disconnectMap()"))
+    // Map Options Disconnect must not await finish on MainActor (ANR/hang risk).
+    #expect(contentView.contains("applyCaltopoConfiguration(caltopoSettings.disconnectMap())"))
+    let viewModel = try String(
+        contentsOf: appleRoot.appendingPathComponent("App/RIDTrackViewModel.swift"),
+        encoding: .utf8
+    )
+    #expect(viewModel.contains("mapDisconnectProgress"))
+    #expect(viewModel.contains("Never await the publisher on MainActor"))
+}
+
+@Test func disconnectThenFlightEndsOfflineLeavesExactlyOnePendingFinishForReconnect() async throws {
+    // Offline fallback after disconnect finish fails: journal the LiveTrack so
+    // reconnect recovery converts it once. Matches Android's unreachable path.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let fileURL = root.appendingPathComponent("caltopo-interrupted-publications.json")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let liveTrackID = "487badd1-10d0-4c05-b41f-dc62b2fd2c06"
+    let observation = RidObservation(
+        source: .bluetoothLegacy,
+        aircraftId: "RID-OFFLINE-END",
+        receivedAt: Date(timeIntervalSince1970: 1_793_383_602),
+        latitude: 39.153080,
+        longitude: -121.132828,
+        altitudeMeters: 527
+    )
+    let disconnectCheckpoint = CaltopoInterruptedPublication(
+        mapID: "4J0LF02",
+        remoteID: "RID-OFFLINE-END",
+        liveTrackID: liveTrackID,
+        label: "1sar7DjMn4Pr_110642Oct30",
+        observations: [observation]
+    )
+    let journal = CaltopoInterruptedPublicationJournal(fileURL: fileURL)
+    try await journal.upsert(disconnectCheckpoint)
+
+    // Flight-end while disconnected upserts the same LiveTrack id (owner only).
+    let finished = CaltopoInterruptedPublication(
+        mapID: "4J0LF02",
+        remoteID: "RID-OFFLINE-END",
+        liveTrackID: liveTrackID,
+        label: "1sar7DjMn4Pr_110642Oct30",
+        description: "flight ended offline",
+        observations: [observation]
+    )
+    try await journal.upsert(finished)
+
+    let pending = await journal.entries(mapID: "4J0LF02")
+    #expect(pending.count == 1)
+    #expect(pending[0].liveTrackID == liveTrackID)
+    #expect(pending[0].description == "flight ended offline")
+
+    // Reconnect recovery clears the entry once after a successful archive.
+    try await journal.remove(liveTrackID: liveTrackID)
+    #expect(await journal.entries(mapID: "4J0LF02").isEmpty)
+    // A second cleanup is a no-op.
+    try await journal.remove(liveTrackID: liveTrackID)
+    #expect(await journal.entries(mapID: "4J0LF02").isEmpty)
 }
 @Test func appleClueCapturePrefersCompleteFreshSEIWithoutRIDAnchoring() throws {
     let appleRoot = URL(fileURLWithPath: #filePath)

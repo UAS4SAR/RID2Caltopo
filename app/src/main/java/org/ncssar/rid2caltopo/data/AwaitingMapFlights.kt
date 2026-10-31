@@ -4,8 +4,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.ncssar.rid2caltopo.app.R2CApplication
 import java.io.File
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 import java.util.UUID
 
 /** Durable per-flight destination choices; only unassigned Publish decisions are offered for review. */
@@ -13,16 +11,15 @@ object AwaitingMapFlights {
     internal fun destinationScope(personalAccountId: String?, teamId: String): String =
         personalAccountId?.trim()?.let { if (it.isEmpty()) "" else "personal:$it" } ?: teamId
 
-    @JvmStatic fun selectedPublicationScope(): String {
-        val personal = CaltopoPersonalSession.capture("/")
-        return destinationScope(personal?.accountID, CaltopoClient.GetCaltopoCredentials().teamId.orEmpty())
-    }
+    @JvmStatic fun selectedPublicationScope(): String = CluePublicationIdentity.publicationTeamId()
 
     private var testFile: File? = null
     internal fun useFileForTesting(file: File?) { testFile = file; loaded = false; entries = JSONArray(); lastWrite.clear(); publicationChoices = null; pendingPublicationChoices.clear() }
     private val pendingPublicationChoices = java.util.concurrent.ConcurrentHashMap<String, String>()
     /** A queued first intent must suppress publication until its destination/consent is durable. */
     @JvmStatic fun reservePublication(remote: String, id: String) { pendingPublicationChoices[remote] = id }
+    /** Reserved flight id while the first durable intent write is still in flight; null when none. */
+    @JvmStatic fun reservedPublicationId(remote: String): String? = pendingPublicationChoices[remote]
     private fun intentSaved(remote: String, id: String) { pendingPublicationChoices.remove(remote, id) }
 
     private data class PublicationChoice(val id: String, val map: String, val team: String, val decision: String)
@@ -51,10 +48,9 @@ object AwaitingMapFlights {
     private fun save() {
         val file = file() ?: return
         file.parentFile?.mkdirs()
-        val tmp = File(file.parentFile, file.name + ".tmp")
-        tmp.writeText(entries.toString())
-        Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-        org.ncssar.rid2caltopo.storage.OperationalStorage.retain(file)
+        // .partial + fsync + verify + atomic move — same durability as flight archives.
+        PlainFileSafeWriter.replace(file, entries.toString().toByteArray(Charsets.UTF_8)) { it.isNotEmpty() }
+        org.ncssar.rid2caltopo.storage.OperationalStorage.retainLater(file)
     }
     private fun all() = (0 until entries.length()).mapNotNull { entries.optJSONObject(it) }
 
@@ -75,7 +71,9 @@ object AwaitingMapFlights {
             item.put("points", JSONArray().put(points.get(0)).put(points.get(points.length() - 1)))
         }
         if (finished && item.optString("decision") == "bound" && !item.optBoolean("publicationStarted")) {
-            item.put("decision", "review")
+            // A flight that already had a connected map should publish through the archive,
+            // not wait in the review inbox while that same map is still up.
+            item.put("decision", if (item.optString("map").isNotEmpty()) "publish" else "review")
         }
         if (finished && item.optString("decision") in listOf("bound", "local")) {
             entries = JSONArray(all().filterNot { it.optString("id") == id }); save(); publishChoices(); intentSaved(remote, id); return
@@ -98,11 +96,33 @@ object AwaitingMapFlights {
         }
         val item = choices[remote] ?: return null
         return when {
-            item.map != map || item.team != team -> ""
+            item.map != map || (item.team != team && !CluePublicationIdentity.sameTeam(item.team, team)) -> ""
             item.decision == "bound" -> null
             item.decision == "publish" -> item.id
             else -> ""
         }
+    }
+
+    /**
+     * An in-progress flight that captured an empty-map review intent before the map connected
+     * must bind to the now-connected map when local ownership is granted, so LiveTrack can start
+     * without waiting for the review inbox. Finished review offers stay in the inbox.
+     */
+    @JvmStatic @JvmOverloads @Synchronized fun bindConnectedMapIfOpenReview(
+        remote: String, map: String, team: String = selectedPublicationScope(),
+    ): String? {
+        if (map.isEmpty()) return null
+        load()
+        reservedPublicationId(remote)?.let { return it }
+        val item = all().lastOrNull { it.optString("remote") == remote && !it.optBoolean("finished") } ?: return null
+        if (item.optString("decision") != "review") return null
+        if (item.optString("map").isNotEmpty()) return null
+        item.put("map", map).put("team", team).put("decision", "bound")
+        save()
+        publishChoices()
+        CaltopoClient.CTDebug("AwaitingMapFlights",
+            "Bound open review intent remote=$remote map=$map id=${item.optString("id")}")
+        return item.optString("id").ifEmpty { null }
     }
     @JvmStatic @Synchronized fun notePublication(remote: String, map: String) {
         load()
@@ -124,19 +144,36 @@ object AwaitingMapFlights {
     }
     @Synchronized fun hasEntry(id: String): Boolean { load(); return all().any { it.optString("id") == id } }
     @Synchronized fun pending(): List<JSONObject> { load(); return all().filter { it.optString("decision") == "review" }.map { JSONObject(it.toString()) } }
-    @Synchronized fun decide(id: String, map: String?, team: String) {
-        load()
-        val item = all().firstOrNull { it.optString("id") == id && it.optString("decision") == "review" } ?: return
-        if (map != null) require(map.isNotBlank() && team.isNotBlank())
-        val prior = entries.toString()
-        item.put("decision", if (map == null) "local" else "publish").put("map", map ?: "").put("team", team)
-        try { save() } catch (error: Exception) { entries = JSONArray(prior); throw error }
-        publishChoices()
-        if (map != null) {
+    fun decide(id: String, map: String?, team: String) {
+        val bindItem: JSONObject?
+        val bindOthers: List<JSONObject>?
+        val finishedPublish: JSONObject?
+        synchronized(this) {
+            load()
+            val item = all().firstOrNull { it.optString("id") == id && it.optString("decision") == "review" } ?: return
+            if (map != null) require(map.isNotBlank() && team.isNotBlank())
+            val prior = entries.toString()
+            item.put("decision", if (map == null) "local" else "publish").put("map", map ?: "").put("team", team)
+            try { save() } catch (error: Exception) { entries = JSONArray(prior); throw error }
+            publishChoices()
+            if (map != null) {
+                bindItem = JSONObject(item.toString())
+                bindOthers = all().map { JSONObject(it.toString()) }
+                finishedPublish = if (item.optBoolean("finished")) JSONObject(item.toString()) else null
+            } else {
+                bindItem = null
+                bindOthers = null
+                finishedPublish = null
+            }
+        }
+        // Clue-store / interrupted-journal I/O must not run under the AwaitingMap monitor.
+        if (map != null && bindItem != null && bindOthers != null) {
             val ctxt = R2CApplication.getAppCtxt()
-            if (ctxt != null) org.ncssar.rid2caltopo.video.AndroidClueStore.shared(ctxt).bindAwaitingFlight(
-                JSONObject(item.toString()), all().map { JSONObject(it.toString()) }, map, team)
-            if (item.optBoolean("finished")) queueCompleted(item)
+            if (ctxt != null) {
+                org.ncssar.rid2caltopo.video.AndroidClueStore.shared(ctxt)
+                    .bindAwaitingFlight(bindItem, bindOthers, map, team)
+            }
+            if (finishedPublish != null) queueCompleted(finishedPublish)
         }
     }
     private fun queueCompleted(item: JSONObject) {
@@ -152,15 +189,23 @@ object AwaitingMapFlights {
         CaltopoInterruptedTrackJournal.save(item.optString("map"), item.optString("remote"), id,
             item.optString("label"), "", geometry)
     }
-    @JvmStatic @Synchronized fun reconcile(map: String, team: String) {
-        load()
+    @JvmStatic fun reconcile(map: String, team: String) {
         val ctxt = R2CApplication.getAppCtxt()
-        if (ctxt != null) all().filter { it.optString("decision") in listOf("publish", "published") && it.optString("map") == map && it.optString("team") == team }.forEach {
-            org.ncssar.rid2caltopo.video.AndroidClueStore.shared(ctxt).bindAwaitingFlight(
-                JSONObject(it.toString()), all().map { other -> JSONObject(other.toString()) }, map, team)
+        val bindings = synchronized(this) {
+            load()
+            val others = all().map { JSONObject(it.toString()) }
+            all().filter { it.optString("decision") in listOf("publish", "published") && it.optString("map") == map && it.optString("team") == team }
+                .map { JSONObject(it.toString()) to others }
         }
-        all().filter { it.optString("decision") == "publish" && it.optString("map") == map && it.optString("team") == team && it.optBoolean("finished") }
-            .forEach { queueCompleted(it) }
+        // Clue-store file checks must not run while this journal lock is held.
+        if (ctxt != null) bindings.forEach { (item, others) ->
+            org.ncssar.rid2caltopo.video.AndroidClueStore.shared(ctxt).bindAwaitingFlight(item, others, map, team)
+        }
+        synchronized(this) {
+            load()
+            all().filter { it.optString("decision") == "publish" && it.optString("map") == map && it.optString("team") == team && it.optBoolean("finished") }
+                .forEach { queueCompleted(it) }
+        }
     }
     /** Removes exactly one undecided or local entry. Returns false when nothing matched. */
     @JvmStatic @Synchronized fun discard(id: String): Boolean {

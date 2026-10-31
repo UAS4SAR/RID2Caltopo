@@ -2360,34 +2360,41 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
 
     public static String ReadTextFile(Uri uri) {
         StringBuilder stringBuilder = new StringBuilder();
-        InputStream is;
-        InputStreamReader isr;
-        BufferedReader bufferedReader;
-
         try {
             Context ctxt = R2CApplication.getAppCtxt();
-            ContentResolver resolver  = ctxt.getContentResolver();
-            Cursor cursor = resolver.query(uri, null, null, null, null);
-            if (cursor != null) {
-                // Try reading file metadata to coerce Google Drive to fetch fresh version of
-                // the file, rather than pulling from it's cache.
-                int nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                int sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE);
-                if (cursor.moveToFirst()) {
+            if (ctxt == null) {
+                CTError(TAG, "ReadTextFile(): application context unavailable");
+                return null;
+            }
+            ContentResolver resolver = ctxt.getContentResolver();
+            Cursor cursor = null;
+            try {
+                cursor = resolver.query(uri, null, null, null, null);
+                if (cursor != null && cursor.moveToFirst()) {
+                    // Metadata query coerces Google Drive to fetch a fresh version
+                    // rather than pulling from its cache.
+                    int nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                    int sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE);
                     CTDebug(TAG, String.format(Locale.US, "ReadJsonFile(%s) size:%d bytes...",
-                            cursor.getString(nameIndex), cursor.getLong(sizeIndex)));
+                            nameIndex >= 0 ? cursor.getString(nameIndex) : uri,
+                            sizeIndex >= 0 ? cursor.getLong(sizeIndex) : -1L));
+                }
+            } finally {
+                if (cursor != null) cursor.close();
+            }
+            try (InputStream is = resolver.openInputStream(uri)) {
+                if (is == null) {
+                    CTError(TAG, String.format(Locale.US, "Not able to open '%s'", uri));
+                    return null;
+                }
+                try (InputStreamReader isr = new InputStreamReader(is, StandardCharsets.UTF_8);
+                     BufferedReader bufferedReader = new BufferedReader(isr)) {
+                    String line;
+                    while ((line = bufferedReader.readLine()) != null) {
+                        stringBuilder.append(line).append("\n");
+                    }
                 }
             }
-            is = resolver.openInputStream(uri);
-            isr = new InputStreamReader(is, StandardCharsets.UTF_8);
-            bufferedReader = new BufferedReader(isr);
-            String line;
-            while ((line = bufferedReader.readLine()) != null) {
-                stringBuilder.append(line).append("\n");
-            }
-            bufferedReader.close();
-            isr.close();
-            if (null != is) is.close();
         } catch (IOException e) {
             CTError(TAG, String.format(Locale.US, "Not able to read '%s'", uri), e);
             return null;
@@ -2828,6 +2835,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         Ccstate = new ClientClassState();
         AircraftOrganizationAccess.resetRuntimeState();
         CaltopoPersonalSession.resetRuntimeState();
+        MapBrowserProfilePreference.INSTANCE.clear();
         if (R2CApplication.getAppCtxt() != null) {
             R2CActivity.MyDeviceName = AndroidDeviceIdentity.displayName(
                     R2CApplication.getAppCtxt());
@@ -3021,6 +3029,19 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     public static boolean IsCurrentPeerDroneConfirmed(@NonNull String remoteId) {
         if (RejectNonCanonicalRemoteId("IsCurrentPeerDroneConfirmed()", remoteId)) return false;
         return CurrentPeerConfirmedDroneRemoteIds.contains(remoteId);
+    }
+
+    /** Confirmations saved before the tracker coordinator exists. The caller replays them. */
+    @NonNull
+    public static java.util.List<CtDroneSpec> SnapshotCurrentPeerConfirmedDroneSpecs() {
+        String[] ids = CurrentPeerConfirmedDroneRemoteIds.toArray(new String[0]);
+        java.util.ArrayList<CtDroneSpec> specs = new java.util.ArrayList<>(ids.length);
+        for (String remoteId : ids) {
+            if (!IsCurrentPeerDroneConfirmed(remoteId)) continue;
+            CtDroneSpec spec = GetDroneSpec(remoteId);
+            if (spec != null && !spec.isLocalArchiveOnly()) specs.add(spec);
+        }
+        return specs;
     }
 
     public static void ClearCurrentPeerDroneConfirmation(@NonNull String remoteId) {

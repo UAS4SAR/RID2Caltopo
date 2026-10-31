@@ -571,22 +571,36 @@ fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
     val overlay = viewModel.overlay
     val pendingProfileSwitch = viewModel.pendingProfileSwitch
     val context = androidx.compose.ui.platform.LocalContext.current
+    val overlayScope = rememberCoroutineScope()
     val configPicker = rememberLauncherForActivityResult(FreshOpenDocument()) { uri ->
         if (uri == null) {
             viewModel.onUIEvent(UIEvent.DismissRequested)
         } else {
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+            // SAF + LoadConfigFile are disk/ContentResolver work — never on Main.
+            overlayScope.launch {
+                val outcome = withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.takePersistableUriPermission(
+                            uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        )
+                        CaltopoClient.LoadConfigFile(uri)
+                    }
+                }
+                outcome.fold(
+                    onSuccess = { loaded ->
+                        viewModel.onUIEvent(
+                            if (loaded) UIEvent.ConfigFileLoaded else UIEvent.NotAbleToReadConfigFile
+                        )
+                    },
+                    onFailure = { e ->
+                        CaltopoClient.CTError(
+                            "MapConnectionOverlayHost",
+                            "Config read failed: ",
+                            e as? Exception ?: Exception(e),
+                        )
+                        viewModel.onUIEvent(UIEvent.NotAbleToReadConfigFile)
+                    },
                 )
-                viewModel.onUIEvent(if (CaltopoClient.LoadConfigFile(uri)) {
-                    UIEvent.ConfigFileLoaded
-                } else {
-                    UIEvent.NotAbleToReadConfigFile
-                })
-            } catch (e: Exception) {
-                CaltopoClient.CTError("MapConnectionOverlayHost", "Config read failed: ", e)
-                viewModel.onUIEvent(UIEvent.NotAbleToReadConfigFile)
             }
         }
     }
@@ -624,14 +638,21 @@ fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
                     hasCreds = viewModel.hasCredentials,
                     hasNetwork = viewModel.hasNetwork,
                     onDismiss = { viewModel.onUIEvent(UIEvent.DismissRequested) },
+                    onCancel = { viewModel.cancelMapOpenRetry() },
                     loading = true,
                     connectingToMap = CaltopoMap.GetMapNode() != null,
+                    retryMessage = org.ncssar.rid2caltopo.data.CaltopoMapOpenNotice.text,
                     onAction = { viewModel.onUIEvent(UIEvent.ConnectionRequested) }
                 )
             }
 
             is OverlayState.MapBrowser -> {
-                val nodes = if (org.ncssar.rid2caltopo.data.CaltopoPersonalSession.browsingPersonal) org.ncssar.rid2caltopo.data.CaltopoPersonalSession.maps else viewModel.mapHierarchy?: emptyList()
+                val personalSession = org.ncssar.rid2caltopo.data.CaltopoPersonalSession
+                val nodes = when {
+                    personalSession.catalogLoading -> emptyList()
+                    personalSession.browsingPersonal -> personalSession.maps
+                    else -> viewModel.mapHierarchy ?: emptyList()
+                }
                 // The browser receives the data it needs and bubbles events back up
                 Dialog(
                     onDismissRequest = { viewModel.onUIEvent(UIEvent.DismissRequested) },
@@ -648,7 +669,9 @@ fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
                                 profileOptions = viewModel.mapBrowserProfiles,
                                 selectedProfileId = viewModel.selectedMapBrowserProfileId,
                                 onUIEvent = { viewModel.onUIEvent(it) },
-                                loading = !org.ncssar.rid2caltopo.data.CaltopoPersonalSession.browsingPersonal && viewModel.mapHierarchy == null
+                                loading = personalSession.catalogLoading || (!personalSession.browsingPersonal && viewModel.mapHierarchy == null),
+                                syncPrompt = viewModel.personalSyncPrompt,
+                                onSyncPromptDismiss = { viewModel.dismissPersonalSyncPrompt() }
                             )
                         }
                     }
@@ -658,8 +681,18 @@ fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
             is OverlayState.Management -> {
                 // Type safety: Management only makes sense if a map is selected
                 (connection as? CaltopoConnectionState.MapSelected)?.let { state ->
+                    val personal = !state.map.personalSessionID.isNullOrBlank() ||
+                        org.ncssar.rid2caltopo.data.CaltopoPersonalSession.browsingPersonal
+                    val account = if (personal) {
+                        org.ncssar.rid2caltopo.data.CaltopoPersonalSession.username
+                    } else {
+                        val active = org.ncssar.rid2caltopo.data.CaltopoClient.GetActiveCaltopoProfileId()
+                        viewModel.mapBrowserProfiles.firstOrNull { it.profileId == active }?.label.orEmpty()
+                    }
+                    val title = org.ncssar.rid2caltopo.data.IncidentSelection.displayMapTitle(
+                        state.map.title, org.ncssar.rid2caltopo.data.CaltopoPersonalSession.username)
                     ConnectedOptionsDialog(
-                        mapName = state.map.title,
+                        summary = org.ncssar.rid2caltopo.data.IncidentSelection.mapOptionsText(personal, account, title),
                         onDismiss = { viewModel.onUIEvent(UIEvent.DismissRequested) },
                         onSwitchMap = { viewModel.onUIEvent(UIEvent.SwitchMapRequested) },
                         onDisconnect = { viewModel.onUIEvent(UIEvent.DisconnectRequested) }
@@ -671,6 +704,24 @@ fun MapConnectionOverlayHost(viewModel: R2CViewModel) {
                 ErrorDialog(
                     message = overlay.message,
                     onDismiss = { viewModel.onUIEvent(UIEvent.DismissRequested) }
+                )
+            }
+
+            is OverlayState.Progress -> {
+                AlertDialog(
+                    onDismissRequest = {},
+                    title = { Text("Please wait") },
+                    text = {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(40.dp))
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(overlay.message)
+                        }
+                    },
+                    confirmButton = {}
                 )
             }
 
@@ -740,6 +791,8 @@ fun StandAloneOptionsDialog(
     hasCreds: Boolean,
     onAction: () -> Unit,
     connectingToMap: Boolean = false,
+    retryMessage: String? = null,
+    onCancel: () -> Unit = onDismiss,
     onPersonalReady: () -> Unit = {}
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -747,6 +800,7 @@ fun StandAloneOptionsDialog(
     val credentialsMode = org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.loginMode == org.ncssar.rid2caltopo.data.CaltopoPersonalLoginMode.CREDENTIALS
     val (personalBusy, openPersonal) = rememberPersonalCredentialsAction(onPersonalReady)
     var credentialBusy by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    var showSyncPrompt by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     fun signInWithCredential() {
         credentialBusy = true
         scope.launch {
@@ -774,7 +828,11 @@ fun StandAloneOptionsDialog(
         "Sign in with your personal CalTopo account to choose a map. Teams credentials are optional."
     }
     AlertDialog(
-        onDismissRequest = if (loading) ({}) else onDismiss, // disable dismiss while loading
+        onDismissRequest = when {
+            retryMessage != null || connectingToMap -> onCancel
+            loading -> ({})
+            else -> onDismiss
+        },
         title = { Text(titleText) },
         text = {
             if (loading) {
@@ -785,7 +843,9 @@ fun StandAloneOptionsDialog(
                     CircularProgressIndicator(modifier = Modifier.size(40.dp))
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        if (connectingToMap) {
+                        if (retryMessage != null) {
+                            retryMessage
+                        } else if (connectingToMap) {
                             "Connecting to incident map…"
                         } else if (hasCreds) {
                             "Loading available maps…"
@@ -804,7 +864,7 @@ fun StandAloneOptionsDialog(
         },
         confirmButton = {
             Button(
-                onClick = if (hasCreds) onAction else if (credentialsMode) ::signInWithCredential else openPersonal,
+                onClick = if (hasCreds) onAction else if (credentialsMode) ({ showSyncPrompt = true }) else openPersonal,
                 enabled = !loading && !personalBusy && !credentialBusy && hasNetwork
             ) {
                 Text(if (hasCreds) "Connect" else if (personalBusy || credentialBusy) "Loading personal maps…" else "Personal: Sign in")
@@ -812,7 +872,18 @@ fun StandAloneOptionsDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Stay Offline") }
+            val cancelOpen = retryMessage != null || connectingToMap
+            TextButton(onClick = if (cancelOpen) onCancel else onDismiss) {
+                Text(if (cancelOpen) "Cancel" else "Stay Offline")
+            }
         }
+    )
+    CaltopoSyncAccountPrompt(
+        visible = showSyncPrompt,
+        onContinue = {
+            showSyncPrompt = false
+            signInWithCredential()
+        },
+        onDismiss = { showSyncPrompt = false }
     )
 }

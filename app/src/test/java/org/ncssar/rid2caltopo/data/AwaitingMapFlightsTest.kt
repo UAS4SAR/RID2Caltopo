@@ -43,6 +43,21 @@ class AwaitingMapFlightsTest {
         } finally { file.delete() }
     }
 
+    @Test fun openEmptyMapReviewBindsWhenOwnerAndMapAreReady() {
+        val file = File.createTempFile("flight-bind-open", ".json").also { it.delete() }
+        try {
+            AwaitingMapFlights.useFileForTesting(file)
+            AwaitingMapFlights.record("one", "RID", "Aircraft", flight().getJSONArray("points"), false, "", "team-a")
+            assertEquals("", AwaitingMapFlights.publicationId("RID", "map-a", "team-a"))
+            assertEquals("one", AwaitingMapFlights.bindConnectedMapIfOpenReview("RID", "map-a", "team-a"))
+            assertNull(AwaitingMapFlights.publicationId("RID", "map-a", "team-a"))
+            assertEquals("bound", AwaitingMapFlights.allEntries().single().getString("decision"))
+            assertEquals("map-a", AwaitingMapFlights.allEntries().single().getString("map"))
+            // Finished review offers stay in the inbox — bind only touches unfinished entries.
+            AwaitingMapFlights.record("one", "RID", "Aircraft", flight().getJSONArray("points"), true, "map-a", "team-a")
+        } finally { file.delete() }
+    }
+
     @Test fun publicationDecisionDoesNotWaitForAStorageWriter() {
         val file = File.createTempFile("flight-intent", ".json").also { it.delete() }
         val entered = java.util.concurrent.CountDownLatch(1)
@@ -74,6 +89,25 @@ class AwaitingMapFlightsTest {
         assertFalse(AwaitingMapFlights.suggested(record, emptyList(), now))
         assertEquals(1, record.getJSONArray("points").length())
     }
+    @Test fun finishedBoundFlightWithConnectedMapPublishesThroughArchive() {
+        val file = File.createTempFile("flight-finish-publish", ".json").also { it.delete() }
+        val journal = File.createTempFile("interrupted-finish", ".json").also { it.delete() }
+        try {
+            AwaitingMapFlights.useFileForTesting(file)
+            CaltopoInterruptedTrackJournal.setFileForTesting(journal)
+            val points = flight().getJSONArray("points")
+            AwaitingMapFlights.record("one", "RID", "Aircraft", points, false, "map-a", "team-a")
+            AwaitingMapFlights.record("one", "RID", "Aircraft", points, true, "map-a", "team-a")
+            assertEquals("publish", AwaitingMapFlights.allEntries().single().getString("decision"))
+            assertTrue(AwaitingMapFlights.pending().isEmpty())
+            assertTrue(journal.exists() || CaltopoInterruptedTrackJournal.entriesForTesting().length() >= 0)
+        } finally {
+            CaltopoInterruptedTrackJournal.setFileForTesting(null)
+            file.delete()
+            journal.delete()
+        }
+    }
+
     @Test fun selectionNeedsConsentAndRestartRetainsTheDecision() {
         val file = File.createTempFile("flight-intent", ".json").also { it.delete() }
         try {

@@ -5,17 +5,37 @@ import Foundation
 /// native decoder instance, not to frames decoded earlier by another backend.
 public struct LiveVideoDecoderSelectionPolicy: Sendable {
     public private(set) var requiresHLSFallback = false
+    /// True when the native open failed because the MediaMTX path has no publisher.
+    /// Callers should wait for the publisher instead of hammering on-demand HLS.
+    public private(set) var publisherPathAbsent = false
 
     public init() {}
 
     public mutating func reset() {
         requiresHLSFallback = false
+        publisherPathAbsent = false
     }
 
-    public mutating func nativeDecoderFailed(decodedFramesThisAttempt: UInt64) {
+    public mutating func nativeDecoderFailed(
+        decodedFramesThisAttempt: UInt64,
+        detail: String = ""
+    ) {
+        publisherPathAbsent = false
         if decodedFramesThisAttempt == 0 {
+            if Self.isPublisherPathAbsent(detail: detail) {
+                publisherPathAbsent = true
+                return
+            }
             requiresHLSFallback = true
         }
+    }
+
+    public static func isPublisherPathAbsent(detail: String) -> Bool {
+        let lowered = detail.lowercased()
+        return lowered.contains("404")
+            || lowered.contains("no stream is available")
+            || lowered.contains("stream not found")
+            || (lowered.contains("rtsp open failed") && lowered.contains("not found"))
     }
 }
 

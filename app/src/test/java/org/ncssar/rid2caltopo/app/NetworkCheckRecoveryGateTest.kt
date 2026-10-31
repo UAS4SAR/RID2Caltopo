@@ -2,6 +2,7 @@ package org.ncssar.rid2caltopo.app
 
 import org.junit.Assert.*
 import org.junit.Test
+import org.ncssar.rid2caltopo.data.CaltopoSession
 
 class NetworkCheckRecoveryGateTest {
     @Test fun offlineToOnlineRefreshesOnceDespiteRepeatedCallbacks() {
@@ -16,5 +17,11 @@ class NetworkCheckRecoveryGateTest {
         val gate = NetworkCheckRecoveryGate()
         assertTrue(gate.update(true))
         assertFalse(gate.update(true))
+    }
+
+    @Test fun caltopoHttpTimeoutsAreBoundedForArchiveAndClues() {
+        assertEquals(10, CaltopoSession.HTTP_CONNECT_TIMEOUT_SECONDS)
+        assertEquals(15, CaltopoSession.HTTP_READ_TIMEOUT_SECONDS)
+        assertEquals(15, CaltopoSession.HTTP_CALL_TIMEOUT_SECONDS)
     }
 }

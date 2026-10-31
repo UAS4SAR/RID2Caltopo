@@ -43,4 +43,26 @@ class CaltopoRecoveryWorkTest {
             assertEquals(2, value.get())
         } finally { release.countDown() }
     }
+
+    @Test fun archiveLaneDoesNotBlockLiveTrackStart() {
+        val archiveEntered = CountDownLatch(1)
+        val archiveRelease = CountDownLatch(1)
+        val startRan = CountDownLatch(1)
+        try {
+            CaltopoRecoveryWork.executeArchive {
+                archiveEntered.countDown()
+                archiveRelease.await(5, TimeUnit.SECONDS)
+            }
+            assertTrue(archiveEntered.await(2, TimeUnit.SECONDS))
+            CaltopoRecoveryWork.executeStart { startRan.countDown() }
+            assertTrue(
+                "LiveTrack start stayed queued behind a stalled archive",
+                startRan.await(2, TimeUnit.SECONDS),
+            )
+        } finally {
+            archiveRelease.countDown()
+            CaltopoRecoveryWork.startWorker.submit {}.get(2, TimeUnit.SECONDS)
+            CaltopoRecoveryWork.archiveWorker.submit {}.get(2, TimeUnit.SECONDS)
+        }
+    }
 }

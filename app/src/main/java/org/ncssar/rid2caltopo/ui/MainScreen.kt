@@ -940,20 +940,35 @@ fun MainScreen(
                 }
                 ImportConfigFileKind.JSON_CONFIG -> {
                     CTDebug(tag, "importConfigFileLauncher(): routing '$displayName' ($mimeType) to JSON loader")
-                    try {
-                        context.contentResolver.takePersistableUriPermission(
-                            uri,
-                            Intent.FLAG_GRANT_READ_URI_PERMISSION
-                        )
-                        if (CaltopoClient.LoadConfigFile(uri)) {
-                            localViewModel.onUIEvent(UIEvent.ConfigFileLoaded)
-                            CaltopoClient.ShowToast("JSON config imported.")
-                        } else {
-                            localViewModel.onUIEvent(UIEvent.NotAbleToReadConfigFile)
+                    // SAF + LoadConfigFile are disk/ContentResolver work — never on Main.
+                    coroutineScope.launch {
+                        val outcome = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            runCatching {
+                                context.contentResolver.takePersistableUriPermission(
+                                    uri,
+                                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                )
+                                CaltopoClient.LoadConfigFile(uri)
+                            }
                         }
-                    } catch (e: Exception) {
-                        CTError(tag, "importConfigFileLauncher(): JSON import failed: ", e)
-                        localViewModel.onUIEvent(UIEvent.NotAbleToReadConfigFile)
+                        outcome.fold(
+                            onSuccess = { loaded ->
+                                if (loaded) {
+                                    localViewModel.onUIEvent(UIEvent.ConfigFileLoaded)
+                                    CaltopoClient.ShowToast("JSON config imported.")
+                                } else {
+                                    localViewModel.onUIEvent(UIEvent.NotAbleToReadConfigFile)
+                                }
+                            },
+                            onFailure = { e ->
+                                CTError(
+                                    tag,
+                                    "importConfigFileLauncher(): JSON import failed: ",
+                                    e as? Exception ?: Exception(e),
+                                )
+                                localViewModel.onUIEvent(UIEvent.NotAbleToReadConfigFile)
+                            },
+                        )
                     }
                     return@rememberLauncherForActivityResult
                 }

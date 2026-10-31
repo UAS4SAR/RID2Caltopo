@@ -12,6 +12,30 @@ class CaltopoPositionReportQueryTest {
     }
 
     @Test
+    fun signedPersonalPositionReportDoesNotConsultTheCookieProbe() {
+        val op = CaltopoOp(null)
+        op.goNaked = true
+        op.positionReport = true
+        op.personalAuthorization = CaltopoPersonalSession.Authorization(
+            CaltopoPersonalAccountConnection.SIGNED_ACCOUNT_GRANT,
+            "4J0LF02",
+        )
+        assertFalse(CaltopoSession.personalCookieRequired(op))
+    }
+
+    @Test
+    fun cookieSessionPositionReportStillUsesThePersonalCookie() {
+        val op = CaltopoOp(null)
+        op.goNaked = true
+        op.positionReport = true
+        op.personalAuthorization = CaltopoPersonalSession.Authorization(
+            "11111111-1111-1111-1111-111111111111",
+            "4J0LF02",
+        )
+        assertTrue(CaltopoSession.personalCookieRequired(op))
+    }
+
+    @Test
     fun positionReportsUseConfiguredConnectKeyWithLegacyFallback() {
         assertEquals(
             "/api/v1/position/report/NCSSAR-UAS",

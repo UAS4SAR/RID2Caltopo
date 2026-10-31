@@ -48,7 +48,9 @@ private func s1mHeader() throws -> Data {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
     try file.write(to: directory.appendingPathComponent("subset.tif"))
-    let sample = try #require(GeoTiffElevationSource(directory: directory).sample(latitude: 39, longitude: -105))
+    let source = GeoTiffElevationSource(directory: directory)
+    source.warmCatalog()
+    let sample = try #require(source.sample(latitude: 39, longitude: -105))
     #expect(abs(sample.elevationMeters - 2812.5) < 0.01)
     #expect(sample.horizontalResolutionMeters == 1)
 }

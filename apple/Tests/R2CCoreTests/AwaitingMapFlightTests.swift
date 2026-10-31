@@ -14,7 +14,7 @@ private func awaitingSample(_ time: TimeInterval = 1_000_000, latitude: Double =
     try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample()], mapID: "", teamID: "team-a", finished: false)
     let id = try #require((await journal.entries).first?.id)
     #expect((await journal.entries)[0].decision == "review")
-    // Connecting a map does not bind or authorize the flight.
+    // Connecting a map via record alone does not bind or authorize the flight.
     try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample(), awaitingSample(1_000_010)], mapID: "map-a", teamID: "team-a", finished: false)
     #expect((await journal.entries)[0].mapID.isEmpty)
     #expect((await journal.entries)[0].decision == "review")
@@ -27,6 +27,24 @@ private func awaitingSample(_ time: TimeInterval = 1_000_000, latitude: Double =
     // Subsequent requests cannot silently retarget an accepted flight.
     try await reopened.decide(id: id, mapID: "map-b", teamID: "team-b")
     #expect((await reopened.entries)[0].mapID == "map-a")
+}
+
+@Test @MainActor func openEmptyMapReviewBindsWhenOwnerAndMapAreReady() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let journal = await AwaitingMapFlightJournal.loaded(fileURL: root.appendingPathComponent("pending.json"))
+    try await journal.record(remoteID: "RID-1", label: "Flight", observations: [awaitingSample()], mapID: "", teamID: "team-a", finished: false)
+    let id = try #require(
+        await journal.bindOpenReviewToConnectedMap(remoteID: "RID-1", mapID: "map-a", teamID: "team-a")
+    )
+    #expect(id == (await journal.entries)[0].id)
+    #expect((await journal.entries)[0].decision == "bound")
+    #expect((await journal.entries)[0].mapID == "map-a")
+    #expect((await journal.entries)[0].teamID == "team-a")
+    // Finished review offers stay unbound by this path.
+    try await journal.record(remoteID: "RID-2", label: "Done", observations: [awaitingSample(2_000_000)], mapID: "", teamID: "team-a", finished: false)
+    try await journal.record(remoteID: "RID-2", label: "Done", observations: [awaitingSample(2_000_000)], mapID: "", teamID: "team-a", finished: true)
+    #expect(try await journal.bindOpenReviewToConnectedMap(remoteID: "RID-2", mapID: "map-a", teamID: "team-a") == nil)
 }
 
 @Test @MainActor func keepLocalAndSeparateFlightConsentSurviveRestart() async throws {

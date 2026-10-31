@@ -30,6 +30,12 @@ public final class RecordingFinalizationActivity: @unchecked Sendable {
         return pending.values.contains { keys.contains($0) }
     }
 
+    /// True while any recording normalize/localize token is outstanding.
+    public var hasPending: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return !pending.isEmpty
+    }
+
     private static func normalize(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased().split(separator: "/").last.map(String.init) ?? ""

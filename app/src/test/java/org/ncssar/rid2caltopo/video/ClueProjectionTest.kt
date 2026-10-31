@@ -263,6 +263,73 @@ class ClueProjectionTest {
     }
 
     @Test
+    fun projectClueLocationWithDemSamples_obliqueGimbalIntersectsRisingSlopedDem() = runBlocking {
+        val droneLat = 39.0
+        val droneLng = -105.0
+        val droneAlt = 1_050.0
+        val agl = 50.0
+        val projection = projectClueLocationWithDemSamples(
+            droneLat = droneLat,
+            droneLng = droneLng,
+            droneAlt = droneAlt,
+            headingDeg = 0.0,
+            aglMeters = agl,
+            gimbalAngleDeg = -30.0,
+            sampleElevationMeters = { lat, _ ->
+                val northMeters = ((lat - droneLat) * 111_195.0).coerceAtLeast(0.0)
+                // Flat under the aircraft at 1000 m, then rises 0.5 m per metre north.
+                DemElevationSample(
+                    elevationMeters = 1_000.0 + northMeters * 0.5,
+                    stale = false,
+                    source = "usgs-geotiff-local-1m",
+                    horizontalResolutionMeters = 1.0,
+                )
+            },
+        )
+        val flat = projectClueLocation(
+            droneLat = droneLat,
+            droneLng = droneLng,
+            droneAlt = droneAlt,
+            headingDeg = 0.0,
+            aglMeters = agl,
+            gimbalAngleDeg = -30.0,
+        )
+        val northMeters = (projection.lat - droneLat) * 111_195.0
+        val flatNorthMeters = (flat.lat - droneLat) * 111_195.0
+        assertTrue(projection.terrainProjectionApplied)
+        assertTrue(
+            "expected rising DEM to shorten the horizontal throw versus flat earth",
+            northMeters < flatNorthMeters - 5.0,
+        )
+        assertTrue("expected intersection well ahead of the aircraft", northMeters > 20.0)
+        assertTrue("expected projected altitude above the flat under-aircraft ground", projection.alt > 1_000.0)
+        assertEquals(null, projection.flatFallbackReason)
+    }
+
+    @Test
+    fun projectClueLocation_flatFallbackUsesKnownDemGroundElevation() {
+        val projection = projectClueLocation(
+            droneLat = 39.0,
+            droneLng = -105.0,
+            droneAlt = 527.0,
+            headingDeg = 0.0,
+            aglMeters = 6.1,
+            gimbalAngleDeg = -30.0,
+            knownGroundElevationMeters = 539.1,
+        )
+        assertEquals(539.1, projection.alt, 1e-9)
+        val withoutDem = projectClueLocation(
+            droneLat = 39.0,
+            droneLng = -105.0,
+            droneAlt = 527.0,
+            headingDeg = 0.0,
+            aglMeters = 6.1,
+            gimbalAngleDeg = -30.0,
+        )
+        assertEquals(520.9, withoutDem.alt, 1e-9)
+    }
+
+    @Test
     fun projectClueLocationWithDemSamples_anchorsSeiRelativeUpAtHomeTerrain() = runBlocking {
         val homeLat = 39.0
         val droneLat = homeLat + (20.0 / 111_195.0)

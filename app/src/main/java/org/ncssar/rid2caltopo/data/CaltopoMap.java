@@ -20,10 +20,8 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.location.Location;
-import android.net.ConnectivityManager;
-import android.net.Network;
-import android.net.NetworkCapabilities;
 import android.os.Bundle;
+import android.os.Looper;
 import android.provider.Settings;
 
 import androidx.annotation.NonNull;
@@ -47,6 +45,9 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
@@ -133,12 +134,25 @@ public class CaltopoMap {
     private static final String LOCAL_DEVICE_COLOR_UNCONFIGURED = "#1976D2";
     private static final long INITIAL_MARKER_POLL_MS = 500L;
     private static final long INITIAL_MARKER_WAIT_MS = 8_000L;
-    private static final long STALE_DEVICE_MARKER_GRACE_MS = 15_000L;
     private static final long MARKER_DELETE_WAIT_MS = 4_000L;
     private static final double AUTO_QUIT_RELOCATION_DISTANCE_METERS = 50.0 * 0.3048;
     private static final float AUTO_QUIT_REQUIRED_ACCURACY_METERS = (float) (25.0 * 0.3048);
     private static final long AUTO_QUIT_FLIGHT_QUIET_MS = 5L * 60L * 1000L;
     private static final long TRACKER_SILENCE_STANDBY_MS = 60L * 1000L;
+    /** Bounded wait for finishing owned LiveTracks before map disconnect / quit. */
+    public static final long DISCONNECT_FINISH_TIMEOUT_MS = 15_000L;
+    private static final ExecutorService DisconnectFinishWorker =
+            Executors.newSingleThreadExecutor(task -> {
+                Thread thread = new Thread(task, "caltopo-disconnect-finish");
+                thread.setDaemon(true);
+                return thread;
+            });
+    private static final AtomicBoolean DisconnectFinishInFlight = new AtomicBoolean(false);
+    /** Completions queued while a finish is already running (e.g. OpenMap after Disconnect). */
+    private static final AtomicReference<Runnable> PendingDisconnectCompletion =
+            new AtomicReference<>();
+    @Nullable private static volatile Consumer<String> disconnectProgressHandler = null;
+    @Nullable private static volatile Runnable pendingClueFlushHandler = null;
     @NonNull private static volatile TimeSource timeSource = System::currentTimeMillis;
     @NonNull private static volatile InactivityDisconnectHandler inactivityDisconnectHandler =
             () -> DisconnectIncidentMapIfInactive("relocation");
@@ -148,6 +162,8 @@ public class CaltopoMap {
 
     // poll the map to see if there are any new r2c peers or user has changed one of our track labels
     private static final DelayedExec MapCheckerDelay = new DelayedExec();
+    private static final DelayedExec ServerRetryDelay = new DelayedExec();
+    private static int serverRetryAttempt = 0;
     private static final DelayedExec InitialMarkerPublishDelay = new DelayedExec();
     private static String FolderId;
     private static volatile String ArchiveFolderId;
@@ -411,26 +427,6 @@ public class CaltopoMap {
         refreshDeviceMarkerIfNeeded();
     }
 
-    private static long getDeviceMarkerStaleAfterMs() {
-        return Math.max(RepeatMapUpdateTimeInSeconds * 2L * 1000L, STALE_DEVICE_MARKER_GRACE_MS);
-    }
-
-    private static long getMarkerLastSeenEpochMs(@Nullable JSONObject properties) {
-        if (properties == null) return 0L;
-        Object rawValue = properties.opt(LOCAL_DEVICE_MARKER_LAST_SEEN_PROP);
-        if (rawValue instanceof Number) {
-            return ((Number) rawValue).longValue();
-        }
-        if (rawValue instanceof String) {
-            try {
-                return Long.parseLong((String) rawValue);
-            } catch (NumberFormatException ignored) {
-                return 0L;
-            }
-        }
-        return 0L;
-    }
-
     private static boolean isManagedR2cMarker(
             @Nullable JSONObject properties,
             @NonNull String expectedTitlePrefix
@@ -545,9 +541,14 @@ public class CaltopoMap {
         if (mapNode != null && MapNode != null && ActiveMapSelection != null &&
                 !ShutdownInProgress && !DisconnectInProgress &&
                 (MapStatus == MapStatusListener.mapStatus.up || MapStatus == MapStatusListener.mapStatus.connecting) &&
-                ActiveMapSelection.matches(mapNode)) return;
+                ActiveMapSelection.matches(mapNode)) {
+            CaltopoPersonalAccountConnection.logState("map open skipped reselect map=" + mapNode.getId()
+                    + " grant=" + CaltopoPersonalAccountConnection.grantKind(mapNode.getPersonalSessionID()));
+            return;
+        }
         if (mapNode != null && mapNode.getPersonalSessionID() != null) {
             if (!CaltopoClient.CanStartMapSession()) {
+                CaltopoPersonalAccountConnection.logState("map open refused map=" + mapNode.getId() + " reason=app-closing");
                 SetMapStatus(MapStatusListener.mapStatus.down, "App is closing. Reopen it before connecting.");
                 return;
             }
@@ -560,20 +561,25 @@ public class CaltopoMap {
             if (MyUUID == null) GetMyUUID();
         }
         if (ShutdownInProgress) {
+            CaltopoPersonalAccountConnection.logState("map open ignored shutdown"
+                    + (mapNode == null ? "" : " map=" + mapNode.getId()));
             CTDebug(TAG, "OpenMap(): ignoring request while shutdown in progress.");
             return;
         }
         DisconnectInProgress = false;
         if (mapNode == null) {
+            CaltopoPersonalAccountConnection.logState("map open reset");
             CTDebug(TAG, "OpenMap(): Map connection reset.");
-            ResetMapConnection(4_000L);
-            MapNode = null;
-            CaltopoPersonalSession.activate(null, "");
-            OperatingProfiles.endAssignment();
-            SetMapStatus(MapStatusListener.mapStatus.down, "Disconnect request.");
+            DisconnectAfterFinishingOwned(DISCONNECT_FINISH_TIMEOUT_MS, null);
             return;
         }
         if (MapNode != null) {
+            if (hasOwnedActivePublications()) {
+                // Finish owned LiveTracks off the UI thread, then open the new map.
+                final CaltopoNode.MapNode target = mapNode;
+                DisconnectAfterFinishingOwned(DISCONNECT_FINISH_TIMEOUT_MS, () -> OpenMap(target));
+                return;
+            }
             // don't wait around for reset operations to complete:
             ResetMapConnection(0);
             SetMapStatus(MapStatusListener.mapStatus.down, "Map switch request.");
@@ -586,6 +592,15 @@ public class CaltopoMap {
 
         SetMapStatus(MapStatusListener.mapStatus.connecting, null);
         try {
+            String grant = mapNode.getPersonalSessionID();
+            String credential = grant == null ? "team"
+                    : (CaltopoPersonalAccountConnection.usesSignedCredential(grant) ? "personal" : "session");
+            String account = "team".equals(credential)
+                    ? (MyCaltopoCredentials == null || MyCaltopoCredentials.teamId == null ? "" : MyCaltopoCredentials.teamId)
+                    : CaltopoPersonalSession.INSTANCE.getAccountID();
+            CaltopoPersonalAccountConnection.logState("map open connecting map=" + mapNode.getId()
+                    + " account=" + account + " credential=" + credential
+                    + " grant=" + CaltopoPersonalAccountConnection.grantKind(grant));
             CTDebug(TAG, String.format(Locale.US, "Connecting to map '%s'(%s)'", MapNode.getTitle(), MapNode.getId()));
             long requestStartedAtMs = timeSource.now();
             long refreshGeneration;
@@ -819,7 +834,200 @@ public class CaltopoMap {
     }
 
 
+    public static void cancelServerRetry() {
+        ServerRetryDelay.stop();
+        serverRetryAttempt = 0;
+        CaltopoMapOpenNotice.clear();
+    }
+
+    public static void setDisconnectProgressHandler(@Nullable Consumer<String> handler) {
+        disconnectProgressHandler = handler;
+    }
+
+    public static void setPendingClueFlushHandler(@Nullable Runnable handler) {
+        pendingClueFlushHandler = handler;
+    }
+
+    public static boolean hasOwnedActivePublications() {
+        for (CaltopoLiveTrack track : new ArrayList<>(liveTracks)) {
+            if (track.hasOwnedActivePublication()) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Finish each owned LiveTrack (archive Shape once), flush pending clues where
+     * possible, then drop the map connection. Bounded; journals on timeout/unreachable
+     * CalTopo and disconnects anyway. Never blocks the main thread.
+     */
+    public static void DisconnectAfterFinishingOwned(
+            long timeoutMs, @Nullable Runnable onComplete) {
+        if (MapStatus == MapStatusListener.mapStatus.down && MapNode == null) {
+            if (onComplete != null) CaltopoRecoveryWork.onMain(onComplete);
+            return;
+        }
+        final String destinationMap = GetMapId();
+        final String destinationFolder = GetArchiveFolderId();
+        final ArrayList<CaltopoLiveTrack> tracks = new ArrayList<>(liveTracks);
+        final boolean needsFinish = hasOwnedActivePublications();
+        final long budgetMs = Math.max(0L, timeoutMs);
+        final Runnable complete = () -> {
+            completeMapDisconnect("Disconnect request.");
+            if (onComplete != null) onComplete.run();
+        };
+        if (!needsFinish) {
+            if (isMainThread()) {
+                DisconnectFinishWorker.execute(() -> {
+                    flushPendingCluesBestEffort();
+                    CaltopoRecoveryWork.onMain(complete);
+                });
+            } else {
+                flushPendingCluesBestEffort();
+                complete.run();
+            }
+            return;
+        }
+        if (!DisconnectFinishInFlight.compareAndSet(false, true)) {
+            CTDebug(TAG, "DisconnectAfterFinishingOwned(): finish already in flight.");
+            // Do not OpenMap / run completion while the first finish still archives —
+            // chain after that worker's disconnect completes.
+            if (onComplete != null) {
+                PendingDisconnectCompletion.updateAndGet(prior -> () -> {
+                    if (prior != null) prior.run();
+                    onComplete.run();
+                });
+            }
+            return;
+        }
+        publishDisconnectProgress("Finishing live track…");
+        DisconnectFinishWorker.execute(() -> {
+            try {
+                finishOwnedTracksOnWorker(tracks, destinationMap, destinationFolder, budgetMs);
+            } finally {
+                DisconnectFinishInFlight.set(false);
+                final Runnable chained = PendingDisconnectCompletion.getAndSet(null);
+                CaltopoRecoveryWork.onMain(() -> {
+                    complete.run();
+                    if (chained != null) chained.run();
+                });
+            }
+        });
+    }
+
+    /** Blocking finish for callers already on a worker (quit / Shutdown). */
+    static void finishOwnedTracksBlocking(long timeoutMs) {
+        if (isMainThread()) {
+            throw new IllegalStateException("finishOwnedTracksBlocking must run off Main");
+        }
+        if (!hasOwnedActivePublications()) {
+            flushPendingCluesBestEffort();
+            return;
+        }
+        publishDisconnectProgress("Finishing live track…");
+        finishOwnedTracksOnWorker(
+                new ArrayList<>(liveTracks), GetMapId(), GetArchiveFolderId(), Math.max(0L, timeoutMs));
+    }
+
+    private static void finishOwnedTracksOnWorker(
+            @NonNull ArrayList<CaltopoLiveTrack> tracks,
+            @Nullable String destinationMap,
+            @Nullable String destinationFolder,
+            long budgetMs) {
+        flushPendingCluesBestEffort();
+        long deadline = System.currentTimeMillis() + budgetMs;
+        for (CaltopoLiveTrack track : tracks) {
+            if (!track.hasOwnedActivePublication()) continue;
+            long remaining = Math.max(0L, deadline - System.currentTimeMillis());
+            try {
+                track.finishOwnedPublicationForDisconnect(remaining, destinationMap, destinationFolder);
+            } catch (Exception e) {
+                CTError(TAG, "finishOwnedTracksOnWorker(): track finish raised", e);
+            }
+        }
+    }
+
+    private static void flushPendingCluesBestEffort() {
+        Runnable flush = pendingClueFlushHandler;
+        if (flush == null) return;
+        try {
+            flush.run();
+        } catch (Exception e) {
+            CTWarn(TAG, "flushPendingCluesBestEffort() raised", e);
+        }
+    }
+
+    /** Internet restored: wake pending clue uploads without blocking the caller. */
+    public static void flushPendingCluesOnInternetRestored() {
+        flushPendingCluesBestEffort();
+    }
+
+    /**
+     * Internet restored: retry interrupted / finished-track Shape archives.
+     * Uses stored map + archive folder even if MapStatus has not flipped to up yet
+     * (validated Internet often precedes the next successful map poll).
+     */
+    public static void recoverInterruptedTracksOnInternetRestored() {
+        CaltopoInterruptedTrackJournal.clearInFlightForConnectivityRestore();
+        String mapId = GetMapId();
+        String archiveFolder = ArchiveFolderId;
+        if (mapId == null || mapId.isEmpty() || archiveFolder == null || archiveFolder.isEmpty()) {
+            CTDebug(TAG, "recoverInterruptedTracksOnInternetRestored(): skip — map/archive folder not ready");
+            return;
+        }
+        if (GetMapStatus() == MapStatusListener.mapStatus.up) {
+            LookForExistingLiveTracks();
+            return;
+        }
+        // Map not yet "up", but folders from the prior session are still known — recover
+        // finished-track journals immediately so a hung offline POST cannot delay them.
+        final R2cRuntime runtime = getCurrentRuntime();
+        final java.util.List<JSONObject> features = GetArtifactFeatureSnapshot();
+        CaltopoRecoveryWork.execute(() -> {
+            try {
+                CaltopoInterruptedTrackJournal.recover(mapId, archiveFolder, runtime, features);
+            } catch (Exception error) {
+                CTWarn(TAG, "Interrupted LiveTrack recovery after reconnect raised", error);
+            }
+        });
+    }
+
+    /** Pending finished-track archives + owned LiveTracks for connectivity-flush logging. */
+    public static int pendingInterruptedArchiveCount() {
+        return CaltopoInterruptedTrackJournal.pendingCount();
+    }
+
+    private static void publishDisconnectProgress(@NonNull String message) {
+        Consumer<String> handler = disconnectProgressHandler;
+        if (handler != null) {
+            CaltopoRecoveryWork.onMain(() -> {
+                try {
+                    handler.accept(message);
+                } catch (Exception e) {
+                    CTWarn(TAG, "disconnectProgressHandler raised", e);
+                }
+            });
+        } else {
+            CaltopoRecoveryWork.onMain(() -> ShowToast(message));
+        }
+    }
+
+    private static void completeMapDisconnect(@NonNull String reason) {
+        CTDebug(TAG, "completeMapDisconnect(): " + reason);
+        ResetMapConnection(0);
+        MapNode = null;
+        ActiveMapSelection = null;
+        CaltopoPersonalSession.activate(null, "");
+        OperatingProfiles.endAssignment();
+        SetMapStatus(MapStatusListener.mapStatus.down, reason);
+    }
+
+    private static boolean isMainThread() {
+        Looper main = Looper.getMainLooper();
+        return main != null && Looper.myLooper() == main;
+    }
+
     public static void ResetMapConnection(long maxWaitInMilliseconds) {
+        cancelServerRetry();
         ActiveMapSelection = null;
         CaltopoOp initial = InitialMapRequest;
         InitialMapRequest = null;
@@ -1071,9 +1279,11 @@ public class CaltopoMap {
                 // No way to delete these runt features w/in the GUI, so we add them to a
                 // list and wait until after we have a folderId and can confirm that the
                 // feature is within either of our directories before deleting.  We don't
-                // delete anything that we didn't create.
+                // delete anything that we didn't create. Markers are never in that list:
+                // a clue marker must not be removed because its title was missing.
                 CTDebug(TAG, "parseMap(): feature missing title.");
-                RogueFeaturesPendingDeletes.add(feature);
+                if (!"Marker".equals(prop.optString("class", ""))) RogueFeaturesPendingDeletes.add(feature);
+                else CTDebug(TAG, "parseMap(): untitled marker left in place id=" + feature.optString("id"));
                 continue;
             }
 
@@ -1395,6 +1605,7 @@ public class CaltopoMap {
                 JSONObject feature = RogueFeaturesPendingDeletes.remove(0);
                 JSONObject prop = feature.optJSONObject("properties");
                 if (null != prop) {
+                    if ("Marker".equals(prop.optString("class", ""))) continue;
                     String featureFolderId = prop.optString("folderId");
                     if (featureFolderId.equals(FolderId) || featureFolderId.equals(ArchiveFolderId)) {
                         // then it's a feature fragment that we created, so we can/should delete it.
@@ -1422,12 +1633,47 @@ public class CaltopoMap {
      * when the app was terminated mid-record).
      * o Create TrackDir and ArchiveDir if they weren't already present.
      */
+    private static void scheduleServerRetry(@NonNull String message) {
+        CaltopoMapOpenNotice.show(message);
+        if (MapStatus != MapStatusListener.mapStatus.connecting) {
+            SetMapStatus(MapStatusListener.mapStatus.connecting, message);
+        }
+        long delay = switch (Math.min(serverRetryAttempt, 3)) {
+            case 0 -> 3_000L;
+            case 1 -> 6_000L;
+            case 2 -> 12_000L;
+            default -> 15_000L;
+        };
+        serverRetryAttempt++;
+        CaltopoPersonalAccountConnection.logState("map open server retry in " + delay + "ms " + message);
+        ServerRetryDelay.start(CaltopoMap::retryCurrentMapOpen, delay, 0L);
+    }
+
+    private static void retryCurrentMapOpen() {
+        if (ShutdownInProgress || DisconnectInProgress || MapNode == null) return;
+        if (MapStatus != MapStatusListener.mapStatus.connecting) return;
+        long requestStartedAtMs = timeSource.now();
+        long refreshGeneration;
+        synchronized (MapRefreshLock) {
+            refreshGeneration = MapRefreshGeneration;
+        }
+        InitialMapRequest = getCurrentRuntime().getCalTopoSessionGateway()
+                .openMapForConnection(MapNode, op -> OpenMapFinished(op, requestStartedAtMs, refreshGeneration));
+    }
+
     private static void OpenMapFinished(CaltopoOp lOpenMapOp,
                                         long requestStartedAtMs,
                                         long refreshGeneration) {
         if (null == MapNode || refreshGeneration != MapRefreshGeneration) return;
         InitialMapRequest = null;
         if (lOpenMapOp.fail()) {
+            if (lOpenMapOp.response != null && lOpenMapOp.response.startsWith("CalTopo server unavailable")) {
+                scheduleServerRetry(lOpenMapOp.response);
+                return;
+            }
+            ServerRetryDelay.stop();
+            serverRetryAttempt = 0;
+            CaltopoMapOpenNotice.clear();
             if (null != lOpenMapOp.response && lOpenMapOp.response.startsWith("<!DOCTYPE html>")) {
                 // Not going to figure this out on our own - write response to a file and open it with a browser:
                 CaltopoClient.OpenBufferContentsInBrowser(lOpenMapOp.response);
@@ -1441,6 +1687,9 @@ public class CaltopoMap {
             SetMapStatus(MapStatusListener.mapStatus.down, "Map could not load. Check your connection and map permissions, then retry.");
             return;
         }
+        ServerRetryDelay.stop();
+        serverRetryAttempt = 0;
+        CaltopoMapOpenNotice.clear();
         recordCaltopoSessionRtt(lOpenMapOp, "openMap");
 
         JSONObject responseJson = lOpenMapOp.responseJson;
@@ -1957,11 +2206,95 @@ public class CaltopoMap {
      */
     @Nullable
     public static String GetFolderId() { return FolderId; }
+
+    /**
+     * Track folder for a clue upload. Map status can be up before this id exists
+     * (a refresh promotes status, and reset clears the id). Lookup or create it
+     * here. Call from a worker: folder creation waits on the CalTopo request.
+     */
+    @Nullable
+    public static String resolveTrackFolderIdForClue() {
+        String existing = GetFolderId();
+        if (existing != null && !existing.isEmpty()) return existing;
+        if (onAndroidUiThread()) {
+            CTWarn(TAG, "resolveTrackFolderIdForClue(): refused on the UI thread");
+            return null;
+        }
+        String found = folderIdInArtifacts(FolderName);
+        if (found != null) {
+            FolderId = found;
+            CTInfo(TAG, "resolveTrackFolderIdForClue(): found existing folder id=" + found);
+            return found;
+        }
+        if (GetMapId().isEmpty()) {
+            CTWarn(TAG, "resolveTrackFolderIdForClue(): map id is blank");
+            return null;
+        }
+        CTInfo(TAG, "resolveTrackFolderIdForClue(): creating '" + FolderName + "'");
+        CaltopoOp created = getCurrentRuntime().getCalTopoSessionGateway()
+                .addFolder(FolderName, true, true, null);
+        if (created == null) {
+            CTWarn(TAG, "resolveTrackFolderIdForClue(): folder create was not started");
+            return null;
+        }
+        try {
+            created.get(30, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception error) {
+            CTWarn(TAG, "resolveTrackFolderIdForClue(): folder create did not finish", error);
+            return blankToNull(GetFolderId());
+        }
+        if (created.fail()) {
+            CTWarn(TAG, "resolveTrackFolderIdForClue(): folder create failed " + created.responseString());
+            return blankToNull(GetFolderId());
+        }
+        String createdId = created.id();
+        if (createdId != null && !createdId.isEmpty() &&
+                (GetFolderId() == null || GetFolderId().isEmpty())) {
+            FolderId = createdId;
+        }
+        String resolved = blankToNull(GetFolderId());
+        if (resolved == null) {
+            CTWarn(TAG, "resolveTrackFolderIdForClue(): folder create returned no id");
+        }
+        return resolved;
+    }
+
+    @Nullable
+    private static String blankToNull(@Nullable String value) {
+        return value == null || value.isEmpty() ? null : value;
+    }
+
+    private static boolean onAndroidUiThread() {
+        Looper main = Looper.getMainLooper();
+        return main != null && main.getThread() == Thread.currentThread();
+    }
+
+    @Nullable
+    private static String folderIdInArtifacts(@Nullable String title) {
+        if (title == null || title.isEmpty()) return null;
+        for (JSONObject feature : GetArtifactFeatureSnapshot()) {
+            JSONObject properties = feature.optJSONObject("properties");
+            if (properties == null) continue;
+            if (!"Folder".equals(properties.optString("class", ""))) continue;
+            if (!title.equals(properties.optString("title", ""))) continue;
+            String id = feature.optString("id", "");
+            if (!id.isEmpty()) return id;
+        }
+        return null;
+    }
     @Nullable
     public static String GetArchiveFolderId() { return ArchiveFolderId; }
 
     public static void Shutdown() {
         try {
+            // Finish owned LiveTracks while the map session is still usable, then
+            // force the map and tracker websocket down so a surviving process cannot
+            // keep a background map connection after quit.
+            try {
+                finishOwnedTracksBlocking(DISCONNECT_FINISH_TIMEOUT_MS);
+            } catch (Exception e) {
+                CTError(TAG, "Shutdown(): finishOwnedTracksBlocking raised", e);
+            }
             ShutdownInProgress = true;
             MapCheckerDelay.stop();
             VerifyTimer.stop();
@@ -1971,11 +2304,11 @@ public class CaltopoMap {
             InitialMarkerPublishPending = false;
             InitialMarkerWaitStartedMs = 0L;
             DeferredExpiredProfileId = null;
-            // Drain active map-owned LiveTracks through the normal archive path
-            // before tearing down the CalTopo session.
-            ResetMapConnection(10_000L);
-            removeMyDeviceMarker(10_000L);
+            // Journal any leftovers; do not wait on network here.
+            ResetMapConnection(0);
+            removeMyDeviceMarker(0);
             MapNode = null;
+            ActiveMapSelection = null;
             OperatingProfiles.endAssignment();
             SessionNodeMap = null;
             SetMapStatus(MapStatusListener.mapStatus.down, "Shutdown in progress.");
@@ -1983,6 +2316,15 @@ public class CaltopoMap {
             getCurrentRuntime().getCalTopoSessionGateway().shutdown();
         } catch (Exception e) {
             CTError(TAG, "Shutdown() raised: " + " (" + e.getClass().getSimpleName() + ")");
+            // Ensure map/tracker cannot remain live after an exception mid-teardown.
+            try {
+                ShutdownInProgress = true;
+                MapCheckerDelay.stop();
+                MapNode = null;
+                ActiveMapSelection = null;
+                SetMapStatus(MapStatusListener.mapStatus.down, "Shutdown in progress.");
+                getCurrentRuntime().getPeerCoordinator().stop();
+            } catch (Exception ignored) { }
         }
     }
 
@@ -2070,11 +2412,94 @@ public class CaltopoMap {
                 if(entry.domain.equals(domain)&&!activeMarkerKeys.contains(entry.key()))deleteJournalMarker(entry);
         }catch(Exception error){CTWarn(TAG,"Marker cleanup journal unavailable; retry retained",error);}
     }
+    /** A write response may name a different feature. Only an id this device published is safe to remove. */
+    static String ownedDeviceMarkerId(@Nullable JSONObject result, @NonNull String deviceId) {
+        if (result == null || deviceId.isEmpty()) return "";
+        String returned = result.optString("id", "");
+        JSONObject properties = result.optJSONObject("properties");
+        String guid = properties == null ? "" : properties.optString(LOCAL_DEVICE_MARKER_GUID_PROP, "");
+        if (!guid.isEmpty() && !deviceId.equals(guid)) return "";
+        if (deviceId.equals(returned)) return returned;
+        if (deviceId.equals(guid) && !returned.isEmpty() && returned.matches("[A-Za-z0-9_-]+")) return returned;
+        return "";
+    }
+    /** Clue photos use the store id. Their media and link ids are name-based UUIDs of that store id. */
+    static boolean clueDerivedMarkerId(@NonNull String markerId, @NonNull String clueId) {
+        if (markerId.isEmpty() || clueId.isEmpty()) return false;
+        if (markerId.equalsIgnoreCase(clueId)) return true;
+        String media = UUID.nameUUIDFromBytes((clueId + ":media").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        String link = UUID.nameUUIDFromBytes((clueId + ":link").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        return markerId.equalsIgnoreCase(media) || markerId.equalsIgnoreCase(link);
+    }
+    static boolean provenOwnDeviceMarker(@NonNull DeviceMarkerJournal.Entry entry, @NonNull String deviceId) {
+        if (deviceId.isEmpty() || entry.marker.isEmpty()) return false;
+        if (deviceId.equals(entry.marker)) return true;
+        return deviceId.equals(entry.deviceGuid);
+    }
+    static final class ClueCleanupIds {
+        final boolean readable;
+        final java.util.List<String> ids;
+        ClueCleanupIds(boolean readable, java.util.List<String> ids) {
+            this.readable = readable;
+            this.ids = ids;
+        }
+    }
+    static java.util.function.Supplier<ClueCleanupIds> clueCleanupIds = CaltopoMap::readClueCleanupIds;
+    private static ClueCleanupIds readClueCleanupIds() {
+        android.content.Context context = org.ncssar.rid2caltopo.app.R2CApplication.getAppCtxt();
+        if (context == null) return new ClueCleanupIds(true, java.util.List.of());
+        java.io.File index = new java.io.File(new java.io.File(context.getFilesDir(), "clues"), "clues.json");
+        if (!index.isFile()) return new ClueCleanupIds(true, java.util.List.of());
+        try {
+            org.json.JSONArray array = new org.json.JSONArray(new String(java.nio.file.Files.readAllBytes(index.toPath()), java.nio.charset.StandardCharsets.UTF_8));
+            java.util.ArrayList<String> ids = new java.util.ArrayList<>();
+            for (int i = 0; i < array.length(); i++) {
+                org.json.JSONObject row = array.optJSONObject(i);
+                if (row == null) continue;
+                String id = row.optString("id", "");
+                if (!id.isEmpty()) ids.add(id);
+            }
+            return new ClueCleanupIds(true, ids);
+        } catch (Exception error) {
+            CTWarn(TAG, "Clue index unreadable; marker cleanup will not delete extra ids", error);
+            return new ClueCleanupIds(false, java.util.List.of());
+        }
+    }
+    private static boolean protectedClueId(@NonNull String markerId, @NonNull ClueCleanupIds clues) {
+        for (String clueId : clues.ids) if (clueDerivedMarkerId(markerId, clueId)) return true;
+        return false;
+    }
+    private static void dropUnprovenMarker(DeviceMarkerJournal.Entry entry, String reason) {
+        CTWarn(TAG, "Marker cleanup refused " + reason + " map=" + entry.map + " id=" + entry.marker);
+        try { markerJournal().acknowledge(entry); }
+        catch (Exception error) { CTWarn(TAG, "Refused marker journal entry retained", error); }
+    }
     private static CaltopoOp deleteJournalMarker(DeviceMarkerJournal.Entry entry) {
         return deleteJournalMarker(entry, getCurrentRuntime().getCalTopoSessionGateway().prepareMarkerCleanup(entry.map));
     }
     private static CaltopoOp deleteJournalMarker(DeviceMarkerJournal.Entry entry,
             java.util.function.BiFunction<String, java.util.function.Consumer<CaltopoOp>, CaltopoOp> cleanup) {
+        String mine = GetMyUUID();
+        if (mine.isEmpty()) {
+            CTWarn(TAG, "Marker cleanup deferred; device id unavailable");
+            return null;
+        }
+        ClueCleanupIds clues = clueCleanupIds.get();
+        if (protectedClueId(entry.marker, clues)) {
+            dropUnprovenMarker(entry, "clue marker");
+            return null;
+        }
+        if (!clues.readable && !mine.equals(entry.marker)) {
+            CTWarn(TAG, "Marker cleanup deferred; clue index unreadable id=" + entry.marker);
+            return null;
+        }
+        // The installation id is this device's marker. Any other id needs a journal row that
+        // recorded this device's guid when the feature was verified. Another device, a hand-drawn
+        // marker, or an unverified response id is removed from the journal without a DELETE.
+        if (!provenOwnDeviceMarker(entry, mine)) {
+            dropUnprovenMarker(entry, "unproven marker");
+            return null;
+        }
         if(!entry.domain.equals(CaltopoClient.GetCaltopoDomainAndPort())||!deletingMarkerKeys.add(entry.key()))return null;
         try {
             return cleanup.apply(entry.marker,op->CaltopoMarkerWork.execute(()->{
@@ -2124,7 +2549,7 @@ public class CaltopoMap {
         CaltopoMarkerWork.execute(() -> publishMarkerAfterCleanup(key, () -> {
             try {
                 // Durable ownership must exist before any POST is constructed or queued.
-                final DeviceMarkerJournal.Entry ownership = markerJournal().arm(domain, map, markerId);
+                final DeviceMarkerJournal.Entry ownership = markerJournal().arm(domain, map, markerId, markerId);
                 activeMarkerKeys.add(key);
                 final JSONObject properties = new JSONObject()
                         .put(LOCAL_DEVICE_MARKER_NAME_PROP, name)
@@ -2144,28 +2569,32 @@ public class CaltopoMap {
                                     CTDebug(TAG,"Device marker publication map="+map+" success="+
                                             (markerOp!=null&&markerOp.success())+" responseCode="+
                                             (markerOp!=null?markerOp.responseCode:-1));
-                                    String resolved = markerOp != null && markerOp.success() ? markerOp.id() : "";
+                                    String resolved = markerOp != null && markerOp.success()
+                                            ? ownedDeviceMarkerId(markerOp.responseJson, markerId) : "";
                                     try {
                                         if (!resolved.isEmpty() && !resolved.equals(markerId)) {
-                                            DeviceMarkerJournal.Entry entry = markerJournal().arm(domain, map, resolved);
+                                            DeviceMarkerJournal.Entry entry = markerJournal().arm(domain, map, resolved, markerId);
                                             activeMarkerKeys.add(entry.key());
                                         }
                                     } catch (Exception error) { CTWarn(TAG, "Resolved marker journal retained for retry", error); }
+                                    final String ownedId = resolved;
                                     CaltopoMarkerWork.onMain(() -> {
                                         if (!markerContextIsCurrent(domain, map, folder, generation)) {
                                             activeMarkerKeys.remove(key);
-                                            if (!resolved.isEmpty()) activeMarkerKeys.remove(domain + "/" + map + "/" + resolved);
+                                            if (!ownedId.isEmpty()) activeMarkerKeys.remove(domain + "/" + map + "/" + ownedId);
                                             CaltopoMarkerWork.execute(() -> {
                                                 try {
                                                     // A late POST may follow an earlier DELETE; persist before compensating.
+                                                    // Only the verified device marker is removed. A response that names
+                                                    // another feature, such as a clue, is not armed or deleted.
                                                     deleteJournalMarker(markerJournal().arm(domain, map,
-                                                            resolved.isEmpty() ? markerId : resolved), cleanup);
+                                                            ownedId.isEmpty() ? markerId : ownedId, markerId), cleanup);
                                                 } catch (Exception error) { CTWarn(TAG, "Late marker cleanup deferred", error); }
                                             });
                                             return;
                                         }
-                                        if (markerOp != null && markerOp.success()) {
-                                            if (!resolved.isEmpty()) ResolvedMyDeviceMarkerId = resolved;
+                                        if (markerOp != null && markerOp.success() && !ownedId.isEmpty()) {
+                                            ResolvedMyDeviceMarkerId = ownedId;
                                             LastPublishedMyDeviceMarkerColor = color;
                                             LastPublishedMyDeviceMarkerDescription = description;
                                         }
@@ -2181,9 +2610,6 @@ public class CaltopoMap {
         if (MapNode == null) return;
         String markerId = GetMyUUID();
         if (markerId.isEmpty()) return;
-        String markerTitle = LOCAL_DEVICE_MARKER_TITLE_PREFIX + R2CActivity.MyDeviceName;
-        long nowMs = System.currentTimeMillis();
-        long staleAfterMs = getDeviceMarkerStaleAfterMs();
         ArrayList<String> staleIds = new ArrayList<>();
         synchronized (ArtifactLock) {
             for (JSONObject feature : ArtifactFeaturesById.values()) {
@@ -2193,11 +2619,10 @@ public class CaltopoMap {
                 if (ResolvedMyDeviceMarkerId != null && ResolvedMyDeviceMarkerId.equals(featureId)) continue;
                 JSONObject properties = feature.optJSONObject("properties");
                 if (!isManagedR2cMarker(properties, LOCAL_DEVICE_MARKER_TITLE_PREFIX)) continue;
-                boolean sameGuid = markerId.equals(properties.optString(LOCAL_DEVICE_MARKER_GUID_PROP, ""));
-                boolean sameTitle = markerTitle.equals(properties.optString("title", ""));
-                long lastSeenEpochMs = getMarkerLastSeenEpochMs(properties);
-                boolean staleHeartbeat = lastSeenEpochMs > 0L && (nowMs - lastSeenEpochMs) > staleAfterMs;
-                if (sameGuid || sameTitle || staleHeartbeat) {
+                if ("Drone".equals(properties.optString("marker-symbol", ""))) continue;
+                // Only a second copy of this device's marker. Another tablet's guid, a matching
+                // title, or an old heartbeat is not enough.
+                if (markerId.equals(properties.optString(LOCAL_DEVICE_MARKER_GUID_PROP, ""))) {
                     staleIds.add(featureId);
                 }
             }
@@ -2233,8 +2658,8 @@ public class CaltopoMap {
         try {
             if (!domain.equals(CaltopoClient.GetCaltopoDomainAndPort())) return;
             // Also enroll legacy markers published before the durable journal existed.
-            markerJournal().arm(domain,map,markerID);
-            if(resolvedID!=null&&!resolvedID.isEmpty())markerJournal().arm(domain,map,resolvedID);
+            markerJournal().arm(domain,map,markerID,markerID);
+            if(resolvedID!=null&&!resolvedID.isEmpty()&&!resolvedID.equals(markerID))markerJournal().arm(domain,map,resolvedID,markerID);
             for(DeviceMarkerJournal.Entry entry:markerJournal().entries())if(entry.domain.equals(domain)&&entry.map.equals(map)) {
                 activeMarkerKeys.remove(entry.key());
                 CaltopoOp op=deleteJournalMarker(entry, cleanup);
@@ -2245,21 +2670,7 @@ public class CaltopoMap {
     }
 
     private static boolean shouldWaitForMarkerDeleteAck() {
-        Context context = R2CApplication.getAppCtxt();
-        if (context == null) return false;
-        try {
-            ConnectivityManager cm = context.getSystemService(ConnectivityManager.class);
-            if (cm == null) return false;
-            Network activeNetwork = cm.getActiveNetwork();
-            if (activeNetwork == null) return false;
-            NetworkCapabilities caps = cm.getNetworkCapabilities(activeNetwork);
-            if (caps == null) return false;
-            return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
-        } catch (Exception e) {
-            CTWarn(TAG, "shouldWaitForMarkerDeleteAck() raised", e);
-            return false;
-        }
+        return CaltopoNetworkReachability.hasValidatedInternet();
     }
 
     @NonNull

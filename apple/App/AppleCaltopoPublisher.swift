@@ -40,6 +40,9 @@ actor AppleCaltopoPublisher {
     private var configurationIdleWaiters: [CheckedContinuation<Void, Never>] = []
     private var lastDeviceMarkerPublishedAt: Date?
     private var publishedDeviceMarkerID: String?
+    private var ownedDeviceMarkerID = ""
+    private var mapOpenRetry: Task<Void, Never>?
+    private var mapOpenRetryAttempt = 0
     private var deviceMarkerGeneration = 0
     private var deviceMarkerPublishingSuspended = false
     private var deviceMarkerPublishInFlight = false
@@ -70,12 +73,15 @@ actor AppleCaltopoPublisher {
 
     deinit {
         recoveryTask?.cancel()
+        mapOpenRetry?.cancel()
         continuation.finish()
     }
 
-    func configure(_ configuration: AppleCaltopoConfiguration, trackFolderName: String) async {
+    func configure(_ configuration: AppleCaltopoConfiguration, trackFolderName: String, deviceMarkerID: String = "") async {
         await waitForConfigurationTransitionToFinish()
         let normalizedFolderName = Self.normalizedTrackFolderName(trackFolderName)
+        let normalizedOwner = deviceMarkerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !normalizedOwner.isEmpty { ownedDeviceMarkerID = normalizedOwner }
         guard configuredConfiguration != configuration
                 || self.trackFolderName != normalizedFolderName
         else {
@@ -105,15 +111,27 @@ actor AppleCaltopoPublisher {
         }
     }
 
+    private static let disconnectFinishTimeout: Duration = .seconds(15)
+
     private func performConfiguration(
         _ configuration: AppleCaltopoConfiguration,
         normalizedFolderName: String
     ) async {
         recoveryTask?.cancel()
         recoveryTask = nil
-        // Persist the final buffered observations before replacing the map client.
-        for remoteID in Array(requestedLiveTrackIDs.keys) {
-            await persistInterruptedPublication(remoteID: remoteID, force: true)
+        mapOpenRetry?.cancel()
+        mapOpenRetry = nil
+        mapOpenRetryAttempt = 0
+        let disconnecting = configuration.liveConfiguration == nil && client != nil
+        if disconnecting {
+            // Finish owned LiveTracks (Shape archive once) before dropping the map client.
+            // On timeout/unreachable CalTopo the finish path journals for reconnect recovery.
+            await finishOwnedLiveTracksForDisconnect(timeout: Self.disconnectFinishTimeout)
+        } else {
+            // Persist the final buffered observations before replacing the map client.
+            for remoteID in Array(requestedLiveTrackIDs.keys) {
+                await persistInterruptedPublication(remoteID: remoteID, force: true)
+            }
         }
         deviceMarkerGeneration += 1
         deviceMarkerPublishingSuspended = true
@@ -161,20 +179,62 @@ actor AppleCaltopoPublisher {
             do {
                 try await ensureFolders(client: configuredClient)
                 await removeStaleR2CDeviceMarkers(client: configuredClient)
+                mapOpenRetry?.cancel()
+                mapOpenRetry = nil
+                mapOpenRetryAttempt = 0
+                deviceMarkerPublishingSuspended = false
+                // Clues and the connected map must not wait on interrupted LiveTrack recovery.
+                continuation.yield(.ready)
                 await recoverInterruptedPublications(client: configuredClient)
             } catch {
-                AppleLog.warning(
-                    "CalTopo",
-                    "Interrupted LiveTrack recovery will retry after map reconnect: \(error.localizedDescription)"
-                )
+                if let message = CaltopoServerAvailability.retryMessage(error) {
+                    continuation.yield(.failed(message))
+                    scheduleMapOpenRetry(client: configuredClient, generation: configurationGeneration)
+                } else {
+                    AppleLog.warning(
+                        "CalTopo",
+                        "Interrupted LiveTrack recovery will retry after map reconnect: \(error.localizedDescription)"
+                    )
+                    deviceMarkerPublishingSuspended = false
+                    continuation.yield(.ready)
+                }
             }
-            deviceMarkerPublishingSuspended = false
-            continuation.yield(.ready)
         } catch {
             client = nil
             deviceMarkerPublishingSuspended = false
             continuation.yield(.failed("Configuration: \(error.localizedDescription)"))
         }
+    }
+
+    private func scheduleMapOpenRetry(client: CaltopoLiveClient, generation: Int) {
+        mapOpenRetry?.cancel()
+        let attempt = mapOpenRetryAttempt
+        mapOpenRetryAttempt += 1
+        let delay = [3.0, 6.0, 12.0, 15.0][min(attempt, 3)]
+        mapOpenRetry = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self else { return }
+            guard await self.configurationGeneration == generation else { return }
+            do {
+                try await self.ensureFolders(client: client)
+                await self.removeStaleR2CDeviceMarkers(client: client)
+                await self.finishMapOpenRetry()
+                self.continuation.yield(.ready)
+                await self.recoverInterruptedPublications(client: client)
+            } catch {
+                guard !Task.isCancelled, await self.configurationGeneration == generation else { return }
+                if let message = CaltopoServerAvailability.retryMessage(error) {
+                    self.continuation.yield(.failed(message))
+                    await self.scheduleMapOpenRetry(client: client, generation: generation)
+                }
+            }
+        }
+    }
+
+    private func finishMapOpenRetry() {
+        mapOpenRetry = nil
+        mapOpenRetryAttempt = 0
+        deviceMarkerPublishingSuspended = false
     }
 
     func publishDeviceMarker(_ marker: CaltopoDeviceMarker, force: Bool = false, consent: AppleLocationConsent, consentGeneration: UInt) async {
@@ -275,6 +335,14 @@ actor AppleCaltopoPublisher {
         do {
             for entry in try markerJournal.entries() where entry.domain == config.domainAndPort {
                 if entry == publishedMarkerOwnership { continue }
+                let owned = ownedDeviceMarkerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if owned.isEmpty || entry.marker.lowercased() != owned {
+                    if !owned.isEmpty {
+                        try? markerJournal.acknowledge(entry)
+                        AppleLog.info("CalTopo", "Marker cleanup left an unproven marker id=\(entry.marker)")
+                    }
+                    continue
+                }
                 let target = CaltopoLiveConfiguration(domainAndPort: config.domainAndPort, mapID: entry.map,
                     credentialID: config.credentialID, credentialSecretBase64: config.credentialSecretBase64,
                     connectKey: config.connectKey, personalSessionID: config.personalSessionID,
@@ -337,7 +405,8 @@ actor AppleCaltopoPublisher {
             let snapshot = try await client.fetchMapArtifacts(now: now)
             let staleIDs = snapshot.staleR2CDeviceMarkerIDs(
                 now: now,
-                staleAfter: Self.staleDeviceMarkerAge
+                staleAfter: Self.staleDeviceMarkerAge,
+                ownedBy: ownedDeviceMarkerID
             )
             for markerID in staleIDs {
                 do {
@@ -511,13 +580,46 @@ actor AppleCaltopoPublisher {
         }
     }
 
+    /// Finish each owned LiveTrack for map disconnect using the normal archive path,
+    /// bounded by `timeout`. Failures leave the interrupted journal for reconnect recovery.
+    func finishOwnedLiveTracksForDisconnect(timeout: Duration) async {
+        let remoteIDs = Array(requestedLiveTrackIDs.keys)
+        guard !remoteIDs.isEmpty else { return }
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        for remoteID in remoteIDs {
+            if clock.now >= deadline {
+                await persistInterruptedPublication(remoteID: remoteID, force: true)
+                continue
+            }
+            let remaining = deadline - clock.now
+            let finishTask = Task { await self.finish(remoteID: remoteID) }
+            let timeoutTask = Task { try? await Task.sleep(for: remaining) }
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { _ = await finishTask.value }
+                group.addTask { _ = await timeoutTask.value }
+                _ = await group.next()
+                finishTask.cancel()
+                timeoutTask.cancel()
+                group.cancelAll()
+            }
+        }
+    }
+
     func finish(remoteID: String, description: String = "") async -> AppleArchivedCaltopoTrack? {
         guard !finishingRemoteIDs.contains(remoteID) else { return nil }
         finishingRemoteIDs.insert(remoteID)
         let generation = configurationGeneration
-        let id = liveTrackIDs[remoteID] ?? requestedLiveTrackIDs[remoteID]
         let label = labels[remoteID] ?? remoteID
         let saved = observations[remoteID] ?? []
+        // Queued points from a flight that never received a LiveTrack id must still
+        // publish through the archive when a map is configured.
+        var id = liveTrackIDs[remoteID] ?? requestedLiveTrackIDs[remoteID]
+        if id == nil && !saved.isEmpty && configuredConfiguration != nil {
+            let assigned = UUID().uuidString.lowercased()
+            requestedLiveTrackIDs[remoteID] = assigned
+            id = assigned
+        }
         let pendingStart = startTasks[remoteID]
         let finishingClient = client
         let finishingConfiguration = configuredConfiguration
@@ -534,13 +636,47 @@ actor AppleCaltopoPublisher {
                 observations.removeValue(forKey: remoteID)
             }
         }
-        guard generation == configurationGeneration, let client = finishingClient,
-              let id, let configuration = finishingConfiguration else { return nil }
+        // A map disconnect may already have cleared the live client while this
+        // flight was still airborne. Persist the finish intent first so reconnect
+        // recovery can convert the LiveTrack once, exactly as a normal archive.
+        guard let id else { return nil }
+        let mapID = finishingConfiguration?.mapID ?? configuredConfiguration?.mapID
+        guard let mapID, !mapID.isEmpty else { return nil }
         let entry = CaltopoInterruptedPublication(
-            mapID: configuration.mapID, remoteID: remoteID, liveTrackID: id,
+            mapID: mapID, remoteID: remoteID, liveTrackID: id,
             label: label, description: description, observations: saved)
         do {
             try await interruptedJournal.upsert(entry)
+        } catch {
+            AppleLog.warning(
+                "CalTopo",
+                "Could not persist finished LiveTrack \(id) for reconnect recovery: \(error.localizedDescription)"
+            )
+        }
+        guard generation == configurationGeneration,
+              let client = finishingClient,
+              finishingConfiguration != nil else {
+            // Ended offline after disconnect: the journal upsert above is the
+            // durable pending finish; reconnect recovery loads it once.
+            return nil
+        }
+        // Lost/unvalidated Internet: durable journal only — do not start a Shape POST
+        // that can hang on a dead path and hide the entry from connectivity-restore flush.
+        let internetAvailable = await MainActor.run {
+            AppleNetworkDiagnosticCenter.shared.internetAvailable
+        }
+        if !internetAvailable {
+            if generation == configurationGeneration {
+                pendingInterruptedRecoveries.removeAll { $0.liveTrackID == id }
+                pendingInterruptedRecoveries.append(entry)
+            }
+            AppleLog.info(
+                "CalTopo",
+                "archiveLiveTrack(\(label)): deferred offline points=\(saved.count) liveTrackId=\(id)"
+            )
+            return nil
+        }
+        do {
             // Finish an in-flight create before the Shape write; a lost response does not
             // prevent conversion because the durable identity is already known.
             if let pendingStart { _ = try? await pendingStart.value }
@@ -690,6 +826,19 @@ actor AppleCaltopoPublisher {
             AppleLog.warning("CalTopo", "Could not persist interrupted LiveTrack \(liveTrackID): \(error.localizedDescription)")
         }
     }
+
+    /// Network-path wake: cancel hung CalTopo calls, then retry interrupted archives.
+    func retryInterruptedPublications() async {
+        await client?.cancelInFlightForConnectivityRestore()
+        let archives = pendingInterruptedRecoveries.count
+        AppleLog.info(
+            "NetworkChecks",
+            "connectivity restored → flush archives=\(archives) liveTracks=\(liveTrackIDs.count) clues=wake"
+        )
+        await retryInterruptedPublications(generation: configurationGeneration)
+    }
+
+    var pendingInterruptedArchiveCount: Int { pendingInterruptedRecoveries.count }
 
     private func retryInterruptedPublications(generation: Int) async {
         if generation == configurationGeneration && !configurationTransitionInFlight { await retryMarkerCleanup() }

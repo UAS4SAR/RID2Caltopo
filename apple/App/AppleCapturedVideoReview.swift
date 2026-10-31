@@ -387,9 +387,14 @@ final class AppleCapturedVideoReviewModel: ObservableObject {
         endObserver = NotificationCenter.default.addObserver(
             forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main
         ) { [weak self] _ in Task { @MainActor in self?.isPaused = true } }
-        analysisTimer = .scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+        // Explicit main RunLoop timer (same pattern as live-video background pull):
+        // scheduledTimer from @MainActor can inherit isolation that traps if the
+        // fire context is ever not MainActor.
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.analyzeCurrentFrame() }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        analysisTimer = timer
         if !pauseOnOpen { player.play() }
     }
 

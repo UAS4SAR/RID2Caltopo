@@ -183,10 +183,16 @@ public class WaypointTrack {
         this.droneSpec = droneSpec;
 		this.trackLabel = trackLabel;
 		this.coordinates = new JSONArray();
-        this.incident = CaltopoClient.GetIncident();
+		this.incident = CaltopoClient.GetIncident();
         this.opPeriod = CaltopoClient.GetOpPeriod();
         this.mapId = CaltopoMap.GetMapId();
 		CTDebug(TAG, String.format("AddWaypointForTrack(%s): Starting new track.", trackLabel));
+        WaypointTrackJournal.ensureOpen(
+                deferredPublicationId,
+                remoteId == null ? "" : remoteId,
+                trackLabel,
+                mapId == null ? "" : mapId,
+                AwaitingMapFlights.selectedPublicationScope());
 	}
 
 
@@ -260,7 +266,9 @@ public class WaypointTrack {
             AwaitingMapFlights.reservePublication(droneSpec.getRemoteId(), deferredPublicationId);
         }
         if (finished) publicationIntentFinished.set(true);
-        CaltopoRecoveryWork.checkpoint(this, () -> {
+        // Publication intent must use the start lane so a stalled archive cannot block
+        // awaiting-map durability for the next airborne flight.
+        CaltopoRecoveryWork.checkpointStart(this, () -> {
             try {
                 final JSONArray points;
                 synchronized (this) { points = new JSONArray(coordinates.toString()); }
@@ -929,6 +937,11 @@ public class WaypointTrack {
      *
      */
     public static void BgPollUnreportedTracks() {
+        try {
+            WaypointTrackJournal.recoverUnfinished();
+        } catch (Exception error) {
+            CTError(TAG, "BgPollUnreportedTracks(): journal recovery failed", error);
+        }
         int consecutiveFails = 0;
         DocumentFile archiveDir = CaltopoClient.GetArchiveDir();
         if (null == archiveDir || !archiveDir.isDirectory()) {
@@ -1099,6 +1112,7 @@ public class WaypointTrack {
                 CTError(TAG, "archive(): unable to write " + fileName);
                 return;
             }
+            WaypointTrackJournal.markFinishedAndRemove(deferredPublicationId);
             dataFilepath = todaysArchiveDir.findFile(fileName);
             CTDebug(TAG, String.format(Locale.US, "archive(): wrote %d coordinates to %s", numCoords, fileName));
             if (archivedOkToLog && !archivedLocalOnly) {
@@ -1135,6 +1149,9 @@ public class WaypointTrack {
         renderTail = new RenderPointNode(new TrackPoint(lat, lng, altInMeters,
                 timestampInMillisec, receivedAtMs), renderTail);
 		WaypointCount++;
+        WaypointTrackJournal.appendPoint(
+                deferredPublicationId, lat, lng, altInMeters, timestampInMillisec,
+                receivedAtMs, source, droneClock);
         if (droneSpec.isCurrentFlightConfirmed() && !droneSpec.isLocalArchiveOnly()) {
             recordPublicationIntent(false);
         }

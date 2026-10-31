@@ -1,5 +1,6 @@
 import kotlinx.coroutines.ensureActive
 import org.ncssar.rid2caltopo.video.clueStorage
+import org.ncssar.rid2caltopo.video.publishFirstPendingClue
 import org.ncssar.rid2caltopo.data.Units
 import org.ncssar.rid2caltopo.data.DisplayUnits
 import org.ncssar.rid2caltopo.notam.NearbyNotam
@@ -19,6 +20,7 @@ import org.ncssar.rid2caltopo.video.MapViewportBounds
 import org.ncssar.rid2caltopo.video.StreamFocusArrival
 import org.ncssar.rid2caltopo.video.AndroidClueRecord
 import org.ncssar.rid2caltopo.video.AndroidClueStore
+import org.ncssar.rid2caltopo.video.ClueTerrainDiagnostics
 import org.ncssar.rid2caltopo.video.folderHiddenAfterDefault
 import org.ncssar.rid2caltopo.video.MapFolderVisibilityController
 import org.ncssar.rid2caltopo.video.MapFolderVisibilityPreferences
@@ -41,13 +43,18 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -168,6 +175,8 @@ data class PendingClue(
     val demSource: String? = null,
     val demResolutionMeters: Double? = null,
     val demSampleStale: Boolean = false,
+    /** Last DEM ground elevation known for this capture; retained across interim flat recomputes. */
+    val knownDemGroundMeters: Double? = null,
     /** Waypoint nearest in time to the frame capture (drone clock); re-bound while the form is open, fixed at Submit. */
     val binding: org.ncssar.rid2caltopo.data.ClueBinding? = null,
     /** The "Current flight ignored" panel is showing over the clue form. */
@@ -243,7 +252,9 @@ data class LocalMapMarker(
     val title: String,
     val description: String,
     val createdAtMs: Long,
-    val sourceDesignator: String
+    val sourceDesignator: String,
+    val uploadState: String = "legacy",
+    val lastUploadError: String = "",
 )
 
 data class ClueSnapshotRef(
@@ -262,6 +273,8 @@ private fun AndroidClueRecord.toLocalMapMarker(): LocalMapMarker = LocalMapMarke
     description = description,
     createdAtMs = createdAtMs,
     sourceDesignator = sourceDesignator,
+    uploadState = uploadState,
+    lastUploadError = lastUploadError,
 )
 
 fun removeLocalMapMarkerById(markers: MutableList<LocalMapMarker>, markerId: String): Boolean {
@@ -474,6 +487,8 @@ private const val DEFAULT_CLUE_GIMBAL_ANGLE_DEG = -90.0
 /** Shown when a second snapshot is requested while a clue form is open (same wording as Apple). */
 private const val METERS_TO_FEET = 3.28084
 private const val RID_INVALID_ALTITUDE_METERS = -1000.0
+/** Let gimbal/heading sliders settle before starting another DEM ray walk. */
+private const val CLUE_DEM_REFRESH_DEBOUNCE_MS = 200L
 
 internal data class ClueProjection(
     val lat: Double,
@@ -483,6 +498,8 @@ internal data class ClueProjection(
     val demSource: String? = null,
     val demResolutionMeters: Double? = null,
     val demSampleStale: Boolean = false,
+    /** Set when returning a flat-surface estimate; null when terrain was applied. */
+    val flatFallbackReason: String? = null,
 )
 
 internal fun buildClueDescriptionTemplate(
@@ -646,14 +663,17 @@ internal fun projectClueLocation(
     headingDeg: Double?,
     aglMeters: Double?,
     gimbalAngleDeg: Double,
+    knownGroundElevationMeters: Double? = null,
 ): ClueProjection {
     val validHeading = headingDeg?.takeIf { it.isFinite() }
     val validAgl = aglMeters?.takeIf { it.isFinite() && it >= 0.0 }
-    val projectedAlt = if (droneAlt.isFinite() && droneAlt > RID_INVALID_ALTITUDE_METERS && validAgl != null) {
-        droneAlt - validAgl
-    } else {
-        droneAlt
-    }
+    val demGround = knownGroundElevationMeters?.takeIf { it.isFinite() }
+    val projectedAlt = demGround
+        ?: if (droneAlt.isFinite() && droneAlt > RID_INVALID_ALTITUDE_METERS && validAgl != null) {
+            droneAlt - validAgl
+        } else {
+            droneAlt
+        }
     if (validHeading == null || validAgl == null) {
         return ClueProjection(droneLat, droneLng, projectedAlt)
     }
@@ -723,10 +743,23 @@ internal suspend fun projectClueLocationWithDemSamples(
     terrainReferenceLongitude: Double? = null,
     seiRelativeUpMeters: Double? = null,
     sampleElevationMeters: suspend (Double, Double) -> DemElevationSample?,
+    /**
+     * Local-raster-only sampler used once the aircraft sample is known to be a GeoTIFF.
+     * Must not fall through to network EPQS; a null means end of local coverage.
+     * Defaults to [sampleElevationMeters] for unit tests that inject a single fake DEM.
+     */
+    sampleLocalElevationMeters: suspend (Double, Double) -> DemElevationSample? = sampleElevationMeters,
 ): ClueProjection {
     suspend fun checkedSample(lat: Double, lng: Double): DemElevationSample? {
         currentCoroutineContext().ensureActive()
         val result = sampleElevationMeters(lat, lng)
+        currentCoroutineContext().ensureActive()
+        return result
+    }
+
+    suspend fun checkedLocalSample(lat: Double, lng: Double): DemElevationSample? {
+        currentCoroutineContext().ensureActive()
+        val result = sampleLocalElevationMeters(lat, lng)
         currentCoroutineContext().ensureActive()
         return result
     }
@@ -743,14 +776,6 @@ internal suspend fun projectClueLocationWithDemSamples(
         referenceGround + anchoredRelativeUp
     } else droneAlt
     val effectiveAgl = anchoredRelativeUp ?: aglMeters
-    val flatProjection = projectClueLocation(
-        droneLat = droneLat,
-        droneLng = droneLng,
-        droneAlt = effectiveDroneAlt,
-        headingDeg = headingDeg,
-        aglMeters = effectiveAgl,
-        gimbalAngleDeg = gimbalAngleDeg,
-    )
     // A vertical sightline needs neither heading nor AGL: terrain directly below is the target.
     if (gimbalAngleDeg.isFinite() && gimbalAngleDeg <= -89.9 &&
         droneLat.isFinite() && droneLng.isFinite() && droneLat in -90.0..90.0 && droneLng in -180.0..180.0
@@ -763,37 +788,103 @@ internal suspend fun projectClueLocationWithDemSamples(
                 demResolutionMeters = ground.horizontalResolutionMeters, demSampleStale = ground.stale,
             )
         }
-        return flatProjection
+        return projectClueLocation(
+            droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
+            headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
+        ).copy(flatFallbackReason = "nadir DEM sample unavailable")
     }
     if (anchoredRelativeUp != null && terrainReferenceLatitude != null &&
         terrainReferenceLongitude != null && referenceGround == null
     ) {
-        return flatProjection
+        return projectClueLocation(
+            droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
+            headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
+        ).copy(flatFallbackReason = "SEI relative-up reference DEM unavailable")
     }
-    val validHeading = headingDeg?.takeIf { it.isFinite() } ?: return flatProjection
-    val validAgl = effectiveAgl?.takeIf { it.isFinite() && it > 0.0 } ?: return flatProjection
+    val validHeading = headingDeg?.takeIf { it.isFinite() }
+        ?: return projectClueLocation(
+            droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
+            headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
+            knownGroundElevationMeters = referenceGround,
+        ).copy(flatFallbackReason = "heading unavailable")
+    val validAgl = effectiveAgl?.takeIf { it.isFinite() && it > 0.0 }
+        ?: return projectClueLocation(
+            droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
+            headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
+            knownGroundElevationMeters = referenceGround,
+        ).copy(flatFallbackReason = "AGL unavailable")
     val clampedAngle = gimbalAngleDeg
         .takeIf { it.isFinite() }
         ?.coerceIn(-90.0, 90.0)
         ?: DEFAULT_CLUE_GIMBAL_ANGLE_DEG
-    if (clampedAngle >= -0.1) return flatProjection
+    if (clampedAngle >= -0.1) {
+        return projectClueLocation(
+            droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
+            headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
+            knownGroundElevationMeters = referenceGround,
+        ).copy(flatFallbackReason = "gimbal at or above horizon")
+    }
     val tiltFromHorizonDeg = abs(clampedAngle).coerceIn(0.1, 90.0)
-    if (tiltFromHorizonDeg >= 89.9) return flatProjection
+    if (tiltFromHorizonDeg >= 89.9) {
+        return projectClueLocation(
+            droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
+            headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
+            knownGroundElevationMeters = referenceGround,
+        ).copy(flatFallbackReason = "gimbal treated as nadir without DEM")
+    }
 
     val slopeDown = tan(Math.toRadians(tiltFromHorizonDeg))
-    if (!slopeDown.isFinite() || slopeDown <= 0.0) return flatProjection
+    if (!slopeDown.isFinite() || slopeDown <= 0.0) {
+        return projectClueLocation(
+            droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
+            headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
+            knownGroundElevationMeters = referenceGround,
+        ).copy(flatFallbackReason = "invalid sightline slope")
+    }
 
     val flatDistanceM = validAgl / slopeDown
-    if (!flatDistanceM.isFinite() || flatDistanceM <= 0.0) return flatProjection
+    if (!flatDistanceM.isFinite() || flatDistanceM <= 0.0) {
+        return projectClueLocation(
+            droneLat = droneLat, droneLng = droneLng, droneAlt = effectiveDroneAlt,
+            headingDeg = headingDeg, aglMeters = effectiveAgl, gimbalAngleDeg = gimbalAngleDeg,
+            knownGroundElevationMeters = referenceGround,
+        ).copy(flatFallbackReason = "non-positive flat distance")
+    }
 
-    val flatGroundM = referenceGround ?: (effectiveDroneAlt - validAgl)
     val droneDemSample = referenceDemSample ?: checkedSample(droneLat, droneLng)
     val droneDemRaw = referenceGround ?: droneDemSample?.elevationMeters?.takeIf { it.isFinite() }
+    // ATO/AGL flat ground anchors foot-vs-metre DEM scale detection; do not feed raw DEM
+    // elevations here or a feet-encoded GeoTIFF looks like metres and the ray walk breaks.
+    val atoFlatGroundM = referenceGround ?: (effectiveDroneAlt - validAgl)
     val demScaleToMeters = if (referenceGround == null) inferDemScaleToMeters(
         droneAltMeters = effectiveDroneAlt,
-        knownGroundMeters = flatGroundM,
+        knownGroundMeters = atoFlatGroundM,
         droneDemRaw = droneDemRaw,
     ) else 1.0
+    val knownDemGroundM = referenceGround ?: droneDemRaw?.let { it * demScaleToMeters }
+    val flatGroundM = knownDemGroundM ?: atoFlatGroundM
+
+    fun flatWithKnownGround(reason: String): ClueProjection {
+        val base = projectClueLocation(
+            droneLat = droneLat,
+            droneLng = droneLng,
+            droneAlt = effectiveDroneAlt,
+            headingDeg = headingDeg,
+            aglMeters = effectiveAgl,
+            gimbalAngleDeg = gimbalAngleDeg,
+            knownGroundElevationMeters = knownDemGroundM,
+        )
+        return base.copy(
+            demSource = droneDemSample?.source,
+            demResolutionMeters = droneDemSample?.horizontalResolutionMeters,
+            demSampleStale = droneDemSample?.stale == true,
+            flatFallbackReason = reason,
+        )
+    }
+
+    if (droneDemSample == null && referenceGround == null) {
+        return flatWithKnownGround("DEM sample unavailable at aircraft")
+    }
 
     // A shallow sightline over falling terrain may stay above the ground for kilometres.
     // Search far enough to reach the visible terrain instead of sizing the DEM walk from
@@ -804,7 +895,8 @@ internal suspend fun projectClueLocationWithDemSamples(
 
     var previousDistanceM = 0.0
     var previousPoint = Pair(droneLat, droneLng)
-    var previousGroundM = flatGroundM
+    var previousGroundM = knownDemGroundM ?: flatGroundM
+    var coverageEnded = false
 
     var distanceM = stepM
     while (distanceM <= maxDistanceM + 0.001) {
@@ -814,8 +906,13 @@ internal suspend fun projectClueLocationWithDemSamples(
             bearingDeg = validHeading,
             distanceM = distanceM,
         )
-        val sampledCandidate = checkedSample(candidate.first, candidate.second)
+        val sampledCandidate = if (usingLocalDem) {
+            checkedLocalSample(candidate.first, candidate.second)
+        } else {
+            checkedSample(candidate.first, candidate.second)
+        }
         if (usingLocalDem && sampledCandidate?.source?.startsWith("usgs-geotiff-local-") != true) {
+            coverageEnded = true
             break
         }
         if (sampledCandidate == null) {
@@ -838,7 +935,6 @@ internal suspend fun projectClueLocationWithDemSamples(
         val rayAltitudeM = effectiveDroneAlt - (slopeDown * distanceM)
         if (rayAltitudeM <= groundM) {
             var lowDistanceM = previousDistanceM
-            var lowPoint = previousPoint
             var lowGroundM = previousGroundM
             var highDistanceM = distanceM
             var highPoint = candidate
@@ -852,7 +948,11 @@ internal suspend fun projectClueLocationWithDemSamples(
                     bearingDeg = validHeading,
                     distanceM = midDistanceM,
                 )
-                val midDemSample = checkedSample(midPoint.first, midPoint.second)
+                val midDemSample = if (usingLocalDem) {
+                    checkedLocalSample(midPoint.first, midPoint.second)
+                } else {
+                    checkedSample(midPoint.first, midPoint.second)
+                }
                 val midGroundM = normalizeDemGroundMeters(
                     candidateDemRaw = midDemSample?.elevationMeters,
                     droneDemRaw = droneDemRaw,
@@ -866,7 +966,6 @@ internal suspend fun projectClueLocationWithDemSamples(
                     highGroundM = midGroundM
                 } else {
                     lowDistanceM = midDistanceM
-                    lowPoint = midPoint
                     lowGroundM = midGroundM
                 }
             }
@@ -887,7 +986,10 @@ internal suspend fun projectClueLocationWithDemSamples(
         distanceM += stepM
     }
 
-    return flatProjection
+    return flatWithKnownGround(
+        if (coverageEnded) "local DEM coverage ended before ray intersection"
+        else "ray did not intersect DEM within search distance",
+    )
 }
 
 internal fun inferDemScaleToMeters(
@@ -1298,7 +1400,25 @@ class StreamsViewModel(
             if (display == null || display.positionStale || display.aglStatus != org.ncssar.rid2caltopo.video.surface.MeasurementStatus.Available) return null
             val agl = display.aglFt?.takeIf { it.isFinite() && it >= 0 }?.div(METERS_TO_FEET) ?: return null
             val altitude = spec.lastAlt.takeIf { it.isFinite() && it > -999 } ?: return null
-            projectClueLocationWithDem(altitudeCoordinator.demElevationService, latitude, longitude, altitude, bearing, agl, tilt)
+            // Live crosshair must not run an unbounded S1M ray-march (38b387bb).
+            withTimeoutOrNull(80L) {
+                projectClueLocationWithDem(
+                    altitudeCoordinator.demElevationService,
+                    latitude,
+                    longitude,
+                    altitude,
+                    bearing,
+                    agl,
+                    tilt,
+                )
+            } ?: projectClueLocation(
+                droneLat = latitude,
+                droneLng = longitude,
+                droneAlt = altitude,
+                headingDeg = bearing,
+                aglMeters = agl,
+                gimbalAngleDeg = tilt,
+            )
         }
         val terrain = altitudeCoordinator.demElevationService.sampleElevationMeters(projected.lat, projected.lng) ?: return null
         if (!terrain.elevationMeters.isFinite() || System.currentTimeMillis() - spec.mostRecentMsecTimestamp !in 0..4999) return null
@@ -1397,6 +1517,7 @@ class StreamsViewModel(
     internal val mapStreamFocusArrival = StreamFocusArrival()
     private var persistedMapViewportState: MapViewportState? = null
     private var clueProjectionJob: Job? = null
+    private var clueProjectionDebounceJob: Job? = null
     private val mutedComplianceAlertDesignators = mutableStateSetOf<String>()
     private val _overLimitDrones = MutableStateFlow<List<OverLimitDroneUiState>>(emptyList())
     val overLimitDrones: StateFlow<List<OverLimitDroneUiState>> = _overLimitDrones.asStateFlow()
@@ -2006,6 +2127,7 @@ class StreamsViewModel(
     override fun onCleared() {
         StreamRegistry.setAdmissionGuard(null)
         CaltopoMap.RemoveMapStatusListener(this)
+        CaltopoMap.setPendingClueFlushHandler(null)
         altitudeCoordinator.close()
         ffmpegProbeService?.close()
         streamSessionService.releaseAll()
@@ -2024,6 +2146,7 @@ class StreamsViewModel(
                 if (activeLocalClueMapKey != mapKey) {
                     hydrateLocalClues(mapKey)
                 }
+                retryPendingClues()
                 if (!oldName.equals(newName)) {
                     CTDebug(tag, "Connected to ${newName}")
                     _mapName.value = newName
@@ -2493,13 +2616,16 @@ class StreamsViewModel(
             if (lat != null && lng != null) org.ncssar.rid2caltopo.data.ClueBindingFramePosition(lat, lng) else null
         }
         val captureFlightId = org.ncssar.rid2caltopo.data.WaypointTrack.GetLiveFlightId(droneSpec)
+        // Provisional bind from the already-captured waypoint snapshot only — open the form
+        // before any slow store scan. Live refresh continues via startPendingBindingRefresh.
+        val bindingPoints = org.ncssar.rid2caltopo.data.WaypointTrack.GetBindingPointsSnapshot(droneSpec)
         val initialBinding = withContext(Dispatchers.Default) { org.ncssar.rid2caltopo.data.ClueBinder.bind(
             aircraftId = droneSpec.remoteId,
             flightId = captureFlightId,
             captureTimeMs = captureTimeMs,
             captureTimeSource = if (captureDroneTimeMs != null) "stream-pts" else "app-receive",
             captureReceivedAtMs = startedAtMs,
-            points = org.ncssar.rid2caltopo.data.WaypointTrack.GetBindingPointsSnapshot(droneSpec),
+            points = bindingPoints,
             framePosition = framePosition,
             originIsWaypoint = false,
         ) }
@@ -2507,6 +2633,7 @@ class StreamsViewModel(
         // nearest the capture, else the latest RID fix.
         val waypointOrigin = initialBinding.nearest.takeIf { freshDjiCamera?.latitudeDeg == null && nonDjiTelemetry?.latitude == null }
         val binding = initialBinding.copy(originIsWaypoint = waypointOrigin != null)
+        android.util.Log.i(tag, "Clue capture stage=bind elapsedMs=${System.currentTimeMillis() - startedAtMs} designator=$designator")
         val clueLat = freshDjiCamera?.latitudeDeg ?: nonDjiTelemetry?.latitude ?: waypointOrigin?.latitude ?: droneSpec.lastLat
         val clueLng = freshDjiCamera?.longitudeDeg ?: nonDjiTelemetry?.longitude ?: waypointOrigin?.longitude ?: droneSpec.lastLng
         // The SEI altitude datum is opaque. The DEM refinement anchors relative-up at
@@ -2619,10 +2746,30 @@ class StreamsViewModel(
             binding = binding,
             ignoredFlightPrompt = isFlightIgnored(droneSpec),
         )
+        android.util.Log.i(
+            tag,
+            "Clue capture stage=form-open elapsedMs=${System.currentTimeMillis() - startedAtMs} " +
+                "designator=$designator imageReady=bitmap demRef=${_pendingClue.value?.demAltitudeReference != null}"
+        )
+        android.util.Log.i(
+            tag,
+            clueProjectionMethodLogLine(
+                clueLat = projectedLocation.lat,
+                clueLng = projectedLocation.lng,
+                droneLat = clueLat,
+                droneLng = clueLng,
+                gimbalPitchDeg = clueGimbalAngle,
+                gimbalYawDeg = clueBearing,
+                terrainProjectionApplied = false,
+                demSource = null,
+                tileHit = false,
+            ) + " stage=form-open-flat"
+        )
         if (isFlightIgnored(droneSpec)) CTDebug(tag, "Clue captured on an ignored flight remoteId=${droneSpec.remoteId}; asking to publish it")
         startPendingBindingRefresh()
 
-        requestDemClueProjectionRefresh(designator)
+        // ~300 ms local S1M try off main before the unbounded async refine. Flat only if tiles miss/timeout.
+        requestDemClueProjectionRefresh(designator, bindTimeoutMs = CLUE_BIND_TERRAIN_TIMEOUT_MS)
 
         viewModelScope.launch(Dispatchers.Default) {
             val width = 600
@@ -2735,20 +2882,35 @@ class StreamsViewModel(
         val acceptedDestination: Pair<String, String>? = null,
     )
 
+    /** Same identity stored at Submit and used to find that clue after the map connects. */
+    private fun publicationTeamId(): String = org.ncssar.rid2caltopo.data.CluePublicationIdentity.publicationTeamId()
+
     private fun captureClueSaveContext(): ClueSaveContext {
         val personal = org.ncssar.rid2caltopo.data.CaltopoPersonalSession.capture("")
-        return ClueSaveContext(personal?.let { it.mapID to it.credentialKey }, currentLocalClueMapKey(),
-            CaltopoClient.GetCaltopoCredentials().teamId.orEmpty(), coordinateDisplayFormat)
+        val teamId = publicationTeamId()
+        val personalMapId = personal?.mapID?.trim().orEmpty()
+        return ClueSaveContext(
+            if (personal != null && personalMapId.isNotEmpty() && teamId.isNotBlank()) personalMapId to teamId else null,
+            currentLocalClueMapKey(),
+            teamId,
+            coordinateDisplayFormat,
+        )
     }
 
     private suspend fun freezeClueDestination(
         context: ClueSaveContext, clue: PendingClue, publish: Boolean,
     ): ClueSaveContext = withContext(Dispatchers.IO) {
+        // A connected map publishes immediately. Awaiting-map review is only for clues
+        // saved while no map is connected.
+        val connectedMapId = context.fallbackMapKey.removePrefix("map:")
+            .takeIf { context.fallbackMapKey.startsWith("map:") && it.isNotBlank() }
+        val connected = context.personalDestination
+            ?: connectedMapId?.takeIf { context.fallbackTeam.isNotBlank() }?.let { it to context.fallbackTeam }
         val flightId = clue.binding?.flightId
-        val destination = if (publish && context.personalDestination != null) context.personalDestination
-        else if (publish) (flightId?.takeIf { org.ncssar.rid2caltopo.data.AwaitingMapFlights.hasEntry(it) }
+        val destination = if (!publish) null
+        else connected ?: (flightId?.takeIf { org.ncssar.rid2caltopo.data.AwaitingMapFlights.hasEntry(it) }
             ?.let { org.ncssar.rid2caltopo.data.AwaitingMapFlights.clueDestinationForFlight(it) }
-            ?: org.ncssar.rid2caltopo.data.AwaitingMapFlights.clueDestination(clue.droneSpec.remoteId)) else null
+            ?: org.ncssar.rid2caltopo.data.AwaitingMapFlights.clueDestination(clue.droneSpec.remoteId))
         context.copy(acceptedDestination = destination)
     }
 
@@ -2760,14 +2922,22 @@ class StreamsViewModel(
         }
         val startedAt = android.os.SystemClock.elapsedRealtime()
         return try {
+            org.ncssar.rid2caltopo.video.CrosshairPreferences.load(getApplication())
+            val coordinates = if (clue.showCrosshairCoordinates)
+                org.ncssar.rid2caltopo.video.CoordinateFormatter.format(clue.lat, clue.lng, context.format) else null
+            // Stamp off the disk mutex with a hard timeout; fall back to the capture bitmap.
+            val stampStarted = android.os.SystemClock.elapsedRealtime()
+            val bitmap = withContext(Dispatchers.Default) {
+                kotlinx.coroutines.withTimeoutOrNull(400L) {
+                    org.ncssar.rid2caltopo.video.stampClueCrosshair(source, coordinates)
+                } ?: source.also {
+                    CTDebug(tag, "Clue save stage=image-stamp-timeout elapsedMs=${android.os.SystemClock.elapsedRealtime() - stampStarted}")
+                }
+            }
+            CTDebug(tag, "Clue save stage=image-prepared elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt}")
             val (record, prepared) = withContext(Dispatchers.IO) {
                 clueDiskMutex.withLock {
                     CTDebug(tag, "Clue save stage=worker-ready elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt}")
-                    org.ncssar.rid2caltopo.video.CrosshairPreferences.load(getApplication())
-                    val coordinates = if (clue.showCrosshairCoordinates)
-                        org.ncssar.rid2caltopo.video.CoordinateFormatter.format(clue.lat, clue.lng, context.format) else null
-                    val bitmap = org.ncssar.rid2caltopo.video.stampClueCrosshair(source, coordinates)
-                    CTDebug(tag, "Clue save stage=image-prepared elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt}")
                     // Flight ownership is fixed by the submit-time binding; fallback
                     // credentials/map are captured before dispatch, not read later from UI state.
                     val destination = context.acceptedDestination
@@ -2817,6 +2987,8 @@ class StreamsViewModel(
     fun updateClueGimbalAngle(gimbalAngleDeg: Double) {
         if (clueSaveInProgress) return
         _pendingClue.value = _pendingClue.value?.let { clue ->
+            val knownGround = clue.knownDemGroundMeters
+                ?: clue.alt.takeIf { clue.terrainProjectionApplied || clue.demSource != null }
             val projection = projectClueLocation(
                 droneLat = clue.droneLat,
                 droneLng = clue.droneLng,
@@ -2824,10 +2996,11 @@ class StreamsViewModel(
                 headingDeg = clue.headingDeg,
                 aglMeters = clue.projectionHeightMeters,
                 gimbalAngleDeg = gimbalAngleDeg,
+                knownGroundElevationMeters = knownGround,
             )
             CTDebug(tag, String.format(
                 Locale.US,
-                "updateClueGimbalAngle(): designator=%s bearingDeg=%s aglM=%s gimbalDeg=%.1f projectedLat=%.6f projectedLng=%.6f projectedAlt=%.1f",
+                "updateClueGimbalAngle(): designator=%s bearingDeg=%s aglM=%s gimbalDeg=%.1f projectedLat=%.6f projectedLng=%.6f projectedAlt=%.1f knownDemGround=%s",
                 clue.designator,
                 clue.headingDeg?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
                 clue.projectionHeightMeters?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
@@ -2835,6 +3008,7 @@ class StreamsViewModel(
                 projection.lat,
                 projection.lng,
                 projection.alt,
+                knownGround?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
             ))
             clue.copy(
                 lat = projection.lat,
@@ -2846,14 +3020,17 @@ class StreamsViewModel(
                 demSource = null,
                 demResolutionMeters = null,
                 demSampleStale = false,
+                knownDemGroundMeters = knownGround,
             )
-        }?.also { requestDemClueProjectionRefresh(it.designator) }
+        }?.also { scheduleDemClueProjectionRefresh(it.designator) }
     }
 
     fun updateClueCameraHeading(headingDeg: Double) {
         if (clueSaveInProgress) return
         val normalizedHeading = normalizeClueHeading(headingDeg) ?: return
         _pendingClue.value = _pendingClue.value?.let { clue ->
+            val knownGround = clue.knownDemGroundMeters
+                ?: clue.alt.takeIf { clue.terrainProjectionApplied || clue.demSource != null }
             val projection = projectClueLocation(
                 droneLat = clue.droneLat,
                 droneLng = clue.droneLng,
@@ -2861,6 +3038,7 @@ class StreamsViewModel(
                 headingDeg = normalizedHeading,
                 aglMeters = clue.projectionHeightMeters,
                 gimbalAngleDeg = clue.gimbalAngleDeg,
+                knownGroundElevationMeters = knownGround,
             )
             clue.copy(
                 lat = projection.lat,
@@ -2872,65 +3050,214 @@ class StreamsViewModel(
                 demSource = null,
                 demResolutionMeters = null,
                 demSampleStale = false,
+                knownDemGroundMeters = knownGround,
             )
-        }?.also { requestDemClueProjectionRefresh(it.designator) }
+        }?.also { scheduleDemClueProjectionRefresh(it.designator) }
     }
 
-    private val clueUploadsInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val clueUploadStartedAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val clueUploadStaleAfterMs = 180_000L
+    private val clueRetryLoggedAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val clueUploadBackoff = org.ncssar.rid2caltopo.data.ClueUploadBackoffTable()
+    private var clueUploadOwner: kotlinx.coroutines.Job? = null
+    private val maxConcurrentClueUploads = 3
+
+    /** Default logging is Debug. Info is Ludicrous, so skip lines must not use CTInfo. */
+    private fun logClueRetry(reason: String, message: String, warn: Boolean = false) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val previous = clueRetryLoggedAtMs[reason]
+        if (previous != null && now - previous < 60_000L) return
+        clueRetryLoggedAtMs[reason] = now
+        if (warn) CTWarn(tag, message) else CTDebug(tag, message)
+    }
+
+    private fun endClueUpload(id: String) {
+        clueUploadStartedAtMs.remove(id)
+    }
+
+    private fun beginClueUpload(id: String): Boolean {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val startedAt = clueUploadStartedAtMs.putIfAbsent(id, now)
+        if (startedAt == null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                clueStorage {
+                    clueDiskMutex.withLock { localClueStore.markUploading(id) }
+                }.onSuccess {
+                    hydrateLocalClues(currentLocalClueMapKey())
+                }
+            }
+            return true
+        }
+        if (now - startedAt < clueUploadStaleAfterMs) return false
+        if (!clueUploadStartedAtMs.replace(id, startedAt, now)) return false
+        CTWarn(tag, "retryPendingClues: cleared stale in-flight clue id=$id ageMs=${now - startedAt}")
+        return true
+    }
 
     private fun retryPendingClues() {
-        if (CaltopoMap.GetMapStatus() != mapStatus.up) return
-        val mapId = CaltopoMap.GetMapId()
-        val teamId = org.ncssar.rid2caltopo.data.CaltopoPersonalSession.capture("")?.credentialKey
-            ?: CaltopoClient.GetCaltopoCredentials().teamId.orEmpty()
-        val folder = CaltopoMap.GetFolderId() ?: return
-        // One photo at a time; the next poll advances the remaining queue.
-        if (clueUploadsInFlight.isNotEmpty()) return
+        val status = CaltopoMap.GetMapStatus()
+        if (status != mapStatus.up) {
+            logClueRetry("map-not-up", "retryPendingClues: skip reason=map-not-up status=$status")
+            return
+        }
+        if (!org.ncssar.rid2caltopo.data.CaltopoNetworkReachability.hasValidatedInternet()) {
+            logClueRetry("deferred-offline", "retryPendingClues: deferred offline")
+            return
+        }
+        val mapId = CaltopoMap.GetMapId().trim()
+        if (mapId.isEmpty()) {
+            logClueRetry("map-id-blank", "retryPendingClues: skip reason=map-id-blank")
+            return
+        }
+        val teamId = publicationTeamId()
+        if (teamId.isBlank()) {
+            logClueRetry("publication-team-blank", "retryPendingClues: skip reason=publication-team-blank")
+            return
+        }
+        // One owner loop; up to MAX_CONCURRENT_CLUE_UPLOADS in flight. Per-clue backoff must
+        // not block other ready ids — a 502 on one clue must not stall the rest.
+        if (clueUploadOwner?.isActive == true) {
+            logClueRetry(
+                "upload-in-flight",
+                "retryPendingClues: skip reason=upload-in-flight ids=$clueUploadStartedAtMs",
+            )
+            return
+        }
         val mapKey = currentLocalClueMapKey()
-        viewModelScope.launch {
-            val (pending, visibleIds) = clueStorage {
-                clueDiskMutex.withLock {
-                    localClueStore.pendingForMap(mapId, teamId) to
-                        localClueStore.recordsForMap(mapKey).map { it.id }.toSet()
-                }
-            }.getOrElse { error ->
-                CTError(tag, "Pending clue storage unavailable; will retry", Exception(error))
-                return@launch
-            }
-            if (mapKey != currentLocalClueMapKey()) return@launch
-            if (visibleIds != localMapMarkers.map { it.id }.toSet()) hydrateLocalClues(mapKey)
-            val record = pending.firstOrNull() ?: return@launch
-            if (!clueUploadsInFlight.add(record.id)) return@launch
-            withContext(Dispatchers.IO) {
-                try {
-                    val jpeg = localClueStore.imageFile(record).readBytes()
-                    org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
-                        mapId, teamId, record.id, record.lat, record.lng, record.title, record.publishedDescription,
-                        folder, record.createdAtMs, jpeg) { result ->
-                        val permanent = result.responseCode in listOf(400, 401, 403, 404, 413, 422)
-                        viewModelScope.launch {
-                            try {
-                                clueStorage {
-                                    clueDiskMutex.withLock {
-                                        localClueStore.recordUploadResult(record.id, result.success(), result.responseString(), permanent)
-                                    }
-                                }.onSuccess {
-                                    hydrateLocalClues(currentLocalClueMapKey())
-                                }.onFailure { error ->
-                                    CTError(tag, "Clue upload result could not be saved; retained for retry", Exception(error))
-                                    CaltopoClient.ShowToast("Clue upload status could not be saved. Local photo retained; check storage. R2C will retry.")
-                                }
-                            } finally { clueUploadsInFlight.remove(record.id) }
-                        }
+        clueUploadOwner = viewModelScope.launch {
+            val owner = coroutineContext[kotlinx.coroutines.Job]
+            try {
+                while (isActive) {
+                    if (CaltopoMap.GetMapStatus() != mapStatus.up || CaltopoMap.GetMapId().trim() != mapId) {
+                        logClueRetry("map-not-up", "retryPendingClues: skip reason=map-not-up status=${CaltopoMap.GetMapStatus()}")
+                        return@launch
                     }
-                } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                    clueUploadsInFlight.remove(record.id)
-                    throw cancelled
-                } catch (error: Exception) {
-                    clueUploadsInFlight.remove(record.id)
-                    CTError(tag, "Pending clue remains local", error)
+                    if (publicationTeamId() != teamId) {
+                        logClueRetry("publication-team-blank", "retryPendingClues: skip reason=publication-team-changed")
+                        return@launch
+                    }
+                    val folder = withContext(Dispatchers.IO) { CaltopoMap.resolveTrackFolderIdForClue() }
+                    if (folder.isNullOrBlank()) {
+                        logClueRetry("track-folder-unresolved", "retryPendingClues: skip reason=track-folder-unresolved mapId=$mapId teamId=$teamId")
+                        return@launch
+                    }
+                    val (pending, visibleIds, pendingSummary) = clueStorage {
+                        clueDiskMutex.withLock {
+                            Triple(
+                                localClueStore.pendingForMap(mapId, teamId),
+                                localClueStore.recordsForMap(mapKey).map { it.id }.toSet(),
+                                localClueStore.pendingPublishSummary(),
+                            )
+                        }
+                    }.getOrElse { error ->
+                        CTError(tag, "retryPendingClues: skip reason=storage-unavailable", Exception(error))
+                        return@launch
+                    }
+                    if (mapKey != currentLocalClueMapKey()) {
+                        logClueRetry("map-changed", "retryPendingClues: skip reason=map-changed")
+                        return@launch
+                    }
+                    if (visibleIds != localMapMarkers.map { it.id }.toSet()) hydrateLocalClues(mapKey)
+                    if (pending.isEmpty()) {
+                        clueUploadBackoff.clearAll()
+                        val queryTeam = org.ncssar.rid2caltopo.data.CluePublicationIdentity.normalizeTeamId(teamId)
+                        val message = "retryPendingClues: skip reason=no-matching-pending queryMap=map:$mapId queryTeam=$queryTeam pending=$pendingSummary"
+                        logClueRetry("no-matching-pending", message, warn = pendingSummary != "none")
+                        return@launch
+                    }
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    val slots = (maxConcurrentClueUploads - clueUploadStartedAtMs.size).coerceAtLeast(0)
+                    val ready = pending
+                        .filter { clueUploadBackoff.isReady(it.id, now) && !clueUploadStartedAtMs.containsKey(it.id) }
+                        .sortedByDescending { it.createdAtMs }
+                        .take(slots)
+                    if (ready.isEmpty()) {
+                        if (clueUploadStartedAtMs.isNotEmpty()) {
+                            kotlinx.coroutines.delay(200L)
+                            continue
+                        }
+                        val wakeAt = pending.minOf { clueUploadBackoff.readyAt(it.id) }
+                        val waitMs = (wakeAt - now).coerceAtLeast(50L).coerceAtMost(60_000L)
+                        kotlinx.coroutines.delay(waitMs)
+                        continue
+                    }
+                    val batch = ready.mapNotNull { record ->
+                        if (!beginClueUpload(record.id)) {
+                            logClueRetry(
+                                "already-in-flight:${record.id}",
+                                "retryPendingClues: skip reason=already-in-flight id=${record.id}",
+                            )
+                            return@mapNotNull null
+                        }
+                        logClueRetry(
+                            "uploading:${record.id}",
+                            "retryPendingClues: uploading id=${record.id} mapId=$mapId teamId=$teamId folder=$folder",
+                        )
+                        async(Dispatchers.IO) { uploadPendingClue(mapId, teamId, folder, record) }
+                    }
+                    if (batch.isEmpty()) {
+                        kotlinx.coroutines.delay(50L)
+                        continue
+                    }
+                    batch.awaitAll()
                 }
+            } finally {
+                if (clueUploadOwner === owner) clueUploadOwner = null
             }
+        }
+    }
+
+    private suspend fun uploadPendingClue(
+        mapId: String,
+        teamId: String,
+        folder: String,
+        record: AndroidClueRecord,
+    ) {
+        val outcome = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
+        try {
+            org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
+                mapId, teamId, record.id, record.lat, record.lng, record.title,
+                record.publishedDescription, folder, record.createdAtMs,
+                localClueStore.imageFile(record).readBytes(),
+            ) { result -> outcome.complete(result) }
+            val result = outcome.await()
+            val permanent = result.responseCode in listOf(400, 401, 403, 404, 413, 422)
+            clueStorage {
+                clueDiskMutex.withLock {
+                    localClueStore.recordUploadResult(record.id, result.success(), result.responseString(), permanent)
+                }
+            }.onSuccess {
+                hydrateLocalClues(currentLocalClueMapKey())
+            }.onFailure { error ->
+                CTError(tag, "Clue upload result could not be saved; retained for retry", Exception(error))
+                CaltopoClient.ShowToast("Clue upload status could not be saved. Local photo retained; check storage. R2C will retry.")
+            }
+            endClueUpload(record.id)
+            if (result.success()) {
+                clueUploadBackoff.reset(record.id)
+                return
+            }
+            val delayMs = clueUploadBackoff.nextDelayMs(record.id)
+            clueUploadBackoff.markDelayedUntil(
+                record.id,
+                android.os.SystemClock.elapsedRealtime() + delayMs,
+            )
+            logClueRetry(
+                "backoff:${record.id}",
+                "retryPendingClues: backoffMs=$delayMs id=${record.id} code=${result.responseCode}",
+                warn = true,
+            )
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            endClueUpload(record.id)
+            throw cancelled
+        } catch (error: Exception) {
+            endClueUpload(record.id)
+            CTError(tag, "Pending clue remains local", error)
+            val delayMs = clueUploadBackoff.nextDelayMs(record.id)
+            clueUploadBackoff.markDelayedUntil(
+                record.id,
+                android.os.SystemClock.elapsedRealtime() + delayMs,
+            )
         }
     }
 
@@ -3009,39 +3336,77 @@ class StreamsViewModel(
         if (clueSaveInProgress) return
         // Acknowledge before any suspension, track scan or image/disk work. Freeze the accepted
         // report so edits and waypoint refreshes cannot change it during the save.
-        // Replace preview-only DEM work with a required worker preparation of this frozen report.
+        // Submit publishes the nearest-waypoint position immediately. DEM refinement stays on the preview.
         clueSaveInProgress = true
+        clueProjectionDebounceJob?.cancel()
         clueProjectionJob?.cancel()
         pendingBindingJob?.cancel()
         viewModelScope.launch {
             try {
+                val startedAt = android.os.SystemClock.elapsedRealtime()
                 val acceptedContext = captureClueSaveContext()
+                val contextAt = android.os.SystemClock.elapsedRealtime()
                 val bound = withContext(Dispatchers.Default) { bindAtSubmit(clue) }
+                val bindAt = android.os.SystemClock.elapsedRealtime()
                 val context = freezeClueDestination(acceptedContext, bound, mode == ClueSaveMode.PUBLISH)
-                val (submitted, title, description) = withContext(Dispatchers.Default) {
-                    val submitted = prepareClueTerrainForSave(bound) { lat, lng ->
-                        altitudeCoordinator.demElevationService.sampleElevationMeters(lat, lng)
-                    }
-                    val title = if (mode == ClueSaveMode.MARKER_LOCAL) submitted.title.ifBlank { "Local marker" } else submitted.title
-                    val captureSummary = appendTelemetrySummary(submitted.description,
-                        buildClueCaptureSummary(submitted, context.format))
-                    val description = if (mode == ClueSaveMode.MARKER_LOCAL) captureSummary
-                        else appendTelemetrySummary(captureSummary, submitted.streamTelemetrySummary)
-                    Triple(submitted, title, description)
+                val destinationAt = android.os.SystemClock.elapsedRealtime()
+                val contextMs = contextAt - startedAt
+                val bindMs = bindAt - contextAt
+                val destinationMs = destinationAt - bindAt
+                val wait = when {
+                    destinationMs >= bindMs && destinationMs >= contextMs -> "destination"
+                    bindMs >= contextMs -> "waypoint-bind"
+                    else -> "capture-context"
                 }
-                persistClueLocally(submitted, title, description, mode == ClueSaveMode.PUBLISH, context)
+                // Nearest-waypoint position is final at Submit. Do not wait on the DEM worker
+                // or on Archive Dir hydration.
+                android.util.Log.i(tag, "Clue save stage=bound elapsedMs=${destinationAt - startedAt} " +
+                    "wait=$wait contextMs=$contextMs bindMs=$bindMs destinationMs=$destinationMs " +
+                    "storageReady=${org.ncssar.rid2caltopo.storage.OperationalStorage.ready()} " +
+                    "terrainApplied=${bound.terrainProjectionApplied} demSource=${bound.demSource ?: "none"} " +
+                    "publishWithoutTerrainWait=true")
+                android.util.Log.i(
+                    tag,
+                    clueProjectionMethodLogLine(
+                        clueLat = bound.lat,
+                        clueLng = bound.lng,
+                        droneLat = bound.droneLat,
+                        droneLng = bound.droneLng,
+                        gimbalPitchDeg = bound.gimbalAngleDeg,
+                        gimbalYawDeg = bound.headingDeg,
+                        terrainProjectionApplied = bound.terrainProjectionApplied,
+                        demSource = bound.demSource,
+                    ) + " stage=submit"
+                )
+                val (title, description) = withContext(Dispatchers.Default) {
+                    val title = if (mode == ClueSaveMode.MARKER_LOCAL) bound.title.ifBlank { "Local marker" } else bound.title
+                    val captureSummary = appendTelemetrySummary(bound.description,
+                        buildClueCaptureSummary(bound, context.format))
+                    val description = if (mode == ClueSaveMode.MARKER_LOCAL) captureSummary
+                        else appendTelemetrySummary(captureSummary, bound.streamTelemetrySummary)
+                    title to description
+                }
+                val publishedDescription = if (mode == ClueSaveMode.PUBLISH) {
+                    appendFlatSurfaceLocationNote(description, bound.terrainProjectionApplied, bound.gimbalAngleDeg)
+                } else description
+                val saved = persistClueLocally(bound, title, publishedDescription, mode == ClueSaveMode.PUBLISH, context)
                     ?: return@launch
+                if (!bound.terrainProjectionApplied && !isNadirGimbal(bound.gimbalAngleDeg)) {
+                    schedulePostSaveClueTerrainRefine(saved, bound, mode == ClueSaveMode.PUBLISH)
+                }
                 when (mode) {
                     ClueSaveMode.PUBLISH -> {
                         retryPendingClues()
                         CaltopoClient.ShowToast("Clue saved locally; map publication is pending.")
                     }
                     ClueSaveMode.IGNORED_LOCAL -> {
-                        CTDebug(tag, "Clue on ignored flight kept local only remoteId=${submitted.droneSpec.remoteId}")
+                        CTDebug(tag, "Clue on ignored flight kept local only remoteId=${bound.droneSpec.remoteId}")
                         CaltopoClient.ShowToast(org.ncssar.rid2caltopo.data.IgnoredFlightClue.LOCAL_ONLY_SAVED)
                     }
                     ClueSaveMode.MARKER_LOCAL -> CaltopoClient.ShowToast("Local marker added to R2C Map Pane.")
                 }
+                android.util.Log.i(tag, "Clue save stage=queued-upload elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt} mode=$mode " +
+                    "flatSurfaceNote=${publishedDescription.contains(FLAT_SURFACE_LOCATION_NOTE)}")
                 if (pendingClue?.timestamp == clue.timestamp && pendingClue?.designator == clue.designator) clearPendingClue()
             } catch (error: ClueTerrainUnavailable) {
                 CTWarn(tag, "Clue save awaiting terrain: ${error.message}")
@@ -3062,16 +3427,57 @@ class StreamsViewModel(
         }
     }
 
+    private val _unpublishedClueDelete = MutableStateFlow<String?>(null)
+    val unpublishedClueDelete: StateFlow<String?> = _unpublishedClueDelete.asStateFlow()
+    private var unpublishedClueDeleteAction: (() -> Unit)? = null
+
+    /**
+     * Pending and failed clues are not on the map yet. Deleting them is permanent, so confirm first.
+     * The "marker remains" toast is only for a clue CalTopo already accepted.
+     */
     fun deleteLocalMapMarker(markerId: String, onDeleted: () -> Unit = {}) {
+        val record = localClueRecordsById[markerId]
+        if (record != null && record.publishToCaltopo && record.uploadState != "published") {
+            unpublishedClueDeleteAction = { performDeleteLocalMapMarker(markerId, onDeleted) }
+            _unpublishedClueDelete.value = record.title.ifBlank { "This clue" }
+            return
+        }
+        performDeleteLocalMapMarker(markerId, onDeleted)
+    }
+
+    fun confirmUnpublishedClueDelete() {
+        val action = unpublishedClueDeleteAction
+        dismissUnpublishedClueDelete()
+        action?.invoke()
+    }
+
+    fun dismissUnpublishedClueDelete() {
+        unpublishedClueDeleteAction = null
+        _unpublishedClueDelete.value = null
+    }
+
+    private fun performDeleteLocalMapMarker(markerId: String, onDeleted: () -> Unit) {
         viewModelScope.launch {
             val marker = localMapMarkers.firstOrNull { it.id == markerId } ?: return@launch
             val deletedRecord = localClueRecordsById[markerId]
+            // Clue storage is session-cached after the first verify/prepare. Only announce when
+            // a genuine first-time open is still running after ~1s; never toast on later deletes.
+            val openingToast = launch {
+                if (org.ncssar.rid2caltopo.storage.OperationalStorage.cluesReady()) return@launch
+                delay(1_000L)
+                if (!isActive) return@launch
+                CaltopoClient.ShowToast("Opening clue storage…")
+            }
             val removed = try {
-                withContext(Dispatchers.IO) { clueDiskMutex.withLock { localClueStore.delete(markerId) } }
+                withContext(Dispatchers.IO) {
+                    clueDiskMutex.withLock { localClueStore.delete(markerId) }
+                }
             } catch (error: Exception) {
                 CTError(tag, "deleteLocalMapMarker: unable to delete id=$markerId", error)
                 CaltopoClient.ShowToast("Local clue copy could not be deleted.")
                 false
+            } finally {
+                openingToast.cancel()
             }
             if (!removed) return@launch
             ++clueHydrationGeneration
@@ -3083,8 +3489,11 @@ class StreamsViewModel(
             if (replacementSnapshot == null) clueSnapshotRefsByTitle.remove(marker.title.trim())
             else clueSnapshotRefsByTitle[marker.title.trim()] = replacementSnapshot
             deletedRecord?.let { scheduleArchiveRewrite(it) }
-            CaltopoClient.ShowToast("Local clue copy deleted; its CalTopo marker remains.")
-            CTDebug(tag, "deleteLocalMapMarker: deleted local copy id=$markerId")
+            val toast = if (deletedRecord?.uploadState == "published")
+                "Local clue copy deleted; its CalTopo marker remains."
+            else "Local clue copy deleted."
+            CaltopoClient.ShowToast(toast)
+            CTDebug(tag, "deleteLocalMapMarker: deleted local copy id=$markerId state=${deletedRecord?.uploadState}")
             onDeleted()
         }
     }
@@ -3096,6 +3505,8 @@ class StreamsViewModel(
     private fun clearPendingClue() {
         clueCaptureJob?.cancel()
         clueCaptureJob = null
+        clueProjectionDebounceJob?.cancel()
+        clueProjectionDebounceJob = null
         clueProjectionJob?.cancel()
         clueProjectionJob = null
         pendingBindingJob?.cancel()
@@ -3157,6 +3568,8 @@ class StreamsViewModel(
                     val origin = next.nearest
                     val moveOrigin = binding.originIsWaypoint && origin != null && origin != binding.nearest
                     _pendingClue.value = if (moveOrigin && origin != null) {
+                        val knownGround = clue.knownDemGroundMeters
+                            ?: clue.alt.takeIf { clue.terrainProjectionApplied || clue.demSource != null }
                         val projection = projectClueLocation(
                             droneLat = origin.latitude,
                             droneLng = origin.longitude,
@@ -3164,17 +3577,25 @@ class StreamsViewModel(
                             headingDeg = clue.headingDeg,
                             aglMeters = clue.projectionHeightMeters,
                             gimbalAngleDeg = clue.gimbalAngleDeg,
+                            knownGroundElevationMeters = knownGround,
                         )
                         CTDebug(tag, "Pending clue origin moved to nearer waypoint " +
                             org.ncssar.rid2caltopo.data.ClueBindingText.formSummary(next))
                         clue.copy(binding = next, droneLat = origin.latitude, droneLng = origin.longitude,
                             droneAlt = origin.altitudeMeters ?: clue.droneAlt,
                             lat = projection.lat, lng = projection.lng, alt = projection.alt,
-                            terrainProjectionApplied = false, demSource = null, demResolutionMeters = null, demSampleStale = false)
+                            terrainProjectionApplied = false, demSource = null, demResolutionMeters = null, demSampleStale = false,
+                            knownDemGroundMeters = knownGround)
                     } else {
                         clue.copy(binding = next)
                     }
-                    if (moveOrigin) requestDemClueProjectionRefresh(clue.designator)
+                    // Origin moves get a hard-capped local bind try only; never an unbounded EPQS walk.
+                    if (moveOrigin) {
+                        requestDemClueProjectionRefresh(
+                            clue.designator,
+                            bindTimeoutMs = CLUE_BIND_TERRAIN_TIMEOUT_MS,
+                        )
+                    }
                 }
                 kotlinx.coroutines.delay(500L)
             }
@@ -3210,49 +3631,238 @@ class StreamsViewModel(
         }
     }
 
-    private fun requestDemClueProjectionRefresh(designator: String) {
+    /**
+     * Debounced DEM refresh for slider-driven gimbal/heading edits. Capture and binding
+     * origin moves still call [requestDemClueProjectionRefresh] immediately.
+     */
+    private fun scheduleDemClueProjectionRefresh(designator: String) {
+        clueProjectionDebounceJob?.cancel()
+        clueProjectionDebounceJob = viewModelScope.launch {
+            delay(CLUE_DEM_REFRESH_DEBOUNCE_MS)
+            if (!isActive) return@launch
+            requestDemClueProjectionRefresh(designator)
+        }
+    }
+
+    private fun requestDemClueProjectionRefresh(
+        designator: String,
+        bindTimeoutMs: Long? = null,
+    ) {
         val clue = _pendingClue.value ?: return
         if (clue.designator != designator) return
         clueProjectionJob?.cancel()
+        val snapshotGimbal = clue.gimbalAngleDeg
+        val snapshotHeading = clue.headingDeg
         clueProjectionJob = viewModelScope.launch(Dispatchers.Default) {
-            val refined = refineCapturedClueTerrain(clue) { lat, lng ->
-                altitudeCoordinator.demElevationService.sampleElevationMeters(lat, lng)
-            }
-            withContext(Dispatchers.Main) {
-                val current = _pendingClue.value ?: return@withContext
-                if (current.designator != clue.designator ||
-                    current.timestamp != clue.timestamp ||
-                    current.droneLat != clue.droneLat ||
-                    current.droneLng != clue.droneLng ||
-                    current.droneAlt != clue.droneAlt ||
-                    current.headingDeg != clue.headingDeg ||
-                    current.gimbalAngleDeg != clue.gimbalAngleDeg) {
-                    return@withContext
+            ClueTerrainDiagnostics.beginClueTerrainTask()
+            try {
+                val dem = altitudeCoordinator.demElevationService
+                // One catalog rebuild for this form walk — never per ray-march step.
+                dem.prepareLocalCatalogForClueSampling()
+                ensureActive()
+                // Form path is local S1M only with hard timeouts. EPQS belongs in post-save refine.
+                val localOnly: suspend (Double, Double) -> org.ncssar.rid2caltopo.video.mapcache.DemElevationSample? =
+                    { lat, lng -> dem.sampleLocalElevationMeters(lat, lng) }
+                val quickTimeout = bindTimeoutMs ?: CLUE_BIND_TERRAIN_TIMEOUT_MS
+                val quick = withTimeoutOrNull(quickTimeout) {
+                    refineCapturedClueTerrain(
+                        clue,
+                        sampleElevation = localOnly,
+                        sampleLocalElevation = localOnly,
+                    )
                 }
-                _pendingClue.value = current.copy(
-                    lat = refined.lat, lng = refined.lng, alt = refined.alt,
-                    aglMeters = refined.aglMeters, aglSourceLabel = refined.aglSourceLabel,
-                    projectionHeightMeters = refined.projectionHeightMeters,
-                    projectionHeightSourceLabel = refined.projectionHeightSourceLabel,
+                if (quick != null && quick.terrainProjectionApplied) {
+                    applyPendingClueTerrainRefine(
+                        designator = designator,
+                        original = clue,
+                        refined = quick,
+                        snapshotGimbal = snapshotGimbal,
+                        snapshotHeading = snapshotHeading,
+                        stage = "bind-${quickTimeout}ms",
+                    )
+                }
+                ensureActive()
+                // Longer local-only pass still hard-capped; Submit never waits on this job.
+                val refined = withTimeoutOrNull(CLUE_FORM_TERRAIN_TIMEOUT_MS) {
+                    refineCapturedClueTerrain(
+                        clue = _pendingClue.value?.takeIf {
+                            it.designator == clue.designator && it.timestamp == clue.timestamp
+                        } ?: clue,
+                        sampleElevation = localOnly,
+                        sampleLocalElevation = localOnly,
+                    )
+                } ?: return@launch
+                applyPendingClueTerrainRefine(
+                    designator = designator,
+                    original = clue,
+                    refined = refined,
+                    snapshotGimbal = snapshotGimbal,
+                    snapshotHeading = snapshotHeading,
+                    stage = "async",
+                )
+            } finally {
+                ClueTerrainDiagnostics.endClueTerrainTask()
+            }
+        }
+    }
+
+    private suspend fun applyPendingClueTerrainRefine(
+        designator: String,
+        original: PendingClue,
+        refined: PendingClue,
+        snapshotGimbal: Double,
+        snapshotHeading: Double?,
+        stage: String,
+    ) {
+        withContext(Dispatchers.Main) {
+            val current = _pendingClue.value ?: return@withContext
+            // Height may change after DEM recovery; do not treat that as stale. Gimbal/heading/origin still must match.
+            if (current.designator != original.designator ||
+                current.timestamp != original.timestamp ||
+                current.droneLat != original.droneLat ||
+                current.droneLng != original.droneLng ||
+                current.droneAlt != original.droneAlt ||
+                current.headingDeg != snapshotHeading ||
+                current.gimbalAngleDeg != snapshotGimbal) {
+                CTDebug(tag, "requestDemClueProjectionRefresh($designator): discarded stale refinement stage=$stage")
+                return@withContext
+            }
+            _pendingClue.value = current.copy(
+                lat = refined.lat, lng = refined.lng, alt = refined.alt,
+                aglMeters = refined.aglMeters, aglSourceLabel = refined.aglSourceLabel,
+                projectionHeightMeters = refined.projectionHeightMeters,
+                projectionHeightSourceLabel = refined.projectionHeightSourceLabel,
+                terrainProjectionApplied = refined.terrainProjectionApplied,
+                demSource = refined.demSource, demResolutionMeters = refined.demResolutionMeters,
+                demSampleStale = refined.demSampleStale,
+                knownDemGroundMeters = refined.knownDemGroundMeters
+                    ?: refined.alt.takeIf { refined.terrainProjectionApplied }
+                    ?: current.knownDemGroundMeters,
+            )
+            android.util.Log.i(
+                tag,
+                clueProjectionMethodLogLine(
+                    clueLat = refined.lat,
+                    clueLng = refined.lng,
+                    droneLat = refined.droneLat,
+                    droneLng = refined.droneLng,
+                    gimbalPitchDeg = refined.gimbalAngleDeg,
+                    gimbalYawDeg = refined.headingDeg,
                     terrainProjectionApplied = refined.terrainProjectionApplied,
-                    demSource = refined.demSource, demResolutionMeters = refined.demResolutionMeters,
+                    demSource = refined.demSource,
+                ) + " stage=$stage"
+            )
+            CTDebug(tag, String.format(
+                Locale.US,
+                "requestDemClueProjectionRefresh(%s): refined projectedLat=%.6f projectedLng=%.6f projectedAlt=%.1f headingDeg=%s aglM=%s gimbalDeg=%.1f terrainApplied=%s demSource=%s demResolutionM=%s stage=%s",
+                designator,
+                refined.lat,
+                refined.lng,
+                refined.alt,
+                refined.headingDeg?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
+                refined.aglMeters?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
+                refined.gimbalAngleDeg,
+                refined.terrainProjectionApplied,
+                refined.demSource ?: "none",
+                refined.demResolutionMeters?.let { String.format(Locale.US, "%.1f", it) } ?: "unknown",
+                stage,
+            ))
+        }
+    }
+
+    private fun schedulePostSaveClueTerrainRefine(
+        record: AndroidClueRecord,
+        clue: PendingClue,
+        publishToCaltopo: Boolean,
+    ) {
+        viewModelScope.launch(Dispatchers.Default) {
+            ClueTerrainDiagnostics.beginClueTerrainTask()
+            try {
+                val dem = altitudeCoordinator.demElevationService
+                dem.prepareLocalCatalogForClueSampling()
+                ensureActive()
+                val refined = withTimeoutOrNull(CLUE_POST_SAVE_TERRAIN_TIMEOUT_MS) {
+                    refineCapturedClueTerrain(
+                        clue,
+                        sampleElevation = { lat, lng -> dem.sampleLocalElevationMeters(lat, lng) },
+                        sampleLocalElevation = { lat, lng -> dem.sampleLocalElevationMeters(lat, lng) },
+                    )
+                } ?: run {
+                    android.util.Log.i(
+                        tag,
+                        "Clue terrain refine timed out stage=post-save id=${record.id} timeoutMs=$CLUE_POST_SAVE_TERRAIN_TIMEOUT_MS",
+                    )
+                    return@launch
+                }
+                android.util.Log.i(
+                    tag,
+                    clueProjectionMethodLogLine(
+                        clueLat = refined.lat,
+                        clueLng = refined.lng,
+                        droneLat = refined.droneLat,
+                        droneLng = refined.droneLng,
+                        gimbalPitchDeg = refined.gimbalAngleDeg,
+                        gimbalYawDeg = refined.headingDeg,
+                        terrainProjectionApplied = refined.terrainProjectionApplied,
+                        demSource = refined.demSource,
+                    ) + " stage=post-save id=${record.id}"
+                )
+                if (!refined.terrainProjectionApplied) return@launch
+                val moved = cluePositionMoved(record.lat, record.lng, refined.lat, refined.lng)
+                val updatedDescription = applyingTerrainProjectionDescription(
+                    description = record.description,
+                    demSource = refined.demSource,
+                    demResolutionMeters = refined.demResolutionMeters,
                     demSampleStale = refined.demSampleStale,
                 )
-                CTDebug(tag, String.format(
-                    Locale.US,
-                    "requestDemClueProjectionRefresh(%s): refined projectedLat=%.6f projectedLng=%.6f projectedAlt=%.1f headingDeg=%s aglM=%s gimbalDeg=%.1f terrainApplied=%s demSource=%s demResolutionM=%s",
-                    clue.designator,
-                    refined.lat,
-                    refined.lng,
-                    refined.alt,
-                    clue.headingDeg?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
-                    clue.aglMeters?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
-                    clue.gimbalAngleDeg,
-                    refined.terrainProjectionApplied,
-                    refined.demSource ?: "none",
-                    refined.demResolutionMeters?.let { String.format(Locale.US, "%.1f", it) } ?: "unknown",
-                ))
+                val updated = record.copy(
+                    lat = refined.lat,
+                    lng = refined.lng,
+                    alt = refined.alt,
+                    description = updatedDescription,
+                )
+                clueStorage {
+                    clueDiskMutex.withLock { localClueStore.update(listOf(updated)) }
+                }.onSuccess {
+                    withContext(Dispatchers.Main) {
+                        localClueRecordsById[updated.id] = updated
+                        val index = localMapMarkers.indexOfFirst { it.id == updated.id }
+                        if (index >= 0) localMapMarkers[index] = updated.toLocalMapMarker()
+                    }
+                    android.util.Log.i(
+                        tag,
+                        "Clue terrain refine applied id=${updated.id} lat=${updated.lat} lng=${updated.lng} " +
+                            "previousLat=${record.lat} previousLng=${record.lng} demSource=${refined.demSource ?: "none"} moved=$moved"
+                    )
+                    if (moved && publishToCaltopo) {
+                        editPublishedClueMarkerPosition(updated)
+                    }
+                }.onFailure { error ->
+                    CTError(tag, "Clue terrain refine could not update local record id=${record.id}", Exception(error))
+                }
+            } finally {
+                ClueTerrainDiagnostics.endClueTerrainTask()
             }
+        }
+    }
+
+    private suspend fun editPublishedClueMarkerPosition(record: AndroidClueRecord) {
+        val mapId = record.mapKey.removePrefix("map:").takeIf { record.mapKey.startsWith("map:") && it.isNotBlank() }
+            ?: return
+        val teamId = record.destinationTeamId.takeIf { it.isNotBlank() } ?: return
+        val folder = withContext(Dispatchers.IO) {
+            org.ncssar.rid2caltopo.data.CaltopoMap.resolveTrackFolderIdForClue()
+        } ?: return
+        val outcome = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
+        org.ncssar.rid2caltopo.data.CaltopoSession.UpdateStoredPhotoMarker(
+            mapId, teamId, record.id, record.lat, record.lng, record.title,
+            record.publishedDescription, folder, record.createdAtMs,
+        ) { result -> outcome.complete(result) }
+        val result = outcome.await()
+        if (result.success()) {
+            android.util.Log.i(tag, "CalTopo marker position edited id=${record.id} lat=${record.lat} lng=${record.lng}")
+        } else {
+            CTWarn(tag, "CalTopo marker position edit failed id=${record.id} code=${result.responseCode}")
         }
     }
 
@@ -4425,6 +5035,7 @@ class StreamsViewModel(
         defaultAnomalyConfig = AnomalyPrefs.sessionStartConfig()
         refreshConfiguredStreamBindings()
         CaltopoMap.AddMapStatusListener(this)
+        CaltopoMap.setPendingClueFlushHandler { retryPendingClues() }
         if (CaltopoMap.GetMapId().isNotBlank()) {
             restoreMapFolderVisibility(mapFolderVisibilityKey(
                 CaltopoClient.GetCaltopoDomainAndPort(), CaltopoMap.GetMapId()))

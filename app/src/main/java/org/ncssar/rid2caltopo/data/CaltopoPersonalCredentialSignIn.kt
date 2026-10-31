@@ -13,27 +13,73 @@ import org.json.JSONObject
 /** System-browser enrollment and catalog load for Personal Login Support: Credentials. */
 object CaltopoPersonalCredentialSignIn {
     fun connect(context: Context, deviceName: String = CaltopoPersonalAccountConnection.DEFAULT_DEVICE_NAME): CredentialCatalog {
+        CaltopoPersonalAccountConnection.logAuth("connect process=${android.app.Application.getProcessName()}")
+        try {
+            return connectStoredOrEnroll(context, deviceName)
+        } catch (error: Exception) {
+            CaltopoPersonalAccountConnection.logAuth("connect failed")
+            throw error
+        }
+    }
+
+    private fun connectStoredOrEnroll(context: Context, deviceName: String): CredentialCatalog {
         val existing = CaltopoPersonalAccountConnection.reconnect("caltopo.com")
+        if (existing != null) CaltopoPersonalAccountConnection.logAuth("reconnect account=${existing.accountId}")
         val status = existing ?: CaltopoPersonalAccountConnection.enroll(
             deviceName = deviceName,
             browser = CaltopoSystemBrowser { url ->
-                context.startActivity(CaltopoPersonalAccountBrowser.systemBrowserIntent(url))
+                CaltopoPersonalAccountBrowser.open(context, url)
             },
             http = CaltopoPersonalAccountHttps
         )
-        val body = CaltopoPersonalAccountConnection.fetchAccountCatalog(CaltopoPersonalAccountHttps)
-            ?: throw CaltopoPersonalAccountException("CalTopo account catalog could not be loaded.")
+        val body = try {
+            CaltopoPersonalAccountConnection.fetchAccountCatalog(CaltopoPersonalAccountHttps)
+                ?: throw CaltopoPersonalAccountException("CalTopo account catalog could not be loaded.")
+        } catch (error: CaltopoPersonalAccountException) {
+            if (error.rejectsStoredCredential()) {
+                CaltopoPersonalAccountConnection.logAuth("stored credential rejected HTTP ${error.httpStatus}; cleared")
+                CaltopoPersonalAccountConnection.disconnect()
+            }
+            throw error
+        }
+        CaltopoPersonalAccountConnection.deleteSpareActivationCredential(body)
         val normalized = CaltopoPersonalCatalog.normalize(body, status.accountId)
+        CaltopoPersonalAccountConnection.logAuth(
+            "catalog normalized accounts=${normalized.optJSONArray("accounts")?.length() ?: 0} features=${normalized.optJSONArray("features")?.length() ?: 0}"
+        )
         return CredentialCatalog(status, CaltopoPersonalSession.prepareCatalog(signedGrants(normalized)))
+    }
+
+    /** Loads maps for a stored credential. Does not open CalTopo activation. */
+    fun openStored(): StoredPersonalLoad {
+        val existing = CaltopoPersonalAccountConnection.reconnect("caltopo.com")
+            ?: return StoredPersonalLoad.Missing
+        return try {
+            val body = CaltopoPersonalAccountConnection.fetchAccountCatalog(CaltopoPersonalAccountHttps)
+                ?: return StoredPersonalLoad.Failed("CalTopo account catalog could not be loaded.")
+            CaltopoPersonalAccountConnection.deleteSpareActivationCredential(body)
+            val normalized = CaltopoPersonalCatalog.normalize(body, existing.accountId)
+            StoredPersonalLoad.Ready(CredentialCatalog(existing, CaltopoPersonalSession.prepareCatalog(signedGrants(normalized))))
+        } catch (error: CaltopoPersonalAccountException) {
+            if (error.rejectsStoredCredential()) {
+                CaltopoPersonalAccountConnection.logAuth("stored credential rejected HTTP ${error.httpStatus}; cleared")
+                CaltopoPersonalAccountConnection.disconnect()
+                StoredPersonalLoad.Rejected
+            } else {
+                StoredPersonalLoad.Failed(error.message ?: "CalTopo account catalog could not be loaded.")
+            }
+        } catch (error: Exception) {
+            StoredPersonalLoad.Failed(error.message ?: "CalTopo account catalog could not be loaded.")
+        }
     }
 
     fun publishCatalog(catalog: CaltopoPersonalSession.PreparedCatalog) {
         CaltopoPersonalSession.acceptCatalog(catalog)
     }
 
-    /** Keystore delete. Call from a worker, then [CaltopoPersonalSession.suspendPersonalSelection] on the UI thread. */
+    /** Keystore delete. Call from a worker, then clear the personal selection on the UI thread. */
     fun logOut() {
-        CaltopoPersonalAccountConnection.disconnect()
+        CaltopoPersonalAccountConnection.logOut()
     }
 
     fun switchMode(context: Context, mode: CaltopoPersonalLoginMode) {
@@ -52,7 +98,7 @@ object CaltopoPersonalCredentialSignIn {
             val feature = features.optJSONObject(index) ?: continue
             val id = feature.optString("id")
             if (feature.optJSONObject("properties")?.optString("class") == "CollaborativeMap" && id.isNotEmpty()) {
-                grants.put(id, "signed-account")
+                grants.put(id, CaltopoPersonalAccountConnection.SIGNED_ACCOUNT_GRANT)
             }
         }
         return JSONObject(normalized.toString()).put("grants", grants)
@@ -60,3 +106,10 @@ object CaltopoPersonalCredentialSignIn {
 }
 
 data class CredentialCatalog(val status: CaltopoPersonalAccountStatus, val catalog: CaltopoPersonalSession.PreparedCatalog)
+
+sealed class StoredPersonalLoad {
+    data class Ready(val catalog: CredentialCatalog) : StoredPersonalLoad()
+    data object Rejected : StoredPersonalLoad()
+    data object Missing : StoredPersonalLoad()
+    data class Failed(val message: String) : StoredPersonalLoad()
+}

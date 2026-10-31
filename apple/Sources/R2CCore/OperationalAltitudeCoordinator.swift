@@ -261,6 +261,12 @@ public struct OperationalAltitudeCoordinator: Sendable {
     public var canManualCalibrate: Bool { currentAltitudeMeters != nil && currentCoordinate != nil && hasFreshAOLTelemetry }
     public var seedSource: SeedSource? { calibration?.seedSource }
 
+    /// Snapshot-only DEM datum for clue height recovery when SEI/AGL are absent at capture.
+    public var clueDemAltitudeReference: ClueDemAltitudeReference? {
+        guard let correctionMeters else { return nil }
+        return ClueDemAltitudeReference(correctionMeters: correctionMeters, scaleToMeters: 1.0)
+    }
+
     public var peerTrafficReference: OperationalPeerAltitudeReference? {
         guard let takeoffCoordinate, let calibration else { return nil }
         return OperationalPeerAltitudeReference(

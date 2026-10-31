@@ -56,9 +56,39 @@ final class AppleCaltopoSettings: ObservableObject {
     @Published private(set) var personalLoginMode: CaltopoPersonalLoginMode
     @Published private(set) var personalCredentialSummary = "Not connected"
     @Published private(set) var personalCredentialBusy = false
+    @Published var openAccountBrowserAfterCredentialSignIn = false
+    @Published var showSyncAccountPrompt = false
+    @Published var showPersonalLogOutPrompt = false
     private static let personalLoginModeKey = "caltopo.personalLoginSupport"
     @Published var usesPersonalCredentials: Bool {
         didSet { defaults.set(usesPersonalCredentials, forKey: "caltopo.usesPersonalCredentials") }
+    }
+
+    func rememberBrowseProfile(_ profileID: String) {
+        MapBrowserProfilePreference(defaults: defaults).remember(profileID)
+    }
+
+    /// Restores the last Map Browser profile once a stored personal credential is available.
+    func restoreRememberedBrowseProfile(
+        personalCredentialAvailable: Bool,
+        activeTeamProfileID: String,
+        knownTeamProfileIDs: [String]
+    ) -> String {
+        let preference = MapBrowserProfilePreference(defaults: defaults)
+        let target = MapBrowserProfilePreference.resolveRestoredProfileID(
+            lastSelectedProfileID: preference.lastSelectedProfileID(),
+            personalCredentialAvailable: personalCredentialAvailable,
+            defaultTeamProfileID: activeTeamProfileID,
+            knownTeamProfileIDs: knownTeamProfileIDs
+        )
+        if target == MapBrowserProfilePreference.personalProfileID {
+            if !usesPersonalCredentials { usesPersonalCredentials = true }
+            preference.remember(MapBrowserProfilePreference.personalProfileID)
+        } else {
+            if usesPersonalCredentials { usesPersonalCredentials = false }
+            if !target.isEmpty { preference.remember(target) }
+        }
+        return target
     }
     @Published private(set) var personalUsername = ""
     @Published private(set) var personalMaps: [CaltopoTeamMapNode] = []
@@ -130,6 +160,12 @@ final class AppleCaltopoSettings: ObservableObject {
         if storedLoginMode == nil { defaults.set(resolvedLoginMode.rawValue, forKey: Self.personalLoginModeKey) }
         personalLoginMode = resolvedLoginMode
         usesPersonalCredentials = defaults.bool(forKey: "caltopo.usesPersonalCredentials")
+        // Seed the last-profile preference from the legacy personal flag on first launch
+        // after this change, so a previous personal choice is restored in Map Browser.
+        if defaults.bool(forKey: "caltopo.usesPersonalCredentials"),
+           MapBrowserProfilePreference(defaults: defaults).lastSelectedProfileID().isEmpty {
+            MapBrowserProfilePreference(defaults: defaults).remember(MapBrowserProfilePreference.personalProfileID)
+        }
         enabled = defaults.bool(forKey: "caltopo.enabled")
         domainAndPort = defaults.string(forKey: "caltopo.domain") ?? "caltopo.com"
         // Match Android's session lifecycle: credentials and profiles persist,
@@ -149,6 +185,19 @@ final class AppleCaltopoSettings: ObservableObject {
         CaltopoPersonalAccountConnection.shared.use(AppleCaltopoPersonalAccountKeychain())
         CaltopoPersonalAccountConnection.shared.setFeatureEnabled(personalLoginMode == .credentials)
         refreshPersonalCredentialSummary()
+    }
+
+    /// Catalog title only. A previously stored "account: title" prefix is not shown.
+    var displayMapTitle: String {
+        OperationalIncidentSelection.displayMapTitle(mapTitle, personalName: personalUsername)
+    }
+
+    func mapOptionsText(teamLabel: String) -> String {
+        let personal = usesPersonalCredentials || personalSessionID != nil
+        return OperationalIncidentSelection.mapOptionsText(
+            personal: personal,
+            accountName: personal ? personalUsername : teamLabel,
+            mapTitle: displayMapTitle)
     }
 
     var configuration: AppleCaltopoConfiguration {
@@ -363,6 +412,43 @@ final class AppleCaltopoSettings: ObservableObject {
         Task { await CaltopoPersonalSessions.shared.clear() }
     }
 
+    var storedPersonalMenuName: String? {
+        let stored = personalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !stored.isEmpty { return stored }
+        let prefix = "Connected as "
+        if personalCredentialSummary.hasPrefix(prefix) {
+            let name = String(personalCredentialSummary.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            return name.isEmpty ? nil : name
+        }
+        return nil
+    }
+
+    func refreshStoredPersonalName() async {
+        let connected = await Task.detached(priority: .utility) {
+            CaltopoPersonalAccountConnection.shared.status(host: "caltopo.com")
+        }.value
+        guard personalLoginMode == .credentials else { return }
+        if let connected, !connected.revoked, !connected.displayName.isEmpty {
+            if personalUsername.isEmpty { personalUsername = connected.displayName }
+            personalCredentialSummary = "Connected as \(connected.displayName)"
+        }
+    }
+
+    func selectStoredPersonalAccount() async {
+        guard personalLoginMode == .credentials, !personalCredentialBusy else { return }
+        let existing = await Task.detached(priority: .userInitiated) {
+            CaltopoPersonalAccountConnection.shared.reconnect(host: "caltopo.com")
+        }.value
+        guard existing != nil else {
+            showSyncAccountPrompt = true
+            return
+        }
+        usesPersonalCredentials = true
+        rememberBrowseProfile(MapBrowserProfilePreference.personalProfileID)
+        personalUsername = existing?.displayName ?? personalUsername
+        await loadCredentialPersonalMaps()
+    }
+
     func signInWithPersonalCredential() async {
         guard personalLoginMode == .credentials, !personalCredentialBusy else { return }
         personalCredentialRevision &+= 1
@@ -381,9 +467,11 @@ final class AppleCaltopoSettings: ObservableObject {
             }.value
             personalCredentialSummary = "Connected as \(connected.displayName)"
             usesPersonalCredentials = true
+            rememberBrowseProfile(MapBrowserProfilePreference.personalProfileID)
             personalUsername = connected.displayName
             selectedPersonalAccountID = connected.accountID
             await loadCredentialPersonalMaps()
+            openAccountBrowserAfterCredentialSignIn = true
         } catch {
             status = error.localizedDescription
         }
@@ -394,13 +482,14 @@ final class AppleCaltopoSettings: ObservableObject {
         personalCredentialRevision &+= 1
         personalCredentialBusy = true
         defer { personalCredentialBusy = false }
-        await Task.detached(priority: .userInitiated) { CaltopoPersonalAccountConnection.shared.disconnect() }.value
+        await CaltopoPersonalAccountConnection.shared.logOut()
         personalCredentialSummary = "Not connected"
         if personalLoginMode == .credentials {
             personalSessionID = nil
             selectedPersonalAccountID = ""
             selectedPersonalMediaOwnerID = ""
             personalMaps = []
+            personalCatalogAccountID = ""
             personalUsername = ""
             personalMapsStatus = "Sign in to connect your CalTopo account"
             if usesPersonalCredentials {
@@ -415,6 +504,15 @@ final class AppleCaltopoSettings: ObservableObject {
         Task { await CaltopoPersonalSessions.shared.clear() }
     }
 
+    func fallBackFromMissingPersonalCredential(activeTeamProfileID: String) {
+        usesPersonalCredentials = false
+        if !activeTeamProfileID.isEmpty {
+            rememberBrowseProfile(activeTeamProfileID)
+        }
+    }
+
+    private var personalCatalogAccountID = ""
+
     func loadCredentialPersonalMaps() async {
         guard personalLoginMode == .credentials, !isLoadingPersonalMaps else { return }
         let revision = personalCredentialRevision
@@ -424,18 +522,36 @@ final class AppleCaltopoSettings: ObservableObject {
             let configuration = try await Task.detached(priority: .userInitiated) {
                 try CaltopoPersonalAccountConnection.shared.teamMapConfiguration()
             }.value
+            if personalCatalogAccountID == configuration.teamID, !personalMaps.isEmpty {
+                CaltopoPersonalAccountConnection.logState("catalog cache hit account=\(configuration.teamID) maps=\(personalMaps.count)")
+                return
+            }
             let client = try CaltopoTeamMapClient(configuration: configuration)
             let request = try await client.makeRequest(now: Date())
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-                throw CaltopoLiveClientError.httpStatus((response as? HTTPURLResponse)?.statusCode ?? 0, "CalTopo account catalog failed.")
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                if status == 401 || status == 403 {
+                    await CaltopoPersonalAccountConnection.shared.disconnect()
+                    personalCatalogAccountID = ""
+                    personalUsername = ""
+                    personalCredentialSummary = "Not connected"
+                    usesPersonalCredentials = false
+                    personalMaps = []
+                    showSyncAccountPrompt = true
+                    personalMapsStatus = "CalTopo rejected the saved account. Sign in again."
+                    return
+                }
+                throw CaltopoLiveClientError.httpStatus(status, "CalTopo account catalog failed.")
             }
+            await CaltopoPersonalAccountConnection.shared.deleteSpareActivationCredential(body: data)
             let prepared = try await Task.detached(priority: .userInitiated) {
                 try CaltopoPersonalCatalog.prepare(data, expectedID: configuration.teamID)
             }.value
             guard revision == personalCredentialRevision, personalLoginMode == .credentials else { return }
             acceptPersonalCatalog(prepared.username, maps: prepared.maps)
             selectedPersonalAccountID = configuration.teamID
+            personalCatalogAccountID = configuration.teamID
         } catch {
             guard revision == personalCredentialRevision, personalLoginMode == .credentials else { return }
             personalMaps = []
@@ -463,8 +579,9 @@ final class AppleCaltopoSettings: ObservableObject {
             selectedPersonalAccountID = map.personalAccountID.isEmpty ? account : map.personalAccountID
             selectedPersonalMediaOwnerID = map.personalMediaOwnerID.isEmpty ? selectedPersonalAccountID : map.personalMediaOwnerID
             mapID = map.id
-            mapTitle = "\(personalUsername): \(map.title)"
+            mapTitle = map.title
             enabled = true
+            rememberBrowseProfile(MapBrowserProfilePreference.personalProfileID)
             status = "Connected to \(map.title)"
             return configuration
         }
@@ -472,12 +589,15 @@ final class AppleCaltopoSettings: ObservableObject {
         selectedPersonalAccountID = map.personalAccountID
         selectedPersonalMediaOwnerID = map.personalMediaOwnerID
         mapID = map.id
-        mapTitle = map.personalSessionID != nil ? "\(personalUsername): \(map.title)" : map.title
+        mapTitle = map.title
         enabled = true
         // Selecting a map does not edit or rewrite credentials.
         defaults.set(true, forKey: "caltopo.enabled")
         defaults.set(mapID, forKey: "caltopo.mapID")
         defaults.set(mapTitle, forKey: "caltopo.mapTitle")
+        if usesPersonalCredentials || personalSessionID != nil {
+            rememberBrowseProfile(MapBrowserProfilePreference.personalProfileID)
+        }
         let value = configuration
         status = "Connected to \(map.title)"
         return value
@@ -518,6 +638,7 @@ final class AppleCaltopoSettings: ObservableObject {
             teamMaps = []
             credentialOrigin = Self.originUnknown
             status = "Not configured"
+            MapBrowserProfilePreference(defaults: defaults).clear()
             for key in [
                 "caltopo.enabled", "caltopo.domainAndPort", "caltopo.mapID",
                 "caltopo.mapTitle", "caltopo.credentialID", "caltopo.teamID",

@@ -72,7 +72,16 @@ final class AppleStreamRegistry: ObservableObject {
     }
 
     var focusedSession: AppleLiveStreamSession {
-        sessions.first(where: { $0.id == focusedID }) ?? sessions.first!
+        if let focused = sessions.first(where: { $0.id == focusedID }) {
+            return focused
+        }
+        if let first = sessions.first {
+            return first
+        }
+        // Placeholder is recreated if a teardown cleared the list — never crash the live UI.
+        let placeholder = AppleLiveStreamSession(path: "demo", model: primaryModel, state: .stopped)
+        sessions = [placeholder]
+        return placeholder
     }
 
     var focusedPlaybackURL: URL? {
@@ -1382,7 +1391,9 @@ final class RID2CaltopoAppDelegate: NSObject, UIApplicationDelegate {
         }
         AppleUserInteractionObserver.install()
         Task.detached(priority: .utility) { await AppleCredentialBackupProtection.shared.apply() }
-        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: nil) { _ in
+        // queue: .main — avoid forming a MainActor-isolated observer delivered on an
+        // arbitrary posting thread (queue: nil) if isolation inheritance traps.
+        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
             Task.detached(priority: .utility) { await AppleCredentialBackupProtection.shared.apply() }
         }
         // Safety net: raw AOL lidar work only lives while Download Map stays open; remove any left by a killed app.

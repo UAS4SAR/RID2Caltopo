@@ -457,7 +457,7 @@ struct ContentView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("You are currently synced with: \(caltopoSettings.mapTitle)")
+                Text(caltopoSettings.mapOptionsText(teamLabel: profileLifecycle.activeCredentialLabel))
             }
             .alert("Update available", isPresented: updateAdvisoryPresented) {
                 if let updateURL = peerCoordinator.recommendedUpdateURL {
@@ -746,7 +746,7 @@ struct ContentView: View {
                 if !caltopoSettings.mapID.isEmpty, caltopoSettings.mapTitle.isEmpty {
                     await caltopoSettings.loadTeamMaps()
                     if !caltopoSettings.mapTitle.isEmpty {
-                        orgConfigSettings.setIncidentMapTitle(caltopoSettings.mapTitle)
+                        orgConfigSettings.setIncidentMapTitle(caltopoSettings.displayMapTitle)
                     }
                 }
                 orgConfigImporter.caltopoConfigurationHandler = { configuration in
@@ -1017,6 +1017,7 @@ struct ContentView: View {
 
     private func handleIncomingURL(_ url: URL) {
         let rawValue = url.absoluteString
+        if url.scheme?.lowercased() == CaltopoPersonalAccountConnection.returnScheme { return }
         if url.scheme == "r2creauth" {
             trackerReauthenticationBrowserOpen = false
             trackerReauthenticationURL = nil
@@ -1156,6 +1157,15 @@ struct ContentView: View {
                         _ = await AppleAircraftOrganizationAccess.refresh(baseURL: AppleAircraftOrganizationAccess.scope)
                     }
                 }
+                // Resume clue uploads and interrupted LiveTrack recovery when connectivity returns.
+                // Heavy network work stays off MainActor inside those helpers
+                // (publisher logs archive/liveTrack flush counts after cancel).
+                AppleLog.info(
+                    "NetworkChecks",
+                    "connectivity restored → flush clues=\(clueStore.pendingUploadCount)"
+                )
+                clueStore.resume()
+                ridTracks.retryInterruptedLiveTrackRecovery()
             }
             .onChange(of: networkDiagnostics.currentSnapshotID) { _, _ in
                 refreshControllerRTMPURL()
@@ -1446,6 +1456,17 @@ struct ContentView: View {
                     },
                     fullCleanup: {
                         await ridTracks.setLocalDeviceMarkerPublishingEnabled(false)
+                        // Abort Flight Storage walks so durable track/clue saves never wait on them.
+                        AppleFlightStorage.cancelPendingMaintenance()
+                        // Finish owned LiveTracks, then close the CalTopo map before
+                        // tearing down the tracker websocket on quit / scene termination.
+                        // Durable track/clue work completes before the bounded MediaMTX drain.
+                        clueStore.flushPendingBestEffort()
+                        let disconnected = caltopoSettings.disconnectMap()
+                        await ridTracks.configureCaltopoAwaiting(
+                            disconnected,
+                            trackFolderName: orgConfigSettings.trackFolder
+                        )
                         await bluetoothScanner.stop()
                         locationProvider.stop()
                         networkDiagnostics.stop()
@@ -1828,6 +1849,30 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         androidRestrictionStrip
                         androidOperationsHeader
+                        if let disconnectProgress = ridTracks.mapDisconnectProgress {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                Text(disconnectProgress)
+                                    .font(.subheadline)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .padding(8)
+                            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 6))
+                        }
+                        if ridTracks.caltopoStatus.hasPrefix("CalTopo server unavailable") {
+                            HStack(alignment: .center, spacing: 8) {
+                                Text(ridTracks.caltopoStatus)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.white)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Button("Cancel") {
+                                    applyCaltopoConfiguration(caltopoSettings.disconnectMap())
+                                }
+                                .buttonStyle(.borderedProminent)
+                            }
+                            .padding(8)
+                            .background(Color.orange, in: RoundedRectangle(cornerRadius: 6))
+                        }
                         if !ridTracks.tracks.isEmpty { androidAircraftTable }
                     }
                 }
@@ -2371,6 +2416,10 @@ struct ContentView: View {
             LabeledContent("Invalid observation", value: String(ridTracks.invalidObservationCount))
             LabeledContent("Archived tracks", value: String(ridTracks.archivedTrackCount))
             Text(ridTracks.archiveStatus).font(.caption).foregroundStyle(.secondary)
+            if clueStore.pendingUploadCount > 0 {
+                LabeledContent("Pending clue uploads", value: String(clueStore.pendingUploadCount))
+            }
+            Text(clueStore.status).font(.caption).foregroundStyle(.secondary)
             LabeledContent("Tracker archive", value: ridTracks.trackerArchiveStatus)
             Text("Files › On My iPad › RID2Caltopo › RID2Caltopo › FlightStorage")
                 .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
@@ -2479,7 +2528,7 @@ struct ContentView: View {
     }
 
     private var currentIncidentName: String {
-        OperationalIncidentSelection.name(mapID: caltopoSettings.mapID, mapTitle: caltopoSettings.mapTitle,
+        OperationalIncidentSelection.name(mapID: caltopoSettings.mapID, mapTitle: caltopoSettings.displayMapTitle,
             standaloneName: orgConfigSettings.standaloneIncidentName)
     }
 
@@ -2518,6 +2567,7 @@ struct ContentView: View {
             onDisconnectMap: {
                 applyCaltopoConfiguration(caltopoSettings.disconnectMap())
             },
+            teamCredentialLabel: profileLifecycle.activeCredentialLabel,
             onRestartStreams: {
                 AppleLog.info("MediaMTX", "Operator restart streams requested from Live View")
                 streamRegistry.shutdown()
@@ -2572,11 +2622,15 @@ struct ContentView: View {
     }
 
     private func requestCredentialProfileSwitch(_ profileID: String) {
-        if profileID == "personal", caltopoSettings.usesPersonalCredentials {
+        // Re-selecting the active/remembered profile is a session no-op.
+        if MapBrowserProfilePreference.isActiveBrowseProfile(
+            requestedProfileID: profileID,
+            usesPersonalCredentials: caltopoSettings.usesPersonalCredentials,
+            activeTeamProfileID: profileLifecycle.activeProfileID
+        ) {
             showTeamMaps = true
             return
         }
-        guard profileID != (caltopoSettings.usesPersonalCredentials ? "personal" : profileLifecycle.activeProfileID) else { return }
         if ridTracks.tracks.isEmpty {
             activateCredentialProfile(profileID)
         } else {
@@ -2590,25 +2644,45 @@ struct ContentView: View {
     }
 
     private func activateCredentialProfileOnWorker(_ profileID: String) async {
-        showTeamMaps = false
-        if profileID == "personal" {
+        if MapBrowserProfilePreference.isActiveBrowseProfile(
+            requestedProfileID: profileID,
+            usesPersonalCredentials: caltopoSettings.usesPersonalCredentials,
+            activeTeamProfileID: profileLifecycle.activeProfileID
+        ) {
+            showTeamMaps = true
+            return
+        }
+        // Keep Map Browser open across a real credential switch and reload its list.
+        // Only disconnect when an incident map is actually open — credentialsVerified /
+        // remembered-profile restore must not tear the session down.
+        let shouldDisconnect = MapBrowserProfilePreference.shouldDisconnectMapForBrowseProfileSwitch(
+            mapID: caltopoSettings.mapID
+        )
+        if shouldDisconnect {
             applyCaltopoConfiguration(caltopoSettings.disconnectMap())
+        }
+        if profileID == MapBrowserProfilePreference.personalProfileID {
             caltopoSettings.usesPersonalCredentials = true
+            caltopoSettings.rememberBrowseProfile(MapBrowserProfilePreference.personalProfileID)
             // The native browser restores saved login offscreen. It opens the
             // website only when CalTopo actually requires interactive sign-in.
             showTeamMaps = true
             return
         }
         if caltopoSettings.usesPersonalCredentials {
-            applyCaltopoConfiguration(caltopoSettings.disconnectMap())
             caltopoSettings.usesPersonalCredentials = false
         }
+        caltopoSettings.rememberBrowseProfile(profileID)
         guard await orgConfigImporter.activateProfile(
             profileID,
             caltopoSettings: caltopoSettings,
             orgSettings: orgConfigSettings
-        ) else { return }
+        ) else {
+            showTeamMaps = true
+            return
+        }
         applyCaltopoConfiguration(caltopoSettings.configuration)
+        showTeamMaps = true
     }
 
     private func enforceMutualAidExpiryAtDeadline() async {
@@ -2633,8 +2707,16 @@ struct ContentView: View {
     }
 
     private func openMapBrowser() {
-        if caltopoSettings.usesPersonalCredentials || caltopoSettings.credentialID.isEmpty || caltopoSettings.credentialSecret.isEmpty {
-            activateCredentialProfile("personal")
+        let remembered = MapBrowserProfilePreference(defaults: .standard).lastSelectedProfileID()
+        let teamCredentialsPresent =
+            !caltopoSettings.credentialID.isEmpty && !caltopoSettings.credentialSecret.isEmpty
+        if let profileToActivate = MapBrowserProfilePreference.browseProfileToActivateOnOpen(
+            rememberedProfileID: remembered,
+            usesPersonalCredentials: caltopoSettings.usesPersonalCredentials,
+            activeTeamProfileID: profileLifecycle.activeProfileID,
+            teamCredentialsPresent: teamCredentialsPresent
+        ) {
+            activateCredentialProfile(profileToActivate)
         } else {
             showTeamMaps = true
         }
@@ -2652,6 +2734,10 @@ struct ContentView: View {
 
     private func applyCaltopoConfiguration(_ configuration: AppleCaltopoConfiguration) {
         guard !credentialMutations.isBusy else { return }
+        if configuration.liveConfiguration == nil {
+            // Wake pending clue uploads while the map client is still configured.
+            clueStore.flushPendingBestEffort()
+        }
         ridTracks.configureCaltopo(
             configuration,
             trackFolderName: orgConfigSettings.trackFolder
@@ -3040,7 +3126,10 @@ struct ContentView: View {
                 maintain: {
                     guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
                     mediaMTX.ensureHealthy(captureStreams: captureStreams)
-                    Task { await clueStore.pruneDeletedStorage() }
+                    Task {
+                        await clueStore.runDurabilityIntegrityScan()
+                        await clueStore.pruneDeletedStorage()
+                    }
                 },
                 status: {
                     let freshness = AlertTrackFreshnessSummary(
@@ -3584,7 +3673,7 @@ private struct AwaitingMapPublicationPanel: View {
     private func beginPublish(_ flight: AwaitingMapFlight) {
         destinationMap = flight.mapID.isEmpty ? settings.mapID : flight.mapID
         destinationTeam = flight.mapID.isEmpty ? settings.configuration.publicationScope : flight.teamID
-        destinationTitle = flight.mapID.isEmpty || flight.mapID == settings.mapID ? settings.mapTitle : "Original incident map"
+        destinationTitle = flight.mapID.isEmpty || flight.mapID == settings.mapID ? settings.displayMapTitle : "Original incident map"
         selected = flight
     }
 
@@ -3663,7 +3752,7 @@ private struct AwaitingMapPublicationPanel: View {
             } else {
                 HStack(spacing: 12) {
                     Image(systemName: "map").foregroundStyle(.tint)
-                    Text(verbatim: "Destination: \(settings.mapTitle) (\(settings.mapID))")
+                    Text(verbatim: "Destination: \(settings.displayMapTitle) (\(settings.mapID))")
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 0)

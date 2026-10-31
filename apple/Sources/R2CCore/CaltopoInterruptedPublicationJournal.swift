@@ -118,6 +118,6 @@ public actor CaltopoInterruptedPublicationJournal {
             withIntermediateDirectories: true
         )
         let data = try JSONEncoder().encode(payload)
-        try data.write(to: fileURL, options: .atomic)
+        try OperationalSafeFileWriter.replace(fileURL, with: data)
     }
 }

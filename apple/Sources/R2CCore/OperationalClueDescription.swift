@@ -74,7 +74,49 @@ public enum OperationalClueDescription {
             lines += ["", telemetrySummary(telemetry, designator: designator, format: format)]
         }
         let notes = description.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (notes.isEmpty ? "" : notes + "\n\n") + lines.joined(separator: "\n")
+        let body = (notes.isEmpty ? "" : notes + "\n\n") + lines.joined(separator: "\n")
+        return appendFlatSurfaceNote(body, terrainApplied: projection.terrainProjectionApplied, gimbalAngleDegrees: gimbalAngleDegrees)
+    }
+
+    public static let flatSurfaceLocationNote =
+        "Location approximated from a flat-surface estimate (terrain data not yet loaded)."
+
+    /// Straight down. Matches the projection cutoff so a nadir sightline is not called an estimate.
+    public static func isNadirGimbal(_ gimbalAngleDegrees: Double) -> Bool {
+        gimbalAngleDegrees.isFinite && gimbalAngleDegrees <= -89.9
+    }
+
+    /// Published point that was not DEM-refined. Nadir stays unmarked.
+    public static func appendFlatSurfaceNote(_ description: String, terrainApplied: Bool, gimbalAngleDegrees: Double) -> String {
+        if terrainApplied || isNadirGimbal(gimbalAngleDegrees) { return description }
+        if description.contains(flatSurfaceLocationNote) { return description }
+        let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? flatSurfaceLocationNote : trimmed + "\n\n" + flatSurfaceLocationNote
+    }
+
+    /// After a late DEM hit, drop the flat-surface note and refresh DEM / decimal position lines.
+    public static func applyingTerrainProjection(
+        _ description: String,
+        projection: OperationalClueProjection,
+        format: OperationalCoordinateDisplayFormat = .decimal
+    ) -> String {
+        var text = description.replacingOccurrences(of: "\n\n" + flatSurfaceLocationNote, with: "")
+        text = text.replacingOccurrences(of: flatSurfaceLocationNote, with: "")
+        let demLine = demSummary(projection)
+        if let range = text.range(of: #"  DEM used:.*$"#, options: .regularExpression) {
+            text.replaceSubrange(range, with: demLine)
+        } else if !text.contains(demLine) {
+            text = text.trimmingCharacters(in: .whitespacesAndNewlines) + "\n" + demLine
+        }
+        let decimal = "  Decimal: \(decimal(projection.latitude, projection.longitude))"
+        if let range = text.range(of: #"  Decimal: .+$"#, options: .regularExpression) {
+            text.replaceSubrange(range, with: decimal)
+        }
+        let position = "  Position (\(format.label)): \(self.position(projection.latitude, projection.longitude, format)) alt \(number(projection.altitudeMeters.map { $0 * feetPerMeter }, "%.0f'"))"
+        if let range = text.range(of: #"  Position \([^)]+\): .+$"#, options: .regularExpression) {
+            text.replaceSubrange(range, with: position)
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func demSummary(_ projection: OperationalClueProjection) -> String {

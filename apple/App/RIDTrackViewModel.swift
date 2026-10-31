@@ -10,6 +10,10 @@ final class RIDTrackViewModel: ObservableObject {
     let shortFlightDecisions = ShortFlightRecordingGate()
     private let awaitingMapJournal = AwaitingMapFlightJournal(fileURL:
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("awaiting-map-flights.json"))
+    private let waypointAppendJournal = WaypointTrackAppendJournal(directory:
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("waypoint-track-journals", isDirectory: true))
+    private var waypointJournalRecoveryDone = false
     @Published private(set) var awaitingMapFlights: [AwaitingMapFlight] = []
     @Published private(set) var awaitingMapJournalEntries: [AwaitingMapFlight] = []
     @Published private(set) var awaitingMapHistoryError: String?
@@ -22,6 +26,10 @@ final class RIDTrackViewModel: ObservableObject {
     private func refreshAwaitingMapState() async {
         awaitingRefreshGeneration += 1
         let generation = awaitingRefreshGeneration
+        if !waypointJournalRecoveryDone {
+            waypointJournalRecoveryDone = true
+            await recoverWaypointAppendJournals()
+        }
         await awaitingMapJournal.ready()
         let entries = await awaitingMapJournal.entries
         let error = await awaitingMapJournal.loadError
@@ -61,6 +69,56 @@ final class RIDTrackViewModel: ObservableObject {
     }
 
     private var awaitingFlightWrites: [String: Task<Void, Never>] = [:]
+
+    private func recoverWaypointAppendJournals() async {
+        do {
+            let recovered = try await waypointAppendJournal.recoverUnfinished()
+            for flight in recovered {
+                do {
+                    try await awaitingMapJournal.record(
+                        remoteID: flight.remoteID,
+                        label: flight.label,
+                        observations: flight.observations,
+                        mapID: flight.mapID,
+                        teamID: flight.teamID,
+                        finished: false,
+                        flightID: flight.id)
+                    try await awaitingMapJournal.record(
+                        remoteID: flight.remoteID,
+                        label: flight.label,
+                        observations: flight.observations,
+                        mapID: flight.mapID,
+                        teamID: flight.teamID,
+                        finished: true,
+                        flightID: flight.id)
+                    try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
+                } catch {
+                    // Leave the .ndjson until awaiting-map commit succeeds on a later pass.
+                    archiveStatus = "Could not commit recovered track \(flight.label): \(error.localizedDescription)"
+                }
+            }
+        } catch {
+            archiveStatus = "Could not recover unfinished tracks: \(error.localizedDescription)"
+        }
+    }
+
+    private func appendWaypointJournal(track: RidAircraftTrack, observation: RidObservation) {
+        let flightID = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+        let label = identityProvider?(track.aircraftID)?.displayLabel ?? track.aircraftID
+        let mapID = publicationMapID
+        let teamID = publicationTeamID
+        Task(priority: .utility) {
+            do {
+                try await waypointAppendJournal.ensureOpen(
+                    flightID: flightID, remoteID: track.aircraftID, label: label,
+                    mapID: mapID, teamID: teamID)
+                try await waypointAppendJournal.append(observation: observation, flightID: flightID)
+            } catch {
+                archiveStatus = "Waypoint journal write failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
     @discardableResult
     private func recordAwaitingFlight(_ track: RidAircraftTrack, finished: Bool = false) -> Task<Void, Never>? {
         guard flightRecordingAllowed?(track.aircraftID) == true,
@@ -164,6 +222,8 @@ final class RIDTrackViewModel: ObservableObject {
     @Published private(set) var trackerArchiveStatus = "Tracker archive not configured"
     @Published private(set) var latestArchiveURL: URL?
     @Published private(set) var caltopoStatus = "Publishing disabled"
+    /// Non-nil while Map Options Disconnect finishes owned LiveTracks off the main actor.
+    @Published private(set) var mapDisconnectProgress: String?
     @Published private(set) var caltopoRTTMilliseconds: Int64?
     private var aolLoggedReasons: [String:String] = [:]
     private var aolRequests: [String: UUID] = [:]
@@ -228,13 +288,37 @@ final class RIDTrackViewModel: ObservableObject {
     private var lateClues: [UUID: OperationalClueRecord] = [:]
     private var rewriteTask: Task<Void, Never>?
     private var rewriteAgain = false
+    private var tracksPublishDeadline: Date?
+    private var tracksPublishTask: Task<Void, Never>?
 
     func bind(to observations: AsyncStream<RidObservation>, sourceID: String) {
         guard observationTasks[sourceID] == nil else { return }
-        observationTasks[sourceID] = Task { [weak self] in
+        // Capture the store actor reference on MainActor, then ingest off-main so
+        // radio bursts do not queue behind SwiftUI/MapKit work (receiveToStartMs).
+        let trackStore = store
+        observationTasks[sourceID] = Task.detached { [weak self] in
             for await observation in observations {
-                guard !Task.isCancelled, let self else { return }
-                await self.ingest(observation)
+                guard !Task.isCancelled else { return }
+                // SEI gate must run before store.ingest; it reads MainActor UI state only.
+                let shouldIngest = await MainActor.run { [weak self] () -> Bool in
+                    guard let self else { return false }
+                    if observation.source != .djiVideo,
+                       let accepted = self.lastAcceptedStreamAt[observation.aircraftId],
+                       Date().timeIntervalSince(accepted) >= 0,
+                       Date().timeIntervalSince(accepted) <= 3,
+                       self.validatedSEIPositionProvider?(self.tracks, Date())[observation.aircraftId] != nil {
+                        return false
+                    }
+                    return true
+                }
+                guard shouldIngest else { continue }
+                let ingestStartedAt = Date()
+                let result = await trackStore.ingest(observation)
+                await self?.applyIngestResult(
+                    observation,
+                    result: result,
+                    ingestStartedAt: ingestStartedAt
+                )
             }
         }
         agingTask = Task { [weak self] in
@@ -316,7 +400,7 @@ final class RIDTrackViewModel: ObservableObject {
                     self.updateCaltopoThumbnailRefreshTargets()
                     self.caltopoStatus = "Stopped \(id)"
                 case let .failed(message):
-                    self.caltopoStatus = "Error: \(message)"
+                    self.caltopoStatus = message.hasPrefix("CalTopo server unavailable") ? message : "Error: \(message)"
                     self.caltopoRTTMilliseconds = nil
                 }
             }
@@ -350,6 +434,20 @@ final class RIDTrackViewModel: ObservableObject {
 
     func ingest(_ observation: RidObservation) async {
         let ingestStartedAt = Date()
+        if observation.source != .djiVideo,
+           let accepted = lastAcceptedStreamAt[observation.aircraftId],
+           Date().timeIntervalSince(accepted) >= 0, Date().timeIntervalSince(accepted) <= 3,
+           validatedSEIPositionProvider?(tracks, Date())[observation.aircraftId] != nil { return }
+        let result = await store.ingest(observation)
+        await applyIngestResult(observation, result: result, ingestStartedAt: ingestStartedAt)
+    }
+
+    /// UI-side apply after store ingest completed off-main (or on-main for SEI/local callers).
+    private func applyIngestResult(
+        _ observation: RidObservation,
+        result: RidTrackIngestOutcome,
+        ingestStartedAt: Date
+    ) async {
         defer {
             // Coordinates are deliberately excluded so durable privacy filtering preserves the
             // receive/apply timing evidence needed to distinguish radio gaps from UI backlog.
@@ -361,7 +459,7 @@ final class RIDTrackViewModel: ObservableObject {
            let accepted = lastAcceptedStreamAt[observation.aircraftId],
            Date().timeIntervalSince(accepted) >= 0, Date().timeIntervalSince(accepted) <= 3,
            validatedSEIPositionProvider?(tracks, Date())[observation.aircraftId] != nil { return }
-        switch await store.ingest(observation) {
+        switch result {
         case let .accepted(track):
             acceptedObservationCount += 1
             if observation.source == .djiVideo {
@@ -377,6 +475,7 @@ final class RIDTrackViewModel: ObservableObject {
                 lastHorizontalAccuracyCodeByAircraftID[track.aircraftID] = code
             }
             recordAwaitingFlight(track)
+            appendWaypointJournal(track: track, observation: observation)
             logAcceptedObservation(track)
             updateAltitude(for: track)
             if publicationSuppressionProvider?(track.aircraftID) == true {
@@ -458,7 +557,27 @@ final class RIDTrackViewModel: ObservableObject {
             )
             logFilterSummaryIfNeeded()
         }
-        tracks = await store.snapshot()
+        // Coalesce UI track publishes so MapKit is not rebuilt on every radio packet.
+        let now = Date()
+        if tracksPublishDeadline == nil || now >= (tracksPublishDeadline ?? .distantPast) {
+            tracksPublishDeadline = now.addingTimeInterval(0.08)
+            tracks = await store.snapshot()
+        } else {
+            scheduleCoalescedTracksPublish()
+        }
+    }
+
+    private func scheduleCoalescedTracksPublish() {
+        guard tracksPublishTask == nil else { return }
+        let deadline = tracksPublishDeadline ?? Date().addingTimeInterval(0.08)
+        tracksPublishTask = Task { [weak self] in
+            let delay = max(0, deadline.timeIntervalSinceNow)
+            if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+            guard !Task.isCancelled, let self else { return }
+            self.tracksPublishTask = nil
+            self.tracksPublishDeadline = nil
+            self.tracks = await self.store.snapshot()
+        }
     }
 
     private func logFilterSummaryIfNeeded() {
@@ -612,6 +731,27 @@ final class RIDTrackViewModel: ObservableObject {
         AppleLog.info("Terrain", "Manual ATO/AGL calibration remoteId=\(remoteID) targetFt=50")
     }
 
+    /// Snapshot-only DEM datum for clue height recovery (matches Android `clueDemAltitudeReference`).
+    func clueDemAltitudeReference(aircraftID: String) -> ClueDemAltitudeReference? {
+        altitudeCoordinatorByAircraftID[aircraftID]?.clueDemAltitudeReference
+    }
+
+    /// Off-main DEM sample for clue height recovery; never blocks the UI thread.
+    func sampleTerrainElevation(latitude: Double, longitude: Double) async -> OperationalTerrainSample? {
+        await terrainService.sample(latitude: latitude, longitude: longitude)
+    }
+
+    /// Local S1M/GeoTIFF only — used for bind-time and ray-march steps so EPQS cannot poison `usingLocalDEM`.
+    func sampleLocalTerrainElevation(latitude: Double, longitude: Double) async -> OperationalTerrainSample? {
+        await terrainService.sampleLocal(latitude: latitude, longitude: longitude)
+    }
+
+    /// One catalog rebuild before a clue form/post-save walk. Never from RID/map/video paths.
+    func prepareLocalCatalogForClueSampling() async {
+        await terrainService.prepareLocalCatalogForClueSampling()
+    }
+
+    /// Prefer on-disk S1M for the aircraft sample so off-nadir walks ray-march local tiles, not EPQS.
     func projectClueWithTerrain(
         observation: RidObservation,
         headingDegrees: Double?,
@@ -619,7 +759,8 @@ final class RIDTrackViewModel: ObservableObject {
         gimbalAngleDegrees: Double,
         terrainReferenceLatitude: Double? = nil,
         terrainReferenceLongitude: Double? = nil,
-        relativeUpMeters: Double? = nil
+        relativeUpMeters: Double? = nil,
+        localOnly: Bool = false
     ) async -> OperationalClueProjection {
         let terrainService = self.terrainService
         return await OperationalClueGeometry.projectWithTerrain(
@@ -633,8 +774,129 @@ final class RIDTrackViewModel: ObservableObject {
             terrainReferenceLongitude: terrainReferenceLongitude,
             relativeUpMeters: relativeUpMeters,
             sampleElevationMeters: { latitude, longitude in
-                await terrainService.sample(latitude: latitude, longitude: longitude)
+                if let local = await terrainService.sampleLocal(latitude: latitude, longitude: longitude) {
+                    return local
+                }
+                if localOnly { return nil }
+                return await terrainService.sample(latitude: latitude, longitude: longitude)
+            },
+            sampleLocalElevationMeters: { latitude, longitude in
+                await terrainService.sampleLocal(latitude: latitude, longitude: longitude)
             }
+        )
+    }
+
+    /// Post-save S1M refine for a flat-ground publish. Never blocks Submit; edits local + CalTopo when terrain hits.
+    func schedulePostSaveClueTerrainRefine(
+        recordID: UUID,
+        draft: AppleClueDraft,
+        store: AppleClueStore,
+        format: OperationalCoordinateDisplayFormat
+    ) {
+        guard !draft.terrainProjectionApplied,
+              !OperationalClueDescription.isNadirGimbal(draft.gimbalAngleDegrees)
+        else { return }
+        let terrainService = self.terrainService
+        let height = draft.projectionHeightMeters ?? draft.aglMeters ?? draft.atoMeters
+        Task.detached(priority: .utility) {
+            await terrainService.prepareLocalCatalogForClueSampling()
+            guard !Task.isCancelled else { return }
+            let flat = OperationalClueGeometry.project(
+                droneLatitude: draft.droneLatitude,
+                droneLongitude: draft.droneLongitude,
+                droneAltitudeMeters: draft.droneAltitudeMeters,
+                headingDegrees: draft.headingDegrees,
+                aglMeters: height,
+                gimbalAngleDegrees: draft.gimbalAngleDegrees
+            )
+            // Hard wall-clock cap: cancellation alone cannot stop a stuck GeoTIFF decode.
+            let projection = await ClueHardTimeout.race(
+                milliseconds: 8_000,
+                operation: {
+                    await OperationalClueGeometry.projectWithTerrain(
+                        droneLatitude: draft.droneLatitude,
+                        droneLongitude: draft.droneLongitude,
+                        droneAltitudeMeters: draft.droneAltitudeMeters,
+                        headingDegrees: draft.headingDegrees,
+                        aglMeters: height,
+                        gimbalAngleDegrees: draft.gimbalAngleDegrees,
+                        terrainReferenceLatitude: draft.terrainReferenceLatitude,
+                        terrainReferenceLongitude: draft.terrainReferenceLongitude,
+                        relativeUpMeters: draft.relativeUpMeters,
+                        sampleElevationMeters: { latitude, longitude in
+                            await terrainService.sampleLocal(latitude: latitude, longitude: longitude)
+                        },
+                        sampleLocalElevationMeters: { latitude, longitude in
+                            await terrainService.sampleLocal(latitude: latitude, longitude: longitude)
+                        }
+                    )
+                },
+                fallback: flat
+            )
+            AppleLog.info(
+                "Clue",
+                OperationalClueProjectionLog.line(
+                    projection: projection,
+                    aircraftLatitude: draft.droneLatitude,
+                    aircraftLongitude: draft.droneLongitude,
+                    gimbalPitchDegrees: draft.gimbalAngleDegrees,
+                    gimbalYawDegrees: draft.headingDegrees
+                ) + " stage=post-save id=\(recordID)"
+            )
+            guard projection.terrainProjectionApplied else { return }
+            await store.applyTerrainProjectionRefine(id: recordID, projection: projection, format: format)
+        }
+    }
+
+    /// Best-effort S1M ray-march with a short deadline. Flat only when tiles miss or the walk does not finish in time.
+    /// Caller must have prepared the local catalog when this is a clue form/post-save walk.
+    func projectClueWithTerrainBounded(
+        observation: RidObservation,
+        headingDegrees: Double?,
+        aglMeters: Double?,
+        gimbalAngleDegrees: Double,
+        terrainReferenceLatitude: Double? = nil,
+        terrainReferenceLongitude: Double? = nil,
+        relativeUpMeters: Double? = nil,
+        timeoutMilliseconds: UInt64 = 300,
+        prepareCatalog: Bool = false
+    ) async -> OperationalClueProjection {
+        let flat = OperationalClueGeometry.project(
+            droneLatitude: observation.latitude,
+            droneLongitude: observation.longitude,
+            droneAltitudeMeters: observation.altitudeMeters,
+            headingDegrees: headingDegrees,
+            aglMeters: aglMeters,
+            gimbalAngleDegrees: gimbalAngleDegrees
+        )
+        let terrainService = self.terrainService
+        if prepareCatalog {
+            await terrainService.prepareLocalCatalogForClueSampling()
+            if Task.isCancelled { return flat }
+        }
+        // Detached race: MainActor-inherited task groups cannot wake the timeout while work is hopping back.
+        return await ClueHardTimeout.race(
+            milliseconds: timeoutMilliseconds,
+            operation: {
+                await OperationalClueGeometry.projectWithTerrain(
+                    droneLatitude: observation.latitude,
+                    droneLongitude: observation.longitude,
+                    droneAltitudeMeters: observation.altitudeMeters,
+                    headingDegrees: headingDegrees,
+                    aglMeters: aglMeters,
+                    gimbalAngleDegrees: gimbalAngleDegrees,
+                    terrainReferenceLatitude: terrainReferenceLatitude,
+                    terrainReferenceLongitude: terrainReferenceLongitude,
+                    relativeUpMeters: relativeUpMeters,
+                    sampleElevationMeters: { latitude, longitude in
+                        await terrainService.sampleLocal(latitude: latitude, longitude: longitude)
+                    },
+                    sampleLocalElevationMeters: { latitude, longitude in
+                        await terrainService.sampleLocal(latitude: latitude, longitude: longitude)
+                    }
+                )
+            },
+            fallback: flat
         )
     }
 
@@ -673,8 +935,15 @@ final class RIDTrackViewModel: ObservableObject {
         } else {
             guard let headingDegrees, headingDegrees.isFinite, let aglMeters, aglMeters.isFinite, aglMeters>=0,
                   let altitude = observation.altitudeMeters, altitude.isFinite else { return nil }
-            let projection = await projectClueWithTerrain(observation: observation, headingDegrees: headingDegrees,
-                aglMeters: aglMeters, gimbalAngleDegrees: tilt)
+            // Live crosshair must not run an unbounded S1M ray-march (38b387bb / ClueHardTimeout orphans).
+            let projection = await projectClueWithTerrainBounded(
+                observation: observation,
+                headingDegrees: headingDegrees,
+                aglMeters: aglMeters,
+                gimbalAngleDegrees: tilt,
+                timeoutMilliseconds: 80,
+                prepareCatalog: false
+            )
             latitude = projection.latitude; longitude = projection.longitude
         }
         guard let terrain = await terrainService.sample(latitude: latitude, longitude: longitude),
@@ -813,7 +1082,7 @@ final class RIDTrackViewModel: ObservableObject {
 
     private func scheduleTerrain(remoteID: String, coordinator: OperationalAltitudeCoordinator) {
         guard let current = coordinator.currentCoordinate, let takeoff = coordinator.takeoffCoordinate else { return }
-        let requestKey = terrainRequestKey(for: coordinator)!
+        guard let requestKey = terrainRequestKey(for: coordinator) else { return }
         if terrainResolvedKeyByAircraftID[remoteID] == requestKey { return }
         if terrainTasks[remoteID] != nil, terrainRequestKeyByAircraftID[remoteID] == requestKey { return }
         terrainTasks.removeValue(forKey: remoteID)?.cancel()
@@ -884,17 +1153,63 @@ final class RIDTrackViewModel: ObservableObject {
     ) {
         publicationMapID = configuration.mapID
         publicationTeamID = configuration.publicationScope
+        // Never await the publisher on MainActor — finish/archive can take seconds.
         Task { [caltopoPublisher] in
-            await awaitingMapJournal.ready()
-            await refreshAwaitingMapState()
-            await caltopoPublisher.configure(
+            await self.applyCaltopoConfiguration(
                 configuration,
-                trackFolderName: trackFolderName
+                trackFolderName: trackFolderName,
+                publisher: caltopoPublisher
             )
-            await self.queueCompletedDeferredFlights()
-            await MainActor.run {
-                if let marker = self.localDeviceMarker { self.publishLocalDeviceMarker(marker, force: true) }
+        }
+    }
+
+    /// Network-path wake: resume interrupted LiveTrack archive recovery off MainActor.
+    func retryInterruptedLiveTrackRecovery() {
+        Task { [caltopoPublisher] in
+            await caltopoPublisher.retryInterruptedPublications()
+        }
+    }
+
+    /// Awaitable map configure/disconnect used by quit / scene teardown so owned LiveTracks
+    /// finish before the CalTopo client and tracker websocket are torn down. UI Disconnect
+    /// must use configureCaltopo so MainActor stays responsive.
+    func configureCaltopoAwaiting(
+        _ configuration: AppleCaltopoConfiguration,
+        trackFolderName: String = "Drone Tracks"
+    ) async {
+        publicationMapID = configuration.mapID
+        publicationTeamID = configuration.publicationScope
+        await applyCaltopoConfiguration(
+            configuration,
+            trackFolderName: trackFolderName,
+            publisher: caltopoPublisher
+        )
+    }
+
+    private func applyCaltopoConfiguration(
+        _ configuration: AppleCaltopoConfiguration,
+        trackFolderName: String,
+        publisher: AppleCaltopoPublisher
+    ) async {
+        let disconnecting = configuration.liveConfiguration == nil
+        if disconnecting {
+            await MainActor.run { self.mapDisconnectProgress = "Finishing live track…" }
+        }
+        defer {
+            if disconnecting {
+                Task { @MainActor in self.mapDisconnectProgress = nil }
             }
+        }
+        await awaitingMapJournal.ready()
+        await refreshAwaitingMapState()
+        await publisher.configure(
+            configuration,
+            trackFolderName: trackFolderName,
+            deviceMarkerID: peerCoordinator?.localZoneID ?? ""
+        )
+        await queueCompletedDeferredFlights()
+        await MainActor.run {
+            if let marker = self.localDeviceMarker { self.publishLocalDeviceMarker(marker, force: true) }
         }
     }
 
@@ -991,11 +1306,20 @@ final class RIDTrackViewModel: ObservableObject {
                     self.ownershipActivationTasks.removeValue(forKey: remoteID)?.cancel()
                     if localOwner, alertEligible,
                        self.publicationSuppressionProvider?(remoteID) != true {
+                        // Start as soon as ownership is granted while the map is already up;
+                        // keep the short delay only as a second chance after peer settle.
+                        if coordinator.publicationAllowed(remoteID: remoteID) {
+                            Task { [weak self] in
+                                await self?.bindOpenReviewIfNeeded(remoteID: remoteID)
+                                self?.flushPendingPublication(remoteID: remoteID)
+                            }
+                        }
                         self.ownershipActivationTasks[remoteID] = Task { [weak self, coordinator] in
                             try? await Task.sleep(for: .seconds(2))
                             guard !Task.isCancelled, let self,
                                   coordinator.publicationAllowed(remoteID: remoteID)
                             else { return }
+                            await self.bindOpenReviewIfNeeded(remoteID: remoteID)
                             self.flushPendingPublication(remoteID: remoteID)
                             self.ownershipActivationTasks.removeValue(forKey: remoteID)
                         }
@@ -1139,6 +1463,27 @@ final class RIDTrackViewModel: ObservableObject {
         thumbnailMetadataRefreshTasks.removeAll()
         peerCoordinator?.setManagedVideoThumbnailUpdatedHandler(nil)
 
+        // Flush awaiting-map / waypoint journals before tearing down CalTopo so a
+        // quit mid-write cannot lose the durable checkpoint recovery needs.
+        let journalFlushes = Array(awaitingFlightWrites.values)
+        awaitingFlightWrites.removeAll()
+        for task in journalFlushes { await task.value }
+
+        // Drop the CalTopo map first (finish owned LiveTracks, then close the client).
+        await configureCaltopoAwaiting(
+            AppleCaltopoConfiguration(
+                enabled: false,
+                domainAndPort: "",
+                mapID: "",
+                mapTitle: "",
+                credentialID: "",
+                credentialSecret: "",
+                teamID: "",
+                connectKey: ""
+            ),
+            trackFolderName: "Drone Tracks"
+        )
+
         for track in await store.snapshot() {
             let recording = CaltopoRecordingAssociation(
                 track: track, identity: identityProvider?(track.aircraftID))
@@ -1182,6 +1527,7 @@ final class RIDTrackViewModel: ObservableObject {
         let flightID = liveFlightID(aircraftID: track.aircraftID)
             ?? RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
         await recordAwaitingFlight(track, finished: true)?.value
+        try? await waypointAppendJournal.markFinishedAndRemove(flightID: flightID)
         await queueCompletedDeferredFlights()
         let identity = identityProvider?(track.aircraftID)
         let archiveConfiguration = archiveConfiguration
@@ -1430,14 +1776,38 @@ final class RIDTrackViewModel: ObservableObject {
         }
     }
 
+    /// Empty-map review intents captured before connect must bind once owner+map are ready.
+    private func bindOpenReviewIfNeeded(remoteID: String) async {
+        guard !publicationMapID.isEmpty else { return }
+        let deferred = awaitingOpenFlights[remoteID]
+        guard let deferred, deferred.decision == "review", deferred.mapID.isEmpty else { return }
+        do {
+            _ = try await awaitingMapJournal.bindOpenReviewToConnectedMap(
+                remoteID: remoteID, mapID: publicationMapID, teamID: publicationTeamID)
+            await refreshAwaitingMapState()
+        } catch {
+            archiveStatus = "Publication intent could not bind to the connected map"
+        }
+    }
+
     @discardableResult
     private func enqueuePublication(
         remoteID: String,
         label: String,
         observation: RidObservation
     ) -> Task<Void, Never> {
-        guard awaitingMapHistoryReady, awaitingMapHistoryError == nil else { return Task { } }
-        let deferred = awaitingOpenFlights[remoteID]
+        // LiveTrack must publish even when awaiting-map history is corrupt/unloadable.
+        // Review UI stays degraded via awaitingMapHistoryError; clues already upload without it.
+        let deferred = (awaitingMapHistoryReady && awaitingMapHistoryError == nil)
+            ? awaitingOpenFlights[remoteID]
+            : nil
+        if let deferred, deferred.decision == "review", deferred.mapID.isEmpty, !publicationMapID.isEmpty {
+            return Task { [weak self] in
+                await self?.bindOpenReviewIfNeeded(remoteID: remoteID)
+                guard let self else { return }
+                _ = self.enqueuePublication(remoteID: remoteID, label: label, observation: observation)
+            }
+        }
         if let deferred, !["publish", "bound"].contains(deferred.decision) || deferred.mapID != publicationMapID || deferred.teamID != publicationTeamID {
             return Task { }
         }
@@ -1607,6 +1977,147 @@ final class RIDTrackViewModel: ObservableObject {
             "CalTopo",
             "Recording did not become linkable before the deferred CalTopo link deadline."
         )
+    }
+}
+
+/// Counts clue terrain races (including losers still winding down) and main-thread hitches.
+enum ClueTerrainDiagnostics {
+    private final class State: @unchecked Sendable {
+        let lock = NSLock()
+        var activeClueTerrainTasks = 0
+        var mainHitchCount: UInt64 = 0
+        var monitorStarted = false
+    }
+
+    private static let state = State()
+
+    static func beginClueTerrainTask() {
+        state.lock.lock()
+        state.activeClueTerrainTasks += 1
+        state.lock.unlock()
+        startMonitorIfNeeded()
+    }
+
+    static func endClueTerrainTask() {
+        state.lock.lock()
+        state.activeClueTerrainTasks = max(0, state.activeClueTerrainTasks - 1)
+        state.lock.unlock()
+    }
+
+    static func noteMainHitch() {
+        state.lock.lock()
+        state.mainHitchCount &+= 1
+        state.lock.unlock()
+    }
+
+    private static func snapshot() -> (tasks: Int, hitches: UInt64) {
+        state.lock.lock()
+        let value = (state.activeClueTerrainTasks, state.mainHitchCount)
+        state.lock.unlock()
+        return value
+    }
+
+    static func startMonitorIfNeeded() {
+        state.lock.lock()
+        let already = state.monitorStarted
+        if !already { state.monitorStarted = true }
+        state.lock.unlock()
+        guard !already else { return }
+        DispatchQueue.main.async {
+            var lastTick = ProcessInfo.processInfo.systemUptime
+            // ~60 Hz probe on the main run loop; gaps >50 ms count as hitches.
+            let hitchProbe = Timer(timeInterval: 1.0 / 60.0, repeats: true) { _ in
+                let now = ProcessInfo.processInfo.systemUptime
+                if now - lastTick > 0.050 {
+                    noteMainHitch()
+                }
+                lastTick = now
+            }
+            RunLoop.main.add(hitchProbe, forMode: .common)
+            let report = Timer(timeInterval: 30, repeats: true) { _ in
+                let snap = snapshot()
+                AppleLog.info(
+                    "ClueTerrain",
+                    "diag activeClueTerrainTasks=\(snap.tasks) mainHitchCount=\(snap.hitches)"
+                )
+            }
+            RunLoop.main.add(report, forMode: .common)
+            let snap = snapshot()
+            AppleLog.info(
+                "ClueTerrain",
+                "diag activeClueTerrainTasks=\(snap.tasks) mainHitchCount=\(snap.hitches)"
+            )
+        }
+    }
+}
+
+/// Wall-clock timeout race that does not inherit caller actor isolation (see 980e4a00).
+/// Unlike `withTaskGroup` + `cancelAll`, this returns as soon as either side finishes and does
+/// **not** wait for the loser (group exit would otherwise await a cancelled GeoTIFF walk).
+/// Loser work is cancelled at utility priority and must honor Task cancellation in ray-march / GeoTIFF loops.
+enum ClueHardTimeout {
+    private final class ResumeGate<T: Sendable>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var resumed = false
+        private let continuation: CheckedContinuation<T, Never>
+        private let work: Task<T, Never>
+        private let timer: Task<Void, any Error>
+
+        init(
+            continuation: CheckedContinuation<T, Never>,
+            work: Task<T, Never>,
+            timer: Task<Void, any Error>
+        ) {
+            self.continuation = continuation
+            self.work = work
+            self.timer = timer
+        }
+
+        func finish(_ value: T) {
+            lock.lock()
+            let shouldResume = !resumed
+            resumed = true
+            lock.unlock()
+            guard shouldResume else { return }
+            work.cancel()
+            timer.cancel()
+            continuation.resume(returning: value)
+        }
+    }
+
+    static func race<T: Sendable>(
+        milliseconds: UInt64,
+        operation: @escaping @Sendable () async -> T,
+        fallback: T
+    ) async -> T {
+        ClueTerrainDiagnostics.startMonitorIfNeeded()
+        // Utility — never compete with live video / UI (userInitiated orphans starved the feed).
+        let work = Task.detached(priority: .utility) {
+            ClueTerrainDiagnostics.beginClueTerrainTask()
+            defer { ClueTerrainDiagnostics.endClueTerrainTask() }
+            return await operation()
+        }
+        let timer = Task.detached(priority: .utility) {
+            try await Task.sleep(for: .milliseconds(milliseconds))
+        }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<T, Never>) in
+                let resumeGate = ResumeGate(continuation: continuation, work: work, timer: timer)
+                Task.detached(priority: .utility) {
+                    let result = await work.result
+                    if case .success(let value) = result {
+                        resumeGate.finish(value)
+                    }
+                }
+                Task.detached(priority: .utility) {
+                    _ = await timer.result
+                    resumeGate.finish(fallback)
+                }
+            }
+        } onCancel: {
+            work.cancel()
+            timer.cancel()
+        }
     }
 }
 

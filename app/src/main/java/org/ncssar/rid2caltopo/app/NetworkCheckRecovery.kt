@@ -8,6 +8,10 @@ import org.ncssar.rid2caltopo.airspace.AirspaceCenter
 import org.ncssar.rid2caltopo.notam.NotamCenter
 import org.ncssar.rid2caltopo.landrestrictions.LandRestrictionCenter
 import org.ncssar.rid2caltopo.data.CaltopoClient
+import org.ncssar.rid2caltopo.data.CaltopoInterruptedTrackJournal
+import org.ncssar.rid2caltopo.data.CaltopoLiveTrack
+import org.ncssar.rid2caltopo.data.CaltopoMap
+import org.ncssar.rid2caltopo.data.CaltopoSession
 
 internal class NetworkCheckRecoveryGate {
     private var available = false
@@ -41,12 +45,40 @@ object NetworkCheckRecovery {
                 AirspaceCenter.requestImmediateRefresh()
                 NotamCenter.requestImmediateRefresh()
                 LandRestrictionCenter.requestImmediateRefresh()
+                // Connectivity callbacks can run on Main — never block it with disk/network.
                 trackerExecutor.execute {
                     if (!CaltopoClient.IsExitRequested()) {
                         org.ncssar.rid2caltopo.data.TrackerEnrollmentClient.retryManagedConfigurationBootstrap(context.applicationContext)
                         if (org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.belongsToOrganization()) {
                             org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.refresh()
                         }
+                    }
+                }
+                trackerExecutor.execute {
+                    if (CaltopoClient.IsExitRequested()) return@execute
+                    // Drop stale sockets / hung POSTs started while the path was dead, then flush.
+                    CaltopoSession.cancelInFlightRequestsForConnectivityRestore()
+                    CaltopoInterruptedTrackJournal.clearInFlightForConnectivityRestore()
+                    val archives = CaltopoMap.pendingInterruptedArchiveCount()
+                    val liveTracks = CaltopoLiveTrack.countOwnedActivePublications()
+                    CaltopoClient.CTInfo(
+                        "NetworkChecks",
+                        "connectivity restored → flush archives=$archives liveTracks=$liveTracks clues=wake"
+                    )
+                    try {
+                        CaltopoMap.flushPendingCluesOnInternetRestored()
+                    } catch (error: Exception) {
+                        CaltopoClient.CTWarn("NetworkChecks", "Pending clue flush after reconnect raised", error)
+                    }
+                    try {
+                        CaltopoMap.recoverInterruptedTracksOnInternetRestored()
+                    } catch (error: Exception) {
+                        CaltopoClient.CTWarn("NetworkChecks", "Interrupted LiveTrack recovery after reconnect raised", error)
+                    }
+                    try {
+                        CaltopoLiveTrack.wakePublicationAfterInternetRestored()
+                    } catch (error: Exception) {
+                        CaltopoClient.CTWarn("NetworkChecks", "LiveTrack wake after reconnect raised", error)
                     }
                 }
             }

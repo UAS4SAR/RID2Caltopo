@@ -1,3 +1,4 @@
+import AuthenticationServices
 import Foundation
 import R2CCore
 import Security
@@ -60,19 +61,85 @@ struct AppleCaltopoPersonalAccountKeychain: CaltopoPersonalAccountStore {
     }
 }
 
-/// Opens activation in Safari or the system browser. Not a WKWebView.
+/// Auth session over the app. Google sign-in stays in that session, not in a WKWebView.
+/// The session stays in the foreground, so the loopback listener is not frozen.
+///
+/// This value is created from the enrollment task, which is not the main actor.
+/// The UIKit session is created later, on the main actor.
 struct AppleCaltopoPersonalAccountBrowser: CaltopoPersonalAccountBrowser {
     func openActivationPage(_ url: URL) async throws {
         guard CaltopoPersonalAccountConnection.isActivationURL(url) else {
             throw CaltopoPersonalAccountError.invalidReturn
         }
-        let opened: Bool = await withCheckedContinuation { continuation in
-            DispatchQueue.main.async {
-                UIApplication.shared.open(url, options: [:]) { success in
-                    continuation.resume(returning: success)
+        try await AppleCaltopoAuthSession.present(url)
+    }
+
+    func dismissActivation() {
+        AppleCaltopoAuthSession.dismissActive()
+    }
+}
+
+@MainActor
+final class AppleCaltopoAuthSession: NSObject, ASWebAuthenticationPresentationContextProviding {
+    private static var active: AppleCaltopoAuthSession?
+    private var authSession: ASWebAuthenticationSession?
+    private var intentionalDismiss = false
+
+    static func present(_ url: URL) async throws {
+        let session = AppleCaltopoAuthSession()
+        active = session
+        do {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                Task { @MainActor in
+                    session.start(url, continuation: continuation)
                 }
             }
+        } catch {
+            if active === session { active = nil }
+            throw error
         }
-        if !opened { throw CaltopoPersonalAccountError.listenerFailed }
+    }
+
+    /// Enrollment calls this off the main actor when the listener finishes or is cancelled.
+    nonisolated static func dismissActive() {
+        Task { @MainActor in
+            guard let session = active else { return }
+            session.dismiss()
+            active = nil
+        }
+    }
+
+    private func start(_ url: URL, continuation: CheckedContinuation<Void, Error>) {
+        let authentication = ASWebAuthenticationSession(
+            url: url,
+            callbackURLScheme: CaltopoPersonalAccountConnection.returnScheme
+        ) { callback, _ in
+            let matched = callback?.scheme?.lowercased() == CaltopoPersonalAccountConnection.returnScheme
+            Task { @MainActor in
+                guard let session = AppleCaltopoAuthSession.active else { return }
+                if session.intentionalDismiss || matched { return }
+                CaltopoPersonalAccountConnection.shared.cancelActiveEnrollment()
+            }
+        }
+        authentication.presentationContextProvider = self
+        authentication.prefersEphemeralWebBrowserSession = false
+        authSession = authentication
+        if authentication.start() {
+            continuation.resume()
+        } else {
+            continuation.resume(throwing: CaltopoPersonalAccountError.listenerFailed)
+        }
+    }
+
+    private func dismiss() {
+        intentionalDismiss = true
+        authSession?.cancel()
+        authSession = nil
+    }
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        return scene?.windows.first { $0.isKeyWindow } ?? scene?.windows.first ?? ASPresentationAnchor()
     }
 }

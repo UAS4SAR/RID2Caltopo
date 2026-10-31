@@ -28,8 +28,36 @@ public enum CaltopoPersonalLoginMode: String, Sendable, Hashable {
 public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
     public static let shared = CaltopoPersonalAccountConnection()
     public static let featureFlagKey = "caltopo.personalAccountActivation"
-    public static let defaultDeviceName = "RID2Caltopo"
+    public static let defaultDeviceName = "RID2Caltopo app"
     public static let credentialTitle = "Last synced by RID2Caltopo app"
+    public static let activationPrompt = "Check the box, then tap Sync Account."
+    public static let logOutPrompt = "Remove the personal CalTopo account from this device and return to the team account?"
+    public static let returnScheme = "rid2caltopo"
+    /// Map-node grant for a stored HMAC credential. It is not a browser-session token.
+    public static let signedAccountGrant = "signed-account"
+
+    /// Cookie validation applies only to a browser session. A signed personal account uses HMAC.
+    public static func requiresCookieValidation(personalSessionID: UUID?, personalSignedAccount: Bool) -> Bool {
+        personalSessionID != nil && !personalSignedAccount
+    }
+
+    /// Method, path, status, and credential kind. The path has no query, and the line has no secret.
+    public static func requestLogLine(method: String, path: String, status: Int, credential: String) -> String {
+        let safePath = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? path
+        let kind = ["personal", "session", "team", "unsigned"].contains(credential) ? credential : "unknown"
+        return "\(method) \(safePath) HTTP \(status) credential=\(kind)"
+    }
+
+    public static func logRequest(method: String, path: String, status: Int, credential: String) {
+        let line = requestLogLine(method: method, path: path, status: status, credential: credential)
+        credentialLog.info("\(line, privacy: .public)")
+    }
+
+    /// State transitions only. The message must not contain a secret, signature, or query.
+    public static func logState(_ message: String) {
+        let safe = message.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? message
+        credentialLog.info("\(safe, privacy: .public)")
+    }
     private static let credentialLog = Logger(subsystem: "org.ncssar.RID2Caltopo", category: "CalTopoAccount")
     private static let pendingLifetime: TimeInterval = 5 * 60
 
@@ -41,6 +69,9 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
     private var cached: CaltopoPersonalAccountRecord?
     private var cacheValid = false
     private var pending: PendingActivation?
+    private var listenerFD: Int32 = -1
+    private var enrollmentCancelled = false
+    private var redeemedActivationCodes = Set<String>()
     private var clock: () -> Date = { Date() }
     private var randomBytes: (Int) -> Data = { count in
         var bytes = [UInt8](repeating: 0, count: count)
@@ -94,6 +125,39 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
     public func reconnect(host: String) -> CaltopoPersonalAccountStatus? {
         guard let current = status(host: host), !current.revoked else { return nil }
         return current
+    }
+
+    public func logOut() async {
+        if let record = try? stored(), !record.revoked {
+            let path = "/api/v1/acct/\(record.accountID)/UserCredential/\(record.credentialID)"
+            do {
+                let url = try credentialDeleteURL(record)
+                let status = try await CaltopoPersonalAccountHTTPSExchange().delete(url: url)
+                Self.credentialLog.info("credential DELETE \(path, privacy: .public) HTTP \(status, privacy: .public)")
+            } catch {
+                Self.credentialLog.error("credential DELETE \(path, privacy: .public) failed")
+            }
+        }
+        disconnect()
+    }
+
+    public func credentialDeleteURL(_ record: CaltopoPersonalAccountRecord, now: Date = Date()) throws -> URL {
+        let path = "/api/v1/acct/\(record.accountID)/UserCredential/\(record.credentialID)"
+        let expires = Int64(now.timeIntervalSince1970 * 1_000) + CaltopoRequestSigner.validityMilliseconds
+        let signature = try CaltopoRequestSigner.signature(
+            method: "DELETE", path: path, expiresMilliseconds: expires, payload: "",
+            credentialSecretBase64: record.signingKey
+        )
+        guard var components = URLComponents(string: "https://\(record.host)\(path)") else {
+            throw CaltopoPersonalAccountError.rejected
+        }
+        components.percentEncodedQuery = [
+            "id=\(record.credentialID)",
+            "expires=\(expires)",
+            "signature=\(signature.addingPercentEncoding(withAllowedCharacters: CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))) ?? signature)",
+        ].joined(separator: "&")
+        guard let url = components.url else { throw CaltopoPersonalAccountError.rejected }
+        return url
     }
 
     public func disconnect() {
@@ -249,24 +313,73 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         timeout: TimeInterval = 5 * 60
     ) async throws -> CaltopoPersonalAccountStatus {
         let bound = try CaltopoPersonalAccountLoopback.bind()
-        defer { Darwin.close(bound.fd) }
+        beginEnrollmentListener(bound.fd)
+        defer {
+            browser.dismissActivation()
+            endEnrollmentListener()
+            Darwin.close(bound.fd)
+        }
         let pending = try begin(host: host, deviceName: deviceName, port: bound.port)
         let gate = ActivationGate()
         let thread = Thread {
             gate.finish(Result {
-                try CaltopoPersonalAccountLoopback.awaitCode(fd: bound.fd, pending: pending, timeout: timeout)
+                try CaltopoPersonalAccountLoopback.awaitCode(fd: bound.fd, pending: pending, timeout: timeout) {
+                    self.isEnrollmentCancelled
+                }
             })
         }
         thread.name = "caltopo-personal-activate"
         thread.start()
         try await browser.openActivationPage(pending.activationURL)
         let returned = try await Task.detached { try gate.wait() }.value
-        let response = try await exchange.get(url: try exchangeURL(host: pending.host, code: returned.code, deviceName: returned.deviceName))
-        guard response.status == 200 else { throw CaltopoPersonalAccountError.exchangeFailed(response.status) }
+        let alreadyRedeemed = lock.withLock {
+            !redeemedActivationCodes.insert(returned.code).inserted
+        }
+        if alreadyRedeemed {
+            Self.credentialLog.info("exchange skipped; activation code already redeemed")
+            if let existing = try? stored(), !existing.revoked { return existing.status }
+            throw CaltopoPersonalAccountError.rejected
+        }
+        let response: (status: Int, body: Data)
+        do {
+            response = try await exchange.get(url: try exchangeURL(host: pending.host, code: returned.code, deviceName: returned.deviceName))
+        } catch {
+            lock.withLock { redeemedActivationCodes.remove(returned.code) }
+            throw error
+        }
+        guard response.status == 200 else {
+            lock.withLock { redeemedActivationCodes.remove(returned.code) }
+            throw CaltopoPersonalAccountError.exchangeFailed(response.status)
+        }
         let record = try completeExchange(response.body, code: returned.code, host: pending.host, deviceName: returned.deviceName)
         try write(record)
         await publishCredentialTitle(record)
         return record.status
+    }
+
+    public func cancelActiveEnrollment() {
+        lock.lock()
+        enrollmentCancelled = true
+        let fd = listenerFD
+        lock.unlock()
+        if fd >= 0 { _ = Darwin.shutdown(fd, SHUT_RDWR) }
+    }
+
+    public static func appReturnURL(nonce: String) throws -> String {
+        guard nonce.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil else {
+            throw CaltopoPersonalAccountError.invalidReturn
+        }
+        return "\(returnScheme)://caltopo-return/\(nonce)"
+    }
+
+    /// Shown after CalTopo redirects to loopback. The activation code is not in this page.
+    public static func activationSuccessPage(nonce: String) throws -> String {
+        let url = try appReturnURL(nonce: nonce)
+        return "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
+            "<meta http-equiv=\"refresh\" content=\"0;url=\(url)\">" +
+            "<title>RID2Caltopo</title></head><body>" +
+            "<p>CalTopo account connected. Returning to RID2Caltopo.</p>" +
+            "<p><a href=\"\(url)\">Return to RID2Caltopo</a></p></body></html>"
     }
 
     public func credentialTitleRequest(_ record: CaltopoPersonalAccountRecord, now: Date = Date()) throws -> CaltopoCredentialTitleRequest {
@@ -296,6 +409,50 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         }
     }
 
+    public func deleteSpareActivationCredential(body: Data) async {
+        guard let record = try? stored(),
+              let spare = Self.spareActivationCredentialID(body: body, keepCredentialID: record.credentialID, enrolledAt: record.enrolledAt) else { return }
+        let path = "/api/v1/acct/\(record.accountID)/UserCredential/\(spare)"
+        let expires = Int64(Date().timeIntervalSince1970 * 1_000) + CaltopoRequestSigner.validityMilliseconds
+        guard let signature = try? CaltopoRequestSigner.signature(
+            method: "DELETE", path: path, expiresMilliseconds: expires, payload: "",
+            credentialSecretBase64: record.signingKey
+        ) else { return }
+        var components = URLComponents(string: "https://\(record.host)\(path)")
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+        let encoded = signature.addingPercentEncoding(withAllowedCharacters: allowed) ?? signature
+        components?.percentEncodedQuery = "id=\(record.credentialID)&expires=\(expires)&signature=\(encoded)"
+        guard let url = components?.url else { return }
+        if let status = try? await CaltopoPersonalAccountHTTPSExchange().delete(url: url) {
+            Self.credentialLog.info("spare DELETE \(path, privacy: .public) HTTP \(status, privacy: .public)")
+        } else {
+            Self.credentialLog.error("spare DELETE \(path, privacy: .public) failed")
+        }
+    }
+
+    /// Sync Account's unused credential, only when the catalog has exactly one match from this enrollment.
+    public static func spareActivationCredentialID(body: Data, keepCredentialID: String, enrolledAt: Date) -> String? {
+        guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return nil }
+        let source = json["result"] as? [String: Any] ?? json
+        var matches: [String] = []
+        for key in ["features", "credentials"] {
+            guard let items = source[key] as? [[String: Any]] else { continue }
+            for item in items {
+                guard let properties = item["properties"] as? [String: Any],
+                      properties["class"] as? String == "UserCredential",
+                      let id = item["id"] as? String, !id.isEmpty, id != keepCredentialID,
+                      properties["title"] as? String == "Generated on User Request" else { continue }
+                let lastUsed = properties["lastUsed"]
+                let unused = lastUsed == nil || lastUsed is NSNull || (lastUsed as? NSNumber)?.int64Value == 0
+                guard unused, let updated = (properties["updated"] as? NSNumber)?.int64Value else { continue }
+                let enrolled = Int64(enrolledAt.timeIntervalSince1970 * 1_000)
+                if abs(updated - enrolled) > 3 * 60 * 1_000 { continue }
+                matches.append(id)
+            }
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
     public static func parseActivationResponse(_ body: Data) throws -> ParsedActivation {
         guard body.count <= 65_536,
               let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
@@ -313,14 +470,25 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         let accountType = account?["type"] as? String ?? ""
         let credentialID = source["code"] as? String ?? ""
         let signingKey = source["key"] as? String ?? ""
-        if let expires = properties?["subscriptionExpires"], !(expires is NSNumber) {
+        if let expires = properties?["subscriptionExpires"], !(expires is NSNull), !(expires is NSNumber) {
+            Self.credentialLog.error("activation rejected: subscriptionExpires")
             throw CaltopoPersonalAccountError.rejected
         }
-        guard accountType == "account",
-              accountID.range(of: "^[A-Za-z0-9]{6}$", options: .regularExpression) != nil,
-              credentialID.range(of: "^[A-Za-z0-9]{12}$", options: .regularExpression) != nil,
-              signingKey.count == 44,
-              let key = Data(base64Encoded: signingKey), key.count == 32 else {
+        // CalTopo account objects are GeoJSON features. type is a short word such as Feature.
+        guard accountType.range(of: "^[A-Za-z]{1,32}$", options: .regularExpression) != nil else {
+            Self.credentialLog.error("activation rejected: account.type")
+            throw CaltopoPersonalAccountError.rejected
+        }
+        guard accountID.range(of: "^[A-Za-z0-9]{6}$", options: .regularExpression) != nil else {
+            Self.credentialLog.error("activation rejected: account.id")
+            throw CaltopoPersonalAccountError.rejected
+        }
+        guard credentialID.range(of: "^[A-Za-z0-9]{12}$", options: .regularExpression) != nil else {
+            Self.credentialLog.error("activation rejected: credential id")
+            throw CaltopoPersonalAccountError.rejected
+        }
+        guard signingKey.count == 44, let key = Self.decodeSigningKey(signingKey), key.count == 32 else {
+            Self.credentialLog.error("activation rejected: key")
             throw CaltopoPersonalAccountError.rejected
         }
         let person = [properties?["firstName"] as? String, properties?["lastName"] as? String]
@@ -330,6 +498,12 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
             ?? (properties?["email"] as? String)?.nilIfBlank
             ?? accountID
         return ParsedActivation(accountID: accountID, credentialID: credentialID, signingKey: signingKey, displayName: display, accountType: accountType)
+    }
+
+    private static func decodeSigningKey(_ signingKey: String) -> Data? {
+        if let standard = Data(base64Encoded: signingKey), standard.count == 32 { return standard }
+        let url = signingKey.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        return Data(base64Encoded: url)
     }
 
     public static func customSchemePrefix(scheme: String, nonce: String) throws -> String {
@@ -462,6 +636,25 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         return value
     }
 
+    private func beginEnrollmentListener(_ fd: Int32) {
+        lock.lock()
+        listenerFD = fd
+        enrollmentCancelled = false
+        lock.unlock()
+    }
+
+    private func endEnrollmentListener() {
+        lock.lock()
+        listenerFD = -1
+        lock.unlock()
+    }
+
+    private var isEnrollmentCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return enrollmentCancelled
+    }
+
     private func currentDate() -> Date {
         lock.lock()
         defer { lock.unlock() }
@@ -502,8 +695,10 @@ public protocol CaltopoPersonalAccountStore: Sendable {
 }
 
 public protocol CaltopoPersonalAccountBrowser: Sendable {
-    /// System browser. Google sign-in must not run in an embedded web view.
+    /// System auth session. Google sign-in must not run in an embedded web view.
     func openActivationPage(_ url: URL) async throws
+    /// Dismiss the auth session after the code is stored, or when enrollment stops.
+    func dismissActivation()
 }
 
 public protocol CaltopoPersonalAccountExchange: Sendable {
@@ -621,6 +816,8 @@ public enum CaltopoPersonalAccountError: Error, Equatable, LocalizedError {
     case exchangeFailed(Int)
     case listenerFailed
     case unavailable
+    case cancelled
+    case timedOut
 
     public var errorDescription: String? {
         switch self {
@@ -633,6 +830,8 @@ public enum CaltopoPersonalAccountError: Error, Equatable, LocalizedError {
         case .exchangeFailed(let status): return "CalTopo activation exchange failed (HTTP \(status))."
         case .listenerFailed: return "CalTopo activation could not listen for the browser return."
         case .unavailable: return "Personal CalTopo credential could not be read. Team credentials were not used."
+        case .cancelled: return "CalTopo sign-in was cancelled."
+        case .timedOut: return "CalTopo sign-in timed out."
         }
     }
 }
@@ -669,7 +868,8 @@ public struct CaltopoPersonalAccountHTTPSExchange: CaltopoPersonalAccountExchang
         request.setValue("RID2Caltopo/Apple", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw CaltopoPersonalAccountError.rejected }
-        guard data.count <= 65_536 else { throw CaltopoPersonalAccountError.rejected }
+        let limit = url.path.hasSuffix("/since/0") ? 16 * 1024 * 1024 : 65_536
+        guard data.count <= limit else { throw CaltopoPersonalAccountError.rejected }
         return (http.statusCode, data)
     }
 
@@ -691,6 +891,21 @@ public struct CaltopoPersonalAccountHTTPSExchange: CaltopoPersonalAccountExchang
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.setValue("RID2Caltopo/Apple", forHTTPHeaderField: "User-Agent")
         request.httpBody = Data(body.utf8)
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw CaltopoPersonalAccountError.rejected }
+        return http.statusCode
+    }
+
+    public func delete(url: URL) async throws -> Int {
+        guard url.scheme == "https",
+              let host = url.host?.lowercased(), ["caltopo.com", "sartopo.com"].contains(host),
+              url.path.range(of: "^/api/v1/acct/[A-Za-z0-9]{6}/UserCredential/[A-Za-z0-9]{12}$", options: .regularExpression) != nil,
+              url.user == nil else { throw CaltopoPersonalAccountError.rejected }
+        let session = URLSession(configuration: .ephemeral, delegate: CaltopoPersonalNoRedirect(), delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("RID2Caltopo/Apple", forHTTPHeaderField: "User-Agent")
         let (_, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw CaltopoPersonalAccountError.rejected }
         return http.statusCode
@@ -731,16 +946,22 @@ enum CaltopoPersonalAccountLoopback {
         return (fd, Int(UInt16(bigEndian: actual.sin_port)))
     }
 
-    static func awaitCode(fd: Int32, pending: PendingActivation, timeout: TimeInterval) throws -> CaltopoActivationReturn {
+    static func awaitCode(fd: Int32, pending: PendingActivation, timeout: TimeInterval, cancelled: () -> Bool = { false }) throws -> CaltopoActivationReturn {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
+            if cancelled() { throw CaltopoPersonalAccountError.cancelled }
             var pollInfo = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
             let remaining = Int32(max(1, deadline.timeIntervalSinceNow * 1000))
             let ready = poll(&pollInfo, 1, min(remaining, 1000))
             if ready == 0 { continue }
-            if ready < 0 { continue }
+            if ready < 0 || (pollInfo.revents & Int16(POLLNVAL)) != 0 {
+                throw cancelled() ? CaltopoPersonalAccountError.cancelled : CaltopoPersonalAccountError.timedOut
+            }
             let client = accept(fd, nil, nil)
-            if client < 0 { continue }
+            if client < 0 {
+                if cancelled() { throw CaltopoPersonalAccountError.cancelled }
+                continue
+            }
             defer { close(client) }
             var header = [UInt8](repeating: 0, count: 8192)
             var used = 0
@@ -761,9 +982,12 @@ enum CaltopoPersonalAccountLoopback {
                 }
             }
             let returned = target.flatMap { try? CaltopoPersonalAccountConnection.shared.callbackCode($0, pending: pending) }
-            let html = returned == nil
-                ? "<html><body>RID2Caltopo did not accept this activation request.</body></html>"
-                : "<html><body>RID2Caltopo is connected. You can return to the app.</body></html>"
+            let html: String
+            if returned == nil {
+                html = "<html><body>RID2Caltopo did not accept this activation request.</body></html>"
+            } else {
+                html = try CaltopoPersonalAccountConnection.activationSuccessPage(nonce: pending.pathToken)
+            }
             let status = returned == nil ? "404 Not Found" : "200 OK"
             let payload = html.data(using: .utf8) ?? Data()
             let response = "HTTP/1.1 \(status)\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(payload.count)\r\nConnection: close\r\n\r\n"
@@ -773,7 +997,7 @@ enum CaltopoPersonalAccountLoopback {
             }
             if let returned { return returned }
         }
-        throw CaltopoPersonalAccountError.expired
+        throw cancelled() ? CaltopoPersonalAccountError.cancelled : CaltopoPersonalAccountError.timedOut
     }
 }
 

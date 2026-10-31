@@ -18,6 +18,58 @@ final class CaltopoPersonalAccountConnectionTests: XCTestCase {
         XCTAssertEqual(request.fields["signature"], signature)
     }
 
+    func testActivationSuccessPageReturnsToTheAppWithoutTheCode() throws {
+        let nonce = "0123456789abcdef0123456789abcdef"
+        let page = try CaltopoPersonalAccountConnection.activationSuccessPage(nonce: nonce)
+        XCTAssertEqual(try CaltopoPersonalAccountConnection.appReturnURL(nonce: nonce), "rid2caltopo://caltopo-return/\(nonce)")
+        XCTAssertTrue(page.contains("rid2caltopo://caltopo-return/\(nonce)"))
+        XCTAssertFalse(page.contains("code="))
+        XCTAssertEqual(CaltopoPersonalAccountConnection.activationPrompt, "Check the box, then tap Sync Account.")
+        XCTAssertTrue(CaltopoPersonalAccountConnection.activationPrompt.contains("Sync"))
+        XCTAssertFalse(CaltopoPersonalAccountConnection.activationPrompt.contains("Synch"))
+    }
+
+    func testLiveFeatureShapeIsAccepted() throws {
+        let key = Data((0..<32).map { UInt8(($0 * 17 + 9) & 0xff) }).base64EncodedString()
+        XCTAssertEqual(key.count, 44)
+        XCTAssertEqual("Feature".count, 7)
+        let json = #"{"code":"Ab12Cd34Ef56","key":"\#(key)","account":{"id":"ACCT01","type":"Feature","properties":{"class":"UserAccount","subscriptionExpires":null}}}"#
+        let parsed = try CaltopoPersonalAccountConnection.parseActivationResponse(Data(json.utf8))
+        XCTAssertEqual(parsed.accountType, "Feature")
+        XCTAssertEqual(parsed.accountID, "ACCT01")
+        XCTAssertEqual(parsed.credentialID, "Ab12Cd34Ef56")
+        XCTAssertFalse(parsed.description.contains(key))
+    }
+
+    func testActivationNameMatchesTheCredentialDescriptionStyle() {
+        XCTAssertEqual(CaltopoPersonalAccountConnection.defaultDeviceName, "RID2Caltopo app")
+    }
+
+    func testSpareActivationCredentialIsOnlyTheUnusedOneFromThisEnrollment() throws {
+        let now = 1_700_000_000_000 as Int64
+        let body = #"{"status":"ok","result":{"features":[{"id":"cred12345678","properties":{"class":"UserCredential","title":"Last synced by RID2Caltopo app","lastUsed":\#(now),"updated":\#(now)}},{"id":"spare1234567","properties":{"class":"UserCredential","title":"Generated on User Request","updated":\#(now - 5_000)}},{"id":"used12345678","properties":{"class":"UserCredential","title":"Generated on User Request","lastUsed":\#(now),"updated":\#(now)}}]}}"#
+        let enrolled = Date(timeIntervalSince1970: TimeInterval(now) / 1_000)
+        XCTAssertEqual(
+            CaltopoPersonalAccountConnection.spareActivationCredentialID(body: Data(body.utf8), keepCredentialID: "cred12345678", enrolledAt: enrolled),
+            "spare1234567"
+        )
+    }
+
+    func testCredentialDeleteUsesAnEmptyPayload() throws {
+        let secret = Data(repeating: 3, count: 32).base64EncodedString()
+        let record = try sampleRecord(secret: secret)
+        let url = try CaltopoPersonalAccountConnection().credentialDeleteURL(record, now: Date(timeIntervalSince1970: 1_700_000_000))
+        XCTAssertEqual(url.path, "/api/v1/acct/USER01/UserCredential/cred12345678")
+        let signature = try CaltopoRequestSigner.signature(
+            method: "DELETE", path: url.path, expiresMilliseconds: 1_700_000_120_000,
+            payload: "", credentialSecretBase64: record.signingKey
+        )
+        XCTAssertTrue(url.absoluteString.contains("expires=1700000120000"))
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+        XCTAssertEqual(query?.first { $0.name == "signature" }?.value, signature)
+        XCTAssertFalse(url.absoluteString.contains(secret))
+    }
+
     func testPersonalLoginModeKeepsAnExistingCookieSessionUntilChosen() {
         XCTAssertEqual(CaltopoPersonalLoginMode.resolve(stored: nil, cookieSessionAlreadyInUse: false), .credentials)
         XCTAssertEqual(CaltopoPersonalLoginMode.resolve(stored: nil, cookieSessionAlreadyInUse: true), .sessionCookies)
@@ -83,8 +135,19 @@ final class CaltopoPersonalAccountConnectionTests: XCTestCase {
         let client = try CaltopoLiveClient(configuration: signed)
         let request = try await client.makeMapChangesRequest(sinceMilliseconds: 0, now: Date(timeIntervalSince1970: 1_700_000_000))
         XCTAssertEqual(request.url?.path, "/api/v1/map/ABC123/since/0")
-        XCTAssertNotNil(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "signature" }?.value)
+        XCTAssertEqual(request.httpMethod, "GET")
+        let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
+        XCTAssertEqual(query?.first { $0.name == "id" }?.value, "cred12345678")
+        XCTAssertNotNil(query?.first { $0.name == "signature" }?.value)
         XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
+        XCTAssertEqual(signed.credentialKind, "personal")
+        XCTAssertFalse(CaltopoPersonalAccountConnection.requiresCookieValidation(personalSessionID: signed.personalSessionID, personalSignedAccount: signed.personalSignedAccount))
+        XCTAssertTrue(CaltopoPersonalAccountConnection.requiresCookieValidation(personalSessionID: cookieID, personalSignedAccount: false))
+        let line = CaltopoPersonalAccountConnection.requestLogLine(
+            method: "GET", path: "/api/v1/map/ABC123/since/0?id=cred12345678&signature=abc", status: 200, credential: "personal")
+        XCTAssertEqual(line, "GET /api/v1/map/ABC123/since/0 HTTP 200 credential=personal")
+        XCTAssertFalse(line.contains(secret))
+        XCTAssertFalse(line.contains("?"))
         let clue = CaltopoPhotoClue(latitude: 1, longitude: 2, title: "Clue", description: "Photo", createdMilliseconds: 1, jpegData: Data([0xff, 0xd8]), teamID: "personal:USER01")
         let bodies = try await client.makePhotoClueRequests(clue, now: Date(timeIntervalSince1970: 1_700_000_000)).compactMap { $0.httpBody }.map { String(decoding: $0, as: UTF8.self) }
         XCTAssertTrue(bodies.contains { $0.contains("signature=") })

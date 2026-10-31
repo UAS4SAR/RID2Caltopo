@@ -513,11 +513,13 @@ public final class BluetoothRIDScanner: ObservableObject, RidObservationProvider
         )
 
         let pipeline = BluetoothRIDPacketPipeline()
-        processingTask = Task { [weak self] in
+        // Detached so packet parse/apply never inherits @MainActor from the scanner.
+        // Stream yields happen off-main; @Published UI fields hop to MainActor.
+        processingTask = Task.detached { [weak self] in
             for await packet in packetPair.stream {
                 guard !Task.isCancelled else { break }
                 let event = await pipeline.ingest(packet)
-                self?.apply(event)
+                await self?.applyPipelineEvent(event)
             }
         }
     }
@@ -548,7 +550,23 @@ public final class BluetoothRIDScanner: ObservableObject, RidObservationProvider
         bridgeLastSeenAt = nil
     }
 
-    private func apply(_ event: BluetoothRIDPipelineEvent) {
+    /// Off-main stream fan-out first; MainActor only for operator-facing published state.
+    private nonisolated func applyPipelineEvent(_ event: BluetoothRIDPipelineEvent) async {
+        if let aircraftMessage = event.aircraftMessage {
+            aircraftMessageContinuation.yield(aircraftMessage)
+        }
+        if let receivedAt = event.ridMessageReceivedAt {
+            ridMessageTimeContinuation.yield(receivedAt)
+        }
+        if let observation = event.observation {
+            continuation.yield(observation)
+        }
+        await MainActor.run { [weak self] in
+            self?.applyPublishedState(event)
+        }
+    }
+
+    private func applyPublishedState(_ event: BluetoothRIDPipelineEvent) {
         if let error = event.decodeError {
             rejectedAdvertisementCount += 1
             lastDecodeError = error
@@ -559,16 +577,11 @@ public final class BluetoothRIDScanner: ObservableObject, RidObservationProvider
         if let bridgePacket = event.bridgePacket {
             recordConfirmedBridgePacket(bridgePacket)
         }
-        if let aircraftMessage = event.aircraftMessage {
-            aircraftMessageContinuation.yield(aircraftMessage)
-        }
-        if let receivedAt = event.ridMessageReceivedAt {
-            ridMessageTimeContinuation.yield(receivedAt)
-        }
-        if let observation = event.observation {
+        if event.observation != nil {
             observationCount += 1
-            lastAircraftID = observation.aircraftId
-            continuation.yield(observation)
+            if let observation = event.observation {
+                lastAircraftID = observation.aircraftId
+            }
         }
     }
 

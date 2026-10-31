@@ -70,6 +70,7 @@ actor AppleTrackArchiveStore {
     private var configuration: AppleTrackArchiveConfiguration?
     private let reportedFilename = "r2c_reported.txt"
     private let uploadWork = TrackerArchiveUploadWork<AppleTrackArchiveOutcome.TrackerResult>()
+    private var pendingReplayTask: Task<Void, Never>?
 
     init(fileManager: FileManager = .default, session: URLSession = .shared) {
         rootURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first?
@@ -410,6 +411,25 @@ actor AppleTrackArchiveStore {
         return result
     }
 
+    /// Transient failures stay unreported and are tried again. Three attempts are not the end.
+    private func schedulePendingReplay() {
+        guard pendingReplayTask == nil else { return }
+        pendingReplayTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(30))
+            await self?.runPendingReplay()
+        }
+    }
+
+    private func runPendingReplay() async {
+        pendingReplayTask = nil
+        guard configuration?.tracker.isConfigured == true else { return }
+        let summary = await replayUnreported()
+        if summary.pending > 0 {
+            AppleLog.info("TrackerArchive", "Pending archive uploads remain count=\(summary.pending); retrying")
+            schedulePendingReplay()
+        }
+    }
+
     private func process(data: Data, file: URL) async -> AppleTrackArchiveOutcome.TrackerResult {
         await uploadWork.run(key: file.standardizedFileURL.path) {
             await self.processOnce(data: data, file: file)
@@ -439,18 +459,26 @@ actor AppleTrackArchiveStore {
         ) else { return .pending(400) }
 
         var statusCode = 503
-        for attempt in 1 ... 3 {
+        let retryDelays: [TimeInterval] = [1, 2, 4]
+        for attempt in 1 ... retryDelays.count {
             do {
                 let (_, response) = try await session.data(for: request)
                 statusCode = (response as? HTTPURLResponse)?.statusCode ?? 503
             } catch {
                 statusCode = (error as? URLError)?.code == .timedOut ? 408 : 503
-                AppleLog.warning("TrackerArchive", "Upload attempt \(attempt)/3 failed for \(file.lastPathComponent): \(error.localizedDescription)")
+                AppleLog.warning("TrackerArchive", "Upload attempt \(attempt) failed for \(file.lastPathComponent): \(error.localizedDescription)")
             }
             if !TrackerArchiveUploadContract.isTransient(statusCode: statusCode) { break }
-            if attempt < 3 {
-                try? await Task.sleep(for: .seconds(attempt))
+            if attempt < retryDelays.count {
+                try? await Task.sleep(for: .seconds(retryDelays[attempt - 1]))
             }
+        }
+        if TrackerArchiveUploadContract.isTransient(statusCode: statusCode) {
+            AppleLog.warning(
+                "TrackerArchive",
+                "Upload remains pending after \(retryDelays.count) attempts for \(file.lastPathComponent) status=\(statusCode); scheduling another replay"
+            )
+            schedulePendingReplay()
         }
         if statusCode == 401 || statusCode == 403 {
             await MainActor.run {

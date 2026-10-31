@@ -34,8 +34,19 @@ object CaltopoPersonalAccountConnection {
     const val FEATURE_PREFERENCE = "caltopo-personal-account"
     const val FEATURE_ENABLED_KEY = "feature_enabled"
     const val LOGIN_MODE_KEY = "login_mode"
-    const val DEFAULT_DEVICE_NAME = "RID2Caltopo"
+    const val DEFAULT_DEVICE_NAME = "RID2Caltopo app"
     const val CREDENTIAL_TITLE = "Last synced by RID2Caltopo app"
+    const val RETURN_SCHEME = "rid2caltopo"
+    const val AUTH_LOG_TAG = "CaltopoPersonalAuth"
+    /** Map-node grant for a stored HMAC credential. It is not a browser-session token. */
+    const val SIGNED_ACCOUNT_GRANT = "signed-account"
+    const val ACTIVATION_PROMPT = "Check the box, then tap Sync Account."
+    const val LOG_OUT_PROMPT = "Remove the personal CalTopo account from this device and return to the team account?"
+
+    fun personalMenuLabel(storedDisplayName: String?): String =
+        if (storedDisplayName.isNullOrBlank()) "Personal: Log In" else "Personal: $storedDisplayName"
+
+    fun teamMenuLabel(teamName: String): String = "Team: $teamName"
     private const val SIGNATURE_TTL_MS = 2 * 60 * 1000L
     private const val PENDING_TTL_MS = 5 * 60 * 1000L
     private const val MAX_ACTIVATION_BODY = 65_536
@@ -54,7 +65,14 @@ object CaltopoPersonalAccountConnection {
     var clock: () -> Long = { System.currentTimeMillis() }
     var titleClient: (CredentialTitleRequest) -> CaltopoActivationHttp = { CaltopoActivationHttp(200, "") }
     var titleFailureLog: (String) -> Unit = {}
+    var onEnrollmentAbandoned: (() -> Unit)? = null
+    var authLog: (String) -> Unit = {}
     var randomBytes: (Int) -> ByteArray = { count -> ByteArray(count).also { SecureRandom().nextBytes(it) } }
+    private var listening: ServerSocket? = null
+    private var enrollmentCancelled = false
+    private val redeemedActivationCodes = mutableSetOf<String>()
+    private var catalogAccountId: String? = null
+    private var catalogBody: String? = null
 
     @JvmStatic fun install(store: CaltopoPersonalAccountStore, featureEnabled: Boolean = this.featureEnabled) {
         synchronized(lock) {
@@ -64,6 +82,8 @@ object CaltopoPersonalAccountConnection {
             cached = null
             cacheValid = false
             pending = null
+            catalogAccountId = null
+            catalogBody = null
         }
     }
 
@@ -77,6 +97,13 @@ object CaltopoPersonalAccountConnection {
         install(CaltopoPersonalAccountMemoryStore(), featureEnabled = false)
         titleClient = { CaltopoActivationHttp(200, "") }
         titleFailureLog = {}
+        onEnrollmentAbandoned = null
+        authLog = {}
+        synchronized(lock) {
+            enrollmentCancelled = false
+            listening = null
+            redeemedActivationCodes.clear()
+        }
         clock = { System.currentTimeMillis() }
         randomBytes = { count -> ByteArray(count).also { SecureRandom().nextBytes(it) } }
     }
@@ -100,7 +127,35 @@ object CaltopoPersonalAccountConnection {
             cached = null
             cacheValid = false
             pending = null
+            catalogAccountId = null
+            catalogBody = null
         }
+    }
+
+    /**
+     * Best-effort signed DELETE of the CalTopo credential, then the local record is always removed.
+     * The web object DAO documents DELETE on this URL. A non-200 or a transport error does not keep the key.
+     */
+    fun logOut(delete: (String) -> Int = { url -> CaltopoPersonalAccountHttps.delete(url).status }) {
+        val record = stored()
+        if (record != null && !record.revoked) {
+            val path = "/api/v1/acct/${record.accountId}/UserCredential/${record.credentialId}"
+            try {
+                val status = delete(credentialDeleteUrl(record))
+                logAuth("credential DELETE $path HTTP $status")
+            } catch (error: Exception) {
+                logAuth("credential DELETE $path failed: ${error.javaClass.simpleName}")
+            }
+        }
+        disconnect()
+        logAuth("logged out")
+    }
+
+    fun credentialDeleteUrl(record: CaltopoPersonalAccountRecord, nowMilliseconds: Long = clock()): String {
+        val path = "/api/v1/acct/${record.accountId}/UserCredential/${record.credentialId}"
+        val expires = nowMilliseconds + SIGNATURE_TTL_MS
+        val signature = sign("DELETE", path, expires, "", record.signingKey)
+        return "https://${record.host}$path?id=${encode(record.credentialId)}&expires=$expires&signature=${encode(signature)}"
     }
 
     fun markRevoked() {
@@ -135,6 +190,49 @@ object CaltopoPersonalAccountConnection {
         )
     }
 
+    @JvmStatic fun usesSignedCredential(token: String?): Boolean = token == SIGNED_ACCOUNT_GRANT
+
+    /** Browser-session grants are checked with the cookie probe. The signed-account grant is not a session. */
+    @JvmStatic fun requiresCookieValidation(token: String?): Boolean =
+        !token.isNullOrEmpty() && !usesSignedCredential(token)
+
+    /**
+     * A signed-account grant never falls through to session cookies.
+     * A cookie grant keeps [decide]'s result, including the cookie path while Credentials is off.
+     */
+    @JvmStatic fun signingForMap(accountId: String?, grantToken: String?): PersonalSigningDecision {
+        val decision = decide(accountId)
+        if (usesSignedCredential(grantToken) && decision.credentials == null && decision.failure == null) {
+            return PersonalSigningDecision(null, "Sign in to connect your CalTopo account. Session cookies are not used.")
+        }
+        return decision
+    }
+
+    @JvmStatic fun requestLogLine(method: String, path: String, status: Int, credential: String): String {
+        val safePath = path.substringBefore('?')
+        val kind = if (credential == "personal" || credential == "session" || credential == "team" || credential == "unsigned") {
+            credential
+        } else {
+            "unknown"
+        }
+        return "$method $safePath HTTP $status credential=$kind"
+    }
+
+    @JvmStatic fun logRequest(method: String, path: String, status: Int, credential: String) {
+        logAuth(requestLogLine(method, path, status, credential))
+    }
+
+    @JvmStatic fun grantKind(token: String?): String = when {
+        token.isNullOrEmpty() -> "none"
+        usesSignedCredential(token) -> "signed-account"
+        else -> "session"
+    }
+
+    /** State transitions only. Callers must not pass a secret, signature, or query. */
+    @JvmStatic fun logState(message: String) {
+        logAuth(message.substringBefore('?'))
+    }
+
     /** Same HMAC construction as [CaltopoSession] and the Apple request signer. */
     @JvmStatic fun sign(method: String, path: String, expiresMilliseconds: Long, payload: String, credentialSecretBase64: String): String {
         val key = try {
@@ -163,8 +261,28 @@ object CaltopoPersonalAccountConnection {
     /** Signed account catalog. The existing personal-catalog normalizer interprets the body. */
     fun fetchAccountCatalog(http: CaltopoActivationExchange): String? {
         val request = accountCatalogRequest() ?: return null
-        val response = http.get(request.url)
-        if (response.status != 200) throw CaltopoPersonalAccountException("CalTopo account catalog failed (HTTP ${response.status}).")
+        val path = runCatching { URI(request.url).path }.getOrDefault("/api/v1/acct/${request.accountId}/since/0")
+        synchronized(lock) {
+            val cached = catalogBody
+            if (catalogAccountId == request.accountId && cached != null) {
+                logAuth("catalog cache hit account=${request.accountId} bytes=${cached.length}")
+                return cached
+            }
+        }
+        logAuth("catalog GET $path")
+        val response = try {
+            http.get(request.url)
+        } catch (error: Exception) {
+            val reason = if (error is CaltopoPersonalAccountException) error.message ?: "rejected" else error.javaClass.simpleName
+            logAuth("catalog GET $path failed: $reason")
+            throw CaltopoPersonalAccountException("CalTopo account catalog could not be loaded.")
+        }
+        logAuth("catalog HTTP ${response.status} bytes=${response.body.length}")
+        if (response.status != 200) throw CaltopoPersonalAccountException("CalTopo account catalog failed (HTTP ${response.status}).", response.status)
+        synchronized(lock) {
+            catalogAccountId = request.accountId
+            catalogBody = response.body
+        }
         return response.body
     }
 
@@ -189,6 +307,11 @@ object CaltopoPersonalAccountConnection {
         val deadline = clock() + timeoutMilliseconds
         val generation = authorizationGeneration
         try {
+            synchronized(lock) {
+                enrollmentCancelled = false
+                listening = server
+            }
+            logAuth("listener start port=${server.localPort}")
             val accept = Thread({
                 pending.acceptedReturn = awaitCode(server, pending, deadline)
             }, "caltopo-personal-activate")
@@ -196,17 +319,68 @@ object CaltopoPersonalAccountConnection {
             accept.start()
             browser.open(pending.activationUrl)
             accept.join(timeoutMilliseconds + 2_000)
-            val returned = pending.acceptedReturn ?: throw CaltopoPersonalAccountException("CalTopo activation was not completed.")
+            val returned = pending.acceptedReturn ?: throw CaltopoPersonalAccountException(
+                if (enrollmentWasCancelled()) "CalTopo sign-in was cancelled." else "CalTopo sign-in timed out."
+            ).also { logAuth(if (enrollmentWasCancelled()) "listener cancelled" else "listener timed out") }
             if (generation != authorizationGeneration) throw CaltopoPersonalAccountException("Personal CalTopo sign-in was cancelled.")
             val record = exchange(pending, returned, http)
             if (generation != authorizationGeneration) throw CaltopoPersonalAccountException("Personal CalTopo sign-in was cancelled.")
             write(record)
+            logAuth("stored account=${record.accountId} credential=${record.credentialId}")
             clearPending()
             if (generation == authorizationGeneration) publishCredentialTitle(record)
             return record.status()
         } finally {
+            val abandoned = pending.acceptedReturn == null
             server.close()
+            synchronized(lock) { if (listening === server) listening = null }
+            if (abandoned) runCatching { onEnrollmentAbandoned?.invoke() }
         }
+    }
+
+    /** Closes the loopback listener. The in-app browser calls this when the operator cancels. */
+    fun cancelEnrollment() {
+        synchronized(lock) {
+            if (pending?.acceptedReturn != null) {
+                logAuth("cancel ignored; activation code already accepted")
+                return
+            }
+            enrollmentCancelled = true
+            runCatching { listening?.close() }
+            logAuth("listener cancelled")
+        }
+    }
+
+    fun logAuth(message: String) {
+        runCatching { authLog(message) }
+    }
+
+    private fun rejectActivation(reason: String): Nothing {
+        logAuth("activation rejected: $reason")
+        throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
+    }
+
+    private fun decodeSigningKey(signingKey: String): ByteArray? {
+        val standard = runCatching { java.util.Base64.getDecoder().decode(signingKey) }.getOrNull()
+        if (standard != null) return standard
+        return runCatching { java.util.Base64.getUrlDecoder().decode(signingKey) }.getOrNull()
+    }
+
+    fun enrollmentWasCancelled(): Boolean = synchronized(lock) { enrollmentCancelled }
+
+    fun appReturnUrl(nonce: String): String {
+        if (!NONCE.matches(nonce)) throw CaltopoPersonalAccountException("CalTopo activation return was rejected.")
+        return "$RETURN_SCHEME://caltopo-return/$nonce"
+    }
+
+    /** Shown in the browser after CalTopo redirects to loopback. The activation code is not in this page. */
+    fun activationSuccessPage(nonce: String): String {
+        val url = appReturnUrl(nonce)
+        return "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
+            "<meta http-equiv=\"refresh\" content=\"0;url=$url\">" +
+            "<title>RID2Caltopo</title></head><body>" +
+            "<p>CalTopo account connected. Returning to RID2Caltopo.</p>" +
+            "<p><a href=\"$url\">Return to RID2Caltopo</a></p></body></html>"
     }
 
     fun begin(host: String, deviceName: String, port: Int, now: Long = clock()): PendingActivation {
@@ -274,35 +448,37 @@ object CaltopoPersonalAccountConnection {
     }
 
     fun parseActivationResponse(rawBody: String): ParsedActivation {
-        if (rawBody.length > MAX_ACTIVATION_BODY) throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
+        if (rawBody.length > MAX_ACTIVATION_BODY) rejectActivation("body length")
         val json = try {
             JSONObject(rawBody)
         } catch (error: Exception) {
-            throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
+            rejectActivation("json")
         }
         if (json.optString("status") == "error") throw CaltopoPersonalAccountException("CalTopo activation was rejected.")
         val source = json.optJSONObject("result") ?: json
         val credentialId = source.optString("code")
         val signingKey = source.optString("key")
-        val account = source.optJSONObject("account") ?: throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
+        val account = source.optJSONObject("account") ?: rejectActivation("account missing")
         val accountId = account.optString("id")
         val accountType = account.optString("type")
-        val properties = account.optJSONObject("properties") ?: throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
+        val properties = account.optJSONObject("properties") ?: rejectActivation("properties missing")
         if (properties.optString("class") != "UserAccount") {
+            logAuth("activation rejected: properties.class")
             throw CaltopoPersonalAccountException("CalTopo activation did not return a personal account.")
         }
-        if (accountType != "account" || !ACCOUNT_ID.matches(accountId) || !CREDENTIAL_ID.matches(credentialId) || signingKey.length != 44) {
-            throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
+        // CalTopo account objects are GeoJSON features. type is a short word such as
+        // Feature (7 characters), not the properties.class value.
+        if (!ACCOUNT_TYPE.matches(accountType)) rejectActivation("account.type length=${accountType.length}")
+        if (!ACCOUNT_ID.matches(accountId)) rejectActivation("account.id length=${accountId.length}")
+        if (!CREDENTIAL_ID.matches(credentialId)) rejectActivation("credential id length=${credentialId.length}")
+        if (signingKey.length != 44) rejectActivation("key length=${signingKey.length}")
+        if (properties.has("subscriptionExpires")) {
+            val expires = properties.opt("subscriptionExpires")
+            if (expires != null && expires != JSONObject.NULL && expires !is Number) rejectActivation("subscriptionExpires")
         }
-        if (properties.has("subscriptionExpires") && properties.opt("subscriptionExpires") !is Number) {
-            throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
-        }
-        val keyBytes = try {
-            java.util.Base64.getDecoder().decode(signingKey)
-        } catch (error: IllegalArgumentException) {
-            throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
-        }
-        if (keyBytes.size != 32) throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
+        val keyBytes = decodeSigningKey(signingKey) ?: rejectActivation("key decode")
+        if (keyBytes.size != 32) rejectActivation("key bytes=${keyBytes.size}")
+        logAuth("activation accepted type=$accountType")
         val person = listOf(properties.optString("firstName"), properties.optString("lastName"))
             .map { it.trim() }.filter { it.isNotEmpty() }.joinToString(" ")
         val display = person.ifBlank { null }
@@ -313,10 +489,80 @@ object CaltopoPersonalAccountConnection {
     }
 
     private fun exchange(pending: PendingActivation, returned: CaltopoActivationReturn, http: CaltopoActivationExchange): CaltopoPersonalAccountRecord {
+        synchronized(lock) {
+            if (!redeemedActivationCodes.add(returned.code)) {
+                logAuth("exchange skipped; activation code already redeemed")
+                val existing = cached
+                if (existing != null && !existing.revoked) return existing
+                throw CaltopoPersonalAccountException("CalTopo activation code was already used.")
+            }
+        }
         val url = "https://${pending.host}/api/v1/activate?code=${encode(returned.code)}&name=${encode(returned.deviceName)}"
-        val response = http.get(url)
-        if (response.status != 200) throw CaltopoPersonalAccountException("CalTopo activation exchange failed (HTTP ${response.status}).")
+        val response = try {
+            http.get(url)
+        } catch (error: Exception) {
+            synchronized(lock) { redeemedActivationCodes.remove(returned.code) }
+            logAuth("exchange request failed")
+            throw CaltopoPersonalAccountException("CalTopo activation exchange failed.")
+        }
+        logAuth("exchange HTTP ${response.status}")
+        if (response.status != 200) {
+            synchronized(lock) { redeemedActivationCodes.remove(returned.code) }
+            throw CaltopoPersonalAccountException("CalTopo activation exchange failed (HTTP ${response.status}).")
+        }
         return completeExchange(response.body, returned.code, pending.host, returned.deviceName)
+    }
+
+    /**
+     * Sync Account inserts a UserCredential before the one-time code is redeemed. That row stays
+     * "Generated on User Request" with no Last Used, because the HMAC credential we keep is the
+     * one returned by GET /api/v1/activate and then retitled. Delete only when the catalog shows
+     * exactly one other credential matching that unused, just-created shape.
+     */
+    fun spareActivationCredentialId(rawBody: String, keepCredentialId: String, enrolledAtEpochMs: Long): String? {
+        val json = try {
+            JSONObject(rawBody)
+        } catch (error: Exception) {
+            return null
+        }
+        val source = json.optJSONObject("result") ?: json
+        val matches = mutableListOf<String>()
+        for (key in listOf("features", "credentials")) {
+            val array = source.optJSONArray(key) ?: continue
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                val properties = item.optJSONObject("properties") ?: continue
+                if (properties.optString("class") != "UserCredential") continue
+                val id = item.optString("id")
+                if (id.isEmpty() || id == keepCredentialId) continue
+                if (properties.optString("title") != "Generated on User Request") continue
+                val lastUsed = if (properties.has("lastUsed")) properties.opt("lastUsed") else null
+                val unused = lastUsed == null || lastUsed == JSONObject.NULL || (lastUsed is Number && lastUsed.toLong() == 0L)
+                if (!unused) continue
+                val updated = properties.opt("updated")
+                if (updated !is Number) continue
+                if (kotlin.math.abs(updated.toLong() - enrolledAtEpochMs) > 3 * 60 * 1000L) continue
+                matches += id
+            }
+        }
+        return if (matches.size == 1) matches[0] else null.also {
+            if (matches.size > 1) logAuth("spare activation credential ambiguous count=${matches.size}; not deleted")
+        }
+    }
+
+    fun deleteSpareActivationCredential(rawBody: String, delete: (String) -> Int = { url -> CaltopoPersonalAccountHttps.delete(url).status }) {
+        val record = stored() ?: return
+        val spareId = spareActivationCredentialId(rawBody, record.credentialId, record.enrolledAtEpochMs) ?: return
+        val path = "/api/v1/acct/${record.accountId}/UserCredential/$spareId"
+        val expires = clock() + SIGNATURE_TTL_MS
+        val signature = sign("DELETE", path, expires, "", record.signingKey)
+        val url = "https://${record.host}$path?id=${encode(record.credentialId)}&expires=$expires&signature=${encode(signature)}"
+        try {
+            val status = delete(url)
+            logAuth("spare DELETE $path HTTP $status")
+        } catch (error: Exception) {
+            logAuth("spare DELETE $path failed: ${error.javaClass.simpleName}")
+        }
     }
 
     fun credentialTitleRequest(record: CaltopoPersonalAccountRecord, nowMilliseconds: Long = clock()): CredentialTitleRequest {
@@ -339,8 +585,10 @@ object CaltopoPersonalAccountConnection {
     private fun publishCredentialTitle(record: CaltopoPersonalAccountRecord) {
         try {
             val response = titleClient(credentialTitleRequest(record))
+            logAuth(if (response.status == 200) "title HTTP 200" else "title HTTP ${response.status}")
             if (response.status != 200) titleFailureLog("CalTopo credential title update failed (HTTP ${response.status}).")
         } catch (error: Exception) {
+            logAuth("title request failed")
             titleFailureLog("CalTopo credential title update failed.")
         }
     }
@@ -359,8 +607,12 @@ object CaltopoPersonalAccountConnection {
                 client.soTimeout = 2_000
                 val target = readRequestTarget(client) ?: return@use
                 val code = runCatching { callbackCode(target, pending) }.getOrNull()
+                if (code != null) {
+                    pending.acceptedReturn = code
+                    logAuth("code received")
+                }
                 val body = if (code != null) {
-                    "<html><body>RID2Caltopo is connected. You can return to the app.</body></html>"
+                    activationSuccessPage(pending.pathToken)
                 } else {
                     "<html><body>RID2Caltopo did not accept this activation request.</body></html>"
                 }
@@ -478,6 +730,7 @@ object CaltopoPersonalAccountConnection {
 
     private val ALLOWED_HOSTS = setOf("caltopo.com", "sartopo.com")
     private val ACCOUNT_ID = Regex("^[A-Za-z0-9]{6}$")
+    private val ACCOUNT_TYPE = Regex("^[A-Za-z]{1,32}$")
     private val CREDENTIAL_ID = Regex("^[A-Za-z0-9]{12}$")
     private val ACTIVATION_CODE = Regex("^[A-Za-z0-9]{8}$")
     private val NONCE = Regex("^[0-9a-f]{32}$")
@@ -605,7 +858,9 @@ class PersonalSigningDecision(
     }
 }
 
-class CaltopoPersonalAccountException(message: String) : IllegalStateException(message)
+class CaltopoPersonalAccountException(message: String, val httpStatus: Int? = null) : IllegalStateException(message) {
+    fun rejectsStoredCredential(): Boolean = httpStatus == 401 || httpStatus == 403
+}
 
 interface CaltopoPersonalAccountStore {
     fun load(): CaltopoPersonalAccountRecord?
@@ -622,11 +877,16 @@ class CaltopoPersonalAccountMemoryStore : CaltopoPersonalAccountStore {
 
 /** HTTPS exchange that does not follow redirects, so an activation code cannot be sent to another host. */
 object CaltopoPersonalAccountHttps : CaltopoActivationExchange {
+    const val MAX_ACTIVATION_BODY = 65_536
+    /** A personal since/0 dump includes every workspace feature, so it is far larger than the credential JSON. */
+    const val MAX_CATALOG_BODY = 16 * 1024 * 1024
+
     override fun get(url: String): CaltopoActivationHttp {
         val parsed = URI(url)
         require(parsed.scheme == "https" && parsed.host?.lowercase(Locale.US) in setOf("caltopo.com", "sartopo.com"))
         require(parsed.path == "/api/v1/activate" || parsed.path.matches(Regex("^/api/v1/acct/[A-Za-z0-9]{6}/since/0$")))
-        return exchange(parsed, "GET", null)
+        val limit = if (parsed.path.endsWith("/since/0")) MAX_CATALOG_BODY else MAX_ACTIVATION_BODY
+        return exchange(parsed, "GET", null, limit)
     }
 
     fun postForm(url: String, fields: Map<String, String>): CaltopoActivationHttp {
@@ -636,10 +896,29 @@ object CaltopoPersonalAccountHttps : CaltopoActivationExchange {
         val body = fields.entries.joinToString("&") { (key, value) ->
             "${formEncode(key)}=${formEncode(value)}"
         }
-        return exchange(parsed, "POST", body)
+        return exchange(parsed, "POST", body, MAX_ACTIVATION_BODY)
     }
 
-    private fun exchange(parsed: URI, method: String, body: String?): CaltopoActivationHttp {
+    fun delete(url: String): CaltopoActivationHttp {
+        val parsed = URI(url)
+        require(parsed.scheme == "https" && parsed.host?.lowercase(Locale.US) in setOf("caltopo.com", "sartopo.com"))
+        require(parsed.path.matches(Regex("^/api/v1/acct/[A-Za-z0-9]{6}/UserCredential/[A-Za-z0-9]{12}$")))
+        return exchange(parsed, "DELETE", null, MAX_ACTIVATION_BODY)
+    }
+
+    fun readResponseBody(input: java.io.InputStream, maxBytes: Int, status: Int): String {
+        val buffer = ByteArray(4096)
+        val output = java.io.ByteArrayOutputStream()
+        while (output.size() <= maxBytes) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            output.write(buffer, 0, read)
+        }
+        if (output.size() > maxBytes) throw CaltopoPersonalAccountException("HTTP $status response too large")
+        return output.toString(Charsets.UTF_8.name())
+    }
+
+    private fun exchange(parsed: URI, method: String, body: String?, maxBytes: Int): CaltopoActivationHttp {
         val connection = parsed.toURL().openConnection() as HttpURLConnection
         connection.instanceFollowRedirects = false
         connection.connectTimeout = 20_000
@@ -654,22 +933,10 @@ object CaltopoPersonalAccountHttps : CaltopoActivationExchange {
         }
         val status = connection.responseCode
         val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-        val responseBody = stream?.use { input -> readLimited(input) }.orEmpty()
+        val responseBody = stream?.use { input -> readResponseBody(input, maxBytes, status) }.orEmpty()
         return CaltopoActivationHttp(status, responseBody)
     }
 }
 
 private fun formEncode(value: String): String =
     java.net.URLEncoder.encode(value, Charsets.UTF_8.name()).replace("+", "%20")
-
-private fun readLimited(input: java.io.InputStream): String {
-    val buffer = ByteArray(4096)
-    val output = java.io.ByteArrayOutputStream()
-    while (output.size() <= 65_536) {
-        val read = input.read(buffer)
-        if (read < 0) break
-        output.write(buffer, 0, read)
-    }
-    if (output.size() > 65_536) throw CaltopoPersonalAccountException("CalTopo activation response was rejected.")
-    return output.toString(Charsets.UTF_8.name())
-}

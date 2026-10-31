@@ -6,6 +6,8 @@ import org.ncssar.rid2caltopo.data.CaltopoClient.CTDebugEnabled
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTError
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTInfo
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTWarn
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 internal object MapCacheDebug {
@@ -16,6 +18,7 @@ internal object MapCacheDebug {
     const val TAG_STORE = "MapCacheStore"
 
     private val eventCount = AtomicLong(0L)
+    private val summaryCounts = ConcurrentHashMap<String, AtomicInteger>()
     @Volatile
     private var tagsRegistered = false
 
@@ -76,6 +79,20 @@ internal object MapCacheDebug {
     fun warn(tag: String, message: String) {
         val seq = eventCount.incrementAndGet()
         CTWarn(tag, "#$seq $message")
+    }
+
+    /**
+     * Aggregates repetitive DEM diagnostics that previously embedded coordinates (and were
+     * fully redacted in exported logs). Emits count+reason without location details.
+     */
+    fun warnSummary(tag: String, reason: String, detail: String? = null) {
+        val key = "$tag|$reason"
+        val count = summaryCounts.getOrPut(key) { AtomicInteger(0) }.incrementAndGet()
+        if (count <= 3 || count % 50 == 0) {
+            val seq = eventCount.incrementAndGet()
+            val suffix = detail?.takeIf { it.isNotBlank() }?.let { " $it" }.orEmpty()
+            CTWarn(tag, "#$seq dem summary reason=$reason count=$count$suffix")
+        }
     }
 
     fun error(tag: String, message: String) {

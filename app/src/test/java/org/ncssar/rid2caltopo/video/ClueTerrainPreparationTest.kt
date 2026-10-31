@@ -20,11 +20,21 @@ class ClueTerrainPreparationTest {
         timestamp = 1_000L, bitmap = null, preview = null, title = "cows", description = "capture",
     )
 
-    @Test fun saveWaitsForTerrainAndKeepsTheCapturedInputs() = runBlocking {
+    @Test fun flatSurfaceNoteIsOnlyForAnUnrefinedObliquePublish() {
+        val note = FLAT_SURFACE_LOCATION_NOTE
+        val oblique = appendFlatSurfaceLocationNote("Photo", terrainProjectionApplied = false, gimbalAngleDeg = -26.2)
+        assertEquals("Photo\n\n$note", oblique)
+        assertEquals(note, appendFlatSurfaceLocationNote("  ", terrainProjectionApplied = false, gimbalAngleDeg = -45.0))
+        assertEquals("Photo", appendFlatSurfaceLocationNote("Photo", terrainProjectionApplied = true, gimbalAngleDeg = -26.2))
+        assertEquals("Photo", appendFlatSurfaceLocationNote("Photo", terrainProjectionApplied = false, gimbalAngleDeg = -90.0))
+        assertEquals("Photo", appendFlatSurfaceLocationNote("Photo", terrainProjectionApplied = false, gimbalAngleDeg = -89.9))
+        assertEquals(oblique, appendFlatSurfaceLocationNote(oblique, terrainProjectionApplied = false, gimbalAngleDeg = -26.2))
+    }
+
+    @Test fun saveRefinesWhenTerrainArrivesWithoutBlockingLiveInputs() = runBlocking {
         val clue = captured()
         val entered = CompletableDeferred<Unit>()
         val release = CompletableDeferred<Unit>()
-        var published = false
         val save = async {
             val prepared = prepareClueTerrainForSave(clue) { lat, _ ->
                 entered.complete(Unit)
@@ -39,35 +49,31 @@ class ClueTerrainPreparationTest {
             // Falling terrain puts the intersection beyond the provisional 40 m range.
             assertTrue((prepared.lng - clue.droneLng) * 86_000 > 59.0)
             assertEquals(90.0, prepared.alt, 0.01)
-            published = true
+            prepared
         }
         withTimeout(2_000) { entered.await() }
-        assertFalse(published)
         assertFalse(save.isCompleted)
         // Incoming live telemetry cannot alter a photograph already accepted for save.
         clue.droneSpec.lastLat = 40.0
         release.complete(Unit)
-        save.await()
-        assertTrue(published)
+        assertTrue(save.await().terrainProjectionApplied)
     }
 
-    @Test fun missingTerrainCannotPublishTheFlatGroundFallback() = runBlocking {
-        var published = false
-        try {
-            prepareClueTerrainForSave(captured()) { _, _ -> null }
-            published = true
-            fail("Expected terrain-unavailable result")
-        } catch (_: ClueTerrainUnavailable) { }
-        assertFalse(published)
+    @Test fun missingTerrainPublishesTheFlatGroundFallback() = runBlocking {
+        val clue = captured()
+        val prepared = prepareClueTerrainForSave(clue) { _, _ -> null }
+        assertFalse(prepared.terrainProjectionApplied)
+        assertNull(prepared.demSource)
+        assertEquals(clue.timestamp, prepared.timestamp)
+        assertEquals(clue.title, prepared.title)
     }
 
-    @Test fun slowProviderTimesOutWithoutPublishingOrUsingLaterTelemetry() = runBlocking {
-        try {
-            prepareClueTerrainForSave(captured(), timeoutMillis = 30) { _, _ -> awaitCancellation() }
-            fail("Expected a bounded terrain timeout")
-        } catch (error: ClueTerrainUnavailable) {
-            assertTrue(error.message!!.contains("timed out"))
-        }
+    @Test fun slowProviderTimesOutToFlatGroundWithoutUsingLaterTelemetry() = runBlocking {
+        val clue = captured()
+        val prepared = prepareClueTerrainForSave(clue, timeoutMillis = 30) { _, _ -> awaitCancellation() }
+        assertFalse(prepared.terrainProjectionApplied)
+        assertEquals(clue.lat, prepared.lat, 0.0)
+        assertEquals(clue.lng, prepared.lng, 0.0)
     }
 
     @Test fun completedFreshProjectionIsNotRestartedAtSave() = runBlocking {
@@ -76,11 +82,46 @@ class ClueTerrainPreparationTest {
         assertSame(clue, prepared)
     }
 
-    @Test fun staleTerrainDoesNotQualifyAsACompletedProjection() = runBlocking {
+    @Test fun staleTerrainIsRetriedThenAllowedAsFlatFallback() = runBlocking {
         val clue = captured().copy(terrainProjectionApplied = true, demSampleStale = true)
-        try {
-            prepareClueTerrainForSave(clue) { _, _ -> null }
-            fail("Stale or unavailable terrain must not be published")
-        } catch (_: ClueTerrainUnavailable) { }
+        val prepared = prepareClueTerrainForSave(clue) { _, _ -> null }
+        assertFalse(prepared.terrainProjectionApplied)
+    }
+
+    @Test fun projectionMethodLogLineCoversTerrainFlatAndNadir() {
+        val ray = clueProjectionMethodLogLine(
+            clueLat = 39.002, clueLng = -120.999, droneLat = 39.001, droneLng = -121.0,
+            gimbalPitchDeg = -26.2, gimbalYawDeg = 90.0,
+            terrainProjectionApplied = true, demSource = "usgs-geotiff-local-1m",
+        )
+        assertTrue(ray.contains("method=terrain-raymarch"))
+        assertTrue(ray.contains("tile=hit"))
+        assertTrue(ray.contains("gimbalPitch=-26.2"))
+        assertTrue(ray.contains("gimbalYaw=90.0"))
+        assertTrue(ray.contains("deltaLat=0.001000"))
+        val flat = clueProjectionMethodLogLine(
+            clueLat = 39.001, clueLng = -121.0, droneLat = 39.001, droneLng = -121.0,
+            gimbalPitchDeg = -26.2, gimbalYawDeg = null,
+            terrainProjectionApplied = false, demSource = null, tileHit = false,
+        )
+        assertTrue(flat.contains("method=flat"))
+        assertTrue(flat.contains("tile=miss"))
+        assertTrue(flat.contains("gimbalYaw=nil"))
+        assertEquals("nadir-DEM", clueProjectionMethod(true, -90.0))
+    }
+
+    @Test fun lateTerrainRewriteRemovesFlatNoteAndUpdatesDemLine() {
+        val note = FLAT_SURFACE_LOCATION_NOTE
+        val body = "Photo\n\n  DEM used: none (flat-ground estimate)\n\n$note"
+        val updated = applyingTerrainProjectionDescription(
+            description = body,
+            demSource = "usgs-geotiff-local-1m",
+            demResolutionMeters = 1.0,
+            demSampleStale = false,
+        )
+        assertFalse(updated.contains(note))
+        assertTrue(updated.contains("DEM used: local USGS GeoTIFF"))
+        assertTrue(cluePositionMoved(39.0, -121.0, 39.001, -121.0))
+        assertFalse(cluePositionMoved(39.0, -121.0, 39.0, -121.0))
     }
 }

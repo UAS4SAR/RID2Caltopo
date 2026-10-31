@@ -579,6 +579,16 @@ private fun localClueDetailText(marker: LocalMapMarker): String = buildString {
     )
     append("\nLocation: ")
     append(String.format(Locale.US, "%.5f, %.5f", marker.lat, marker.lng))
+    when (marker.uploadState) {
+        "pending", "uploading" -> append("\nUpload: ${marker.uploadState}")
+        "failed" -> {
+            append("\nUpload: failed")
+            if (marker.lastUploadError.isNotBlank()) {
+                append(" — ")
+                append(marker.lastUploadError.take(120))
+            }
+        }
+    }
     if (marker.description.isNotBlank()) {
         append("\n\n")
         append(marker.description.trim())
@@ -1106,6 +1116,20 @@ internal fun SplitMapPane(
         localEntries = localDronePointEntries,
         peerEntries = peerDronePointEntries,
     )
+    val unpublishedClueDelete by viewModel.unpublishedClueDelete.collectAsStateWithLifecycle()
+    unpublishedClueDelete?.let { title ->
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissUnpublishedClueDelete() },
+            title = { Text("Delete unpublished clue?") },
+            text = { Text("$title has not been published. Deleting it removes it permanently.") },
+            confirmButton = {
+                TextButton(onClick = { viewModel.confirmUnpublishedClueDelete() }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissUnpublishedClueDelete() }) { Text("Cancel") }
+            },
+        )
+    }
 
     surfaceBriefing?.let { briefing ->
         AlertDialog(onDismissRequest = { surfaceBriefing = null }, title = { Text("Surface high-point briefing") },
@@ -1935,9 +1959,12 @@ internal fun SplitMapPane(
                             totalFailed.incrementAndGet()
                             val n = demFailureLogCount.incrementAndGet()
                             if (n <= 12 || (n % 50) == 0) {
-                                val msg = "download dem failure#$n lat=${"%.5f".format(Locale.US, lat)} lng=${"%.5f".format(Locale.US, lng)} reason=$failureDetail"
-                                CTError(MAP_PANE_TAG, "DownloadMap DEM $msg")
-                                MapCacheDebug.warn(MapCacheDebug.TAG_DEM, msg)
+                                MapCacheDebug.warnSummary(
+                                    MapCacheDebug.TAG_DEM,
+                                    reason = "download-dem-failure",
+                                    detail = "count=$n detail=$failureDetail",
+                                )
+                                CTError(MAP_PANE_TAG, "DownloadMap DEM failure#$n reason=$failureDetail")
                             }
                         }
                         if (sample != null) {
@@ -3640,7 +3667,11 @@ internal fun SplitMapPane(
                 }
 
                 viewModel.localMapMarkers.forEach { point ->
-                    val markerTitle = "Local: ${point.title}"
+                    val markerTitle = when (point.uploadState) {
+                        "pending", "uploading" -> "Local: ${point.title} (${point.uploadState})"
+                        "failed" -> "Local: ${point.title} (failed)"
+                        else -> "Local: ${point.title}"
+                    }
                     val markerSnippet = localClueDetailText(point)
                     val snapshot = viewModel.clueSnapshotForId(point.id) ?: viewModel.clueSnapshotForTitle(point.title)
                     val marker = Marker(mapView).apply {

@@ -22,6 +22,22 @@ class R2CViewModelCredentialRecoveryTest {
     }
 
     @Test
+    fun teamCredentialVerificationLeavesAPersonalCatalogInPlace() {
+        org.ncssar.rid2caltopo.data.CaltopoClient.ResetPersistedClientState()
+        val session = org.ncssar.rid2caltopo.data.CaltopoPersonalSession
+        try {
+            session.catalogReady = true
+            session.username = "test-user"
+            session.maps = listOf(org.ncssar.rid2caltopo.data.CaltopoNode.MapNode("ABC123", "Test map", 0L))
+            val model = R2CViewModel(org.ncssar.rid2caltopo.data.SimpleTimer())
+            model.onUIEvent(UIEvent.BrowseProfileSelected("personal"))
+            model.onUIEvent(UIEvent.ConnectionStatusChanged(org.ncssar.rid2caltopo.data.CaltopoMap.MapStatusListener.mapStatus.credentialsVerified))
+            assertTrue(session.browsingPersonal)
+            org.junit.Assert.assertEquals(session.maps, model.mapHierarchy)
+        } finally { org.ncssar.rid2caltopo.data.CaltopoClient.ResetPersistedClientState() }
+    }
+
+    @Test
     fun restoredCredentialsResumeAWaitingMapConnection() {
         assertTrue(
             shouldResumeMapConnectionAfterCredentialRestore(

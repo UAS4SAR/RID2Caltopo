@@ -172,6 +172,24 @@ public actor AwaitingMapFlightJournal {
         next[index].mapID = mapID ?? ""; next[index].teamID = teamID
         try await commit(next)
     }
+
+    /// Bind an unfinished empty-map review intent to the connected map so LiveTrack can start
+    /// without waiting for the review inbox. Finished review offers are left alone.
+    @discardableResult
+    public func bindOpenReviewToConnectedMap(remoteID: String, mapID: String, teamID: String) async throws -> String? {
+        try await beginMutation()
+        defer { endMutation() }
+        guard !mapID.isEmpty else { return nil }
+        var next = entries
+        guard let index = next.lastIndex(where: {
+            $0.remoteID == remoteID && !$0.finished && $0.decision == "review" && $0.mapID.isEmpty
+        }) else { return nil }
+        next[index].mapID = mapID
+        next[index].teamID = teamID
+        next[index].decision = "bound"
+        try await commit(next)
+        return next[index].id
+    }
     public func notePublication(remoteID: String, mapID: String) async throws {
         try await beginMutation()
         defer { endMutation() }

@@ -297,6 +297,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
             this.myGuid = guid;
             this.myName = name;
             this.started = true;
+            replayStoredConfirmations();
             notifyCoordinationIndicatorListener();
             return;
         }
@@ -335,6 +336,8 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                 this.trackerWsUrl,
                 describeToken(trackerApiKey),
                 CaltopoClient.DescribeTrackerCredentialSelection("coordination")));
+        // Seed before connect so the open flush sends Saves that happened first.
+        replayStoredConfirmations();
 
         transport = transportFactory.create();
         transport.setCallback(new TrackerCoordinationTransport.Callback() {
@@ -496,6 +499,9 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         PendingDrone pending = new PendingDrone(liveTrack, droneSpec, distMeters, firstSeenTs);
         pendingDrones.put(droneSpec.getRemoteId(), pending);
         scheduleFallbackOwnership(pending);
+        // A Save that arrived before this coordinator existed is already in the
+        // session. Replay it now so the lease can call setLocalOwner(true).
+        seedStoredConfirmation(droneSpec);
         applyKnownOwnerToPendingTrack(pending);
         sendFirstSighting(pending);
     }
@@ -1203,6 +1209,31 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                 applyOwnerAssignment(pending.droneSpec.getRemoteId(), myGuid, -1L, 0L);
             }
         }, CONNECT_GRACE_MS, 0L);
+    }
+
+    private void replayStoredConfirmations() {
+        for (CtDroneSpec spec : CaltopoClient.SnapshotCurrentPeerConfirmedDroneSpecs()) {
+            seedStoredConfirmation(spec);
+        }
+    }
+
+    private void seedStoredConfirmation(@NonNull CtDroneSpec droneSpec) {
+        String remoteId = droneSpec.getRemoteId();
+        if (remoteId.isEmpty() || locallyConfirmedRemoteIds.containsKey(remoteId)) return;
+        if (!CaltopoClient.IsCurrentPeerDroneConfirmed(remoteId)) return;
+        CTInfo(TAG, "seedStoredConfirmation(): replaying Save remoteId=" + remoteId +
+                " mappedId='" + droneSpec.getMappedId() + "'");
+        onDroneConfirmed(
+                remoteId,
+                emptyText(droneSpec.getOrg()),
+                emptyText(droneSpec.getModel()),
+                emptyText(droneSpec.getOwner()),
+                emptyText(droneSpec.getMappedId()));
+    }
+
+    @NonNull
+    private static String emptyText(@Nullable String value) {
+        return value == null ? "" : value;
     }
 
     private void applyKnownOwnerToPendingTrack(@NonNull PendingDrone pending) {
@@ -1975,9 +2006,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
     private void uploadRecordingDownloadNow(@NonNull RecordingDownloadRequest request) {
         final String origin = trackerHttpOrigin;
         final String token = trackerApiKey;
-        ManagedVideoSessionRecording recording = ManagedVideoSessionRecordingCatalog.INSTANCE.find(
-                R2CApplication.getAppCtxt(), request.streamSessionId);
-        if (origin == null || token == null || recording == null) {
+        if (origin == null || token == null) {
             approvedRecordingUploads.remove(request.requestId);
             CTWarn(TAG, "Unable to attach requested recording " + request.streamSessionId);
             return;
@@ -1985,7 +2014,15 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         RemoteMediaConsent.Grant grant = mediaConsent.find(
                 "recording|" + request.requestId, request.streamSessionId + "|" + request.uploadPath);
         if (grant == null || !grant.isAllowed()) return;
+        // Catalog MediaMetadataRetriever scan must stay off Main (and off the catalog lock).
         recordingUploadExecutor.execute(() -> {
+            ManagedVideoSessionRecording recording = ManagedVideoSessionRecordingCatalog.INSTANCE.find(
+                    R2CApplication.getAppCtxt(), request.streamSessionId);
+            if (recording == null) {
+                approvedRecordingUploads.remove(request.requestId);
+                CTWarn(TAG, "Unable to attach requested recording " + request.streamSessionId);
+                return;
+            }
             final long total = recording.getFile().length();
             final long chunkSize = 8L * 1024L * 1024L;
             try {

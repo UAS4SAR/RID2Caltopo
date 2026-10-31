@@ -137,6 +137,7 @@ public final class DefaultPeerCoordinator implements PeerCoordinator {
         activeCoordinator.start(mapId, guid, name, brokerUri);
         activeCoordinator.updateCaltopoRtt(myCaltopoRttMs);
         activeCoordinator.updateMyPosition(myLat, myLon);
+        replayConfirmedTracks();
         emitCoordinationIndicatorIfChanged();
     }
 
@@ -658,12 +659,43 @@ public final class DefaultPeerCoordinator implements PeerCoordinator {
                 "activateRegistration(): operator-confirmed remoteId=" +
                         registration.droneSpec.getRemoteId()
         );
+        replayConfirmation(registration);
         activeCoordinator.onLiveTrackCreated(
                 registration.liveTrack,
                 registration.droneSpec,
                 registration.distMeters,
                 registration.firstSeenTs
         );
+    }
+
+    /** Tracks confirmed before this coordinator started still need their Save replayed. */
+    private void replayConfirmedTracks() {
+        for (ActiveTrackRegistration registration : activeTracks.values()) {
+            if (registration.droneSpec.isLocalArchiveOnly()) continue;
+            if (!CaltopoClient.IsCurrentPeerDroneConfirmed(registration.droneSpec.getRemoteId())) continue;
+            if (!registration.coordinatorActivated) {
+                activateRegistration(registration);
+                continue;
+            }
+            replayConfirmation(registration);
+            activeCoordinator.onLiveTrackCreated(
+                    registration.liveTrack,
+                    registration.droneSpec,
+                    registration.distMeters,
+                    registration.firstSeenTs
+            );
+        }
+    }
+
+    private void replayConfirmation(@NonNull ActiveTrackRegistration registration) {
+        CtDroneSpec spec = registration.droneSpec;
+        if (!CaltopoClient.IsCurrentPeerDroneConfirmed(spec.getRemoteId())) return;
+        activeCoordinator.onDroneConfirmed(
+                spec.getRemoteId(),
+                spec.getOrg() == null ? "" : spec.getOrg(),
+                spec.getModel() == null ? "" : spec.getModel(),
+                spec.getOwner() == null ? "" : spec.getOwner(),
+                spec.getMappedId() == null ? "" : spec.getMappedId());
     }
 
     @NonNull

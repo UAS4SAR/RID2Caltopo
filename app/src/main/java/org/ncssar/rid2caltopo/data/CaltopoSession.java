@@ -12,6 +12,7 @@ package org.ncssar.rid2caltopo.data;
 import static org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug;
 import static org.ncssar.rid2caltopo.data.CaltopoClient.CTError;
 import static org.ncssar.rid2caltopo.data.CaltopoClient.CTInfo;
+import static org.ncssar.rid2caltopo.data.CaltopoClient.CTWarn;
 import static org.ncssar.rid2caltopo.data.CaltopoClient.GetTodaysTrackDir;
 import static java.lang.Math.round;
 import java.util.regex.Matcher;
@@ -36,6 +37,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URI;
+import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -164,7 +166,12 @@ public class CaltopoSession {
 	}
 
     private static final String TAG = "CaltopoSession";
+    /** HMAC expires window; per-call OkHttp bounds are tighter (see MyOkHttpClient). */
     private static final int DEFAULT_TIMEOUT_MS = 2 * 60 * 1000;
+    /** Bound archive/clue/LiveTrack attempts so a dead link cannot stall for minutes. */
+    public static final int HTTP_CONNECT_TIMEOUT_SECONDS = 10;
+    public static final int HTTP_READ_TIMEOUT_SECONDS = 15;
+    public static final int HTTP_CALL_TIMEOUT_SECONDS = 15;
     private static final int MAX_RETRY_ATTEMPTS = 4;
     private static final long BASE_RETRY_DELAY_MS = 1000;
     private static final long MAX_RETRY_DELAY_MS = 8000;
@@ -193,10 +200,27 @@ public class CaltopoSession {
     }
 
     public static final OkHttpClient MyOkHttpClient = new OkHttpClient.Builder()
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
+            .connectTimeout(HTTP_CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .readTimeout(HTTP_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .writeTimeout(HTTP_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .callTimeout(HTTP_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .dns(Dns.SYSTEM) // This uses OkHttp's more robust DNS logic
             .build();
+
+    /**
+     * Connectivity restored: drop stale sockets and cancel calls started while the
+     * path was dead so pending archive/clue/LiveTrack work can retry immediately.
+     * Derived personal-session clients share this dispatcher and connection pool.
+     */
+    public static void cancelInFlightRequestsForConnectivityRestore() {
+        try {
+            MyOkHttpClient.dispatcher().cancelAll();
+            MyOkHttpClient.connectionPool().evictAll();
+            CTDebug(TAG, "cancelInFlightRequestsForConnectivityRestore(): cancelled OkHttp calls and evicted pool");
+        } catch (Exception error) {
+            CTWarn(TAG, "cancelInFlightRequestsForConnectivityRestore() raised", error);
+        }
+    }
 
     public static void Init(@NonNull CaltopoCredentials cred, @NonNull String domainAndPort) {
         Cred = cred;
@@ -245,7 +269,8 @@ public class CaltopoSession {
     @NonNull
     private static synchronized ExecutorService GetPhotoWaypointExecutorPool() {
         if (PhotoWaypointExecutorPool == null || PhotoWaypointExecutorPool.isShutdown() || PhotoWaypointExecutorPool.isTerminated()) {
-            PhotoWaypointExecutorPool = Executors.newFixedThreadPool(1);
+            // Bounded parallelism so one stalled photo/clue upload cannot serialize all others.
+            PhotoWaypointExecutorPool = Executors.newFixedThreadPool(3);
         }
         return PhotoWaypointExecutorPool;
     }
@@ -257,6 +282,14 @@ public class CaltopoSession {
     private static boolean isAcceptedErrorCode(CaltopoOp op) {
         if (op.acceptedErrorCodes == null) return false;
         for (int code : op.acceptedErrorCodes) {
+            if (code == op.responseCode) return true;
+        }
+        return false;
+    }
+
+    private static boolean isQuietErrorCode(CaltopoOp op) {
+        if (op.quietErrorCodes == null) return false;
+        for (int code : op.quietErrorCodes) {
             if (code == op.responseCode) return true;
         }
         return false;
@@ -400,6 +433,42 @@ public class CaltopoSession {
 		return paramString.substring(0, paramString.length()-1);
     }
 
+	/** Path only. Query, signature, and secrets stay out of this line. Team position reports are omitted. */
+	private static void logTransport(CaltopoOp op, int status, @NonNull String credential) {
+		if (op.positionReport && "team".equals(credential)) return;
+		CaltopoPersonalAccountConnection.logRequest(
+				op.method == null ? "GET" : op.method.toString(),
+				op.url == null ? "/" : op.url,
+				status,
+				credential);
+	}
+
+	static boolean personalCookieRequired(@NonNull CaltopoOp op) {
+		if (op.personalAuthorization == null) return false;
+		if (op.goNaked && CaltopoPersonalAccountConnection.usesSignedCredential(op.personalAuthorization.getToken())) {
+			return false;
+		}
+		return true;
+	}
+
+	@NonNull
+	private static String transportCredential(CaltopoOp op, @Nullable CaltopoCredentials personalSigned) {
+		if (op.goNaked) {
+			if (op.personalAuthorization != null
+					&& CaltopoPersonalAccountConnection.usesSignedCredential(op.personalAuthorization.getToken())) {
+				return "personal";
+			}
+			if (op.personalAuthorization != null) return "session";
+			return "unsigned";
+		}
+		if (personalSigned != null) return "personal";
+		if (op.personalAuthorization != null
+				&& CaltopoPersonalAccountConnection.usesSignedCredential(op.personalAuthorization.getToken()))
+			return "personal";
+		if (op.personalAuthorization != null) return "session";
+		return "team";
+	}
+
 	// this needs to be run in background thread to prevent blocking the app thread.
 	private static CaltopoOp BgSendRequest(CaltopoOp op) {
         boolean goodResponse = false;
@@ -407,7 +476,10 @@ public class CaltopoSession {
         final CaltopoCredentials fullReadCredentials = Cred;
         final String fullReadDomain = DomainAndPort;
         for (int attemptNum = 1; attemptNum <= (op.positionReport ? 1 : MAX_RETRY_ATTEMPTS); attemptNum++) {
-            try (AutoCloseable fullRead = fullMapRead ? CaltopoFullMapReads.acquire(R2CApplication.getAppCtxt(), CaltopoFullMapReads.mapKey(op.personalAuthorization != null ? "https://caltopo.com" : "https://" + fullReadDomain, op.url), () -> op.asyncFuture != null && op.asyncFuture.isCancelled()) : null) {
+            boolean loggedTransport = false;
+            final boolean signedFullRead = op.personalAuthorization != null
+                    && CaltopoPersonalAccountConnection.usesSignedCredential(op.personalAuthorization.getToken());
+            try (FullMapReadLease fullRead = fullMapRead ? CaltopoFullMapReads.acquire(R2CApplication.getAppCtxt(), CaltopoFullMapReads.mapKey(op.personalAuthorization != null ? "https://caltopo.com" : "https://" + fullReadDomain, op.url), () -> op.asyncFuture != null && op.asyncFuture.isCancelled(), signedFullRead) : null) {
                 if (Thread.currentThread().isInterrupted() || (op.asyncFuture != null && op.asyncFuture.isCancelled())) throw new InterruptedException();
                 if (fullMapRead && op.personalAuthorization == null &&
                         (fullReadCredentials != Cred || !java.util.Objects.equals(fullReadDomain, DomainAndPort))) {
@@ -425,12 +497,14 @@ public class CaltopoSession {
                 long expires = op.sentTimestampMsec + DEFAULT_TIMEOUT_MS;
                 String payloadString = (null == op.payload) ? "" : op.payload.toString();
                 // Personal signed credentials are opt-in. A null decision keeps the cookie
-                // path. Teams Cred is never replaced by an account activation secret.
+                // path. A signed-account grant never falls through to that path or to Teams Cred.
                 final PersonalSigningDecision personalDecision = (!op.goNaked && op.personalAuthorization != null)
-                        ? CaltopoPersonalAccountConnection.decide(op.personalAuthorization.getAccountID())
+                        ? CaltopoPersonalAccountConnection.signingForMap(
+                                op.personalAuthorization.getAccountID(), op.personalAuthorization.getToken())
                         : null;
                 if (personalDecision != null && personalDecision.failure != null) {
                     op.response = personalDecision.failure;
+                    logTransport(op, 0, transportCredential(op, null));
                     break;
                 }
                 final CaltopoCredentials personalSigned = personalDecision == null ? null : personalDecision.credentials;
@@ -496,7 +570,10 @@ public class CaltopoSession {
                         .method(op.method.toString(), requestBody);
 
                 OkHttpClient requestClient = MyOkHttpClient;
-                if (op.personalAuthorization != null && personalSigned == null) {
+                // Position reports authenticate with the connect key in the path. A signed
+                // personal map has no browser cookie; asking the cookie probe throws before
+                // the GET is sent and the live track never receives points.
+                if (op.personalAuthorization != null && personalSigned == null && personalCookieRequired(op)) {
                     String cookie = CaltopoPersonalSession.cookie(op.personalAuthorization, op.goNaked
                             ? "/api/v1/map/" + op.personalAuthorization.getMapID() + "/since/0" : op.url);
                     if (!finalUrl.host().equals("caltopo.com") || !finalUrl.isHttps() || finalUrl.port() != 443)
@@ -523,6 +600,8 @@ public class CaltopoSession {
                 if (Thread.currentThread().isInterrupted() || (op.asyncFuture != null && op.asyncFuture.isCancelled())) throw new InterruptedException();
                 try (Response response = requestClient.newCall(requestBuilder.build()).execute()) {
                     op.responseCode = response.code();
+                    loggedTransport = true;
+                    logTransport(op, op.responseCode, transportCredential(op, personalSigned));
                     op.receivedTimestampMsec = System.currentTimeMillis();
 
                     // Response.body().string() handles the stream reading and closing automatically
@@ -530,6 +609,7 @@ public class CaltopoSession {
 
                     if (response.isSuccessful()) {
                         goodResponse = true;
+                        if (fullRead != null) fullRead.succeeded();
                         if (!op.response.isEmpty()) {
                             try {
                                 JSONObject responseJson = new JSONObject(op.response);
@@ -546,10 +626,16 @@ public class CaltopoSession {
                         goodResponse = true;
                         op.response = "CalTopo object is already absent.";
                         CTInfo(TAG, "BgSendRequest() treating code " + op.responseCode + " as 'already gone'");
+                    } else if (isQuietErrorCode(op)) {
+                        // Expected probe miss (e.g. media not created yet). Leave goodResponse
+                        // false so callers can POST-create; only suppress CaltopoOpFailed noise.
+                        boolean personal = op.personalAuthorization != null;
+                        op.response = CaltopoServerAvailability.message(op.responseCode, personal, false);
+                        CTDebug(TAG, "BgSendRequest() expected probe code " + op.responseCode);
                     } else {
-                        op.response = op.personalAuthorization != null
-                                ? "Personal map request failed; check your login and map permissions. Team credentials were not used."
-                                : "CalTopo request failed; check connection and permissions.";
+                        boolean personal = op.personalAuthorization != null;
+                        boolean unavailable = CaltopoServerAvailability.isUnavailable(op.responseCode, false);
+                        op.response = CaltopoServerAvailability.message(op.responseCode, personal, false);
                         CTError(TAG, "BgSendRequest() failed w/code " + op.responseCode + ":\n" + op.response);
                         Bundle eventParams = new Bundle();
                         eventParams.putInt("r2c_responseCode", op.responseCode);
@@ -557,6 +643,8 @@ public class CaltopoSession {
                         eventParams.putString("r2c_operation", op.toString());
                         eventParams.putString("r2c_method", op.method.toString());
                         CaltopoClient.CTEvent(TAG, "CaltopoOpFailed", eventParams);
+                        // A failed full read must return to the UI. The 90s gate is not a retry timer.
+                        if (fullMapRead && unavailable) break;
                         if (!op.positionReport && IsTransientResponseCode(op.responseCode)
                                 && RetryAfterDelay("HTTP " + op.responseCode, attemptNum)) {
                             continue;
@@ -573,17 +661,27 @@ public class CaltopoSession {
                 op.response = "Full map reload cancelled.";
                 break;
             } catch (UnknownHostException e) {
+                if (!loggedTransport) logTransport(op, 0, transportCredential(op, null));
                 op.response = "CalTopo hostname could not be resolved.";
                 if (op.positionReport || !RetryAfterDelay("DNS lookup failure", attemptNum)) {
                     break;
                 }
             } catch (IOException e) {
+                if (!loggedTransport) logTransport(op, 0, transportCredential(op, null));
+                boolean timedOut = e instanceof SocketTimeoutException;
+                if (timedOut || fullMapRead) {
+                    op.response = CaltopoServerAvailability.message(timedOut ? 0 : op.responseCode, op.personalAuthorization != null, true);
+                    op.responseCode = timedOut ? 0 : op.responseCode;
+                    CTError(TAG, op.response);
+                    break;
+                }
                 op.response = "CalTopo request could not complete.";
                 CTError(TAG, op.response);
                 if (op.positionReport || !RetryAfterDelay("I/O exception", attemptNum)) {
                     break;
                 }
             } catch (Exception e) {
+                if (!loggedTransport) logTransport(op, 0, transportCredential(op, null));
                 op.response = "CalTopo request authorization or processing failed.";
                 CTError(TAG, op.response);
                 break;
@@ -591,6 +689,9 @@ public class CaltopoSession {
         }
 
         op.goodResponse = goodResponse;
+        // setOperationIsDone always marks the Future complete; the boolean is success,
+        // not "done". Quiet probe misses (media GET 400/404) stay fail() so
+        // PublishStoredPhoto can POST-create.
         op.setOperationIsDone(goodResponse);
         if (!goodResponse && op.responseCode > 0 && op.response.isEmpty()) {
             op.response = SafeResponseText(op.response);
@@ -691,6 +792,15 @@ public class CaltopoSession {
         outer.url = path;
         outer.personalAuthorization = CaltopoPersonalSession.capture(path);
         final boolean personal = outer.personalAuthorization != null;
+        final String openCredential = personal
+                ? (CaltopoPersonalAccountConnection.usesSignedCredential(outer.personalAuthorization.getToken()) ? "personal" : "session")
+                : "team";
+        final String openAccount = "team".equals(openCredential)
+                ? (credentials == null || credentials.teamId == null ? "" : credentials.teamId)
+                : CaltopoPersonalSession.INSTANCE.getAccountID();
+        CaltopoPersonalAccountConnection.logState("map open worker queued map=" + mapNode.getId()
+                + " account=" + openAccount + " credential=" + openCredential
+                + " grant=" + CaltopoPersonalAccountConnection.grantKind(personal ? outer.personalAuthorization.getToken() : null));
         final CaltopoMapSnapshots.Scope scope = new CaltopoMapSnapshots.Scope(
                 personal ? "https://caltopo.com" : "https://" + domain, mapNode.getId(),
                 personal || credentials == null ? null : credentials.teamId,
@@ -698,11 +808,18 @@ public class CaltopoSession {
                 personal || credentials == null ? null : credentials.credentialSecret,
                 personal ? outer.personalAuthorization.getToken() : null,
                 personal ? CaltopoPersonalSession.INSTANCE.getGeneration() : 0L);
+        final java.util.concurrent.atomic.AtomicBoolean openStarted = new java.util.concurrent.atomic.AtomicBoolean();
         outer.asyncFuture = StartupMapExecutorPool.submit(() -> {
+            if (!openStarted.compareAndSet(false, true)) return outer;
+            CaltopoPersonalAccountConnection.logState("map open worker started map=" + mapNode.getId()
+                    + " credential=" + openCredential);
             Runnable validate = () -> {
                 if (Thread.currentThread().isInterrupted() || outer.isCancelled()) throw new java.util.concurrent.CancellationException();
-                if (personal) CaltopoPersonalSession.requireValid(outer.personalAuthorization, path);
-                else if (credentials != Cred || !java.util.Objects.equals(domain, DomainAndPort))
+                // signed-account is an HMAC grant. The cookie probe only knows browser
+                // sessions, and asking it rejects the open before any map request.
+                if (personal && CaltopoPersonalAccountConnection.requiresCookieValidation(outer.personalAuthorization.getToken()))
+                    CaltopoPersonalSession.requireValid(outer.personalAuthorization, path);
+                else if (!personal && (credentials != Cred || !java.util.Objects.equals(domain, DomainAndPort)))
                     throw new IllegalStateException("Map connection changed.");
             };
             try {
@@ -729,13 +846,39 @@ public class CaltopoSession {
                 });
                 validate.run();
                 outer.receivedTimestampMsec = System.currentTimeMillis();
+                CaltopoPersonalAccountConnection.logState("map open finished map=" + mapNode.getId()
+                        + " credential=" + openCredential + " code=" + outer.responseCode);
                 outer.setOperationIsDone(true);
             } catch (Exception error) {
-                outer.response = "Map could not load. Check your connection and map permissions, then retry.";
+                CaltopoPersonalAccountConnection.logState("map open failed map=" + mapNode.getId()
+                        + " credential=" + openCredential + " code=" + outer.responseCode
+                        + " error=" + error.getClass().getSimpleName());
+                if (outer.response == null || !outer.response.startsWith("CalTopo server unavailable")) {
+                    outer.response = outer.responseCode == 401 || outer.responseCode == 403
+                            ? CaltopoServerAvailability.message(outer.responseCode, personal, false)
+                            : "Map could not load. Check your connection and map permissions, then retry.";
+                }
                 outer.setOperationIsDone(false);
             }
             return outer;
         });
+        Thread openWatch = new Thread(() -> {
+            try {
+                Thread.sleep(20_000L);
+            } catch (InterruptedException ignored) {
+                return;
+            }
+            if (openStarted.compareAndSet(false, true)) {
+                CaltopoPersonalAccountConnection.logState("map open timed out before a request map=" + mapNode.getId()
+                        + " credential=" + openCredential);
+                outer.response = "Map open timed out before a request was sent.";
+                outer.responseCode = 0;
+                if (outer.asyncFuture != null) outer.asyncFuture.cancel(false);
+                outer.setOperationIsDone(false);
+            }
+        }, "caltopo-map-open-watch");
+        openWatch.setDaemon(true);
+        openWatch.start();
         return outer;
     }
 
@@ -997,7 +1140,28 @@ public class CaltopoSession {
     }
 
     public static CaltopoOp DeleteLiveTrackOnMap(String mapId, String id, Consumer<CaltopoOp> done) {
-        CaltopoOp op = new CaltopoOp(done);
+        // End-of-flight archive and interrupted-track recovery both stop the same
+        // LiveTrack. The second DELETE is the 400 that follows a successful 200.
+        if (!CaltopoLiveTrackDeletes.claim(mapId, id)) {
+            CaltopoPersonalAccountConnection.logState(
+                    "live track delete already sent map=" + mapId + " id=" + id);
+            CaltopoOp skipped = new CaltopoOp(done);
+            skipped.method = CtsMethod_t.DELETE;
+            skipped.url = CALTOPO_MAP_API_V1 + mapId + "/LiveTrack/" + id;
+            skipped.responseCode = 200;
+            skipped.response = "";
+            long now = System.currentTimeMillis();
+            skipped.sentTimestampMsec = now;
+            skipped.receivedTimestampMsec = now;
+            skipped.setOperationIsDone(true);
+            return skipped;
+        }
+        CaltopoOp op = new CaltopoOp(result -> {
+            if (!(result.success() || result.responseCode == 400 || result.responseCode == 404)) {
+                CaltopoLiveTrackDeletes.release(mapId, id);
+            }
+            if (done != null) done.accept(result);
+        });
         // CalTopo returns 400 for an absent LiveTrack after standalone upload.
         // Match Apple stopLiveTrack; this is limited to this DELETE operation.
         op.acceptedErrorCodes = new int[] {400, 404};
@@ -1093,6 +1257,9 @@ public class CaltopoSession {
 		CaltopoOp op = new CaltopoOp(onComplete);
 		op.positionReport = true;
         op.personalAuthorization = CaltopoPersonalSession.capture(url);
+        // The connect key in the path authorizes this GET. Query id is the device id,
+        // so it must not be replaced with an HMAC credential id. A signed personal
+        // grant is recorded for logging and must not be sent through the cookie probe.
         op.goNaked = true;
         op.method = positionReportMethod();
         op.url = url;
@@ -1409,6 +1576,11 @@ public class CaltopoSession {
     // Each stage uses the authorization captured for this clue, never the current account by accident.
     private static CaltopoOp PhotoOp(CaltopoPersonalSession.Authorization personal, String credentialKey,
             CtsMethod_t method, String path, JSONObject payload, boolean naked) {
+        return PhotoOp(personal, credentialKey, method, path, payload, naked, null);
+    }
+
+    private static CaltopoOp PhotoOp(CaltopoPersonalSession.Authorization personal, String credentialKey,
+            CtsMethod_t method, String path, JSONObject payload, boolean naked, int[] quietErrorCodes) {
         if (!java.util.Objects.equals(personal, CaltopoPersonalSession.capture("")) ||
             (personal == null && (Cred == null || !credentialKey.equals(Cred.teamId))))
             throw new IllegalStateException("Clue upload paused: original credentials are no longer selected");
@@ -1418,33 +1590,136 @@ public class CaltopoSession {
         op.method = method;
         op.url = path;
         op.payload = payload;
-        BgSendRequest(op);
+        op.quietErrorCodes = quietErrorCodes;
+        PhotoExchangeForTesting exchange = photoExchangeForTesting;
+        if (exchange != null) {
+            exchange.apply(op);
+        } else {
+            BgSendRequest(op);
+        }
+        // Probe misses stay fail() with their HTTP code. Only acknowledged successes need an ok envelope.
         if (op.success()) {
+            String body = op.response == null ? "" : op.response;
             try {
-                JSONObject envelope = new JSONObject(op.response);
+                JSONObject envelope = new JSONObject(body);
                 if (!"ok".equals(envelope.optString("status")) || envelope.has("error")) throw new JSONException("Invalid response");
             } catch (JSONException error) {
+                // Preserve the server body for diagnosis; callers may still recover when the
+                // Marker already exists and only media/link remain.
+                CTDebug(TAG, "PhotoOp() unexpected envelope method=" + method + " path=" + path +
+                        " http=" + op.responseCode + " body=" + SafeResponseText(body));
                 op.responseCode = 502;
-                op.response = "Photo upload was not acknowledged; retained for retry.";
+                op.response = body.isEmpty()
+                        ? "Photo upload was not acknowledged; retained for retry."
+                        : body;
                 op.setOperationIsDone(false);
             }
+        } else if (op.responseCode == 502 || op.responseCode >= 500) {
+            CTDebug(TAG, "PhotoOp() server error method=" + method + " path=" + path +
+                    " http=" + op.responseCode + " body=" + SafeResponseText(op.response));
         }
         return op;
+    }
+
+    /** Unit tests observe the call without sending the photo. */
+    public interface StoredPhotoProbe {
+        void onPublish(String mapId, String teamId, String markerId);
+    }
+    @androidx.annotation.Nullable private static volatile StoredPhotoProbe storedPhotoProbeForTesting;
+
+    public static void setStoredPhotoProbeForTesting(@androidx.annotation.Nullable StoredPhotoProbe probe) {
+        storedPhotoProbeForTesting = probe;
+    }
+
+    /** Unit tests script each PhotoOp HTTP exchange without contacting CalTopo. */
+    public interface PhotoExchangeForTesting {
+        void apply(@NonNull CaltopoOp op);
+    }
+    @androidx.annotation.Nullable private static volatile PhotoExchangeForTesting photoExchangeForTesting;
+
+    public static void setPhotoExchangeForTesting(@androidx.annotation.Nullable PhotoExchangeForTesting exchange) {
+        photoExchangeForTesting = exchange;
+    }
+
+    /**
+     * Edit an existing photo-clue Marker position (same id). Does not re-upload media.
+     * Used when DEM ray-march resolves after a flat-ground Submit.
+     */
+    public static CaltopoOp UpdateStoredPhotoMarker(String mapId, String teamId, String markerId,
+            double lat, double lng, String title, String description, String folderId,
+            long createdAt, Consumer<CaltopoOp> done) {
+        CTDebug(TAG, "UpdateStoredPhotoMarker() start mapId='" + mapId + "' teamId='" + teamId +
+                "' markerId='" + markerId + "' folderId='" + folderId + "'");
+        CaltopoOp outer = new CaltopoOp(done);
+        StoredPhotoProbe probe = storedPhotoProbeForTesting;
+        if (probe != null) {
+            probe.onPublish(mapId, teamId, markerId);
+            outer.responseCode = 200;
+            outer.response = "test-probe-update";
+            outer.setOperationIsDone(true);
+            return outer;
+        }
+        final CaltopoPersonalSession.Authorization personal = CaltopoPersonalSession.capture("");
+        SubmitPhotoRequest(outer, () -> {
+            try {
+                JSONObject geometry = new JSONObject().put("type", "Point").put("coordinates", new JSONArray().put(lng).put(lat));
+                JSONObject props = new JSONObject().put("class", "Marker").put("title", title)
+                    .put("description", description).put("created", createdAt).put("updated", System.currentTimeMillis())
+                    .put("folderId", folderId)
+                    .put("marker-symbol", "Drone").put("marker-color", "#FF0000")
+                    .put("marker-size", "1").put("marker-visibility", "visible");
+                JSONObject marker = new JSONObject().put("id", markerId).put("type", "Feature").put("geometry", geometry).put("properties", props);
+                CaltopoOp result = PhotoOp(personal, teamId, CtsMethod_t.POST, CALTOPO_MAP_API_V1 + mapId + "/Marker/" + markerId, marker, false);
+                outer.responseCode = result.responseCode;
+                outer.response = result.response;
+                CTDebug(TAG, "UpdateStoredPhotoMarker() result markerId='" + markerId + "' success=" +
+                        result.success() + " code=" + result.responseCode);
+                outer.setOperationIsDone(result.success());
+            } catch (Exception error) {
+                outer.response = error.getMessage();
+                CTDebug(TAG, "UpdateStoredPhotoMarker() result markerId='" + markerId +
+                        "' success=false error=" + error.getMessage());
+                outer.setOperationIsDone(false);
+            }
+            return outer;
+        });
+        return outer;
     }
 
     public static CaltopoOp PublishStoredPhoto(String mapId, String teamId, String markerId,
             double lat, double lng, String title, String description, String folderId,
             long createdAt, byte[] jpeg, Consumer<CaltopoOp> done) {
+        CTDebug(TAG, "PublishStoredPhoto() start mapId='" + mapId + "' teamId='" + teamId +
+                "' markerId='" + markerId + "' folderId='" + folderId +
+                "' bytes=" + (jpeg == null ? 0 : jpeg.length));
         CaltopoOp outer = new CaltopoOp(done);
+        StoredPhotoProbe probe = storedPhotoProbeForTesting;
+        if (probe != null) {
+            probe.onPublish(mapId, teamId, markerId);
+            outer.responseCode = 200;
+            outer.response = "test-probe";
+            outer.setOperationIsDone(true);
+            CTDebug(TAG, "PublishStoredPhoto() result markerId='" + markerId + "' success=true code=200");
+            return outer;
+        }
         final CaltopoPersonalSession.Authorization personal = CaltopoPersonalSession.capture("");
         SubmitPhotoRequest(outer, () -> {
             CaltopoOp result;
             try {
-                if (personal != null && (!mapId.equals(personal.getMapID()) || !teamId.equals(personal.getCredentialKey()) || personal.getMediaOwnerID().isEmpty()))
+                String mediaOwner = personal != null ? personal.getMediaOwnerID() : teamId;
+                if ((mediaOwner == null || mediaOwner.isEmpty()) && teamId != null && teamId.startsWith("personal:")) {
+                    mediaOwner = teamId.substring("personal:".length()).trim();
+                }
+                if (personal != null && (!mapId.equals(personal.getMapID())
+                        || !CluePublicationIdentity.sameTeam(teamId, personal.getCredentialKey())
+                        || mediaOwner.isEmpty()))
                     throw new IllegalStateException("Original personal account and map must be selected");
-                final String mediaOwner = personal != null ? personal.getMediaOwnerID() : teamId;
                 String mediaId = UUID.nameUUIDFromBytes((markerId + ":media").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
-                if (personal != null) CaltopoPersonalSession.authorizeMedia(personal, mediaId);
+                // Live track already uses the signed personal HMAC. Clues must use that same
+                // grant; the cookie media probe only knows browser-session UUID tokens.
+                if (CluePublicationAuth.requiresCookieMediaAuthorization(personal)) {
+                    CaltopoPersonalSession.authorizeMedia(personal, mediaId);
+                }
                 String linkId = UUID.nameUUIDFromBytes((markerId + ":link").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
                 JSONObject geometry = new JSONObject().put("type", "Point").put("coordinates", new JSONArray().put(lng).put(lat));
                 JSONObject props = new JSONObject().put("class", "Marker").put("title", title)
@@ -1452,9 +1727,24 @@ public class CaltopoSession {
                     .put("marker-symbol", "Drone").put("marker-color", "#FF0000");
                 JSONObject marker = new JSONObject().put("id", markerId).put("type", "Feature").put("geometry", geometry).put("properties", props);
                 result = PhotoOp(personal, teamId, CtsMethod_t.POST, CALTOPO_MAP_API_V1 + mapId + "/Marker/" + markerId, marker, false);
+                boolean markerPresent = result.success();
+                if (!markerPresent) {
+                    // A prior attempt may have created the Marker then failed media. Attach to it.
+                    CaltopoOp existingMarker = PhotoOp(personal, teamId, CtsMethod_t.GET,
+                            CALTOPO_MAP_API_V1 + mapId + "/Marker/" + markerId, null, false, new int[] {400, 404});
+                    CTDebug(TAG, "PublishStoredPhoto() marker POST failed code=" + result.responseCode +
+                            " body=" + SafeResponseText(result.response) +
+                            "; existing GET code=" + existingMarker.responseCode);
+                    if (existingMarker.success()) {
+                        markerPresent = true;
+                        result = existingMarker;
+                    }
+                }
                 boolean mediaReady = false;
-                if (result.success()) {
-                    CaltopoOp existing = PhotoOp(personal, teamId, CtsMethod_t.GET, CALTOPO_MEDIA_API_V1 + mediaId, null, false);
+                if (markerPresent) {
+                    // Absent media is an expected 400/404 probe miss before create; quiet it.
+                    CaltopoOp existing = PhotoOp(personal, teamId, CtsMethod_t.GET, CALTOPO_MEDIA_API_V1 + mediaId,
+                            null, false, new int[] {400, 404});
                     if (existing.success()) {
                         mediaReady = CaltopoPhotoMediaState.isReady(existing.responseJson, mediaId, mediaOwner);
                         result = existing;
@@ -1473,10 +1763,15 @@ public class CaltopoSession {
                         new JSONObject().put("id", linkId).put("type", "Feature").put("geometry", geometry).put("properties", linkProps), false);
                 }
                 outer.responseCode = result.responseCode;
-                outer.response = result.response;
+                String loginExpired = CluePublicationAuth.loginExpiredMessage(result.responseCode);
+                outer.response = loginExpired != null ? loginExpired : result.response;
+                CTDebug(TAG, "PublishStoredPhoto() result markerId='" + markerId + "' success=" +
+                        result.success() + " code=" + result.responseCode);
                 outer.setOperationIsDone(result.success());
             } catch (Exception error) {
                 outer.response = error.getMessage();
+                CTDebug(TAG, "PublishStoredPhoto() result markerId='" + markerId +
+                        "' success=false error=" + error.getMessage());
                 outer.setOperationIsDone(false);
             }
             return outer;
