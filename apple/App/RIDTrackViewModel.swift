@@ -288,13 +288,24 @@ final class RIDTrackViewModel: ObservableObject {
     private var lateClues: [UUID: OperationalClueRecord] = [:]
     private var rewriteTask: Task<Void, Never>?
     private var rewriteAgain = false
+    private var tracksPublishDeadline: Date?
+    private var tracksPublishTask: Task<Void, Never>?
 
     func bind(to observations: AsyncStream<RidObservation>, sourceID: String) {
         guard observationTasks[sourceID] == nil else { return }
-        observationTasks[sourceID] = Task { [weak self] in
+        // Capture the store actor reference on MainActor, then ingest off-main so
+        // radio bursts do not queue behind SwiftUI/MapKit work (receiveToStartMs).
+        let trackStore = store
+        observationTasks[sourceID] = Task.detached { [weak self] in
             for await observation in observations {
-                guard !Task.isCancelled, let self else { return }
-                await self.ingest(observation)
+                guard !Task.isCancelled else { return }
+                let ingestStartedAt = Date()
+                let result = await trackStore.ingest(observation)
+                await self?.applyIngestResult(
+                    observation,
+                    result: result,
+                    ingestStartedAt: ingestStartedAt
+                )
             }
         }
         agingTask = Task { [weak self] in
@@ -410,6 +421,20 @@ final class RIDTrackViewModel: ObservableObject {
 
     func ingest(_ observation: RidObservation) async {
         let ingestStartedAt = Date()
+        if observation.source != .djiVideo,
+           let accepted = lastAcceptedStreamAt[observation.aircraftId],
+           Date().timeIntervalSince(accepted) >= 0, Date().timeIntervalSince(accepted) <= 3,
+           validatedSEIPositionProvider?(tracks, Date())[observation.aircraftId] != nil { return }
+        let result = await store.ingest(observation)
+        await applyIngestResult(observation, result: result, ingestStartedAt: ingestStartedAt)
+    }
+
+    /// UI-side apply after store ingest completed off-main (or on-main for SEI/local callers).
+    private func applyIngestResult(
+        _ observation: RidObservation,
+        result: RidTrackIngestOutcome,
+        ingestStartedAt: Date
+    ) async {
         defer {
             // Coordinates are deliberately excluded so durable privacy filtering preserves the
             // receive/apply timing evidence needed to distinguish radio gaps from UI backlog.
@@ -421,7 +446,7 @@ final class RIDTrackViewModel: ObservableObject {
            let accepted = lastAcceptedStreamAt[observation.aircraftId],
            Date().timeIntervalSince(accepted) >= 0, Date().timeIntervalSince(accepted) <= 3,
            validatedSEIPositionProvider?(tracks, Date())[observation.aircraftId] != nil { return }
-        switch await store.ingest(observation) {
+        switch result {
         case let .accepted(track):
             acceptedObservationCount += 1
             if observation.source == .djiVideo {
@@ -519,7 +544,27 @@ final class RIDTrackViewModel: ObservableObject {
             )
             logFilterSummaryIfNeeded()
         }
-        tracks = await store.snapshot()
+        // Coalesce UI track publishes so MapKit is not rebuilt on every radio packet.
+        let now = Date()
+        if tracksPublishDeadline == nil || now >= (tracksPublishDeadline ?? .distantPast) {
+            tracksPublishDeadline = now.addingTimeInterval(0.08)
+            tracks = await store.snapshot()
+        } else {
+            scheduleCoalescedTracksPublish()
+        }
+    }
+
+    private func scheduleCoalescedTracksPublish() {
+        guard tracksPublishTask == nil else { return }
+        let deadline = tracksPublishDeadline ?? Date().addingTimeInterval(0.08)
+        tracksPublishTask = Task { [weak self] in
+            let delay = max(0, deadline.timeIntervalSinceNow)
+            if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+            guard !Task.isCancelled, let self else { return }
+            self.tracksPublishTask = nil
+            self.tracksPublishDeadline = nil
+            self.tracks = await self.store.snapshot()
+        }
     }
 
     private func logFilterSummaryIfNeeded() {

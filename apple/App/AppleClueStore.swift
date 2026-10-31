@@ -61,7 +61,8 @@ final class AppleClueStore: ObservableObject {
                 guard let self else { return }
                 self.records = loaded
                 self.updateStatus()
-                await self.performDurabilityIntegrityScan()
+                // Integrity scan must not block clue Submit. Run it after the index is ready.
+                Task { [weak self] in await self?.performDurabilityIntegrityScan() }
             } catch {
                 guard let self else { return }
                 self.indexLoadFailed = true
@@ -158,21 +159,52 @@ final class AppleClueStore: ObservableObject {
 
     @discardableResult
     func save(_ draft: AppleClueDraft, jpegData: Data, publishToCaltopo: Bool) async throws -> OperationalClueRecord {
+        let saveStarted = Date()
         guard !jpegData.isEmpty else { throw CocoaError(.fileWriteUnknown) }
-        await initialLoad?.value
+        // Index load only — never wait on the durability integrity scan.
+        if let initialLoad {
+            let loadFinished = await withTaskGroup(of: Bool.self) { group in
+                group.addTask { await initialLoad.value; return true }
+                group.addTask {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    return false
+                }
+                let first = await group.next() ?? false
+                group.cancelAll()
+                return first
+            }
+            if !loadFinished {
+                AppleLog.warning("Clue", "Clue save stage=index-load-timeout elapsedMs=\(Int(Date().timeIntervalSince(saveStarted) * 1_000)); continuing with in-memory index")
+            }
+        }
         guard !indexLoadFailed else { throw CocoaError(.fileReadUnknown) }
+        AppleLog.info("Clue", "Clue save stage=bound elapsedMs=\(Int(Date().timeIntervalSince(saveStarted) * 1_000)) publishWithoutTerrainWait=true")
         let id = UUID()
         let day = AppleFlightStorage.dayName(Date())
         let imageFilename = "\(day)/\(id.uuidString.lowercased()).jpg"
         let thumbnailFilename = "\(day)/\(id.uuidString.lowercased())-thumb.jpg"
         let root = self.root
-        let flightDestination = publishToCaltopo ? try await publicationDestination(for: draft) : (map: nil, team: nil)
+        // Prefer connected-map destination without disk journal when possible.
+        let flightDestination: (map: String?, team: String?)
+        if publishToCaltopo {
+            if !mapID.isEmpty && !teamID.isEmpty {
+                flightDestination = (mapID, teamID)
+            } else {
+                flightDestination = (try? await withTimeout(seconds: 0.2) {
+                    try await self.publicationDestination(for: draft)
+                }) ?? (nil, nil)
+            }
+        } else {
+            flightDestination = (nil, nil)
+        }
+        AppleLog.info("Clue", "Clue save stage=image-prepared elapsedMs=\(Int(Date().timeIntervalSince(saveStarted) * 1_000)) bytes=\(jpegData.count)")
+        // Durable image first. Thumbnail is filled after Local clue saved / upload enqueue.
         try await disk.run {
             try FileManager.default.createDirectory(at: root.appendingPathComponent(day), withIntermediateDirectories: true)
-            AppleFlightStorage.prepareWrite(Int64(jpegData.count) * 2)
+            AppleFlightStorage.prepareWrite(Int64(jpegData.count))
             try jpegData.write(to: root.appendingPathComponent(imageFilename), options: .atomic)
-            let thumbnailData = Self.thumbnailJPEG(from: jpegData) ?? jpegData
-            try thumbnailData.write(to: root.appendingPathComponent(thumbnailFilename), options: .atomic)
+            // Placeholder thumb so the index row is valid; replaced asynchronously.
+            try jpegData.write(to: root.appendingPathComponent(thumbnailFilename), options: .atomic)
         }
         let record = OperationalClueRecord(
             id: id,
@@ -207,14 +239,48 @@ final class AppleClueStore: ObservableObject {
         }
         AppleLog.info(
             "Clue",
+            "Clue save stage=durable id=\(id) elapsedMs=\(Int(Date().timeIntervalSince(saveStarted) * 1_000))"
+        )
+        AppleLog.info(
+            "Clue",
             "Local clue saved id=\(id) designator=\(draft.designator) bytes=\(jpegData.count) publish=\(publishToCaltopo) " +
                 "binding=\(draft.binding.map { ClueBindingText.formSummary($0) } ?? "none")"
         )
         updateStatus()
         // The binding was fixed at Submit; the upload starts right away.
-        if publishToCaltopo { enqueueUpload(id) }
+        if publishToCaltopo {
+            enqueueUpload(id)
+            AppleLog.info("Clue", "Clue save stage=queued-upload id=\(id) elapsedMs=\(Int(Date().timeIntervalSince(saveStarted) * 1_000))")
+        }
         clueChanged?(record)
+        // Thumbnail encode stays off the durable/upload critical path.
+        let thumbJPEG = jpegData
+        let thumbName = thumbnailFilename
+        let diskQueue = disk
+        Task.detached(priority: .utility) {
+            guard let thumb = Self.thumbnailJPEG(from: thumbJPEG), thumb.count != thumbJPEG.count else { return }
+            try? await diskQueue.run {
+                try thumb.write(to: root.appendingPathComponent(thumbName), options: .atomic)
+            }
+            AppleLog.info("Clue", "Clue save stage=thumb id=\(id) bytes=\(thumb.count)")
+        }
         return record
+    }
+
+    private func withTimeout<T: Sendable>(
+        seconds: Double,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(for: .seconds(seconds))
+                throw CancellationError()
+            }
+            let value = try await group.next()!
+            group.cancelAll()
+            return value
+        }
     }
 
     // MARK: Waypoint binding

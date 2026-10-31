@@ -415,6 +415,12 @@ final class AppleVideoFrameSource: ObservableObject {
     private var nativeFailureHandled = false
     private var nativeEndHandled = false
     private var displayLink: CADisplayLink?
+    /// Live native display feed runs off the main actor so RID/UI backlog cannot
+    /// starve RTSP dequeue (MediaMTX "reader is too slow").
+    private let displayFeedQueue = DispatchQueue(label: "org.ncssar.video.display-feed", qos: .userInteractive)
+    private var displayFeedTimer: DispatchSourceTimer?
+    /// Mirrored for off-main pops; mutated only when installing/tearing down the native session.
+    nonisolated(unsafe) private var ffmpegSessionForFeed: OpaquePointer?
     /// CADisplayLink stops while the display is locked. In background a timer
     /// keeps pulling decoded frames so DJI SEI telemetry, lag measurement, and
     /// the managed (WebRTC) video consumer continue; only on-screen rendering
@@ -472,9 +478,10 @@ final class AppleVideoFrameSource: ObservableObject {
     @objc private func applicationDidEnterBackground() {
         guard !renderingSuspended else { return }
         renderingSuspended = true
-        guard displayLink != nil else { return }
+        guard displayLink != nil || displayFeedTimer != nil else { return }
         displayLink?.invalidate()
         displayLink = nil
+        stopDisplayFeedTimer()
         installBackgroundFrameTimer()
         AppleLog.info("Video", "Display locked or app in background; frame pull continues, rendering paused path=\(currentPath ?? "unknown")")
     }
@@ -877,8 +884,21 @@ final class AppleVideoFrameSource: ObservableObject {
     private func installDisplayLink() {
         displayLink?.invalidate()
         displayLink = nil
+        stopDisplayFeedTimer()
         if renderingSuspended {
             installBackgroundFrameTimer()
+            return
+        }
+        // Live native: pop/decode-feed off main. File/AVPlayer keeps CADisplayLink.
+        if ffmpegSession != nil, currentURL?.isFileURL != true {
+            ffmpegSessionForFeed = ffmpegSession
+            let timer = DispatchSource.makeTimerSource(queue: displayFeedQueue)
+            timer.schedule(deadline: .now(), repeating: 1.0 / 90.0, leeway: .milliseconds(2))
+            timer.setEventHandler { [weak self] in
+                self?.pullNativeFrameOffMain()
+            }
+            displayFeedTimer = timer
+            timer.resume()
             return
         }
         let displayLink = CADisplayLink(target: self, selector: #selector(pullFrame(_:)))
@@ -891,9 +911,152 @@ final class AppleVideoFrameSource: ObservableObject {
         self.displayLink = displayLink
     }
 
+    private func stopDisplayFeedTimer() {
+        displayFeedTimer?.cancel()
+        displayFeedTimer = nil
+        ffmpegSessionForFeed = nil
+    }
+
+    /// Off-main RTSP dequeue so MainActor saturation cannot stall the live FIFO.
+    nonisolated private func pullNativeFrameOffMain() {
+        guard let ffmpegSession = ffmpegSessionForFeed else { return }
+        var sequence: UInt64 = 0
+        var presentationTimeMicroseconds: Int64 = 0
+        var cameraValues = [Double](repeating: .nan, count: 20)
+        var djiSourceTimestampMicroseconds: Int64 = 0
+        var djiTelemetrySequence: UInt64 = 0
+        let retainedPixelBuffer = cameraValues.withUnsafeMutableBufferPointer { values in
+            R2CFFmpegSessionCopyFrameWithCamera(ffmpegSession, &sequence,
+                &presentationTimeMicroseconds, values.baseAddress, Int32(values.count),
+                &djiSourceTimestampMicroseconds, &djiTelemetrySequence)
+        }
+        guard let retainedPixelBuffer else { return }
+        let pixelBuffer = retainedPixelBuffer.takeRetainedValue()
+        let values = cameraValues
+        Task { @MainActor [weak self] in
+            self?.consumeNativeFrameFromFeed(
+                pixelBuffer: pixelBuffer,
+                sequence: sequence,
+                presentationTimeMicroseconds: presentationTimeMicroseconds,
+                cameraValues: values,
+                djiSourceTimestampMicroseconds: djiSourceTimestampMicroseconds,
+                djiTelemetrySequence: djiTelemetrySequence
+            )
+        }
+    }
+
+    private func consumeNativeFrameFromFeed(
+        pixelBuffer: CVPixelBuffer,
+        sequence: UInt64,
+        presentationTimeMicroseconds: Int64,
+        cameraValues: [Double],
+        djiSourceTimestampMicroseconds: Int64,
+        djiTelemetrySequence: UInt64
+    ) {
+        let callbackStarted = CACurrentMediaTime()
+        if callbackWindowStartedAt == 0 { callbackWindowStartedAt = callbackStarted }
+        if callbackLastAt > 0 { callbackMaxGapSeconds = max(callbackMaxGapSeconds, callbackStarted - callbackLastAt) }
+        callbackLastAt = callbackStarted
+        callbackCount += 1
+        defer { callbackWorkSeconds += CACurrentMediaTime() - callbackStarted }
+        guard sequence != ffmpegFrameSequence else { return }
+        ffmpegFrameSequence = sequence
+        let djiAzimuthDegrees = cameraValues[0]
+        let djiTiltDegrees = cameraValues[1]
+        let djiHorizontalFovDegrees = cameraValues[2]
+        let djiVerticalFovDegrees = cameraValues[3]
+        let djiAttitudeAngles = Array(cameraValues[4..<13])
+        let djiPositionValues = Array(cameraValues[13..<20])
+        let copiedDJITelemetry = djiTelemetrySequence > 0
+        if copiedDJITelemetry,
+           djiTelemetrySequence != ffmpegDJICameraTelemetrySequence,
+           let ffmpegSession {
+            ffmpegDJICameraTelemetrySequence = djiTelemetrySequence
+            var payload = [UInt8](repeating: 0, count: 128)
+            var payloadSize: Int32 = 0
+            var northMillimeters: Int32 = 0
+            var eastMillimeters: Int32 = 0
+            var downMillimeters: Int32 = 0
+            var payloadTimestampMicroseconds: Int64 = 0
+            var payloadSequence: UInt64 = 0
+            let copiedPayload = payload.withUnsafeMutableBufferPointer { bytes in
+                R2CFFmpegSessionCopyLatestDJISEIPayload(
+                    ffmpegSession,
+                    bytes.baseAddress,
+                    Int32(bytes.count),
+                    &payloadSize,
+                    &northMillimeters,
+                    &eastMillimeters,
+                    &downMillimeters,
+                    &payloadTimestampMicroseconds,
+                    &payloadSequence
+                )
+            }
+            latestDJICameraTelemetry = AppleDJICameraTelemetry(
+                rawAzimuthCandidateDegrees: RidHeading.normalized(djiAzimuthDegrees) ?? djiAzimuthDegrees,
+                cameraAzimuthDegrees: OperationalClueGeometry.djiControllerCameraAzimuthDegrees(
+                    seiCameraAzimuthDegrees: djiAzimuthDegrees
+                ),
+                courseDegrees: RidHeading.normalized(djiPositionValues[6]),
+                rawTiltDegrees: djiTiltDegrees,
+                tiltDegrees: OperationalClueGeometry.djiCalibratedTiltDegrees(
+                    rawTiltDegrees: djiTiltDegrees
+                ) ?? min(90, max(-90, djiTiltDegrees)),
+                horizontalFovDegrees: djiHorizontalFovDegrees,
+                verticalFovDegrees: djiVerticalFovDegrees,
+                attitudeAnglesDegrees: djiAttitudeAngles,
+                latitudeDegrees: djiPositionValues[0].isFinite ? djiPositionValues[0] : nil,
+                longitudeDegrees: djiPositionValues[1].isFinite ? djiPositionValues[1] : nil,
+                altitudeMeters: nil,
+                relativeUpMeters: djiPositionValues[2].isFinite ? djiPositionValues[2] : nil,
+                referenceLatitudeDegrees: djiPositionValues[3].isFinite ? djiPositionValues[3] : nil,
+                referenceLongitudeDegrees: djiPositionValues[4].isFinite ? djiPositionValues[4] : nil,
+                referenceAltitudeMeters: djiPositionValues[5].isFinite ? djiPositionValues[5] : nil,
+                relativeNorthMillimeters: copiedPayload ? northMillimeters : nil,
+                relativeEastMillimeters: copiedPayload ? eastMillimeters : nil,
+                downMillimeters: copiedPayload ? downMillimeters : nil,
+                sourceTimestampMicroseconds: djiSourceTimestampMicroseconds > 0
+                    ? djiSourceTimestampMicroseconds
+                    : nil,
+                receivedAt: Date(),
+                droneTime: observeDroneClock(ptsMicroseconds: djiSourceTimestampMicroseconds)
+                    .map { Date(timeIntervalSince1970: Double($0) / 1_000) }
+            )
+        }
+        if let ffmpegSession {
+            var gimbalPitchDegrees = 0.0
+            if R2CFFmpegSessionCopyLatestGimbalPitchDegrees(ffmpegSession, &gimbalPitchDegrees) {
+                let selected = OperationalClueGeometry.selectedGimbalAngleDegrees(
+                    streamPitchDegrees: gimbalPitchDegrees
+                )
+                if latestGimbalPitchDegrees != selected { latestGimbalPitchDegrees = selected }
+            }
+            var cameraYawDegrees = 0.0
+            if R2CFFmpegSessionCopyLatestCameraYawDegrees(ffmpegSession, &cameraYawDegrees),
+               let normalized = RidHeading.normalized(cameraYawDegrees) {
+                if latestCameraYawDegrees != normalized { latestCameraYawDegrees = normalized }
+            }
+            var streamHeadingDegrees = 0.0
+            if R2CFFmpegSessionCopyLatestHeadingDegrees(ffmpegSession, &streamHeadingDegrees),
+               let normalized = RidHeading.normalized(streamHeadingDegrees) {
+                if latestStreamHeadingDegrees != normalized { latestStreamHeadingDegrees = normalized }
+            }
+        }
+        let itemTime = presentationTimeMicroseconds > Int64.min / 2
+            ? CMTime(value: presentationTimeMicroseconds, timescale: 1_000_000)
+            : CMClockGetTime(CMClockGetHostTimeClock())
+        consumeDecodedFrame(
+            pixelBuffer,
+            itemTime: itemTime,
+            sourceTimestampMicroseconds: presentationTimeMicroseconds > 0 ? presentationTimeMicroseconds : nil,
+            renderNatively: true
+        )
+    }
+
     private func tearDownPlayer() {
         displayLink?.invalidate()
         displayLink = nil
+        stopDisplayFeedTimer()
         backgroundFrameTimer?.invalidate()
         backgroundFrameTimer = nil
         itemStatusObservation = nil
@@ -907,6 +1070,7 @@ final class AppleVideoFrameSource: ObservableObject {
     }
 
     private func tearDownNativeDecoder() {
+        stopDisplayFeedTimer()
         if let ffmpegSession {
             R2CFFmpegSessionDestroy(ffmpegSession)
             self.ffmpegSession = nil
@@ -1336,8 +1500,10 @@ final class AppleVideoFrameSource: ObservableObject {
 
     func captureSnapshot(
         zoomScale: Double = 1,
-        normalizedPan: CGPoint = .zero
+        normalizedPan: CGPoint = .zero,
+        encodeTimeoutSeconds: Double = 0.45
     ) async throws -> AppleVideoSnapshot {
+        // Never wait on decoder recovery. Use whatever frame is already available.
         guard let latestPixelBuffer, let capturedAt = latestFrameCapturedAt else {
             throw AppleVideoSnapshotError.noDecodedFrame
         }
@@ -1352,35 +1518,53 @@ final class AppleVideoFrameSource: ObservableObject {
             normalizedPanX: normalizedPan.x,
             normalizedPanY: normalizedPan.y
         )
+        let encodeStarted = Date()
         // Keep all pixel conversion off the main actor. The decoder buffer is
         // retained for the detached operation and the frame metadata above is
-        // captured at the camera event.
+        // captured at the camera event. A hard timeout keeps the clue form from
+        // waiting on a stalled CIContext encode during decoder thrash.
         let transfer = PixelBufferTransfer(value: latestPixelBuffer)
-        let data = try await Task.detached(priority: .userInitiated) {
-            let context = CIContext(options: [.cacheIntermediates: false])
-            let extent = CGRect(x: 0, y: 0, width: width, height: height)
-            var image = CIImage(cvPixelBuffer: transfer.value)
-            if viewport.needsTransform {
-                let transform = CGAffineTransform(
-                    a: viewport.scale,
-                    b: 0,
-                    c: 0,
-                    d: viewport.scale,
-                    tx: viewport.translationX(width: Double(width)),
-                    ty: viewport.translationY(height: Double(height))
-                )
-                let background = CIImage(color: .black).cropped(to: extent)
-                image = image.transformed(by: transform).composited(over: background).cropped(to: extent)
+        let data: Data
+        do {
+            data = try await withThrowingTaskGroup(of: Data.self) { group in
+                group.addTask(priority: .userInitiated) {
+                    try Self.encodeJPEG(
+                        pixelBuffer: transfer.value,
+                        width: width,
+                        height: height,
+                        viewport: viewport,
+                        quality: 0.85
+                    )
+                }
+                group.addTask {
+                    try await Task.sleep(for: .seconds(encodeTimeoutSeconds))
+                    throw CancellationError()
+                }
+                let first = try await group.next()!
+                group.cancelAll()
+                return first
             }
-            guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-              let jpeg = context.jpegRepresentation(
-                    of: image,
-                    colorSpace: colorSpace,
-                    options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.85]
-                  )
-            else { throw AppleVideoSnapshotError.conversionFailed }
-            return jpeg
-        }.value
+        } catch {
+            // Timed out or cancelled: downscale aggressively so the form still opens.
+            data = try await Task.detached(priority: .userInitiated) {
+                try Self.encodeJPEG(
+                    pixelBuffer: transfer.value,
+                    width: width,
+                    height: height,
+                    viewport: viewport,
+                    quality: 0.55,
+                    maxEdge: 640
+                )
+            }.value
+            AppleLog.warning(
+                "Clue",
+                "Clue capture stage=jpeg-fallback elapsedMs=\(Int(Date().timeIntervalSince(encodeStarted) * 1_000))"
+            )
+        }
+        AppleLog.info(
+            "Clue",
+            "Clue capture stage=jpeg elapsedMs=\(Int(Date().timeIntervalSince(encodeStarted) * 1_000)) bytes=\(data.count) \(width)x\(height)"
+        )
         return AppleVideoSnapshot(
             jpegData: data,
             capturedAt: capturedAt,
@@ -1391,6 +1575,43 @@ final class AppleVideoFrameSource: ObservableObject {
             djiCameraTelemetry: frameTelemetry,
             droneCapturedAtMs: frameDroneTimeMs
         )
+    }
+
+    private nonisolated static func encodeJPEG(
+        pixelBuffer: CVPixelBuffer,
+        width: Int,
+        height: Int,
+        viewport: OperationalVideoViewport,
+        quality: Double,
+        maxEdge: Int? = nil
+    ) throws -> Data {
+        let context = CIContext(options: [.cacheIntermediates: false])
+        let extent = CGRect(x: 0, y: 0, width: width, height: height)
+        var image = CIImage(cvPixelBuffer: pixelBuffer)
+        if viewport.needsTransform {
+            let transform = CGAffineTransform(
+                a: viewport.scale,
+                b: 0,
+                c: 0,
+                d: viewport.scale,
+                tx: viewport.translationX(width: Double(width)),
+                ty: viewport.translationY(height: Double(height))
+            )
+            let background = CIImage(color: .black).cropped(to: extent)
+            image = image.transformed(by: transform).composited(over: background).cropped(to: extent)
+        }
+        if let maxEdge, max(width, height) > maxEdge {
+            let scale = Double(maxEdge) / Double(max(width, height))
+            image = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        }
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+              let jpeg = context.jpegRepresentation(
+                of: image,
+                colorSpace: colorSpace,
+                options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality]
+              )
+        else { throw AppleVideoSnapshotError.conversionFailed }
+        return jpeg
     }
 
     private func logPlayerFailureContext(prefix: String, trigger: LiveVideoRecoveryPolicy.Trigger) {

@@ -2596,13 +2596,16 @@ class StreamsViewModel(
             if (lat != null && lng != null) org.ncssar.rid2caltopo.data.ClueBindingFramePosition(lat, lng) else null
         }
         val captureFlightId = org.ncssar.rid2caltopo.data.WaypointTrack.GetLiveFlightId(droneSpec)
+        // Provisional bind from the already-captured waypoint snapshot only — open the form
+        // before any slow store scan. Live refresh continues via startPendingBindingRefresh.
+        val bindingPoints = org.ncssar.rid2caltopo.data.WaypointTrack.GetBindingPointsSnapshot(droneSpec)
         val initialBinding = withContext(Dispatchers.Default) { org.ncssar.rid2caltopo.data.ClueBinder.bind(
             aircraftId = droneSpec.remoteId,
             flightId = captureFlightId,
             captureTimeMs = captureTimeMs,
             captureTimeSource = if (captureDroneTimeMs != null) "stream-pts" else "app-receive",
             captureReceivedAtMs = startedAtMs,
-            points = org.ncssar.rid2caltopo.data.WaypointTrack.GetBindingPointsSnapshot(droneSpec),
+            points = bindingPoints,
             framePosition = framePosition,
             originIsWaypoint = false,
         ) }
@@ -2610,6 +2613,7 @@ class StreamsViewModel(
         // nearest the capture, else the latest RID fix.
         val waypointOrigin = initialBinding.nearest.takeIf { freshDjiCamera?.latitudeDeg == null && nonDjiTelemetry?.latitude == null }
         val binding = initialBinding.copy(originIsWaypoint = waypointOrigin != null)
+        android.util.Log.i(tag, "Clue capture stage=bind elapsedMs=${System.currentTimeMillis() - startedAtMs} designator=$designator")
         val clueLat = freshDjiCamera?.latitudeDeg ?: nonDjiTelemetry?.latitude ?: waypointOrigin?.latitude ?: droneSpec.lastLat
         val clueLng = freshDjiCamera?.longitudeDeg ?: nonDjiTelemetry?.longitude ?: waypointOrigin?.longitude ?: droneSpec.lastLng
         // The SEI altitude datum is opaque. The DEM refinement anchors relative-up at
@@ -2721,6 +2725,11 @@ class StreamsViewModel(
             },
             binding = binding,
             ignoredFlightPrompt = isFlightIgnored(droneSpec),
+        )
+        android.util.Log.i(
+            tag,
+            "Clue capture stage=form-open elapsedMs=${System.currentTimeMillis() - startedAtMs} " +
+                "designator=$designator imageReady=bitmap demRef=${_pendingClue.value?.demAltitudeReference != null}"
         )
         if (isFlightIgnored(droneSpec)) CTDebug(tag, "Clue captured on an ignored flight remoteId=${droneSpec.remoteId}; asking to publish it")
         startPendingBindingRefresh()
@@ -2878,14 +2887,22 @@ class StreamsViewModel(
         }
         val startedAt = android.os.SystemClock.elapsedRealtime()
         return try {
+            org.ncssar.rid2caltopo.video.CrosshairPreferences.load(getApplication())
+            val coordinates = if (clue.showCrosshairCoordinates)
+                org.ncssar.rid2caltopo.video.CoordinateFormatter.format(clue.lat, clue.lng, context.format) else null
+            // Stamp off the disk mutex with a hard timeout; fall back to the capture bitmap.
+            val stampStarted = android.os.SystemClock.elapsedRealtime()
+            val bitmap = withContext(Dispatchers.Default) {
+                kotlinx.coroutines.withTimeoutOrNull(400L) {
+                    org.ncssar.rid2caltopo.video.stampClueCrosshair(source, coordinates)
+                } ?: source.also {
+                    CTDebug(tag, "Clue save stage=image-stamp-timeout elapsedMs=${android.os.SystemClock.elapsedRealtime() - stampStarted}")
+                }
+            }
+            CTDebug(tag, "Clue save stage=image-prepared elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt}")
             val (record, prepared) = withContext(Dispatchers.IO) {
                 clueDiskMutex.withLock {
                     CTDebug(tag, "Clue save stage=worker-ready elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt}")
-                    org.ncssar.rid2caltopo.video.CrosshairPreferences.load(getApplication())
-                    val coordinates = if (clue.showCrosshairCoordinates)
-                        org.ncssar.rid2caltopo.video.CoordinateFormatter.format(clue.lat, clue.lng, context.format) else null
-                    val bitmap = org.ncssar.rid2caltopo.video.stampClueCrosshair(source, coordinates)
-                    CTDebug(tag, "Clue save stage=image-prepared elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt}")
                     // Flight ownership is fixed by the submit-time binding; fallback
                     // credentials/map are captured before dispatch, not read later from UI state.
                     val destination = context.acceptedDestination

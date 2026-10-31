@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import Darwin
 import MediaMTXMobile
 import R2CCore
 
@@ -485,15 +486,40 @@ final class MediaMTXViewModel: ObservableObject {
     }
     #endif
 
+    /// Probe the RTMP ingest listener, not HLS. Live playback uses RTSP; polling
+    /// `http://127.0.0.1:8888/` only produced 404 spam when nothing needed HLS.
     private static func localListenerAvailable() async -> Bool {
-        guard let url = URL(string: "http://127.0.0.1:8888/") else { return false }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 2
-        do {
-            let (_, response) = try await URLSession.shared.data(for: request)
-            return response is HTTPURLResponse
-        } catch {
-            return false
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let socket = socket(AF_INET, SOCK_STREAM, 0)
+                guard socket >= 0 else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                defer { close(socket) }
+                var addr = sockaddr_in()
+                addr.sin_family = sa_family_t(AF_INET)
+                addr.sin_port = in_port_t(1935).bigEndian
+                addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+                let connectResult: Int32 = withUnsafePointer(to: &addr) {
+                    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { pointer in
+                        // Non-blocking connect with a short poll so health checks stay off HLS.
+                        let flags = fcntl(socket, F_GETFL, 0)
+                        _ = fcntl(socket, F_SETFL, flags | O_NONBLOCK)
+                        let result = connect(socket, pointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+                        if result == 0 { return 0 }
+                        if errno != EINPROGRESS { return -1 }
+                        var pollFD = pollfd(fd: socket, events: Int16(POLLOUT), revents: 0)
+                        let polled = poll(&pollFD, 1, 400)
+                        guard polled > 0 else { return -1 }
+                        var soError: Int32 = 0
+                        var length = socklen_t(MemoryLayout<Int32>.size)
+                        getsockopt(socket, SOL_SOCKET, SO_ERROR, &soError, &length)
+                        return soError == 0 ? 0 : -1
+                    }
+                }
+                continuation.resume(returning: connectResult == 0)
+            }
         }
     }
 

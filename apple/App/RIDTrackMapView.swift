@@ -1966,13 +1966,17 @@ struct RIDTrackMapView: View {
         // Telemetry as of the capture; the form never reads live aircraft state.
         let tracksAtCapture = model.tracks
         let altitudeDisplaysAtCapture = model.altitudeDisplayByAircraftID
+        let captureStarted = Date()
+        AppleLog.info("Clue", "Clue capture stage=tap aircraft=\(defaultAircraftID) stream=\(streamID)")
         capturingSnapshot = true
         Task {
             defer { capturingSnapshot = false }
             do {
+                // JPEG encode has a hard timeout; never wait on decoder recovery/bind for form open.
                 let snapshot = try await session.model.captureSnapshot(
                     zoomScale: zoomScale,
-                    normalizedPan: normalizedPan
+                    normalizedPan: normalizedPan,
+                    encodeTimeoutSeconds: 0.45
                 )
                 let frameTelemetry = snapshot.djiCameraTelemetry.flatMap { telemetry in
                     let age = snapshot.capturedAt.timeIntervalSince(telemetry.receivedAt)
@@ -1990,28 +1994,28 @@ struct RIDTrackMapView: View {
                 let seiRelativeAltitude = completeSEITelemetry.map {
                     ($0.referenceAltitudeMeters ?? 0) + ($0.relativeUpMeters ?? 0)
                 }
-                // Bind to the waypoint nearest in time to the frame (drone clock), before or after.
                 let captureReceivedMs = ClueBindingPoint.milliseconds(snapshot.capturedAt)
                 let captureTimeMs = snapshot.droneCapturedAtMs ?? captureReceivedMs
                 let framePosition = completeSEITelemetry.flatMap { telemetry -> ClueBindingFramePosition? in
                     guard let latitude = telemetry.latitudeDegrees, let longitude = telemetry.longitudeDegrees else { return nil }
                     return ClueBindingFramePosition(latitude: latitude, longitude: longitude)
                 }
-                let livePoints = await model.bindingPoints(aircraftID: defaultAircraftID, captureTimeMs: captureTimeMs)
                 let flightID = model.liveFlightID(aircraftID: defaultAircraftID)
-                let fallbackPoints = captureTrack.points
-                let binding = await Task.detached(priority: .utility) { ClueBinder.bind(
-                    aircraftID: defaultAircraftID,
-                    flightID: flightID,
-                    captureTimeMs: captureTimeMs,
-                    captureTimeSource: snapshot.droneCapturedAtMs == nil ? "app-receive" : "stream-pts",
-                    captureReceivedAtMs: captureReceivedMs,
-                    points: livePoints ?? fallbackPoints.map(ClueBindingPoint.init(trackPoint:)),
-                    framePosition: framePosition,
-                    originIsWaypoint: framePosition == nil
-                ) }.value
-                // The frame's own drone position is the projection origin; without it, the bound waypoint.
-                let waypointOrigin = framePosition == nil ? binding.nearest : nil
+                let fallbackPoints = captureTrack.points.map(ClueBindingPoint.init(trackPoint:))
+                // Provisional bind from in-memory points only — form opens before live store scan.
+                let provisionalBinding = await Task.detached(priority: .utility) {
+                    ClueBinder.bind(
+                        aircraftID: defaultAircraftID,
+                        flightID: flightID,
+                        captureTimeMs: captureTimeMs,
+                        captureTimeSource: snapshot.droneCapturedAtMs == nil ? "app-receive" : "stream-pts",
+                        captureReceivedAtMs: captureReceivedMs,
+                        points: fallbackPoints,
+                        framePosition: framePosition,
+                        originIsWaypoint: framePosition == nil
+                    )
+                }.value
+                let waypointOrigin = framePosition == nil ? provisionalBinding.nearest : nil
                 let captureObservation = RidObservation(
                     source: ridCaptureObservation.source,
                     aircraftId: ridCaptureObservation.aircraftId,
@@ -2054,7 +2058,6 @@ struct RIDTrackMapView: View {
                     reportTelemetry.horizontalFovDegrees = frameTelemetry.horizontalFovDegrees
                     reportTelemetry.verticalFovDegrees = frameTelemetry.verticalFovDegrees
                     reportTelemetry.source = "dji-sei-245"
-                    // Same decoded DJI source confidence used by Android's report.
                     reportTelemetry.confidence = 0.95
                     reportTelemetry.timestampMicroseconds = frameTelemetry.sourceTimestampMicroseconds
                 }
@@ -2077,8 +2080,6 @@ struct RIDTrackMapView: View {
                     atoMeters: captureATOMeters,
                     validatedDJIRelativeUpMeters: completeSEITelemetry?.relativeUpMeters
                 )
-                // Match Android: stash DEM datum when SEI position is absent so DEM can
-                // recover height from waypoint altitude even while AGL display is pending.
                 let demAltitudeReference = completeSEITelemetry == nil
                     ? model.clueDemAltitudeReference(aircraftID: defaultAircraftID)
                     : nil
@@ -2094,19 +2095,38 @@ struct RIDTrackMapView: View {
                     heading: captureHeading,
                     djiCameraTelemetry: completeSEITelemetry,
                     reportTelemetry: reportTelemetry,
-                    binding: binding,
+                    binding: provisionalBinding,
                     tracksAtCapture: tracksAtCapture,
                     altitudeDisplaysAtCapture: altitudeDisplaysAtCapture,
                     frozenProjectionHeight: frozenProjectionHeight,
                     demAltitudeReference: demAltitudeReference,
                     showCrosshairCoordinates: session.model.crosshairReadoutActive && frameTelemetry != nil
                 )
-                AppleLog.info("Clue", "Snapshot bound aircraft=\(defaultAircraftID) \(ClueBindingText.formSummary(binding)) " +
-                    "captureSource=\(binding.captureTimeSource) origin=\(framePosition == nil ? "waypoint" : "frame") " +
+                AppleLog.info(
+                    "Clue",
+                    "Clue capture stage=form-open elapsedMs=\(Int(Date().timeIntervalSince(captureStarted) * 1_000)) " +
+                        "aircraft=\(defaultAircraftID) imageReady=jpeg " +
+                        "height=\(frozenProjectionHeight.map { String(format: "%.1f(%@)", $0.meters, $0.sourceLabel) } ?? "nil") " +
+                        "demRef=\(demAltitudeReference != nil)"
+                )
+                AppleLog.info("Clue", "Snapshot bound aircraft=\(defaultAircraftID) \(ClueBindingText.formSummary(provisionalBinding)) " +
+                    "captureSource=\(provisionalBinding.captureTimeSource) origin=\(framePosition == nil ? "waypoint" : "frame") " +
                     "height=\(frozenProjectionHeight.map { String(format: "%.1f(%@)", $0.meters, $0.sourceLabel) } ?? "nil") " +
                     "demRef=\(demAltitudeReference != nil)")
+                // Refine binding off the form-open path; ClueSubmissionView refreshes while open.
+                Task {
+                    _ = await model.bindingPoints(aircraftID: defaultAircraftID, captureTimeMs: captureTimeMs)
+                    AppleLog.info(
+                        "Clue",
+                        "Clue capture stage=bind elapsedMs=\(Int(Date().timeIntervalSince(captureStarted) * 1_000)) aircraft=\(defaultAircraftID)"
+                    )
+                }
             } catch {
                 clueError = error.localizedDescription
+                AppleLog.error(
+                    "Clue",
+                    "Clue capture stage=failed elapsedMs=\(Int(Date().timeIntervalSince(captureStarted) * 1_000)) error=\(error.localizedDescription)"
+                )
             }
         }
     }
@@ -3146,8 +3166,10 @@ private struct ClueSubmissionView: View {
                     terrainProjectionPending = false
                     return
                 }
+                // Prefer DEM recovery whenever demRef exists (Android refineCapturedClueTerrain).
+                // A frozen ATO flat-ground fallback must not block DEM once tiles are ready.
                 var heightMeters = input.projectionHeightMeters
-                if heightMeters == nil, let demRef = input.demAltitudeReference,
+                if let demRef = input.demAltitudeReference,
                    let droneAlt = observation.altitudeMeters {
                     let sample = await model.sampleTerrainElevation(
                         latitude: observation.latitude,
@@ -3277,12 +3299,38 @@ private struct ClueSubmissionView: View {
             )
         }
         submissionFeedback = nil
-        // Bind once more to the nearest waypoint available now; this binding is final and the
-        // upload starts immediately. A waypoint-origin clue follows a nearer origin by translation.
+        // Bind once more with a hard timeout; never wait on DEM/decoder. Durable save + upload start at once.
         submitting = true
         defer { submitting = false }
+        let saveStarted = Date()
         let submittedAircraftID = selectedAircraftID
-        let submittedBinding = await currentBinding()
+        let existingBinding = binding ?? pending.binding
+        let submittedBinding: ClueBinding = await {
+            let result = await withTaskGroup(of: ClueBinding?.self) { group in
+                group.addTask { await self.currentBinding() }
+                group.addTask {
+                    try? await Task.sleep(for: .milliseconds(200))
+                    return nil
+                }
+                let first = await group.next() ?? nil
+                group.cancelAll()
+                return first
+            }
+            return result ?? existingBinding ?? ClueBinder.bind(
+                aircraftID: submittedAircraftID,
+                flightID: nil,
+                captureTimeMs: captureTimeMs,
+                captureTimeSource: pending.binding?.captureTimeSource ?? "app-receive",
+                captureReceivedAtMs: ClueBindingPoint.milliseconds(pending.snapshot.capturedAt),
+                points: (track?.points ?? []).map(ClueBindingPoint.init(trackPoint:)),
+                framePosition: pending.binding?.framePosition,
+                originIsWaypoint: pending.binding?.framePosition == nil
+            )
+        }()
+        AppleLog.info(
+            "Clue",
+            "Clue save stage=bound elapsedMs=\(Int(Date().timeIntervalSince(saveStarted) * 1_000)) publishWithoutTerrainWait=true"
+        )
         guard !Task.isCancelled, submittedAircraftID == selectedAircraftID else { return }
         var observation = shownObservation
         var projection = shownProjection
@@ -3338,9 +3386,28 @@ private struct ClueSubmissionView: View {
         )
         let data = pending.snapshot.jpegData
         let coordinates = pending.showCrosshairCoordinates ? OperationalCoordinateFormatter.format(latitude: projection.latitude, longitude: projection.longitude, as: coordinateDisplayFormat) : nil
-        let stamped = await Task.detached(priority: .userInitiated) {
-                UIImage(data: data).flatMap { stampClueCrosshair($0, coordinates: coordinates).jpegData(compressionQuality: 0.9) } ?? data
-            }.value
+        // Stamp with timeout; fall back to the already-available capture JPEG.
+        let stamped: Data = await {
+            let result = await withTaskGroup(of: Data?.self) { group in
+                group.addTask {
+                    await Task.detached(priority: .userInitiated) {
+                        UIImage(data: data).flatMap { stampClueCrosshair($0, coordinates: coordinates).jpegData(compressionQuality: 0.9) } ?? data
+                    }.value
+                }
+                group.addTask {
+                    try? await Task.sleep(for: .milliseconds(400))
+                    return nil
+                }
+                let first = await group.next() ?? nil
+                group.cancelAll()
+                return first
+            }
+            return result ?? data
+        }()
+        AppleLog.info(
+            "Clue",
+            "Clue save stage=image-prepared elapsedMs=\(Int(Date().timeIntervalSince(saveStarted) * 1_000)) bytes=\(stamped.count)"
+        )
         guard !Task.isCancelled, submittedAircraftID == selectedAircraftID else { return }
         _ = await onSubmit(draft, stamped, upload)
     }
