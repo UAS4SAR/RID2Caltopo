@@ -39,10 +39,32 @@ actor AppleTerrainElevationService {
         // Altitude / AOL / clue projection must not wait for a map view to open.
         let dem = localDEM
         Task.detached(priority: .utility) { dem.warmCatalog() }
+        ClueTerrainDiagnostics.startMonitorIfNeeded()
+    }
+
+    /// One-shot catalog rebuild for clue capture/refine. Never call from RID, map, or video paths.
+    func prepareLocalCatalogForClueSampling() async {
+        guard !Task.isCancelled else { return }
+        if budgetGeneration != AppleUnifiedMapCache.generation {
+            localDEM.invalidateCatalog()
+            budgetGeneration = AppleUnifiedMapCache.generation
+        }
+        let localDEM = self.localDEM
+        let child = Task.detached(priority: .utility) {
+            guard !Task.isCancelled else { return }
+            localDEM.ensureCatalogCurrent()
+        }
+        await withTaskCancellationHandler {
+            _ = await child.value
+        } onCancel: {
+            child.cancel()
+        }
     }
 
     /// Local GeoTIFF only. Does not consult EPQS or the point cache.
+    /// Does not rescan the DEM directory — call [prepareLocalCatalogForClueSampling] once before a clue walk.
     func sampleLocal(latitude: Double, longitude: Double) async -> OperationalTerrainSample? {
+        guard !Task.isCancelled else { return nil }
         guard latitude.isFinite, longitude.isFinite,
               (-90 ... 90).contains(latitude), (-180 ... 180).contains(longitude)
         else { return nil }
@@ -51,11 +73,20 @@ actor AppleTerrainElevationService {
             budgetGeneration = AppleUnifiedMapCache.generation
         }
         let localDEM = self.localDEM
-        // Clue ray-march must not miss S1M because the catalog was still cold/stale after TerrainPrefetch.
-        let localSample = await Task.detached(priority: .utility, operation: {
-            localDEM.ensureCatalogCurrent()
-            return localDEM.sample(latitude: latitude, longitude: longitude)
-        }).value
+        // Nested detach must honor the caller's cancel so ClueHardTimeout losers stop between tiles.
+        let child = Task.detached(priority: .utility) { () -> GeoTiffElevationSource.Sample? in
+            guard !Task.isCancelled else { return nil }
+            return localDEM.sample(
+                latitude: latitude,
+                longitude: longitude,
+                isCancelled: { Task.isCancelled }
+            )
+        }
+        let localSample = await withTaskCancellationHandler {
+            await child.value
+        } onCancel: {
+            child.cancel()
+        }
         if let localSample {
             return OperationalTerrainSample(
                 elevationMeters: localSample.elevationMeters,
@@ -78,6 +109,7 @@ actor AppleTerrainElevationService {
     }
 
     func sample(latitude: Double, longitude: Double) async -> OperationalTerrainSample? {
+        guard !Task.isCancelled else { return nil }
         guard latitude.isFinite, longitude.isFinite,
               (-90 ... 90).contains(latitude), (-180 ... 180).contains(longitude)
         else { return nil }
@@ -89,11 +121,21 @@ actor AppleTerrainElevationService {
         let key = OperationalAltitudeCoordinator.terrainCacheKey(coordinate)
         prefetch(latitude: latitude, longitude: longitude)
         let localDEM = self.localDEM
-        // Rebuild catalog when invalidate is pending so S1M tiles already on disk are used before EPQS.
-        if let localSample = await Task.detached(priority: .utility, operation: {
-            localDEM.ensureCatalogCurrent()
-            return localDEM.sample(latitude: latitude, longitude: longitude)
-        }).value {
+        // RID / altitude path: never sync-scan the DEM directory here. Catalog warm stays async.
+        let child = Task.detached(priority: .utility) { () -> GeoTiffElevationSource.Sample? in
+            guard !Task.isCancelled else { return nil }
+            return localDEM.sample(
+                latitude: latitude,
+                longitude: longitude,
+                isCancelled: { Task.isCancelled }
+            )
+        }
+        let localSample = await withTaskCancellationHandler {
+            await child.value
+        } onCancel: {
+            child.cancel()
+        }
+        if let localSample {
             return OperationalTerrainSample(
                 elevationMeters: localSample.elevationMeters,
                 source: "usgs-geotiff-local-\(Int(localSample.horizontalResolutionMeters.rounded()))m",

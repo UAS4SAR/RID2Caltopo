@@ -3210,6 +3210,10 @@ private struct ClueSubmissionView: View {
                 let demRef = input.demAltitudeReference
                 let aircraftID = input.aircraftID
 
+                // One catalog rebuild for this form walk — never per ray-march step.
+                await model.prepareLocalCatalogForClueSampling()
+                guard !Task.isCancelled, !submitting, terrainTaskKey == key else { return }
+
                 var heightMeters = input.projectionHeightMeters
                 var recoveredHeight: OperationalClueProjectionHeightSelection?
                 if let demRef, let droneAlt = captureObservation.altitudeMeters {

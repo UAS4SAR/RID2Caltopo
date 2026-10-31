@@ -119,12 +119,15 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
 
     /// `maximumHorizontalResolutionMeters` drops coarser rasters before any block is decoded.
     /// The footprint asks for S1M (1.5 m) and must not spend the pass inflating 10 m / 30 m tiles.
+    /// `isCancelled` is checked between tiles so a timed-out clue ray-march can stop mid-walk.
     public func sample(
         latitude: Double,
         longitude: Double,
-        maximumHorizontalResolutionMeters: Double = .infinity
+        maximumHorizontalResolutionMeters: Double = .infinity,
+        isCancelled: () -> Bool = { false }
     ) -> Sample? {
         guard latitude.isFinite, longitude.isFinite else { return nil }
+        if isCancelled() { return nil }
         let snapshot: [Tile]
         let ready: Bool
         let needsRefresh: Bool
@@ -144,6 +147,7 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
         var best: Sample?
         var newlyCoarse: [URL] = []
         for tile in snapshot where tile.bounds?.contains(latitude: latitude, longitude: longitude) != false {
+            if isCancelled() { return best }
             let skipCoarse = lock.r2cWithLock { coarseTileURLs.contains(tile.url) }
             if maximumHorizontalResolutionMeters.isFinite, skipCoarse { continue }
             guard let data = loadFileUnlocked(tile.url),
@@ -156,6 +160,7 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
                 }
                 continue
             }
+            if isCancelled() { return best }
             guard let value = sample(tile: tile, data: data, metadata: metadata, latitude: latitude, longitude: longitude),
                   value.isFinite, (-500 ... 10_000).contains(value)
             else { continue }

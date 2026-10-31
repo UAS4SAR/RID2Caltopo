@@ -76,14 +76,20 @@ internal class DemElevationService(context: Context) {
         .build()
 
     /**
+     * One-shot catalog rebuild for clue capture/refine. Never call from RID, map, or video paths.
+     */
+    suspend fun prepareLocalCatalogForClueSampling() = withContext(Dispatchers.IO) {
+        localGeoTiff.ensureCatalogCurrent()
+    }
+
+    /**
      * Local GeoTIFF only. Does not consult EPQS or the point cache. Used by clue ray walks
      * once the aircraft sample is known to be a local raster so out-of-coverage steps end
      * immediately instead of blocking on network elevation lookups.
+     * Does not rescan the DEM directory — call [prepareLocalCatalogForClueSampling] once before a clue walk.
      */
     suspend fun sampleLocalElevationMeters(lat: Double, lng: Double): DemElevationSample? = withContext(Dispatchers.IO) {
         if (!lat.isFinite() || !lng.isFinite()) return@withContext null
-        // Clue ray-march must not miss S1M because the catalog was still cold/stale after TerrainPrefetch.
-        localGeoTiff.ensureCatalogCurrent()
         val localTiff = terrainReads.read { checkCancelled -> localGeoTiff.sample(lat, lng, checkCancelled) }
         if (localTiff != null && localTiff.elevationMeters.isFinite() &&
             localTiff.elevationMeters >= -500.0 && localTiff.elevationMeters <= 10_000.0

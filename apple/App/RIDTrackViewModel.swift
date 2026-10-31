@@ -746,6 +746,11 @@ final class RIDTrackViewModel: ObservableObject {
         await terrainService.sampleLocal(latitude: latitude, longitude: longitude)
     }
 
+    /// One catalog rebuild before a clue form/post-save walk. Never from RID/map/video paths.
+    func prepareLocalCatalogForClueSampling() async {
+        await terrainService.prepareLocalCatalogForClueSampling()
+    }
+
     /// Prefer on-disk S1M for the aircraft sample so off-nadir walks ray-march local tiles, not EPQS.
     func projectClueWithTerrain(
         observation: RidObservation,
@@ -794,6 +799,8 @@ final class RIDTrackViewModel: ObservableObject {
         let terrainService = self.terrainService
         let height = draft.projectionHeightMeters ?? draft.aglMeters ?? draft.atoMeters
         Task.detached(priority: .utility) {
+            await terrainService.prepareLocalCatalogForClueSampling()
+            guard !Task.isCancelled else { return }
             let flat = OperationalClueGeometry.project(
                 droneLatitude: draft.droneLatitude,
                 droneLongitude: draft.droneLongitude,
@@ -842,6 +849,7 @@ final class RIDTrackViewModel: ObservableObject {
     }
 
     /// Best-effort S1M ray-march with a short deadline. Flat only when tiles miss or the walk does not finish in time.
+    /// Caller must have prepared the local catalog when this is a clue form/post-save walk.
     func projectClueWithTerrainBounded(
         observation: RidObservation,
         headingDegrees: Double?,
@@ -850,7 +858,8 @@ final class RIDTrackViewModel: ObservableObject {
         terrainReferenceLatitude: Double? = nil,
         terrainReferenceLongitude: Double? = nil,
         relativeUpMeters: Double? = nil,
-        timeoutMilliseconds: UInt64 = 300
+        timeoutMilliseconds: UInt64 = 300,
+        prepareCatalog: Bool = false
     ) async -> OperationalClueProjection {
         let flat = OperationalClueGeometry.project(
             droneLatitude: observation.latitude,
@@ -861,6 +870,10 @@ final class RIDTrackViewModel: ObservableObject {
             gimbalAngleDegrees: gimbalAngleDegrees
         )
         let terrainService = self.terrainService
+        if prepareCatalog {
+            await terrainService.prepareLocalCatalogForClueSampling()
+            if Task.isCancelled { return flat }
+        }
         // Detached race: MainActor-inherited task groups cannot wake the timeout while work is hopping back.
         return await ClueHardTimeout.race(
             milliseconds: timeoutMilliseconds,
@@ -922,8 +935,15 @@ final class RIDTrackViewModel: ObservableObject {
         } else {
             guard let headingDegrees, headingDegrees.isFinite, let aglMeters, aglMeters.isFinite, aglMeters>=0,
                   let altitude = observation.altitudeMeters, altitude.isFinite else { return nil }
-            let projection = await projectClueWithTerrain(observation: observation, headingDegrees: headingDegrees,
-                aglMeters: aglMeters, gimbalAngleDegrees: tilt)
+            // Live crosshair must not run an unbounded S1M ray-march (38b387bb / ClueHardTimeout orphans).
+            let projection = await projectClueWithTerrainBounded(
+                observation: observation,
+                headingDegrees: headingDegrees,
+                aglMeters: aglMeters,
+                gimbalAngleDegrees: tilt,
+                timeoutMilliseconds: 80,
+                prepareCatalog: false
+            )
             latitude = projection.latitude; longitude = projection.longitude
         }
         guard let terrain = await terrainService.sample(latitude: latitude, longitude: longitude),
@@ -1960,9 +1980,81 @@ final class RIDTrackViewModel: ObservableObject {
     }
 }
 
+/// Counts clue terrain races (including losers still winding down) and main-thread hitches.
+enum ClueTerrainDiagnostics {
+    private final class State: @unchecked Sendable {
+        let lock = NSLock()
+        var activeClueTerrainTasks = 0
+        var mainHitchCount: UInt64 = 0
+        var monitorStarted = false
+    }
+
+    private static let state = State()
+
+    static func beginClueTerrainTask() {
+        state.lock.lock()
+        state.activeClueTerrainTasks += 1
+        state.lock.unlock()
+        startMonitorIfNeeded()
+    }
+
+    static func endClueTerrainTask() {
+        state.lock.lock()
+        state.activeClueTerrainTasks = max(0, state.activeClueTerrainTasks - 1)
+        state.lock.unlock()
+    }
+
+    static func noteMainHitch() {
+        state.lock.lock()
+        state.mainHitchCount &+= 1
+        state.lock.unlock()
+    }
+
+    private static func snapshot() -> (tasks: Int, hitches: UInt64) {
+        state.lock.lock()
+        let value = (state.activeClueTerrainTasks, state.mainHitchCount)
+        state.lock.unlock()
+        return value
+    }
+
+    static func startMonitorIfNeeded() {
+        state.lock.lock()
+        let already = state.monitorStarted
+        if !already { state.monitorStarted = true }
+        state.lock.unlock()
+        guard !already else { return }
+        DispatchQueue.main.async {
+            var lastTick = ProcessInfo.processInfo.systemUptime
+            // ~60 Hz probe on the main run loop; gaps >50 ms count as hitches.
+            let hitchProbe = Timer(timeInterval: 1.0 / 60.0, repeats: true) { _ in
+                let now = ProcessInfo.processInfo.systemUptime
+                if now - lastTick > 0.050 {
+                    noteMainHitch()
+                }
+                lastTick = now
+            }
+            RunLoop.main.add(hitchProbe, forMode: .common)
+            let report = Timer(timeInterval: 30, repeats: true) { _ in
+                let snap = snapshot()
+                AppleLog.info(
+                    "ClueTerrain",
+                    "diag activeClueTerrainTasks=\(snap.tasks) mainHitchCount=\(snap.hitches)"
+                )
+            }
+            RunLoop.main.add(report, forMode: .common)
+            let snap = snapshot()
+            AppleLog.info(
+                "ClueTerrain",
+                "diag activeClueTerrainTasks=\(snap.tasks) mainHitchCount=\(snap.hitches)"
+            )
+        }
+    }
+}
+
 /// Wall-clock timeout race that does not inherit caller actor isolation (see 980e4a00).
 /// Unlike `withTaskGroup` + `cancelAll`, this returns as soon as either side finishes and does
 /// **not** wait for the loser (group exit would otherwise await a cancelled GeoTIFF walk).
+/// Loser work is cancelled at utility priority and must honor Task cancellation in ray-march / GeoTIFF loops.
 enum ClueHardTimeout {
     private final class ResumeGate<T: Sendable>: @unchecked Sendable {
         private let lock = NSLock()
@@ -1998,22 +2090,26 @@ enum ClueHardTimeout {
         operation: @escaping @Sendable () async -> T,
         fallback: T
     ) async -> T {
-        let work = Task.detached(priority: .userInitiated) {
-            await operation()
+        ClueTerrainDiagnostics.startMonitorIfNeeded()
+        // Utility — never compete with live video / UI (userInitiated orphans starved the feed).
+        let work = Task.detached(priority: .utility) {
+            ClueTerrainDiagnostics.beginClueTerrainTask()
+            defer { ClueTerrainDiagnostics.endClueTerrainTask() }
+            return await operation()
         }
-        let timer = Task.detached {
+        let timer = Task.detached(priority: .utility) {
             try await Task.sleep(for: .milliseconds(milliseconds))
         }
         return await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<T, Never>) in
                 let resumeGate = ResumeGate(continuation: continuation, work: work, timer: timer)
-                Task.detached {
+                Task.detached(priority: .utility) {
                     let result = await work.result
                     if case .success(let value) = result {
                         resumeGate.finish(value)
                     }
                 }
-                Task.detached {
+                Task.detached(priority: .utility) {
                     _ = await timer.result
                     resumeGate.finish(fallback)
                 }

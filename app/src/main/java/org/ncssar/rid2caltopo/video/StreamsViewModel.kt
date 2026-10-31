@@ -20,6 +20,7 @@ import org.ncssar.rid2caltopo.video.MapViewportBounds
 import org.ncssar.rid2caltopo.video.StreamFocusArrival
 import org.ncssar.rid2caltopo.video.AndroidClueRecord
 import org.ncssar.rid2caltopo.video.AndroidClueStore
+import org.ncssar.rid2caltopo.video.ClueTerrainDiagnostics
 import org.ncssar.rid2caltopo.video.folderHiddenAfterDefault
 import org.ncssar.rid2caltopo.video.MapFolderVisibilityController
 import org.ncssar.rid2caltopo.video.MapFolderVisibilityPreferences
@@ -1399,7 +1400,25 @@ class StreamsViewModel(
             if (display == null || display.positionStale || display.aglStatus != org.ncssar.rid2caltopo.video.surface.MeasurementStatus.Available) return null
             val agl = display.aglFt?.takeIf { it.isFinite() && it >= 0 }?.div(METERS_TO_FEET) ?: return null
             val altitude = spec.lastAlt.takeIf { it.isFinite() && it > -999 } ?: return null
-            projectClueLocationWithDem(altitudeCoordinator.demElevationService, latitude, longitude, altitude, bearing, agl, tilt)
+            // Live crosshair must not run an unbounded S1M ray-march (38b387bb).
+            withTimeoutOrNull(80L) {
+                projectClueLocationWithDem(
+                    altitudeCoordinator.demElevationService,
+                    latitude,
+                    longitude,
+                    altitude,
+                    bearing,
+                    agl,
+                    tilt,
+                )
+            } ?: projectClueLocation(
+                droneLat = latitude,
+                droneLng = longitude,
+                droneAlt = altitude,
+                headingDeg = bearing,
+                aglMeters = agl,
+                gimbalAngleDeg = tilt,
+            )
         }
         val terrain = altitudeCoordinator.demElevationService.sampleElevationMeters(projected.lat, projected.lng) ?: return null
         if (!terrain.elevationMeters.isFinite() || System.currentTimeMillis() - spec.mostRecentMsecTimestamp !in 0..4999) return null
@@ -3635,46 +3654,55 @@ class StreamsViewModel(
         val snapshotGimbal = clue.gimbalAngleDeg
         val snapshotHeading = clue.headingDeg
         clueProjectionJob = viewModelScope.launch(Dispatchers.Default) {
-            val dem = altitudeCoordinator.demElevationService
-            // Form path is local S1M only with hard timeouts. EPQS belongs in post-save refine.
-            val localOnly: suspend (Double, Double) -> org.ncssar.rid2caltopo.video.mapcache.DemElevationSample? =
-                { lat, lng -> dem.sampleLocalElevationMeters(lat, lng) }
-            val quickTimeout = bindTimeoutMs ?: CLUE_BIND_TERRAIN_TIMEOUT_MS
-            val quick = withTimeoutOrNull(quickTimeout) {
-                refineCapturedClueTerrain(
-                    clue,
-                    sampleElevation = localOnly,
-                    sampleLocalElevation = localOnly,
-                )
-            }
-            if (quick != null && quick.terrainProjectionApplied) {
+            ClueTerrainDiagnostics.beginClueTerrainTask()
+            try {
+                val dem = altitudeCoordinator.demElevationService
+                // One catalog rebuild for this form walk — never per ray-march step.
+                dem.prepareLocalCatalogForClueSampling()
+                ensureActive()
+                // Form path is local S1M only with hard timeouts. EPQS belongs in post-save refine.
+                val localOnly: suspend (Double, Double) -> org.ncssar.rid2caltopo.video.mapcache.DemElevationSample? =
+                    { lat, lng -> dem.sampleLocalElevationMeters(lat, lng) }
+                val quickTimeout = bindTimeoutMs ?: CLUE_BIND_TERRAIN_TIMEOUT_MS
+                val quick = withTimeoutOrNull(quickTimeout) {
+                    refineCapturedClueTerrain(
+                        clue,
+                        sampleElevation = localOnly,
+                        sampleLocalElevation = localOnly,
+                    )
+                }
+                if (quick != null && quick.terrainProjectionApplied) {
+                    applyPendingClueTerrainRefine(
+                        designator = designator,
+                        original = clue,
+                        refined = quick,
+                        snapshotGimbal = snapshotGimbal,
+                        snapshotHeading = snapshotHeading,
+                        stage = "bind-${quickTimeout}ms",
+                    )
+                }
+                ensureActive()
+                // Longer local-only pass still hard-capped; Submit never waits on this job.
+                val refined = withTimeoutOrNull(CLUE_FORM_TERRAIN_TIMEOUT_MS) {
+                    refineCapturedClueTerrain(
+                        clue = _pendingClue.value?.takeIf {
+                            it.designator == clue.designator && it.timestamp == clue.timestamp
+                        } ?: clue,
+                        sampleElevation = localOnly,
+                        sampleLocalElevation = localOnly,
+                    )
+                } ?: return@launch
                 applyPendingClueTerrainRefine(
                     designator = designator,
                     original = clue,
-                    refined = quick,
+                    refined = refined,
                     snapshotGimbal = snapshotGimbal,
                     snapshotHeading = snapshotHeading,
-                    stage = "bind-${quickTimeout}ms",
+                    stage = "async",
                 )
+            } finally {
+                ClueTerrainDiagnostics.endClueTerrainTask()
             }
-            // Longer local-only pass still hard-capped; Submit never waits on this job.
-            val refined = withTimeoutOrNull(CLUE_FORM_TERRAIN_TIMEOUT_MS) {
-                refineCapturedClueTerrain(
-                    clue = _pendingClue.value?.takeIf {
-                        it.designator == clue.designator && it.timestamp == clue.timestamp
-                    } ?: clue,
-                    sampleElevation = localOnly,
-                    sampleLocalElevation = localOnly,
-                )
-            } ?: return@launch
-            applyPendingClueTerrainRefine(
-                designator = designator,
-                original = clue,
-                refined = refined,
-                snapshotGimbal = snapshotGimbal,
-                snapshotHeading = snapshotHeading,
-                stage = "async",
-            )
         }
     }
 
@@ -3748,65 +3776,72 @@ class StreamsViewModel(
         publishToCaltopo: Boolean,
     ) {
         viewModelScope.launch(Dispatchers.Default) {
-            val dem = altitudeCoordinator.demElevationService
-            val refined = withTimeoutOrNull(CLUE_POST_SAVE_TERRAIN_TIMEOUT_MS) {
-                refineCapturedClueTerrain(
-                    clue,
-                    sampleElevation = { lat, lng -> dem.sampleLocalElevationMeters(lat, lng) },
-                    sampleLocalElevation = { lat, lng -> dem.sampleLocalElevationMeters(lat, lng) },
-                )
-            } ?: run {
+            ClueTerrainDiagnostics.beginClueTerrainTask()
+            try {
+                val dem = altitudeCoordinator.demElevationService
+                dem.prepareLocalCatalogForClueSampling()
+                ensureActive()
+                val refined = withTimeoutOrNull(CLUE_POST_SAVE_TERRAIN_TIMEOUT_MS) {
+                    refineCapturedClueTerrain(
+                        clue,
+                        sampleElevation = { lat, lng -> dem.sampleLocalElevationMeters(lat, lng) },
+                        sampleLocalElevation = { lat, lng -> dem.sampleLocalElevationMeters(lat, lng) },
+                    )
+                } ?: run {
+                    android.util.Log.i(
+                        tag,
+                        "Clue terrain refine timed out stage=post-save id=${record.id} timeoutMs=$CLUE_POST_SAVE_TERRAIN_TIMEOUT_MS",
+                    )
+                    return@launch
+                }
                 android.util.Log.i(
                     tag,
-                    "Clue terrain refine timed out stage=post-save id=${record.id} timeoutMs=$CLUE_POST_SAVE_TERRAIN_TIMEOUT_MS",
+                    clueProjectionMethodLogLine(
+                        clueLat = refined.lat,
+                        clueLng = refined.lng,
+                        droneLat = refined.droneLat,
+                        droneLng = refined.droneLng,
+                        gimbalPitchDeg = refined.gimbalAngleDeg,
+                        gimbalYawDeg = refined.headingDeg,
+                        terrainProjectionApplied = refined.terrainProjectionApplied,
+                        demSource = refined.demSource,
+                    ) + " stage=post-save id=${record.id}"
                 )
-                return@launch
-            }
-            android.util.Log.i(
-                tag,
-                clueProjectionMethodLogLine(
-                    clueLat = refined.lat,
-                    clueLng = refined.lng,
-                    droneLat = refined.droneLat,
-                    droneLng = refined.droneLng,
-                    gimbalPitchDeg = refined.gimbalAngleDeg,
-                    gimbalYawDeg = refined.headingDeg,
-                    terrainProjectionApplied = refined.terrainProjectionApplied,
+                if (!refined.terrainProjectionApplied) return@launch
+                val moved = cluePositionMoved(record.lat, record.lng, refined.lat, refined.lng)
+                val updatedDescription = applyingTerrainProjectionDescription(
+                    description = record.description,
                     demSource = refined.demSource,
-                ) + " stage=post-save id=${record.id}"
-            )
-            if (!refined.terrainProjectionApplied) return@launch
-            val moved = cluePositionMoved(record.lat, record.lng, refined.lat, refined.lng)
-            val updatedDescription = applyingTerrainProjectionDescription(
-                description = record.description,
-                demSource = refined.demSource,
-                demResolutionMeters = refined.demResolutionMeters,
-                demSampleStale = refined.demSampleStale,
-            )
-            val updated = record.copy(
-                lat = refined.lat,
-                lng = refined.lng,
-                alt = refined.alt,
-                description = updatedDescription,
-            )
-            clueStorage {
-                clueDiskMutex.withLock { localClueStore.update(listOf(updated)) }
-            }.onSuccess {
-                withContext(Dispatchers.Main) {
-                    localClueRecordsById[updated.id] = updated
-                    val index = localMapMarkers.indexOfFirst { it.id == updated.id }
-                    if (index >= 0) localMapMarkers[index] = updated.toLocalMapMarker()
-                }
-                android.util.Log.i(
-                    tag,
-                    "Clue terrain refine applied id=${updated.id} lat=${updated.lat} lng=${updated.lng} " +
-                        "previousLat=${record.lat} previousLng=${record.lng} demSource=${refined.demSource ?: "none"} moved=$moved"
+                    demResolutionMeters = refined.demResolutionMeters,
+                    demSampleStale = refined.demSampleStale,
                 )
-                if (moved && publishToCaltopo) {
-                    editPublishedClueMarkerPosition(updated)
+                val updated = record.copy(
+                    lat = refined.lat,
+                    lng = refined.lng,
+                    alt = refined.alt,
+                    description = updatedDescription,
+                )
+                clueStorage {
+                    clueDiskMutex.withLock { localClueStore.update(listOf(updated)) }
+                }.onSuccess {
+                    withContext(Dispatchers.Main) {
+                        localClueRecordsById[updated.id] = updated
+                        val index = localMapMarkers.indexOfFirst { it.id == updated.id }
+                        if (index >= 0) localMapMarkers[index] = updated.toLocalMapMarker()
+                    }
+                    android.util.Log.i(
+                        tag,
+                        "Clue terrain refine applied id=${updated.id} lat=${updated.lat} lng=${updated.lng} " +
+                            "previousLat=${record.lat} previousLng=${record.lng} demSource=${refined.demSource ?: "none"} moved=$moved"
+                    )
+                    if (moved && publishToCaltopo) {
+                        editPublishedClueMarkerPosition(updated)
+                    }
+                }.onFailure { error ->
+                    CTError(tag, "Clue terrain refine could not update local record id=${record.id}", Exception(error))
                 }
-            }.onFailure { error ->
-                CTError(tag, "Clue terrain refine could not update local record id=${record.id}", Exception(error))
+            } finally {
+                ClueTerrainDiagnostics.endClueTerrainTask()
             }
         }
     }
