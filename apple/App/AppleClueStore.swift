@@ -141,9 +141,16 @@ final class AppleClueStore: ObservableObject {
     func resumePendingUploads(generation: Int) async {
         await initialLoad?.value
         guard generation == configurationGeneration else { return }
-        // Publish connected-map clues before awaiting-map binding. A journal failure must not pause them.
-        records.filter { $0.uploadState == .pending || $0.uploadState == .failed || $0.uploadState == .uploading }
-            .forEach { enqueueUpload($0.id) }
+        // Reconcile before enqueue so a prior client timeout that still landed on CalTopo
+        // clears "1 clue pending" without risking a duplicate feature.
+        let pendingIDs = records
+            .filter { $0.uploadState == .pending || $0.uploadState == .failed || $0.uploadState == .uploading }
+            .map(\.id)
+        for id in pendingIDs {
+            guard generation == configurationGeneration else { return }
+            if await reconcileUploadedClue(id: id) { continue }
+            enqueueUpload(id)
+        }
         let decisions: [AwaitingMapFlight]
         do {
             decisions = try await disk.run {
@@ -589,7 +596,13 @@ final class AppleClueStore: ObservableObject {
                         "Clue",
                         "Clue upload start id=\(id) attempt=\(attempt) mapId=\(self.mapID) teamId=\(destinationTeamID)"
                     )
-                    // Folder resolve + media POST must not hang forever without a terminal log.
+                    // Before a retry, reconcile: a prior timed-out POST may already be on the map.
+                    if attempt > 1, await self.reconcileUploadedClue(id: id) {
+                        terminalReason = "reconciled"
+                        break
+                    }
+                    // Per-request timeout is 15s; multi-step clue publish gets a 45s attempt budget.
+                    let attemptBudgetSeconds: Double = 45
                     let markerID: String = try await {
                         try await withThrowingTaskGroup(of: String.self) { group in
                             group.addTask {
@@ -610,7 +623,7 @@ final class AppleClueStore: ObservableObject {
                             }
                             group.addTask {
                                 await Task.detached {
-                                    try? await Task.sleep(for: .seconds(90))
+                                    try? await Task.sleep(for: .seconds(attemptBudgetSeconds))
                                 }.value
                                 throw ClueUploadAttemptTimeout()
                             }
@@ -638,16 +651,20 @@ final class AppleClueStore: ObservableObject {
                     break
                 } catch is ClueUploadAttemptTimeout {
                     let attempts = self.records.first(where: { $0.id == id })?.uploadAttempts ?? 1
+                    if await self.reconcileUploadedClue(id: id) {
+                        terminalReason = "reconciled-after-timeout"
+                        break
+                    }
                     self.mutate(id) { value in
                         value.uploadState = .failed
-                        value.lastUploadError = "Upload timed out after 90s; will retry."
+                        value.lastUploadError = "Upload timed out after 45s; will retry."
                     }
                     try? await self.persistIndex()
                     self.updateStatus()
                     let delay = min(60.0, 2.0 * pow(2.0, Double(max(attempts - 1, 0))))
                     AppleLog.warning(
                         "Clue",
-                        "Clue upload failed id=\(id) attempt=\(attempts) retry=\(Int(delay))s error=timeout-90s"
+                        "Clue upload failed id=\(id) attempt=\(attempts) retry=\(Int(delay))s error=timeout-45s"
                     )
                     terminalReason = "timeout-retrying"
                     try? await Task.sleep(for: .seconds(delay))
@@ -667,21 +684,38 @@ final class AppleClueStore: ObservableObject {
                         break
                     }
                     let attempts = self.records.first(where: { $0.id == id })?.uploadAttempts ?? 1
+                    if case let CaltopoLiveClientError.httpStatus(code, message) = error,
+                       ClueTrackDurabilityIntegrity.isClientFailureNeedingReconcile(statusCode: code) {
+                        AppleLog.warning(
+                            "Clue",
+                            "Clue upload failed id=\(id) attempt=\(attempts) reason=http-\(code) error=\(message)"
+                        )
+                        if await self.reconcileUploadedClue(id: id) {
+                            terminalReason = "reconciled-after-http-\(code)"
+                            break
+                        }
+                        // Keep durable and retry — never "permanent" until reconcile proves presence.
+                        self.mutate(id) { value in
+                            value.uploadState = .failed
+                            value.lastUploadError = message
+                        }
+                        try? await self.persistIndex()
+                        self.updateStatus()
+                        let delay = min(60.0, 2.0 * pow(2.0, Double(max(attempts - 1, 0))))
+                        AppleLog.warning(
+                            "Clue",
+                            "Clue upload failed id=\(id) attempt=\(attempts) retry=\(Int(delay))s error=\(message)"
+                        )
+                        terminalReason = "failed-retrying"
+                        try? await Task.sleep(for: .seconds(delay))
+                        continue
+                    }
                     self.mutate(id) { value in
                         value.uploadState = .failed
                         value.lastUploadError = error.localizedDescription
                     }
                     try? await self.persistIndex()
                     self.updateStatus()
-                    if case let CaltopoLiveClientError.httpStatus(code, _) = error,
-                       ClueTrackDurabilityIntegrity.isPermanentClientFailure(statusCode: code) {
-                        AppleLog.warning(
-                            "Clue",
-                            "Clue upload failed id=\(id) attempt=\(attempts) reason=permanent-http-\(code) error=\(error.localizedDescription)"
-                        )
-                        terminalReason = "permanent-failure"
-                        break
-                    }
                     let delay = min(60.0, 2.0 * pow(2.0, Double(max(attempts - 1, 0))))
                     AppleLog.warning(
                         "Clue",
@@ -697,6 +731,36 @@ final class AppleClueStore: ObservableObject {
             if generation == self.configurationGeneration {
                 self.uploadTasks.removeValue(forKey: id)
             }
+        }
+    }
+
+    /// Returns true when the clue Marker (stable client UUID) is already on the connected map.
+    @discardableResult
+    private func reconcileUploadedClue(id: UUID) async -> Bool {
+        guard let client, let record = records.first(where: { $0.id == id }) else { return false }
+        do {
+            guard let featureID = try await client.reconcilePhotoClue(
+                markerID: id,
+                mediaID: record.caltopoMediaID
+            ) else { return false }
+            mutate(id) { value in
+                value.uploadState = .published
+                value.caltopoMarkerID = featureID
+                value.lastUploadError = nil
+            }
+            try? await persistIndex()
+            updateStatus()
+            AppleLog.info(
+                "Clue",
+                "Clue upload reconciled id=\(id) featureId=\(featureID)"
+            )
+            return true
+        } catch {
+            AppleLog.warning(
+                "Clue",
+                "Clue upload reconcile failed id=\(id) error=\(error.localizedDescription)"
+            )
+            return false
         }
     }
 

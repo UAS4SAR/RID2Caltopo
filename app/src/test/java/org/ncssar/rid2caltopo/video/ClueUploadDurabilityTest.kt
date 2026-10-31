@@ -46,17 +46,24 @@ class ClueUploadDurabilityTest {
     }
 
     @Test
-    fun permanent4xxKeepsFailedRecordAndNeverDeletes() {
+    fun client4xxKeepsDurableRetryableRecordAndNeverDeletes() {
         val root = temporaryFolder.newFolder("clue-4xx")
         val store = AndroidClueStore.forDirectory(root)
         val record = clueRecord("b", "map:alpha")
         store.saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
-        store.recordUploadResult(record.id, false, "Forbidden", terminal = true)
+        // 4xx alone is not permanent; keep retryable until reconcile proves presence.
+        store.recordUploadResult(record.id, false, "Forbidden", terminal = false)
         val kept = store.record(record.id)!!
-        assertEquals("failed", kept.uploadState)
+        assertEquals("pending", kept.uploadState)
         assertEquals("Forbidden", kept.lastUploadError)
-        assertTrue(store.pendingForMap("alpha", "team-a").isEmpty())
+        assertEquals(listOf(record.id), store.pendingForMap("alpha", "team-a").map { it.id })
         assertEquals(listOf(record.id), store.unpublishedForMap("alpha", "team-a").map { it.id })
+        assertTrue(File(root, record.imageFilename).isFile)
+
+        store.recordUploadResult(record.id, false, "Forbidden", terminal = true)
+        val failed = store.record(record.id)!!
+        assertEquals("failed", failed.uploadState)
+        assertEquals(listOf(record.id), store.pendingForMap("alpha", "team-a").map { it.id })
         assertTrue(File(root, record.imageFilename).isFile)
     }
 

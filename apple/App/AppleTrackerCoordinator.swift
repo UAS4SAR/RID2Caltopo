@@ -1978,12 +1978,13 @@ final class AppleTrackerCoordinator: ObservableObject {
                 } else {
                     source = self.managedVideoSourcesBySessionID[sessionID]
                 }
-                guard let snapshot = try? await source?.captureSnapshot() else { return }
-                let thumbnail = await Task.detached(priority: .utility) { Self.catalogThumbnailJPEG(snapshot.jpegData) }.value
+                // Encode a small catalog JPEG off Main — never full clue-quality captureSnapshot.
+                guard let jpeg = await source?.captureCatalogThumbnail(),
+                      !jpeg.isEmpty,
+                      jpeg.count <= 256 * 1024
+                else { return }
                 guard !Task.isCancelled,
                       self.managedVideoThumbnailAttempts[sessionID] == attemptID,
-                      let jpeg = thumbnail,
-                      jpeg.count <= 256 * 1024,
                       let index = self.managedVideoStreams.firstIndex(where: {
                           $0.sessionId == sessionID
                       })
@@ -2075,28 +2076,6 @@ final class AppleTrackerCoordinator: ObservableObject {
 
     func setManagedVideoThumbnailUpdatedHandler(_ handler: ((String) -> Void)?) {
         managedVideoThumbnailUpdatedHandler = handler
-    }
-
-    private nonisolated static func catalogThumbnailJPEG(_ source: Data) -> Data? {
-        guard let image = UIImage(data: source) else { return nil }
-        let size = CGSize(width: 320, height: 180)
-        let renderer = UIGraphicsImageRenderer(size: size)
-        let rendered = renderer.image { _ in
-            UIColor.black.setFill()
-            UIRectFill(CGRect(origin: .zero, size: size))
-            let scale = min(size.width / image.size.width, size.height / image.size.height)
-            let drawn = CGSize(
-                width: image.size.width * scale,
-                height: image.size.height * scale
-            )
-            image.draw(in: CGRect(
-                x: (size.width - drawn.width) / 2,
-                y: (size.height - drawn.height) / 2,
-                width: drawn.width,
-                height: drawn.height
-            ))
-        }
-        return rendered.jpegData(compressionQuality: 0.72)
     }
 
     private func scheduleSourceEndAfterRecoveryGrace(sessionID: String) {

@@ -318,8 +318,16 @@ public class CaltopoSession {
         }
     }
 
+    /** Truncated, secret-scrubbed body for diagnosis. Never logs activation codes or signing keys. */
     private static String SafeResponseText(@Nullable String response) {
-        return response == null ? "" : response;
+        if (response == null || response.isEmpty()) return "";
+        String text = response.replaceAll("\\s+", " ").trim();
+        text = text.replaceAll("(?i)(signature=)[^&\\s\"]+", "$1[redacted]");
+        text = text.replaceAll("(?i)(\"(?:signature|secret|activation(?:Code)?|credentialSecret)\"\\s*:\\s*\")[^\"]*", "$1[redacted]\"");
+        text = text.replaceAll("(?i)(activation(?:Code)?=)[^&\\s\"]+", "$1[redacted]");
+        text = text.replaceAll("(?i)(session=)[^;\\s\"]+", "$1[redacted]");
+        if (text.length() > 300) text = text.substring(0, 300) + "…";
+        return text;
     }
 
     private static String ExceptionMessage(@NonNull Exception e) {
@@ -1686,6 +1694,50 @@ public class CaltopoSession {
         return outer;
     }
 
+    /**
+     * Returns success when Marker/{markerId} (stable client clue UUID) already exists on the map.
+     * Used after timeouts / 4xx so a prior client-lost success clears pending without duplicating.
+     */
+    public static CaltopoOp ReconcileStoredPhoto(String mapId, String teamId, String markerId,
+            String linkId, Consumer<CaltopoOp> done) {
+        CTDebug(TAG, "ReconcileStoredPhoto() start mapId='" + mapId + "' teamId='" + teamId +
+                "' markerId='" + markerId + "'");
+        CaltopoOp outer = new CaltopoOp(done);
+        final CaltopoPersonalSession.Authorization personal = CaltopoPersonalSession.capture("");
+        SubmitPhotoRequest(outer, () -> {
+            try {
+                CaltopoOp marker = PhotoOp(personal, teamId, CtsMethod_t.GET,
+                        CALTOPO_MAP_API_V1 + mapId + "/Marker/" + markerId, null, false, new int[] {400, 404});
+                if (marker.success()) {
+                    outer.responseCode = 200;
+                    outer.response = "reconciled-marker";
+                    CTInfo(TAG, "Clue upload reconciled id=" + markerId + " featureId=" + markerId);
+                    outer.setOperationIsDone(true);
+                    return outer;
+                }
+                if (linkId != null && !linkId.isEmpty()) {
+                    CaltopoOp link = PhotoOp(personal, teamId, CtsMethod_t.GET,
+                            CALTOPO_MAP_API_V1 + mapId + "/MapMediaObject/" + linkId, null, false, new int[] {400, 404});
+                    if (link.success()) {
+                        outer.responseCode = 200;
+                        outer.response = "reconciled-link";
+                        CTInfo(TAG, "Clue upload reconciled id=" + markerId + " featureId=" + markerId);
+                        outer.setOperationIsDone(true);
+                        return outer;
+                    }
+                }
+                outer.responseCode = marker.responseCode;
+                outer.response = SafeResponseText(marker.response);
+                outer.setOperationIsDone(false);
+            } catch (Exception error) {
+                outer.response = error.getMessage();
+                outer.setOperationIsDone(false);
+            }
+            return outer;
+        });
+        return outer;
+    }
+
     public static CaltopoOp PublishStoredPhoto(String mapId, String teamId, String markerId,
             double lat, double lng, String title, String description, String folderId,
             long createdAt, byte[] jpeg, Consumer<CaltopoOp> done) {
@@ -1724,7 +1776,8 @@ public class CaltopoSession {
                 JSONObject geometry = new JSONObject().put("type", "Point").put("coordinates", new JSONArray().put(lng).put(lat));
                 JSONObject props = new JSONObject().put("class", "Marker").put("title", title)
                     .put("description", description).put("created", createdAt).put("folderId", folderId)
-                    .put("marker-symbol", "Drone").put("marker-color", "#FF0000");
+                    .put("marker-symbol", "Drone").put("marker-color", "#FF0000")
+                    .put("r2c-clue-id", markerId);
                 JSONObject marker = new JSONObject().put("id", markerId).put("type", "Feature").put("geometry", geometry).put("properties", props);
                 result = PhotoOp(personal, teamId, CtsMethod_t.POST, CALTOPO_MAP_API_V1 + mapId + "/Marker/" + markerId, marker, false);
                 boolean markerPresent = result.success();
@@ -1738,6 +1791,9 @@ public class CaltopoSession {
                     if (existingMarker.success()) {
                         markerPresent = true;
                         result = existingMarker;
+                    } else if (result.responseCode >= 400 && result.responseCode < 500) {
+                        CTWarn(TAG, "PublishStoredPhoto() marker HTTP " + result.responseCode +
+                                " body=" + SafeResponseText(result.response));
                     }
                 }
                 boolean mediaReady = false;
@@ -1756,15 +1812,35 @@ public class CaltopoSession {
                 if (result.success() && !mediaReady) result = PhotoOp(personal, teamId, CtsMethod_t.POST, CALTOPO_MEDIA_API_V1 + mediaId + "/data",
                     new JSONObject().put("creator", mediaOwner).put("data", android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP)), false);
                 if (result.success()) {
-                    JSONObject linkProps = new JSONObject().put("class", "MapMediaObject").put("title", title)
-                        .put("description", description).put("parentId", "Marker:" + markerId).put("backendMediaId", mediaId)
-                        .put("created", createdAt).put("marker-symbol", "aperture");
-                    result = PhotoOp(personal, teamId, CtsMethod_t.POST, CALTOPO_MAP_API_V1 + mapId + "/MapMediaObject/" + linkId,
-                        new JSONObject().put("id", linkId).put("type", "Feature").put("geometry", geometry).put("properties", linkProps), false);
+                    // Idempotent link: probe first so a prior success that timed out client-side does not 400.
+                    CaltopoOp existingLink = PhotoOp(personal, teamId, CtsMethod_t.GET,
+                            CALTOPO_MAP_API_V1 + mapId + "/MapMediaObject/" + linkId,
+                            null, false, new int[] {400, 404});
+                    if (existingLink.success()) {
+                        result = existingLink;
+                    } else {
+                        JSONObject linkProps = new JSONObject().put("class", "MapMediaObject").put("title", title)
+                            .put("description", description).put("parentId", "Marker:" + markerId).put("backendMediaId", mediaId)
+                            .put("created", createdAt).put("marker-symbol", "aperture");
+                        result = PhotoOp(personal, teamId, CtsMethod_t.POST, CALTOPO_MAP_API_V1 + mapId + "/MapMediaObject/" + linkId,
+                            new JSONObject().put("id", linkId).put("type", "Feature").put("geometry", geometry).put("properties", linkProps), false);
+                        if (!result.success()) {
+                            CTWarn(TAG, "PublishStoredPhoto() MapMediaObject POST code=" + result.responseCode +
+                                    " body=" + SafeResponseText(result.response));
+                            CaltopoOp recoveredLink = PhotoOp(personal, teamId, CtsMethod_t.GET,
+                                    CALTOPO_MAP_API_V1 + mapId + "/MapMediaObject/" + linkId,
+                                    null, false, new int[] {400, 404});
+                            if (recoveredLink.success()) result = recoveredLink;
+                        }
+                    }
                 }
                 outer.responseCode = result.responseCode;
                 String loginExpired = CluePublicationAuth.loginExpiredMessage(result.responseCode);
                 outer.response = loginExpired != null ? loginExpired : result.response;
+                if (!result.success() && result.responseCode >= 400 && result.responseCode < 500) {
+                    CTWarn(TAG, "PublishStoredPhoto() HTTP " + result.responseCode +
+                            " body=" + SafeResponseText(result.response));
+                }
                 CTDebug(TAG, "PublishStoredPhoto() result markerId='" + markerId + "' success=" +
                         result.success() + " code=" + result.responseCode);
                 outer.setOperationIsDone(result.success());

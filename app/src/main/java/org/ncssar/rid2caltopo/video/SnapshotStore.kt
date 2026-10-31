@@ -277,9 +277,12 @@ class AndroidClueStore private constructor(
     fun pendingForMap(mapId: String, teamId: String): List<AndroidClueRecord> {
         ensureLoaded()
         return synchronized(this) {
-            storedRecords.values.filter { it.publishToCaltopo && it.uploadState == "pending" &&
-                mapId.isNotBlank() && teamId.isNotBlank() && it.mapKey == "map:$mapId" &&
-                org.ncssar.rid2caltopo.data.CluePublicationIdentity.sameTeam(it.destinationTeamId, teamId) }
+            storedRecords.values.filter {
+                it.publishToCaltopo &&
+                    (it.uploadState == "pending" || it.uploadState == "failed" || it.uploadState == "uploading") &&
+                    mapId.isNotBlank() && teamId.isNotBlank() && it.mapKey == "map:$mapId" &&
+                    org.ncssar.rid2caltopo.data.CluePublicationIdentity.sameTeam(it.destinationTeamId, teamId)
+            }
         }
     }
 

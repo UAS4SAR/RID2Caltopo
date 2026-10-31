@@ -208,13 +208,21 @@ class AndroidClueStoreTest {
     }
 
     @Test
-    fun legacyRecordsAndPermanentFailuresAreNeverBlindlyReplayed() {
+    fun legacyRecordsStayOutOfQueueAndFailedStayDurableForReconcileRetry() {
         val store = AndroidClueStore.forDirectory(temporaryFolder.newFolder("legacy"))
         val old = clueRecord("old", "map:alpha").copy(destinationTeamId="team-a")
         store.saveEncoded(old, byteArrayOf(1), byteArrayOf(2))
+        // Legacy uploadState is not pending/failed/uploading.
         assertTrue(store.pendingForMap("alpha", "team-a").isEmpty())
-        store.recordUploadResult(old.id, false, "Forbidden", terminal=true)
-        assertTrue(store.pendingForMap("alpha", "team-a").isEmpty())
+        val pending = clueRecord("retryable", "map:alpha").copy(
+            destinationTeamId = "team-a",
+            uploadState = "pending",
+        )
+        store.saveEncoded(pending, byteArrayOf(1), byteArrayOf(2))
+        store.recordUploadResult(pending.id, false, "Forbidden", terminal = true)
+        // Failed remains retryable until map reconciliation proves presence.
+        assertEquals(listOf(pending.id), store.pendingForMap("alpha", "team-a").map { it.id })
+        assertEquals("failed", store.record(pending.id)!!.uploadState)
     }
 
     @Test

@@ -547,6 +547,8 @@ public actor CaltopoLiveClient {
         if let id = configuration.personalSessionID {
             try await CaltopoPersonalSessions.shared.authorizeMedia(id, mediaID: clue.mediaID)
         }
+        let markerID = clue.markerID.uuidString.lowercased()
+        let mediaID = clue.mediaID.uuidString.lowercased()
         // Clue media must not share startLane: 502 retries would HOL-block LiveTrack create/points.
         func acknowledged(_ request: URLRequest) async throws -> Data {
             let data = try await perform(request, lane: clueLane)
@@ -560,8 +562,7 @@ public actor CaltopoLiveClient {
         } catch let markerPostError {
             // Prior attempt may have created the Marker then failed media. Attach to it.
             do {
-                _ = try await acknowledged(makeMarkerSnapshotRequest(
-                    markerID: clue.markerID.uuidString.lowercased(), now: now))
+                _ = try await acknowledged(makeMarkerSnapshotRequest(markerID: markerID, now: now))
             } catch {
                 throw markerPostError
             }
@@ -584,8 +585,83 @@ public actor CaltopoLiveClient {
         }
         if !mediaExists { _ = try await acknowledged(requests[1]) }
         if !mediaReady { _ = try await acknowledged(requests[2]) }
-        _ = try await acknowledged(requests[3])
-        return clue.markerID.uuidString.lowercased()
+        // MapMediaObject POST is not always idempotent; probe / recover so retries do not 400.
+        var linkPresent = false
+        do {
+            let data = try await perform(
+                makeMapMediaObjectSnapshotRequest(mediaID: mediaID, now: now),
+                lane: clueLane
+            )
+            if let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+               envelope["status"] as? String == "ok", envelope["error"] == nil {
+                linkPresent = true
+            }
+        } catch CaltopoLiveClientError.httpStatus(let code, _) where code == 400 || code == 404 {
+            linkPresent = false
+        }
+        if !linkPresent {
+            do {
+                _ = try await acknowledged(requests[3])
+            } catch let linkError {
+                do {
+                    let data = try await perform(
+                        makeMapMediaObjectSnapshotRequest(mediaID: mediaID, now: now),
+                        lane: clueLane
+                    )
+                    guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          envelope["status"] as? String == "ok", envelope["error"] == nil
+                    else { throw linkError }
+                } catch {
+                    throw linkError
+                }
+            }
+        }
+        return markerID
+    }
+
+    /// Cheap presence check: Marker with the stable client clue id already on the map.
+    public func reconcilePhotoClue(
+        markerID: UUID,
+        mediaID: UUID,
+        now: Date = Date()
+    ) async throws -> String? {
+        let featureID = markerID.uuidString.lowercased()
+        do {
+            _ = try await perform(
+                makeMarkerSnapshotRequest(markerID: featureID, now: now),
+                lane: clueLane
+            )
+            return featureID
+        } catch CaltopoLiveClientError.httpStatus(let code, _) where code == 400 || code == 404 {
+            // Fall through to a signed map features scan for older markers / UUID casing.
+        }
+        let snapshot = try await fetchMapArtifacts(now: now, refresh: true)
+        let needle = featureID
+        let clueTag = markerID.uuidString.uppercased()
+        if snapshot.items.contains(where: {
+            $0.className == "Marker" && $0.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle
+        }) {
+            return featureID
+        }
+        if snapshot.points.contains(where: { point in
+            let id = point.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if id == needle { return true }
+            let description = point.description ?? ""
+            return description.localizedCaseInsensitiveContains(clueTag)
+                || description.localizedCaseInsensitiveContains("r2c-clue-id:\(needle)")
+        }) {
+            return featureID
+        }
+        // Photo may exist under MapMediaObject even if Marker GET is weirdly gated.
+        do {
+            _ = try await perform(
+                makeMapMediaObjectSnapshotRequest(mediaID: mediaID.uuidString.lowercased(), now: now),
+                lane: clueLane
+            )
+            return featureID
+        } catch CaltopoLiveClientError.httpStatus(let code, _) where code == 400 || code == 404 {
+            return nil
+        }
     }
 
     public func publishDeviceMarker(
@@ -681,6 +757,13 @@ public actor CaltopoLiveClient {
         try makeSignedGetRequest(path: "/api/v1/map/\(configuration.mapID)/Marker/\(markerID)", now: now)
     }
 
+    func makeMapMediaObjectSnapshotRequest(mediaID: String, now: Date) throws -> URLRequest {
+        try makeSignedGetRequest(
+            path: "/api/v1/map/\(configuration.mapID)/MapMediaObject/\(mediaID)",
+            now: now
+        )
+    }
+
     private func makeSignedGetRequest(path: String, now: Date) throws -> URLRequest {
         guard let url = httpsURL(path: path), var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         else { throw CaltopoLiveClientError.invalidURL }
@@ -722,6 +805,8 @@ public actor CaltopoLiveClient {
             "marker-symbol": "Drone",
             "marker-size": "1",
             "marker-visibility": "visible",
+            // Stable client id for retry reconciliation (same Feature id as the path).
+            "r2c-clue-id": markerID,
         ]
         if let folderID = clue.folderID?.trimmingCharacters(in: .whitespacesAndNewlines),
            !folderID.isEmpty {
@@ -1141,15 +1226,40 @@ public actor CaltopoLiveClient {
         guard (200 ..< 300).contains(httpResponse.statusCode)
                 || acceptedStatusCodes.contains(httpResponse.statusCode)
         else {
-            throw CaltopoLiveClientError.httpStatus(
-                httpResponse.statusCode,
-                CaltopoServerAvailability.message(
-                    status: httpResponse.statusCode,
-                    personal: configuration.authorizesAsPersonalAccount,
-                    timedOut: false)
-            )
+            let base = CaltopoServerAvailability.message(
+                status: httpResponse.statusCode,
+                personal: configuration.authorizesAsPersonalAccount,
+                timedOut: false)
+            let preview = Self.responseBodyPreview(data)
+            let detail = preview.isEmpty ? base : "\(base) body=\(preview)"
+            throw CaltopoLiveClientError.httpStatus(httpResponse.statusCode, detail)
         }
         return data
+    }
+
+    /// Truncated, secret-scrubbed body for 4xx/5xx diagnosis. Never logs activation codes or signing keys.
+    static func responseBodyPreview(_ data: Data, limit: Int = 300) -> String {
+        guard !data.isEmpty else { return "" }
+        var text = String(decoding: data, as: UTF8.self)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let redactions: [(String, String)] = [
+            (#"(?i)(signature=)[^&\s"]+"#, "$1[redacted]"),
+            (#"(?i)("(?:signature|secret|activation(?:Code)?|credentialSecret)"\s*:\s*")[^"]*"#, "$1[redacted]\""),
+            (#"(?i)(activation(?:Code)?=)[^&\s"]+"#, "$1[redacted]"),
+            (#"(?i)(session=)[^;\s"]+"#, "$1[redacted]"),
+        ]
+        for (pattern, template) in redactions {
+            text = text.replacingOccurrences(
+                of: pattern,
+                with: template,
+                options: .regularExpression
+            )
+        }
+        if text.count > limit {
+            return String(text.prefix(limit)) + "…"
+        }
+        return text
     }
 
     private func httpsURL(path: String) -> URL? {

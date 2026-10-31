@@ -43,13 +43,13 @@ import Testing
     }
 
     @Test func networkFailuresKeepPendingOrFailedDisposition() {
-        #expect(ClueTrackDurabilityIntegrity.isPermanentClientFailure(statusCode: 400))
-        #expect(ClueTrackDurabilityIntegrity.isPermanentClientFailure(statusCode: 404))
-        #expect(!ClueTrackDurabilityIntegrity.isPermanentClientFailure(statusCode: 502))
-        #expect(!ClueTrackDurabilityIntegrity.isPermanentClientFailure(statusCode: 503))
+        #expect(ClueTrackDurabilityIntegrity.isClientFailureNeedingReconcile(statusCode: 400))
+        #expect(ClueTrackDurabilityIntegrity.isClientFailureNeedingReconcile(statusCode: 404))
+        #expect(!ClueTrackDurabilityIntegrity.isClientFailureNeedingReconcile(statusCode: 502))
+        #expect(!ClueTrackDurabilityIntegrity.isClientFailureNeedingReconcile(statusCode: 503))
         #expect(ClueTrackDurabilityIntegrity.isMediaAbsentProbe(statusCode: 400))
         #expect(ClueTrackDurabilityIntegrity.isMediaAbsentProbe(statusCode: 404))
-        // Store-level permanent stop must not fire for media-absent probes (handled in publishPhotoClue).
+        // 4xx requires map reconciliation; durable pending/failed IDs still resume.
         let pending = sampleRecord(imageFilename: "day/a.jpg", uploadState: .pending)
         let failed = sampleRecord(imageFilename: "day/b.jpg", uploadState: .failed)
         let published = sampleRecord(imageFilename: "day/c.jpg", uploadState: .published)

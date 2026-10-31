@@ -3289,18 +3289,43 @@ class StreamsViewModel(
             tag,
             "Clue upload start id=${record.id} attempt=$attempt mapId=$mapId teamId=$teamId",
         )
-        val outcome = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
         try {
+            // Startup and retries: a prior client timeout may already have landed the Marker.
+            if (reconcilePendingClue(mapId, teamId, record)) {
+                endClueUpload(record.id)
+                clueUploadBackoff.reset(record.id)
+                return
+            }
+            val outcome = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
             org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
                 mapId, teamId, record.id, record.lat, record.lng, record.title,
                 record.publishedDescription, folder, record.createdAtMs,
                 localClueStore.imageFile(record).readBytes(),
             ) { result -> outcome.complete(result) }
             val result = outcome.await()
-            val permanent = result.responseCode in listOf(400, 401, 403, 404, 413, 422)
+            if (!result.success() &&
+                result.responseCode in listOf(400, 401, 403, 404, 413, 422)
+            ) {
+                android.util.Log.w(
+                    tag,
+                    "Clue upload failed id=${record.id} attempt=$attempt reason=http-${result.responseCode} " +
+                        "error=${result.responseString().take(300)}",
+                )
+                if (reconcilePendingClue(mapId, teamId, record)) {
+                    endClueUpload(record.id)
+                    clueUploadBackoff.reset(record.id)
+                    return
+                }
+            }
+            // Never terminal on 4xx alone — only reconcile-proven presence clears pending.
             clueStorage {
                 clueDiskMutex.withLock {
-                    localClueStore.recordUploadResult(record.id, result.success(), result.responseString(), permanent)
+                    localClueStore.recordUploadResult(
+                        record.id,
+                        result.success(),
+                        result.responseString(),
+                        terminal = false,
+                    )
                 }
             }.onSuccess {
                 hydrateLocalClues(currentLocalClueMapKey())
@@ -3343,6 +3368,37 @@ class StreamsViewModel(
                 android.os.SystemClock.elapsedRealtime() + delayMs,
             )
         }
+    }
+
+    private suspend fun reconcilePendingClue(
+        mapId: String,
+        teamId: String,
+        record: AndroidClueRecord,
+    ): Boolean {
+        val linkId = java.util.UUID.nameUUIDFromBytes(
+            (record.id + ":link").toByteArray(Charsets.UTF_8),
+        ).toString()
+        val outcome = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
+        org.ncssar.rid2caltopo.data.CaltopoSession.ReconcileStoredPhoto(
+            mapId,
+            teamId,
+            record.id,
+            linkId,
+        ) { result -> outcome.complete(result) }
+        val result = outcome.await()
+        if (!result.success()) return false
+        clueStorage {
+            clueDiskMutex.withLock {
+                localClueStore.recordUploadResult(record.id, true, "", terminal = false)
+            }
+        }.onSuccess {
+            hydrateLocalClues(currentLocalClueMapKey())
+        }
+        android.util.Log.i(
+            tag,
+            "Clue upload reconciled id=${record.id} featureId=${record.id}",
+        )
+        return true
     }
 
     /** Opens the Drone Confirmation Panel for a drone (set by the activity). */

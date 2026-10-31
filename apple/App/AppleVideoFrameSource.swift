@@ -1754,6 +1754,35 @@ final class AppleVideoFrameSource: ObservableObject {
         )
     }
 
+    /// Small catalog/LiveTrack preview JPEG. Encodes off Main at thumbnail size —
+    /// never use clue-quality full-frame encode for the refresh loop.
+    func captureCatalogThumbnail(maxEdge: Int = 320, quality: Double = 0.72) async -> Data? {
+        guard let latestPixelBuffer else { return nil }
+        let width = CVPixelBufferGetWidth(latestPixelBuffer)
+        let height = CVPixelBufferGetHeight(latestPixelBuffer)
+        let transfer = PixelBufferTransfer(value: latestPixelBuffer)
+        let encodeStarted = Date()
+        do {
+            let data = try await Task.detached(priority: .utility) {
+                try Self.encodeJPEG(
+                    pixelBuffer: transfer.value,
+                    width: width,
+                    height: height,
+                    viewport: OperationalVideoViewport(scale: 1, normalizedPanX: 0, normalizedPanY: 0),
+                    quality: quality,
+                    maxEdge: maxEdge
+                )
+            }.value
+            AppleLog.debug(
+                "TrackerPeer",
+                "Managed video thumbnail encode elapsedMs=\(Int(Date().timeIntervalSince(encodeStarted) * 1_000)) bytes=\(data.count) src=\(width)x\(height)"
+            )
+            return data
+        } catch {
+            return nil
+        }
+    }
+
     private nonisolated static func encodeJPEG(
         pixelBuffer: CVPixelBuffer,
         width: Int,

@@ -56,6 +56,9 @@ class PublishStoredPhotoMediaProbeTest {
                     op.url == "/api/v1/media/$mediaId" -> complete(op, 200, true, okBody)
                 op.method == CaltopoSession.CtsMethod_t.POST &&
                     op.url == "/api/v1/media/$mediaId/data" -> complete(op, 200, true, okBody)
+                op.method == CaltopoSession.CtsMethod_t.GET &&
+                    op.url == "/api/v1/map/MAP01/MapMediaObject/$linkId" ->
+                    complete(op, 404, false, "absent")
                 op.method == CaltopoSession.CtsMethod_t.POST &&
                     op.url == "/api/v1/map/MAP01/MapMediaObject/$linkId" -> complete(op, 200, true, okBody)
                 else -> error("Unexpected PhotoOp $key")
@@ -76,6 +79,7 @@ class PublishStoredPhotoMediaProbeTest {
                 "GET /api/v1/media/$mediaId",
                 "POST /api/v1/media/$mediaId",
                 "POST /api/v1/media/$mediaId/data",
+                "GET /api/v1/map/MAP01/MapMediaObject/$linkId",
                 "POST /api/v1/map/MAP01/MapMediaObject/$linkId",
             ),
             calls.toList(),
@@ -106,6 +110,9 @@ class PublishStoredPhotoMediaProbeTest {
                     op.url == "/api/v1/media/$mediaId" -> complete(op, 200, true, okBody)
                 op.method == CaltopoSession.CtsMethod_t.POST &&
                     op.url == "/api/v1/media/$mediaId/data" -> complete(op, 200, true, okBody)
+                op.method == CaltopoSession.CtsMethod_t.GET &&
+                    op.url == "/api/v1/map/MAP01/MapMediaObject/$linkId" ->
+                    complete(op, 404, false, "absent")
                 op.method == CaltopoSession.CtsMethod_t.POST &&
                     op.url == "/api/v1/map/MAP01/MapMediaObject/$linkId" -> complete(op, 200, true, okBody)
                 else -> error("Unexpected PhotoOp $key")
@@ -121,6 +128,7 @@ class PublishStoredPhotoMediaProbeTest {
         assertTrue(calls[0].startsWith("POST /api/v1/map/MAP01/Marker/"))
         assertTrue(calls[1].startsWith("GET /api/v1/map/MAP01/Marker/"))
         assertTrue(calls.any { it == "POST /api/v1/media/$mediaId/data" })
+        assertTrue(calls.any { it == "GET /api/v1/map/MAP01/MapMediaObject/$linkId" })
         assertTrue(calls.last().startsWith("POST /api/v1/map/MAP01/MapMediaObject/"))
     }
 

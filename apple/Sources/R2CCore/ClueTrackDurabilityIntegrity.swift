@@ -38,9 +38,15 @@ public enum ClueTrackDurabilityIntegrity {
         pendingUploadIDs(in: records).count
     }
 
-    /// Permanent 4xx from CalTopo stops retries but must keep the record as failed.
-    public static func isPermanentClientFailure(statusCode: Int) -> Bool {
+    /// HTTP 4xx that historically looked "permanent". Callers must reconcile map state
+    /// before treating a clue as done; never drop durable retry solely on these codes.
+    public static func isClientFailureNeedingReconcile(statusCode: Int) -> Bool {
         [400, 401, 403, 404, 413, 422].contains(statusCode)
+    }
+
+    @available(*, deprecated, renamed: "isClientFailureNeedingReconcile")
+    public static func isPermanentClientFailure(statusCode: Int) -> Bool {
+        isClientFailureNeedingReconcile(statusCode: statusCode)
     }
 
     /// Media probe 400/404 means absent, not a store-level permanent stop.

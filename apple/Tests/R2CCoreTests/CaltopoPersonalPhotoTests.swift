@@ -11,6 +11,7 @@ private final class PhotoTransport: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) private static var mediaReady = false
     nonisolated(unsafe) private static var mediaAbsentStatus = 404
     nonisolated(unsafe) private static var markerExists = false
+    nonisolated(unsafe) private static var linkExists = false
     nonisolated(unsafe) private static var rejectMarkerPost = false
     static func reset(
         mediaAbsentStatus: Int = 404,
@@ -23,6 +24,7 @@ private final class PhotoTransport: URLProtocol, @unchecked Sendable {
         Self.failNextData = failNextData
         mediaExists = false
         mediaReady = false
+        linkExists = false
         Self.mediaAbsentStatus = mediaAbsentStatus
         Self.rejectMarkerPost = rejectMarkerPost
         Self.markerExists = markerExists
@@ -38,20 +40,24 @@ private final class PhotoTransport: URLProtocol, @unchecked Sendable {
         let fail = path.hasSuffix("/data") && Self.failNextData
         if method == "POST" && path.hasPrefix("/api/v1/media/") && !path.hasSuffix("/data") { Self.mediaExists = true }
         if method == "POST" && path.contains("/Marker/") && !Self.rejectMarkerPost { Self.markerExists = true }
+        if method == "POST" && path.contains("/MapMediaObject/") { Self.linkExists = true }
         if fail { Self.failNextData = false; Self.mediaReady = true }
         let exists = Self.mediaExists, ready = Self.mediaReady
         let absent = Self.mediaAbsentStatus
         let markerPresent = Self.markerExists
+        let linkPresent = Self.linkExists
         let rejectMarker = Self.rejectMarkerPost
         Self.lock.unlock()
         if fail { client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost)); return }
         let mediaRead = method == "GET" && path.hasPrefix("/api/v1/media/")
         let markerRead = method == "GET" && path.contains("/Marker/")
+        let linkRead = method == "GET" && path.contains("/MapMediaObject/")
         let markerPost = method == "POST" && path.contains("/Marker/")
         let code: Int
         if markerPost && rejectMarker { code = 400 }
         else if mediaRead && !exists { code = absent }
         else if markerRead && !markerPresent { code = 404 }
+        else if linkRead && !linkPresent { code = 404 }
         else { code = 200 }
         let body: [String: Any]
         if mediaRead && exists {
@@ -112,12 +118,15 @@ final class CaltopoPersonalPhotoTests: XCTestCase {
         let result = try await client.publishPhotoClue(clue)
         XCTAssertEqual(result, clue.markerID.uuidString.lowercased())
         let (paths, _) = PhotoTransport.snapshot()
+        let media = clue.mediaID.uuidString.lowercased()
+        let marker = clue.markerID.uuidString.lowercased()
         XCTAssertEqual(paths, [
-            "/api/v1/map/ABC123/Marker/" + clue.markerID.uuidString.lowercased(),
-            "/api/v1/media/" + clue.mediaID.uuidString.lowercased(),
-            "/api/v1/media/" + clue.mediaID.uuidString.lowercased(),
-            "/api/v1/media/" + clue.mediaID.uuidString.lowercased() + "/data",
-            "/api/v1/map/ABC123/MapMediaObject/" + clue.mediaID.uuidString.lowercased(),
+            "/api/v1/map/ABC123/Marker/" + marker,
+            "/api/v1/media/" + media,
+            "/api/v1/media/" + media,
+            "/api/v1/media/" + media + "/data",
+            "/api/v1/map/ABC123/MapMediaObject/" + media,
+            "/api/v1/map/ABC123/MapMediaObject/" + media,
         ])
         await CaltopoPersonalSessions.shared.clear()
     }
@@ -133,13 +142,16 @@ final class CaltopoPersonalPhotoTests: XCTestCase {
         let result = try await client.publishPhotoClue(clue)
         XCTAssertEqual(result, clue.markerID.uuidString.lowercased())
         let (paths, _) = PhotoTransport.snapshot()
+        let media = clue.mediaID.uuidString.lowercased()
+        let marker = clue.markerID.uuidString.lowercased()
         XCTAssertEqual(paths, [
-            "/api/v1/map/ABC123/Marker/" + clue.markerID.uuidString.lowercased(),
-            "/api/v1/map/ABC123/Marker/" + clue.markerID.uuidString.lowercased(),
-            "/api/v1/media/" + clue.mediaID.uuidString.lowercased(),
-            "/api/v1/media/" + clue.mediaID.uuidString.lowercased(),
-            "/api/v1/media/" + clue.mediaID.uuidString.lowercased() + "/data",
-            "/api/v1/map/ABC123/MapMediaObject/" + clue.mediaID.uuidString.lowercased(),
+            "/api/v1/map/ABC123/Marker/" + marker,
+            "/api/v1/map/ABC123/Marker/" + marker,
+            "/api/v1/media/" + media,
+            "/api/v1/media/" + media,
+            "/api/v1/media/" + media + "/data",
+            "/api/v1/map/ABC123/MapMediaObject/" + media,
+            "/api/v1/map/ABC123/MapMediaObject/" + media,
         ])
         await CaltopoPersonalSessions.shared.clear()
     }
