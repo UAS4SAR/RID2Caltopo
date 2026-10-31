@@ -136,7 +136,12 @@ final class AppleAnomalyProcessor: @unchecked Sendable {
     }
 
     deinit {
-        R2CAnomalyDestroy(runtime)
+        // Drain the process queue before freeing the C runtime — submit/configure/reset
+        // may still be inside R2CAnomalyProcessBGRA on that queue.
+        queue.sync {
+            R2CAnomalyDestroy(runtime)
+            runtime = nil
+        }
     }
 
     func submit(
@@ -740,15 +745,20 @@ final class AppleVideoFrameSource: ObservableObject {
         guard hadLiveFeed else { return }
         displayLink?.invalidate()
         displayLink = nil
-        displayFeed.stop()
-        installBackgroundFrameTimer()
+        // Live native: keep NativeDisplayFeed pops off-main (980e4a00). Only layer
+        // presentation is suspended. File/AVPlayer still needs a main timer.
+        if let ffmpegSession, currentURL?.isFileURL != true {
+            displayFeed.start(session: ffmpegSession)
+        } else {
+            displayFeed.stop()
+            installBackgroundFrameTimer()
+        }
         AppleLog.info("Video", "Display locked or app in background; frame pull continues, rendering paused path=\(currentPath ?? "unknown")")
     }
 
     @objc private func applicationWillEnterForeground() {
         guard renderingSuspended else { return }
         renderingSuspended = false
-        guard backgroundFrameTimer != nil else { return }
         backgroundFrameTimer?.invalidate()
         backgroundFrameTimer = nil
         installDisplayLink()
@@ -758,7 +768,7 @@ final class AppleVideoFrameSource: ObservableObject {
     private func installBackgroundFrameTimer() {
         backgroundFrameTimer?.invalidate()
         let timer = Timer(timeInterval: Self.backgroundFramePullInterval, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
+            Task { @MainActor in
                 self?.pullFrame(hostTime: CACurrentMediaTime())
             }
         }
@@ -1143,11 +1153,17 @@ final class AppleVideoFrameSource: ObservableObject {
     private func installDisplayLink() {
         displayLink?.invalidate()
         displayLink = nil
-        displayFeed.stop()
         if renderingSuspended {
-            installBackgroundFrameTimer()
+            // Prefer off-main feed for live native; main timer only for file/AVPlayer.
+            if let ffmpegSession, currentURL?.isFileURL != true {
+                displayFeed.start(session: ffmpegSession)
+            } else {
+                displayFeed.stop()
+                installBackgroundFrameTimer()
+            }
             return
         }
+        displayFeed.stop()
         // Live native: pop/decode-feed off main. File/AVPlayer keeps CADisplayLink.
         if let ffmpegSession, currentURL?.isFileURL != true {
             displayFeed.start(session: ffmpegSession)

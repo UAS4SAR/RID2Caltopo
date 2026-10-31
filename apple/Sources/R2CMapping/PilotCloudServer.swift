@@ -29,7 +29,17 @@ public final class PilotCloudServer:@unchecked Sendable {
         url="http://\(host):\(UInt16(bigEndian:address.sin_port))";platform.base=url;platform.token=token;platform.mqttUser="R2C-"+missionID.prefix(8);platform.mqttPassword=try pilotRandom()
     }
     public func start(){lock.lock();defer{lock.unlock()};guard !started,!closed else{return};started=true
-        let timer=DispatchSource.makeTimerSource(queue:DispatchQueue.global(qos:.utility));self.timer=timer;timer.schedule(deadline:.now()+30,repeating:30);timer.setEventHandler{[weak self] in self?.keepalive()};timer.resume()
+        // Form the timer handler on the utility queue so a MainActor caller cannot
+        // inherit isolation into setEventHandler (980e4a00 class).
+        let timerQueue=DispatchQueue.global(qos:.utility)
+        timerQueue.async{[self] in
+            let timer=DispatchSource.makeTimerSource(queue:timerQueue)
+            let handler:@Sendable ()->Void={[weak self] in self?.keepalive()}
+            timer.schedule(deadline:.now()+30,repeating:30)
+            timer.setEventHandler(handler:handler)
+            self.lock.lock();if self.closed{self.lock.unlock();timer.cancel();return};self.timer=timer;self.lock.unlock()
+            timer.resume()
+        }
         DispatchQueue.global(qos:.utility).async{[self] in
             while active {
                 let fd=accept(listener,nil,nil);if fd<0{break};let peer=PilotPeer(fd)

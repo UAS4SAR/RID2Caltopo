@@ -72,6 +72,8 @@ actor MediaMTXMobileController: MediaServerController {
 
     func stop() async {
         guard running else { return }
+        // Close the log pipe first so forwardLogLines exits, then clear the callback
+        // before releasing the Unmanaged retain (callback invokes retain themselves).
         R2CMediaMTXStop()
         R2CMediaMTXSetLogCallback(nil, 0)
         retainedSelf?.release()
@@ -132,12 +134,15 @@ private func mediaMTXSwiftLogCallback(
     line: UnsafePointer<CChar>?
 ) {
     guard context != 0, let line, let pointer = UnsafeRawPointer(bitPattern: context) else { return }
-    let controller = Unmanaged<MediaMTXMobileController>
-        .fromOpaque(pointer)
-        .takeUnretainedValue()
+    // Retain across the hop: stop() may release the start-time retain while this
+    // callback is still between Go's unlocked invoke and the actor Task.
+    let unmanaged = Unmanaged<MediaMTXMobileController>.fromOpaque(pointer)
+    unmanaged.retain()
+    let controller = unmanaged.takeUnretainedValue()
     let logLine = String(cString: line)
     Task {
         await controller.receive(logLine: logLine)
+        unmanaged.release()
     }
 }
 

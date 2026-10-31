@@ -1326,6 +1326,12 @@ final class RIDTrackViewModel: ObservableObject {
         thumbnailMetadataRefreshTasks.removeAll()
         peerCoordinator?.setManagedVideoThumbnailUpdatedHandler(nil)
 
+        // Flush awaiting-map / waypoint journals before tearing down CalTopo so a
+        // quit mid-write cannot lose the durable checkpoint recovery needs.
+        let journalFlushes = Array(awaitingFlightWrites.values)
+        awaitingFlightWrites.removeAll()
+        for task in journalFlushes { await task.value }
+
         // Drop the CalTopo map first (finish owned LiveTracks, then close the client).
         await configureCaltopoAwaiting(
             AppleCaltopoConfiguration(
