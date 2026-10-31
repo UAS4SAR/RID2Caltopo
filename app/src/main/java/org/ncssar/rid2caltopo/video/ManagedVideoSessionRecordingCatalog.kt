@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import android.os.Looper
 import android.util.Base64
 import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
@@ -19,6 +20,12 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.ThreadFactory
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicInteger
 
 data class ManagedVideoSessionRecording(
     val sessionId: String,
@@ -46,12 +53,24 @@ object ManagedVideoSessionRecordingCatalog {
     private const val ROOT_NAME = "managed-video-session-recordings"
     private const val MAX_ARCHIVE_RECOVERY_RECORDINGS = 4
     private const val MIN_FREE_SPACE_AFTER_RECOVERY_BYTES = 256L * 1024L * 1024L
+    /** Incomplete MediaMTX files can hang the retriever; one bad file must not stall archive/track work. */
+    internal const val METADATA_SCAN_TIMEOUT_MS = 2_000L
     internal const val TRACK_ASSOCIATION_GRACE_MS = 30_000L
     private var initializedIncidentKey = ""
     private var recoveredArchiveKey = ""
     private val recordingMetadataCache = mutableMapOf<String, CachedRecordingMetadata>()
     private data class PublishedCatalog(val incidentKey: String, val recordings: List<ManagedVideoSessionRecording>)
     @Volatile private var publishedCatalog = PublishedCatalog("", emptyList())
+
+    private val metadataScanThreads = AtomicInteger()
+    private val MetadataScanExecutor = Executors.newFixedThreadPool(
+        2,
+        ThreadFactory { runnable ->
+            Thread(runnable, "RecordingCatalogMetadata-${metadataScanThreads.incrementAndGet()}").apply {
+                isDaemon = true
+            }
+        },
+    )
 
     /** UI callbacks only read the bounded, immutable inventory already advertised to peers. */
     internal fun cachedSnapshot(incidentKey: String): List<ManagedVideoSessionRecording> {
@@ -83,26 +102,36 @@ object ManagedVideoSessionRecordingCatalog {
         val recording: ManagedVideoSessionRecording?,
     )
 
+    private data class PendingMetadataScan(
+        val file: File,
+        val fingerprint: RecordingFingerprint,
+    )
+
     internal data class RecordingFingerprint(
         val length: Long,
         val lastModified: Long,
     )
 
-    @Synchronized
     fun initialize(context: Context) {
+        synchronized(this) { initializeLocked(context) }
+    }
+
+    private fun initializeLocked(context: Context) {
         val incidentKey = currentIncidentKey()
         if (initializedIncidentKey == incidentKey) return
         activeRoot(context, incidentKey).mkdirs()
         initializedIncidentKey = incidentKey
     }
 
-    @Synchronized
+    /**
+     * Copy under no catalog lock so a hung metadata scan cannot stall retain,
+     * and retain cannot stall cache apply. Only initialization mutates under the lock.
+     */
     fun retain(
         context: Context,
         mergedFile: File,
         streamPath: String,
     ): File? {
-        initialize(context)
         if (!mergedFile.isFile || mergedFile.length() <= 0L) return null
         val safePath = streamPath
             .substringAfterLast('/')
@@ -113,7 +142,10 @@ object ManagedVideoSessionRecordingCatalog {
             streamPath.substringAfterLast('/'),
         )
             ?: sessionIdForPath("$safePath/${mergedFile.name}")
-        val destination = File(activeRoot(context), "${safePath}__${sessionId}__${mergedFile.name}")
+        val destination = synchronized(this) {
+            initializeLocked(context)
+            File(activeRoot(context), "${safePath}__${sessionId}__${mergedFile.name}")
+        }
         val temporary = File(destination.parentFile, ".${destination.name}.tmp")
         return try {
             mergedFile.copyTo(temporary, overwrite = true)
@@ -133,29 +165,57 @@ object ManagedVideoSessionRecordingCatalog {
         }
     }
 
-    @Synchronized
+    /**
+     * Snapshot file list + cache hits under the catalog lock, parse metadata unlocked
+     * (with a per-file timeout), then publish under the lock. Never runs on Main.
+     */
     fun snapshot(context: Context): List<ManagedVideoSessionRecording> {
+        checkOffMain()
         val incidentKey = currentIncidentKey()
-        initialize(context)
-        val files = activeRoot(context, incidentKey)
-            .walkTopDown()
-            .filter { it.isFile && it.extension.equals("mp4", ignoreCase = true) }
-            .toList()
-        val currentPaths = files.mapTo(mutableSetOf()) { it.absolutePath }
-        recordingMetadataCache.keys.retainAll(currentPaths)
-        val recordings = files
-            .asSequence()
-            .mapNotNull(::readRecordingCached)
-            .sortedByDescending { it.recordedAt }
-            .take(20)
-            .toList()
-        // Never publish a scan of the previous incident after a map/incident switch.
-        if (incidentKey != currentIncidentKey()) return emptyList()
-        publishedCatalog = PublishedCatalog(incidentKey, recordings)
-        return recordings
+        val pendingScans = mutableListOf<PendingMetadataScan>()
+        val cachedHits = mutableListOf<ManagedVideoSessionRecording>()
+        synchronized(this) {
+            initializeLocked(context)
+            val files = activeRoot(context, incidentKey)
+                .walkTopDown()
+                .filter { it.isFile && it.extension.equals("mp4", ignoreCase = true) }
+                .toList()
+            val currentPaths = files.mapTo(mutableSetOf()) { it.absolutePath }
+            recordingMetadataCache.keys.retainAll(currentPaths)
+            for (file in files) {
+                val fingerprint = RecordingFingerprint(
+                    length = file.length(),
+                    lastModified = file.lastModified(),
+                )
+                val cached = recordingMetadataCache[file.absolutePath]
+                    ?.takeIf { it.fingerprint == fingerprint }
+                if (cached != null) {
+                    cached.recording?.let(cachedHits::add)
+                } else {
+                    pendingScans.add(PendingMetadataScan(file, fingerprint))
+                }
+            }
+        }
+        val scanned = pendingScans.map { pending ->
+            val recording = readRecordingWithTimeout(pending.file)
+                ?.copy(byteCount = pending.fingerprint.length)
+            pending to recording
+        }
+        return synchronized(this) {
+            for ((pending, recording) in scanned) {
+                recordingMetadataCache[pending.file.absolutePath] =
+                    CachedRecordingMetadata(pending.fingerprint, recording)
+            }
+            // Never publish a scan of the previous incident after a map/incident switch.
+            if (incidentKey != currentIncidentKey()) return emptyList()
+            val recordings = (cachedHits + scanned.mapNotNull { it.second })
+                .sortedByDescending { it.recordedAt }
+                .take(20)
+            publishedCatalog = PublishedCatalog(incidentKey, recordings)
+            recordings
+        }
     }
 
-    @Synchronized
     fun find(context: Context, sessionId: String): ManagedVideoSessionRecording? =
         snapshot(context).firstOrNull { it.sessionId == sessionId }
 
@@ -369,6 +429,36 @@ object ManagedVideoSessionRecordingCatalog {
         recording.byteCount,
     )
 
+    private fun checkOffMain() {
+        check(Looper.myLooper() != Looper.getMainLooper()) {
+            "Recording catalog metadata scan must run off the main thread"
+        }
+    }
+
+    /**
+     * Bound MediaMetadataRetriever / MediaExtractor work so one incomplete MediaMTX
+     * file cannot stall retain, archive, or track association. Timed-out workers may
+     * remain busy in native code; the pool is small and daemon-backed.
+     */
+    private fun readRecordingWithTimeout(file: File): ManagedVideoSessionRecording? {
+        val future: Future<ManagedVideoSessionRecording?> =
+            MetadataScanExecutor.submit<ManagedVideoSessionRecording?> { readRecording(file) }
+        return try {
+            future.get(METADATA_SCAN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        } catch (_: TimeoutException) {
+            future.cancel(true)
+            CaltopoClient.CTWarn(
+                TAG,
+                "Timed out inspecting ${file.name} after ${METADATA_SCAN_TIMEOUT_MS}ms; skipping until fingerprint changes",
+            )
+            null
+        } catch (error: Exception) {
+            future.cancel(true)
+            CaltopoClient.CTWarn(TAG, "Unable to inspect ${file.name}: ${error.message}")
+            null
+        }
+    }
+
     private fun readRecording(file: File): ManagedVideoSessionRecording? {
         val retriever = MediaMetadataRetriever()
         return try {
@@ -436,21 +526,11 @@ object ManagedVideoSessionRecordingCatalog {
             CaltopoClient.CTWarn(TAG, "Unable to inspect ${file.name}: ${error.message}")
             null
         } finally {
-            retriever.release()
-        }
-    }
-
-    private fun readRecordingCached(file: File): ManagedVideoSessionRecording? {
-        val path = file.absolutePath
-        val fingerprint = RecordingFingerprint(
-            length = file.length(),
-            lastModified = file.lastModified(),
-        )
-        recordingMetadataCache[path]
-            ?.takeIf { it.fingerprint == fingerprint }
-            ?.let { return it.recording }
-        return readRecording(file)?.copy(byteCount = fingerprint.length).also { recording ->
-            recordingMetadataCache[path] = CachedRecordingMetadata(fingerprint, recording)
+            try {
+                retriever.release()
+            } catch (_: Exception) {
+                // Native release can throw on incomplete MediaMTX files; ignore.
+            }
         }
     }
 

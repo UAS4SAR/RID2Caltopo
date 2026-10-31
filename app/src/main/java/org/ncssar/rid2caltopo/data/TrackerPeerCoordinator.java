@@ -2006,9 +2006,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
     private void uploadRecordingDownloadNow(@NonNull RecordingDownloadRequest request) {
         final String origin = trackerHttpOrigin;
         final String token = trackerApiKey;
-        ManagedVideoSessionRecording recording = ManagedVideoSessionRecordingCatalog.INSTANCE.find(
-                R2CApplication.getAppCtxt(), request.streamSessionId);
-        if (origin == null || token == null || recording == null) {
+        if (origin == null || token == null) {
             approvedRecordingUploads.remove(request.requestId);
             CTWarn(TAG, "Unable to attach requested recording " + request.streamSessionId);
             return;
@@ -2016,7 +2014,15 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         RemoteMediaConsent.Grant grant = mediaConsent.find(
                 "recording|" + request.requestId, request.streamSessionId + "|" + request.uploadPath);
         if (grant == null || !grant.isAllowed()) return;
+        // Catalog MediaMetadataRetriever scan must stay off Main (and off the catalog lock).
         recordingUploadExecutor.execute(() -> {
+            ManagedVideoSessionRecording recording = ManagedVideoSessionRecordingCatalog.INSTANCE.find(
+                    R2CApplication.getAppCtxt(), request.streamSessionId);
+            if (recording == null) {
+                approvedRecordingUploads.remove(request.requestId);
+                CTWarn(TAG, "Unable to attach requested recording " + request.streamSessionId);
+                return;
+            }
             final long total = recording.getFile().length();
             final long chunkSize = 8L * 1024L * 1024L;
             try {

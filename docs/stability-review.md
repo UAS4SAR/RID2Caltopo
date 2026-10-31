@@ -157,6 +157,30 @@ Additional P0/P1 items from the [Android crash/deadlock audit](d7ce8ee2-d32e-486
 | **Severity** | Hang |
 | **Change** | Metadata-only allowance for app-private writes; bind clues / `queueCompleted` outside the AwaitingMap monitor. |
 
+### 18. Android — Recording catalog `MediaMetadataRetriever` under catalog lock
+| | |
+|---|---|
+| **Where** | `ManagedVideoSessionRecordingCatalog.snapshot` / `readRecording`; `TrackerPeerCoordinator.uploadRecordingDownloadNow` |
+| **Severity** | Hang (retain / presence / deferred video link / archive association) |
+| **Why** | `@Synchronized snapshot` walked every mp4 and called `MediaMetadataRetriever` / `MediaExtractor` under the catalog monitor. Incomplete MediaMTX files can stall the retriever; `retain` and other callers blocked on the same monitor. |
+| **Change** | Snapshot file list + cache hits under the lock; parse metadata unlocked with a 2s per-file timeout on a small daemon pool; apply cache/publish under the lock. `retain` copies off the lock. Scan asserts off Main; recording upload `find` moved onto `recordingUploadExecutor`. |
+
+### 19. iOS — `AppleFlightStorage.maintain` directory walks blocked saves
+| | |
+|---|---|
+| **Where** | `AppleFlightStorage.maintain` / `prepareWrite`; `AppleClueStore` save |
+| **Severity** | Hang (clue save / recording finalize / Manage Storage / quit) |
+| **Why** | `maintain` held `NSRecursiveLock` across directory enumeration, `clues.json` reads, deletes, and ledger rebuild. `prepareWrite` ran that inline on the caller’s path (including clue disk work). |
+| **Change** | Walks/purge run only on the `flight-storage-demand` queue via nonisolated trampolines (no MainActor isolation inheritance). Locks cover in-memory state only. Maintain is incremental and cancellable via `cancelPendingMaintenance`. Clue saves use `prepareAppPrivateWrite` (Android parity — never waits on walks). After cancel/quit, `prepareWrite` also refuses to block. |
+
+### 20. iOS — Quit MediaMTX recording drain unbounded
+| | |
+|---|---|
+| **Where** | `MediaMTXViewModel.shutdown`; `ContentView` fullCleanup |
+| **Severity** | Hang / abandoned normalize on quit |
+| **Why** | Quit cancelled the event loop immediately, abandoning in-flight localize/normalize, or could wait without a bound while durable work still contended with Flight Storage walks. |
+| **Change** | Full cleanup cancels Flight Storage maintenance first, finishes durable track/clue shutdown, then MediaMTX: stop native server → drain finalizers with a 5s hard timeout → cancel event loop → discard remaining tokens. Unfinished recordings stay on disk for next-launch recovery. |
+
 ---
 
 ## Open risks (deliberately left)
@@ -164,13 +188,11 @@ Additional P0/P1 items from the [Android crash/deadlock audit](d7ce8ee2-d32e-486
 1. **Interrupted journal cold-start read under `LOCK`** — first `mutableRootLocked()` may still read disk once under the monitor.
 2. **`group.next()!` timeout helpers** — safe while both tasks are added first.
 3. **`RIDTrackMapView` clearance `Timer` + `assumeIsolated`** — fires on `RunLoop.main`.
-4. **Recording catalog `MediaMetadataRetriever` under catalog lock** — incomplete MediaMTX files can stall retain; bound/timeout left for a dedicated change.
-5. **`AppleFlightStorage.maintain` lock across directory walks** — still can stall `prepareWrite` under storage pressure; clue path now uses `prepareAppPrivateWrite`.
-6. **Quit MediaMTX event drain** — recording normalize may still be cut short on kill; journals are awaited.
-7. **Mapping / surface `!!`** — not clue/track critical path.
-8. **Bluetooth LE `onScanResult` on binder** — bounded parse.
-9. **Clue index dual-writer last-writer-wins** — memory state remains correct.
-10. **File/AVPlayer background pull still on main** — live native is off-main; file review is secondary.
+4. **Mapping / surface `!!`** — not clue/track critical path.
+5. **Bluetooth LE `onScanResult` on binder** — bounded parse.
+6. **Clue index dual-writer last-writer-wins** — memory state remains correct.
+7. **File/AVPlayer background pull still on main** — live native is off-main; file review is secondary.
+8. **Timed-out catalog metadata workers** — native `MediaMetadataRetriever` may ignore interrupt; pool is small and daemon-backed so one bad file cannot stall retain/track work.
 
 ---
 

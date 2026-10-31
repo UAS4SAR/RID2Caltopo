@@ -201,7 +201,8 @@ final class AppleClueStore: ObservableObject {
         // Durable image first. Thumbnail is filled after Local clue saved / upload enqueue.
         try await disk.run {
             try FileManager.default.createDirectory(at: root.appendingPathComponent(day), withIntermediateDirectories: true)
-            AppleFlightStorage.prepareWrite(Int64(jpegData.count))
+            // Never wait on Flight Storage directory walks / purge (Android prepareAppPrivateWrite).
+            AppleFlightStorage.prepareAppPrivateWrite(Int64(jpegData.count))
             try jpegData.write(to: root.appendingPathComponent(imageFilename), options: .atomic)
             // Placeholder thumb so the index row is valid; replaced asynchronously.
             try jpegData.write(to: root.appendingPathComponent(thumbnailFilename), options: .atomic)

@@ -121,6 +121,10 @@ actor MediaMTXMobileController: MediaServerController {
         else { finalizationTokens[path] = tokens }
     }
 
+    func pendingFinalizationCount() -> Int {
+        finalizationTokens.values.reduce(0) { $0 + $1.count }
+    }
+
     func discardPendingRecordingEvents() {
         for token in finalizationTokens.values.flatMap({ $0 }) {
             RecordingFinalizationActivity.shared.finish(token)
@@ -419,13 +423,24 @@ final class MediaMTXViewModel: ObservableObject {
         }
     }
 
+    /// Quit-time bound for finishing in-flight localize/normalize. Unfinished
+    /// recordings remain on disk and are recoverable on the next launch.
+    private static let quitRecordingDrainTimeoutSeconds: TimeInterval = 5
+
     func shutdown() async {
         storageControl.enqueue { AppleFlightStorage.stopObserving() }
+        AppleFlightStorage.cancelPendingMaintenance()
         healthCheckTask?.cancel()
         healthCheckTask = nil
+
+        // Stop the native server first so no new publishers/recordings start, but keep
+        // the event loop briefly so buffered recordFileCompleted work can finish.
+        await controller.stop()
+        await drainRecordingFinalizers(timeoutSeconds: Self.quitRecordingDrainTimeoutSeconds)
+
         eventTask?.cancel()
         eventTask = nil
-        await controller.stop()
+        // Remaining tokens / un-normalized files are left recoverable for next launch.
         await controller.discardPendingRecordingEvents()
         await storageControl.perform {
             AppleFlightStorage.release(owner: "recorder")
@@ -438,6 +453,23 @@ final class MediaMTXViewModel: ObservableObject {
         isRunning = false
         AppleStreamsServerStatus.shared.startedAt = nil
         status = "Stopped"
+    }
+
+    /// Wait briefly for outstanding recording finalizers. Never unbounded — quit and
+    /// durable track/clue work must not wait on MediaMTX normalize.
+    private func drainRecordingFinalizers(timeoutSeconds: TimeInterval) async {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            let controllerPending = await controller.pendingFinalizationCount()
+            if controllerPending == 0 && !RecordingFinalizationActivity.shared.hasPending {
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        AppleLog.warning(
+            "MediaMTX",
+            "Quit recording drain timed out after \(Int(timeoutSeconds))s; leaving recordings recoverable on next launch"
+        )
     }
 
     func restart(captureStreams: Bool) {

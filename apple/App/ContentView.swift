@@ -1456,8 +1456,11 @@ struct ContentView: View {
                     },
                     fullCleanup: {
                         await ridTracks.setLocalDeviceMarkerPublishingEnabled(false)
+                        // Abort Flight Storage walks so durable track/clue saves never wait on them.
+                        AppleFlightStorage.cancelPendingMaintenance()
                         // Finish owned LiveTracks, then close the CalTopo map before
                         // tearing down the tracker websocket on quit / scene termination.
+                        // Durable track/clue work completes before the bounded MediaMTX drain.
                         clueStore.flushPendingBestEffort()
                         let disconnected = caltopoSettings.disconnectMap()
                         await ridTracks.configureCaltopoAwaiting(

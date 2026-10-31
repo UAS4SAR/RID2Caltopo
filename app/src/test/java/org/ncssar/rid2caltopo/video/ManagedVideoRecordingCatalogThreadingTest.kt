@@ -1,5 +1,6 @@
 package org.ncssar.rid2caltopo.video
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
@@ -12,7 +13,7 @@ class ManagedVideoRecordingCatalogThreadingTest {
         val release = CountDownLatch(1)
         val workers = Executors.newFixedThreadPool(2)
         try {
-            // Catalog scans hold this monitor while reading files and metadata.
+            // Cache apply still takes the catalog monitor; UI inventory must not wait on it.
             workers.submit {
                 synchronized(ManagedVideoSessionRecordingCatalog) {
                     entered.countDown()
@@ -28,5 +29,9 @@ class ManagedVideoRecordingCatalogThreadingTest {
             release.countDown()
             workers.shutdownNow()
         }
+    }
+
+    @Test fun metadataScanTimeoutIsBounded() {
+        assertEquals(2_000L, ManagedVideoSessionRecordingCatalog.METADATA_SCAN_TIMEOUT_MS)
     }
 }
