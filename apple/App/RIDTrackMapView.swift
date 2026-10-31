@@ -704,6 +704,10 @@ struct RIDTrackMapView: View {
         .onReceive(viewportMemory.$inspectionRemoteID) { request in
             guard let remoteID = request else { return }
             viewportMemory.inspectionRemoteID = nil
+            if followFocusedDrone {
+                operatorAdjustedViewport = false
+                followResumeEpoch &+= 1
+            }
             focusedAircraftID = remoteID
             let identity = identityStore.identity(for: remoteID)
             selectedPilotSettings = PilotDisplaySelection(id: remoteID, remoteID: remoteID,

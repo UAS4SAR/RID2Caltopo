@@ -2841,7 +2841,12 @@ internal fun SplitMapPane(
                             Checkbox(
                                 checked = followFocusedDroneEnabled,
                                 onCheckedChange = { enabled ->
-                                    if (enabled) operatorAdjustedViewport = false
+                                    if (enabled) {
+                                        operatorAdjustedViewport = false
+                                        lastInsetFollowDesignator = null
+                                        lastInsetFollowPoint = null
+                                        lastInsetFollowAtMs = 0L
+                                    }
                                     viewModel.setFollowFocusedDroneEnabled(enabled)
                                 }
                             )
@@ -4738,6 +4743,9 @@ internal fun SplitMapPane(
                     val enabled = !followFocusedDroneEnabled
                     if (enabled) {
                         operatorAdjustedViewport = false
+                        lastInsetFollowDesignator = null
+                        lastInsetFollowPoint = null
+                        lastInsetFollowAtMs = 0L
                     }
                     viewModel.setFollowFocusedDroneEnabled(enabled)
                 },
