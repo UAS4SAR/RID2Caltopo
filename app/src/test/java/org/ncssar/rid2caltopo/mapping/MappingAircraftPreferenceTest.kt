@@ -7,13 +7,17 @@ import kotlinx.coroutines.flow.first
 import org.junit.Assert.*
 import org.junit.Test
 import java.nio.file.Files
+import java.util.concurrent.Executors
 
 class MappingAircraftPreferenceTest {
     @Test fun closingAndReopeningThePlannerRetainsTheLatestAircraft() = runBlocking {
         val directory=Files.createTempDirectory("r2c-aircraft-preference").toFile()
         val file=directory.resolve("mission.preferences_pb")
         val key=stringPreferencesKey("aircraft")
-        var scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+        // Dedicated writer thread: Dispatchers.IO is saturated when the full mapping suite runs.
+        val executor=Executors.newSingleThreadExecutor()
+        val dispatcher=executor.asCoroutineDispatcher()
+        var scope=CoroutineScope(SupervisorJob()+dispatcher)
         try {
             var store=PreferenceDataStoreFactory.create(scope=scope,produceFile={file})
             val first=MappingAircraftPreference(store,scope)
@@ -22,9 +26,8 @@ class MappingAircraftPreferenceTest {
             assertEquals("DJI Matrice 4T",first.load())
             withTimeout(15_000){store.data.first{it[key]=="DJI Matrice 4T"}}
             scope.coroutineContext[Job]!!.cancelAndJoin()
-            // Let the previous DataStore actor release the preferences file before reopen.
             delay(250)
-            scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+            scope=CoroutineScope(SupervisorJob()+dispatcher)
             store=PreferenceDataStoreFactory.create(scope=scope,produceFile={file})
             val reopened=MappingAircraftPreference(store,scope)
             assertEquals("DJI Matrice 4T",reopened.load())
@@ -34,6 +37,11 @@ class MappingAircraftPreferenceTest {
             reopened.select("retired model")
             withTimeout(15_000){store.data.first{it[key]=="DJI Matrice 4TD"}}
             assertEquals("DJI Matrice 4TD",reopened.load())
-        } finally {scope.coroutineContext[Job]!!.cancelAndJoin();directory.deleteRecursively()}
+        } finally {
+            scope.coroutineContext[Job]!!.cancelAndJoin()
+            dispatcher.close()
+            executor.shutdownNow()
+            directory.deleteRecursively()
+        }
     }
 }
