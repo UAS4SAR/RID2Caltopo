@@ -170,10 +170,13 @@ public class CaltopoMap {
     /** Serializes lazy Drone Tracks folder creation across track/clue callers. */
     private static final Object MapArtifactsLock = new Object();
     private static volatile boolean MapArtifactsEnsureInFlight = false;
+    /** Connect full-map read latch; clue uploads may wait, other GETs must not. */
+    private static final Object InitialFullReadLock = new Object();
+    private static volatile boolean InitialFullReadComplete = true;
     /** True only after the first live track starts for this map session. */
     private static volatile boolean DeviceMarkerAllowed = false;
     private static volatile CaltopoNode.MapNode MapNode;
-    private static String FolderName = "DroneTracks";
+    private static String FolderName = "Drone Tracks";
     private static MapStatusListener.mapStatus MapStatus = MapStatusListener.mapStatus.down;
     private static String LastStandaloneCoordinationScopeId = "";
     private static boolean StandaloneCoordinationStarted = false;
@@ -596,6 +599,7 @@ public class CaltopoMap {
         DisconnectInProgress = false;
 
         SetMapStatus(MapStatusListener.mapStatus.connecting, null);
+        beginInitialFullRead();
         try {
             String grant = mapNode.getPersonalSessionID();
             String credential = grant == null ? "team"
@@ -618,6 +622,7 @@ public class CaltopoMap {
         } catch (Exception e) {
             String emsg = "OpenMap(): CaltopoSession.OpenMap() barfed";
             CTError(TAG, emsg, e);
+            completeInitialFullRead();
             SetMapStatus(MapStatusListener.mapStatus.down, emsg);
         }
     }
@@ -1073,6 +1078,7 @@ public class CaltopoMap {
         ArchiveFolderId = null;
         DeviceMarkerAllowed = false;
         LastErrorString = null;
+        completeInitialFullRead();
     }
 
     private static void stopPeerCoordinationForMapDisconnect() {
@@ -1303,14 +1309,16 @@ public class CaltopoMap {
                         MyLiveTracksInThisMap.put(feature);
                         break;
                 case "Folder": {
-                    if (FolderId == null && title.equals(FolderName)) {
-                        FolderId = feature.getString("id");
-                        CTDebug(TAG, String.format(Locale.US,
-                                "Found existing folder '%s' with id %s", FolderName, FolderId));
-                    } else if (null == ArchiveFolderId && title.equals(archiveFolderName)) {
-                        ArchiveFolderId = feature.getString("id");
-                        CTDebug(TAG, String.format(Locale.US,
-                                "Found existing folder '%s' with id %s", archiveFolderName, ArchiveFolderId));
+                    String folderId = feature.optString("id", "");
+                    if (folderId.isEmpty()) break;
+                    if (FolderId == null && folderTitlesMatch(title, FolderName)) {
+                        FolderId = folderId;
+                        CTInfo(TAG, String.format(Locale.US,
+                                "adopted folder title=%s id=%s", FolderName, FolderId));
+                    } else if (ArchiveFolderId == null && folderTitlesMatch(title, archiveFolderName)) {
+                        ArchiveFolderId = folderId;
+                        CTInfo(TAG, String.format(Locale.US,
+                                "adopted folder title=%s id=%s", archiveFolderName, ArchiveFolderId));
                     }
                     break;
                 }
@@ -1330,7 +1338,15 @@ public class CaltopoMap {
     }
 
     static String normalizedTrackFolderName(@Nullable String name) {
-        return name == null || name.trim().isEmpty() ? "DroneTracks" : name.trim();
+        return name == null || name.trim().isEmpty() ? "Drone Tracks" : name.trim();
+    }
+
+    /** Trimmed, case-insensitive folder title match for connect adoption. */
+    static boolean folderTitlesMatch(@Nullable String title, @Nullable String expected) {
+        if (title == null || expected == null) return false;
+        String left = title.trim();
+        String right = expected.trim();
+        return !left.isEmpty() && left.equalsIgnoreCase(right);
     }
 
     static String archiveFolderName(String trackFolderName, Date date) {
@@ -1669,7 +1685,10 @@ public class CaltopoMap {
     private static void OpenMapFinished(CaltopoOp lOpenMapOp,
                                         long requestStartedAtMs,
                                         long refreshGeneration) {
-        if (null == MapNode || refreshGeneration != MapRefreshGeneration) return;
+        if (null == MapNode || refreshGeneration != MapRefreshGeneration) {
+            completeInitialFullRead();
+            return;
+        }
         InitialMapRequest = null;
         if (lOpenMapOp.fail()) {
             if (lOpenMapOp.response != null && lOpenMapOp.response.startsWith("CalTopo server unavailable")) {
@@ -1689,6 +1708,7 @@ public class CaltopoMap {
             }
             MapNode = null;
             OperatingProfiles.endAssignment();
+            completeInitialFullRead();
             SetMapStatus(MapStatusListener.mapStatus.down, "Map could not load. Check your connection and map permissions, then retry.");
             return;
         }
@@ -1701,6 +1721,7 @@ public class CaltopoMap {
         JSONObject state = (responseJson != null) ? responseJson.optJSONObject("state") : null;
         if (null == state) {
             CTError(TAG, "OpenMapFinished(): state missing from response. " + lOpenMapOp );
+            completeInitialFullRead();
             SetMapStatus(MapStatusListener.mapStatus.down, "Map response was incomplete. Please try connecting again.");
             return;
         } else try {
@@ -1710,9 +1731,11 @@ public class CaltopoMap {
                 LastMapSync = Math.max(LastMapSync, snapshotCursor > 500L ? snapshotCursor : requestStartedAtMs);
                 LastMapPollStartedAt = requestStartedAtMs;
             }
+            completeInitialFullRead();
             FinishInitialMapSetup();
         } catch (Exception e) {
             CTError(TAG, "OpenMapFinished(): parseMap() raised:" + " (" + e.getClass().getSimpleName() + ")");
+            completeInitialFullRead();
             SetMapStatus(MapStatusListener.mapStatus.down, "Map could not load. Please try connecting again.");
             return;
         }
@@ -2306,11 +2329,20 @@ public class CaltopoMap {
     private static void adoptExistingTrackFoldersFromArtifacts() {
         if (blankToNull(FolderId) == null) {
             String found = folderIdInArtifacts(FolderName);
-            if (found != null) FolderId = found;
+            if (found != null) {
+                FolderId = found;
+                CTInfo(TAG, String.format(Locale.US,
+                        "adopted folder title=%s id=%s", FolderName, FolderId));
+            }
         }
         if (blankToNull(ArchiveFolderId) == null) {
-            String found = folderIdInArtifacts(archiveFolderName(FolderName, new Date()));
-            if (found != null) ArchiveFolderId = found;
+            String archiveName = archiveFolderName(FolderName, new Date());
+            String found = folderIdInArtifacts(archiveName);
+            if (found != null) {
+                ArchiveFolderId = found;
+                CTInfo(TAG, String.format(Locale.US,
+                        "adopted folder title=%s id=%s", archiveName, ArchiveFolderId));
+            }
         }
     }
 
@@ -2349,16 +2381,54 @@ public class CaltopoMap {
 
     @Nullable
     private static String folderIdInArtifacts(@Nullable String title) {
-        if (title == null || title.isEmpty()) return null;
+        if (title == null || title.trim().isEmpty()) return null;
         for (JSONObject feature : GetArtifactFeatureSnapshot()) {
             JSONObject properties = feature.optJSONObject("properties");
             if (properties == null) continue;
             if (!"Folder".equals(properties.optString("class", ""))) continue;
-            if (!title.equals(properties.optString("title", ""))) continue;
+            if (!folderTitlesMatch(properties.optString("title", ""), title)) continue;
             String id = feature.optString("id", "");
             if (!id.isEmpty()) return id;
         }
         return null;
+    }
+
+    private static void beginInitialFullRead() {
+        synchronized (InitialFullReadLock) {
+            InitialFullReadComplete = false;
+        }
+    }
+
+    private static void completeInitialFullRead() {
+        synchronized (InitialFullReadLock) {
+            InitialFullReadComplete = true;
+            InitialFullReadLock.notifyAll();
+        }
+    }
+
+    /**
+     * Clue uploads only: wait for the connect full-map read to finish adoption.
+     * Does not acquire the shared since/0 HTTP gate. Returns false on timeout.
+     */
+    public static boolean awaitInitialFullReadForClue(long timeoutMs) {
+        if (onAndroidUiThread()) {
+            CTWarn(TAG, "awaitInitialFullReadForClue(): refused on the UI thread");
+            return InitialFullReadComplete;
+        }
+        long deadline = System.currentTimeMillis() + Math.max(0L, timeoutMs);
+        synchronized (InitialFullReadLock) {
+            while (!InitialFullReadComplete) {
+                long remaining = deadline - System.currentTimeMillis();
+                if (remaining <= 0L) return false;
+                try {
+                    InitialFullReadLock.wait(remaining);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return InitialFullReadComplete;
+                }
+            }
+            return true;
+        }
     }
     @Nullable
     public static String GetArchiveFolderId() { return ArchiveFolderId; }

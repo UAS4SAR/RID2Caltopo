@@ -3504,8 +3504,18 @@ class StreamsViewModel(
                 }
             }.getOrDefault(record)
             android.util.Log.i(tag, clueUploadPositionLogLineForRecord(latest))
-            // Cached folder only — never wait on ensure/full-map. Move later if needed.
-            val folder = withContext(Dispatchers.IO) { CaltopoMap.GetFolderId().orEmpty() }
+            // Wait for connect adoption (bounded), then use/create Drone Tracks folders.
+            // Timed-out wait without a folder still sends; movePublishedClue repairs later.
+            val folder = withContext(Dispatchers.IO) {
+                val readDone = CaltopoMap.awaitInitialFullReadForClue(
+                    org.ncssar.rid2caltopo.data.ClueTrackFolderSend.INITIAL_READ_WAIT_MS,
+                )
+                org.ncssar.rid2caltopo.data.ClueTrackFolderSend.folderIdForSend(
+                    initialReadCompleted = readDone,
+                    cachedFolderId = CaltopoMap.GetFolderId(),
+                    ensureFolderId = { CaltopoMap.ensureMapArtifacts("clue") },
+                ).orEmpty()
+            }
             // Startup and retries: complete any partial prior POST (marker/media/link).
             if (reconcilePendingClue(mapId, teamId, folder, latest, jpeg)) {
                 endClueUpload(record.id)

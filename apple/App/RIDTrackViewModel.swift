@@ -636,6 +636,10 @@ final class RIDTrackViewModel: ObservableObject {
             guard let self else { return nil }
             return await self.caltopoPublisher.cachedTrackFolderID()
         }
+        store.awaitInitialFullReadForClue = { [weak self] timeout in
+            guard let self else { return true }
+            return await self.caltopoPublisher.awaitInitialFullReadForClue(timeoutSeconds: timeout)
+        }
         Task { [archiveStore] in
             // App-sandbox FlightStorage is durable without an Android-style Archive Dir
             // bookmark. Soft-unavailable Documents must not take down startup.

@@ -43,6 +43,8 @@ public actor CaltopoTrackFolderResolver {
         date: Date = Date(),
         timeZone: TimeZone = .current,
         settleDelay: Duration = .zero,
+        existingActiveID: String? = nil,
+        existingArchiveID: String? = nil,
         fetchSnapshot: @escaping FetchSnapshot,
         createFolder: @escaping CreateFolder,
         deleteFolder: @escaping DeleteFolder = { _ in }
@@ -57,14 +59,22 @@ public actor CaltopoTrackFolderResolver {
             date: date,
             timeZone: timeZone
         )
+        let knownActive: String? = {
+            let trimmed = existingActiveID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }()
+        let knownArchive: String? = {
+            let trimmed = existingArchiveID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }()
         let taskID = UUID()
         let task = Task {
-            var snapshot = try await fetchSnapshot()
-            var activeID = Self.preferredFolderID(
+            let snapshot = try await fetchSnapshot()
+            var activeID = knownActive ?? Self.preferredFolderID(
                 named: activeName,
                 in: snapshot
             )
-            var archiveID = Self.preferredFolderID(
+            var archiveID = knownArchive ?? Self.preferredFolderID(
                 named: archiveName,
                 in: snapshot
             )
@@ -74,6 +84,7 @@ public actor CaltopoTrackFolderResolver {
 
             // Create returns the GUID; that response is the acknowledgement — do not
             // re-read the map to confirm. Optional settleDelay / deleteFolder are unused.
+            // Check adopted / snapshot ids first; create only what is still missing.
             _ = settleDelay
             _ = deleteFolder
             if activeID == nil {
@@ -127,13 +138,26 @@ public actor CaltopoTrackFolderResolver {
         normalizedTrackFolderName(value)
     }
 
+    /// Match CalTopo folder titles by trimmed, case-insensitive comparison.
+    public static func folderTitlesMatch(_ title: String, expected: String) -> Bool {
+        let left = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let right = expected.trimmingCharacters(in: .whitespacesAndNewlines)
+        return left.compare(right, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+    }
+
+    /// First matching folder id in a connect snapshot (trimmed, case-insensitive).
+    public static func adoptedFolderID(named expectedTitle: String, in snapshot: CaltopoArtifactSnapshot) -> String? {
+        let expected = normalizedTrackFolderName(expectedTitle)
+        return snapshot.folders.first { folderTitlesMatch($0.title, expected: expected) }?.id
+    }
+
     private static func normalizedTrackFolderName(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "Drone Tracks" : trimmed
     }
 
     private static func folderTitle(_ title: String, matches expected: String) -> Bool {
-        title.compare(expected, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        folderTitlesMatch(title, expected: expected)
     }
 
     private static func preferredFolderID(

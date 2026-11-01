@@ -160,6 +160,7 @@ actor AppleCaltopoPublisher {
         archiveFolderID = nil
         deviceMarkerAllowed = false
         lastDeviceMarkerPublishedAt = nil
+        await CaltopoInitialFullReadGate.shared.complete()
         guard let liveConfiguration = configuration.liveConfiguration else {
             client = nil
             deviceMarkerPublishingSuspended = false
@@ -179,11 +180,13 @@ actor AppleCaltopoPublisher {
             }
             pendingInterruptedRecoveries = await interruptedJournal.entries(mapID: configuration.mapID)
             await retryMarkerCleanup()
+            await CaltopoInitialFullReadGate.shared.begin()
             do {
                 // Connect must not create folders or a device marker. Full-map read discovers
                 // existing Drone Tracks* folders / R2C markers; create only on first flight.
                 let snapshot = try await configuredClient.fetchMapArtifacts(refresh: true)
                 adoptTrackFoldersFromConnectSnapshot(snapshot)
+                await CaltopoInitialFullReadGate.shared.complete()
                 await removeStaleR2CDeviceMarkers(client: configuredClient)
                 mapOpenRetry?.cancel()
                 mapOpenRetry = nil
@@ -193,6 +196,7 @@ actor AppleCaltopoPublisher {
                 continuation.yield(.ready)
                 await retryInterruptedPublications(generation: configurationGeneration)
             } catch {
+                await CaltopoInitialFullReadGate.shared.complete()
                 if let message = CaltopoServerAvailability.retryMessage(error) {
                     continuation.yield(.failed(message))
                     scheduleMapOpenRetry(client: configuredClient, generation: configurationGeneration)
@@ -222,15 +226,18 @@ actor AppleCaltopoPublisher {
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled, let self else { return }
             guard await self.configurationGeneration == generation else { return }
+            await CaltopoInitialFullReadGate.shared.begin()
             do {
                 // Probe the map without creating folders/markers; recovery ensures lazily.
                 let snapshot = try await client.fetchMapArtifacts(refresh: true)
                 await self.adoptTrackFoldersFromConnectSnapshot(snapshot)
+                await CaltopoInitialFullReadGate.shared.complete()
                 await self.removeStaleR2CDeviceMarkers(client: client)
                 await self.finishMapOpenRetry()
                 self.continuation.yield(.ready)
                 await self.retryInterruptedPublications(generation: generation)
             } catch {
+                await CaltopoInitialFullReadGate.shared.complete()
                 guard !Task.isCancelled, await self.configurationGeneration == generation else { return }
                 if let message = CaltopoServerAvailability.retryMessage(error) {
                     self.continuation.yield(.failed(message))
@@ -780,19 +787,26 @@ actor AppleCaltopoPublisher {
     /// Non-blocking folder id for clue send (nil until connect adoption or first-flight create).
     func cachedTrackFolderID() -> String? { trackFolderID }
 
+    /// Bounded wait for the connect full-map read. Clue uploads only.
+    func awaitInitialFullReadForClue(
+        timeoutSeconds: TimeInterval = CaltopoClueTrackFolderSend.initialReadWaitSeconds
+    ) async -> Bool {
+        await CaltopoInitialFullReadGate.shared.wait(timeoutSeconds: timeoutSeconds)
+    }
+
     /// Cache existing Drone Tracks* folder ids from the connect full-map read (never creates).
     private func adoptTrackFoldersFromConnectSnapshot(_ snapshot: CaltopoArtifactSnapshot) {
         let activeName = CaltopoTrackFolderResolver.normalizedTrackFolderNameForAdoption(trackFolderName)
         let archiveName = CaltopoTrackFolderResolver.archiveFolderName(trackFolderName: activeName)
-        if trackFolderID == nil {
-            trackFolderID = snapshot.folders.first {
-                $0.title.compare(activeName, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
-            }?.id
+        if trackFolderID == nil,
+           let adopted = CaltopoTrackFolderResolver.adoptedFolderID(named: activeName, in: snapshot) {
+            trackFolderID = adopted
+            AppleLog.info("CalTopo", "adopted folder title=\(activeName) id=\(adopted)")
         }
-        if archiveFolderID == nil {
-            archiveFolderID = snapshot.folders.first {
-                $0.title.compare(archiveName, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
-            }?.id
+        if archiveFolderID == nil,
+           let adopted = CaltopoTrackFolderResolver.adoptedFolderID(named: archiveName, in: snapshot) {
+            archiveFolderID = adopted
+            AppleLog.info("CalTopo", "adopted folder title=\(archiveName) id=\(adopted)")
         }
     }
 
@@ -807,9 +821,13 @@ actor AppleCaltopoPublisher {
         let generation = configurationGeneration
         let resolver = folderResolver
         let folderName = trackFolderName
+        let knownActive = trackFolderID
+        let knownArchive = archiveFolderID
         let resolved = try await resolver.resolve(
             trackFolderName: folderName,
             settleDelay: .zero,
+            existingActiveID: knownActive,
+            existingArchiveID: knownArchive,
             fetchSnapshot: {
                 // Prefer the warm map-open snapshot. refresh:true would re-enter the shared
                 // full-map-read gate (90s) and stall clue POSTs behind reconnect / LiveTrack recovery.
@@ -824,15 +842,18 @@ actor AppleCaltopoPublisher {
             }
         )
         guard generation == configurationGeneration else { throw CancellationError() }
-        trackFolderID = resolved.active
-        archiveFolderID = resolved.archive
+        // Prefer ids adopted while resolve was in flight over a just-created duplicate.
+        if trackFolderID == nil { trackFolderID = resolved.active }
+        if archiveFolderID == nil { archiveFolderID = resolved.archive }
+        let active = trackFolderID ?? resolved.active
+        let archive = archiveFolderID ?? resolved.archive
         if resolved.created {
             AppleLog.info(
                 "CalTopo",
-                "Created map artifacts reason=\(reason.rawValue) active=\(resolved.active) archive=\(resolved.archive) folder='\(folderName)'"
+                "Created map artifacts reason=\(reason.rawValue) active=\(active) archive=\(archive) folder='\(folderName)'"
             )
         }
-        return resolved
+        return CaltopoTrackFolderIDs(active: active, archive: archive, created: resolved.created)
     }
 
     private func persistInterruptedPublication(

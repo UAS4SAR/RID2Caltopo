@@ -85,6 +85,8 @@ final class AppleClueStore: ObservableObject {
     var ensureMapArtifacts: ((CaltopoMapArtifactReason) async throws -> String)?
     /// Cached folder id for clue send / later move (never blocks Submit).
     var cachedTrackFolderID: (() async -> String?)?
+    /// Clue uploads only: wait for the connect full-map read (bounded).
+    var awaitInitialFullReadForClue: ((TimeInterval) async -> Bool)?
     /// Called after a clue is saved or deleted, so a finished flight's KMZ can be rebuilt.
     var clueChanged: ((OperationalClueRecord) -> Void)?
 
@@ -746,8 +748,9 @@ final class AppleClueStore: ObservableObject {
                     let publishDescription = latest.publishedDescription
                     let publishMediaID = latest.caltopoMediaID
                     let publishCreatedMs = Int64(latest.capturedAt.timeIntervalSince1970 * 1_000)
-                    // Cached folder only — never wait on ensure/full-map. Move later if needed.
-                    let folderID = await self.cachedFolderIDForClue()
+                    // Wait for connect adoption (bounded), then use/create Drone Tracks folders.
+                    // Timed-out wait without a folder still sends; movePublishedClue repairs later.
+                    let folderID = await self.resolveFolderIDForClueSend()
                     let publishMarkerID = Self.publishMarkerID(for: latest)
                     let remainingOverall = submitDeadlineSeconds - Date().timeIntervalSince(attemptStartedAt)
                     guard remainingOverall > 0 else { throw ClueUploadAttemptTimeout(kind: .send) }
@@ -987,6 +990,24 @@ final class AppleClueStore: ObservableObject {
         return nil
     }
 
+    /// Wait for connect full-map adoption, then reuse or create Drone Tracks folders.
+    /// On wait timeout without a folder, returns nil so the clue can send and move later.
+    private func resolveFolderIDForClueSend() async -> String? {
+        let readCompleted = await awaitInitialFullReadForClue?(CaltopoClueTrackFolderSend.initialReadWaitSeconds) ?? true
+        let cached = await cachedFolderIDForClue()
+        var ensured: String?
+        if readCompleted, cached == nil, let ensureMapArtifacts {
+            ensured = try? await ensureMapArtifacts(.firstTrack)
+        }
+        let folderID = CaltopoClueTrackFolderSend.folderIDForSendSync(
+            initialReadCompleted: readCompleted,
+            cachedFolderID: cached,
+            ensuredFolderID: ensured
+        )
+        if let folderID { trackFolderID = folderID }
+        return folderID
+    }
+
     private func regenerateMediaID(for id: UUID, reason: String) async {
         let fresh = UUID()
         mutate(id) { value in
@@ -1125,6 +1146,8 @@ final class AppleClueStore: ObservableObject {
         let resolved = try await resolver.resolve(
             trackFolderName: folderName,
             settleDelay: .zero,
+            existingActiveID: trackFolderID,
+            existingArchiveID: nil,
             fetchSnapshot: {
                 // Warm connect snapshot only — never force a gated full-map read.
                 try await client.fetchMapArtifacts(refresh: false)

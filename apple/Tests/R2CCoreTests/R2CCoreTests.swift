@@ -1049,6 +1049,81 @@ func caltopoFolderResolutionReusesExistingDailyFolder() async throws {
 }
 
 @Test
+func caltopoConnectSnapshotAdoptsExistingFoldersByTrimmedCaseInsensitiveTitle() {
+    let snapshot = CaltopoArtifactSnapshot(folders: [
+        CaltopoArtifactFolder(id: "existing-active", title: "  drone tracks  ", initiallyVisible: true),
+        CaltopoArtifactFolder(id: "existing-archive", title: " DRONE TRACKS 24Jul ", initiallyVisible: false),
+    ])
+    #expect(
+        CaltopoTrackFolderResolver.adoptedFolderID(named: "Drone Tracks", in: snapshot) == "existing-active"
+    )
+    #expect(
+        CaltopoTrackFolderResolver.adoptedFolderID(named: "Drone Tracks 24Jul", in: snapshot) == "existing-archive"
+    )
+    #expect(CaltopoTrackFolderResolver.folderTitlesMatch(" DRONE TRACKS ", expected: "Drone Tracks"))
+}
+
+@Test
+func caltopoFolderResolutionPrefersAlreadyAdoptedIdsBeforeCreate() async throws {
+    let resolver = CaltopoTrackFolderResolver()
+    let probe = CaltopoFolderResolverProbe(snapshot: CaltopoArtifactSnapshot())
+    let result = try await resolver.resolve(
+        trackFolderName: "Drone Tracks",
+        date: Date(timeIntervalSince1970: 1_721_779_200),
+        timeZone: TimeZone(secondsFromGMT: 0)!,
+        existingActiveID: "adopted-active",
+        existingArchiveID: "adopted-archive",
+        fetchSnapshot: { await probe.fetch() },
+        createFolder: { title, visible, labelVisible in
+            await probe.create(title: title, visible: visible, labelVisible: labelVisible)
+        }
+    )
+    #expect(result == CaltopoTrackFolderIDs(active: "adopted-active", archive: "adopted-archive", created: false))
+    let counts = await probe.counts()
+    #expect(counts.creations == 0)
+}
+
+@Test
+func caltopoClueFolderSendUsesAdoptedFolderAfterInitialRead() {
+    let folder = CaltopoClueTrackFolderSend.folderIDForSendSync(
+        initialReadCompleted: true,
+        cachedFolderID: "adopted-active",
+        ensuredFolderID: "created-active"
+    )
+    #expect(folder == "adopted-active")
+}
+
+@Test
+func caltopoClueFolderSendEnsuresAfterInitialReadWhenCacheEmpty() {
+    let folder = CaltopoClueTrackFolderSend.folderIDForSendSync(
+        initialReadCompleted: true,
+        cachedFolderID: nil,
+        ensuredFolderID: "ensured-active"
+    )
+    #expect(folder == "ensured-active")
+}
+
+@Test
+func caltopoClueFolderSendTimeoutFallsBackWithoutEnsure() {
+    let folder = CaltopoClueTrackFolderSend.folderIDForSendSync(
+        initialReadCompleted: false,
+        cachedFolderID: nil,
+        ensuredFolderID: "should-not-use"
+    )
+    #expect(folder == nil)
+}
+
+@Test
+func caltopoInitialFullReadGateWaitTimesOutThenCompletes() async {
+    let gate = CaltopoInitialFullReadGate()
+    await gate.begin()
+    let timedOut = await gate.wait(timeoutSeconds: 0.05)
+    #expect(timedOut == false)
+    await gate.complete()
+    #expect(await gate.wait(timeoutSeconds: 0.05) == true)
+}
+
+@Test
 func caltopoMarkerIconURLMatchesAndroidContract() throws {
     let url = try #require(CaltopoMarkerIcon.url(symbol: "clue", colorHex: " #FF00AA "))
     let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
