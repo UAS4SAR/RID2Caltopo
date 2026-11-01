@@ -36,7 +36,11 @@ class MappingSurfaceViewActivity:ComponentActivity(){
         lifecycleScope.launch {
             val prepared=try {
                 MappingSurfaceStartup.load {
-                    org.ncssar.rid2caltopo.storage.OperationalStorage.requireReady(appContext)
+                    check(org.ncssar.rid2caltopo.storage.OperationalStorage.tryRequireReady(appContext)) {
+                        org.ncssar.rid2caltopo.storage.OperationalStorage.status.value.message.ifEmpty {
+                            "Choose or reconnect Archive Dir to use retained operational data."
+                        }
+                    }
                     LocalMappingTiles.directory(appContext,id)
                 }
             } catch (cancelled:CancellationException) { throw cancelled }

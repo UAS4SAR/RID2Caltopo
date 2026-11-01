@@ -633,6 +633,14 @@ final class RIDTrackViewModel: ObservableObject {
             return try await self.ensureMapArtifacts(reason: reason)
         }
         Task { [archiveStore] in
+            // App-sandbox FlightStorage is durable without an Android-style Archive Dir
+            // bookmark. Soft-unavailable Documents must not take down startup.
+            if await archiveStore.documentsUnavailable {
+                AppleLog.warning(
+                    "Archive",
+                    "Documents directory unavailable at launch; tracks stay in temporary FlightStorage until Documents returns"
+                )
+            }
             await archiveStore.launchSweep()
             self.scheduleArchiveRewrites()
         }

@@ -19,7 +19,11 @@ import java.util.zip.ZipOutputStream
 /** Re-export a saved surface with its original calibrated color projection, without reconstructing. */
 internal object MappingSurfacePreview {
     @Synchronized fun rebuild(context:Context,id:String,progress:(String,Double)->Unit,check:()->Unit):MappingLayer {
-        org.ncssar.rid2caltopo.storage.OperationalStorage.requireReady(context)
+        check(org.ncssar.rid2caltopo.storage.OperationalStorage.tryRequireReady(context)) {
+            org.ncssar.rid2caltopo.storage.OperationalStorage.status.value.message.ifEmpty {
+                "Choose or reconnect Archive Dir to use retained operational data."
+            }
+        }
         require(MappingProcessingManager.state.value?.active!=true){"Wait for reconstruction to finish."}
         MappingSurfaceNative.requireAvailable()
         val root=LocalMappingTiles.directory(context,id);val report=JSONObject(File(root,"layer.json").readText())

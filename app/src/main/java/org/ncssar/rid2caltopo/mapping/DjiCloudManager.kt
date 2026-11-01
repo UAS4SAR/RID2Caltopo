@@ -27,7 +27,11 @@ object DjiCloudManager {
     val session=current.asStateFlow()
     @Synchronized fun start(context:Context,mission:MappingMission,profile:MappingResolution.Profile,gsd:Double,httpDiagnostic:Boolean=false,capture:MappingCaptureProfile.Profile=MappingCaptureProfile.nadir,canopyHeightMeters:Double=20.0,maximumObstacleHeightMeters:Double?=null,clearanceMeters:Double=15.0,maximumCaptureSpeedMetersPerSecond:Double?=null,transitSpeedMetersPerSecond:Double?=null) = startRecord(context,mission.json(profile,gsd,capture,canopyHeightMeters,maximumObstacleHeightMeters,clearanceMeters,maximumCaptureSpeedMetersPerSecond,transitSpeedMetersPerSecond).put("processLocally",!profile.thermal),httpDiagnostic)
     @Synchronized fun resume(context:Context,id:String,httpDiagnostic:Boolean?=null) {
-        org.ncssar.rid2caltopo.storage.OperationalStorage.requireReady(context)
+        check(org.ncssar.rid2caltopo.storage.OperationalStorage.tryRequireReady(context)) {
+            org.ncssar.rid2caltopo.storage.OperationalStorage.status.value.message.ifEmpty {
+                "Choose or reconnect Archive Dir to use retained operational data."
+            }
+        }
         require(UUID.fromString(id).toString()==id)
         val root=File(context.filesDir,"mapping-missions/$id")
         startRecord(context,JSONObject(File(root,"mission.json").readText()),httpDiagnostic ?: savedHttpDiagnostic(root))

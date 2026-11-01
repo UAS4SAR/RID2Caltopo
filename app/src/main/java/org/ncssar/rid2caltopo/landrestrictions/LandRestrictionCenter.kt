@@ -25,7 +25,9 @@ object LandRestrictionCenter {
     private const val REFRESH_INTERVAL_MS = 15 * 60_000L
     private const val STALE_INTERVAL_MS = 24 * 60 * 60_000L
     private const val MOVEMENT_REFRESH_METERS = 926f
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO + org.ncssar.rid2caltopo.app.StartupCoroutineSafety.handler
+    )
     private val _uiState = MutableStateFlow(LandRestrictionUiState())
     val uiState: StateFlow<LandRestrictionUiState> = _uiState.asStateFlow()
     private val refreshMutex = Mutex()

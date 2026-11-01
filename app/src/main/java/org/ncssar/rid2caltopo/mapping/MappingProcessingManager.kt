@@ -22,7 +22,7 @@ data class MappingProcessingState(val missionId:String,val title:String,val acti
 
 /** One bounded, cancellable local job. Completed layers survive app/server restarts. */
 object MappingProcessingManager {
-    private val scope=CoroutineScope(SupervisorJob()+Dispatchers.Default)
+    private val scope=CoroutineScope(SupervisorJob()+Dispatchers.Default+org.ncssar.rid2caltopo.app.StartupCoroutineSafety.handler)
     private val current=MutableStateFlow<MappingProcessingState?>(null)
     val state=current.asStateFlow()
     private var job:Job?=null

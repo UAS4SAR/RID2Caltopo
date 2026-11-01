@@ -548,8 +548,11 @@ object ManagedVideoSessionRecordingCatalog {
     }
 
     private fun root(context: Context): File {
-        if (CaltopoClient.GetArchiveUri() == null) return org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context, "recording-catalog")
-        org.ncssar.rid2caltopo.storage.OperationalStorage.requireReady(context)
+        if (CaltopoClient.GetArchiveUri() == null ||
+            !org.ncssar.rid2caltopo.storage.OperationalStorage.tryRequireReady(context)
+        ) {
+            return org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context, "recording-catalog")
+        }
         return File(context.filesDir, ROOT_NAME)
     }
 

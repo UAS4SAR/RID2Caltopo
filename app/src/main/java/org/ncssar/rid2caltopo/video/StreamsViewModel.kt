@@ -48,6 +48,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
+import org.ncssar.rid2caltopo.app.StartupCoroutineSafety
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -5441,7 +5442,7 @@ class StreamsViewModel(
     init {
         // Finish or roll back interrupted archive writes, retry queued KMZ rewrites, and resume
         // binding clues saved before the app stopped.
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(Dispatchers.IO + StartupCoroutineSafety.handler) {
             val changed = runCatching { org.ncssar.rid2caltopo.data.FlightArchiveStore.launchSweep() }.getOrElse {
                 CTError(tag, "Archive launch sweep failed", it as? Exception ?: Exception(it)); emptyList()
             }
@@ -5452,13 +5453,13 @@ class StreamsViewModel(
                 }
             }
         }
-        viewModelScope.launch {
+        viewModelScope.launch(StartupCoroutineSafety.handler) {
             while (true) {
                 retryPendingClues()
                 kotlinx.coroutines.delay(30_000L)
             }
         }
-        viewModelScope.launch {
+        viewModelScope.launch(StartupCoroutineSafety.handler) {
             org.ncssar.rid2caltopo.app.FlightStorage.changes.collect { generation ->
                 if (generation > 0) hydrateLocalClues(currentLocalClueMapKey())
             }

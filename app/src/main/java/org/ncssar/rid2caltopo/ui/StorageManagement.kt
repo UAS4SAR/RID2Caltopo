@@ -98,7 +98,7 @@ internal fun StorageManagementDialog(
     LaunchedEffect(Unit) {
         try {
             val (used, maximum) = withContext(Dispatchers.IO) {
-                if (CaltopoClient.GetArchiveUri() != null) org.ncssar.rid2caltopo.storage.OperationalStorage.requireReady(context)
+                org.ncssar.rid2caltopo.storage.OperationalStorage.tryRequireReady(context)
                 UnifiedMapCache.usage(context).total to MapCacheSettings.maxCacheBytes(context)
             }
             mapBytes = used; cacheMaximum = maximum

@@ -66,8 +66,53 @@ internal object OperationalStorage {
         val main = Looper.getMainLooper() ?: return
         check(Looper.myLooper() != main) { "Operational storage must run on a worker" }
     }
-    fun start(context: Context) { startup.execute { runCatching { TemporaryStorage.cleanAbandoned(context); prepare(context.applicationContext) } } }
+    fun start(context: Context) {
+        startup.execute {
+            runCatching {
+                TemporaryStorage.cleanAbandoned(context)
+                prepare(context.applicationContext)
+            }.onFailure { error ->
+                if (ArchiveDirAvailability.isUnavailable(error)) {
+                    announceUnavailable(error.message ?: ArchiveDirAvailability.CHOOSE_OR_RECONNECT)
+                    CaltopoClient.CTWarn("OperationalStorage", "Archive Dir unavailable at startup; app-private durability remains active")
+                } else {
+                    CaltopoClient.CTWarn("OperationalStorage", "Archive prepare failed at startup: ${error.message}")
+                }
+            }
+        }
+    }
     fun retry(context: Context) = start(context)
+
+    /** True when a selected Archive Dir tree URI is present for this process. */
+    fun archiveUriPresent(): Boolean = CaltopoClient.GetArchiveUri() != null
+
+    fun isUnavailable(error: Throwable): Boolean = ArchiveDirAvailability.isUnavailable(error)
+
+    /** Soft status for UI prompts; does not throw. */
+    fun announceUnavailable(message: String = ArchiveDirAvailability.CHOOSE_OR_RECONNECT) {
+        if (!state.value.ready) state.value = Status(message = message)
+    }
+
+    /**
+     * Prepare when an Archive Dir URI is selected. Returns false when Archive Dir is
+     * missing or unusable so callers can keep using app-private durable storage.
+     */
+    fun tryRequireReady(context: Context): Boolean {
+        if (state.value.ready) return true
+        if (!archiveUriPresent()) {
+            announceUnavailable()
+            return false
+        }
+        return runCatching {
+            requireReady(context)
+            true
+        }.getOrElse { error ->
+            if (isUnavailable(error)) {
+                announceUnavailable(error.message ?: ArchiveDirAvailability.CHOOSE_OR_RECONNECT)
+                false
+            } else throw error
+        }
+    }
 
     private fun areas(context: Context): List<Area> {
         val external = context.getExternalFilesDirs(null).filterNotNull().map { File(it, "local-mapping") }
@@ -96,7 +141,7 @@ internal object OperationalStorage {
     fun prepare(context: Context, testArchive: DocumentFile? = null) {
         worker()
         val uri = testArchive?.uri?.toString() ?: CaltopoClient.GetArchiveUri()?.toString()
-            ?: throw unavailable("Choose or reconnect Archive Dir to use retained operational data.")
+            ?: throw unavailable(ArchiveDirAvailability.CHOOSE_OR_RECONNECT)
         synchronized(gate) {
             store?.let {
                 check(it.uri == uri) { "Restart the app after changing Archive Dir." }
@@ -205,7 +250,7 @@ internal object OperationalStorage {
         // A TreeDocumentFile's document URI can differ from the persisted tree URI.
         // Both lanes must use the same selected URI for identity and projection paths.
         val uri = selectedUri ?: CaltopoClient.GetArchiveUri()?.toString() ?: archive?.uri?.toString()
-            ?: error("Choose or reconnect Archive Dir to use retained operational state.")
+            ?: throw unavailable(ArchiveDirAvailability.CHOOSE_OR_RECONNECT_STATE)
         synchronized(queueGate) {
             preparedQueue?.let { check(it.value.uri == uri) { "Restart the app after changing Archive Dir." }; checkQueue(it); return it }
         }
@@ -262,7 +307,7 @@ internal object OperationalStorage {
     private fun prepareRecorder(context: Context, archive: DocumentFile? = null, selectedUri: String? = null): PreparedRecorder {
         worker()
         val uri = selectedUri ?: CaltopoClient.GetArchiveUri()?.toString() ?: archive?.uri?.toString()
-            ?: error("Choose or reconnect Archive Dir before recording.")
+            ?: throw unavailable(ArchiveDirAvailability.CHOOSE_OR_RECONNECT_RECORDING)
         synchronized(recorderGate) {
             preparedRecorder?.let { check(it.value.uri == uri); checkRecorder(it); return it }
         }
@@ -308,12 +353,33 @@ internal object OperationalStorage {
     }
     fun requireRecorderReady(context: Context) {
         worker()
+        if (!archiveUriPresent() && preparedRecorder == null) {
+            throw unavailable(ArchiveDirAvailability.CHOOSE_OR_RECONNECT_RECORDING)
+        }
         preparedRecorder?.let { current ->
             check(current.value.uri == CaltopoClient.GetArchiveUri()?.toString()) { "Restart the app after changing Archive Dir." }
             checkRecorder(current)
             return
         }
         prepareRecorder(context.applicationContext)
+    }
+
+    /** Soft recorder prepare: false when Archive Dir is unavailable (use TemporaryStorage). */
+    fun tryRequireRecorderReady(context: Context): Boolean {
+        if (preparedRecorder != null) return true
+        if (!archiveUriPresent()) {
+            announceUnavailable(ArchiveDirAvailability.CHOOSE_OR_RECONNECT_RECORDING)
+            return false
+        }
+        return runCatching {
+            requireRecorderReady(context)
+            true
+        }.getOrElse { error ->
+            if (isUnavailable(error)) {
+                announceUnavailable(error.message ?: ArchiveDirAvailability.CHOOSE_OR_RECONNECT_RECORDING)
+                false
+            } else throw error
+        }
     }
     private fun onRecordingStore(file: File, action: (Store) -> Unit) {
         worker()
@@ -490,9 +556,9 @@ internal object OperationalStorage {
             if (archiveStage.exists()) removeTree(archiveStage)
         }
     }
-    private fun unavailable(message: String): IllegalStateException {
-        state.value = Status(message = message)
-        return IllegalStateException(message)
+    private fun unavailable(message: String): ArchiveDirUnavailableException {
+        announceUnavailable(message)
+        return ArchiveDirUnavailableException(message)
     }
     internal fun isTransientPrepareFailure(error: Throwable): Boolean {
         val message = error.message.orEmpty()
@@ -943,29 +1009,49 @@ internal object OperationalStorage {
     }
     fun requireReady(context: Context) {
         if (state.value.ready) return
+        if (!archiveUriPresent()) throw unavailable(ArchiveDirAvailability.CHOOSE_OR_RECONNECT)
         prepare(context.applicationContext)
-        kotlin.check(state.value.ready) { state.value.message.ifEmpty { "Archive Dir is unavailable." } }
+        if (!state.value.ready) {
+            throw unavailable(state.value.message.ifEmpty { ArchiveDirAvailability.CHOOSE_OR_RECONNECT })
+        }
     }
     fun requireFor(file: File) {
         val context = org.ncssar.rid2caltopo.app.R2CApplication.getAppCtxt() ?: return
         val base = context.applicationInfo.dataDir
         val path = file.absolutePath
         if (path == "$base/files/operational-state/device-marker-cleanup.json") {
-            prepareQueue(context)
+            // Queue journal stays app-private; prepare archive copy only when URI is usable.
+            if (archiveUriPresent()) {
+                runCatching { prepareQueue(context) }.onFailure { error ->
+                    if (!isUnavailable(error)) throw error
+                    announceUnavailable(error.message ?: ArchiveDirAvailability.CHOOSE_OR_RECONNECT_STATE)
+                }
+            } else {
+                announceUnavailable(ArchiveDirAvailability.CHOOSE_OR_RECONNECT_STATE)
+            }
             return
         }
         if (listOf("mediamtx-recordings", "mediamtx-recordings-merged").any { path == "$base/files/$it" || path.startsWith("$base/files/$it/") }) {
-            requireRecorderReady(context)
+            if (!tryRequireRecorderReady(context)) return
             return
         }
         // Clues and the operational queue are app-private until an asynchronous retain.
         // They must not wait for bulk Archive Dir hydration.
         if (listOf("clues", "operational-state").any { path == "$base/files/$it" || path.startsWith("$base/files/$it/") }) return
-        val names = listOf("mapping-missions", "mapping-layers", "mapping-processing", "mapping-storage-stats", "map-archives", "managed-video-session-recordings", "mediamtx-recordings", "mediamtx-recordings-merged", "video-sei-originals", "land-restrictions", "anr-traces", "review-annotations")
+        // Support downloads and diagnostics remain usable without Archive Dir; retain later.
+        val softNames = listOf("land-restrictions", "anr-traces", "review-annotations")
+        if (softNames.any { path == "$base/files/$it" || path.startsWith("$base/files/$it/") }) {
+            if (!tryRequireReady(context)) return
+            return
+        }
+        val names = listOf("mapping-missions", "mapping-layers", "mapping-processing", "mapping-storage-stats", "map-archives", "managed-video-session-recordings", "mediamtx-recordings", "mediamtx-recordings-merged", "video-sei-originals")
         if (names.any { path == "$base/files/$it" || path.startsWith("$base/files/$it/") } ||
             path == "$base/no_backup/dem_blocks_v2" || path == "$base/no_backup/map_cache" ||
             path.startsWith("$base/no_backup/dem_blocks_v2/") || path.startsWith("$base/no_backup/map_cache/")) {
-            worker(); requireReady(context)
+            worker()
+            if (!tryRequireReady(context)) {
+                throw unavailable(state.value.message.ifEmpty { ArchiveDirAvailability.CHOOSE_OR_RECONNECT })
+            }
         }
     }
     fun ready(): Boolean = state.value.ready
@@ -986,7 +1072,15 @@ internal object OperationalStorage {
             return
         }
         if (state.value.ready && store != null) return
-        prepareClues(context.applicationContext)
+        // App-private clues remain durable without Archive Dir; hydrate when reconnected.
+        if (!archiveUriPresent()) {
+            announceUnavailable(ArchiveDirAvailability.CHOOSE_OR_RECONNECT_CLUES)
+            return
+        }
+        runCatching { prepareClues(context.applicationContext) }.onFailure { error ->
+            if (!isUnavailable(error)) throw error
+            announceUnavailable(error.message ?: ArchiveDirAvailability.CHOOSE_OR_RECONNECT_CLUES)
+        }
     }
 
     @androidx.annotation.VisibleForTesting
@@ -1002,14 +1096,37 @@ internal object OperationalStorage {
     private val queueNames = listOf("awaiting-map-flights.json", "flight-archive-journal.json", "flight-kmz-rewrites.json", "caltopo-interrupted-tracks.json", "device-marker-cleanup.json")
     fun stateFile(context: Context, name: String): File {
         require(name in queueNames)
+        // App-private journal/queue files must work without Archive Dir. Retain copies once
+        // the operator reconnects; never throw from this path during startup hydration.
+        val file = ArchiveDirAvailability.operationalStateFile(context.filesDir, name)
+        if (ArchiveDirAvailability.useAppPrivateQueueOnly(archiveUriPresent())) {
+            announceUnavailable(ArchiveDirAvailability.CHOOSE_OR_RECONNECT_STATE)
+            CaltopoClient.CTDebug(
+                "OperationalStorage",
+                "state file $name using app-private store; Archive Dir unavailable",
+            )
+            return file
+        }
         // The queue lane is independent of bulk areas such as layers and decoded terrain.
         // Live-track publication and clue binding read the app-private file without waiting
         // on that hydration.
         if (!state.value.ready) {
             CaltopoClient.CTDebug("OperationalStorage", "state file $name skipped bulk archive prepare")
         }
-        if (preparedQueue == null) prepareQueue(context)
-        return File(context.filesDir, "operational-state/$name")
+        if (preparedQueue == null) {
+            runCatching { prepareQueue(context) }.onFailure { error ->
+                if (isUnavailable(error) || isTransientPrepareFailure(error)) {
+                    announceUnavailable(error.message ?: ArchiveDirAvailability.CHOOSE_OR_RECONNECT_STATE)
+                    CaltopoClient.CTWarn(
+                        "OperationalStorage",
+                        "state file $name continue app-private: ${error.message}",
+                    )
+                    return file
+                }
+                throw error
+            }
+        }
+        return file
     }
     private fun deferRetain(file: File) {
         synchronized(deferredRetains) { deferredRetains.add(file) }
@@ -1131,7 +1248,7 @@ internal object OperationalStorage {
     private fun prepareClues(context: Context): PreparedClues {
         worker()
         val uri = CaltopoClient.GetArchiveUri()?.toString()
-            ?: error("Choose or reconnect Archive Dir before deleting retained clues.")
+            ?: throw unavailable(ArchiveDirAvailability.CHOOSE_OR_RECONNECT_CLUES)
         // Bulk ready means clues were already verified this selection; keep an independent
         // lane Store for deletes so we never share the bulk writer's verification lock.
         synchronized(gate) {
@@ -1241,12 +1358,19 @@ internal object OperationalStorage {
             }
             if (context != null && CaltopoClient.GetArchiveUri() != null) {
                 // Prepare only the clues area; do not wait for layers/DEM/recordings.
-                val clues = prepareClues(context.applicationContext)
-                synchronized(cluesGate) {
-                    checkClues(clues)
-                    if (mapping(file, clues.value) != null) {
-                        removeOnStore(clues.value, file)
-                        return
+                val clues = runCatching { prepareClues(context.applicationContext) }.getOrElse { error ->
+                    if (isUnavailable(error)) {
+                        announceUnavailable(error.message ?: ArchiveDirAvailability.CHOOSE_OR_RECONNECT_CLUES)
+                        null
+                    } else throw error
+                }
+                if (clues != null) {
+                    synchronized(cluesGate) {
+                        checkClues(clues)
+                        if (mapping(file, clues.value) != null) {
+                            removeOnStore(clues.value, file)
+                            return
+                        }
                     }
                 }
             }
@@ -1254,8 +1378,12 @@ internal object OperationalStorage {
             return
         }
         synchronized(gate) {
-            val value = store ?: error("Archive storage is not prepared")
-            kotlin.check(state.value.ready) { state.value.message.ifEmpty { "Archive Dir is unavailable." } }
+            val value = store
+            if (value == null || !state.value.ready) {
+                // Unmanaged or unprepared delete: remove the local file; Archive Dir retains until reconnect.
+                if (file.exists()) check(file.delete() || !file.exists()) { "Could not delete local file" }
+                return
+            }
             removeOnStore(value, file)
         }
     }

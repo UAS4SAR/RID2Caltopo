@@ -440,10 +440,18 @@ class AndroidClueStore private constructor(
 
     private fun selectRoot() {
         val app = context ?: return
-        val next = if (org.ncssar.rid2caltopo.data.CaltopoClient.GetArchiveUri() == null) {
-            check(org.ncssar.rid2caltopo.data.CaltopoClient.HasArchiveDirForCurrentSession()) { "Choose Archive Dir before saving clues." }
-            org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(app, "clues")
-        } else File(app.filesDir, "clues")
+        // Clues always stay durable in app-private storage. Temporary session archive uses
+        // TemporaryStorage; reconnect migrates via OperationalStorage retain/hydrate.
+        val next = when {
+            org.ncssar.rid2caltopo.data.CaltopoClient.GetArchiveUri() != null ->
+                File(app.filesDir, "clues")
+            org.ncssar.rid2caltopo.data.CaltopoClient.HasArchiveDirForCurrentSession() ->
+                org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(app, "clues")
+            else -> {
+                org.ncssar.rid2caltopo.storage.OperationalStorage.announceUnavailable()
+                File(app.filesDir, "clues")
+            }
+        }
         if (next != root) { root = next; loaded = false }
     }
 

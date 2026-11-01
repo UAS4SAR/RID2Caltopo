@@ -34,7 +34,11 @@ internal object MappingFlightDeletion {
         try {
             connections.forEach { it.closeAndWait() }
             DjiCloudManager.deletionDrained(missionId,connections)
-            org.ncssar.rid2caltopo.storage.OperationalStorage.requireReady(context)
+            check(org.ncssar.rid2caltopo.storage.OperationalStorage.tryRequireReady(context)) {
+                org.ncssar.rid2caltopo.storage.OperationalStorage.status.value.message.ifEmpty {
+                    "Choose or reconnect Archive Dir to use retained operational data."
+                }
+            }
             val managed = org.ncssar.rid2caltopo.storage.OperationalStorage.ready()
             val volumes = context.getExternalFilesDirs(null).filterNotNull().map { File(it, "local-mapping") }
             val plan = plan(context.filesDir, volumes, missionId, originals, managed)

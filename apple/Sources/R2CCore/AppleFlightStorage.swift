@@ -211,8 +211,11 @@ public final class AppleFlightStorage: @unchecked Sendable {
     }
 
     public static var root: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("RID2Caltopo/FlightStorage", isDirectory: true)
+        // App-sandbox Documents is the durable store (no Android-style Archive Dir bookmark).
+        // Fall back to temporaryDirectory rather than crashing if Documents is unavailable.
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return documents.appendingPathComponent("RID2Caltopo/FlightStorage", isDirectory: true)
     }
     public static func dayName(_ date: Date) -> String {
         let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")

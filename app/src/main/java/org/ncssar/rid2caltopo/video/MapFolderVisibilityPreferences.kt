@@ -80,7 +80,9 @@ internal class MapFolderVisibilityPreferences(
     private val write: (String, String) -> Unit,
     private val onWriteFailure: (Throwable) -> Unit = {}
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + worker)
+    private val scope = CoroutineScope(
+        SupervisorJob() + worker + org.ncssar.rid2caltopo.app.StartupCoroutineSafety.handler
+    )
     private val gate = Any()
     private val pending = LinkedHashMap<String, SavedMapFolderVisibility>()
     private var draining = false

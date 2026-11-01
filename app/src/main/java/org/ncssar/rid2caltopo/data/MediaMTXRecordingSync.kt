@@ -25,8 +25,11 @@ object MediaMTXRecordingSync {
 
     @JvmStatic
     fun getRecordingStagingDir(context: Context): File {
-        if (CaltopoClient.GetArchiveUri() == null) return org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context, "recording-staging")
-        org.ncssar.rid2caltopo.storage.OperationalStorage.requireRecorderReady(context)
+        if (CaltopoClient.GetArchiveUri() == null ||
+            !org.ncssar.rid2caltopo.storage.OperationalStorage.tryRequireRecorderReady(context)
+        ) {
+            return org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context, "recording-staging")
+        }
         return File(context.filesDir, "mediamtx-recordings")
     }
 

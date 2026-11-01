@@ -71,11 +71,23 @@ actor AppleTrackArchiveStore {
     private let reportedFilename = "r2c_reported.txt"
     private let uploadWork = TrackerArchiveUploadWork<AppleTrackArchiveOutcome.TrackerResult>()
     private var pendingReplayTask: Task<Void, Never>?
+    /// Soft flag when Documents could not be resolved; tracks/clues still try app-private paths.
+    let documentsUnavailable: Bool
 
     init(fileManager: FileManager = .default, session: URLSession = .shared) {
-        rootURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("RID2Caltopo", isDirectory: true)
-            .appendingPathComponent("FlightStorage", isDirectory: true)
+        if let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
+            rootURL = documents
+                .appendingPathComponent("RID2Caltopo", isDirectory: true)
+                .appendingPathComponent("FlightStorage", isDirectory: true)
+            documentsUnavailable = false
+        } else {
+            // Prefer a writable temporary root over crashing launch; operator sees status.
+            rootURL = fileManager.temporaryDirectory
+                .appendingPathComponent("RID2Caltopo", isDirectory: true)
+                .appendingPathComponent("FlightStorage", isDirectory: true)
+            documentsUnavailable = true
+            AppleLog.warning("Archive", "Documents directory unavailable; using temporary FlightStorage until Documents returns")
+        }
         self.session = session
     }
 

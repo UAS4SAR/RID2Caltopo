@@ -497,7 +497,7 @@ object FlightStorage {
     }
     private inline fun <T> storageIo(context: Context, action: () -> T): T {
         check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) { "Flight storage must run on a worker" }
-        if (CaltopoClient.GetArchiveUri() != null) org.ncssar.rid2caltopo.storage.OperationalStorage.requireReady(context)
+        org.ncssar.rid2caltopo.storage.OperationalStorage.tryRequireReady(context)
         return synchronized(lock, action)
     }
     private fun availableBytes(context: Context, archive: DocumentFile?): Long? = try {

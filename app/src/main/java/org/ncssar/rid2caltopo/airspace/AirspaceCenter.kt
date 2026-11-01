@@ -19,7 +19,9 @@ import org.ncssar.rid2caltopo.data.CaltopoMap
 object AirspaceCenter {
     private const val LOOP_DELAY_MS = 1_000L
     private var nextRoutineRefreshAt = Long.MIN_VALUE
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO + org.ncssar.rid2caltopo.app.StartupCoroutineSafety.handler
+    )
     private val repository = AirspaceRepository()
     private val _uiState = MutableStateFlow(AirspaceUiState())
     val uiState: StateFlow<AirspaceUiState> = _uiState.asStateFlow()

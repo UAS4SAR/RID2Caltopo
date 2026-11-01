@@ -13,7 +13,9 @@ import kotlinx.coroutines.Dispatchers
 
 object NotamCenter {
     private const val LOOP_DELAY_MS = 60_000L
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO + org.ncssar.rid2caltopo.app.StartupCoroutineSafety.handler
+    )
     private val repository = NotamRepository()
     private val refreshMutex = Mutex()
     val uiState = repository.uiState

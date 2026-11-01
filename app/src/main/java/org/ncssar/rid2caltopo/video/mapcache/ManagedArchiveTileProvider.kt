@@ -27,7 +27,10 @@ internal class ManagedArchiveTileProvider(private val context: Context, source: 
         override fun loadTile(index: Long): Drawable? = synchronized(diskGate) {
             if (stopped.get()) return@synchronized null
             val files = archives ?: run {
-                OperationalStorage.requireReady(context)
+                if (!OperationalStorage.tryRequireReady(context)) {
+                    archives = emptyList()
+                    return@synchronized null
+                }
                 File(context.filesDir, "map-archives").walkTopDown().filter { it.isFile && it.extension.lowercase() in setOf("zip", "sqlite", "mbtiles", "gemf") }
                     .mapNotNull { ArchiveFileFactory.getArchiveFile(it) }.toList().also { archives = it }
             }

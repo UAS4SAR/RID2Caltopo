@@ -18,5 +18,11 @@ class FlightStorageTransientCheckTest {
             IllegalStateException("Archive Dir is unavailable; reconnect its storage.")))
         assertFalse(FlightStorage.isTransientStorageCheckFailure(
             IllegalStateException("Choose or reconnect Archive Dir to use retained operational data.")))
+        assertFalse(FlightStorage.isTransientStorageCheckFailure(
+            org.ncssar.rid2caltopo.storage.ArchiveDirUnavailableException(
+                "Choose or reconnect Archive Dir to use retained operational data.")))
+        assertTrue(org.ncssar.rid2caltopo.storage.OperationalStorage.isUnavailable(
+            org.ncssar.rid2caltopo.storage.ArchiveDirUnavailableException(
+                "Choose or reconnect Archive Dir to use retained operational data.")))
     }
 }
