@@ -3,7 +3,10 @@ from unittest.mock import patch
 from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 from pathlib import Path
-from run_android_release_qualification import instrumentation_passed, p95, app_owned_io, inspect_violations
+from run_android_release_qualification import (
+    instrumentation_passed, p95, app_owned_io, inspect_violations,
+    package_process_pids, force_stop_and_await_gone,
+)
 
 
 class QualificationResultTests(unittest.TestCase):
@@ -35,6 +38,23 @@ class QualificationResultTests(unittest.TestCase):
         for values in ([], [float("nan")], [-1]):
             with self.assertRaises(AssertionError): p95(values)
         self.assertEqual(19, p95(list(range(1, 21))))
+
+    def test_force_stop_waits_until_main_and_caltopo_probe_are_gone(self):
+        calls = []
+
+        def adb_run(command, timeout=10):
+            calls.append(command)
+            if command[:2] == ["shell", "am"]:
+                return SimpleNamespace(returncode=0, stdout="")
+            name = command[2]
+            # First poll still sees the probe; later polls are clear.
+            if name.endswith(":caltopo_probe") and sum(1 for c in calls if c[:2] == ["shell", "pidof"]) <= 2:
+                return SimpleNamespace(returncode=0, stdout="4321")
+            return SimpleNamespace(returncode=1, stdout="")
+
+        force_stop_and_await_gone(adb_run, "org.ncssar.rid2caltopo", timeout_s=2.0)
+        self.assertTrue(any(c[:3] == ["shell", "am", "force-stop"] for c in calls))
+        self.assertEqual([], package_process_pids(adb_run, "org.ncssar.rid2caltopo"))
 
 
 if __name__ == "__main__": unittest.main()
