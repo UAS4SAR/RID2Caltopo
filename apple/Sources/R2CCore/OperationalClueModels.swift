@@ -32,6 +32,8 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
     public var lastUploadError: String?
     public var caltopoMarkerID: String?
     public var caltopoMediaID: UUID
+    /// True after marker + media + link were confirmed. Nil/false means auto re-verify may run once.
+    public var caltopoPartsReconciled: Bool?
     // Optional for compatibility with older indexes. Missing destinations require review.
     public var destinationMapID: String?
     public var destinationTeamID: String?
@@ -76,6 +78,7 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
         lastUploadError: String? = nil,
         caltopoMarkerID: String? = nil,
         caltopoMediaID: UUID = UUID(),
+        caltopoPartsReconciled: Bool? = nil,
         destinationMapID: String? = nil,
         destinationTeamID: String? = nil,
         binding: ClueBinding? = nil
@@ -103,6 +106,7 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
         self.lastUploadError = lastUploadError
         self.caltopoMarkerID = caltopoMarkerID
         self.caltopoMediaID = caltopoMediaID
+        self.caltopoPartsReconciled = caltopoPartsReconciled
         self.destinationMapID = destinationMapID
         self.destinationTeamID = destinationTeamID
         self.binding = binding

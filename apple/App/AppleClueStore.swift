@@ -196,9 +196,23 @@ final class AppleClueStore: ObservableObject {
                 }
             }
         }
+        // Allow one more published-parts re-verify for this connect.
+        for record in records where record.uploadState == .published && (record.caltopoPartsReconciled == true) {
+            mutate(record.id) { value in
+                if CluePartsReconcilePolicy.clearReconciledOnRetry(partsReconciled: value.caltopoPartsReconciled == true) {
+                    value.caltopoPartsReconciled = false
+                }
+            }
+        }
         Task { try? await persistIndex() }
         updateStatus()
-        resume()
+        // Force one more published-parts re-verify for this connect after clearing flags.
+        configurationGeneration += 1
+        let generation = configurationGeneration
+        Task {
+            await client?.cancelInFlightForConnectivityRestore()
+            await resumePendingUploads(generation: generation)
+        }
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
             guard let self else { return }
@@ -249,17 +263,19 @@ final class AppleClueStore: ObservableObject {
     func resumePendingUploads(generation: Int) async {
         await initialLoad?.value
         guard generation == configurationGeneration else { return }
-        // Repair recently published clues that reconciled marker-only (missing photo/link).
-        await reverifyRecentPublishedClues()
-        guard generation == configurationGeneration else { return }
-        // Reconcile before enqueue so a prior client timeout that still landed on CalTopo
-        // clears "1 clue pending" without risking a duplicate feature.
+        // Pending Submit uploads first — never wait on re-verify of already-published clues.
+        // Reconcile each pending id before enqueue so a prior client timeout that still landed
+        // on CalTopo clears pending without risking a duplicate feature.
         let pendingIDs = ClueTrackDurabilityIntegrity.pendingUploadIDs(in: records)
         for id in pendingIDs {
             guard generation == configurationGeneration else { return }
             if await reconcileUploadedClue(id: id) { continue }
             enqueueUpload(id)
         }
+        guard generation == configurationGeneration else { return }
+        // One-shot published-parts repair for this connect; skips already-reconciled rows.
+        await reverifyRecentPublishedClues()
+        guard generation == configurationGeneration else { return }
         let decisions: [AwaitingMapFlight]
         do {
             decisions = try await disk.run {
@@ -783,6 +799,7 @@ final class AppleClueStore: ObservableObject {
                         value.uploadState = .published
                         value.caltopoMarkerID = markerID
                         value.lastUploadError = nil
+                        value.caltopoPartsReconciled = true
                     }
                     try? await self.persistIndex()
                     self.updateStatus()
@@ -940,6 +957,7 @@ final class AppleClueStore: ObservableObject {
                 value.uploadState = .published
                 value.caltopoMarkerID = result.featureID
                 value.lastUploadError = nil
+                value.caltopoPartsReconciled = true
             }
             try? await persistIndex()
             updateStatus()
@@ -1137,13 +1155,16 @@ final class AppleClueStore: ObservableObject {
         }
     }
 
-    /// Re-verify recently published clues (last 24 h) and repair missing photos/links.
+    /// Re-verify recently published clues (last 24 h) that are not yet durably reconciled.
     func reverifyRecentPublishedClues() async {
         guard let client, !teamID.isEmpty else { return }
         await initialLoad?.value
         let cutoff = Date().addingTimeInterval(-24 * 60 * 60)
         let recent = records.filter {
-            $0.uploadState == .published && $0.capturedAt >= cutoff
+            CluePartsReconcilePolicy.needsAutoReverify(
+                uploadState: $0.uploadState,
+                partsReconciled: $0.caltopoPartsReconciled == true
+            ) && $0.capturedAt >= cutoff
         }
         for record in recent {
             do {
@@ -1152,13 +1173,20 @@ final class AppleClueStore: ObservableObject {
                     mediaID: record.caltopoMediaID,
                     teamID: record.destinationTeamID ?? teamID
                 )
-                if parts.allPresent { continue }
+                if parts.allPresent {
+                    mutate(record.id) { value in
+                        value.caltopoPartsReconciled = true
+                    }
+                    try? await persistIndex()
+                    continue
+                }
                 // Nothing visible may be a transient map/auth miss — do not demote published.
                 if !parts.anyPresent { continue }
                 if await reconcileUploadedClue(id: record.id) { continue }
                 // Still incomplete after repair: re-queue without losing the local clue.
                 mutate(record.id) { value in
                     value.uploadState = .pending
+                    value.caltopoPartsReconciled = false
                     value.lastUploadError = "Re-verify found incomplete CalTopo parts; repairing."
                 }
                 try? await persistIndex()

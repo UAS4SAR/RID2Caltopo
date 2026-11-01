@@ -38,6 +38,11 @@ data class AndroidClueRecord(
     val caltopoLinkId: String = "",
     /** Blank uses local record id as the CalTopo Marker id; set for "Upload as new marker". */
     val caltopoMarkerId: String = "",
+    /**
+     * True after marker + media + link were confirmed present. Durable so auto re-verify
+     * does not probe the same published clue on every owner wake.
+     */
+    val caltopoPartsReconciled: Boolean = false,
     /** Waypoint binding (optional; records saved before binding existed have none). */
     val binding: ClueBinding? = null,
 ) {
@@ -74,8 +79,11 @@ class AndroidClueStore private constructor(
         ensureLoaded()
         // File existence stays outside the store monitor (same as awaitingFlightClues).
         val snapshot = synchronized(this) { storedRecords.values.toList() }
+        // During prepare/merge the durable tree may be briefly renamed; keep serving index
+        // rows so the UI never flashes empty while images are mid-move.
+        val prepareBusy = org.ncssar.rid2caltopo.storage.OperationalStorage.cluesPrepareInProgress()
         return snapshot
-            .filter { it.mapKey == mapKey && imageFile(it).isFile }
+            .filter { it.mapKey == mapKey && (prepareBusy || imageFile(it).isFile) }
             .sortedByDescending { it.createdAtMs }
     }
 
@@ -303,7 +311,10 @@ class AndroidClueStore private constructor(
         }
     }
 
-    /** Recently published clues for startup re-verify of marker/media/link completeness. */
+    /**
+     * Published clues that still need a one-shot marker/media/link re-verify.
+     * Already-reconciled rows are excluded so Submit/owner wakes do not re-probe them.
+     */
     fun recentlyPublishedForMap(
         mapId: String,
         teamId: String,
@@ -313,7 +324,10 @@ class AndroidClueStore private constructor(
         return synchronized(this) {
             storedRecords.values.filter {
                 it.publishToCaltopo &&
-                    it.uploadState == "published" &&
+                    org.ncssar.rid2caltopo.data.CluePartsReconcilePolicy.needsAutoReverify(
+                        it.uploadState,
+                        it.caltopoPartsReconciled,
+                    ) &&
                     it.createdAtMs >= newerThanMs &&
                     mapId.isNotBlank() && teamId.isNotBlank() && it.mapKey == "map:$mapId" &&
                     org.ncssar.rid2caltopo.data.CluePublicationIdentity.sameTeam(it.destinationTeamId, teamId)
@@ -346,6 +360,8 @@ class AndroidClueStore private constructor(
             storedRecords[id] = prior.copy(
                 uploadState = if (success) "published" else if (terminal) "failed" else "pending",
                 lastUploadError = error,
+                // Success confirms parts; failure/demotion clears so a later connect can repair.
+                caltopoPartsReconciled = success,
             )
             indexSnapshot = storedRecords.values.toList()
             indexRoot = root
@@ -356,6 +372,35 @@ class AndroidClueStore private constructor(
             synchronized(this) { storedRecords[id] = prior }
             throw failure
         }
+    }
+
+    /** Clears durable parts-reconciled so user Retry can re-probe published clues once. */
+    fun clearPartsReconciledForRetry(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        ensureLoaded()
+        val indexSnapshot: List<AndroidClueRecord>
+        val indexRoot: File
+        val changed: Boolean
+        synchronized(this) {
+            var any = false
+            for (id in ids) {
+                val prior = storedRecords[id] ?: continue
+                if (!org.ncssar.rid2caltopo.data.CluePartsReconcilePolicy.clearReconciledOnRetry(prior.caltopoPartsReconciled)) {
+                    continue
+                }
+                storedRecords[id] = prior.copy(caltopoPartsReconciled = false)
+                any = true
+            }
+            changed = any
+            indexSnapshot = storedRecords.values.toList()
+            indexRoot = root
+        }
+        if (changed) persistIndexSnapshot(indexSnapshot, indexRoot)
+    }
+
+    /** Drop the in-memory index so the next read reloads from the durable tree. */
+    fun invalidateLoaded() {
+        synchronized(this) { loaded = false }
     }
 
     /** Persist a regenerated media/link id after corrupt existing-backendMedia recovery. */
@@ -543,6 +588,14 @@ class AndroidClueStore private constructor(
                 if (loaded) return
                 selectRoot()
                 if (root != directory) return@repeat
+                // Mid-prepare the durable directory may be briefly absent/empty. Keep the
+                // last good in-memory index until prepare finishes and a full reload lands.
+                if (prepared.isEmpty() && storedRecords.isNotEmpty() &&
+                    org.ncssar.rid2caltopo.storage.OperationalStorage.cluesPrepareInProgress()
+                ) {
+                    loaded = true
+                    return
+                }
                 storedRecords.clear()
                 storedRecords.putAll(prepared)
                 loaded = true
@@ -607,6 +660,11 @@ class AndroidClueStore private constructor(
         private var shared: AndroidClueStore? = null
         @JvmStatic @Synchronized fun shared(context: Context): AndroidClueStore =
             shared ?: AndroidClueStore(context).also { shared = it }
+
+        @JvmStatic @Synchronized fun invalidateSharedLoaded() {
+            shared?.invalidateLoaded()
+        }
+
         private const val THUMBNAIL_MAX_SIDE = 180
 
         internal fun forDirectory(root: File): AndroidClueStore = AndroidClueStore(root)
@@ -655,6 +713,7 @@ private fun AndroidClueRecord.toJson(): JSONObject = JSONObject()
     .put("caltopoMediaId", caltopoMediaId)
     .put("caltopoLinkId", caltopoLinkId)
     .put("caltopoMarkerId", caltopoMarkerId)
+    .put("caltopoPartsReconciled", caltopoPartsReconciled)
     .also { json -> binding?.let { json.put("binding", it.toJson()) } }
 
 private fun JSONObject.toAndroidClueRecord(): AndroidClueRecord? {
@@ -681,6 +740,7 @@ private fun JSONObject.toAndroidClueRecord(): AndroidClueRecord? {
         caltopoMediaId = optString("caltopoMediaId"),
         caltopoLinkId = optString("caltopoLinkId"),
         caltopoMarkerId = optString("caltopoMarkerId"),
+        caltopoPartsReconciled = optBoolean("caltopoPartsReconciled", false),
         binding = ClueBinding.fromJson(optJSONObject("binding")),
     ).takeIf { it.lat.isFinite() && it.lng.isFinite() }
 }

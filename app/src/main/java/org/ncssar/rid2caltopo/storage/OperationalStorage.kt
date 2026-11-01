@@ -669,11 +669,16 @@ internal object OperationalStorage {
                 val archiveHash = if (archivePresent) {
                     runCatching { value.tree.read(path).use { VerifiedArchiveTree.digest(it) } }.getOrNull()
                 } else null
-                when (ClueHydrationReconcile.verdict(localHash, hash, archivePresent, archiveHash)) {
+                when (ClueHydrationReconcile.verdict(localHash, hash, archivePresent, archiveHash, relative)) {
                     ClueHydrationReconcile.Verdict.MATCH -> continue
                     ClueHydrationReconcile.Verdict.RACE -> {
-                        if (archiveHash != null && localHash == archiveHash) value.migrated[path] = archiveHash
-                        else value.migrated.remove(path)
+                        // Prefer the staged (post-merge) digest when present — clues.json is
+                        // rewritten by union merge and will not match the pre-merge migrated hash.
+                        when {
+                            localHash != null -> value.migrated[path] = localHash
+                            archiveHash != null -> value.migrated[path] = archiveHash
+                            else -> value.migrated.remove(path)
+                        }
                         CaltopoClient.CTDebug(
                             "OperationalStorage",
                             "Clues hydrate reconciled concurrent lane change path=$path",
@@ -1143,6 +1148,9 @@ internal object OperationalStorage {
     }
     fun ready(): Boolean = state.value.ready
 
+    /** True while the clues prepare lock is held (merge/rename of the durable tree). */
+    fun cluesPrepareInProgress(): Boolean = cluesPrepare.isLocked
+
     /** True when clues lane verify/prepare already completed for this Archive Dir selection. */
     fun cluesReady(): Boolean {
         val generation = selectionGeneration.get()
@@ -1391,10 +1399,12 @@ internal object OperationalStorage {
             val area = selected.single { it.id == "clues" }
             val value = Store(uri, work, tree, writer, listOf(area))
             val reuseProjection = cluesPreparedGeneration == generation && cluesProjectionReusable(context, work, area)
+            var notifyProjectionReady = false
             if (!reuseProjection) {
                 val scratch = TemporaryStorage.directory(context, "archive-hydration", root.uri)
                 migrateAreaSources(context, value, area, ::checkSelection, announce = false)
                 prepareAreaProjection(context, value, area, scratch, ::checkSelection)
+                notifyProjectionReady = true
             } else {
                 CaltopoClient.CTDebug("OperationalStorage", "Reused session-prepared clues projection")
             }
@@ -1409,9 +1419,15 @@ internal object OperationalStorage {
             }
             markCluesPrepared(generation)
             CaltopoClient.CTDebug("OperationalStorage", "Clue storage ready independently of bulk storage")
+            cluesPrepare.unlock()
+            // After the rename window closes, reload the in-memory index and wake the UI
+            // that may have kept a last-good snapshot during prepare.
+            if (notifyProjectionReady) {
+                org.ncssar.rid2caltopo.app.FlightStorage.notifyCluesProjectionReady()
+            }
             return prepared
         } finally {
-            cluesPrepare.unlock()
+            if (cluesPrepare.isHeldByCurrentThread) cluesPrepare.unlock()
         }
     }
 

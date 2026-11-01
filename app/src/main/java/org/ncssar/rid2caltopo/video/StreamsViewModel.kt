@@ -2324,6 +2324,7 @@ class StreamsViewModel(
                 clueSnapshotRefsByTitle.clear()
                 _pendingClueUploads.value = emptyList()
                 activeLocalClueMapKey = null
+                clueReverifySessionKey = null
             }
         }
     }
@@ -3022,6 +3023,8 @@ class StreamsViewModel(
         clueHydrationJob?.cancel()
         val generation = ++clueHydrationGeneration
         clueHydrationJob = viewModelScope.launch {
+            val previousCount = localMapMarkers.size
+            val prepareBusy = org.ncssar.rid2caltopo.storage.OperationalStorage.cluesPrepareInProgress()
             val loaded = clueStorage {
                 val workerContext = kotlinx.coroutines.currentCoroutineContext()
                 clueDiskMutex.withLock {
@@ -3037,6 +3040,18 @@ class StreamsViewModel(
                 return@launch
             }
             if (generation != clueHydrationGeneration || mapKey != currentLocalClueMapKey()) return@launch
+            if (!org.ncssar.rid2caltopo.storage.ClueIndexObservation.shouldPublish(
+                    previousCount = previousCount,
+                    newCount = loaded.size,
+                    prepareInProgress = prepareBusy,
+                )
+            ) {
+                CTDebug(
+                    tag,
+                    "Keeping ${previousCount} local clue(s) for $mapKey during storage prepare (read=${loaded.size})",
+                )
+                return@launch
+            }
             localMapMarkers.clear()
             clueSnapshotRefsByTitle.clear()
             localClueRecordsById.clear()
@@ -3081,9 +3096,16 @@ class StreamsViewModel(
             missingCluePhotoLogged.remove(row.id)
         }
         viewModelScope.launch {
-            // Operator Retry clears terminal photo-missing / needs-attention so recovery can run again.
+            // Operator Retry clears terminal photo-missing / needs-attention so recovery can run again,
+            // and allows one more published-parts re-verify for this map connect.
+            clueReverifySessionKey = null
             clueStorage {
                 clueDiskMutex.withLock {
+                    val retryIds = _pendingClueUploads.value.map { it.id }.toMutableSet()
+                    localClueStore.allRecords()
+                        .filter { it.uploadState == "published" && it.caltopoPartsReconciled }
+                        .forEach { retryIds.add(it.id) }
+                    localClueStore.clearPartsReconciledForRetry(retryIds)
                     for (row in _pendingClueUploads.value) {
                         val record = localClueStore.record(row.id) ?: continue
                         if (org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.stopsAutoRetry(record.lastUploadError)) {
@@ -3343,6 +3365,9 @@ class StreamsViewModel(
     private val clueRetryLoggedAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val clueUploadBackoff = org.ncssar.rid2caltopo.data.ClueUploadBackoffTable()
     private var clueUploadOwner: kotlinx.coroutines.Job? = null
+    private val clueUploadWakeRequested = java.util.concurrent.atomic.AtomicBoolean(false)
+    /** One auto re-verify pass per map+team connect; Retry clears this. */
+    private var clueReverifySessionKey: String? = null
     private val maxConcurrentClueUploads = 3
 
     /** Default logging is Debug. Info is Ludicrous, so skip lines must not use CTInfo. */
@@ -3377,6 +3402,22 @@ class StreamsViewModel(
         return true
     }
 
+    /**
+     * One-shot published-parts re-verify for this map connect. Runs off the upload owner so
+     * Submit never waits on ReconcileStoredPhoto of already-published clues.
+     */
+    private fun schedulePublishedClueReverifyOnce(mapId: String, teamId: String) {
+        val key = "$mapId|$teamId"
+        if (clueReverifySessionKey == key) return
+        clueReverifySessionKey = key
+        viewModelScope.launch(Dispatchers.IO) {
+            val folderHint = CaltopoMap.GetFolderId()
+            if (!folderHint.isNullOrBlank()) {
+                reverifyRecentPublishedClues(mapId, teamId, folderHint)
+            }
+        }
+    }
+
     private fun retryPendingClues() {
         val status = CaltopoMap.GetMapStatus()
         if (status != mapStatus.up) {
@@ -3397,27 +3438,29 @@ class StreamsViewModel(
             logClueRetry("publication-team-blank", "retryPendingClues: skip reason=publication-team-blank")
             return
         }
-        // One owner loop; up to MAX_CONCURRENT_CLUE_UPLOADS in flight. Per-clue backoff must
-        // not block other ready ids — a 502 on one clue must not stall the rest.
-        if (clueUploadOwner?.isActive == true) {
+        // Submit and periodic wakes always set the flag first. An active owner with real
+        // in-flight ids logs those ids; an owner with ids={} must not claim upload-in-flight.
+        clueUploadWakeRequested.set(true)
+        val wake = org.ncssar.rid2caltopo.data.ClueUploadWakeGate.decide(
+            ownerActive = clueUploadOwner?.isActive == true,
+            inFlightIds = clueUploadStartedAtMs.keys,
+        )
+        wake.skipLogIds?.let { ids ->
             logClueRetry(
                 "upload-in-flight",
-                "retryPendingClues: skip reason=upload-in-flight ids=$clueUploadStartedAtMs",
+                "retryPendingClues: skip reason=upload-in-flight ids=$ids",
             )
             return
         }
+        if (!wake.startOwner) return
         val mapKey = currentLocalClueMapKey()
         clueUploadOwner = viewModelScope.launch {
             val owner = coroutineContext[kotlinx.coroutines.Job]
             try {
-                // Best-effort re-verify uses a cached folder when available; per-clue upload
-                // resolves its own folder under the Submit deadline so LiveTrack recovery cannot
-                // hold every pending clue behind one shared wait before "Clue upload start".
-                val folderHint = withContext(Dispatchers.IO) { CaltopoMap.GetFolderId() }
-                if (!folderHint.isNullOrBlank()) {
-                    reverifyRecentPublishedClues(mapId, teamId, folderHint)
-                }
+                // Re-verify published parts in parallel — never ahead of pending Submit uploads.
+                schedulePublishedClueReverifyOnce(mapId, teamId)
                 while (isActive) {
+                    clueUploadWakeRequested.set(false)
                     if (CaltopoMap.GetMapStatus() != mapStatus.up || CaltopoMap.GetMapId().trim() != mapId) {
                         logClueRetry("map-not-up", "retryPendingClues: skip reason=map-not-up status=${CaltopoMap.GetMapStatus()}")
                         return@launch
@@ -3444,6 +3487,7 @@ class StreamsViewModel(
                     }
                     if (visibleIds != localMapMarkers.map { it.id }.toSet()) hydrateLocalClues(mapKey)
                     if (pending.isEmpty()) {
+                        if (clueUploadWakeRequested.get()) continue
                         clueUploadBackoff.clearAll()
                         val queryTeam = org.ncssar.rid2caltopo.data.CluePublicationIdentity.normalizeTeamId(teamId)
                         val message = "retryPendingClues: skip reason=no-matching-pending queryMap=map:$mapId queryTeam=$queryTeam pending=$pendingSummary"
@@ -3950,7 +3994,15 @@ class StreamsViewModel(
                 record.caltopoMediaId.ifBlank { null },
             ) { result -> probe.complete(result) }
             val probed = probe.await()
-            if (probed.success()) continue
+            if (probed.success()) {
+                // Durable mark so later owner wakes / connects do not re-probe this clue.
+                clueStorage {
+                    clueDiskMutex.withLock {
+                        localClueStore.recordUploadResult(record.id, true, "", terminal = false)
+                    }
+                }
+                continue
+            }
             // Nothing visible may be transient — only repair clear partial presence (HTTP 409).
             if (probed.responseCode != 409) continue
             if (reconcilePendingClue(mapId, teamId, folder, record, jpeg)) continue
