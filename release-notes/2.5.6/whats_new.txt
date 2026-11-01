@@ -1,5 +1,8 @@
 Latest changes:
-- After a Play reinstall or when Archive Dir access is missing, the app no longer crashes on startup. Tracks and clues keep saving on this device and migrate when you reconnect Archive Dir; Submit still uploads immediately.
+- Confirmed clue and track uploads stay published: no re-upload after map deletion, and clue deletes remain final.
+- Live tracks auto-archive into a dated Drone Tracks folder; the awaiting-publication list stays accurate.
+- Fixed a startup freeze from location-client churn, archive prepare races, and the gimbal -90 cursor.
+- After a reinstall or when Archive Dir access is missing, the app no longer crashes on startup. Tracks and clues keep saving on this device and migrate when you reconnect Archive Dir; Submit still uploads immediately.
 - Sign in to a personal CalTopo account with Credentials through desktop activation. Existing personal browser logins keep Session Cookies until you choose Credentials. Confirm Log Out to clear the saved personal account.
 - Map Browser remembers the last credential profile, including personal accounts.
 - Clue uploads start as soon as you press Submit, save durably on this device first, and retry without creating duplicates, including photos.

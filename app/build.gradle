@@ -257,7 +257,7 @@ android {
         applicationId "org.ncssar.rid2caltopo"
         minSdk = 29
         targetSdk = 36
-        versionCode = 434
+        versionCode = 435
         versionName appVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
