@@ -40,35 +40,32 @@ internal fun drawCameraFootprints(
     mapView: MapView,
     footprints: List<CameraFootprintDrawing>,
     paints: CameraFootprintStrokePaints,
-    density: Float,
+    @Suppress("UNUSED_PARAMETER") density: Float,
 ) {
     if (footprints.isEmpty() || mapView.width <= 0 || mapView.height <= 0) return
     val projection = mapView.projection
     val pixel = android.graphics.Point()
-    fun closedOutline(vertices: List<CameraFootprintVertex>) {
+    fun strokeOutline(outline: CameraFootprintOutline) {
+        val vertices = outline.vertices
         if (vertices.size < 3) return
         val points = vertices.map { vertex ->
             projection.toPixels(GeoPoint(vertex.latitude, vertex.longitude), pixel)
             pixel.x to pixel.y
         }
-        vertices.indices.forEach { index ->
-            val next = (index + 1) % vertices.size
-            val dashed = vertices[index].clipped || vertices[next].clipped
-            val effect = if (dashed) android.graphics.DashPathEffect(floatArrayOf(5f * density, 4f * density), 0f) else null
-            paints.halo.pathEffect = effect
-            paints.border.pathEffect = effect
+        paints.halo.pathEffect = null
+        paints.border.pathEffect = null
+        val segmentCount = if (outline.closed) vertices.size else vertices.size - 1
+        for (index in 0 until segmentCount) {
+            val next = if (outline.closed) (index + 1) % vertices.size else index + 1
             val a = points[index]
             val b = points[next]
             canvas.drawLine(a.first.toFloat(), a.second.toFloat(), b.first.toFloat(), b.second.toFloat(), paints.halo)
             canvas.drawLine(a.first.toFloat(), a.second.toFloat(), b.first.toFloat(), b.second.toFloat(), paints.border)
         }
-        paints.halo.pathEffect = null
-        paints.border.pathEffect = null
     }
     footprints.forEach { footprint ->
-        // One closed outline per aircraft. Drawing corners and boundary together produced
-        // two overlapping skewed quads when terrain lagged the live pose (especially shallow).
-        closedOutline(cameraFootprintDisplayOutline(footprint))
+        // One outline per aircraft. Unbounded far edges stay open (no far segment, no dash).
+        strokeOutline(cameraFootprintDisplayOutline(footprint))
     }
 }
 

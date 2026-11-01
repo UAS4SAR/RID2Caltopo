@@ -4203,7 +4203,7 @@ private struct AircraftMapDisplay: Equatable {
 private final class CameraFootprintMapView: UIView {
     private weak var map: MKMapView?
     private var inputs: [String: CameraFootprintInput] = [:]
-    private var terrain: [String: (CameraFootprintInput, [CameraFootprintVertex])] = [:]
+    private var terrain: [String: (CameraFootprintInput, CameraFootprintOutline)] = [:]
     private var inputProvider: () -> [String: CameraFootprintInput] = { [:] }
     private var worker: Task<Void, Never>?
     private var displayTimer: Timer?
@@ -4212,9 +4212,7 @@ private final class CameraFootprintMapView: UIView {
     private let overlayBook = CameraFootprintOverlayBook()
     private let debugThrottle = CameraFootprintDebugThrottle()
     private let solidHalo = CAShapeLayer()
-    private let dashedHalo = CAShapeLayer()
     private let solidStroke = CAShapeLayer()
-    private let dashedStroke = CAShapeLayer()
     private let dem: GeoTiffElevationSource = {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -4229,19 +4227,13 @@ private final class CameraFootprintMapView: UIView {
         autoresizingMask = [.flexibleWidth, .flexibleHeight]
         let halo = UIColor.black.withAlphaComponent(0.7).cgColor
         let stroke = UIColor(red: 0.5, green: 0.87, blue: 0.92, alpha: 1).cgColor
-        for shape in [solidHalo, dashedHalo] {
-            shape.fillColor = nil
-            shape.strokeColor = halo
-            shape.lineWidth = 3
-        }
-        for shape in [solidStroke, dashedStroke] {
-            shape.fillColor = nil
-            shape.strokeColor = stroke
-            shape.lineWidth = 1.25
-        }
-        dashedHalo.lineDashPattern = [NSNumber(value: 5), NSNumber(value: 4)]
-        dashedStroke.lineDashPattern = [NSNumber(value: 5), NSNumber(value: 4)]
-        for shape in [solidHalo, dashedHalo, solidStroke, dashedStroke] {
+        solidHalo.fillColor = nil
+        solidHalo.strokeColor = halo
+        solidHalo.lineWidth = 3
+        solidStroke.fillColor = nil
+        solidStroke.strokeColor = stroke
+        solidStroke.lineWidth = 1.25
+        for shape in [solidHalo, solidStroke] {
             layer.addSublayer(shape)
         }
     }
@@ -4277,7 +4269,7 @@ private final class CameraFootprintMapView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         let scale = traitCollection.displayScale
-        for shape in [solidHalo, dashedHalo, solidStroke, dashedStroke] {
+        for shape in [solidHalo, solidStroke] {
             shape.frame = bounds
             shape.contentsScale = scale
         }
@@ -4342,7 +4334,7 @@ private final class CameraFootprintMapView: UIView {
                 }
                 let result = await withTaskCancellationHandler(operation: { await task.value }, onCancel: { task.cancel() })
                 guard !Task.isCancelled else { return }
-                let computed = result.reduce(into: [String: (CameraFootprintInput, [CameraFootprintVertex])]()) { values, entry in
+                let computed = result.reduce(into: [String: (CameraFootprintInput, CameraFootprintOutline)]()) { values, entry in
                     if let input = snapshot[entry.key] { values[entry.key] = (input, entry.value) }
                 }
                 self.terrain = mergeCameraFootprintTerrain(previous: self.terrain, computed: computed, current: snapshot)
@@ -4355,51 +4347,49 @@ private final class CameraFootprintMapView: UIView {
     private func rebuildPaths() {
         guard let map, bounds.width > 0, bounds.height > 0 else { clearPaths(); return }
         let solid = UIBezierPath()
-        let dashed = UIBezierPath()
-        func closedOutline(_ vertices: [CameraFootprintVertex]) {
+        func strokeOutline(_ outline: CameraFootprintOutline) {
+            let vertices = outline.vertices
             guard vertices.count >= 3 else { return }
             let points = vertices.map {
                 map.convert(CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude), toPointTo: self)
             }
-            for index in vertices.indices {
-                let next = (index + 1) % vertices.count
-                let path = vertices[index].clipped || vertices[next].clipped ? dashed : solid
-                path.move(to: points[index])
-                path.addLine(to: points[next])
+            let segmentCount = outline.closed ? vertices.count : vertices.count - 1
+            for index in 0..<segmentCount {
+                let next = outline.closed ? (index + 1) % vertices.count : index + 1
+                solid.move(to: points[index])
+                solid.addLine(to: points[next])
             }
         }
-        // One closed outline per aircraft. Drawing corners and boundary together produced
-        // two overlapping skewed quads when terrain lagged the live pose (especially shallow).
+        // One outline per aircraft. Unbounded far edges stay open (no far segment, no dash).
         let outlines = overlayBook.sync(inputs: inputs, terrain: terrain)
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         debugThrottle.retain(activeKeys: Set(inputs.keys))
         for (id, input) in inputs {
-            if debugThrottle.shouldLog(droneKey: id, nowMs: nowMs) {
-                AppleLog.debug(
-                    "CameraFootprint",
-                    cameraFootprintDebugLine(
-                        source: "SEI",
-                        gimbalTiltDeg: input.tilt,
-                        headingDeg: input.azimuth,
-                        aglMeters: input.height
-                    )
-                )
-            }
             if let outline = outlines[id] {
-                closedOutline(outline)
+                if debugThrottle.shouldLog(droneKey: id, nowMs: nowMs) {
+                    AppleLog.debug(
+                        "CameraFootprint",
+                        cameraFootprintDebugLine(
+                            source: "SEI",
+                            gimbalTiltDeg: input.tilt,
+                            headingDeg: input.azimuth,
+                            aglMeters: input.height,
+                            nearGroundMeters: outline.nearGroundMeters,
+                            farGroundMeters: outline.farGroundMeters,
+                            clamped: outline.clamped
+                        )
+                    )
+                }
+                strokeOutline(outline)
             }
         }
         solidHalo.path = solid.cgPath
         solidStroke.path = solid.cgPath
-        dashedHalo.path = dashed.cgPath
-        dashedStroke.path = dashed.cgPath
     }
 
     private func clearPaths() {
         solidHalo.path = nil
-        dashedHalo.path = nil
         solidStroke.path = nil
-        dashedStroke.path = nil
     }
 }
 
