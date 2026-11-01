@@ -20,17 +20,19 @@ class MappingAircraftPreferenceTest {
             assertEquals("DJI Matrice 4TD",first.load())
             for(model in listOf("DJI Matrice 30","DJI Matrice 30T","DJI Matrice 4T"))first.select(model)
             assertEquals("DJI Matrice 4T",first.load())
-            withTimeout(5000){store.data.first{it[key]=="DJI Matrice 4T"}}
+            withTimeout(15_000){store.data.first{it[key]=="DJI Matrice 4T"}}
             scope.coroutineContext[Job]!!.cancelAndJoin()
+            // Let the previous DataStore actor release the preferences file before reopen.
+            delay(250)
             scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
             store=PreferenceDataStoreFactory.create(scope=scope,produceFile={file})
             val reopened=MappingAircraftPreference(store,scope)
             assertEquals("DJI Matrice 4T",reopened.load())
             reopened.select("DJI Matrice 400")
-            withTimeout(5000){store.data.first{it[key]=="DJI Matrice 400"}}
+            withTimeout(15_000){store.data.first{it[key]=="DJI Matrice 400"}}
             assertEquals("DJI Matrice 400",MappingAircraftPreference(store,scope).load())
             reopened.select("retired model")
-            withTimeout(5000){store.data.first{it[key]=="DJI Matrice 4TD"}}
+            withTimeout(15_000){store.data.first{it[key]=="DJI Matrice 4TD"}}
             assertEquals("DJI Matrice 4TD",reopened.load())
         } finally {scope.coroutineContext[Job]!!.cancelAndJoin();directory.deleteRecursively()}
     }

@@ -324,7 +324,10 @@ android {
                     arguments "-DANOMALY_DEBUG_TIMING=ON"
                 }
             }
-            enableUnitTestCoverage = true
+            // Jacoco unit-test agent hangs DataStore preference tests on JDK 25
+            // (class file 69 / Unsupported class file). Re-enable when the agent
+            // supports this runtime; device coverage remains opt-in below.
+            enableUnitTestCoverage = false
             // Device coverage instruments app and library hot paths. Keep normal
             // field/debug installs representative; opt in only for coverage runs.
             enableAndroidTestCoverage = providers.gradleProperty("enableDeviceCoverage")
@@ -376,9 +379,20 @@ android {
         unitTests.all {
             jacoco {
                 includeNoLocationClasses = true
-                excludes = ['jdk.internal.*']
+                // JDK 25 (class file 69) platform classes break older Jacoco agents and hang
+                // DataStore preference unit tests; keep app classes instrumented.
+                excludes = ['jdk.internal.*', 'jdk.*', 'java.*', 'javax.*', 'sun.*']
             }
         }
+    }
+}
+
+// AGP still attaches the Jacoco agent from unitTests.all { jacoco {} } even when
+// enableUnitTestCoverage is false. Disable it so JDK 25 unit tests stay reliable.
+tasks.withType(Test).configureEach { test ->
+    def extension = test.extensions.findByType(JacocoTaskExtension)
+    if (extension != null) {
+        extension.enabled = false
     }
 }
 
@@ -482,7 +496,8 @@ dependencies {
 }
 
 jacoco {
-    toolVersion = "0.8.12"
+    // 0.8.12 cannot instrument JDK 25 (class file 69); DataStore preference tests hang.
+    toolVersion = "0.8.14"
 }
 
 tasks.register("jacocoTestReport", JacocoReport) {
