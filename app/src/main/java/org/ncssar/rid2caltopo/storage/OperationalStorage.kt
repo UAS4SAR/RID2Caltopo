@@ -653,17 +653,26 @@ internal object OperationalStorage {
                 }
             }
             // Retain after the durable alias is published so Archive Dir has every pending photo.
+            // Never replace=true here: mismatched same-path archive copies must survive (union merge).
             for (file in area.alias.walkTopDown().filter { it.isFile }) {
                 checkSelection()
                 val relative = file.relativeTo(area.alias).invariantSeparatorsPath
                 if (relative.isNotEmpty() && allowed(area, relative)) {
-                    runCatching { commit(value, file, "${area.retained}/$relative") }
-                        .onFailure { error ->
+                    try {
+                        commit(value, file, "${area.retained}/$relative", replace = false, stableSnapshot = true)
+                    } catch (error: IllegalStateException) {
+                        if (error.message?.startsWith("Conflicting archive file:") == true) {
                             CaltopoClient.CTWarn(
                                 "OperationalStorage",
-                                "Clues durable retain deferred path=$relative: ${error.message}",
+                                "Clues durable retain kept archive conflict path=$relative",
                             )
+                            continue
                         }
+                        CaltopoClient.CTWarn(
+                            "OperationalStorage",
+                            "Clues durable retain deferred path=$relative: ${error.message}",
+                        )
+                    }
                 }
             }
             // Never symlink clues into clearable cache — keep a material durable directory.
