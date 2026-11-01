@@ -63,7 +63,24 @@ class TileDiskCacheWriter(context: Context) : IFilesystemCache {
                 check(temporary.renameTo(file)) { "Cannot save local mapping imagery." }
                 return true
             }
-            val expiresAt = pExpirationTime?.takeIf { it > System.currentTimeMillis() } ?: diskCache.defaultExpiry()
+            if (pTileSourceInfo.name() == "USFS-Topo" && !isRasterImage(bytes)) {
+                // The current Forest Service Basemap is a vector-tile service. Do not
+                // keep those payloads in the raster cache.
+                MapCacheDebug.log("tile put skipped source=USFS-Topo key=$key reason=not-raster")
+                return false
+            }
+            val now = System.currentTimeMillis()
+            val policyExpiry = TileSourceRetention.expiresAtMs(
+                pTileSourceInfo.name(),
+                now,
+                MapCacheSettings.maxTileAgeMs(appContext)
+            )
+            val requested = pExpirationTime?.takeIf { it > now }
+            val expiresAt = when (TileSourceRetention.classifySource(pTileSourceInfo.name())) {
+                TileRetentionClass.RESTRICTED -> minOf(requested ?: Long.MAX_VALUE, policyExpiry)
+                TileRetentionClass.UNRESTRICTED -> Long.MAX_VALUE
+                TileRetentionClass.STANDARD -> requested ?: policyExpiry
+            }
             diskCache.put(key, bytes, expiresAt)
             if (diskCache.snapshot().bytesUsed > MapCachePolicy.tileCacheMaxBytes(appContext)) {
                 MapCacheMaintenanceScheduler.request(appContext)
@@ -142,7 +159,15 @@ class TileDiskCacheWriter(context: Context) : IFilesystemCache {
         val drawable = pTileSource.getDrawable(ByteArrayInputStream(cached.bytes)) ?: return null
         if (usedKey != keys.first()) {
             // Opportunistically migrate legacy source-name keys to current key format.
-            diskCache.put(keys.first(), cached.bytes, diskCache.defaultExpiry())
+            diskCache.put(
+                keys.first(),
+                cached.bytes,
+                TileSourceRetention.expiresAtMs(
+                    pTileSource.name(),
+                    System.currentTimeMillis(),
+                    MapCacheSettings.maxTileAgeMs(appContext)
+                )
+            )
             MapCacheDebug.log("tile migrate source=${pTileSource.name()} from=$usedKey to=${keys.first()}")
         }
         if (cached.stale) {
@@ -325,6 +350,15 @@ class TileDiskCacheWriter(context: Context) : IFilesystemCache {
             }
             return true
         }
+    }
+
+    private fun isRasterImage(bytes: ByteArray): Boolean {
+        if (bytes.size < 8) return false
+        val jpeg = bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte()
+        val png = bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte()
+        val gif = bytes[0] == 0x47.toByte() && bytes[1] == 0x49.toByte()
+        val webp = bytes[0] == 0x52.toByte() && bytes[1] == 0x49.toByte() && bytes[2] == 0x46.toByte()
+        return jpeg || png || gif || webp
     }
 
     private fun sha256Hex(bytes: ByteArray): String {

@@ -47,6 +47,40 @@ internal object OsmStandardTileSource : OnlineTileSourceBase(
     }
 }
 
+internal object UsgsTopoTileSource : OnlineTileSourceBase(
+    "USGS-Topo",
+    0,
+    16,
+    256,
+    "",
+    arrayOf("https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/")
+) {
+    override fun getTileURLString(pMapTileIndex: Long): String {
+        val zoom = MapTileIndex.getZoom(pMapTileIndex)
+        val x = MapTileIndex.getX(pMapTileIndex)
+        val y = MapTileIndex.getY(pMapTileIndex)
+        // ArcGIS order is z/y/x. A file extension is rejected with HTTP 400.
+        return "$baseUrl$zoom/$y/$x"
+    }
+}
+
+internal object UsfsTopoTileSource : OnlineTileSourceBase(
+    "USFS-Topo",
+    2,
+    19,
+    256,
+    ".pbf",
+    arrayOf("https://tiles.arcgis.com/tiles/gGHDlz6USftL5Pau/arcgis/rest/services/FSBasemap_20240617/VectorTileServer/tile/")
+) {
+    override fun getTileURLString(pMapTileIndex: Long): String {
+        val zoom = MapTileIndex.getZoom(pMapTileIndex)
+        val x = MapTileIndex.getX(pMapTileIndex)
+        val y = MapTileIndex.getY(pMapTileIndex)
+        // The retired raster cache EDW_FSTopo_01 returns 404. This is the current national basemap.
+        return "$baseUrl$zoom/$y/$x.pbf"
+    }
+}
+
 internal object UsgsContoursTileSource : OnlineTileSourceBase(
     "USGS-Contours",
     0,
@@ -87,6 +121,8 @@ internal fun tileSourceForBaseLayer(baseLayer: BaseLayerOption): OnlineTileSourc
     when (baseLayer) {
         BaseLayerOption.OpenStreetMap -> OsmStandardTileSource
         BaseLayerOption.Imagery -> ArcGisWorldImageryTileSource
+        BaseLayerOption.UsgsTopo -> UsgsTopoTileSource
+        BaseLayerOption.UsfsTopo -> UsfsTopoTileSource
     }
 
 internal fun offlinePrepTileSources(

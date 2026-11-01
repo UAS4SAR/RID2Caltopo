@@ -108,13 +108,30 @@ internal object UnifiedMapCache {
         }
     }
 
-    fun maintain(context: Context) = synchronized(lock) {
-        initialize(context)
-        val cutoff = System.currentTimeMillis() - MapCachePolicy.tileCacheMaxAgeMs(context)
-        stores.values.filter { it.namespace.startsWith("tile_") }.forEach {
-            it.cache.runMaintenance(cutoff, it.cache.snapshot().bytesUsed)
+    fun maintain(context: Context, shouldContinue: () -> Boolean = { true }): Boolean {
+        val caches = synchronized(lock) {
+            initialize(context)
+            stores.values.filter { it.namespace.startsWith("tile_") }.map { it.cache }
         }
-        trim(context, (MapCacheSettings.maxCacheBytes(context) - reserved).coerceAtLeast(0))
+        if (!shouldContinue()) return false
+        val now = System.currentTimeMillis()
+        val standardMaxAgeMs = MapCachePolicy.tileCacheMaxAgeMs(context)
+        for (cache in caches) {
+            if (!shouldContinue()) return false
+            cache.purgeMatching(
+                decide = { key, createdAtMs, expiresAtMs ->
+                    TileSourceRetention.decision(key, createdAtMs, expiresAtMs, now, standardMaxAgeMs)
+                },
+                shouldContinue = shouldContinue
+            )
+        }
+        if (!shouldContinue()) return false
+        synchronized(lock) {
+            if (shouldContinue()) {
+                trim(context, (MapCacheSettings.maxCacheBytes(context) - reserved).coerceAtLeast(0))
+            }
+        }
+        return shouldContinue()
     }
 
     /** Explicit cleanup only. Live reservations and terrain readers remain protected. */

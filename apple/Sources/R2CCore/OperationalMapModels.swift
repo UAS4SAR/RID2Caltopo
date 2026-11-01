@@ -83,16 +83,59 @@ public enum OperationalMapFocusPolicy {
 public enum OperationalMapBaseLayer: String, CaseIterable, Codable, Sendable, Equatable {
     case openStreetMap
     case imagery
+    /// Current National Map topographic basemap (USGSTopo). Public-domain US Government work.
+    case usgsTopo
+    /// USDA Forest Service Basemap (FSBasemap). Freely distributable; the live service is vector tiles.
+    case usfsTopo
 
     public var label: String {
         switch self {
         case .openStreetMap: "OpenStreetMap"
         case .imagery: "Imagery"
+        case .usgsTopo: "USGS Topo"
+        case .usfsTopo: "USFS Topo"
         }
     }
 
     public var cacheKey: String { rawValue }
-    public var fileExtension: String { self == .imagery ? "jpg" : "png" }
+
+    public var fileExtension: String {
+        switch self {
+        case .imagery, .usgsTopo: "jpg"
+        case .openStreetMap: "png"
+        case .usfsTopo: "pbf"
+        }
+    }
+
+    /// Last zoom the origin actually publishes. Higher display zooms reuse that tile.
+    public var sourceMaximumZoom: Int {
+        switch self {
+        case .usgsTopo: 16
+        case .openStreetMap, .imagery, .usfsTopo: 19
+        }
+    }
+
+    public var attribution: String {
+        switch self {
+        case .openStreetMap: "© OpenStreetMap contributors"
+        case .imagery: "Tiles © Esri"
+        case .usgsTopo: "USGS The National Map"
+        case .usfsTopo: "U.S. Forest Service"
+        }
+    }
+
+    public var attributionURL: URL {
+        switch self {
+        case .openStreetMap:
+            OperationalMapTilePolicy.openStreetMapCopyrightURL
+        case .imagery:
+            EsriImageryAttribution.sourceURL
+        case .usgsTopo:
+            URL(string: "https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer")!
+        case .usfsTopo:
+            URL(string: "https://tiles.arcgis.com/tiles/gGHDlz6USftL5Pau/arcgis/rest/services/FSBasemap_20240617/VectorTileServer")!
+        }
+    }
 
     public func tileURL(zoom: Int, x: Int, y: Int) -> URL? {
         switch self {
@@ -100,6 +143,12 @@ public enum OperationalMapBaseLayer: String, CaseIterable, Codable, Sendable, Eq
             URL(string: "https://tile.openstreetmap.org/\(zoom)/\(x)/\(y).png")
         case .imagery:
             URL(string: "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/\(zoom)/\(y)/\(x).jpg")
+        case .usgsTopo:
+            // ArcGIS tile order is z/y/x. The service rejects a file extension (HTTP 400).
+            URL(string: "https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/\(zoom)/\(y)/\(x)")
+        case .usfsTopo:
+            // ArcGIS vector-tile order is z/y/x. EDW_FSTopo_01, the old raster cache, now 404s.
+            URL(string: "https://tiles.arcgis.com/tiles/gGHDlz6USftL5Pau/arcgis/rest/services/FSBasemap_20240617/VectorTileServer/tile/\(zoom)/\(y)/\(x).pbf")
         }
     }
 

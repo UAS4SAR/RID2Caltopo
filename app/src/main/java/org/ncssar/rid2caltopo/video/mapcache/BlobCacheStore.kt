@@ -20,6 +20,16 @@ internal interface BlobCacheStore {
         shouldContinue: () -> Boolean = { true }
     ): CacheMaintenanceResult =
         CacheMaintenanceResult()
+
+    /**
+     * Classify each entry and delete or rewrite its expiry. Implementations must
+     * release their store lock between batches so a live tile read is not stuck
+     * behind a full-cache scan.
+     */
+    fun purgeMatching(
+        decide: (key: String, createdAtMs: Long, expiresAtMs: Long) -> TileRetentionDecision,
+        shouldContinue: () -> Boolean = { true }
+    ): CacheMaintenanceResult = CacheMaintenanceResult()
 }
 
 internal data class CacheMaintenanceResult(
