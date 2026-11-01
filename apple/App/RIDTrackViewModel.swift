@@ -632,6 +632,10 @@ final class RIDTrackViewModel: ObservableObject {
             guard let self else { throw CancellationError() }
             return try await self.ensureMapArtifacts(reason: reason)
         }
+        store.cachedTrackFolderID = { [weak self] in
+            guard let self else { return nil }
+            return await self.caltopoPublisher.cachedTrackFolderID()
+        }
         Task { [archiveStore] in
             // App-sandbox FlightStorage is durable without an Android-style Archive Dir
             // bookmark. Soft-unavailable Documents must not take down startup.

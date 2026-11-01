@@ -18,6 +18,9 @@ struct PendingClueUploadRow: Identifiable, Equatable, Sendable {
     let capturedAt: Date
     let uploadAttempts: Int
     let lastErrorPlain: String
+    let mapName: String
+    let mapID: String
+    let credentialProfile: String
 }
 
 struct AppleClueDraft: Sendable {
@@ -56,6 +59,8 @@ final class AppleClueStore: ObservableObject {
     @Published private(set) var status = "No local clues"
     @Published private(set) var pendingUploadCount = 0
     @Published private(set) var pendingUploadRows: [PendingClueUploadRow] = []
+    /// Brief status for Retry now / Upload as new ("Retrying…", then success or plain error).
+    @Published private(set) var pendingUploadActionFeedback: String?
 
     private let disk = OperationalWorkQueue(label: "org.ncssar.clues.disk")
     private var initialLoad: Task<Void, Never>?
@@ -66,14 +71,20 @@ final class AppleClueStore: ObservableObject {
     private var client: CaltopoLiveClient?
     private var teamID = ""
     private var mapID = ""
+    private var mapTitle = ""
+    private var credentialProfile = ""
     private var configurationGeneration = 0
     private var trackFolderName = "Drone Tracks"
     private var trackFolderID: String?
     private var folderResolver = CaltopoTrackFolderResolver()
     private var uploadTasks: [UUID: Task<Void, Never>] = [:]
     private var integrityScanDone = false
+    /// Consecutive identical permanent 4xx fingerprints per clue (auto-retry bound).
+    private var permanentFailureStreak: [UUID: (fingerprint: String, count: Int)] = [:]
     /// Shared with the track publisher so clue and track folder creation stay one path.
     var ensureMapArtifacts: ((CaltopoMapArtifactReason) async throws -> String)?
+    /// Cached folder id for clue send / later move (never blocks Submit).
+    var cachedTrackFolderID: (() async -> String?)?
     /// Called after a clue is saved or deleted, so a finished flight's KMZ can be rebuilt.
     var clueChanged: ((OperationalClueRecord) -> Void)?
 
@@ -105,14 +116,21 @@ final class AppleClueStore: ObservableObject {
 
     func configure(
         _ configuration: AppleCaltopoConfiguration,
-        trackFolderName: String = "Drone Tracks"
+        trackFolderName: String = "Drone Tracks",
+        mapTitle: String = "",
+        credentialProfile: String = ""
     ) {
         uploadTasks.values.forEach { $0.cancel() }
         uploadTasks.removeAll()
+        permanentFailureStreak.removeAll()
         configurationGeneration += 1
         personalLogin = configuration.personalSessionID != nil
         mapID = configuration.mapID
         teamID = configuration.publicationScope
+        self.mapTitle = mapTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.credentialProfile = credentialProfile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? (personalLogin ? "Personal" : "Team")
+            : credentialProfile.trimmingCharacters(in: .whitespacesAndNewlines)
         self.trackFolderName = trackFolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "Drone Tracks"
             : trackFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -156,24 +174,74 @@ final class AppleClueStore: ObservableObject {
         resume()
     }
 
-    /// Pending-chip Retry now: clear per-clue upload tasks' backoff by re-enqueueing immediately.
+    /// Pending-chip Retry now: immediate, not throttled by backoff. Feedback is plain words.
     func retryPendingUploadsNow() {
         AppleLog.info("Clue", "retryPendingUploadsNow pending=\(pendingUploadCount)")
+        pendingUploadActionFeedback = "Retrying…"
         let pendingIDs = records
             .filter { $0.uploadState == .pending || $0.uploadState == .failed || $0.uploadState == .uploading }
             .map(\.id)
         for id in pendingIDs {
             uploadTasks[id]?.cancel()
             uploadTasks.removeValue(forKey: id)
+            permanentFailureStreak.removeValue(forKey: id)
             mutate(id) { value in
                 if value.uploadState != .published && value.uploadState != .localOnly {
                     value.uploadState = .pending
+                    if value.lastUploadError == CluePhotoUploadPolicy.needsAttentionMessage {
+                        value.lastUploadError = nil
+                    }
                 }
             }
         }
         Task { try? await persistIndex() }
         updateStatus()
         resume()
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self else { return }
+            if self.pendingUploadCount == 0 {
+                self.pendingUploadActionFeedback = "Uploaded"
+            } else if let first = self.pendingUploadRows.first {
+                self.pendingUploadActionFeedback = first.lastErrorPlain
+            }
+        }
+    }
+
+    /// Upload as a brand-new CalTopo marker (new marker + media ids); local record id unchanged.
+    func uploadPendingClueAsNewMarker(_ id: UUID) {
+        guard let record = records.first(where: { $0.id == id }),
+              record.uploadState != .published, record.uploadState != .localOnly else { return }
+        pendingUploadActionFeedback = "Retrying…"
+        uploadTasks[id]?.cancel()
+        uploadTasks.removeValue(forKey: id)
+        permanentFailureStreak.removeValue(forKey: id)
+        let freshMarker = UUID()
+        let freshMedia = UUID()
+        mutate(id) { value in
+            value.caltopoMarkerID = freshMarker.uuidString.lowercased()
+            value.caltopoMediaID = freshMedia
+            value.uploadState = .pending
+            value.lastUploadError = nil
+        }
+        Task { try? await persistIndex() }
+        updateStatus()
+        enqueueUpload(id)
+        AppleLog.info("Clue", "Clue upload as new marker id=\(id) marker=\(freshMarker)")
+    }
+
+    /// Stop auto-upload; keep the local photo and metadata (never deletes).
+    func dismissPendingClueKeepLocal(_ id: UUID) {
+        uploadTasks[id]?.cancel()
+        uploadTasks.removeValue(forKey: id)
+        permanentFailureStreak.removeValue(forKey: id)
+        mutate(id) { value in
+            value.uploadState = .localOnly
+            value.lastUploadError = nil
+        }
+        Task { try? await persistIndex() }
+        updateStatus()
+        AppleLog.info("Clue", "Clue dismiss keep local id=\(id)")
     }
 
     func resumePendingUploads(generation: Int) async {
@@ -678,60 +746,45 @@ final class AppleClueStore: ObservableObject {
                     let publishDescription = latest.publishedDescription
                     let publishMediaID = latest.caltopoMediaID
                     let publishCreatedMs = Int64(latest.capturedAt.timeIntervalSince1970 * 1_000)
-                    let markerID: String = try await {
-                        let folderID: String = try await {
-                            try await withThrowingTaskGroup(of: String.self) { group in
-                                group.addTask {
-                                    try await self.resolveTrackFolder(using: client)
-                                }
-                                group.addTask {
-                                    let remaining = submitDeadlineSeconds - Date().timeIntervalSince(attemptStartedAt)
-                                    guard remaining > 0 else { throw ClueUploadAttemptTimeout(kind: .submit) }
-                                    try await Task.sleep(for: .seconds(remaining))
-                                    throw ClueUploadAttemptTimeout(kind: .submit)
-                                }
-                                let first = try await group.next()!
-                                group.cancelAll()
-                                return first
-                            }
-                        }()
-                        try Task.checkCancellation()
-                        let remainingOverall = submitDeadlineSeconds - Date().timeIntervalSince(attemptStartedAt)
-                        guard remainingOverall > 0 else { throw ClueUploadAttemptTimeout(kind: .submit) }
-                        let sendTimeout = min(sendBudgetSeconds, remainingOverall)
-                        AppleLog.info(
-                            "Clue",
-                            "Clue upload send id=\(id) attempt=\(attempt) folder=\(folderID) " +
-                                "sendTimeout=\(Int(sendTimeout))s"
-                        )
-                        return try await withThrowingTaskGroup(of: String.self) { group in
-                            group.addTask {
-                                try await client.publishPhotoClue(CaltopoPhotoClue(
-                                    markerID: id,
-                                    mediaID: publishMediaID,
-                                    latitude: publishLatitude,
-                                    longitude: publishLongitude,
-                                    title: publishTitle,
-                                    description: publishDescription,
-                                    createdMilliseconds: publishCreatedMs,
-                                    jpegData: jpeg,
-                                    teamID: destinationTeamID,
-                                    folderID: folderID
-                                ))
-                            }
-                            group.addTask {
-                                try await Task.sleep(for: .seconds(sendTimeout))
-                                throw ClueUploadAttemptTimeout(kind: .send)
-                            }
-                            let first = try await group.next()!
-                            group.cancelAll()
-                            return first
+                    // Cached folder only — never wait on ensure/full-map. Move later if needed.
+                    let folderID = await self.cachedFolderIDForClue()
+                    let publishMarkerID = Self.publishMarkerID(for: latest)
+                    let remainingOverall = submitDeadlineSeconds - Date().timeIntervalSince(attemptStartedAt)
+                    guard remainingOverall > 0 else { throw ClueUploadAttemptTimeout(kind: .send) }
+                    let sendTimeout = min(sendBudgetSeconds, remainingOverall)
+                    AppleLog.info(
+                        "Clue",
+                        "Clue upload send id=\(id) attempt=\(attempt) folder=\(folderID ?? "none") " +
+                            "sendTimeout=\(Int(sendTimeout))s"
+                    )
+                    let markerID: String = try await withThrowingTaskGroup(of: String.self) { group in
+                        group.addTask {
+                            try await client.publishPhotoClue(CaltopoPhotoClue(
+                                markerID: publishMarkerID,
+                                mediaID: publishMediaID,
+                                latitude: publishLatitude,
+                                longitude: publishLongitude,
+                                title: publishTitle,
+                                description: publishDescription,
+                                createdMilliseconds: publishCreatedMs,
+                                jpegData: jpeg,
+                                teamID: destinationTeamID,
+                                folderID: folderID
+                            ))
                         }
-                    }()
+                        group.addTask {
+                            try await Task.sleep(for: .seconds(sendTimeout))
+                            throw ClueUploadAttemptTimeout(kind: .send)
+                        }
+                        let first = try await group.next()!
+                        group.cancelAll()
+                        return first
+                    }
                     guard !Task.isCancelled, generation == self.configurationGeneration else {
                         terminalReason = "cancelled-after-publish-race"
                         break
                     }
+                    self.permanentFailureStreak.removeValue(forKey: id)
                     self.mutate(id) { value in
                         value.uploadState = .published
                         value.caltopoMarkerID = markerID
@@ -743,6 +796,8 @@ final class AppleClueStore: ObservableObject {
                         "Clue",
                         "Clue upload success id=\(id) attempt=\(attempt) status=200 marker=\(markerID)"
                     )
+                    // Best-effort folder move when folders were created after a folder-less send.
+                    await self.movePublishedClueToTrackFolderIfNeeded(id: id)
                     // Terrain may have refined local coords while the flat POST was in flight.
                     if self.pendingCaltopoTerrainEdits.remove(id) != nil,
                        let published = self.records.first(where: { $0.id == id }) {
@@ -751,32 +806,21 @@ final class AppleClueStore: ObservableObject {
                     terminalReason = "published"
                     break
                 } catch let CaltopoLiveClientError.httpStatus(code, message)
-                    where code == 409
-                        && message.localizedCaseInsensitiveContains(
+                    where CluePhotoUploadPolicy.isAmbiguousMediaState(statusCode: code, message: message)
+                        || (code == 409 && message.localizedCaseInsensitiveContains(
                             CluePhotoUploadPolicy.existingBackendMediaToken
-                        )
+                        ))
                 {
-                    // Corrupt / unusable existing media: persist a new id and retry without long backoff.
-                    let fresh = UUID()
-                    self.mutate(id) { value in
-                        value.caltopoMediaID = fresh
-                        value.uploadState = .pending
-                        value.lastUploadError = "Replacing unusable CalTopo photo; retrying."
-                    }
-                    try? await self.persistIndex()
-                    self.updateStatus()
-                    AppleLog.warning(
-                        "Clue",
-                        "Clue upload regenerating media id=\(id) attempt=\(attempt)"
-                    )
+                    // Ambiguous / unusable media: persist a NEW media id before the next send.
+                    await self.regenerateMediaID(for: id, reason: "ambiguous-media")
                     terminalReason = "media-regenerated"
                     continue
                 } catch let timeout as ClueUploadAttemptTimeout {
                     let attempts = self.records.first(where: { $0.id == id })?.uploadAttempts ?? 1
-                    let budget = timeout.kind == .submit
-                        ? Int(CluePhotoUploadPolicy.submitDeadlineSeconds(jpegBytes: jpeg.count))
-                        : Int(CluePhotoUploadPolicy.attemptBudgetSeconds(jpegBytes: jpeg.count))
+                    let budget = Int(CluePhotoUploadPolicy.attemptBudgetSeconds(jpegBytes: jpeg.count))
                     let token = "timeout-\(timeout.kind.rawValue)-\(budget)s"
+                    // Timeout during media/data is ambiguous — mint a new media id before retry.
+                    await self.regenerateMediaID(for: id, reason: "timeout")
                     self.mutate(id) { value in
                         value.uploadState = .failed
                         value.lastUploadError = "Upload timed out after \(budget)s; will retry."
@@ -784,7 +828,6 @@ final class AppleClueStore: ObservableObject {
                     try? await self.persistIndex()
                     self.updateStatus()
                     let delay = min(60.0, 2.0 * pow(2.0, Double(max(attempts - 1, 0))))
-                    // Log before reconcile so a full-map-read gate wait cannot delay the timeout line.
                     AppleLog.warning(
                         "Clue",
                         "Clue upload failed id=\(id) attempt=\(attempts) retry=\(Int(delay))s error=\(token)"
@@ -821,10 +864,14 @@ final class AppleClueStore: ObservableObject {
                             terminalReason = "reconciled-after-http-\(code)"
                             break
                         }
-                        // Keep durable and retry — never "permanent" until reconcile proves presence.
+                        if CluePhotoUploadPolicy.isPermanentClientFailure(statusCode: code),
+                           await self.notePermanentFailure(id: id, statusCode: code, message: message) {
+                            terminalReason = "needs-attention"
+                            break
+                        }
                         self.mutate(id) { value in
                             value.uploadState = .failed
-                            value.lastUploadError = message
+                            value.lastUploadError = CluePhotoUploadPolicy.plainUploadError(message)
                         }
                         try? await self.persistIndex()
                         self.updateStatus()
@@ -839,7 +886,7 @@ final class AppleClueStore: ObservableObject {
                     }
                     self.mutate(id) { value in
                         value.uploadState = .failed
-                        value.lastUploadError = error.localizedDescription
+                        value.lastUploadError = CluePhotoUploadPolicy.plainUploadError(error.localizedDescription)
                     }
                     try? await self.persistIndex()
                     self.updateStatus()
@@ -878,10 +925,11 @@ final class AppleClueStore: ObservableObject {
                 guard let loaded = try? await disk.run({ try Data(contentsOf: imageURL) }) else { return false }
                 jpegData = loaded
             }
-            let folderID = try? await resolveTrackFolder(using: client)
+            // Cached folder only — reconcile must never wait on folder ensure / full-map reads.
+            let folderID = await cachedFolderIDForClue()
             guard let result = try await client.reconcilePhotoClue(
                 CaltopoPhotoClue(
-                    markerID: id,
+                    markerID: Self.publishMarkerID(for: record),
                     mediaID: record.caltopoMediaID,
                     latitude: record.clueLatitude,
                     longitude: record.clueLongitude,
@@ -893,6 +941,7 @@ final class AppleClueStore: ObservableObject {
                     folderID: folderID
                 )
             ) else { return false }
+            permanentFailureStreak.removeValue(forKey: id)
             mutate(id) { value in
                 value.uploadState = .published
                 value.caltopoMarkerID = result.featureID
@@ -905,13 +954,119 @@ final class AppleClueStore: ObservableObject {
                 "Clue",
                 "Clue upload reconciled id=\(id) featureId=\(result.featureID)"
             )
+            await movePublishedClueToTrackFolderIfNeeded(id: id)
             return true
+        } catch let CaltopoLiveClientError.httpStatus(code, message)
+            where CluePhotoUploadPolicy.isAmbiguousMediaState(statusCode: code, message: message)
+        {
+            await regenerateMediaID(for: id, reason: "reconcile-ambiguous")
+            return false
         } catch {
             AppleLog.warning(
                 "Clue",
                 "Clue upload reconcile failed id=\(id) error=\(error.localizedDescription)"
             )
             return false
+        }
+    }
+
+    private static func publishMarkerID(for record: OperationalClueRecord) -> UUID {
+        if let raw = record.caltopoMarkerID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let parsed = UUID(uuidString: raw) {
+            return parsed
+        }
+        return record.id
+    }
+
+    private func cachedFolderIDForClue() async -> String? {
+        if let trackFolderID, !trackFolderID.isEmpty { return trackFolderID }
+        if let fromPublisher = await cachedTrackFolderID?(), !fromPublisher.isEmpty {
+            trackFolderID = fromPublisher
+            return fromPublisher
+        }
+        return nil
+    }
+
+    private func regenerateMediaID(for id: UUID, reason: String) async {
+        let fresh = UUID()
+        mutate(id) { value in
+            value.caltopoMediaID = fresh
+            if value.uploadState != .published && value.uploadState != .localOnly {
+                value.uploadState = .pending
+            }
+            value.lastUploadError = "Replacing unusable CalTopo photo; retrying."
+        }
+        try? await persistIndex()
+        updateStatus()
+        AppleLog.warning("Clue", "Clue upload regenerating media id=\(id) reason=\(reason)")
+    }
+
+    /// Returns true when the clue should stop auto-retry ("Needs attention").
+    @discardableResult
+    private func notePermanentFailure(id: UUID, statusCode: Int, message: String) async -> Bool {
+        let fingerprint = CluePhotoUploadPolicy.permanentFailureFingerprint(
+            statusCode: statusCode, message: message)
+        var streak = permanentFailureStreak[id] ?? (fingerprint, 0)
+        if streak.fingerprint == fingerprint {
+            streak.count += 1
+        } else {
+            streak = (fingerprint, 1)
+        }
+        permanentFailureStreak[id] = streak
+        if streak.count >= CluePhotoUploadPolicy.permanentFailureLimit {
+            mutate(id) { value in
+                value.uploadState = .failed
+                value.lastUploadError = CluePhotoUploadPolicy.needsAttentionMessage
+            }
+            try? await persistIndex()
+            updateStatus()
+            AppleLog.warning(
+                "Clue",
+                "Clue upload needs attention id=\(id) fingerprint=\(fingerprint) count=\(streak.count)"
+            )
+            return true
+        }
+        return false
+    }
+
+    /// After a folder-less send, move the marker once Drone Tracks exists. Never fails the clue.
+    private func movePublishedClueToTrackFolderIfNeeded(id: UUID) async {
+        guard let client, let record = records.first(where: { $0.id == id }),
+              record.uploadState == .published else { return }
+        let folderID: String
+        if let cached = await cachedFolderIDForClue() {
+            folderID = cached
+        } else if let ensureMapArtifacts {
+            // First flight (or later) may create folders; clue move is best-effort only.
+            do {
+                folderID = try await ensureMapArtifacts(.firstTrack)
+                trackFolderID = folderID
+            } catch {
+                AppleLog.warning(
+                    "Clue",
+                    "Clue folder move skipped id=\(id) error=\(error.localizedDescription)"
+                )
+                return
+            }
+        } else {
+            return
+        }
+        do {
+            try await client.updatePhotoClueMarker(
+                markerID: record.caltopoMarkerID ?? record.id.uuidString.lowercased(),
+                latitude: record.clueLatitude,
+                longitude: record.clueLongitude,
+                title: record.title,
+                description: record.publishedDescription,
+                folderID: folderID,
+                createdMilliseconds: Int64(record.capturedAt.timeIntervalSince1970 * 1_000)
+            )
+            AppleLog.info("Clue", "Clue folder move ok id=\(id) folder=\(folderID)")
+        } catch {
+            AppleLog.warning(
+                "Clue",
+                "Clue folder move failed id=\(id) error=\(error.localizedDescription)"
+            )
         }
     }
 
@@ -926,7 +1081,7 @@ final class AppleClueStore: ObservableObject {
         for record in recent {
             do {
                 let parts = try await client.probePhotoClueParts(
-                    markerID: record.id,
+                    markerID: Self.publishMarkerID(for: record),
                     mediaID: record.caltopoMediaID,
                     teamID: record.destinationTeamID ?? teamID
                 )
@@ -955,11 +1110,12 @@ final class AppleClueStore: ObservableObject {
         updateStatus()
     }
 
+    /// First-flight / recovery only. Clue Submit never calls this before send.
     private func resolveTrackFolder(using client: CaltopoLiveClient) async throws -> String {
         if let trackFolderID { return trackFolderID }
         let generation = configurationGeneration
         if let ensureMapArtifacts {
-            let folderID = try await ensureMapArtifacts(.clue)
+            let folderID = try await ensureMapArtifacts(.firstTrack)
             if generation == configurationGeneration { trackFolderID = folderID }
             return folderID
         }
@@ -968,9 +1124,9 @@ final class AppleClueStore: ObservableObject {
         let resolver = folderResolver
         let resolved = try await resolver.resolve(
             trackFolderName: folderName,
-            settleDelay: .milliseconds(500),
+            settleDelay: .zero,
             fetchSnapshot: {
-                // Same warm-snapshot preference as the shared publisher path.
+                // Warm connect snapshot only — never force a gated full-map read.
                 try await client.fetchMapArtifacts(refresh: false)
             },
             createFolder: { title, visible, labelVisible in
@@ -979,19 +1135,12 @@ final class AppleClueStore: ObservableObject {
                     visible: visible,
                     labelVisible: labelVisible
                 )
-            },
-            deleteFolder: { folderID in
-                try await client.deleteFolder(folderID: folderID)
-                AppleLog.info(
-                    "Clue",
-                    "Removed empty duplicate clue folder id=\(folderID)"
-                )
             }
         )
         if resolved.created {
             AppleLog.info(
                 "CalTopo",
-                "Created map artifacts reason=clue active=\(resolved.active) archive=\(resolved.archive) folder='\(folderName)'"
+                "Created map artifacts reason=first-track active=\(resolved.active) archive=\(resolved.archive) folder='\(folderName)'"
             )
         }
         if generation == configurationGeneration { trackFolderID = resolved.active }
@@ -1098,7 +1247,10 @@ final class AppleClueStore: ObservableObject {
                     designator: $0.designator,
                     capturedAt: $0.capturedAt,
                     uploadAttempts: $0.uploadAttempts,
-                    lastErrorPlain: CluePhotoUploadPolicy.plainUploadError($0.lastUploadError)
+                    lastErrorPlain: CluePhotoUploadPolicy.plainUploadError($0.lastUploadError),
+                    mapName: mapTitle.isEmpty ? mapID : mapTitle,
+                    mapID: $0.destinationMapID ?? mapID,
+                    credentialProfile: credentialProfile
                 )
             }
         status = records.isEmpty ? "No local clues" : "\(records.count) local clues\(pending > 0 ? "; \(pending) awaiting CalTopo" : "")"

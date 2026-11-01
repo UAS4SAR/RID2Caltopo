@@ -598,10 +598,26 @@ public actor CaltopoLiveClient {
             } catch let CaltopoLiveClientError.httpStatus(code, message)
                 where CluePhotoUploadPolicy.isExistingBackendMediaError(statusCode: code, message: message)
             {
-                // Timed-out create already landed; verify and continue instead of looping on 400.
-                let data = try await perform(makeMediaSnapshotRequest(mediaID: clue.mediaID, now: now), lane: clueLane)
-                mediaReady = try CaltopoPhotoMediaState.isReady(data, mediaID: clue.mediaID, ownerID: mediaOwner)
-                mediaExists = true
+                // Timed-out create may have landed, or CalTopo retained a bad id.
+                // Verify; if GET 404 / not ready, force a new media id (never loop on 400+404).
+                do {
+                    let data = try await perform(makeMediaSnapshotRequest(mediaID: clue.mediaID, now: now), lane: clueLane)
+                    mediaReady = try CaltopoPhotoMediaState.isReady(data, mediaID: clue.mediaID, ownerID: mediaOwner)
+                    mediaExists = true
+                    if !mediaReady {
+                        throw CaltopoLiveClientError.httpStatus(
+                            409,
+                            "\(CluePhotoUploadPolicy.existingBackendMediaToken); \(CluePhotoUploadPolicy.ambiguousMediaStateToken)"
+                        )
+                    }
+                } catch let CaltopoLiveClientError.httpStatus(verifyCode, _)
+                    where verifyCode == 400 || verifyCode == 404
+                {
+                    throw CaltopoLiveClientError.httpStatus(
+                        409,
+                        "\(CluePhotoUploadPolicy.existingBackendMediaToken); \(CluePhotoUploadPolicy.ambiguousMediaStateToken)"
+                    )
+                }
             }
         }
         if mediaExists && !mediaReady {
@@ -611,14 +627,22 @@ public actor CaltopoLiveClient {
             } catch let CaltopoLiveClientError.httpStatus(code, message)
                 where CluePhotoUploadPolicy.isExistingBackendMediaError(statusCode: code, message: message)
             {
-                let data = try await perform(makeMediaSnapshotRequest(mediaID: clue.mediaID, now: now), lane: clueLane)
-                if try CaltopoPhotoMediaState.isReady(data, mediaID: clue.mediaID, ownerID: mediaOwner) {
-                    mediaReady = true
-                } else {
-                    // Object exists but bytes are unusable — caller regenerates media id.
+                do {
+                    let data = try await perform(makeMediaSnapshotRequest(mediaID: clue.mediaID, now: now), lane: clueLane)
+                    if try CaltopoPhotoMediaState.isReady(data, mediaID: clue.mediaID, ownerID: mediaOwner) {
+                        mediaReady = true
+                    } else {
+                        throw CaltopoLiveClientError.httpStatus(
+                            409,
+                            "\(CluePhotoUploadPolicy.existingBackendMediaToken); \(CluePhotoUploadPolicy.ambiguousMediaStateToken)"
+                        )
+                    }
+                } catch let CaltopoLiveClientError.httpStatus(verifyCode, _)
+                    where verifyCode == 400 || verifyCode == 404
+                {
                     throw CaltopoLiveClientError.httpStatus(
                         409,
-                        "\(CluePhotoUploadPolicy.existingBackendMediaToken); media present but not ready"
+                        "\(CluePhotoUploadPolicy.existingBackendMediaToken); \(CluePhotoUploadPolicy.ambiguousMediaStateToken)"
                     )
                 }
             }
@@ -680,20 +704,8 @@ public actor CaltopoLiveClient {
             _ = try await perform(makeMarkerSnapshotRequest(markerID: featureID, now: now), lane: clueLane)
             markerPresent = true
         } catch CaltopoLiveClientError.httpStatus(let code, _) where code == 400 || code == 404 {
+            // Single-entity GET only — never fall back to a gated full-map since/0 read.
             markerPresent = false
-        }
-        if !markerPresent {
-            let snapshot = try await fetchMapArtifacts(now: now, refresh: true)
-            let clueTag = markerID.uuidString.uppercased()
-            markerPresent = snapshot.items.contains(where: {
-                $0.className == "Marker" && $0.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == featureID
-            }) || snapshot.points.contains(where: { point in
-                let id = point.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                if id == featureID { return true }
-                let description = point.description ?? ""
-                return description.localizedCaseInsensitiveContains(clueTag)
-                    || description.localizedCaseInsensitiveContains("r2c-clue-id:\(featureID)")
-            })
         }
         var mediaReady = false
         let mediaOwner = configuration.authorizesAsPersonalAccount ? configuration.personalMediaOwnerID : teamID
@@ -1348,6 +1360,12 @@ public actor CaltopoLiveClient {
                 timedOut: false)
             let preview = Self.responseBodyPreview(data)
             let detail = preview.isEmpty ? base : "\(base) body=\(preview)"
+            CaltopoPersonalAccountConnection.logFailedRequest(
+                method: method,
+                path: path,
+                status: httpResponse.statusCode,
+                credential: credential
+            )
             throw CaltopoLiveClientError.httpStatus(httpResponse.statusCode, detail)
         }
         return data

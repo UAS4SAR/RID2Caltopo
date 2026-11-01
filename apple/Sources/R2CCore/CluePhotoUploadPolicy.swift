@@ -11,11 +11,13 @@ public enum CluePhotoUploadPolicy {
     public static let photoTimeoutCapSeconds: TimeInterval = 180
     /// Overhead for marker/media/link steps around the photo POST in one send budget.
     public static let attemptBudgetOverheadSeconds: TimeInterval = 45
-    /// Extra wall-clock from Submit for folder ensure / map readiness before the first wire send.
-    /// Sized for one shared full-map-read gate interval so reconnect cannot starve the overall deadline.
-    public static let submitDeadlineFolderAllowanceSeconds: TimeInterval = 90
 
     public static let existingBackendMediaToken = "Cannot update existing backendMedia"
+    /// Thrown/returned when media create/data state cannot be verified; caller must mint a new media id.
+    public static let ambiguousMediaStateToken = "media state ambiguous"
+    public static let needsAttentionMessage = "Needs attention"
+    /// Identical permanent 4xx fingerprints before auto-retry stops (still saved; woken on reconnect).
+    public static let permanentFailureLimit = 5
 
     /// Seconds for the media `/data` HTTP call from JPEG byte length.
     public static func photoUploadTimeoutSeconds(jpegBytes: Int) -> TimeInterval {
@@ -25,7 +27,7 @@ public enum CluePhotoUploadPolicy {
         return min(photoTimeoutCapSeconds, max(photoTimeoutBaseSeconds, scaled))
     }
 
-    /// Multi-step publish budget measured from when the first clue request is sent (not folder ensure).
+    /// Multi-step publish budget measured from when the first clue request is sent.
     public static func attemptBudgetSeconds(jpegBytes: Int) -> TimeInterval {
         min(
             photoTimeoutCapSeconds + attemptBudgetOverheadSeconds,
@@ -33,9 +35,9 @@ public enum CluePhotoUploadPolicy {
         )
     }
 
-    /// Overall wall-clock from Submit / attempt start covering folder ensure + send budget.
+    /// Overall wall-clock from attempt start; send begins immediately (no folder wait).
     public static func submitDeadlineSeconds(jpegBytes: Int) -> TimeInterval {
-        attemptBudgetSeconds(jpegBytes: jpegBytes) + submitDeadlineFolderAllowanceSeconds
+        attemptBudgetSeconds(jpegBytes: jpegBytes)
     }
 
     /// CalTopo rejects re-POSTing an id that already has backend media (common after client timeout).
@@ -45,12 +47,40 @@ public enum CluePhotoUploadPolicy {
         return text.range(of: existingBackendMediaToken, options: .caseInsensitive) != nil
     }
 
+    /// Media create/data failed in a way that must not reuse the same media id.
+    public static func isAmbiguousMediaState(statusCode: Int, message: String?) -> Bool {
+        let text = message ?? ""
+        if text.range(of: ambiguousMediaStateToken, options: .caseInsensitive) != nil { return true }
+        if statusCode == 409 && text.range(of: existingBackendMediaToken, options: .caseInsensitive) != nil {
+            return true
+        }
+        return false
+    }
+
+    /// Deterministic client errors that will not succeed by blind retry of the same payload.
+    public static func isPermanentClientFailure(statusCode: Int) -> Bool {
+        switch statusCode {
+        case 400, 401, 403, 404, 409, 410, 413, 422: return true
+        default: return false
+        }
+    }
+
+    /// Fingerprint for consecutive identical permanent failures (status + brief body token).
+    public static func permanentFailureFingerprint(statusCode: Int, message: String?) -> String {
+        let plain = plainUploadError(message)
+        return "\(statusCode):\(plain)"
+    }
+
     /// Plain-language last-error text for the pending-clues sheet.
     public static func plainUploadError(_ raw: String?) -> String {
         let text = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty { return "Waiting to upload" }
-        if text.range(of: existingBackendMediaToken, options: .caseInsensitive) != nil {
-            return "Photo already on CalTopo; finishing link"
+        if text.localizedCaseInsensitiveContains(needsAttentionMessage) {
+            return needsAttentionMessage
+        }
+        if text.range(of: ambiguousMediaStateToken, options: .caseInsensitive) != nil
+            || text.range(of: existingBackendMediaToken, options: .caseInsensitive) != nil {
+            return "Photo upload incomplete; replacing photo id"
         }
         if text.localizedCaseInsensitiveContains("timed out")
             || text.localizedCaseInsensitiveContains("timeout") {
@@ -65,5 +95,18 @@ public enum CluePhotoUploadPolicy {
         }
         if text.count > 160 { return String(text.prefix(157)) + "…" }
         return text
+    }
+
+    /// Marker description time: local with zone abbreviation plus UTC in parentheses.
+    public static func formatClueMarkerTime(_ date: Date, timeZone: TimeZone = .current) -> String {
+        let local = DateFormatter()
+        local.locale = Locale(identifier: "en_US_POSIX")
+        local.timeZone = timeZone
+        local.dateFormat = "h:mm a zzz"
+        let utc = DateFormatter()
+        utc.locale = Locale(identifier: "en_US_POSIX")
+        utc.timeZone = TimeZone(secondsFromGMT: 0)
+        utc.dateFormat = "HH:mm 'UTC'"
+        return "\(local.string(from: date)) (\(utc.string(from: date)))"
     }
 }

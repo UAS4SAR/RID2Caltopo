@@ -1638,11 +1638,26 @@ public class CaltopoSession {
                         : body;
                 op.setOperationIsDone(false);
             }
-        } else if (op.responseCode == 502 || op.responseCode >= 500) {
-            CTDebug(TAG, "PhotoOp() server error method=" + method + " path=" + path +
-                    " http=" + op.responseCode + " body=" + SafeResponseText(op.response));
+        } else if (!op.success()) {
+            boolean quiet = false;
+            if (quietErrorCodes != null) {
+                for (int code : quietErrorCodes) {
+                    if (code == op.responseCode) { quiet = true; break; }
+                }
+            }
+            if (!quiet) {
+                CTWarn(TAG, "CalTopo request failed method=" + method.name() +
+                        " path=" + pathTemplateForLog(path) + " status=" + op.responseCode);
+            }
         }
         return op;
+    }
+
+    /** Path with ids retained; query keys/signatures never included. */
+    static String pathTemplateForLog(@Nullable String path) {
+        if (path == null || path.isEmpty()) return "/";
+        int q = path.indexOf('?');
+        return q < 0 ? path : path.substring(0, q);
     }
 
     /** Unit tests observe the call without sending the photo. */
@@ -1689,9 +1704,11 @@ public class CaltopoSession {
                 JSONObject geometry = new JSONObject().put("type", "Point").put("coordinates", new JSONArray().put(lng).put(lat));
                 JSONObject props = new JSONObject().put("class", "Marker").put("title", title)
                     .put("description", description).put("created", createdAt).put("updated", System.currentTimeMillis())
-                    .put("folderId", folderId)
                     .put("marker-symbol", "Drone").put("marker-color", "#FF0000")
                     .put("marker-size", "1").put("marker-visibility", "visible");
+                if (folderId != null && !folderId.trim().isEmpty()) {
+                    props.put("folderId", folderId);
+                }
                 JSONObject marker = new JSONObject().put("id", markerId).put("type", "Feature").put("geometry", geometry).put("properties", props);
                 CaltopoOp result = PhotoOp(personal, teamId, CtsMethod_t.POST, CALTOPO_MAP_API_V1 + mapId + "/Marker/" + markerId, marker, false);
                 outer.responseCode = result.responseCode;
@@ -1839,9 +1856,13 @@ public class CaltopoSession {
                         ? linkIdOverride : defaultStoredPhotoLinkId(markerId);
                 JSONObject geometry = new JSONObject().put("type", "Point").put("coordinates", new JSONArray().put(lng).put(lat));
                 JSONObject props = new JSONObject().put("class", "Marker").put("title", title)
-                    .put("description", description).put("created", createdAt).put("folderId", folderId)
+                    .put("description", description).put("created", createdAt)
                     .put("marker-symbol", "Drone").put("marker-color", "#FF0000")
                     .put("r2c-clue-id", markerId);
+                // Omit folderId when folders are not cached yet; a later move never blocks the clue.
+                if (folderId != null && !folderId.trim().isEmpty()) {
+                    props.put("folderId", folderId);
+                }
                 JSONObject marker = new JSONObject().put("id", markerId).put("type", "Feature").put("geometry", geometry).put("properties", props);
                 result = PhotoOp(personal, teamId, CtsMethod_t.POST, CALTOPO_MAP_API_V1 + mapId + "/Marker/" + markerId, marker, false);
                 boolean markerPresent = result.success();
@@ -1872,13 +1893,23 @@ public class CaltopoSession {
                         result = PhotoOp(personal, teamId, CtsMethod_t.POST, CALTOPO_MEDIA_API_V1 + mediaId,
                             new JSONObject().put("properties", new JSONObject().put("creator", mediaOwner)), false);
                         if (!result.success() && isExistingBackendMediaConflict(result)) {
-                            // Timed-out create already landed; verify and continue instead of looping on 400.
+                            // Timed-out create may have landed, or CalTopo retained a bad id.
+                            // Verify; if GET 404 / not ready, force a new media id (never loop on 400+404).
                             CaltopoOp recovered = PhotoOp(personal, teamId, CtsMethod_t.GET, CALTOPO_MEDIA_API_V1 + mediaId,
                                     null, false, new int[] {400, 404});
-                            if (recovered.success()) {
-                                mediaReady = CaltopoPhotoMediaState.isReady(recovered.responseJson, mediaId, mediaOwner);
+                            if (recovered.success()
+                                    && CaltopoPhotoMediaState.isReady(recovered.responseJson, mediaId, mediaOwner)) {
+                                mediaReady = true;
                                 result = recovered;
-                                CTInfo(TAG, "PublishStoredPhoto() media create 400 treated as existing mediaId=" + mediaId);
+                                CTInfo(TAG, "PublishStoredPhoto() media create 400 treated as existing ready mediaId=" + mediaId);
+                            } else {
+                                outer.responseCode = 409;
+                                outer.response = CluePhotoUploadPolicy.EXISTING_BACKEND_MEDIA_TOKEN
+                                        + "; " + CluePhotoUploadPolicy.AMBIGUOUS_MEDIA_STATE_TOKEN;
+                                CTWarn(TAG, "PublishStoredPhoto() media create 400 with unusable/missing GET mediaId="
+                                        + mediaId + " getCode=" + recovered.responseCode);
+                                outer.setOperationIsDone(false);
+                                return outer;
                             }
                         }
                     } else result = existing;
@@ -1897,12 +1928,13 @@ public class CaltopoSession {
                             mediaReady = true;
                             result = recovered;
                             CTInfo(TAG, "PublishStoredPhoto() media /data 400 treated as existing ready mediaId=" + mediaId);
-                        } else if (recovered.success()) {
-                            // Object exists but bytes are unusable: caller regenerates media id on next attempt.
+                        } else {
+                            // Object missing or bytes unusable: caller regenerates media id on next attempt.
                             outer.responseCode = 409;
                             outer.response = CluePhotoUploadPolicy.EXISTING_BACKEND_MEDIA_TOKEN
-                                    + "; media present but not ready";
-                            CTWarn(TAG, "PublishStoredPhoto() existing media not ready mediaId=" + mediaId);
+                                    + "; " + CluePhotoUploadPolicy.AMBIGUOUS_MEDIA_STATE_TOKEN;
+                            CTWarn(TAG, "PublishStoredPhoto() media /data 400 with unusable/missing GET mediaId="
+                                    + mediaId + " getCode=" + recovered.responseCode);
                             outer.setOperationIsDone(false);
                             return outer;
                         }

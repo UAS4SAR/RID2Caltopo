@@ -108,28 +108,55 @@ struct AppleOperationalStatusChipLabel: View {
 
 struct PendingClueUploadsSheet: View {
     let rows: [PendingClueUploadRow]
+    let actionFeedback: String?
     let onRetryNow: () -> Void
+    let onUploadAsNewMarker: (UUID) -> Void
+    let onDismissKeepLocal: (UUID) -> Void
     let onClose: () -> Void
+    @State private var confirmDismissID: UUID?
 
     var body: some View {
         NavigationStack {
             List {
+                if let actionFeedback, !actionFeedback.isEmpty {
+                    Section {
+                        Text(actionFeedback)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Section {
                     ForEach(rows) { row in
-                        VStack(alignment: .leading, spacing: 4) {
+                        VStack(alignment: .leading, spacing: 6) {
                             Text(row.title)
                                 .font(.headline)
                             Text(row.designator.isEmpty ? "Captured \(row.capturedAt.formatted(date: .abbreviated, time: .shortened))" : "\(row.designator) · \(row.capturedAt.formatted(date: .abbreviated, time: .shortened))")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
+                            Text("Map \(row.mapName.isEmpty ? row.mapID : "\(row.mapName) (\(row.mapID))")")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                            Text("Credential \(row.credentialProfile)")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
                             Text("Attempts \(row.uploadAttempts) · \(row.lastErrorPlain)")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
+                            HStack(spacing: 12) {
+                                Button("Upload as new marker") {
+                                    onUploadAsNewMarker(row.id)
+                                }
+                                .font(.footnote)
+                                Button("Dismiss (keep local copy)") {
+                                    confirmDismissID = row.id
+                                }
+                                .font(.footnote)
+                            }
                         }
                         .padding(.vertical, 2)
                     }
                 } footer: {
-                    Text("Clue Submit still uploads immediately. Retry wakes pending uploads without waiting for the next automatic attempt.")
+                    Text("Clue Submit still uploads immediately. Retry wakes pending uploads without waiting for the next automatic attempt. Dismiss keeps the local photo.")
                 }
             }
             .navigationTitle(rows.count == 1 ? "1 clue pending" : "\(rows.count) clues pending")
@@ -141,6 +168,26 @@ struct PendingClueUploadsSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Retry now", action: onRetryNow)
                 }
+            }
+            .confirmationDialog(
+                "Keep the local copy and stop uploading this clue?",
+                isPresented: Binding(
+                    get: { confirmDismissID != nil },
+                    set: { if !$0 { confirmDismissID = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Dismiss (keep local copy)", role: .destructive) {
+                    if let id = confirmDismissID {
+                        onDismissKeepLocal(id)
+                    }
+                    confirmDismissID = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    confirmDismissID = nil
+                }
+            } message: {
+                Text("The photo and clue details stay on this device. Nothing is deleted.")
             }
         }
     }
@@ -886,9 +933,15 @@ struct RIDTrackMapView: View {
         .sheet(isPresented: $showPendingClueUploads) {
             PendingClueUploadsSheet(
                 rows: clueStore.pendingUploadRows,
+                actionFeedback: clueStore.pendingUploadActionFeedback,
                 onRetryNow: {
                     clueStore.retryPendingUploadsNow()
-                    showPendingClueUploads = false
+                },
+                onUploadAsNewMarker: { id in
+                    clueStore.uploadPendingClueAsNewMarker(id)
+                },
+                onDismissKeepLocal: { id in
+                    clueStore.dismissPendingClueKeepLocal(id)
                 },
                 onClose: { showPendingClueUploads = false }
             )
@@ -3783,14 +3836,8 @@ private struct ClueSubmissionView: View {
         }
     }
 
-    private static let timestampFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        return formatter
-    }()
-
     private static func clueDescriptionTemplate(_ date: Date, pilot: String = "") -> String {
-        "time: \(timestampFormatter.string(from: date))\nfound by: \(pilot.trimmingCharacters(in: .whitespacesAndNewlines))\nreported to IC: yes|no\n"
+        "time: \(CluePhotoUploadPolicy.formatClueMarkerTime(date))\nfound by: \(pilot.trimmingCharacters(in: .whitespacesAndNewlines))\nreported to IC: yes|no\n"
     }
 
     private static func formatGimbalPitchText(_ degrees: Double) -> String {

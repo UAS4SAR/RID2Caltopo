@@ -562,17 +562,22 @@ public enum CaltopoArtifactVisibilityPolicy {
 public struct CaltopoArtifactChanges: Sendable, Equatable {
     public let featuresByID: [String: Data]
     public let deletedFeatureIDs: Set<String>
+    /// When CalTopo includes an authoritative `ids` map, every retained feature id across classes.
+    /// Absent when the server did not include `ids` (common for short incremental windows).
+    public let authoritativeFeatureIDs: Set<String>?
     public let receivedFeatureCount: Int
     public let serverTimestampMilliseconds: Int64?
 
     public init(
         featuresByID: [String: Data] = [:],
         deletedFeatureIDs: Set<String> = [],
+        authoritativeFeatureIDs: Set<String>? = nil,
         receivedFeatureCount: Int = 0,
         serverTimestampMilliseconds: Int64? = nil
     ) {
         self.featuresByID = featuresByID
         self.deletedFeatureIDs = deletedFeatureIDs
+        self.authoritativeFeatureIDs = authoritativeFeatureIDs
         self.receivedFeatureCount = receivedFeatureCount
         self.serverTimestampMilliseconds = serverTimestampMilliseconds
     }
@@ -591,6 +596,12 @@ public struct CaltopoArtifactFeatureStore: Sendable {
             featuresByID.removeValue(forKey: featureID)
         }
         featuresByID.merge(changes.featuresByID) { _, incoming in incoming }
+        // CalTopo docs: when unsure about deletions, since/{cursor} includes an `ids` map.
+        if let live = changes.authoritativeFeatureIDs {
+            for featureID in Array(featuresByID.keys) where !live.contains(featureID) {
+                featuresByID.removeValue(forKey: featureID)
+            }
+        }
     }
 
     public func snapshot() throws -> CaltopoArtifactSnapshot {
@@ -619,12 +630,33 @@ public enum CaltopoArtifactDecoder {
             }
             featuresByID[id] = try JSONSerialization.data(withJSONObject: feature, options: [.sortedKeys])
         }
+        let result = dictionary["result"] as? [String: Any] ?? dictionary
+        let state = result["state"] as? [String: Any]
+        let idsRoot = (result["ids"] as? [String: Any]) ?? (state?["ids"] as? [String: Any])
+        let authoritative = flattenAuthoritativeIDs(idsRoot)
         return CaltopoArtifactChanges(
             featuresByID: featuresByID,
             deletedFeatureIDs: deletedFeatureIDs,
+            authoritativeFeatureIDs: authoritative,
             receivedFeatureCount: features.count,
-            serverTimestampMilliseconds: ((dictionary["result"] as? [String: Any] ?? dictionary)["timestamp"] as? NSNumber)?.int64Value
+            serverTimestampMilliseconds: (result["timestamp"] as? NSNumber)?.int64Value
         )
+    }
+
+    /// Flatten CalTopo `ids` class→[id] map into one set. Nil when the map is absent.
+    private static func flattenAuthoritativeIDs(_ ids: [String: Any]?) -> Set<String>? {
+        guard let ids else { return nil }
+        var live = Set<String>()
+        for value in ids.values {
+            if let rows = value as? [String] {
+                live.formUnion(rows.filter { !$0.isEmpty })
+            } else if let rows = value as? [Any] {
+                for item in rows {
+                    if let id = item as? String, !id.isEmpty { live.insert(id) }
+                }
+            }
+        }
+        return live
     }
 
     public static func decode(featuresByID: [String: Data]) throws -> CaltopoArtifactSnapshot {

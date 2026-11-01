@@ -180,9 +180,10 @@ actor AppleCaltopoPublisher {
             pendingInterruptedRecoveries = await interruptedJournal.entries(mapID: configuration.mapID)
             await retryMarkerCleanup()
             do {
-                // Connect must not create folders or a device marker. Probe the map, remove
-                // leftovers, then recover interrupted tracks (lazily ensures folders if needed).
-                _ = try await configuredClient.fetchMapArtifacts(refresh: true)
+                // Connect must not create folders or a device marker. Full-map read discovers
+                // existing Drone Tracks* folders / R2C markers; create only on first flight.
+                let snapshot = try await configuredClient.fetchMapArtifacts(refresh: true)
+                adoptTrackFoldersFromConnectSnapshot(snapshot)
                 await removeStaleR2CDeviceMarkers(client: configuredClient)
                 mapOpenRetry?.cancel()
                 mapOpenRetry = nil
@@ -223,7 +224,8 @@ actor AppleCaltopoPublisher {
             guard await self.configurationGeneration == generation else { return }
             do {
                 // Probe the map without creating folders/markers; recovery ensures lazily.
-                _ = try await client.fetchMapArtifacts(refresh: true)
+                let snapshot = try await client.fetchMapArtifacts(refresh: true)
+                await self.adoptTrackFoldersFromConnectSnapshot(snapshot)
                 await self.removeStaleR2CDeviceMarkers(client: client)
                 await self.finishMapOpenRetry()
                 self.continuation.yield(.ready)
@@ -775,6 +777,25 @@ actor AppleCaltopoPublisher {
         }
     }
 
+    /// Non-blocking folder id for clue send (nil until connect adoption or first-flight create).
+    func cachedTrackFolderID() -> String? { trackFolderID }
+
+    /// Cache existing Drone Tracks* folder ids from the connect full-map read (never creates).
+    private func adoptTrackFoldersFromConnectSnapshot(_ snapshot: CaltopoArtifactSnapshot) {
+        let activeName = CaltopoTrackFolderResolver.normalizedTrackFolderNameForAdoption(trackFolderName)
+        let archiveName = CaltopoTrackFolderResolver.archiveFolderName(trackFolderName: activeName)
+        if trackFolderID == nil {
+            trackFolderID = snapshot.folders.first {
+                $0.title.compare(activeName, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+            }?.id
+        }
+        if archiveFolderID == nil {
+            archiveFolderID = snapshot.folders.first {
+                $0.title.compare(archiveName, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+            }?.id
+        }
+    }
+
     /// Lazily creates or reuses Drone Tracks folders. Idempotent and coalesced under concurrency.
     /// Does not publish the device marker; callers enable that only for a live-track start.
     @discardableResult
@@ -788,7 +809,7 @@ actor AppleCaltopoPublisher {
         let folderName = trackFolderName
         let resolved = try await resolver.resolve(
             trackFolderName: folderName,
-            settleDelay: .milliseconds(500),
+            settleDelay: .zero,
             fetchSnapshot: {
                 // Prefer the warm map-open snapshot. refresh:true would re-enter the shared
                 // full-map-read gate (90s) and stall clue POSTs behind reconnect / LiveTrack recovery.
@@ -799,13 +820,6 @@ actor AppleCaltopoPublisher {
                     title: title,
                     visible: visible,
                     labelVisible: labelVisible
-                )
-            },
-            deleteFolder: { folderID in
-                try await client.deleteFolder(folderID: folderID)
-                AppleLog.info(
-                    "CalTopo",
-                    "Removed empty duplicate track folder id=\(folderID)"
                 )
             }
         )

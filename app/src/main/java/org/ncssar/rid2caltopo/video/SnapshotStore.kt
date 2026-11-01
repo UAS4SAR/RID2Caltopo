@@ -36,14 +36,18 @@ data class AndroidClueRecord(
     val caltopoMediaId: String = "",
     /** Blank uses deterministic marker-derived link id. */
     val caltopoLinkId: String = "",
+    /** Blank uses local record id as the CalTopo Marker id; set for "Upload as new marker". */
+    val caltopoMarkerId: String = "",
     /** Waypoint binding (optional; records saved before binding existed have none). */
     val binding: ClueBinding? = null,
 ) {
+    fun resolvedMarkerId(): String = caltopoMarkerId.ifBlank { id }
+
     fun resolvedMediaId(): String =
-        caltopoMediaId.ifBlank { org.ncssar.rid2caltopo.data.CaltopoSession.defaultStoredPhotoMediaId(id) }
+        caltopoMediaId.ifBlank { org.ncssar.rid2caltopo.data.CaltopoSession.defaultStoredPhotoMediaId(resolvedMarkerId()) }
 
     fun resolvedLinkId(): String =
-        caltopoLinkId.ifBlank { org.ncssar.rid2caltopo.data.CaltopoSession.defaultStoredPhotoLinkId(id) }
+        caltopoLinkId.ifBlank { org.ncssar.rid2caltopo.data.CaltopoSession.defaultStoredPhotoLinkId(resolvedMarkerId()) }
     /** Capture time used for flight ownership: the bound capture time on the drone clock. */
     val ownershipTimeMs: Long get() = binding?.captureTimeMs ?: createdAtMs
 
@@ -371,6 +375,57 @@ class AndroidClueStore private constructor(
         }
     }
 
+    /** Upload as a new CalTopo marker; keeps the local record and photo. */
+    fun markUploadAsNewMarker(id: String, mediaId: String, linkId: String) {
+        ensureLoaded()
+        val prior: AndroidClueRecord
+        val indexSnapshot: List<AndroidClueRecord>
+        val indexRoot: File
+        synchronized(this) {
+            prior = storedRecords[id] ?: return
+            if (!prior.publishToCaltopo || prior.uploadState == "published") return
+            storedRecords[id] = prior.copy(
+                caltopoMarkerId = UUID.randomUUID().toString().lowercase(),
+                caltopoMediaId = mediaId,
+                caltopoLinkId = linkId,
+                uploadState = "pending",
+                lastUploadError = "",
+            )
+            indexSnapshot = storedRecords.values.toList()
+            indexRoot = root
+        }
+        try {
+            persistIndexSnapshot(indexSnapshot, indexRoot)
+        } catch (failure: Exception) {
+            synchronized(this) { storedRecords[id] = prior }
+            throw failure
+        }
+    }
+
+    /** Stop CalTopo auto-upload; retain the local photo and metadata. */
+    fun markLocalOnly(id: String) {
+        ensureLoaded()
+        val prior: AndroidClueRecord
+        val indexSnapshot: List<AndroidClueRecord>
+        val indexRoot: File
+        synchronized(this) {
+            prior = storedRecords[id] ?: return
+            storedRecords[id] = prior.copy(
+                publishToCaltopo = false,
+                uploadState = "local",
+                lastUploadError = "",
+            )
+            indexSnapshot = storedRecords.values.toList()
+            indexRoot = root
+        }
+        try {
+            persistIndexSnapshot(indexSnapshot, indexRoot)
+        } catch (failure: Exception) {
+            synchronized(this) { storedRecords[id] = prior }
+            throw failure
+        }
+    }
+
     /** Marks a pending clue as actively uploading (UI + Manage Storage visibility). */
     fun markUploading(id: String) {
         ensureLoaded()
@@ -566,6 +621,7 @@ private fun AndroidClueRecord.toJson(): JSONObject = JSONObject()
     .put("uploadAttempts", uploadAttempts)
     .put("caltopoMediaId", caltopoMediaId)
     .put("caltopoLinkId", caltopoLinkId)
+    .put("caltopoMarkerId", caltopoMarkerId)
     .also { json -> binding?.let { json.put("binding", it.toJson()) } }
 
 private fun JSONObject.toAndroidClueRecord(): AndroidClueRecord? {
@@ -591,6 +647,7 @@ private fun JSONObject.toAndroidClueRecord(): AndroidClueRecord? {
         uploadAttempts = optInt("uploadAttempts", 0),
         caltopoMediaId = optString("caltopoMediaId"),
         caltopoLinkId = optString("caltopoLinkId"),
+        caltopoMarkerId = optString("caltopoMarkerId"),
         binding = ClueBinding.fromJson(optJSONObject("binding")),
     ).takeIf { it.lat.isFinite() && it.lng.isFinite() }
 }
@@ -609,7 +666,7 @@ internal fun publishFirstPendingClue(
 ): AndroidClueRecord? {
     val record = store.pendingForMap(mapId, teamId).firstOrNull() ?: return null
     org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
-        mapId, teamId, record.id, record.lat, record.lng, record.title, record.publishedDescription,
+        mapId, teamId, record.resolvedMarkerId(), record.lat, record.lng, record.title, record.publishedDescription,
         folderId, record.createdAtMs, jpegFor(record),
         record.caltopoMediaId.ifBlank { null }, record.caltopoLinkId.ifBlank { null }, done,
     )

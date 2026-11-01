@@ -72,59 +72,28 @@ public actor CaltopoTrackFolderResolver {
             var createdActiveID: String?
             var createdArchiveID: String?
 
-            let resolvedActiveID: String
-            if let activeID {
-                resolvedActiveID = activeID
-            } else {
-                resolvedActiveID = try await createFolder(activeName, true, true)
-                createdActiveID = resolvedActiveID
-                activeID = resolvedActiveID
+            // Create returns the GUID; that response is the acknowledgement — do not
+            // re-read the map to confirm. Optional settleDelay / deleteFolder are unused.
+            _ = settleDelay
+            _ = deleteFolder
+            if activeID == nil {
+                let created = try await createFolder(activeName, true, true)
+                createdActiveID = created
+                activeID = created
                 createdFolder = true
             }
-            let resolvedArchiveID: String
-            if let archiveID {
-                resolvedArchiveID = archiveID
-            } else {
-                resolvedArchiveID = try await createFolder(archiveName, false, false)
-                createdArchiveID = resolvedArchiveID
-                archiveID = resolvedArchiveID
+            if archiveID == nil {
+                let created = try await createFolder(archiveName, false, false)
+                createdArchiveID = created
+                archiveID = created
                 createdFolder = true
             }
+            _ = createdActiveID
+            _ = createdArchiveID
 
-            if createdFolder {
-                if settleDelay > .zero {
-                    try await Task.sleep(for: settleDelay)
-                }
-                snapshot = try await fetchSnapshot()
-                activeID = Self.preferredFolderID(
-                    named: activeName,
-                    in: snapshot,
-                    excluding: createdActiveID
-                ) ?? activeID
-                archiveID = Self.preferredFolderID(
-                    named: archiveName,
-                    in: snapshot,
-                    excluding: createdArchiveID
-                ) ?? archiveID
-            }
-
-            let chosenActiveID = activeID ?? resolvedActiveID
-            let chosenArchiveID = archiveID ?? resolvedArchiveID
-            let occupied = Self.occupiedFolderIDs(in: snapshot)
-            for createdID in [createdActiveID, createdArchiveID].compactMap({ $0 }) {
-                guard createdID != chosenActiveID,
-                      createdID != chosenArchiveID,
-                      !occupied.contains(createdID)
-                else { continue }
-                // Match Android's ownership boundary: never delete an
-                // arbitrary pre-existing map folder. We may clean up only the
-                // unused folder this resolution just created after another
-                // publisher won the race.
-                try? await deleteFolder(createdID)
-            }
             return CaltopoTrackFolderIDs(
-                active: chosenActiveID,
-                archive: chosenArchiveID,
+                active: activeID!,
+                archive: archiveID!,
                 created: createdFolder
             )
         }
@@ -152,6 +121,10 @@ public actor CaltopoTrackFolderResolver {
         formatter.timeZone = timeZone
         formatter.dateFormat = "ddMMM"
         return normalizedTrackFolderName(trackFolderName) + " " + formatter.string(from: date)
+    }
+
+    public static func normalizedTrackFolderNameForAdoption(_ value: String) -> String {
+        normalizedTrackFolderName(value)
     }
 
     private static func normalizedTrackFolderName(_ value: String) -> String {

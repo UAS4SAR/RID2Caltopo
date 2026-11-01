@@ -1417,6 +1417,8 @@ public class CaltopoMap {
                     ReconcileArtifactStore(stateObj, "reconcile");
                 } else {
                     ParseMapUpdate(stateObj);
+                    // CalTopo docs: when unsure about deletions, since/{cursor} includes an ids map.
+                    pruneArtifactsUsingAuthoritativeIds(updateMapOp.responseJson, stateObj);
                 }
         } catch (Exception e) {
             CTError(TAG, "updateMapFinished(): map artifact parse raised. " + " (" + e.getClass().getSimpleName() + ")");
@@ -2455,6 +2457,51 @@ public class CaltopoMap {
         if (properties.optBoolean("deleted", false)) return true;
         String action = properties.optString("action", "");
         return "delete".equalsIgnoreCase(action) || "removed".equalsIgnoreCase(action);
+    }
+
+    /**
+     * When CalTopo includes an authoritative {@code ids} map, drop cached features absent from it.
+     * No-op when {@code ids} is missing (short incremental windows often omit it).
+     */
+    private static void pruneArtifactsUsingAuthoritativeIds(
+            @Nullable JSONObject responseJson, @NonNull JSONObject stateObj) {
+        JSONObject ids = null;
+        if (responseJson != null) ids = responseJson.optJSONObject("ids");
+        if (ids == null) ids = stateObj.optJSONObject("ids");
+        if (ids == null) return;
+        java.util.HashSet<String> live = new java.util.HashSet<>();
+        java.util.Iterator<String> kinds = ids.keys();
+        while (kinds.hasNext()) {
+            String kind = kinds.next();
+            JSONArray rows = ids.optJSONArray(kind);
+            if (rows == null) continue;
+            for (int i = 0; i < rows.length(); i++) {
+                String id = rows.optString(i, "");
+                if (!id.isEmpty()) live.add(id);
+            }
+        }
+        java.util.ArrayList<String> removed = new java.util.ArrayList<>();
+        synchronized (ArtifactLock) {
+            for (String cachedId : new java.util.HashSet<>(ArtifactFeaturesById.keySet())) {
+                if (!live.contains(cachedId)) {
+                    ArtifactFeaturesById.remove(cachedId);
+                    removed.add(cachedId);
+                }
+            }
+        }
+        for (String removedId : removed) {
+            try {
+                notifyArtifactFeature(
+                        new JSONObject().put("id", removedId).put("deleted", true),
+                        "ids-prune");
+            } catch (JSONException ignored) {
+            }
+        }
+        if (!removed.isEmpty()) {
+            CTInfo(TAG, String.format(Locale.US,
+                    "pruneArtifactsUsingAuthoritativeIds(): removed=%d cached=%d",
+                    removed.size(), GetArtifactFeatureSnapshot().size()));
+        }
     }
 
     private static void resetArtifactStore(@NonNull String reason) {

@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.ZoneId
 
 class CluePhotoUploadPolicyTest {
     @Test
@@ -18,14 +19,13 @@ class CluePhotoUploadPolicyTest {
     }
 
     @Test
-    fun sendBudgetExcludesFolderWaitAndSubmitDeadlineCoversBoth() {
+    fun sendBudgetStartsAtFirstRequestWithNoFolderAllowance() {
         assertEquals(90, CluePhotoUploadPolicy.attemptBudgetSeconds(0))
         assertEquals(120, CluePhotoUploadPolicy.attemptBudgetSeconds(100_000))
-        assertEquals(180, CluePhotoUploadPolicy.submitDeadlineSeconds(0))
-        assertEquals(210, CluePhotoUploadPolicy.submitDeadlineSeconds(100_000))
+        assertEquals(90, CluePhotoUploadPolicy.submitDeadlineSeconds(0))
+        assertEquals(120, CluePhotoUploadPolicy.submitDeadlineSeconds(100_000))
         assertEquals(
-            CluePhotoUploadPolicy.attemptBudgetSeconds(0) +
-                CluePhotoUploadPolicy.SUBMIT_DEADLINE_FOLDER_ALLOWANCE_SECONDS,
+            CluePhotoUploadPolicy.attemptBudgetSeconds(0),
             CluePhotoUploadPolicy.submitDeadlineSeconds(0),
         )
     }
@@ -40,14 +40,31 @@ class CluePhotoUploadPolicyTest {
         )
         assertFalse(CluePhotoUploadPolicy.isExistingBackendMediaError(400, "Personal map request failed."))
         assertFalse(CluePhotoUploadPolicy.isExistingBackendMediaError(404, """{"message":"Cannot update existing backendMedia"}"""))
+        assertTrue(
+            CluePhotoUploadPolicy.isAmbiguousMediaState(
+                409,
+                "Cannot update existing backendMedia; media state ambiguous",
+            ),
+        )
     }
 
     @Test
     fun plainUploadErrorIsOperatorFacing() {
         assertEquals(
-            "Photo already on CalTopo; finishing link",
+            "Photo upload incomplete; replacing photo id",
             CluePhotoUploadPolicy.plainUploadError("""{"message":"Cannot update existing backendMedia"}"""),
         )
         assertEquals("Waiting to upload", CluePhotoUploadPolicy.plainUploadError(""))
+        assertEquals("Needs attention", CluePhotoUploadPolicy.plainUploadError("Needs attention"))
+    }
+
+    @Test
+    fun markerTimeIncludesLocalZoneAndUTC() {
+        val text = CluePhotoUploadPolicy.formatClueMarkerTime(
+            1_730_401_140_000L,
+            ZoneId.of("America/Los_Angeles"),
+        )
+        assertTrue(text.contains("UTC"))
+        assertTrue(text.contains("(") && text.contains(")"))
     }
 }

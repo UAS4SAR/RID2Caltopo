@@ -15,6 +15,8 @@ private final class PhotoTransport: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) private static var linkExists = false
     nonisolated(unsafe) private static var rejectMarkerPost = false
     nonisolated(unsafe) private static var rejectMediaCreate = false
+    /// When true with rejectMediaCreate: POST returns 400-existing but GET still 404 (stuck clue C).
+    nonisolated(unsafe) private static var rejectMediaCreateLeavesAbsent = false
     nonisolated(unsafe) private static var rejectMediaDataAsExisting = false
     static func reset(
         mediaAbsentStatus: Int = 404,
@@ -22,6 +24,7 @@ private final class PhotoTransport: URLProtocol, @unchecked Sendable {
         failNextData: Bool = true,
         markerExists: Bool = false,
         rejectMediaCreate: Bool = false,
+        rejectMediaCreateLeavesAbsent: Bool = false,
         rejectMediaDataAsExisting: Bool = false,
         mediaExists: Bool = false,
         mediaReady: Bool = false
@@ -36,6 +39,7 @@ private final class PhotoTransport: URLProtocol, @unchecked Sendable {
         Self.rejectMarkerPost = rejectMarkerPost
         Self.markerExists = markerExists
         Self.rejectMediaCreate = rejectMediaCreate
+        Self.rejectMediaCreateLeavesAbsent = rejectMediaCreateLeavesAbsent
         Self.rejectMediaDataAsExisting = rejectMediaDataAsExisting
     }
     static func snapshot() -> ([String], [String?]) { lock.lock(); defer { lock.unlock() }; return (paths, cookies) }
@@ -53,10 +57,13 @@ private final class PhotoTransport: URLProtocol, @unchecked Sendable {
         let fail = path.hasSuffix("/data") && Self.failNextData
         let rejectCreate = Self.rejectMediaCreate
         let rejectDataExisting = Self.rejectMediaDataAsExisting
-        // Create POST (accepted or 400-existing) means the media object is present for recovery GET.
+        // Create POST (accepted or 400-existing) usually means present for recovery GET,
+        // except the stuck-clue path where CalTopo 400s create but GET is still 404.
         if method == "POST" && path.hasPrefix("/api/v1/media/") && !path.hasSuffix("/data") {
-            Self.mediaExists = true
-            if rejectCreate { Self.mediaReady = true }
+            if !(rejectCreate && Self.rejectMediaCreateLeavesAbsent) {
+                Self.mediaExists = true
+                if rejectCreate { Self.mediaReady = true }
+            }
         }
         if method == "POST" && path.contains("/Marker/") && !Self.rejectMarkerPost { Self.markerExists = true }
         if method == "POST" && path.contains("/MapMediaObject/") { Self.linkExists = true }
@@ -266,5 +273,92 @@ final class CaltopoPersonalPhotoTests: XCTestCase {
         XCTAssertFalse(calls.contains { $0.0 == "POST" && $0.1 == "/api/v1/media/\(media)" })
         XCTAssertTrue(calls.contains { $0.0 == "POST" && $0.1.contains("/MapMediaObject/") })
         await CaltopoPersonalSessions.shared.clear()
+    }
+
+    /// Scenario C: media POST timed out after landing → retry gets 400-existing + GET 404 → ambiguous.
+    func testTimedOutMediaCreateThen400ExistingPlus404ForcesNewMediaID() async throws {
+        PhotoTransport.reset(
+            mediaAbsentStatus: 404,
+            failNextData: false,
+            markerExists: true,
+            rejectMediaCreate: true,
+            rejectMediaCreateLeavesAbsent: true
+        )
+        let sessionID = UUID()
+        await CaltopoPersonalSessions.shared.register(sessionID) { _ in "session=test-only" }
+        let transport = URLSessionConfiguration.ephemeral
+        transport.protocolClasses = [PhotoTransport.self]
+        let client = try CaltopoLiveClient(configuration: .init(mapID: "ABC123", credentialID: "org-must-not-be-used", credentialSecretBase64: "invalid!", personalSessionID: sessionID, personalAccountID: "USER01", personalMediaOwnerID: "WORK01"), session: URLSession(configuration: transport))
+        let clue = CaltopoPhotoClue(latitude: 0, longitude: 0, title: "C", description: "clue", createdMilliseconds: 1, jpegData: Data([1, 2, 3]), teamID: "personal:USER01")
+        do {
+            _ = try await client.publishPhotoClue(clue)
+            XCTFail("Expected ambiguous media state")
+        } catch let CaltopoLiveClientError.httpStatus(code, message) {
+            XCTAssertEqual(code, 409)
+            XCTAssertTrue(CluePhotoUploadPolicy.isAmbiguousMediaState(statusCode: code, message: message))
+        }
+        // Recover with a NEW media id attached to the SAME marker.
+        let fresh = CaltopoPhotoClue(
+            markerID: clue.markerID,
+            mediaID: UUID(),
+            latitude: clue.latitude,
+            longitude: clue.longitude,
+            title: clue.title,
+            description: clue.description,
+            createdMilliseconds: clue.createdMilliseconds,
+            jpegData: clue.jpegData,
+            teamID: clue.teamID
+        )
+        PhotoTransport.reset(failNextData: false, markerExists: true)
+        let result = try await client.publishPhotoClue(fresh)
+        XCTAssertEqual(result, clue.markerID.uuidString.lowercased())
+        let calls = PhotoTransport.methodPathSnapshot()
+        XCTAssertTrue(calls.contains { $0.0 == "POST" && $0.1.contains("/Marker/\(clue.markerID.uuidString.lowercased())") })
+        XCTAssertTrue(calls.contains { $0.0 == "POST" && $0.1 == "/api/v1/media/\(fresh.mediaID.uuidString.lowercased())" })
+        XCTAssertFalse(calls.contains { $0.1.contains(clue.mediaID.uuidString.lowercased()) })
+        await CaltopoPersonalSessions.shared.clear()
+    }
+
+    func testCluePublishDoesNotWaitOnFullMapGate() async throws {
+        let clock = FullReadClock()
+        let gate = clock.limiter()
+        // Hold the full-map gate for a long wall wait.
+        let holder = Task {
+            _ = try await gate.perform(mapURL: URL(string: "https://caltopo.com/api/v1/map/ABC123/since/0")!) {
+                try await Task.sleep(for: .seconds(30))
+                return 1
+            }
+        }
+        await Task.yield()
+        PhotoTransport.reset(failNextData: false)
+        let sessionID = UUID()
+        await CaltopoPersonalSessions.shared.register(sessionID) { _ in "session=test-only" }
+        let transport = URLSessionConfiguration.ephemeral
+        transport.protocolClasses = [PhotoTransport.self]
+        let client = try CaltopoLiveClient(
+            configuration: .init(mapID: "ABC123", credentialID: "org-must-not-be-used", credentialSecretBase64: "invalid!", personalSessionID: sessionID, personalAccountID: "USER01", personalMediaOwnerID: "WORK01"),
+            session: URLSession(configuration: transport),
+            fullMapReads: gate
+        )
+        let clue = CaltopoPhotoClue(latitude: 0, longitude: 0, title: "fast", description: "clue", createdMilliseconds: 1, jpegData: Data([1]), teamID: "personal:USER01", folderID: nil)
+        let started = Date()
+        let result = try await client.publishPhotoClue(clue)
+        let elapsed = Date().timeIntervalSince(started)
+        XCTAssertEqual(result, clue.markerID.uuidString.lowercased())
+        XCTAssertLessThan(elapsed, 1.0, "Clue POSTs must not wait on the full-map gate")
+        holder.cancel()
+        _ = await holder.result
+        await CaltopoPersonalSessions.shared.clear()
+    }
+}
+
+/// Shared with CaltopoFullMapReadsTests clock pattern for gate hold tests.
+private final class FullReadClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var time: TimeInterval = 0
+    func now() -> TimeInterval { lock.lock(); defer { lock.unlock() }; return time }
+    func advance(_ seconds: TimeInterval) { lock.lock(); defer { lock.unlock() }; time += seconds }
+    func limiter() -> CaltopoFullMapReads {
+        CaltopoFullMapReads(now: { self.now() }, sleep: { seconds in self.advance(seconds); try Task.checkCancellation() })
     }
 }

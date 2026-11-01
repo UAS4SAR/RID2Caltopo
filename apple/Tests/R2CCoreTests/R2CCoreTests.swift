@@ -946,7 +946,8 @@ func caltopoFolderResolutionCoalescesConcurrentPublishers() async throws {
     #expect(results[0] == CaltopoTrackFolderIDs(active: "active-created", archive: "archive-created", created: true))
     #expect(results[1] == results[0])
     let counts = await probe.counts()
-    #expect(counts.fetches == 2)
+    // One warm snapshot; create GUIDs are the acknowledgement (no confirmation re-read).
+    #expect(counts.fetches == 1)
     #expect(counts.creations == 2)
 }
 
@@ -999,29 +1000,15 @@ func caltopoFolderResolutionKeepsPopulatedArchiveWithoutDeletingPreexistingFolde
 }
 
 @Test
-func caltopoFolderResolutionDeletesOnlyItsOwnUnusedRaceLosers() async throws {
+func caltopoFolderResolutionUsesCreatedGUIDsWithoutConfirmationReread() async throws {
     let resolver = CaltopoTrackFolderResolver()
-    let initial = CaltopoArtifactSnapshot()
-    let settled = CaltopoArtifactSnapshot(folders: [
-        CaltopoArtifactFolder(id: "active-other", title: "Drone Tracks", initiallyVisible: true),
-        CaltopoArtifactFolder(id: "active-created", title: "Drone Tracks", initiallyVisible: true),
-        CaltopoArtifactFolder(
-            id: "archive-other",
-            title: "Drone Tracks 24Jul",
-            initiallyVisible: false
-        ),
-        CaltopoArtifactFolder(
-            id: "archive-created",
-            title: "Drone Tracks 24Jul",
-            initiallyVisible: false
-        ),
-    ])
-    let probe = CaltopoFolderResolverProbe(snapshots: [initial, settled])
+    let probe = CaltopoFolderResolverProbe(snapshot: CaltopoArtifactSnapshot())
 
     let result = try await resolver.resolve(
         trackFolderName: "Drone Tracks",
         date: Date(timeIntervalSince1970: 1_721_779_200),
         timeZone: TimeZone(secondsFromGMT: 0)!,
+        settleDelay: .milliseconds(500),
         fetchSnapshot: { await probe.fetch() },
         createFolder: { title, visible, labelVisible in
             await probe.create(title: title, visible: visible, labelVisible: labelVisible)
@@ -1031,8 +1018,11 @@ func caltopoFolderResolutionDeletesOnlyItsOwnUnusedRaceLosers() async throws {
         }
     )
 
-    #expect(result == CaltopoTrackFolderIDs(active: "active-other", archive: "archive-other", created: true))
-    #expect(Set(await probe.deletions()) == Set(["active-created", "archive-created"]))
+    #expect(result == CaltopoTrackFolderIDs(active: "active-created", archive: "archive-created", created: true))
+    let counts = await probe.counts()
+    #expect(counts.fetches == 1)
+    #expect(counts.creations == 2)
+    #expect(await probe.deletions().isEmpty)
 }
 
 @Test

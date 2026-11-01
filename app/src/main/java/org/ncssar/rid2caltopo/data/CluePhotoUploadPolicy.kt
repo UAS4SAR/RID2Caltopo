@@ -1,5 +1,10 @@
 package org.ncssar.rid2caltopo.data
 
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
@@ -15,10 +20,18 @@ object CluePhotoUploadPolicy {
     const val PHOTO_TIMEOUT_CAP_SECONDS = 180
     /** Overhead for marker/media/link steps around the photo POST in one send budget. */
     const val ATTEMPT_BUDGET_OVERHEAD_SECONDS = 45
-    /** Extra wall-clock from Submit for folder ensure / map readiness before the first wire send. */
-    const val SUBMIT_DEADLINE_FOLDER_ALLOWANCE_SECONDS = 90
 
     const val EXISTING_BACKEND_MEDIA_TOKEN = "Cannot update existing backendMedia"
+    /** Returned when media create/data state cannot be verified; caller must mint a new media id. */
+    const val AMBIGUOUS_MEDIA_STATE_TOKEN = "media state ambiguous"
+    const val NEEDS_ATTENTION_MESSAGE = "Needs attention"
+    /** Identical permanent 4xx fingerprints before auto-retry stops (still saved; woken on reconnect). */
+    const val PERMANENT_FAILURE_LIMIT = 5
+
+    private val localClueTimeFormatter: DateTimeFormatter =
+        DateTimeFormatter.ofPattern("h:mm a zzz", Locale.US)
+    private val utcClueTimeFormatter: DateTimeFormatter =
+        DateTimeFormatter.ofPattern("HH:mm 'UTC'", Locale.US).withZone(ZoneOffset.UTC)
 
     /** Seconds for the media `/data` HTTP call from JPEG byte length. */
     @JvmStatic
@@ -29,7 +42,7 @@ object CluePhotoUploadPolicy {
         return min(PHOTO_TIMEOUT_CAP_SECONDS, max(PHOTO_TIMEOUT_BASE_SECONDS, scaled))
     }
 
-    /** Multi-step publish budget measured from when PublishStoredPhoto starts (not folder ensure). */
+    /** Multi-step publish budget measured from when PublishStoredPhoto starts. */
     @JvmStatic
     fun attemptBudgetSeconds(jpegBytes: Int): Int {
         return min(
@@ -38,10 +51,10 @@ object CluePhotoUploadPolicy {
         )
     }
 
-    /** Overall wall-clock from Submit / attempt start covering folder ensure + send budget. */
+    /** Overall wall-clock from attempt start; send begins immediately (no folder wait). */
     @JvmStatic
     fun submitDeadlineSeconds(jpegBytes: Int): Int {
-        return attemptBudgetSeconds(jpegBytes) + SUBMIT_DEADLINE_FOLDER_ALLOWANCE_SECONDS
+        return attemptBudgetSeconds(jpegBytes)
     }
 
     /** CalTopo rejects re-POSTing an id that already has backend media (common after client timeout). */
@@ -52,13 +65,39 @@ object CluePhotoUploadPolicy {
         return text.contains(EXISTING_BACKEND_MEDIA_TOKEN, ignoreCase = true)
     }
 
+    /** Media create/data failed in a way that must not reuse the same media id. */
+    @JvmStatic
+    fun isAmbiguousMediaState(statusCode: Int, message: String?): Boolean {
+        val text = message.orEmpty()
+        if (text.contains(AMBIGUOUS_MEDIA_STATE_TOKEN, ignoreCase = true)) return true
+        return statusCode == 409 && text.contains(EXISTING_BACKEND_MEDIA_TOKEN, ignoreCase = true)
+    }
+
+    /** Deterministic client errors that will not succeed by blind retry of the same payload. */
+    @JvmStatic
+    fun isPermanentClientFailure(statusCode: Int): Boolean {
+        return statusCode == 400 || statusCode == 401 || statusCode == 403 || statusCode == 404 ||
+            statusCode == 409 || statusCode == 410 || statusCode == 413 || statusCode == 422
+    }
+
+    /** Fingerprint for consecutive identical permanent failures (status + brief body token). */
+    @JvmStatic
+    fun permanentFailureFingerprint(statusCode: Int, message: String?): String {
+        return "$statusCode:${plainUploadError(message)}"
+    }
+
     /** Plain-language last-error text for the pending-clues sheet. */
     @JvmStatic
     fun plainUploadError(raw: String?): String {
         val text = raw?.trim().orEmpty()
         if (text.isEmpty()) return "Waiting to upload"
-        if (text.contains(EXISTING_BACKEND_MEDIA_TOKEN, ignoreCase = true)) {
-            return "Photo already on CalTopo; finishing link"
+        if (text.contains(NEEDS_ATTENTION_MESSAGE, ignoreCase = true)) {
+            return NEEDS_ATTENTION_MESSAGE
+        }
+        if (text.contains(AMBIGUOUS_MEDIA_STATE_TOKEN, ignoreCase = true) ||
+            text.contains(EXISTING_BACKEND_MEDIA_TOKEN, ignoreCase = true)
+        ) {
+            return "Photo upload incomplete; replacing photo id"
         }
         if (text.contains("timed out", ignoreCase = true) || text.contains("timeout", ignoreCase = true)) {
             return "Upload timed out; will retry"
@@ -70,5 +109,14 @@ object CluePhotoUploadPolicy {
             return "CalTopo login or permissions need attention"
         }
         return if (text.length > 160) text.take(157) + "…" else text
+    }
+
+    /** Marker description time: local with zone abbreviation plus UTC in parentheses. */
+    @JvmStatic
+    @JvmOverloads
+    fun formatClueMarkerTime(timestampMs: Long, zoneId: ZoneId = ZoneId.systemDefault()): String {
+        val local = Instant.ofEpochMilli(timestampMs).atZone(zoneId).format(localClueTimeFormatter)
+        val utc = utcClueTimeFormatter.format(Instant.ofEpochMilli(timestampMs))
+        return "$local ($utc)"
     }
 }
