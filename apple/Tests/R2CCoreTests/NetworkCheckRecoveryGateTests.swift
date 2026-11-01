@@ -16,6 +16,7 @@ import Testing
     #expect(!second)
 }
 
-@Test func caltopoLiveClientRequestTimeoutIsBoundedForArchiveAndClues() {
+@Test func caltopoLiveClientRequestTimeoutIsBoundedForArchiveAndLiveTrack() {
     #expect(CaltopoLiveClient.requestTimeoutSeconds == 15)
+    #expect(CluePhotoUploadPolicy.jsonTimeoutSeconds == 60)
 }

@@ -19,14 +19,20 @@ class CluePhotoUploadPolicyTest {
     }
 
     @Test
-    fun sendBudgetStartsAtFirstRequestWithNoFolderAllowance() {
-        assertEquals(90, CluePhotoUploadPolicy.attemptBudgetSeconds(0))
-        assertEquals(120, CluePhotoUploadPolicy.attemptBudgetSeconds(100_000))
-        assertEquals(90, CluePhotoUploadPolicy.submitDeadlineSeconds(0))
-        assertEquals(120, CluePhotoUploadPolicy.submitDeadlineSeconds(100_000))
+    fun sendBudgetCoversJsonStepsPlusPhotoTimeout() {
+        val overhead = CluePhotoUploadPolicy.JSON_TIMEOUT_SECONDS * 5
+        assertEquals(overhead, CluePhotoUploadPolicy.ATTEMPT_BUDGET_OVERHEAD_SECONDS)
+        assertEquals(45 + overhead, CluePhotoUploadPolicy.attemptBudgetSeconds(0))
+        assertEquals(75 + overhead, CluePhotoUploadPolicy.attemptBudgetSeconds(100_000))
+        assertEquals(45 + overhead, CluePhotoUploadPolicy.submitDeadlineSeconds(0))
+        assertEquals(75 + overhead, CluePhotoUploadPolicy.submitDeadlineSeconds(100_000))
         assertEquals(
             CluePhotoUploadPolicy.attemptBudgetSeconds(0),
             CluePhotoUploadPolicy.submitDeadlineSeconds(0),
+        )
+        assertTrue(
+            CluePhotoUploadPolicy.attemptBudgetSeconds(100_000)
+                >= CluePhotoUploadPolicy.photoUploadTimeoutSeconds(100_000) + overhead,
         )
     }
 
@@ -79,5 +85,28 @@ class CluePhotoUploadPolicyTest {
         )
         assertTrue(text.contains("UTC"))
         assertTrue(text.contains("(") && text.contains(")"))
+    }
+
+    @Test
+    fun clueJsonTimeoutMatchesV254() {
+        assertEquals(60, CluePhotoUploadPolicy.JSON_TIMEOUT_SECONDS)
+    }
+
+    @Test
+    fun clueStepFailureMessageIncludesStepAndScrubsIds() {
+        val line = CluePhotoUploadPolicy.clueStepFailureMessage(
+            "media-post",
+            "POST",
+            "/api/v1/media/19fe1364-dc45-4275-a6ae-7fcfef8aef78?signature=secret",
+            15_012L,
+            60,
+        )
+        assertTrue(line.contains("step=media-post"))
+        assertTrue(line.contains("method=POST"))
+        assertTrue(line.contains("path=/api/v1/media/…"))
+        assertFalse(line.contains("19fe1364"))
+        assertFalse(line.contains("signature"))
+        assertTrue(line.contains("elapsedMs=15012"))
+        assertTrue(line.contains("timeoutSeconds=60"))
     }
 }

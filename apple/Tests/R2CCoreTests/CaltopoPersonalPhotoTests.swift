@@ -7,6 +7,7 @@ private final class PhotoTransport: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) private static var paths: [String] = []
     nonisolated(unsafe) private static var methods: [String] = []
     nonisolated(unsafe) private static var cookies: [String?] = []
+    nonisolated(unsafe) private static var timeouts: [TimeInterval] = []
     nonisolated(unsafe) private static var failNextData = true
     nonisolated(unsafe) private static var mediaExists = false
     nonisolated(unsafe) private static var mediaReady = false
@@ -18,6 +19,8 @@ private final class PhotoTransport: URLProtocol, @unchecked Sendable {
     /// When true with rejectMediaCreate: POST returns 400-existing but GET still 404 (stuck clue C).
     nonisolated(unsafe) private static var rejectMediaCreateLeavesAbsent = false
     nonisolated(unsafe) private static var rejectMediaDataAsExisting = false
+    nonisolated(unsafe) private static var mediaCreateDelaySeconds: TimeInterval = 0
+    nonisolated(unsafe) private static var failMediaCreateWithTimeout = false
     static func reset(
         mediaAbsentStatus: Int = 404,
         rejectMarkerPost: Bool = false,
@@ -27,10 +30,12 @@ private final class PhotoTransport: URLProtocol, @unchecked Sendable {
         rejectMediaCreateLeavesAbsent: Bool = false,
         rejectMediaDataAsExisting: Bool = false,
         mediaExists: Bool = false,
-        mediaReady: Bool = false
+        mediaReady: Bool = false,
+        mediaCreateDelaySeconds: TimeInterval = 0,
+        failMediaCreateWithTimeout: Bool = false
     ) {
         lock.lock(); defer { lock.unlock() }
-        paths = []; methods = []; cookies = []
+        paths = []; methods = []; cookies = []; timeouts = []
         Self.failNextData = failNextData
         Self.mediaExists = mediaExists
         Self.mediaReady = mediaReady
@@ -41,26 +46,36 @@ private final class PhotoTransport: URLProtocol, @unchecked Sendable {
         Self.rejectMediaCreate = rejectMediaCreate
         Self.rejectMediaCreateLeavesAbsent = rejectMediaCreateLeavesAbsent
         Self.rejectMediaDataAsExisting = rejectMediaDataAsExisting
+        Self.mediaCreateDelaySeconds = mediaCreateDelaySeconds
+        Self.failMediaCreateWithTimeout = failMediaCreateWithTimeout
     }
     static func snapshot() -> ([String], [String?]) { lock.lock(); defer { lock.unlock() }; return (paths, cookies) }
     static func methodPathSnapshot() -> [(String, String)] {
         lock.lock(); defer { lock.unlock() }
         return zip(methods, paths).map { ($0, $1) }
     }
+    static func timeoutSnapshot() -> [(String, String, TimeInterval)] {
+        lock.lock(); defer { lock.unlock() }
+        return zip(zip(methods, paths), timeouts).map { ($0.0, $0.1, $1) }
+    }
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         let path = request.url!.path
         let method = request.httpMethod ?? "GET"
+        let timeout = request.timeoutInterval
         Self.lock.lock()
         Self.paths.append(path); Self.methods.append(method); Self.cookies.append(request.value(forHTTPHeaderField: "Cookie"))
+        Self.timeouts.append(timeout)
         let fail = path.hasSuffix("/data") && Self.failNextData
         let rejectCreate = Self.rejectMediaCreate
         let rejectDataExisting = Self.rejectMediaDataAsExisting
+        let mediaCreateDelay = Self.mediaCreateDelaySeconds
+        let failCreateTimeout = Self.failMediaCreateWithTimeout
         // Create POST (accepted or 400-existing) usually means present for recovery GET,
         // except the stuck-clue path where CalTopo 400s create but GET is still 404.
         if method == "POST" && path.hasPrefix("/api/v1/media/") && !path.hasSuffix("/data") {
-            if !(rejectCreate && Self.rejectMediaCreateLeavesAbsent) {
+            if !(rejectCreate && Self.rejectMediaCreateLeavesAbsent) && !failCreateTimeout {
                 Self.mediaExists = true
                 if rejectCreate { Self.mediaReady = true }
             }
@@ -77,12 +92,19 @@ private final class PhotoTransport: URLProtocol, @unchecked Sendable {
         let linkPresent = Self.linkExists
         let rejectMarker = Self.rejectMarkerPost
         Self.lock.unlock()
+        let mediaCreate = method == "POST" && path.hasPrefix("/api/v1/media/") && !path.hasSuffix("/data")
+        if mediaCreate && failCreateTimeout {
+            client?.urlProtocol(self, didFailWithError: URLError(.timedOut))
+            return
+        }
+        if mediaCreate && mediaCreateDelay > 0 {
+            Thread.sleep(forTimeInterval: mediaCreateDelay)
+        }
         if fail { client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost)); return }
         let mediaRead = method == "GET" && path.hasPrefix("/api/v1/media/")
         let markerRead = method == "GET" && path.contains("/Marker/")
         let linkRead = method == "GET" && path.contains("/MapMediaObject/")
         let markerPost = method == "POST" && path.contains("/Marker/")
-        let mediaCreate = method == "POST" && path.hasPrefix("/api/v1/media/") && !path.hasSuffix("/data")
         let mediaData = method == "POST" && path.hasSuffix("/data")
         let code: Int
         if markerPost && rejectMarker { code = 400 }
@@ -348,6 +370,52 @@ final class CaltopoPersonalPhotoTests: XCTestCase {
         XCTAssertLessThan(elapsed, 1.0, "Clue POSTs must not wait on the full-map gate")
         holder.cancel()
         _ = await holder.result
+        await CaltopoPersonalSessions.shared.clear()
+    }
+
+    /// Field regression: media create taking ~20s must succeed on attempt 1 (v2.5.4 had 60s/request).
+    func testMediaPostTaking20SecondsSucceedsOnFirstAttempt() async throws {
+        PhotoTransport.reset(failNextData: false, mediaCreateDelaySeconds: 20)
+        let sessionID = UUID()
+        await CaltopoPersonalSessions.shared.register(sessionID) { _ in "session=test-only" }
+        let transport = URLSessionConfiguration.ephemeral
+        transport.protocolClasses = [PhotoTransport.self]
+        let client = try CaltopoLiveClient(configuration: .init(mapID: "ABC123", credentialID: "org-must-not-be-used", credentialSecretBase64: "invalid!", personalSessionID: sessionID, personalAccountID: "USER01", personalMediaOwnerID: "WORK01"), session: URLSession(configuration: transport))
+        let clue = CaltopoPhotoClue(latitude: 0, longitude: 0, title: "slow-media", description: "clue", createdMilliseconds: 1, jpegData: Data([1, 2, 3]), teamID: "personal:USER01")
+        let started = Date()
+        let result = try await client.publishPhotoClue(clue)
+        let elapsed = Date().timeIntervalSince(started)
+        XCTAssertEqual(result, clue.markerID.uuidString.lowercased())
+        XCTAssertGreaterThanOrEqual(elapsed, 20)
+        let timeouts = PhotoTransport.timeoutSnapshot()
+        let media = clue.mediaID.uuidString.lowercased()
+        let mediaPost = timeouts.first { $0.0 == "POST" && $0.1 == "/api/v1/media/\(media)" }
+        XCTAssertNotNil(mediaPost)
+        XCTAssertEqual(mediaPost?.2, CluePhotoUploadPolicy.jsonTimeoutSeconds)
+        XCTAssertGreaterThanOrEqual(mediaPost?.2 ?? 0, 20)
+        await CaltopoPersonalSessions.shared.clear()
+    }
+
+    func testClueStepFailureLogIncludesStepName() async throws {
+        var logs: [String] = []
+        CluePhotoUploadPolicy.testingFailureLogSink = { logs.append($0) }
+        defer { CluePhotoUploadPolicy.testingFailureLogSink = nil }
+        PhotoTransport.reset(failNextData: false, failMediaCreateWithTimeout: true)
+        let sessionID = UUID()
+        await CaltopoPersonalSessions.shared.register(sessionID) { _ in "session=test-only" }
+        let transport = URLSessionConfiguration.ephemeral
+        transport.protocolClasses = [PhotoTransport.self]
+        let client = try CaltopoLiveClient(configuration: .init(mapID: "ABC123", credentialID: "org-must-not-be-used", credentialSecretBase64: "invalid!", personalSessionID: sessionID, personalAccountID: "USER01", personalMediaOwnerID: "WORK01"), session: URLSession(configuration: transport))
+        let clue = CaltopoPhotoClue(latitude: 0, longitude: 0, title: "fail-log", description: "clue", createdMilliseconds: 1, jpegData: Data([1]), teamID: "personal:USER01")
+        do {
+            _ = try await client.publishPhotoClue(clue)
+            XCTFail("Expected media-post timeout")
+        } catch {
+            // expected
+        }
+        XCTAssertTrue(logs.contains { $0.contains("step=media-post") }, "logs=\(logs)")
+        XCTAssertTrue(logs.contains { $0.contains("method=POST") })
+        XCTAssertTrue(logs.contains { $0.contains("timeoutSeconds=60") })
         await CaltopoPersonalSessions.shared.clear()
     }
 }

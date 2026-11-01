@@ -11,17 +11,23 @@ import kotlin.math.min
 
 /** Shared clue-photo upload timeouts and CalTopo 400 classification (keep in sync with Apple). */
 object CluePhotoUploadPolicy {
-    /** Marker / media metadata / MapMediaObject JSON calls. */
-    const val JSON_TIMEOUT_SECONDS = 15
+    /** Marker / media metadata / MapMediaObject JSON calls (v2.5.4 session default). */
+    const val JSON_TIMEOUT_SECONDS = 60
     /** Base allowance for the JPEG `/data` POST before size scaling. */
     const val PHOTO_TIMEOUT_BASE_SECONDS = 45
     /** Extra seconds per megabyte of JPEG payload (wire is larger after base64). */
     const val PHOTO_TIMEOUT_PER_MEGABYTE_SECONDS = 30
     const val PHOTO_TIMEOUT_CAP_SECONDS = 180
+    /** Non-/data happy-path steps: marker-post, media-get, media-post, link-get, link-post. */
+    const val ATTEMPT_BUDGET_JSON_STEP_COUNT = 5
     /** Overhead for marker/media/link steps around the photo POST in one send budget. */
-    const val ATTEMPT_BUDGET_OVERHEAD_SECONDS = 45
+    const val ATTEMPT_BUDGET_OVERHEAD_SECONDS = JSON_TIMEOUT_SECONDS * ATTEMPT_BUDGET_JSON_STEP_COUNT
 
     const val EXISTING_BACKEND_MEDIA_TOKEN = "Cannot update existing backendMedia"
+    /** Optional test hook; production leaves this null. Never includes secrets or coordinates. */
+    @JvmField
+    @Volatile
+    var testingFailureLogSink: ((String) -> Unit)? = null
     /** Returned when media create/data state cannot be verified; caller must mint a new media id. */
     const val AMBIGUOUS_MEDIA_STATE_TOKEN = "media state ambiguous"
     const val NEEDS_ATTENTION_MESSAGE = "Needs attention"
@@ -151,5 +157,42 @@ object CluePhotoUploadPolicy {
         val local = Instant.ofEpochMilli(timestampMs).atZone(zoneId).format(localClueTimeFormatter)
         val utc = utcClueTimeFormatter.format(Instant.ofEpochMilli(timestampMs))
         return "$local ($utc)"
+    }
+
+    private val uuidSegment =
+        Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+    /** Path for clue failure logs: strip query; keep map id; scrub other UUID segments. */
+    @JvmStatic
+    fun cluePathForLog(path: String?): String {
+        if (path.isNullOrEmpty()) return "/"
+        val withoutQuery = path.substringBefore('?')
+        return uuidSegment.replace(withoutQuery, "…")
+    }
+
+    /** Stable failure line for clue HTTP steps (no codes, keys, or coordinates). */
+    @JvmStatic
+    fun clueStepFailureMessage(
+        step: String,
+        method: String,
+        path: String?,
+        elapsedMs: Long,
+        timeoutSeconds: Int,
+    ): String {
+        return "Clue step failed step=$step method=$method path=${cluePathForLog(path)} " +
+            "elapsedMs=$elapsedMs timeoutSeconds=$timeoutSeconds"
+    }
+
+    @JvmStatic
+    fun recordClueStepFailure(
+        step: String,
+        method: String,
+        path: String?,
+        elapsedMs: Long,
+        timeoutSeconds: Int,
+    ) {
+        val line = clueStepFailureMessage(step, method, path, elapsedMs, timeoutSeconds)
+        testingFailureLogSink?.invoke(line)
+        CaltopoClient.CTWarn("CluePhotoUpload", line)
     }
 }

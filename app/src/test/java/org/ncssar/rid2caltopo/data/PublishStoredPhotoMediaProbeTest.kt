@@ -30,6 +30,7 @@ class PublishStoredPhotoMediaProbeTest {
     fun tearDown() {
         CaltopoSession.setPhotoExchangeForTesting(null)
         CaltopoSession.setStoredPhotoProbeForTesting(null)
+        CluePhotoUploadPolicy.testingFailureLogSink = null
         CaltopoPersonalSession.resetRuntimeState()
     }
 
@@ -375,6 +376,85 @@ class PublishStoredPhotoMediaProbeTest {
         assertTrue(outer.success())
         assertEquals(200, outer.responseCode)
         assertFalse(calls.any { it.startsWith("POST ") })
+    }
+
+    /** Field regression: media create taking ~20s must succeed on attempt 1 (v2.5.4 had 60s/request). */
+    @Test
+    fun mediaPostTaking20SecondsSucceedsOnFirstAttempt() {
+        val markerId = "d4e5f6a7-b8c9-0123-def0-234567890123"
+        val mediaId = UUID.nameUUIDFromBytes("$markerId:media".toByteArray(Charsets.UTF_8)).toString()
+        val linkId = UUID.nameUUIDFromBytes("$markerId:link".toByteArray(Charsets.UTF_8)).toString()
+        val timeouts = CopyOnWriteArrayList<Pair<String, Int>>()
+
+        CaltopoSession.setPhotoExchangeForTesting { op ->
+            val key = "${op.method} ${op.url}"
+            timeouts.add(key to op.callTimeoutSeconds)
+            when {
+                op.method == CaltopoSession.CtsMethod_t.POST &&
+                    op.url == "/api/v1/map/MAP01/Marker/$markerId" -> complete(op, 200, true, okBody)
+                op.method == CaltopoSession.CtsMethod_t.GET &&
+                    op.url == "/api/v1/media/$mediaId" -> complete(op, 404, false, "absent")
+                op.method == CaltopoSession.CtsMethod_t.POST &&
+                    op.url == "/api/v1/media/$mediaId" -> {
+                    Thread.sleep(20_000L)
+                    complete(op, 200, true, okBody)
+                }
+                op.method == CaltopoSession.CtsMethod_t.POST &&
+                    op.url == "/api/v1/media/$mediaId/data" -> complete(op, 200, true, okBody)
+                op.method == CaltopoSession.CtsMethod_t.GET &&
+                    op.url == "/api/v1/map/MAP01/MapMediaObject/$linkId" ->
+                    complete(op, 404, false, "absent")
+                op.method == CaltopoSession.CtsMethod_t.POST &&
+                    op.url == "/api/v1/map/MAP01/MapMediaObject/$linkId" -> complete(op, 200, true, okBody)
+                else -> error("Unexpected PhotoOp $key")
+            }
+        }
+
+        val started = System.currentTimeMillis()
+        val outer = CaltopoSession.PublishStoredPhoto(
+            "MAP01", "TEAM01", markerId, 47.0, -122.0,
+            "slow-media", "clue", "folder", 1L, byteArrayOf(1, 2, 3), null,
+        )
+        outer.get(45, TimeUnit.SECONDS)
+        val elapsed = System.currentTimeMillis() - started
+        assertTrue("publish should succeed after 20s media-post", outer.success())
+        assertTrue("elapsed=$elapsed", elapsed >= 20_000L)
+        val mediaPost = timeouts.firstOrNull { it.first == "POST /api/v1/media/$mediaId" }
+        assertEquals(CluePhotoUploadPolicy.JSON_TIMEOUT_SECONDS, mediaPost?.second)
+        assertTrue((mediaPost?.second ?: 0) >= 20)
+    }
+
+    @Test
+    fun clueStepFailureLogIncludesStepName() {
+        val markerId = "e5f6a7b8-c9d0-1234-ef01-345678901234"
+        val mediaId = UUID.nameUUIDFromBytes("$markerId:media".toByteArray(Charsets.UTF_8)).toString()
+        val logs = CopyOnWriteArrayList<String>()
+        CluePhotoUploadPolicy.testingFailureLogSink = { logs.add(it) }
+        try {
+            CaltopoSession.setPhotoExchangeForTesting { op ->
+                when {
+                    op.method == CaltopoSession.CtsMethod_t.POST &&
+                        op.url == "/api/v1/map/MAP01/Marker/$markerId" -> complete(op, 200, true, okBody)
+                    op.method == CaltopoSession.CtsMethod_t.GET &&
+                        op.url == "/api/v1/media/$mediaId" -> complete(op, 404, false, "absent")
+                    op.method == CaltopoSession.CtsMethod_t.POST &&
+                        op.url == "/api/v1/media/$mediaId" ->
+                        complete(op, 0, false, "CalTopo server unavailable (timed out)")
+                    else -> error("Unexpected PhotoOp ${op.method} ${op.url}")
+                }
+            }
+            val outer = CaltopoSession.PublishStoredPhoto(
+                "MAP01", "TEAM01", markerId, 47.0, -122.0,
+                "fail-log", "clue", "folder", 1L, byteArrayOf(1), null,
+            )
+            outer.get(5, TimeUnit.SECONDS)
+            assertFalse(outer.success())
+            assertTrue("logs=$logs", logs.any { it.contains("step=media-post") })
+            assertTrue(logs.any { it.contains("method=POST") })
+            assertTrue(logs.any { it.contains("timeoutSeconds=60") })
+        } finally {
+            CluePhotoUploadPolicy.testingFailureLogSink = null
+        }
     }
 
     private fun complete(op: CaltopoOp, code: Int, success: Boolean, body: String) {

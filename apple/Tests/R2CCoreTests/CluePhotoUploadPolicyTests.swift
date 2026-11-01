@@ -12,14 +12,20 @@ import Testing
         #expect(CluePhotoUploadPolicy.photoUploadTimeoutSeconds(jpegBytes: 20 * 1024 * 1024) == 180)
     }
 
-    @Test func sendBudgetStartsAtFirstRequestWithNoFolderAllowance() {
-        #expect(CluePhotoUploadPolicy.attemptBudgetSeconds(jpegBytes: 0) == 90)
-        #expect(CluePhotoUploadPolicy.attemptBudgetSeconds(jpegBytes: 100_000) == 120)
-        #expect(CluePhotoUploadPolicy.submitDeadlineSeconds(jpegBytes: 0) == 90)
-        #expect(CluePhotoUploadPolicy.submitDeadlineSeconds(jpegBytes: 100_000) == 120)
+    @Test func sendBudgetCoversJsonStepsPlusPhotoTimeout() {
+        let overhead = CluePhotoUploadPolicy.jsonTimeoutSeconds * 5
+        #expect(CluePhotoUploadPolicy.attemptBudgetOverheadSeconds == overhead)
+        #expect(CluePhotoUploadPolicy.attemptBudgetSeconds(jpegBytes: 0) == 45 + overhead)
+        #expect(CluePhotoUploadPolicy.attemptBudgetSeconds(jpegBytes: 100_000) == 75 + overhead)
+        #expect(CluePhotoUploadPolicy.submitDeadlineSeconds(jpegBytes: 0) == 45 + overhead)
+        #expect(CluePhotoUploadPolicy.submitDeadlineSeconds(jpegBytes: 100_000) == 75 + overhead)
         #expect(
             CluePhotoUploadPolicy.submitDeadlineSeconds(jpegBytes: 0)
                 == CluePhotoUploadPolicy.attemptBudgetSeconds(jpegBytes: 0)
+        )
+        #expect(
+            CluePhotoUploadPolicy.attemptBudgetSeconds(jpegBytes: 100_000)
+                >= CluePhotoUploadPolicy.photoUploadTimeoutSeconds(jpegBytes: 100_000) + overhead
         )
     }
 
@@ -71,8 +77,25 @@ import Testing
         #expect(text.contains("(") && text.contains(")"))
     }
 
-    @Test func jsonTimeoutStaysShort() {
-        #expect(CluePhotoUploadPolicy.jsonTimeoutSeconds == 15)
+    @Test func clueJsonTimeoutMatchesV254WhileArchiveStaysBounded() {
+        #expect(CluePhotoUploadPolicy.jsonTimeoutSeconds == 60)
         #expect(CaltopoLiveClient.requestTimeoutSeconds == 15)
+    }
+
+    @Test func clueStepFailureMessageIncludesStepAndScrubsIds() {
+        let line = CluePhotoUploadPolicy.clueStepFailureMessage(
+            step: "media-post",
+            method: "POST",
+            path: "/api/v1/media/19fe1364-dc45-4275-a6ae-7fcfef8aef78?signature=secret",
+            elapsedMs: 15_012,
+            timeoutSeconds: 60
+        )
+        #expect(line.contains("step=media-post"))
+        #expect(line.contains("method=POST"))
+        #expect(line.contains("path=/api/v1/media/…"))
+        #expect(!line.contains("19fe1364"))
+        #expect(!line.contains("signature"))
+        #expect(line.contains("elapsedMs=15012"))
+        #expect(line.contains("timeoutSeconds=60"))
     }
 }

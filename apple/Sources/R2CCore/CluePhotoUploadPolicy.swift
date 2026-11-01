@@ -2,17 +2,22 @@ import Foundation
 
 /// Shared clue-photo upload timeouts and CalTopo 400 classification (keep in sync with Android).
 public enum CluePhotoUploadPolicy {
-    /// Marker / media metadata / MapMediaObject JSON calls.
-    public static let jsonTimeoutSeconds: TimeInterval = 15
+    /// Marker / media metadata / MapMediaObject JSON calls (v2.5.4 session default).
+    public static let jsonTimeoutSeconds: TimeInterval = 60
     /// Base allowance for the JPEG `/data` POST before size scaling.
     public static let photoTimeoutBaseSeconds: TimeInterval = 45
     /// Extra seconds per megabyte of JPEG payload (wire is larger after base64).
     public static let photoTimeoutPerMegabyteSeconds: TimeInterval = 30
     public static let photoTimeoutCapSeconds: TimeInterval = 180
+    /// Non-/data happy-path steps: marker-post, media-get, media-post, link-get, link-post.
+    public static let attemptBudgetJsonStepCount: TimeInterval = 5
     /// Overhead for marker/media/link steps around the photo POST in one send budget.
-    public static let attemptBudgetOverheadSeconds: TimeInterval = 45
+    public static let attemptBudgetOverheadSeconds: TimeInterval =
+        jsonTimeoutSeconds * attemptBudgetJsonStepCount
 
     public static let existingBackendMediaToken = "Cannot update existing backendMedia"
+    /// Optional test hook; production leaves this nil. Never includes secrets or coordinates.
+    nonisolated(unsafe) public static var testingFailureLogSink: ((String) -> Void)?
     /// Thrown/returned when media create/data state cannot be verified; caller must mint a new media id.
     public static let ambiguousMediaStateToken = "media state ambiguous"
     public static let needsAttentionMessage = "Needs attention"
@@ -141,5 +146,45 @@ public enum CluePhotoUploadPolicy {
         utc.timeZone = TimeZone(secondsFromGMT: 0)
         utc.dateFormat = "HH:mm 'UTC'"
         return "\(local.string(from: date)) (\(utc.string(from: date)))"
+    }
+
+    /// Path for clue failure logs: strip query; keep map id; scrub other UUID segments.
+    public static func cluePathForLog(_ path: String) -> String {
+        let withoutQuery = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+            .first.map(String.init) ?? path
+        let uuid = try! NSRegularExpression(
+            pattern: #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"#)
+        let range = NSRange(withoutQuery.startIndex..<withoutQuery.endIndex, in: withoutQuery)
+        return uuid.stringByReplacingMatches(in: withoutQuery, range: range, withTemplate: "…")
+    }
+
+    /// Stable failure line for clue HTTP steps (no codes, keys, or coordinates).
+    public static func clueStepFailureMessage(
+        step: String,
+        method: String,
+        path: String,
+        elapsedMs: Int,
+        timeoutSeconds: TimeInterval
+    ) -> String {
+        let safePath = cluePathForLog(path)
+        return "Clue step failed step=\(step) method=\(method) path=\(safePath) elapsedMs=\(elapsedMs) timeoutSeconds=\(Int(timeoutSeconds))"
+    }
+
+    public static func recordClueStepFailure(
+        step: String,
+        method: String,
+        path: String,
+        elapsedMs: Int,
+        timeoutSeconds: TimeInterval
+    ) {
+        let line = clueStepFailureMessage(
+            step: step,
+            method: method,
+            path: path,
+            elapsedMs: elapsedMs,
+            timeoutSeconds: timeoutSeconds
+        )
+        testingFailureLogSink?(line)
+        CaltopoPersonalAccountConnection.logState(line)
     }
 }
