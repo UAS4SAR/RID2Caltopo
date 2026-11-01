@@ -36,14 +36,36 @@ data class AndroidClueRecord(
     val caltopoMediaId: String = "",
     /** Blank uses deterministic marker-derived link id. */
     val caltopoLinkId: String = "",
+    /** Blank uses local record id as the CalTopo Marker id; set for "Upload as new marker". */
+    val caltopoMarkerId: String = "",
+    /**
+     * True after marker + media + link were confirmed present. Durable so auto re-verify
+     * does not probe the same published clue on every owner wake.
+     */
+    val caltopoPartsReconciled: Boolean = false,
+    /**
+     * True after a confirmed upload's Marker was found absent from the incident map.
+     * Remotely-deleted clues stay local and must never auto re-POST.
+     */
+    val caltopoRemotelyDeleted: Boolean = false,
     /** Waypoint binding (optional; records saved before binding existed have none). */
     val binding: ClueBinding? = null,
 ) {
+    fun resolvedMarkerId(): String = caltopoMarkerId.ifBlank { id }
+
     fun resolvedMediaId(): String =
-        caltopoMediaId.ifBlank { org.ncssar.rid2caltopo.data.CaltopoSession.defaultStoredPhotoMediaId(id) }
+        caltopoMediaId.ifBlank { org.ncssar.rid2caltopo.data.CaltopoSession.defaultStoredPhotoMediaId(resolvedMarkerId()) }
 
     fun resolvedLinkId(): String =
-        caltopoLinkId.ifBlank { org.ncssar.rid2caltopo.data.CaltopoSession.defaultStoredPhotoLinkId(id) }
+        caltopoLinkId.ifBlank { org.ncssar.rid2caltopo.data.CaltopoSession.defaultStoredPhotoLinkId(resolvedMarkerId()) }
+
+    /** Durable upload confirmation — published, reconciled, or legacy success ids. */
+    fun uploadConfirmed(): Boolean =
+        org.ncssar.rid2caltopo.data.ClueUploadConfirmation.isConfirmed(
+            uploadState = uploadState,
+            partsReconciled = caltopoPartsReconciled,
+            hasLegacyCaltopoIds = caltopoMarkerId.isNotBlank(),
+        )
     /** Capture time used for flight ownership: the bound capture time on the drone clock. */
     val ownershipTimeMs: Long get() = binding?.captureTimeMs ?: createdAtMs
 
@@ -64,14 +86,19 @@ class AndroidClueStore private constructor(
     constructor(context: Context) : this(File(context.applicationContext.filesDir, "clues"), context.applicationContext)
 
     private val storedRecords = LinkedHashMap<String, AndroidClueRecord>()
+    /** User-deleted ids — refuse resurrecting writes and drop them from hydrate/merge. */
+    private val deletedIds = LinkedHashSet<String>()
     private var loaded = false
 
     fun recordsForMap(mapKey: String): List<AndroidClueRecord> {
         ensureLoaded()
         // File existence stays outside the store monitor (same as awaitingFlightClues).
         val snapshot = synchronized(this) { storedRecords.values.toList() }
+        // During prepare/merge the durable tree may be briefly renamed; keep serving index
+        // rows so the UI never flashes empty while images are mid-move.
+        val prepareBusy = org.ncssar.rid2caltopo.storage.OperationalStorage.cluesPrepareInProgress()
         return snapshot
-            .filter { it.mapKey == mapKey && imageFile(it).isFile }
+            .filter { it.mapKey == mapKey && (prepareBusy || imageFile(it).isFile) }
             .sortedByDescending { it.createdAtMs }
     }
 
@@ -129,6 +156,11 @@ class AndroidClueStore private constructor(
         require(imageBytes.isNotEmpty()) { "Clue image is empty" }
         require(thumbnailBytes.isNotEmpty()) { "Clue thumbnail is empty" }
         ensureLoaded()
+        synchronized(this) {
+            if (deletedIds.contains(record.id)) {
+                throw IllegalStateException("Refusing write to user-deleted clue id=${record.id}")
+            }
+        }
         val directory = synchronized(this) { selectRoot(); root }
         // App-private clue bytes must not wait on Archive Dir hydration.
         context?.let {
@@ -157,6 +189,8 @@ class AndroidClueStore private constructor(
                 indexRoot = root
             }
             persistIndexSnapshot(indexSnapshot, indexRoot)
+            // Archive Dir retain must not wait on the save path; cache wipe must not be the only copy.
+            retainClueArtifacts(imageFile, thumbnailFile, File(indexRoot, "clues.json"))
             if (context != null) org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("ClueStore",
                 "Save id=${record.id} storageCheckMs=${(preparedAt - started) / 1_000_000} " +
                     "imageMs=${(imageAt - preparedAt) / 1_000_000} thumbnailMs=${(thumbnailAt - imageAt) / 1_000_000} " +
@@ -171,20 +205,31 @@ class AndroidClueStore private constructor(
 
     fun delete(id: String): Boolean {
         ensureLoaded()
-        val removed: AndroidClueRecord
+        val removed: AndroidClueRecord?
         val indexSnapshot: List<AndroidClueRecord>
+        val tombstoneSnapshot: Set<String>
         val indexRoot: File
         synchronized(this) {
-            removed = storedRecords.remove(id) ?: return false
+            // Tombstone first so in-flight upload/reconcile cannot rewrite the row.
+            deletedIds.add(id)
+            tombstoneSnapshot = deletedIds.toSet()
+            removed = storedRecords.remove(id)
             indexSnapshot = storedRecords.values.toList()
             indexRoot = root
         }
         try {
+            persistTombstoneSnapshot(tombstoneSnapshot, indexRoot)
             persistIndexSnapshot(indexSnapshot, indexRoot)
         } catch (error: Exception) {
-            synchronized(this) { storedRecords[id] = removed }
+            if (removed != null) {
+                synchronized(this) {
+                    deletedIds.remove(id)
+                    storedRecords[id] = removed
+                }
+            }
             throw error
         }
+        if (removed == null) return true
         return try {
             if (context != null) {
                 org.ncssar.rid2caltopo.storage.OperationalStorage.remove(imageFile(removed))
@@ -197,14 +242,30 @@ class AndroidClueStore private constructor(
         } catch (error: Exception) {
             val restoreSnapshot: List<AndroidClueRecord>
             val restoreRoot: File
+            val restoreTombs: Set<String>
             synchronized(this) {
+                deletedIds.remove(id)
                 storedRecords[id] = removed
                 restoreSnapshot = storedRecords.values.toList()
+                restoreTombs = deletedIds.toSet()
                 restoreRoot = root
             }
+            persistTombstoneSnapshot(restoreTombs, restoreRoot)
             persistIndexSnapshot(restoreSnapshot, restoreRoot)
             throw error
         }
+    }
+
+    /** True when the user has deleted this id — in-flight writes must no-op. */
+    fun isUserDeleted(id: String): Boolean {
+        ensureLoaded()
+        return synchronized(this) { deletedIds.contains(id) }
+    }
+
+    /** Snapshot of user-deleted ids for merge / hydrate filters. */
+    fun userDeletedIds(): Set<String> {
+        ensureLoaded()
+        return synchronized(this) { deletedIds.toSet() }
     }
 
     /**
@@ -268,7 +329,11 @@ class AndroidClueStore private constructor(
         val indexSnapshot: List<AndroidClueRecord>
         val indexRoot: File
         synchronized(this) {
-            applied = changed.filter { storedRecords.containsKey(it.id) && storedRecords[it.id] != it }
+            applied = changed.filter {
+                !deletedIds.contains(it.id) &&
+                    storedRecords.containsKey(it.id) &&
+                    storedRecords[it.id] != it
+            }
             if (applied.isEmpty()) return emptyList()
             prior = applied.associate { it.id to storedRecords.getValue(it.id) }
             applied.forEach { storedRecords[it.id] = it }
@@ -289,14 +354,24 @@ class AndroidClueStore private constructor(
         return synchronized(this) {
             storedRecords.values.filter {
                 it.publishToCaltopo &&
-                    (it.uploadState == "pending" || it.uploadState == "failed" || it.uploadState == "uploading") &&
+                    !it.caltopoRemotelyDeleted &&
+                    !deletedIds.contains(it.id) &&
+                    org.ncssar.rid2caltopo.data.ClueUploadConfirmation.mayAutoUpload(
+                        uploadState = it.uploadState,
+                        confirmed = it.uploadConfirmed(),
+                        remotelyDeleted = it.caltopoRemotelyDeleted,
+                    ) &&
                     mapId.isNotBlank() && teamId.isNotBlank() && it.mapKey == "map:$mapId" &&
-                    org.ncssar.rid2caltopo.data.CluePublicationIdentity.sameTeam(it.destinationTeamId, teamId)
+                    org.ncssar.rid2caltopo.data.CluePublicationIdentity.sameTeam(it.destinationTeamId, teamId) &&
+                    !org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.stopsAutoRetry(it.lastUploadError)
             }
         }
     }
 
-    /** Recently published clues for startup re-verify of marker/media/link completeness. */
+    /**
+     * Published clues that still need a one-shot marker/media/link re-verify.
+     * Already-reconciled rows are excluded so Submit/owner wakes do not re-probe them.
+     */
     fun recentlyPublishedForMap(
         mapId: String,
         teamId: String,
@@ -306,7 +381,12 @@ class AndroidClueStore private constructor(
         return synchronized(this) {
             storedRecords.values.filter {
                 it.publishToCaltopo &&
-                    it.uploadState == "published" &&
+                    !it.caltopoRemotelyDeleted &&
+                    !deletedIds.contains(it.id) &&
+                    org.ncssar.rid2caltopo.data.CluePartsReconcilePolicy.needsAutoReverify(
+                        it.uploadState,
+                        it.caltopoPartsReconciled,
+                    ) &&
                     it.createdAtMs >= newerThanMs &&
                     mapId.isNotBlank() && teamId.isNotBlank() && it.mapKey == "map:$mapId" &&
                     org.ncssar.rid2caltopo.data.CluePublicationIdentity.sameTeam(it.destinationTeamId, teamId)
@@ -335,10 +415,15 @@ class AndroidClueStore private constructor(
         val indexSnapshot: List<AndroidClueRecord>
         val indexRoot: File
         synchronized(this) {
+            if (deletedIds.contains(id)) return
             prior = storedRecords[id] ?: return
             storedRecords[id] = prior.copy(
                 uploadState = if (success) "published" else if (terminal) "failed" else "pending",
                 lastUploadError = error,
+                // Success confirms parts; failure/demotion clears so a later connect can repair.
+                caltopoPartsReconciled = success,
+                // A successful confirm clears remote-delete; demotion does not invent one.
+                caltopoRemotelyDeleted = if (success) false else prior.caltopoRemotelyDeleted,
             )
             indexSnapshot = storedRecords.values.toList()
             indexRoot = root
@@ -351,6 +436,62 @@ class AndroidClueStore private constructor(
         }
     }
 
+    /** Marker absent from the map for a confirmed upload — keep local, never auto re-POST. */
+    fun markRemotelyDeleted(id: String) {
+        ensureLoaded()
+        val prior: AndroidClueRecord
+        val indexSnapshot: List<AndroidClueRecord>
+        val indexRoot: File
+        synchronized(this) {
+            if (deletedIds.contains(id)) return
+            prior = storedRecords[id] ?: return
+            if (prior.caltopoRemotelyDeleted && prior.caltopoPartsReconciled) return
+            storedRecords[id] = prior.copy(
+                caltopoRemotelyDeleted = true,
+                // Still published locally; reconciled so auto re-verify does not keep probing.
+                caltopoPartsReconciled = true,
+                uploadState = if (prior.uploadState == "published") prior.uploadState else "published",
+            )
+            indexSnapshot = storedRecords.values.toList()
+            indexRoot = root
+        }
+        try {
+            persistIndexSnapshot(indexSnapshot, indexRoot)
+        } catch (failure: Exception) {
+            synchronized(this) { storedRecords[id] = prior }
+            throw failure
+        }
+    }
+
+    /** Clears durable parts-reconciled so user Retry can re-probe published clues once. */
+    fun clearPartsReconciledForRetry(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        ensureLoaded()
+        val indexSnapshot: List<AndroidClueRecord>
+        val indexRoot: File
+        val changed: Boolean
+        synchronized(this) {
+            var any = false
+            for (id in ids) {
+                val prior = storedRecords[id] ?: continue
+                if (!org.ncssar.rid2caltopo.data.CluePartsReconcilePolicy.clearReconciledOnRetry(prior.caltopoPartsReconciled)) {
+                    continue
+                }
+                storedRecords[id] = prior.copy(caltopoPartsReconciled = false)
+                any = true
+            }
+            changed = any
+            indexSnapshot = storedRecords.values.toList()
+            indexRoot = root
+        }
+        if (changed) persistIndexSnapshot(indexSnapshot, indexRoot)
+    }
+
+    /** Drop the in-memory index so the next read reloads from the durable tree. */
+    fun invalidateLoaded() {
+        synchronized(this) { loaded = false }
+    }
+
     /** Persist a regenerated media/link id after corrupt existing-backendMedia recovery. */
     fun updateCaltopoMediaIds(id: String, mediaId: String, linkId: String) {
         ensureLoaded()
@@ -358,8 +499,60 @@ class AndroidClueStore private constructor(
         val indexSnapshot: List<AndroidClueRecord>
         val indexRoot: File
         synchronized(this) {
+            if (deletedIds.contains(id)) return
             prior = storedRecords[id] ?: return
             storedRecords[id] = prior.copy(caltopoMediaId = mediaId, caltopoLinkId = linkId)
+            indexSnapshot = storedRecords.values.toList()
+            indexRoot = root
+        }
+        try {
+            persistIndexSnapshot(indexSnapshot, indexRoot)
+        } catch (failure: Exception) {
+            synchronized(this) { storedRecords[id] = prior }
+            throw failure
+        }
+    }
+
+    /** Upload as a new CalTopo marker; keeps the local record and photo. */
+    fun markUploadAsNewMarker(id: String, mediaId: String, linkId: String) {
+        ensureLoaded()
+        val prior: AndroidClueRecord
+        val indexSnapshot: List<AndroidClueRecord>
+        val indexRoot: File
+        synchronized(this) {
+            prior = storedRecords[id] ?: return
+            if (!prior.publishToCaltopo || prior.uploadState == "published") return
+            storedRecords[id] = prior.copy(
+                caltopoMarkerId = UUID.randomUUID().toString().lowercase(),
+                caltopoMediaId = mediaId,
+                caltopoLinkId = linkId,
+                uploadState = "pending",
+                lastUploadError = "",
+            )
+            indexSnapshot = storedRecords.values.toList()
+            indexRoot = root
+        }
+        try {
+            persistIndexSnapshot(indexSnapshot, indexRoot)
+        } catch (failure: Exception) {
+            synchronized(this) { storedRecords[id] = prior }
+            throw failure
+        }
+    }
+
+    /** Stop CalTopo auto-upload; retain the local photo and metadata. */
+    fun markLocalOnly(id: String) {
+        ensureLoaded()
+        val prior: AndroidClueRecord
+        val indexSnapshot: List<AndroidClueRecord>
+        val indexRoot: File
+        synchronized(this) {
+            prior = storedRecords[id] ?: return
+            storedRecords[id] = prior.copy(
+                publishToCaltopo = false,
+                uploadState = "local",
+                lastUploadError = "",
+            )
             indexSnapshot = storedRecords.values.toList()
             indexRoot = root
         }
@@ -378,8 +571,9 @@ class AndroidClueStore private constructor(
         val indexSnapshot: List<AndroidClueRecord>
         val indexRoot: File
         synchronized(this) {
+            if (deletedIds.contains(id)) return
             prior = storedRecords[id] ?: return
-            if (!prior.publishToCaltopo || prior.uploadState == "published") return
+            if (!prior.publishToCaltopo || prior.uploadConfirmed() || prior.caltopoRemotelyDeleted) return
             storedRecords[id] = prior.copy(
                 uploadState = "uploading",
                 uploadAttempts = prior.uploadAttempts + 1,
@@ -402,7 +596,13 @@ class AndroidClueStore private constructor(
         return synchronized(this) {
             storedRecords.values.filter {
                 it.publishToCaltopo &&
-                    (it.uploadState == "pending" || it.uploadState == "uploading" || it.uploadState == "failed") &&
+                    !it.caltopoRemotelyDeleted &&
+                    !deletedIds.contains(it.id) &&
+                    org.ncssar.rid2caltopo.data.ClueUploadConfirmation.mayAutoUpload(
+                        uploadState = it.uploadState,
+                        confirmed = it.uploadConfirmed(),
+                        remotelyDeleted = it.caltopoRemotelyDeleted,
+                    ) &&
                     mapId.isNotBlank() && teamId.isNotBlank() && it.mapKey == "map:$mapId" &&
                     org.ncssar.rid2caltopo.data.CluePublicationIdentity.sameTeam(it.destinationTeamId, teamId)
             }
@@ -412,6 +612,29 @@ class AndroidClueStore private constructor(
     fun imageFile(record: AndroidClueRecord): File = File(root, record.imageFilename)
 
     fun thumbnailFile(record: AndroidClueRecord): File = File(root, record.thumbnailFilename)
+
+    /**
+     * Search known prior clue roots and copy a missing JPEG into the durable store.
+     * Must run off Main. Returns the adopted file, or null when the photo is gone.
+     */
+    fun adoptMissingPhoto(record: AndroidClueRecord): File? {
+        val app = context ?: return imageFile(record).takeIf { it.isFile && it.length() > 0L }
+        ensureLoaded()
+        val directory = synchronized(this) { selectRoot(); root }
+        val image = org.ncssar.rid2caltopo.storage.CluePhotoRecovery.adoptIfFound(
+            app,
+            record.imageFilename,
+            directory,
+        )
+        if (image != null) {
+            org.ncssar.rid2caltopo.storage.CluePhotoRecovery.adoptIfFound(
+                app,
+                record.thumbnailFilename,
+                directory,
+            )
+        }
+        return image
+    }
 
     fun loadThumbnail(record: AndroidClueRecord): Bitmap? {
         val path = thumbnailFile(record).absolutePath
@@ -440,6 +663,19 @@ class AndroidClueStore private constructor(
             }
             org.ncssar.rid2caltopo.storage.OperationalStorage.requireFor(directory)
             val prepared = LinkedHashMap<String, AndroidClueRecord>()
+            val preparedTombs = LinkedHashSet<String>()
+            val tombstoneFile = File(directory, TOMBSTONE_FILENAME)
+            if (tombstoneFile.isFile) {
+                try {
+                    val array = JSONArray(tombstoneFile.readText())
+                    for (i in 0 until array.length()) {
+                        val id = array.optString(i).trim()
+                        if (id.isNotEmpty()) preparedTombs.add(id)
+                    }
+                } catch (error: Exception) {
+                    throw java.io.IOException("Clue delete tombstones unavailable; index preserved", error)
+                }
+            }
             val index = File(directory, "clues.json")
             if (index.exists()) {
                 try {
@@ -447,11 +683,14 @@ class AndroidClueStore private constructor(
                     for (i in 0 until array.length()) {
                         val json = array.optJSONObject(i) ?: throw java.io.IOException("Invalid clue index entry")
                         val record = json.toAndroidClueRecord() ?: throw java.io.IOException("Unreadable clue index entry")
+                        if (preparedTombs.contains(record.id)) continue
                         // A process kill mid-upload leaves "uploading"; treat as pending on reload.
                         val normalized = if (record.uploadState == "uploading") {
                             record.copy(uploadState = "pending")
                         } else record
                         // Missing media can be temporary. Never discard its retained metadata.
+                        // Legacy published rows stay !reconciled so one-shot connect probe can
+                        // backfill reconciled or mark map-deleted — never re-POST (see ViewModel).
                         prepared[record.id] = normalized
                     }
                 } catch (error: Exception) {
@@ -462,8 +701,20 @@ class AndroidClueStore private constructor(
                 if (loaded) return
                 selectRoot()
                 if (root != directory) return@repeat
+                // Mid-prepare the durable directory may be briefly absent/empty. Keep the
+                // last good in-memory index until prepare finishes and a full reload lands.
+                if (prepared.isEmpty() && storedRecords.isNotEmpty() &&
+                    org.ncssar.rid2caltopo.storage.OperationalStorage.cluesPrepareInProgress()
+                ) {
+                    loaded = true
+                    return
+                }
                 storedRecords.clear()
                 storedRecords.putAll(prepared)
+                deletedIds.clear()
+                deletedIds.addAll(preparedTombs)
+                // Drop any in-memory rows that gained a tombstone while unloaded.
+                deletedIds.forEach { storedRecords.remove(it) }
                 loaded = true
                 return
             }
@@ -473,18 +724,14 @@ class AndroidClueStore private constructor(
 
     private fun selectRoot() {
         val app = context ?: return
-        // Clues always stay durable in app-private storage. Temporary session archive uses
-        // TemporaryStorage; reconnect migrates via OperationalStorage retain/hydrate.
-        val next = when {
-            org.ncssar.rid2caltopo.data.CaltopoClient.GetArchiveUri() != null ->
-                File(app.filesDir, "clues")
-            org.ncssar.rid2caltopo.data.CaltopoClient.HasArchiveDirForCurrentSession() ->
-                org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(app, "clues")
-            else -> {
-                org.ncssar.rid2caltopo.storage.OperationalStorage.announceUnavailable()
-                File(app.filesDir, "clues")
-            }
+        // Clue photos are retained operational data: always durable app-private files/clues.
+        // Never TemporaryStorage/cache — OS or app cache cleanup must not orphan pending rows.
+        if (org.ncssar.rid2caltopo.data.CaltopoClient.GetArchiveUri() == null &&
+            !org.ncssar.rid2caltopo.data.CaltopoClient.HasArchiveDirForCurrentSession()
+        ) {
+            org.ncssar.rid2caltopo.storage.OperationalStorage.announceUnavailable()
         }
+        val next = File(app.filesDir, "clues")
         if (next != root) { root = next; loaded = false }
     }
 
@@ -496,10 +743,35 @@ class AndroidClueStore private constructor(
         directory.mkdirs()
         val array = JSONArray()
         snapshot.forEach { array.put(it.toJson()) }
+        val indexFile = File(directory, "clues.json")
         replaceFileAtomically(
-            File(directory, "clues.json"),
+            indexFile,
             array.toString(2).toByteArray(Charsets.UTF_8),
         )
+        if (context != null) {
+            org.ncssar.rid2caltopo.storage.OperationalStorage.retainLater(indexFile)
+        }
+    }
+
+    private fun persistTombstoneSnapshot(ids: Set<String>, directory: File) {
+        directory.mkdirs()
+        val array = JSONArray()
+        ids.sorted().forEach { array.put(it) }
+        val file = File(directory, TOMBSTONE_FILENAME)
+        replaceFileAtomically(
+            file,
+            array.toString(2).toByteArray(Charsets.UTF_8),
+        )
+        if (context != null) {
+            org.ncssar.rid2caltopo.storage.OperationalStorage.retainLater(file)
+        }
+    }
+
+    private fun retainClueArtifacts(vararg files: File) {
+        if (context == null) return
+        for (file in files) {
+            if (file.isFile) org.ncssar.rid2caltopo.storage.OperationalStorage.retainLater(file)
+        }
     }
 
     private fun encodeJpeg(bitmap: Bitmap, quality: Int): ByteArray {
@@ -519,7 +791,13 @@ class AndroidClueStore private constructor(
         private var shared: AndroidClueStore? = null
         @JvmStatic @Synchronized fun shared(context: Context): AndroidClueStore =
             shared ?: AndroidClueStore(context).also { shared = it }
+
+        @JvmStatic @Synchronized fun invalidateSharedLoaded() {
+            shared?.invalidateLoaded()
+        }
+
         private const val THUMBNAIL_MAX_SIDE = 180
+        internal const val TOMBSTONE_FILENAME = "deleted-clue-ids.json"
 
         internal fun forDirectory(root: File): AndroidClueStore = AndroidClueStore(root)
 
@@ -566,6 +844,9 @@ private fun AndroidClueRecord.toJson(): JSONObject = JSONObject()
     .put("uploadAttempts", uploadAttempts)
     .put("caltopoMediaId", caltopoMediaId)
     .put("caltopoLinkId", caltopoLinkId)
+    .put("caltopoMarkerId", caltopoMarkerId)
+    .put("caltopoPartsReconciled", caltopoPartsReconciled)
+    .put("caltopoRemotelyDeleted", caltopoRemotelyDeleted)
     .also { json -> binding?.let { json.put("binding", it.toJson()) } }
 
 private fun JSONObject.toAndroidClueRecord(): AndroidClueRecord? {
@@ -591,6 +872,9 @@ private fun JSONObject.toAndroidClueRecord(): AndroidClueRecord? {
         uploadAttempts = optInt("uploadAttempts", 0),
         caltopoMediaId = optString("caltopoMediaId"),
         caltopoLinkId = optString("caltopoLinkId"),
+        caltopoMarkerId = optString("caltopoMarkerId"),
+        caltopoPartsReconciled = optBoolean("caltopoPartsReconciled", false),
+        caltopoRemotelyDeleted = optBoolean("caltopoRemotelyDeleted", false),
         binding = ClueBinding.fromJson(optJSONObject("binding")),
     ).takeIf { it.lat.isFinite() && it.lng.isFinite() }
 }
@@ -609,7 +893,7 @@ internal fun publishFirstPendingClue(
 ): AndroidClueRecord? {
     val record = store.pendingForMap(mapId, teamId).firstOrNull() ?: return null
     org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
-        mapId, teamId, record.id, record.lat, record.lng, record.title, record.publishedDescription,
+        mapId, teamId, record.resolvedMarkerId(), record.lat, record.lng, record.title, record.publishedDescription,
         folderId, record.createdAtMs, jpegFor(record),
         record.caltopoMediaId.ifBlank { null }, record.caltopoLinkId.ifBlank { null }, done,
     )

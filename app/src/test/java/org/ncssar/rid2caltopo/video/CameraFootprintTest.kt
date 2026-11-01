@@ -8,55 +8,63 @@ class CameraFootprintTest {
     private fun input(tilt: Double = -90.0, azimuth: Double = 0.0) =
         CameraFootprintInput(39.0,-121.0,39.0,-121.0,100.0,azimuth,tilt,90.0,60.0)
     @Test fun nadirRectangleUsesBothFieldsOfView() {
-        val points=CameraFootprintGeometry.project(input())
-        assertEquals(4,points.size)
-        assertTrue(points.all { !it.clipped && it.corner })
-        val north=Math.toRadians(points[0].latitude-39)*6378137
-        val east=Math.toRadians(points[0].longitude+121)*6378137*cos(Math.toRadians(39.0))
-        assertEquals(100*tan(PI/6),north,0.001)
-        assertEquals(-100.0,east,0.001)
+        val outline=CameraFootprintGeometry.project(input())
+        assertEquals(4,outline.size)
+        assertTrue(outline.closed)
+        assertTrue(outline.vertices.all { !it.clipped && it.corner })
+        // Near-left at nadir heading north is south-west of the aircraft.
+        val north=Math.toRadians(outline[0].latitude-39)*6378137
+        val east=Math.toRadians(outline[0].longitude+121)*6378137*cos(Math.toRadians(39.0))
+        assertEquals(-100.0 * tan(PI / 6.0), north, 0.001)
+        assertEquals(-100.0, east, 0.001)
     }
     @Test fun terrainMatchesFlatPlaneRegardlessOfAbsoluteElevation() {
         val flat=CameraFootprintGeometry.project(input())
         val terrain=CameraFootprintGeometry.project(input(),elevation={ _,_ -> 900.0 })
         assertEquals(32,terrain.size)
+        assertTrue(terrain.closed)
         for (index in 0..3) {
             assertEquals(flat[index].latitude,terrain[index*8].latitude,1e-7)
             assertEquals(flat[index].longitude,terrain[index*8].longitude,1e-7)
         }
     }
     @Test fun coverageBoundaryClipsBeforeFlatIntersection() {
-        val points=CameraFootprintGeometry.project(input(),elevation={ lat,lon ->
+        val outline=CameraFootprintGeometry.project(input(),elevation={ lat,lon ->
             if(abs(lat-39)<0.0002 && abs(lon+121)<0.0002) 900.0 else null
         })
-        assertEquals(32,points.size)
-        assertTrue(points.all { it.clipped })
-        assertTrue(points.all { abs(it.latitude-39)<0.000201 && abs(it.longitude+121)<0.000201 })
+        // DEM holes clip rays but do not open the far edge (not horizon / max-range).
+        assertEquals(32,outline.size)
+        assertTrue(outline.closed)
+        assertFalse(outline.clamped)
+        assertTrue(outline.vertices.all { it.clipped })
+        assertTrue(outline.vertices.all { abs(it.latitude-39)<0.000201 && abs(it.longitude+121)<0.000201 })
     }
     @Test fun horizonMissingCoverageAndCancellation() {
-        val points=CameraFootprintGeometry.project(input(tilt=0.0))
-        assertTrue(points[0].clipped && points[1].clipped)
-        assertTrue(points.all { it.latitude.isFinite() && it.longitude.isFinite() })
+        val outline=CameraFootprintGeometry.project(input(tilt=0.0))
+        assertFalse(outline.closed)
+        assertTrue(outline.clamped)
+        assertTrue(outline.vertices.first().clipped)
+        assertTrue(outline.vertices.all { it.latitude.isFinite() && it.longitude.isFinite() })
         assertTrue(CameraFootprintGeometry.project(input(),elevation={ _,_ -> null }).isEmpty())
         assertTrue(CameraFootprintGeometry.project(input(),cancelled={ true }).isEmpty())
     }
     @Test fun azimuthRotatesNadirRectangle() {
         val p=CameraFootprintGeometry.project(input(azimuth=90.0))[0]
         assertEquals(100.0,Math.toRadians(p.latitude-39)*6378137,0.001)
-        assertEquals(100*tan(PI/6),Math.toRadians(p.longitude+121)*6378137*cos(Math.toRadians(39.0)),0.001)
+        assertEquals(-100.0*tan(PI/6.0),Math.toRadians(p.longitude+121)*6378137*cos(Math.toRadians(39.0)),0.001)
     }
     @Test fun launchReferencedHeightAccountsForRaisedGroundAtAircraft() {
         val i=input().copy(launchLatitude=38.99)
-        val points=CameraFootprintGeometry.project(i,elevation={ lat,_ -> if(lat<38.995) 900.0 else 950.0 })
-        assertEquals(-50.0,Math.toRadians(points[0].longitude+121)*6378137*cos(Math.toRadians(39.0)),0.01)
-        assertTrue(points.all { !it.clipped })
+        val outline=CameraFootprintGeometry.project(i,elevation={ lat,_ -> if(lat<38.995) 900.0 else 950.0 })
+        assertEquals(-50.0,Math.toRadians(outline[0].longitude+121)*6378137*cos(Math.toRadians(39.0)),0.01)
+        assertTrue(outline.vertices.all { !it.clipped })
     }
     @Test fun invalidHeightAndFovAreRejected() {
         assertTrue(CameraFootprintGeometry.project(input().copy(height=0.0,horizontalFov=180.0)).isEmpty())
     }
     @Test fun cornersSurviveMissingOrUnfinishedTerrainAndFollowNewPose() {
         val pending=cameraFootprintDrawing(input(),null)
-        val missing=cameraFootprintDrawing(input(),emptyList())
+        val missing=cameraFootprintDrawing(input(),CameraFootprintOutline.EMPTY)
         assertEquals(4,pending.corners.size)
         assertEquals(pending.corners,missing.corners)
         assertTrue(pending.boundary.isEmpty() && missing.boundary.isEmpty())
@@ -65,13 +73,13 @@ class CameraFootprintTest {
     }
     @Test fun fourRayTerrainPassHasBoundedSampleCount() {
         var samples=0
-        val points=CameraFootprintGeometry.project(input(),elevation={ _,_ -> samples++; 900.0 },edgeSubdivisions=1)
-        assertEquals(4,points.size)
-        assertTrue(points.all { it.corner })
+        val outline=CameraFootprintGeometry.project(input(),elevation={ _,_ -> samples++; 900.0 },edgeSubdivisions=1)
+        assertEquals(4,outline.size)
+        assertTrue(outline.vertices.all { it.corner })
         assertTrue("Four rays should need fewer than 200 samples here; got $samples",samples<200)
-        val drawing=cameraFootprintDrawing(input(),points)
-        assertEquals(points,drawing.boundary)
-        assertEquals(points,drawing.corners)
+        val drawing=cameraFootprintDrawing(input(),outline)
+        assertEquals(outline,drawing.boundary)
+        assertEquals(outline.vertices,drawing.corners.vertices)
     }
     @Test fun cancelledTerrainBudgetCannotEraseImmediateCorners() {
         var samples=0
@@ -130,15 +138,21 @@ class CameraFootprintTest {
         val origin = input()
         val near = origin.copy(longitude = -121.0001)
         val far = origin.copy(latitude = 40.0)
-        val terrain = listOf(CameraFootprintVertex(1.0, 2.0, false, true))
+        val terrain = CameraFootprintOutline(
+            listOf(CameraFootprintVertex(1.0, 2.0, false, true)),
+            closed = true,
+        )
         val previous = mapOf("a" to (origin to terrain))
-        val kept = mergeCameraFootprintTerrain(previous, mapOf("a" to (near to emptyList())), mapOf("a" to near))
+        val kept = mergeCameraFootprintTerrain(previous, mapOf("a" to (near to CameraFootprintOutline.EMPTY)), mapOf("a" to near))
         assertEquals(terrain, kept["a"]?.second)
         assertTrue(mergeCameraFootprintTerrain(previous, emptyMap(), mapOf("a" to far)).isEmpty())
-        val fresh = listOf(CameraFootprintVertex(3.0, 4.0, false, true))
+        val fresh = CameraFootprintOutline(
+            listOf(CameraFootprintVertex(3.0, 4.0, false, true)),
+            closed = true,
+        )
         assertEquals(fresh, mergeCameraFootprintTerrain(previous, mapOf("a" to (near to fresh)), mapOf("a" to near))["a"]?.second)
         assertTrue(mergeCameraFootprintTerrain(previous, previous, emptyMap()).isEmpty())
-        assertNull(cameraFootprintTerrainForDisplay(origin to emptyList(), origin))
+        assertNull(cameraFootprintTerrainForDisplay(origin to CameraFootprintOutline.EMPTY, origin))
     }
     @Test fun liveCornersTrackTheNewPoseWhileAReusableOutlineStays() {
         val origin = input()
@@ -182,10 +196,11 @@ class CameraFootprintTest {
             tan(Math.toRadians(half.horizontalFov / 2.0)) / tan(Math.toRadians(half.verticalFov / 2.0)),
             1e-9,
         )
-        val points = CameraFootprintGeometry.project(half)
-        val north = Math.toRadians(points[0].latitude - 39.0) * 6378137
-        val east = Math.toRadians(points[0].longitude + 121.0) * 6378137 * cos(Math.toRadians(39.0))
-        assertEquals(50.0 * v, north, 0.05)
+        val outline = CameraFootprintGeometry.project(half)
+        // Near-left (image bottom-left) at nadir.
+        val north = Math.toRadians(outline[0].latitude - 39.0) * 6378137
+        val east = Math.toRadians(outline[0].longitude + 121.0) * 6378137 * cos(Math.toRadians(39.0))
+        assertEquals(-50.0 * v, north, 0.05)
         assertEquals(-50.0, east, 0.05)
         val halfAngle = CameraFootprintGeometry.project(full.copy(horizontalFov = 45.0, verticalFov = 30.0))
         val halfAngleEast = Math.toRadians(halfAngle[0].longitude + 121.0) * 6378137 * cos(Math.toRadians(39.0))
@@ -196,5 +211,115 @@ class CameraFootprintTest {
         assertEquals("ABC-1", cameraFootprintPreferenceKey("abc-1"))
         assertNull(cameraFootprintPreferenceKey("  "))
         assertNull(cameraFootprintPreferenceKey(""))
+    }
+    @Test fun toggleOffRemovesOverlayAndToggleOnYieldsExactlyOne() {
+        val book = CameraFootprintOverlayBook()
+        val pose = input(tilt = -16.0, azimuth = 203.0)
+        assertEquals(1, book.sync(mapOf("matrice" to pose)).size)
+        assertEquals(1, book.outlineCount("matrice"))
+        assertTrue(book.sync(emptyMap()).isEmpty())
+        assertEquals(0, book.outlineCount("matrice"))
+        assertEquals(1, book.sync(mapOf("matrice" to pose)).size)
+        assertEquals(1, book.outlineCount("matrice"))
+        assertEquals(1, book.size())
+    }
+    @Test fun singleOverlayPerDroneEvenWhenTerrainAndLiveCornersDiffer() {
+        val origin = input(tilt = -45.0, azimuth = 203.0)
+        val moved = origin.copy(azimuth = 206.0, tilt = -44.0)
+        val terrain = CameraFootprintGeometry.project(origin, elevation = { _, _ -> 900.0 }, edgeSubdivisions = 1)
+        val drawing = cameraFootprintLiveDrawing(moved, terrain)
+        assertTrue(drawing.corners.size >= 3)
+        assertTrue(drawing.boundary.size >= 3)
+        assertEquals(1, listOf(cameraFootprintDisplayOutline(drawing)).size)
+        val book = CameraFootprintOverlayBook()
+        book.sync(mapOf("a" to moved), mapOf("a" to (origin to terrain)))
+        assertEquals(1, book.outlineCount("a"))
+        assertEquals(1, book.size())
+    }
+    @Test fun overlayRemovedWhenFlightOrStreamEnds() {
+        val book = CameraFootprintOverlayBook()
+        book.sync(mapOf("a" to input(), "b" to input(azimuth = 90.0)))
+        assertEquals(2, book.size())
+        book.sync(mapOf("b" to input(azimuth = 90.0)))
+        assertEquals(0, book.outlineCount("a"))
+        assertEquals(1, book.outlineCount("b"))
+        book.sync(emptyMap())
+        assertEquals(0, book.size())
+    }
+    @Test fun depthGrowsMonotonicallyFromNadirToShallow() {
+        var previousFar = -1.0
+        var previousDepth = -1.0
+        for (tilt in -90..-5) {
+            val outline = CameraFootprintGeometry.project(input(tilt = tilt.toDouble()), edgeSubdivisions = 1)
+            assertTrue(outline.isNotEmpty())
+            // Far reach grows until max-range tips; geometric depth grows while the quad stays closed.
+            assertTrue(
+                "Far reach should grow as tilt goes from -90 toward -5; at $tilt far=${outline.farGroundMeters} previous=$previousFar",
+                outline.farGroundMeters + 1e-6 >= previousFar,
+            )
+            previousFar = outline.farGroundMeters
+            if (outline.closed) {
+                val depth = cameraFootprintDepthMeters(outline)
+                assertTrue(
+                    "Closed depth should grow as tilt goes from -90 toward -5; at $tilt depth=$depth previous=$previousDepth",
+                    depth + 1e-6 >= previousDepth,
+                )
+                previousDepth = depth
+            }
+        }
+    }
+    @Test fun unboundedFootprintIsOpenWithSidesAtMaxRange() {
+        val shallow = input(tilt = -10.0, azimuth = 203.0).copy(height = 30.0, horizontalFov = 90.0, verticalFov = 60.0)
+        val outline = CameraFootprintGeometry.project(shallow, edgeSubdivisions = 8)
+        assertTrue(outline.isNotEmpty())
+        assertFalse(outline.closed)
+        assertTrue(outline.clamped)
+        // Open polyline: FL → … → NL → … → NR → … → FR. No far-edge connection.
+        val corners = outline.vertices.filter { it.corner }
+        assertEquals(4, corners.size)
+        val farLeft = corners[0]
+        val farRight = corners[3]
+        assertTrue(farLeft.clipped && farRight.clipped)
+        val farLeftRange = cameraFootprintDistanceMeters(shallow.latitude, shallow.longitude, farLeft.latitude, farLeft.longitude)
+        val farRightRange = cameraFootprintDistanceMeters(shallow.latitude, shallow.longitude, farRight.latitude, farRight.longitude)
+        assertEquals(CameraFootprintGeometry.MAX_RANGE, farLeftRange, 1.0)
+        assertEquals(CameraFootprintGeometry.MAX_RANGE, farRightRange, 1.0)
+        assertEquals(CameraFootprintGeometry.MAX_RANGE, outline.farGroundMeters, 1.0)
+        assertFalse(cameraFootprintOutlineSelfIntersects(outline))
+    }
+    @Test fun noSelfIntersectionAcrossGimbalHeadingAndSlopeSweep() {
+        val tilts = (-90..0 step 5).map { it.toDouble() }
+        val headings = listOf(0.0, 45.0, 90.0, 203.0, 315.0)
+        for (tilt in tilts) {
+            for (heading in headings) {
+                val pose = input(tilt = tilt, azimuth = heading).copy(height = 30.0)
+                val flat = CameraFootprintGeometry.project(pose, edgeSubdivisions = 8)
+                assertFalse("flat tilt=$tilt hdg=$heading", cameraFootprintOutlineSelfIntersects(flat))
+                val slope = CameraFootprintGeometry.project(pose, elevation = { lat, lon ->
+                    val east = Math.toRadians(lon + 121.0) * 6378137.0 * cos(Math.toRadians(39.0))
+                    val north = Math.toRadians(lat - 39.0) * 6378137.0
+                    900.0 + 0.15 * east + 0.08 * north
+                }, edgeSubdivisions = 8)
+                if (slope.isEmpty()) continue
+                val display = cameraFootprintDisplayOutline(cameraFootprintLiveDrawing(pose, slope))
+                assertFalse("display tilt=$tilt hdg=$heading", cameraFootprintOutlineSelfIntersects(display))
+            }
+        }
+    }
+    @Test fun debugLineIncludesNearFarAndClampedWithoutCoordinates() {
+        val line = cameraFootprintDebugLine(
+            source = "SEI",
+            gimbalTiltDeg = -12.3,
+            headingDeg = 203.0,
+            aglMeters = 95.4,
+            nearGroundMeters = 140.6,
+            farGroundMeters = 3000.2,
+            clamped = true,
+        )
+        assertTrue(line.contains("nearM=141"))
+        assertTrue(line.contains("farM=3000"))
+        assertTrue(line.contains("clamped=true"))
+        assertFalse(line.contains("39."))
+        assertFalse(line.contains("-121"))
     }
 }

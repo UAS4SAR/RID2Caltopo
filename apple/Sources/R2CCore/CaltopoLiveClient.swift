@@ -220,9 +220,10 @@ public actor CaltopoLiveClient {
     })
     private var positionReportKeys: Set<String> = []
     private var stoppedLiveTrackIDs: Set<String> = []
-    /// Bound archive/clue/LiveTrack JSON attempts so a dead path cannot stall for minutes.
-    /// Photo `/data` uploads use `CluePhotoUploadPolicy.photoUploadTimeoutSeconds`.
-    public static let requestTimeoutSeconds: TimeInterval = CluePhotoUploadPolicy.jsonTimeoutSeconds
+    /// Bound archive/LiveTrack JSON attempts so a dead path cannot stall for minutes.
+    /// Clue JSON steps use `CluePhotoUploadPolicy.jsonTimeoutSeconds` (60s); photo `/data`
+    /// uses `CluePhotoUploadPolicy.photoUploadTimeoutSeconds`.
+    public static let requestTimeoutSeconds: TimeInterval = 15
     private let ownsSession: Bool
 
     public init(
@@ -248,8 +249,11 @@ public actor CaltopoLiveClient {
             ownsSession = false
         } else {
             let transport = URLSessionConfiguration.ephemeral
-            transport.timeoutIntervalForRequest = Self.requestTimeoutSeconds
-            transport.timeoutIntervalForResource = Self.requestTimeoutSeconds
+            // Per-request timeoutInterval is set in perform(); session ceiling must
+            // allow clue JSON (60s) and size-scaled photo `/data` (up to 180s).
+            let sessionCeiling = CluePhotoUploadPolicy.photoTimeoutCapSeconds
+            transport.timeoutIntervalForRequest = sessionCeiling
+            transport.timeoutIntervalForResource = sessionCeiling
             transport.waitsForConnectivity = false
             resolvedSession = URLSession(configuration: transport)
             ownsSession = true
@@ -265,8 +269,9 @@ public actor CaltopoLiveClient {
             // must keep their protocolClasses, so personalTransport stays nil and
             // perform() uses the caller-provided session (personalTransport ?? session).
             let transport = URLSessionConfiguration.ephemeral
-            transport.timeoutIntervalForRequest = Self.requestTimeoutSeconds
-            transport.timeoutIntervalForResource = Self.requestTimeoutSeconds
+            let sessionCeiling = CluePhotoUploadPolicy.photoTimeoutCapSeconds
+            transport.timeoutIntervalForRequest = sessionCeiling
+            transport.timeoutIntervalForResource = sessionCeiling
             transport.waitsForConnectivity = false
             transport.httpCookieStorage = nil
             transport.httpShouldSetCookies = false
@@ -540,7 +545,11 @@ public actor CaltopoLiveClient {
             ],
             "properties": markerProperties,
         ]
-        let data = try await perform(makeSignedPostRequest(path: markerPath, object: markerPayload, now: now), lane: clueLane)
+        let data = try await perform(
+            makeSignedPostRequest(path: markerPath, object: markerPayload, now: now),
+            lane: clueLane,
+            timeout: CluePhotoUploadPolicy.jsonTimeoutSeconds
+        )
         guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               envelope["status"] as? String == "ok", envelope["error"] == nil
         else { throw CaltopoLiveClientError.httpStatus(502, "Marker position edit was not acknowledged.") }
@@ -555,22 +564,56 @@ public actor CaltopoLiveClient {
         let mediaID = clue.mediaID.uuidString.lowercased()
         let photoTimeout = CluePhotoUploadPolicy.photoUploadTimeoutSeconds(jpegBytes: clue.jpegData.count)
         // Clue media must not share startLane: 502 retries would HOL-block LiveTrack create/points.
+        func cluePerform(
+            _ request: URLRequest,
+            step: String,
+            timeout: TimeInterval = CluePhotoUploadPolicy.jsonTimeoutSeconds,
+            recordExpectedAbsence: Bool = true
+        ) async throws -> Data {
+            let started = Date()
+            do {
+                return try await perform(request, lane: clueLane, timeout: timeout)
+            } catch {
+                let isExpectedAbsence = !recordExpectedAbsence
+                    && {
+                        if case CaltopoLiveClientError.httpStatus(let code, _) = error {
+                            return code == 400 || code == 404
+                        }
+                        return false
+                    }()
+                if !isExpectedAbsence {
+                    let elapsedMs = Int(Date().timeIntervalSince(started) * 1_000)
+                    CluePhotoUploadPolicy.recordClueStepFailure(
+                        step: step,
+                        method: request.httpMethod ?? "GET",
+                        path: request.url?.path ?? "/",
+                        elapsedMs: elapsedMs,
+                        timeoutSeconds: timeout
+                    )
+                }
+                throw error
+            }
+        }
         func acknowledged(
             _ request: URLRequest,
-            timeout: TimeInterval = Self.requestTimeoutSeconds
+            step: String,
+            timeout: TimeInterval = CluePhotoUploadPolicy.jsonTimeoutSeconds
         ) async throws -> Data {
-            let data = try await perform(request, lane: clueLane, timeout: timeout)
+            let data = try await cluePerform(request, step: step, timeout: timeout)
             guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   envelope["status"] as? String == "ok", envelope["error"] == nil
             else { throw CaltopoLiveClientError.httpStatus(502, "Photo upload was not acknowledged; retained for retry.") }
             return data
         }
         do {
-            _ = try await acknowledged(requests[0])
+            _ = try await acknowledged(requests[0], step: "marker-post")
         } catch let markerPostError {
             // Prior attempt may have created the Marker then failed media. Attach to it.
             do {
-                _ = try await acknowledged(makeMarkerSnapshotRequest(markerID: markerID, now: now))
+                _ = try await acknowledged(
+                    makeMarkerSnapshotRequest(markerID: markerID, now: now),
+                    step: "marker-get"
+                )
             } catch {
                 throw markerPostError
             }
@@ -582,7 +625,11 @@ public actor CaltopoLiveClient {
             // Probe with perform — not acknowledged — so a CalTopo 400/404 "absent"
             // stays 400/404 instead of being rewritten into a false 502 envelope failure.
             // Probe 400/404 is not a store-level permanent stop; media is simply absent.
-            let data = try await perform(makeMediaSnapshotRequest(mediaID: clue.mediaID, now: now), lane: clueLane)
+            let data = try await cluePerform(
+                makeMediaSnapshotRequest(mediaID: clue.mediaID, now: now),
+                step: "media-get",
+                recordExpectedAbsence: false
+            )
             guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   envelope["status"] as? String == "ok", envelope["error"] == nil
             else { throw CaltopoLiveClientError.httpStatus(502, "Photo upload was not acknowledged; retained for retry.") }
@@ -593,32 +640,62 @@ public actor CaltopoLiveClient {
         }
         if !mediaExists {
             do {
-                _ = try await acknowledged(requests[1])
+                _ = try await acknowledged(requests[1], step: "media-post")
                 mediaExists = true
             } catch let CaltopoLiveClientError.httpStatus(code, message)
                 where CluePhotoUploadPolicy.isExistingBackendMediaError(statusCode: code, message: message)
             {
-                // Timed-out create already landed; verify and continue instead of looping on 400.
-                let data = try await perform(makeMediaSnapshotRequest(mediaID: clue.mediaID, now: now), lane: clueLane)
-                mediaReady = try CaltopoPhotoMediaState.isReady(data, mediaID: clue.mediaID, ownerID: mediaOwner)
-                mediaExists = true
+                // Timed-out create may have landed, or CalTopo retained a bad id.
+                // Verify; if GET 404 / not ready, force a new media id (never loop on 400+404).
+                do {
+                    let data = try await cluePerform(
+                        makeMediaSnapshotRequest(mediaID: clue.mediaID, now: now),
+                        step: "media-get"
+                    )
+                    mediaReady = try CaltopoPhotoMediaState.isReady(data, mediaID: clue.mediaID, ownerID: mediaOwner)
+                    mediaExists = true
+                    if !mediaReady {
+                        throw CaltopoLiveClientError.httpStatus(
+                            409,
+                            "\(CluePhotoUploadPolicy.existingBackendMediaToken); \(CluePhotoUploadPolicy.ambiguousMediaStateToken)"
+                        )
+                    }
+                } catch let CaltopoLiveClientError.httpStatus(verifyCode, _)
+                    where verifyCode == 400 || verifyCode == 404
+                {
+                    throw CaltopoLiveClientError.httpStatus(
+                        409,
+                        "\(CluePhotoUploadPolicy.existingBackendMediaToken); \(CluePhotoUploadPolicy.ambiguousMediaStateToken)"
+                    )
+                }
             }
         }
         if mediaExists && !mediaReady {
             do {
-                _ = try await acknowledged(requests[2], timeout: photoTimeout)
+                _ = try await acknowledged(requests[2], step: "data-post", timeout: photoTimeout)
                 mediaReady = true
             } catch let CaltopoLiveClientError.httpStatus(code, message)
                 where CluePhotoUploadPolicy.isExistingBackendMediaError(statusCode: code, message: message)
             {
-                let data = try await perform(makeMediaSnapshotRequest(mediaID: clue.mediaID, now: now), lane: clueLane)
-                if try CaltopoPhotoMediaState.isReady(data, mediaID: clue.mediaID, ownerID: mediaOwner) {
-                    mediaReady = true
-                } else {
-                    // Object exists but bytes are unusable — caller regenerates media id.
+                do {
+                    let data = try await cluePerform(
+                        makeMediaSnapshotRequest(mediaID: clue.mediaID, now: now),
+                        step: "media-get"
+                    )
+                    if try CaltopoPhotoMediaState.isReady(data, mediaID: clue.mediaID, ownerID: mediaOwner) {
+                        mediaReady = true
+                    } else {
+                        throw CaltopoLiveClientError.httpStatus(
+                            409,
+                            "\(CluePhotoUploadPolicy.existingBackendMediaToken); \(CluePhotoUploadPolicy.ambiguousMediaStateToken)"
+                        )
+                    }
+                } catch let CaltopoLiveClientError.httpStatus(verifyCode, _)
+                    where verifyCode == 400 || verifyCode == 404
+                {
                     throw CaltopoLiveClientError.httpStatus(
                         409,
-                        "\(CluePhotoUploadPolicy.existingBackendMediaToken); media present but not ready"
+                        "\(CluePhotoUploadPolicy.existingBackendMediaToken); \(CluePhotoUploadPolicy.ambiguousMediaStateToken)"
                     )
                 }
             }
@@ -626,9 +703,10 @@ public actor CaltopoLiveClient {
         // MapMediaObject POST is not always idempotent; probe / recover so retries do not 400.
         var linkPresent = false
         do {
-            let data = try await perform(
+            let data = try await cluePerform(
                 makeMapMediaObjectSnapshotRequest(mediaID: mediaID, now: now),
-                lane: clueLane
+                step: "link-get",
+                recordExpectedAbsence: false
             )
             if let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                envelope["status"] as? String == "ok", envelope["error"] == nil {
@@ -639,12 +717,13 @@ public actor CaltopoLiveClient {
         }
         if !linkPresent {
             do {
-                _ = try await acknowledged(requests[3])
+                _ = try await acknowledged(requests[3], step: "link")
             } catch let linkError {
                 do {
-                    let data = try await perform(
+                    let data = try await cluePerform(
                         makeMapMediaObjectSnapshotRequest(mediaID: mediaID, now: now),
-                        lane: clueLane
+                        step: "link-get",
+                        recordExpectedAbsence: false
                     )
                     guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                           envelope["status"] as? String == "ok", envelope["error"] == nil
@@ -675,30 +754,27 @@ public actor CaltopoLiveClient {
     ) async throws -> PhotoClueParts {
         let featureID = markerID.uuidString.lowercased()
         let mediaKey = mediaID.uuidString.lowercased()
+        let jsonTimeout = CluePhotoUploadPolicy.jsonTimeoutSeconds
         var markerPresent = false
         do {
-            _ = try await perform(makeMarkerSnapshotRequest(markerID: featureID, now: now), lane: clueLane)
+            _ = try await perform(
+                makeMarkerSnapshotRequest(markerID: featureID, now: now),
+                lane: clueLane,
+                timeout: jsonTimeout
+            )
             markerPresent = true
         } catch CaltopoLiveClientError.httpStatus(let code, _) where code == 400 || code == 404 {
+            // Single-entity GET only — never fall back to a gated full-map since/0 read.
             markerPresent = false
-        }
-        if !markerPresent {
-            let snapshot = try await fetchMapArtifacts(now: now, refresh: true)
-            let clueTag = markerID.uuidString.uppercased()
-            markerPresent = snapshot.items.contains(where: {
-                $0.className == "Marker" && $0.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == featureID
-            }) || snapshot.points.contains(where: { point in
-                let id = point.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                if id == featureID { return true }
-                let description = point.description ?? ""
-                return description.localizedCaseInsensitiveContains(clueTag)
-                    || description.localizedCaseInsensitiveContains("r2c-clue-id:\(featureID)")
-            })
         }
         var mediaReady = false
         let mediaOwner = configuration.authorizesAsPersonalAccount ? configuration.personalMediaOwnerID : teamID
         do {
-            let data = try await perform(makeMediaSnapshotRequest(mediaID: mediaID, now: now), lane: clueLane)
+            let data = try await perform(
+                makeMediaSnapshotRequest(mediaID: mediaID, now: now),
+                lane: clueLane,
+                timeout: jsonTimeout
+            )
             mediaReady = try CaltopoPhotoMediaState.isReady(data, mediaID: mediaID, ownerID: mediaOwner)
         } catch CaltopoLiveClientError.httpStatus(let code, _) where code == 400 || code == 404 {
             mediaReady = false
@@ -707,7 +783,8 @@ public actor CaltopoLiveClient {
         do {
             _ = try await perform(
                 makeMapMediaObjectSnapshotRequest(mediaID: mediaKey, now: now),
-                lane: clueLane
+                lane: clueLane,
+                timeout: jsonTimeout
             )
             linkPresent = true
         } catch CaltopoLiveClientError.httpStatus(let code, _) where code == 400 || code == 404 {
@@ -1348,6 +1425,12 @@ public actor CaltopoLiveClient {
                 timedOut: false)
             let preview = Self.responseBodyPreview(data)
             let detail = preview.isEmpty ? base : "\(base) body=\(preview)"
+            CaltopoPersonalAccountConnection.logFailedRequest(
+                method: method,
+                path: path,
+                status: httpResponse.statusCode,
+                credential: credential
+            )
             throw CaltopoLiveClientError.httpStatus(httpResponse.statusCode, detail)
         }
         return data

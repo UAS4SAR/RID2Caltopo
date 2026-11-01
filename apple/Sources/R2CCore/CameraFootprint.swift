@@ -17,20 +17,46 @@ public struct CameraFootprintVertex: Sendable, Equatable {
         self.latitude=latitude; self.longitude=longitude; self.clipped=clipped; self.corner=corner
     }
 }
+
+/// Footprint outline in ground coordinates.
+/// Closed order is near-left, near-right, far-right, far-left.
+/// Open (unbounded far edge): far-left → near-left → near-right → far-right, with no far edge.
+public struct CameraFootprintOutline: Sendable, Equatable {
+    public let vertices: [CameraFootprintVertex]
+    public let closed: Bool
+    public let nearGroundMeters: Double
+    public let farGroundMeters: Double
+    public let clamped: Bool
+    public var isEmpty: Bool { vertices.isEmpty }
+    public var count: Int { vertices.count }
+
+    public init(vertices: [CameraFootprintVertex], closed: Bool,
+                nearGroundMeters: Double = 0, farGroundMeters: Double = 0, clamped: Bool = false) {
+        self.vertices = vertices
+        self.closed = closed
+        self.nearGroundMeters = nearGroundMeters
+        self.farGroundMeters = farGroundMeters
+        self.clamped = clamped
+    }
+
+    public static let empty = CameraFootprintOutline(vertices: [], closed: true)
+}
+
 public enum CameraFootprintGeometry {
     public static let maximumRange = 3000.0
     /// Launch-relative pinhole projection. Terrain closure must return nil outside downloaded S1M.
+    /// Corner order: near-left, near-right, far-right, far-left. Unbounded far corners yield an open outline.
     public static func project(_ input: CameraFootprintInput,
                                elevation: ((Double, Double) -> Double?)? = nil,
                                cancelled: () -> Bool = { false },
-                               edgeSubdivisions: Int? = nil) -> [CameraFootprintVertex] {
+                               edgeSubdivisions: Int? = nil) -> CameraFootprintOutline {
         let i = input
         guard [i.latitude,i.longitude,i.launchLatitude,i.launchLongitude,i.height,i.azimuth,i.tilt,
                i.horizontalFov,i.verticalFov].allSatisfy(\.isFinite), i.height > 0,
               (0.01...179).contains(i.horizontalFov), (0.01...179).contains(i.verticalFov),
-              (-85...85).contains(i.latitude), (-180...180).contains(i.longitude) else { return [] }
+              (-85...85).contains(i.latitude), (-180...180).contains(i.longitude) else { return .empty }
         let launchGround = elevation?(i.launchLatitude,i.launchLongitude)
-        if elevation != nil && launchGround == nil { return [] }
+        if elevation != nil && launchGround == nil { return .empty }
         let aircraftZ = (launchGround ?? 0) + i.height
         let rad = Double.pi / 180, earth = 6378137.0
         let yaw = i.azimuth*rad, pitch = i.tilt*rad
@@ -38,69 +64,244 @@ public enum CameraFootprintGeometry {
         let rx = cos(yaw), ry = -sin(yaw)
         let ux = -sin(yaw)*sin(pitch), uy = -cos(yaw)*sin(pitch), uz = cos(pitch)
         let h = tan(i.horizontalFov*rad/2), v = tan(i.verticalFov*rad/2)
-        let corners: [(Double,Double)] = [(-1,1),(1,1),(1,-1),(-1,-1)]
+        // Near-left, near-right, far-right, far-left (image y=+1 is toward the far FOV edge).
+        let corners: [(Double,Double)] = [(-1,-1),(1,-1),(1,1),(-1,1)]
         let subdivisions = min(8, max(1, edgeSubdivisions ?? (elevation == nil ? 1 : 8)))
+
+        struct Hit {
+            let latitude, longitude: Double
+            let clipped: Bool
+            let atMaxRange: Bool
+            let groundMeters: Double
+        }
+
+        func rayDir(_ sx: Double, _ sy: Double) -> (Double, Double, Double) {
+            let x = sx * h, y = sy * v
+            let dx = fx + rx * x + ux * y, dy = fy + ry * x + uy * y, dz = fz + uz * y
+            let norm = sqrt(dx * dx + dy * dy + dz * dz)
+            return (dx / norm, dy / norm, dz / norm)
+        }
+
+        func coordinate(_ east: Double, _ north: Double, groundMeters: Double) -> (Double, Double) {
+            (i.latitude + north * groundMeters / earth / rad,
+             i.longitude + east * groundMeters / (earth * cos(i.latitude * rad)) / rad)
+        }
+
+        /// Place a tip at horizontal `maximumRange` along the ray's ground azimuth.
+        func horizontalTip(_ dir: (Double, Double, Double)) -> Hit {
+            let horiz = hypot(dir.0, dir.1)
+            let east: Double
+            let north: Double
+            if horiz > 1e-8 {
+                east = dir.0 / horiz; north = dir.1 / horiz
+            } else {
+                east = sin(yaw); north = cos(yaw)
+            }
+            let p = coordinate(east, north, groundMeters: maximumRange)
+            return Hit(latitude: p.0, longitude: p.1, clipped: true, atMaxRange: true, groundMeters: maximumRange)
+        }
+
+        func hit(_ sx: Double, _ sy: Double) -> Hit? {
+            if cancelled() { return nil }
+            let dir = rayDir(sx, sy)
+            let (ndx, ndy, ndz) = dir
+            func slantCoordinate(_ distance: Double) -> (Double, Double) {
+                (i.latitude + ndy * distance / earth / rad,
+                 i.longitude + ndx * distance / (earth * cos(i.latitude * rad)) / rad)
+            }
+            func clearance(_ distance: Double) -> Double? {
+                let p = slantCoordinate(distance)
+                let ground: Double
+                if let elevation { guard let z = elevation(p.0, p.1) else { return nil }; ground = z }
+                else { ground = 0 }
+                return aircraftZ + ndz * distance - ground
+            }
+            let limit = maximumRange
+            if elevation == nil {
+                let planeHit = ndz < -1e-8 ? -i.height / ndz : Double.infinity
+                if planeHit > limit { return horizontalTip(dir) }
+                let p = slantCoordinate(planeHit)
+                return Hit(latitude: p.0, longitude: p.1, clipped: false, atMaxRange: false,
+                           groundMeters: planeHit * hypot(ndx, ndy))
+            }
+            guard let initial = clearance(0), initial > 0 else { return nil }
+            var previous = 0.0, step = 5.0
+            while step <= limit {
+                if cancelled() { return nil }
+                let c = clearance(step)
+                if c == nil || c! <= 0 {
+                    var lo = previous, hi = step
+                    for _ in 0..<10 {
+                        let mid = (lo + hi) / 2, value = clearance(mid)
+                        if value == nil || value! <= 0 { hi = mid } else { lo = mid }
+                    }
+                    let distance = (lo + hi) / 2
+                    let p = slantCoordinate(distance)
+                    return Hit(latitude: p.0, longitude: p.1, clipped: c == nil, atMaxRange: false,
+                               groundMeters: distance * hypot(ndx, ndy))
+                }
+                previous = step; step += 5
+            }
+            return horizontalTip(dir)
+        }
+
+        func vertex(_ hit: Hit, corner: Bool) -> CameraFootprintVertex {
+            .init(latitude: hit.latitude, longitude: hit.longitude, clipped: hit.clipped, corner: corner)
+        }
+
+        var cornerHits: [Hit] = []
+        cornerHits.reserveCapacity(4)
+        for c in corners {
+            guard let sample = hit(c.0, c.1) else { return .empty }
+            cornerHits.append(sample)
+        }
+        let closed = !cornerHits[2].atMaxRange && !cornerHits[3].atMaxRange
+        let nearGround = (cornerHits[0].groundMeters + cornerHits[1].groundMeters) / 2
+        let clamped = cornerHits[2].atMaxRange || cornerHits[3].atMaxRange
+        let farLeftTip = cornerHits[3].atMaxRange ? horizontalTip(rayDir(corners[3].0, corners[3].1)) : cornerHits[3]
+        let farRightTip = cornerHits[2].atMaxRange ? horizontalTip(rayDir(corners[2].0, corners[2].1)) : cornerHits[2]
+        let farGround = (farLeftTip.groundMeters + farRightTip.groundMeters) / 2
+
         var vertices: [CameraFootprintVertex] = []
-        for edge in 0..<4 {
-            for j in 0..<subdivisions {
-                if cancelled() { return [] }
-                let a = corners[edge], b = corners[(edge+1)%4], t = Double(j)/Double(subdivisions)
-                let x = (a.0+(b.0-a.0)*t)*h, y = (a.1+(b.1-a.1)*t)*v
-                let dx = fx+rx*x+ux*y, dy = fy+ry*x+uy*y, dz = fz+uz*y
-                let norm = sqrt(dx*dx+dy*dy+dz*dz)
-                func coordinate(_ distance: Double) -> (Double,Double) {
-                    (i.latitude+dy/norm*distance/earth/rad,
-                     i.longitude+dx/norm*distance/(earth*cos(i.latitude*rad))/rad)
-                }
-                func clearance(_ distance: Double) -> Double? {
-                    let p = coordinate(distance)
-                    let ground: Double
-                    if let elevation { guard let z = elevation(p.0,p.1) else { return nil }; ground=z }
-                    else { ground=0 }
-                    return aircraftZ+dz/norm*distance-ground
-                }
-                var distance = maximumRange, clipped = true
-                if elevation == nil {
-                    let hit = dz < -1e-8 ? -i.height*norm/dz : Double.infinity
-                    distance=min(hit,maximumRange); clipped=hit > maximumRange
-                } else {
-                    guard let initial = clearance(0), initial > 0 else { return [] }
-                    var previous = 0.0, step = 5.0
-                    while step <= maximumRange {
-                        if cancelled() { return [] }
-                        let c = clearance(step)
-                        if c == nil || c! <= 0 {
-                            var lo=previous, hi=step
-                            for _ in 0..<10 {
-                                let mid=(lo+hi)/2, value=clearance(mid)
-                                if value == nil || value! <= 0 { hi=mid } else { lo=mid }
-                            }
-                            distance=(lo+hi)/2; clipped=c == nil
-                            break
-                        }
-                        previous=step; step += 5
+        if closed {
+            for edge in 0..<4 {
+                let a = corners[edge], b = corners[(edge + 1) % 4]
+                for j in 0..<subdivisions {
+                    if cancelled() { return .empty }
+                    if j == 0 {
+                        vertices.append(vertex(cornerHits[edge], corner: true))
+                    } else {
+                        let t = Double(j) / Double(subdivisions)
+                        guard let sample = hit(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t) else { return .empty }
+                        vertices.append(vertex(sample, corner: false))
                     }
                 }
-                let p=coordinate(distance)
-                vertices.append(.init(latitude:p.0,longitude:p.1,clipped:clipped,corner:j == 0))
             }
+        } else {
+            func appendGroundChord(start: Hit, end: Hit, startCorner: Bool, endCorner: Bool) {
+                for j in 0..<subdivisions {
+                    let t = Double(j) / Double(subdivisions)
+                    let lat = start.latitude + (end.latitude - start.latitude) * t
+                    let lon = start.longitude + (end.longitude - start.longitude) * t
+                    vertices.append(.init(latitude: lat, longitude: lon,
+                                          clipped: start.clipped || end.clipped,
+                                          corner: j == 0 && startCorner))
+                }
+                if endCorner { vertices.append(vertex(end, corner: true)) }
+            }
+            appendGroundChord(start: farLeftTip, end: cornerHits[0], startCorner: true, endCorner: true)
+            for j in 1..<subdivisions {
+                let t = Double(j) / Double(subdivisions)
+                let a = corners[0], b = corners[1]
+                guard let sample = hit(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t) else { return .empty }
+                vertices.append(vertex(sample, corner: false))
+            }
+            vertices.append(vertex(cornerHits[1], corner: true))
+            for j in 1..<subdivisions {
+                let t = Double(j) / Double(subdivisions)
+                let lat = cornerHits[1].latitude + (farRightTip.latitude - cornerHits[1].latitude) * t
+                let lon = cornerHits[1].longitude + (farRightTip.longitude - cornerHits[1].longitude) * t
+                vertices.append(.init(latitude: lat, longitude: lon, clipped: true, corner: false))
+            }
+            vertices.append(vertex(farRightTip, corner: true))
         }
-        return vertices
+        guard vertices.count >= 3 else { return .empty }
+        return CameraFootprintOutline(
+            vertices: vertices,
+            closed: closed,
+            nearGroundMeters: nearGround,
+            farGroundMeters: farGround,
+            clamped: clamped
+        )
     }
 }
 
+/// Non-adjacent edge crossings in a local ENU frame. Open outlines do not wrap.
+public func cameraFootprintOutlineSelfIntersects(_ outline: CameraFootprintOutline) -> Bool {
+    let vertices = outline.vertices
+    guard vertices.count >= 4 else { return false }
+    let originLat = vertices[0].latitude, originLon = vertices[0].longitude
+    guard originLat.isFinite, originLon.isFinite else { return false }
+    let cosLat = cos(originLat * .pi / 180)
+    func xy(_ v: CameraFootprintVertex) -> (Double, Double) {
+        ((v.longitude - originLon) * .pi / 180 * 6_378_137 * cosLat,
+         (v.latitude - originLat) * .pi / 180 * 6_378_137)
+    }
+    func cross(_ ax: Double, _ ay: Double, _ bx: Double, _ by: Double) -> Double { ax * by - ay * bx }
+    func segmentsIntersect(_ a: (Double, Double), _ b: (Double, Double),
+                           _ c: (Double, Double), _ d: (Double, Double)) -> Bool {
+        let abx = b.0 - a.0, aby = b.1 - a.1
+        let d1 = cross(abx, aby, c.0 - a.0, c.1 - a.1)
+        let d2 = cross(abx, aby, d.0 - a.0, d.1 - a.1)
+        let cdx = d.0 - c.0, cdy = d.1 - c.1
+        let d3 = cross(cdx, cdy, a.0 - c.0, a.1 - c.1)
+        let d4 = cross(cdx, cdy, b.0 - c.0, b.1 - c.1)
+        return d1 * d2 < 0 && d3 * d4 < 0
+    }
+    let points = vertices.map(xy)
+    let n = points.count
+    let segmentCount = outline.closed ? n : n - 1
+    for i in 0..<segmentCount {
+        let a = points[i], b = points[outline.closed ? (i + 1) % n : i + 1]
+        let lastJ = outline.closed && i == 0 ? segmentCount - 1 : segmentCount
+        if i + 2 < lastJ {
+            for j in (i + 2)..<lastJ {
+                if outline.closed && i == 0 && j == segmentCount - 1 { continue }
+                let c = points[j], d = points[outline.closed ? (j + 1) % n : j + 1]
+                if segmentsIntersect(a, b, c, d) { return true }
+            }
+        }
+    }
+    return false
+}
+
+/// Along-look ground depth: distance between near-edge and far-edge midpoints.
+public func cameraFootprintDepthMeters(_ outline: CameraFootprintOutline) -> Double {
+    let corners = outline.vertices.filter(\.corner)
+    guard corners.count >= 4 else {
+        return max(0, outline.farGroundMeters - outline.nearGroundMeters)
+    }
+    let nearA: CameraFootprintVertex
+    let nearB: CameraFootprintVertex
+    let farA: CameraFootprintVertex
+    let farB: CameraFootprintVertex
+    if outline.closed {
+        nearA = corners[0]; nearB = corners[1]; farA = corners[2]; farB = corners[3]
+    } else {
+        nearA = corners[1]; nearB = corners[2]; farA = corners[0]; farB = corners[3]
+    }
+    let nearLat = (nearA.latitude + nearB.latitude) / 2
+    let nearLon = (nearA.longitude + nearB.longitude) / 2
+    let farLat = (farA.latitude + farB.latitude) / 2
+    let farLon = (farA.longitude + farB.longitude) / 2
+    return cameraFootprintDistanceMeters(nearLat, nearLon, farLat, farLon)
+}
+
 public struct CameraFootprintDrawing: Sendable {
-    public let corners, boundary: [CameraFootprintVertex]
+    public let corners, boundary: CameraFootprintOutline
     /// `liveCorners` keeps the flat preview on the current pose. Terrain vertices are the outline only.
-    public init(input: CameraFootprintInput, terrain: [CameraFootprintVertex]?, liveCorners: Bool = false) {
-        boundary = terrain ?? []
-        let terrainCorners = boundary.filter(\.corner)
-        if !liveCorners, terrainCorners.count == 4 {
-            corners = terrainCorners
+    public init(input: CameraFootprintInput, terrain: CameraFootprintOutline?, liveCorners: Bool = false) {
+        let boundary = (terrain?.isEmpty == false) ? terrain! : .empty
+        let terrainCorners = boundary.vertices.filter(\.corner)
+        if !liveCorners, boundary.closed, terrainCorners.count == 4 {
+            corners = CameraFootprintOutline(
+                vertices: terrainCorners, closed: boundary.closed,
+                nearGroundMeters: boundary.nearGroundMeters, farGroundMeters: boundary.farGroundMeters,
+                clamped: boundary.clamped
+            )
         } else {
             let flat = CameraFootprintGeometry.project(input)
-            corners = flat.isEmpty && terrainCorners.count == 4 ? terrainCorners : flat
+            if flat.isEmpty, boundary.closed, terrainCorners.count == 4 {
+                corners = CameraFootprintOutline(
+                    vertices: terrainCorners, closed: boundary.closed,
+                    nearGroundMeters: boundary.nearGroundMeters, farGroundMeters: boundary.farGroundMeters,
+                    clamped: boundary.clamped
+                )
+            } else {
+                corners = flat
+            }
         }
+        self.boundary = boundary
     }
 }
 
@@ -110,6 +311,11 @@ public let cameraFootprintTerrainAzimuthDegrees = 12.0
 public let cameraFootprintTerrainTiltDegrees = 5.0
 public let cameraFootprintTerrainFovDegrees = 1.5
 public let cameraFootprintTerrainLaunchMeters = 1.0
+public let cameraFootprintShallowTiltDegrees = -25.0
+public let cameraFootprintShallowTerrainPositionMeters = 8.0
+public let cameraFootprintShallowTerrainAzimuthDegrees = 4.0
+public let cameraFootprintShallowTerrainTiltDegrees = 2.0
+public let cameraFootprintDebugIntervalMs: Int64 = 5_000
 
 public func cameraFootprintDistanceMeters(_ lat1: Double, _ lon1: Double, _ lat2: Double, _ lon2: Double) -> Double {
     guard [lat1, lon1, lat2, lon2].allSatisfy(\.isFinite) else { return .infinity }
@@ -129,15 +335,87 @@ public func cameraFootprintAngleDeltaDegrees(_ a: Double, _ b: Double) -> Double
 
 /// Exact pose equality never matches a moving SEI stream. One 500 ms terrain pass stays usable through a slow orbit.
 public func cameraFootprintTerrainReusable(cached: CameraFootprintInput, current: CameraFootprintInput) -> Bool {
-    guard cameraFootprintDistanceMeters(cached.launchLatitude, cached.launchLongitude, current.launchLatitude, current.launchLongitude) <= cameraFootprintTerrainLaunchMeters,
-          cameraFootprintDistanceMeters(cached.latitude, cached.longitude, current.latitude, current.longitude) <= cameraFootprintTerrainPositionMeters,
+    guard cameraFootprintDistanceMeters(cached.launchLatitude, cached.launchLongitude, current.launchLatitude, current.launchLongitude) <= cameraFootprintTerrainLaunchMeters else { return false }
+    let shallow = cached.tilt > cameraFootprintShallowTiltDegrees || current.tilt > cameraFootprintShallowTiltDegrees
+    let positionLimit = shallow ? cameraFootprintShallowTerrainPositionMeters : cameraFootprintTerrainPositionMeters
+    let azimuthLimit = shallow ? cameraFootprintShallowTerrainAzimuthDegrees : cameraFootprintTerrainAzimuthDegrees
+    let tiltLimit = shallow ? cameraFootprintShallowTerrainTiltDegrees : cameraFootprintTerrainTiltDegrees
+    guard cameraFootprintDistanceMeters(cached.latitude, cached.longitude, current.latitude, current.longitude) <= positionLimit,
           abs(cached.height - current.height) <= cameraFootprintTerrainHeightMeters,
-          cameraFootprintAngleDeltaDegrees(cached.azimuth, current.azimuth) <= cameraFootprintTerrainAzimuthDegrees,
-          abs(cached.tilt - current.tilt) <= cameraFootprintTerrainTiltDegrees,
+          cameraFootprintAngleDeltaDegrees(cached.azimuth, current.azimuth) <= azimuthLimit,
+          abs(cached.tilt - current.tilt) <= tiltLimit,
           abs(cached.horizontalFov - current.horizontalFov) <= cameraFootprintTerrainFovDegrees,
           abs(cached.verticalFov - current.verticalFov) <= cameraFootprintTerrainFovDegrees
     else { return false }
     return true
+}
+
+/// Exactly one footprint per aircraft. Terrain replaces the live outline in place when it does not self-intersect.
+public func cameraFootprintDisplayOutline(_ drawing: CameraFootprintDrawing) -> CameraFootprintOutline {
+    if drawing.boundary.count >= 3 && !cameraFootprintOutlineSelfIntersects(drawing.boundary) {
+        return drawing.boundary
+    }
+    if drawing.corners.count >= 3 { return drawing.corners }
+    return .empty
+}
+
+/// In-place footprint overlays keyed by aircraft. Toggle-off / stream-end clears an id.
+public final class CameraFootprintOverlayBook: @unchecked Sendable {
+    private var byDrone: [String: CameraFootprintOutline] = [:]
+
+    public init() {}
+
+    @discardableResult
+    public func sync(
+        inputs: [String: CameraFootprintInput],
+        terrain: [String: (CameraFootprintInput, CameraFootprintOutline)] = [:]
+    ) -> [String: CameraFootprintOutline] {
+        var next: [String: CameraFootprintOutline] = [:]
+        for (id, input) in inputs {
+            let sampled: CameraFootprintOutline? = {
+                guard let entry = terrain[id], !entry.1.isEmpty,
+                      cameraFootprintTerrainReusable(cached: entry.0, current: input) else { return nil }
+                return entry.1
+            }()
+            let outline = cameraFootprintDisplayOutline(CameraFootprintDrawing(input: input, terrain: sampled, liveCorners: true))
+            if outline.count >= 3 { next[id] = outline }
+        }
+        byDrone = next
+        return next
+    }
+
+    public func outlineCount(_ id: String) -> Int { byDrone[id] == nil ? 0 : 1 }
+    public var size: Int { byDrone.count }
+    public func clear() { byDrone.removeAll() }
+}
+
+public func cameraFootprintDebugLine(
+    source: String,
+    gimbalTiltDeg: Double,
+    headingDeg: Double,
+    aglMeters: Double,
+    nearGroundMeters: Double,
+    farGroundMeters: Double,
+    clamped: Bool
+) -> String {
+    String(format: "CameraFootprint source=%@ gimbalTiltDeg=%.1f headingDeg=%.1f aglM=%.1f nearM=%.0f farM=%.0f clamped=%@",
+           source, gimbalTiltDeg, headingDeg, aglMeters, nearGroundMeters, farGroundMeters, clamped ? "true" : "false")
+}
+
+/// At most one debug line per drone per `cameraFootprintDebugIntervalMs`.
+public final class CameraFootprintDebugThrottle: @unchecked Sendable {
+    private let intervalMs: Int64
+    private var lastByDrone: [String: Int64] = [:]
+    public init(intervalMs: Int64 = cameraFootprintDebugIntervalMs) { self.intervalMs = intervalMs }
+    public func shouldLog(droneKey: String, nowMs: Int64) -> Bool {
+        let last = lastByDrone[droneKey] ?? 0
+        guard nowMs - last >= intervalMs else { return false }
+        lastByDrone[droneKey] = nowMs
+        return true
+    }
+    public func retain(activeKeys: Set<String>) {
+        lastByDrone = lastByDrone.filter { activeKeys.contains($0.key) }
+    }
 }
 
 public struct CameraFootprintFrameRect: Sendable, Equatable {
@@ -157,7 +435,7 @@ public func cameraFootprintAdScanRect(_ zoneFraction: Double) -> CameraFootprint
 }
 
 /// Camera-plane offsets of a video rectangle inside the full FOV. Origin is top-left, y down;
-/// camera x is right and y is up. Order matches `project`: left-top, right-top, right-bottom, left-bottom.
+/// camera x is right and y is up. Order matches image top-left rect corners.
 public func cameraFootprintSubframeRayOffsets(
     horizontalFovDeg: Double,
     verticalFovDeg: Double,
@@ -210,12 +488,12 @@ public func cameraFootprintPreferenceKey(_ remoteID: String) -> String? {
 }
 
 public func mergeCameraFootprintTerrain(
-    previous: [String: (CameraFootprintInput, [CameraFootprintVertex])],
-    computed: [String: (CameraFootprintInput, [CameraFootprintVertex])],
+    previous: [String: (CameraFootprintInput, CameraFootprintOutline)],
+    computed: [String: (CameraFootprintInput, CameraFootprintOutline)],
     current: [String: CameraFootprintInput]
-) -> [String: (CameraFootprintInput, [CameraFootprintVertex])] {
+) -> [String: (CameraFootprintInput, CameraFootprintOutline)] {
     guard !current.isEmpty else { return [:] }
-    var merged: [String: (CameraFootprintInput, [CameraFootprintVertex])] = [:]
+    var merged: [String: (CameraFootprintInput, CameraFootprintOutline)] = [:]
     for (id, input) in current {
         if let fresh = computed[id], !fresh.1.isEmpty {
             merged[id] = fresh

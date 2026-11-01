@@ -69,6 +69,24 @@ class ClueHydrationReconcileTest {
     }
 
     @Test
+    fun mergedCluesJsonRewriteIsRaceNotMismatch() {
+        // Union merge rewrites clues.json so staged != migrated and != raw archive.
+        assertEquals(
+            ClueHydrationReconcile.Verdict.RACE,
+            ClueHydrationReconcile.verdict(
+                stagedHash = "merged-index",
+                expectedHash = "pre-merge-migrated",
+                archivePresent = true,
+                archiveHash = "archive-side",
+                relativePath = "clues.json",
+            ),
+        )
+        assertTrue(ClueHydrationReconcile.isMergedIndexPath("clues.json"))
+        assertTrue(ClueHydrationReconcile.isMergedIndexPath("day/clues.json"))
+        assertFalse(ClueHydrationReconcile.isMergedIndexPath("photo.jpg"))
+    }
+
+    @Test
     fun cluesHydrationRaceDoesNotSurfaceFlightStorageDialog() {
         assertTrue(
             FlightStorage.isTransientStorageCheckFailure(

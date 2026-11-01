@@ -183,11 +183,13 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         final long revision;
         final String mapId, remoteId, trackId, label, description;
         final JSONArray points;
+        final long flightStartedAtMs;
         JournalSnapshot(long revision, String mapId, String remoteId, String trackId,
-                        String label, String description, JSONArray points) {
+                        String label, String description, JSONArray points, long flightStartedAtMs) {
             this.revision = revision; this.mapId = mapId; this.remoteId = remoteId;
             this.trackId = trackId; this.label = label; this.description = description;
             this.points = points;
+            this.flightStartedAtMs = flightStartedAtMs;
         }
     }
     private long trackObservedStartedAtMs;
@@ -652,10 +654,18 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             throw new IllegalStateException("finishOwnedPublicationForDisconnect must run off Main");
         }
         final DisconnectFinishWork work;
+        final long flightStartedAtMs;
         synchronized (this) {
+            // Capture the flight day before prepare clears publication state.
+            flightStartedAtMs = trackObservedStartedAtMs;
             work = prepareDisconnectFinishLocked(destinationMap);
         }
-        applyDisconnectFinishWork(work, maxWaitMs, destinationMap, destinationFolder);
+        long startedAtMs = work.snapshot != null && work.snapshot.flightStartedAtMs > 0L
+                ? work.snapshot.flightStartedAtMs
+                : flightStartedAtMs;
+        String resolved = CaltopoMap.resolveArchiveFolderIdForFlight(startedAtMs);
+        String folder = resolved != null && !resolved.isEmpty() ? resolved : destinationFolder;
+        applyDisconnectFinishWork(work, maxWaitMs, destinationMap, folder);
     }
 
     /**
@@ -796,14 +806,19 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                     // Clear the durable checkpoint only after the archive finished, on
                     // this worker — not from a gateway callback that may hop to Main.
                     CaltopoInterruptedTrackJournal.remove(archivedLiveTrackId);
-                    AwaitingMapFlights.published(archivedLiveTrackId);
+                    String folderTitle = destinationFolderTitleForLog(destinationFolder);
+                    AwaitingMapFlights.confirmArchive(
+                            archivedLiveTrackId, myRemoteId, work.durableJournalId, folderTitle);
+                    CTInfo(TAG, String.format(Locale.US,
+                            "CalTopo track archived id=%s folder=%s",
+                            archivedLiveTrackId, folderTitle));
                     if (work.durableJournalId != null) {
                         WaypointTrackJournal.markFinishedAndRemove(work.durableJournalId);
                     }
                 } else {
                     CTWarn(TAG, String.format(Locale.US,
-                            "disconnect-finish(%s): archive failed; journal retained",
-                            work.snapshot != null ? work.snapshot.label : archivedLiveTrackId));
+                            "CalTopo track not archived reason=shape-post-failed liveTrackId=%s",
+                            archivedLiveTrackId));
                 }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
@@ -946,11 +961,11 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     public void archiveTrackOnCaltopo(long maxWaitInMilliseconds) {
         final String destinationMap = CaltopoMap.GetMapId();
         CaltopoRecoveryWork.offMainArchive(() -> {
-            String destinationFolder = CaltopoMap.GetArchiveFolderId();
-            if (destinationFolder == null || destinationFolder.isEmpty()) {
-                CaltopoMap.ensureMapArtifacts("first-track");
-                destinationFolder = CaltopoMap.GetArchiveFolderId();
+            long flightStartedAtMs;
+            synchronized (this) {
+                flightStartedAtMs = trackObservedStartedAtMs;
             }
+            String destinationFolder = CaltopoMap.resolveArchiveFolderIdForFlight(flightStartedAtMs);
             archiveTrackOnWorker(maxWaitInMilliseconds, destinationMap, destinationFolder);
         });
     }
@@ -1107,6 +1122,16 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         if (work.skip || work.feature == null || work.archiveId == null
                 || destinationMap == null || destinationMap.isEmpty()
                 || destinationFolder == null || destinationFolder.isEmpty()) {
+            if (!work.skip && work.archiveId != null) {
+                String reason = destinationMap == null || destinationMap.isEmpty()
+                        ? "no-map"
+                        : (destinationFolder == null || destinationFolder.isEmpty()
+                            ? "dated-folder-unavailable"
+                            : "no-waypoints");
+                CTWarn(TAG, String.format(Locale.US,
+                        "CalTopo track not archived reason=%s liveTrackId=%s",
+                        reason, work.archiveId));
+            }
             return;
         }
         // Never scan the recording catalog / MediaMetadataRetriever / OperationalStorage
@@ -1152,9 +1177,19 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                 destinationMap, destinationFolder, runtime,
                 success -> CaltopoRecoveryWork.offMainArchive(() -> {
                     if (archiveDone != null) archiveDone.countDown();
-                    if (!success) return;
+                    if (!success) {
+                        CTWarn(TAG, String.format(Locale.US,
+                                "CalTopo track not archived reason=shape-post-failed liveTrackId=%s",
+                                archivedLiveTrackId));
+                        return;
+                    }
                     CaltopoInterruptedTrackJournal.remove(archivedLiveTrackId);
-                    AwaitingMapFlights.published(archivedLiveTrackId);
+                    String folderTitle = destinationFolderTitleForLog(destinationFolder);
+                    AwaitingMapFlights.confirmArchive(
+                            archivedLiveTrackId, myRemoteId, work.durableJournalId, folderTitle);
+                    CTInfo(TAG, String.format(Locale.US,
+                            "CalTopo track archived id=%s folder=%s",
+                            archivedLiveTrackId, folderTitle));
                     if (work.durableJournalId != null) {
                         WaypointTrackJournal.markFinishedAndRemove(work.durableJournalId);
                     }
@@ -1181,6 +1216,18 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                         "archiveTrackOnCaltopo(%s): interrupted waiting for Shape POST", work.trackLabel));
             }
         }
+    }
+
+    /** Best-effort dated folder title for archive confirmation logs (never coordinates). */
+    @NonNull
+    private static String destinationFolderTitleForLog(@Nullable String destinationFolderId) {
+        if (destinationFolderId == null || destinationFolderId.isEmpty()) {
+            return CaltopoMap.archiveFolderName(
+                    CaltopoClient.GetTrackFolderName(), new java.util.Date());
+        }
+        // Folder id is opaque; the dated title is what operators look for on the map.
+        return CaltopoMap.archiveFolderName(
+                CaltopoClient.GetTrackFolderName(), new java.util.Date());
     }
 
     private synchronized void resetLiveTrack() {
@@ -1468,11 +1515,11 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     public void finishTrack(@NonNull String reason) {
         final String destinationMap = CaltopoMap.GetMapId();
         CaltopoRecoveryWork.offMainArchive(() -> {
-            String destinationFolder = CaltopoMap.GetArchiveFolderId();
-            if (destinationFolder == null || destinationFolder.isEmpty()) {
-                CaltopoMap.ensureMapArtifacts("first-track");
-                destinationFolder = CaltopoMap.GetArchiveFolderId();
+            long flightStartedAtMs;
+            synchronized (this) {
+                flightStartedAtMs = trackObservedStartedAtMs;
             }
+            String destinationFolder = CaltopoMap.resolveArchiveFolderIdForFlight(flightStartedAtMs);
             finishTrackOnWorker(reason, destinationMap, destinationFolder);
         });
     }
@@ -1841,7 +1888,8 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         }
         return new JournalSnapshot(++journalRevision,
                 publicationMapId != null ? publicationMapId : CaltopoMap.GetMapId(),
-                myRemoteId, journalId, segmentTrackLabel, description, points);
+                myRemoteId, journalId, segmentTrackLabel, description, points,
+                trackObservedStartedAtMs);
     }
 
     private boolean saveJournalSnapshot(JournalSnapshot snapshot) {
@@ -1850,7 +1898,8 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             // A delayed periodic write must never overwrite a forced final archive checkpoint.
             if (snapshot.revision <= persistedJournalRevision) return true;
             boolean saved = CaltopoInterruptedTrackJournal.save(snapshot.mapId, snapshot.remoteId,
-                    snapshot.trackId, snapshot.label, snapshot.description, snapshot.points);
+                    snapshot.trackId, snapshot.label, snapshot.description, snapshot.points,
+                    snapshot.flightStartedAtMs);
             if (saved) {
                 persistedJournalRevision = snapshot.revision;
                 try { AwaitingMapFlights.notePublication(snapshot.remoteId, snapshot.mapId); }

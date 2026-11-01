@@ -7,6 +7,8 @@
 
 package org.ncssar.rid2caltopo.app;
 
+import android.app.ActivityManager;
+import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -24,10 +26,14 @@ public final class MainThreadStallMonitor {
     private static final String TAG = "MainThreadStallMonitor";
     private static final long HEARTBEAT_INTERVAL_MS = 1000L;
     private static final long STALL_THRESHOLD_MS = 1000L;
+    /** elapsedRealtime advances during deep sleep; uptimeMillis does not. */
+    private static final long SLEEP_GAP_THRESHOLD_MS = 1500L;
 
     private static final Handler MainHandler = new Handler(Looper.getMainLooper());
     private static volatile boolean started = false;
     private static volatile long nextExpectedAtUptimeMs = 0L;
+    private static volatile long lastHeartbeatElapsedRealtimeMs = 0L;
+    private static volatile Context appContext;
     private static final ScheduledExecutorService Watchdog = Executors.newSingleThreadScheduledExecutor(task -> {
         Thread thread = new Thread(task, "r2c-main-stall-watchdog");
         thread.setDaemon(true);
@@ -41,7 +47,11 @@ public final class MainThreadStallMonitor {
     public static synchronized void start() {
         if (started) return;
         started = true;
-        nextExpectedAtUptimeMs = SystemClock.uptimeMillis() + HEARTBEAT_INTERVAL_MS;
+        appContext = R2CApplication.getAppCtxt();
+        long nowUptime = SystemClock.uptimeMillis();
+        long nowElapsed = SystemClock.elapsedRealtime();
+        nextExpectedAtUptimeMs = nowUptime + HEARTBEAT_INTERVAL_MS;
+        lastHeartbeatElapsedRealtimeMs = nowElapsed;
         MainHandler.postDelayed(MainThreadStallMonitor::heartbeat, HEARTBEAT_INTERVAL_MS);
         lastStackAtUptimeMs = 0L;
         watchdogTask = Watchdog.scheduleWithFixedDelay(
@@ -58,44 +68,92 @@ public final class MainThreadStallMonitor {
         CaltopoClient.CTDebug(TAG, "Stopped main-thread stall monitor.");
     }
 
+    /**
+     * True when a long gap should be treated as a real main-thread stall.
+     * Suppresses device-sleep gaps (elapsedRealtime advanced while uptime did not)
+     * and process freeze/background periods where the main looper was not scheduled.
+     */
+    static boolean shouldReportStall(
+            long delayUptimeMs,
+            long elapsedSinceLastHeartbeatMs,
+            int processImportance,
+            boolean processImportanceKnown
+    ) {
+        if (delayUptimeMs < STALL_THRESHOLD_MS) return false;
+        // Deep sleep: Handler.postDelayed is uptime-based, so delayUptime is usually small
+        // after wake. When a sample still looks large, a much larger elapsedRealtime gap
+        // means the device was asleep rather than the main thread doing work.
+        long sleepSkew = elapsedSinceLastHeartbeatMs - delayUptimeMs;
+        if (sleepSkew >= SLEEP_GAP_THRESHOLD_MS) return false;
+        if (processImportanceKnown && processImportance > ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) {
+            return false;
+        }
+        return true;
+    }
+
+    static int currentProcessImportance(Context context) {
+        if (context == null) return ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND;
+        try {
+            ActivityManager.RunningAppProcessInfo info = new ActivityManager.RunningAppProcessInfo();
+            ActivityManager.getMyMemoryState(info);
+            return info.importance;
+        } catch (RuntimeException ignored) {
+            return ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND;
+        }
+    }
+
+    private static String mainStackTrace(int limit) {
+        Thread main = Looper.getMainLooper().getThread();
+        StackTraceElement[] frames = main.getStackTrace();
+        StringBuilder trace = new StringBuilder(" state=").append(main.getState());
+        for (int index = 0; index < Math.min(limit, frames.length); index++) {
+            trace.append("\n    at ").append(frames[index]);
+        }
+        return trace.toString();
+    }
+
     private static void captureBlockedMainStack() {
         long now = SystemClock.uptimeMillis();
         long overdue = now - nextExpectedAtUptimeMs;
-        if (!started || overdue < STALL_THRESHOLD_MS || now - lastStackAtUptimeMs < 5_000L) return;
+        long elapsedGap = SystemClock.elapsedRealtime() - lastHeartbeatElapsedRealtimeMs;
+        int importance = currentProcessImportance(appContext);
+        if (!started || !shouldReportStall(overdue, elapsedGap, importance, true)) return;
+        if (now - lastStackAtUptimeMs < 1_000L) return;
         lastStackAtUptimeMs = now;
-        Thread main = Looper.getMainLooper().getThread();
-        StackTraceElement[] frames = main.getStackTrace();
-        StringBuilder trace = new StringBuilder("main thread blocked delayMs=")
-                .append(overdue).append(" state=").append(main.getState());
-        for (int index = 0; index < Math.min(32, frames.length); index++) {
-            trace.append("\n    at ").append(frames[index]);
-        }
         // Capture from the watchdog while Main is blocked, rather than from its recovered heartbeat.
-        CaltopoClient.CTWarn(TAG, trace.toString());
+        CaltopoClient.CTWarn(TAG, "main thread blocked delayMs=" + overdue + mainStackTrace(32));
     }
 
     private static void heartbeat() {
         long nowUptimeMs = SystemClock.uptimeMillis();
+        long nowElapsedMs = SystemClock.elapsedRealtime();
         long delayMs = nowUptimeMs - nextExpectedAtUptimeMs;
-        if (delayMs >= STALL_THRESHOLD_MS && !SettingsStartup.isReady()) {
-            CaltopoClient.CTWarn(TAG, "Main thread stall during saved-settings startup delayMs=" + delayMs);
-        } else if (delayMs >= STALL_THRESHOLD_MS) {
-            CaltopoClient.CTWarn(TAG, String.format(Locale.US,
-                    "main thread stall delayMs=%d intervalMs=%d thread=%s scanningRunning=%b scannerUptime=%s " +
-                            "ridIngestQueueDepth=%d ridIngestDropped=%d activeFlights=%d mapStatus=%s",
-                    delayMs,
-                    HEARTBEAT_INTERVAL_MS,
-                    Thread.currentThread().getName(),
-                    ScanningService.IsRunning(),
-                    ScanningService.UpTime(),
-                    ScanningService.GetRidIngestQueueDepth(),
-                    ScanningService.GetDroppedRidIngestPacketCount(),
-                    CaltopoClient.GetActiveFlightCountSnapshot(),
-                    CaltopoMap.GetMapStatus()));
+        long elapsedGap = nowElapsedMs - lastHeartbeatElapsedRealtimeMs;
+        int importance = currentProcessImportance(appContext);
+        if (shouldReportStall(delayMs, elapsedGap, importance, true)) {
+            String stack = mainStackTrace(32);
+            if (!SettingsStartup.isReady()) {
+                CaltopoClient.CTWarn(TAG, "Main thread stall during saved-settings startup delayMs=" + delayMs + stack);
+            } else {
+                CaltopoClient.CTWarn(TAG, String.format(Locale.US,
+                        "main thread stall delayMs=%d intervalMs=%d thread=%s scanningRunning=%b scannerUptime=%s " +
+                                "ridIngestQueueDepth=%d ridIngestDropped=%d activeFlights=%d mapStatus=%s%s",
+                        delayMs,
+                        HEARTBEAT_INTERVAL_MS,
+                        Thread.currentThread().getName(),
+                        ScanningService.IsRunning(),
+                        ScanningService.UpTime(),
+                        ScanningService.GetRidIngestQueueDepth(),
+                        ScanningService.GetDroppedRidIngestPacketCount(),
+                        CaltopoClient.GetActiveFlightCountSnapshot(),
+                        CaltopoMap.GetMapStatus(),
+                        stack));
+            }
         }
         synchronized (MainThreadStallMonitor.class) {
             if (!started) return;
             nextExpectedAtUptimeMs = nowUptimeMs + HEARTBEAT_INTERVAL_MS;
+            lastHeartbeatElapsedRealtimeMs = nowElapsedMs;
             MainHandler.postDelayed(MainThreadStallMonitor::heartbeat, HEARTBEAT_INTERVAL_MS);
         }
     }

@@ -103,6 +103,12 @@ object FlightStorage {
     private val stateLock = Any()
     private val protectedDays = mutableMapOf<String, String>()
     val changes = kotlinx.coroutines.flow.MutableStateFlow(0L)
+
+    /** Bumps [changes] so clue UI reloads after Archive Dir clues prepare finishes. */
+    @JvmStatic fun notifyCluesProjectionReady() {
+        org.ncssar.rid2caltopo.video.AndroidClueStore.invalidateSharedLoaded()
+        changes.value++
+    }
     private val worker = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()
     private val pendingDocuments = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val documentDrainQueued = java.util.concurrent.atomic.AtomicBoolean(false)

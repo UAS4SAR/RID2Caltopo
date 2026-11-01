@@ -32,11 +32,25 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
     public var lastUploadError: String?
     public var caltopoMarkerID: String?
     public var caltopoMediaID: UUID
+    /// True after marker + media + link were confirmed. Nil/false means auto re-verify may run once.
+    public var caltopoPartsReconciled: Bool?
+    /// True after a confirmed upload's Marker was found absent from the incident map.
+    /// Remotely-deleted clues stay local and must never auto re-POST.
+    public var caltopoRemotelyDeleted: Bool?
     // Optional for compatibility with older indexes. Missing destinations require review.
     public var destinationMapID: String?
     public var destinationTeamID: String?
     /// Waypoint binding (nil for clues saved before binding existed).
     public var binding: ClueBinding?
+
+    /// Durable upload confirmation — published, reconciled, or legacy success marker id.
+    public var uploadConfirmed: Bool {
+        ClueUploadConfirmation.isConfirmed(
+            uploadState: uploadState,
+            partsReconciled: caltopoPartsReconciled == true,
+            hasLegacyCaltopoIds: caltopoMarkerID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        )
+    }
 
     /// Capture time on the drone clock when bound; otherwise the stored capture time.
     public var ownershipTime: Date {
@@ -76,6 +90,8 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
         lastUploadError: String? = nil,
         caltopoMarkerID: String? = nil,
         caltopoMediaID: UUID = UUID(),
+        caltopoPartsReconciled: Bool? = nil,
+        caltopoRemotelyDeleted: Bool? = nil,
         destinationMapID: String? = nil,
         destinationTeamID: String? = nil,
         binding: ClueBinding? = nil
@@ -103,6 +119,8 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
         self.lastUploadError = lastUploadError
         self.caltopoMarkerID = caltopoMarkerID
         self.caltopoMediaID = caltopoMediaID
+        self.caltopoPartsReconciled = caltopoPartsReconciled
+        self.caltopoRemotelyDeleted = caltopoRemotelyDeleted
         self.destinationMapID = destinationMapID
         self.destinationTeamID = destinationTeamID
         self.binding = binding

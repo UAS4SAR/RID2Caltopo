@@ -26,7 +26,7 @@ internal const val CAMERA_FOOTPRINT_FRAME_MS = 80L
  * Latest terrain outlines. Not Compose state: publishing a pass must not rebuild every map overlay.
  */
 internal class CameraFootprintTerrainCache {
-    @Volatile var value: Map<String, Pair<CameraFootprintInput, List<CameraFootprintVertex>>> = emptyMap()
+    @Volatile var value: Map<String, Pair<CameraFootprintInput, CameraFootprintOutline>> = emptyMap()
 }
 
 /** Pan/zoom notifies only the footprint HUD. The listener is installed once on the MapView. */
@@ -84,6 +84,8 @@ internal fun CameraFootprintHud(
     modifier: Modifier = Modifier,
 ) {
     val drawingsState = remember { mutableStateOf<List<CameraFootprintDrawing>>(emptyList()) }
+    val overlayBook = remember { CameraFootprintOverlayBook() }
+    val debugThrottle = remember { CameraFootprintDebugThrottle() }
     var projectionTick by remember { mutableIntStateOf(0) }
     DisposableEffect(projectionClock) {
         projectionClock.onChange = {
@@ -95,9 +97,30 @@ internal fun CameraFootprintHud(
         while (isActive) {
             val inputs = currentCameraFootprintInputs(viewModel)
             val cached = terrain.value
+            // Replace-in-place per aircraft; empty inputs (toggle off / stream end) remove overlays.
+            overlayBook.sync(inputs, cached)
+            val nowMs = System.currentTimeMillis()
+            debugThrottle.retain(inputs.keys)
             drawingsState.value = inputs.mapNotNull { (id, input) ->
-                val outline = cameraFootprintTerrainForDisplay(cached[id], input)
-                cameraFootprintLiveDrawing(input, outline).takeIf { it.corners.isNotEmpty() || it.boundary.isNotEmpty() }
+                val terrain = cameraFootprintTerrainForDisplay(cached[id], input)
+                val drawing = cameraFootprintLiveDrawing(input, terrain)
+                val outline = cameraFootprintDisplayOutline(drawing)
+                if (outline.size < 3) return@mapNotNull null
+                if (debugThrottle.shouldLog(id, nowMs)) {
+                    org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug(
+                        "CameraFootprint",
+                        cameraFootprintDebugLine(
+                            source = "SEI",
+                            gimbalTiltDeg = input.tilt,
+                            headingDeg = input.azimuth,
+                            aglMeters = input.height,
+                            nearGroundMeters = outline.nearGroundMeters,
+                            farGroundMeters = outline.farGroundMeters,
+                            clamped = outline.clamped,
+                        ),
+                    )
+                }
+                drawing
             }
             delay(CAMERA_FOOTPRINT_FRAME_MS)
         }

@@ -125,9 +125,26 @@ object AwaitingMapFlights {
         return item.optString("id").ifEmpty { null }
     }
     @JvmStatic @Synchronized fun notePublication(remote: String, map: String) {
+        if (map.isEmpty()) return
         load()
-        val entry = all().lastOrNull { it.optString("remote") == remote && !it.optBoolean("finished") && it.optString("map") == map } ?: return
-        if (!entry.optBoolean("publicationStarted")) { entry.put("publicationStarted", true); save() }
+        // Live publish to a connected map must bind an empty-map review intent captured before
+        // connect; requiring map equality left those rows as finished review forever.
+        val entry = all().lastOrNull {
+            it.optString("remote") == remote && !it.optBoolean("finished") &&
+                (it.optString("map") == map ||
+                    (it.optString("map").isEmpty() && it.optString("decision") == "review"))
+        } ?: return
+        var changed = false
+        if (entry.optString("map").isEmpty()) {
+            entry.put("map", map).put("decision", "bound")
+            changed = true
+        }
+        if (!entry.optBoolean("publicationStarted")) {
+            entry.put("publicationStarted", true)
+            changed = true
+        }
+        if (changed) save()
+        if (changed) publishChoices()
     }
     @Synchronized fun clueDestination(remote: String): Pair<String, String>? {
         load()
@@ -143,7 +160,17 @@ object AwaitingMapFlights {
         return entry.optString("map") to entry.optString("team")
     }
     @Synchronized fun hasEntry(id: String): Boolean { load(); return all().any { it.optString("id") == id } }
-    @Synchronized fun pending(): List<JSONObject> { load(); return all().filter { it.optString("decision") == "review" }.map { JSONObject(it.toString()) } }
+    @Synchronized fun pending(): List<JSONObject> {
+        load()
+        return all().filter {
+            TrackArchiveConfirmation.showsInAwaitingPublicationInbox(
+                decision = it.optString("decision"),
+                finished = it.optBoolean("finished"),
+                archiveConfirmed = it.optBoolean("archiveConfirmed"),
+                hasArchiveId = it.optString("caltopoArchiveId").isNotEmpty(),
+            )
+        }.map { JSONObject(it.toString()) }
+    }
     fun decide(id: String, map: String?, team: String) {
         val bindItem: JSONObject?
         val bindOthers: List<JSONObject>?
@@ -187,7 +214,7 @@ object AwaitingMapFlights {
             geometry.put(JSONArray().put(point.getDouble(0)).put(point.getDouble(1)).put(point.getDouble(2)))
         }
         CaltopoInterruptedTrackJournal.save(item.optString("map"), item.optString("remote"), id,
-            item.optString("label"), "", geometry)
+            item.optString("label"), "", geometry, firstTime(item))
     }
     @JvmStatic fun reconcile(map: String, team: String) {
         val ctxt = R2CApplication.getAppCtxt()
@@ -221,10 +248,73 @@ object AwaitingMapFlights {
     /** Copies of every journal entry, including decided ones, for clue ownership checks. */
     @Synchronized fun allEntries(): List<JSONObject> { load(); return all().map { JSONObject(it.toString()) } }
     @JvmStatic @Synchronized fun published(id: String) {
-        load(); all().firstOrNull { it.optString("id") == id }?.let { it.put("decision", "published")
-            val points = it.optJSONArray("points")
-            if (points != null && points.length() > 1) it.put("points", JSONArray().put(points.get(0)).put(points.get(points.length()-1)))
-            save(); publishChoices() }
+        confirmArchive(archiveId = id, remote = null, flightId = id, folderTitle = null)
+    }
+
+    /**
+     * Durable CalTopo Shape-archive confirmation. Prunes confirmed rows so stale
+     * queued/published entries cannot linger. Never deletes unpublished review/local offers.
+     */
+    @JvmStatic @JvmOverloads @Synchronized fun confirmArchive(
+        archiveId: String,
+        remote: String? = null,
+        flightId: String? = null,
+        folderTitle: String? = null,
+    ): Boolean {
+        load()
+        val trimmedId = archiveId.trim()
+        if (trimmedId.isEmpty()) return false
+        val match = all().lastOrNull { entry ->
+            val id = entry.optString("id")
+            when {
+                flightId != null && id == flightId -> true
+                id == trimmedId -> true
+                remote != null && entry.optString("remote") == remote &&
+                    entry.optString("decision") in listOf(
+                        "review", "queued", "publish", "bound", "published",
+                    ) -> true
+                else -> false
+            }
+        }
+        if (match != null) {
+            match.put("decision", "published")
+            match.put("caltopoArchiveId", trimmedId)
+            match.put("archiveConfirmed", true)
+            match.put("finished", true)
+            if (!folderTitle.isNullOrBlank()) match.put("caltopoArchiveFolder", folderTitle)
+            val points = match.optJSONArray("points")
+            if (points != null && points.length() > 1) {
+                match.put("points", JSONArray().put(points.get(0)).put(points.get(points.length() - 1)))
+            }
+        }
+        val remaining = all().filterNot {
+            TrackArchiveConfirmation.isConfirmed(
+                decision = it.optString("decision"),
+                archiveConfirmed = it.optBoolean("archiveConfirmed"),
+                hasArchiveId = it.optString("caltopoArchiveId").isNotEmpty(),
+            )
+        }
+        if (match == null && remaining.size == entries.length()) return false
+        entries = JSONArray(remaining)
+        save()
+        publishChoices()
+        return true
+    }
+
+    /** Removes entries whose CalTopo Shape archive is already confirmed. */
+    @JvmStatic @Synchronized fun pruneConfirmedArchives() {
+        load()
+        val remaining = all().filterNot {
+            TrackArchiveConfirmation.isConfirmed(
+                decision = it.optString("decision"),
+                archiveConfirmed = it.optBoolean("archiveConfirmed"),
+                hasArchiveId = it.optString("caltopoArchiveId").isNotEmpty(),
+            )
+        }
+        if (remaining.size == entries.length()) return
+        entries = JSONArray(remaining)
+        save()
+        publishChoices()
     }
     fun firstTime(item: JSONObject): Long = item.optJSONArray("points")?.optJSONArray(0)?.optLong(3) ?: 0
     fun lastTime(item: JSONObject): Long = item.optJSONArray("points")?.let { it.optJSONArray(it.length() - 1)?.optLong(3) } ?: 0

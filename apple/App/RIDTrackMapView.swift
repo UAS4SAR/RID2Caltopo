@@ -108,28 +108,55 @@ struct AppleOperationalStatusChipLabel: View {
 
 struct PendingClueUploadsSheet: View {
     let rows: [PendingClueUploadRow]
+    let actionFeedback: String?
     let onRetryNow: () -> Void
+    let onUploadAsNewMarker: (UUID) -> Void
+    let onDismissKeepLocal: (UUID) -> Void
     let onClose: () -> Void
+    @State private var confirmDismissID: UUID?
 
     var body: some View {
         NavigationStack {
             List {
+                if let actionFeedback, !actionFeedback.isEmpty {
+                    Section {
+                        Text(actionFeedback)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Section {
                     ForEach(rows) { row in
-                        VStack(alignment: .leading, spacing: 4) {
+                        VStack(alignment: .leading, spacing: 6) {
                             Text(row.title)
                                 .font(.headline)
                             Text(row.designator.isEmpty ? "Captured \(row.capturedAt.formatted(date: .abbreviated, time: .shortened))" : "\(row.designator) · \(row.capturedAt.formatted(date: .abbreviated, time: .shortened))")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
+                            Text("Map \(row.mapName.isEmpty ? row.mapID : "\(row.mapName) (\(row.mapID))")")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                            Text("Credential \(row.credentialProfile)")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
                             Text("Attempts \(row.uploadAttempts) · \(row.lastErrorPlain)")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
+                            HStack(spacing: 12) {
+                                Button("Upload as new marker") {
+                                    onUploadAsNewMarker(row.id)
+                                }
+                                .font(.footnote)
+                                Button("Dismiss (keep local copy)") {
+                                    confirmDismissID = row.id
+                                }
+                                .font(.footnote)
+                            }
                         }
                         .padding(.vertical, 2)
                     }
                 } footer: {
-                    Text("Clue Submit still uploads immediately. Retry wakes pending uploads without waiting for the next automatic attempt.")
+                    Text("Clue Submit still uploads immediately. Retry wakes pending uploads without waiting for the next automatic attempt. Dismiss keeps the local photo.")
                 }
             }
             .navigationTitle(rows.count == 1 ? "1 clue pending" : "\(rows.count) clues pending")
@@ -141,6 +168,26 @@ struct PendingClueUploadsSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Retry now", action: onRetryNow)
                 }
+            }
+            .confirmationDialog(
+                "Keep the local copy and stop uploading this clue?",
+                isPresented: Binding(
+                    get: { confirmDismissID != nil },
+                    set: { if !$0 { confirmDismissID = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Dismiss (keep local copy)", role: .destructive) {
+                    if let id = confirmDismissID {
+                        onDismissKeepLocal(id)
+                    }
+                    confirmDismissID = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    confirmDismissID = nil
+                }
+            } message: {
+                Text("The photo and clue details stay on this device. Nothing is deleted.")
             }
         }
     }
@@ -886,9 +933,15 @@ struct RIDTrackMapView: View {
         .sheet(isPresented: $showPendingClueUploads) {
             PendingClueUploadsSheet(
                 rows: clueStore.pendingUploadRows,
+                actionFeedback: clueStore.pendingUploadActionFeedback,
                 onRetryNow: {
                     clueStore.retryPendingUploadsNow()
-                    showPendingClueUploads = false
+                },
+                onUploadAsNewMarker: { id in
+                    clueStore.uploadPendingClueAsNewMarker(id)
+                },
+                onDismissKeepLocal: { id in
+                    clueStore.dismissPendingClueKeepLocal(id)
                 },
                 onClose: { showPendingClueUploads = false }
             )
@@ -3783,14 +3836,8 @@ private struct ClueSubmissionView: View {
         }
     }
 
-    private static let timestampFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        return formatter
-    }()
-
     private static func clueDescriptionTemplate(_ date: Date, pilot: String = "") -> String {
-        "time: \(timestampFormatter.string(from: date))\nfound by: \(pilot.trimmingCharacters(in: .whitespacesAndNewlines))\nreported to IC: yes|no\n"
+        "time: \(CluePhotoUploadPolicy.formatClueMarkerTime(date))\nfound by: \(pilot.trimmingCharacters(in: .whitespacesAndNewlines))\nreported to IC: yes|no\n"
     }
 
     private static func formatGimbalPitchText(_ degrees: Double) -> String {
@@ -4156,16 +4203,16 @@ private struct AircraftMapDisplay: Equatable {
 private final class CameraFootprintMapView: UIView {
     private weak var map: MKMapView?
     private var inputs: [String: CameraFootprintInput] = [:]
-    private var terrain: [String: (CameraFootprintInput, [CameraFootprintVertex])] = [:]
+    private var terrain: [String: (CameraFootprintInput, CameraFootprintOutline)] = [:]
     private var inputProvider: () -> [String: CameraFootprintInput] = { [:] }
     private var worker: Task<Void, Never>?
     private var displayTimer: Timer?
     private var cacheGeneration = -1
     private var laidOutSize = CGSize.zero
+    private let overlayBook = CameraFootprintOverlayBook()
+    private let debugThrottle = CameraFootprintDebugThrottle()
     private let solidHalo = CAShapeLayer()
-    private let dashedHalo = CAShapeLayer()
     private let solidStroke = CAShapeLayer()
-    private let dashedStroke = CAShapeLayer()
     private let dem: GeoTiffElevationSource = {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -4180,19 +4227,13 @@ private final class CameraFootprintMapView: UIView {
         autoresizingMask = [.flexibleWidth, .flexibleHeight]
         let halo = UIColor.black.withAlphaComponent(0.7).cgColor
         let stroke = UIColor(red: 0.5, green: 0.87, blue: 0.92, alpha: 1).cgColor
-        for shape in [solidHalo, dashedHalo] {
-            shape.fillColor = nil
-            shape.strokeColor = halo
-            shape.lineWidth = 3
-        }
-        for shape in [solidStroke, dashedStroke] {
-            shape.fillColor = nil
-            shape.strokeColor = stroke
-            shape.lineWidth = 1.25
-        }
-        dashedHalo.lineDashPattern = [NSNumber(value: 5), NSNumber(value: 4)]
-        dashedStroke.lineDashPattern = [NSNumber(value: 5), NSNumber(value: 4)]
-        for shape in [solidHalo, dashedHalo, solidStroke, dashedStroke] {
+        solidHalo.fillColor = nil
+        solidHalo.strokeColor = halo
+        solidHalo.lineWidth = 3
+        solidStroke.fillColor = nil
+        solidStroke.strokeColor = stroke
+        solidStroke.lineWidth = 1.25
+        for shape in [solidHalo, solidStroke] {
             layer.addSublayer(shape)
         }
     }
@@ -4204,6 +4245,7 @@ private final class CameraFootprintMapView: UIView {
         worker?.cancel(); worker = nil
         displayTimer?.invalidate(); displayTimer = nil
         inputs = [:]; terrain = [:]; inputProvider = { [:] }
+        overlayBook.clear()
         clearPaths()
         removeFromSuperview()
     }
@@ -4227,7 +4269,7 @@ private final class CameraFootprintMapView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         let scale = traitCollection.displayScale
-        for shape in [solidHalo, dashedHalo, solidStroke, dashedStroke] {
+        for shape in [solidHalo, solidStroke] {
             shape.frame = bounds
             shape.contentsScale = scale
         }
@@ -4257,7 +4299,7 @@ private final class CameraFootprintMapView: UIView {
         }
         inputs = next
         if next.isEmpty {
-            worker?.cancel(); worker = nil; terrain = [:]; clearPaths(); return
+            worker?.cancel(); worker = nil; terrain = [:]; overlayBook.clear(); clearPaths(); return
         }
         ensureWorker()
         rebuildPaths()
@@ -4292,7 +4334,7 @@ private final class CameraFootprintMapView: UIView {
                 }
                 let result = await withTaskCancellationHandler(operation: { await task.value }, onCancel: { task.cancel() })
                 guard !Task.isCancelled else { return }
-                let computed = result.reduce(into: [String: (CameraFootprintInput, [CameraFootprintVertex])]()) { values, entry in
+                let computed = result.reduce(into: [String: (CameraFootprintInput, CameraFootprintOutline)]()) { values, entry in
                     if let input = snapshot[entry.key] { values[entry.key] = (input, entry.value) }
                 }
                 self.terrain = mergeCameraFootprintTerrain(previous: self.terrain, computed: computed, current: snapshot)
@@ -4305,39 +4347,49 @@ private final class CameraFootprintMapView: UIView {
     private func rebuildPaths() {
         guard let map, bounds.width > 0, bounds.height > 0 else { clearPaths(); return }
         let solid = UIBezierPath()
-        let dashed = UIBezierPath()
-        func closedOutline(_ vertices: [CameraFootprintVertex]) {
+        func strokeOutline(_ outline: CameraFootprintOutline) {
+            let vertices = outline.vertices
             guard vertices.count >= 3 else { return }
             let points = vertices.map {
                 map.convert(CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude), toPointTo: self)
             }
-            for index in vertices.indices {
-                let next = (index + 1) % vertices.count
-                let path = vertices[index].clipped || vertices[next].clipped ? dashed : solid
-                path.move(to: points[index])
-                path.addLine(to: points[next])
+            let segmentCount = outline.closed ? vertices.count : vertices.count - 1
+            for index in 0..<segmentCount {
+                let next = outline.closed ? (index + 1) % vertices.count : index + 1
+                solid.move(to: points[index])
+                solid.addLine(to: points[next])
             }
         }
+        // One outline per aircraft. Unbounded far edges stay open (no far segment, no dash).
+        let outlines = overlayBook.sync(inputs: inputs, terrain: terrain)
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        debugThrottle.retain(activeKeys: Set(inputs.keys))
         for (id, input) in inputs {
-            let sampled = terrain[id].flatMap { entry -> [CameraFootprintVertex]? in
-                guard !entry.1.isEmpty, cameraFootprintTerrainReusable(cached: entry.0, current: input) else { return nil }
-                return entry.1
+            if let outline = outlines[id] {
+                if debugThrottle.shouldLog(droneKey: id, nowMs: nowMs) {
+                    AppleLog.debug(
+                        "CameraFootprint",
+                        cameraFootprintDebugLine(
+                            source: "SEI",
+                            gimbalTiltDeg: input.tilt,
+                            headingDeg: input.azimuth,
+                            aglMeters: input.height,
+                            nearGroundMeters: outline.nearGroundMeters,
+                            farGroundMeters: outline.farGroundMeters,
+                            clamped: outline.clamped
+                        )
+                    )
+                }
+                strokeOutline(outline)
             }
-            let drawing = CameraFootprintDrawing(input: input, terrain: sampled, liveCorners: true)
-            closedOutline(drawing.corners)
-            closedOutline(drawing.boundary)
         }
         solidHalo.path = solid.cgPath
         solidStroke.path = solid.cgPath
-        dashedHalo.path = dashed.cgPath
-        dashedStroke.path = dashed.cgPath
     }
 
     private func clearPaths() {
         solidHalo.path = nil
-        dashedHalo.path = nil
         solidStroke.path = nil
-        dashedStroke.path = nil
     }
 }
 

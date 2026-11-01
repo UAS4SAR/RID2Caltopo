@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.ZoneId
 
 class CluePhotoUploadPolicyTest {
     @Test
@@ -18,15 +19,20 @@ class CluePhotoUploadPolicyTest {
     }
 
     @Test
-    fun sendBudgetExcludesFolderWaitAndSubmitDeadlineCoversBoth() {
-        assertEquals(90, CluePhotoUploadPolicy.attemptBudgetSeconds(0))
-        assertEquals(120, CluePhotoUploadPolicy.attemptBudgetSeconds(100_000))
-        assertEquals(180, CluePhotoUploadPolicy.submitDeadlineSeconds(0))
-        assertEquals(210, CluePhotoUploadPolicy.submitDeadlineSeconds(100_000))
+    fun sendBudgetCoversJsonStepsPlusPhotoTimeout() {
+        val overhead = CluePhotoUploadPolicy.JSON_TIMEOUT_SECONDS * 5
+        assertEquals(overhead, CluePhotoUploadPolicy.ATTEMPT_BUDGET_OVERHEAD_SECONDS)
+        assertEquals(45 + overhead, CluePhotoUploadPolicy.attemptBudgetSeconds(0))
+        assertEquals(75 + overhead, CluePhotoUploadPolicy.attemptBudgetSeconds(100_000))
+        assertEquals(45 + overhead, CluePhotoUploadPolicy.submitDeadlineSeconds(0))
+        assertEquals(75 + overhead, CluePhotoUploadPolicy.submitDeadlineSeconds(100_000))
         assertEquals(
-            CluePhotoUploadPolicy.attemptBudgetSeconds(0) +
-                CluePhotoUploadPolicy.SUBMIT_DEADLINE_FOLDER_ALLOWANCE_SECONDS,
+            CluePhotoUploadPolicy.attemptBudgetSeconds(0),
             CluePhotoUploadPolicy.submitDeadlineSeconds(0),
+        )
+        assertTrue(
+            CluePhotoUploadPolicy.attemptBudgetSeconds(100_000)
+                >= CluePhotoUploadPolicy.photoUploadTimeoutSeconds(100_000) + overhead,
         )
     }
 
@@ -40,14 +46,67 @@ class CluePhotoUploadPolicyTest {
         )
         assertFalse(CluePhotoUploadPolicy.isExistingBackendMediaError(400, "Personal map request failed."))
         assertFalse(CluePhotoUploadPolicy.isExistingBackendMediaError(404, """{"message":"Cannot update existing backendMedia"}"""))
+        assertTrue(
+            CluePhotoUploadPolicy.isAmbiguousMediaState(
+                409,
+                "Cannot update existing backendMedia; media state ambiguous",
+            ),
+        )
     }
 
     @Test
     fun plainUploadErrorIsOperatorFacing() {
         assertEquals(
-            "Photo already on CalTopo; finishing link",
+            "Photo upload incomplete; replacing photo id",
             CluePhotoUploadPolicy.plainUploadError("""{"message":"Cannot update existing backendMedia"}"""),
         )
         assertEquals("Waiting to upload", CluePhotoUploadPolicy.plainUploadError(""))
+        assertEquals("Needs attention", CluePhotoUploadPolicy.plainUploadError("Needs attention"))
+        assertEquals("Photo missing", CluePhotoUploadPolicy.plainUploadError("Photo missing"))
+        assertEquals("Photo missing", CluePhotoUploadPolicy.plainUploadError("missing-photo"))
+    }
+
+    @Test
+    fun missingPhotoStopsAutoRetryAndNotesLostPhotoOnce() {
+        assertTrue(CluePhotoUploadPolicy.stopsAutoRetry("Photo missing"))
+        assertTrue(CluePhotoUploadPolicy.stopsAutoRetry("Needs attention"))
+        assertTrue(CluePhotoUploadPolicy.stopsAutoRetry("missing-photo"))
+        assertFalse(CluePhotoUploadPolicy.stopsAutoRetry("Upload timed out; will retry"))
+        val noted = CluePhotoUploadPolicy.descriptionWithLostPhotoNote("Found beside trail")
+        assertTrue(CluePhotoUploadPolicy.descriptionNotesLostPhoto(noted))
+        assertEquals(noted, CluePhotoUploadPolicy.descriptionWithLostPhotoNote(noted))
+    }
+
+    @Test
+    fun markerTimeIncludesLocalZoneAndUTC() {
+        val text = CluePhotoUploadPolicy.formatClueMarkerTime(
+            1_730_401_140_000L,
+            ZoneId.of("America/Los_Angeles"),
+        )
+        assertTrue(text.contains("UTC"))
+        assertTrue(text.contains("(") && text.contains(")"))
+    }
+
+    @Test
+    fun clueJsonTimeoutMatchesV254() {
+        assertEquals(60, CluePhotoUploadPolicy.JSON_TIMEOUT_SECONDS)
+    }
+
+    @Test
+    fun clueStepFailureMessageIncludesStepAndScrubsIds() {
+        val line = CluePhotoUploadPolicy.clueStepFailureMessage(
+            "media-post",
+            "POST",
+            "/api/v1/media/19fe1364-dc45-4275-a6ae-7fcfef8aef78?signature=secret",
+            15_012L,
+            60,
+        )
+        assertTrue(line.contains("step=media-post"))
+        assertTrue(line.contains("method=POST"))
+        assertTrue(line.contains("path=/api/v1/media/…"))
+        assertFalse(line.contains("19fe1364"))
+        assertFalse(line.contains("signature"))
+        assertTrue(line.contains("elapsedMs=15012"))
+        assertTrue(line.contains("timeoutSeconds=60"))
     }
 }

@@ -14,7 +14,7 @@ class AwaitingMapFlightsTest {
     private fun feature(title: String, type: String = "Point", lat: Double = 39.0) = JSONObject()
         .put("properties", JSONObject().put("title", title))
         .put("geometry", JSONObject().put("type", type).put("coordinates", JSONArray().put(-121.0).put(lat)))
-    @Test fun lateFinalCheckpointDoesNotExpandAnAlreadyPublishedFlight() {
+    @Test fun lateFinalCheckpointDoesNotRecreateAnAlreadyConfirmedArchive() {
         val file = File.createTempFile("flight-intent", ".json").also { it.delete() }
         try {
             AwaitingMapFlights.useFileForTesting(file)
@@ -24,8 +24,10 @@ class AwaitingMapFlightsTest {
             AwaitingMapFlights.record("one", "RID", "Aircraft", points, false, "", "team-a")
             AwaitingMapFlights.decide("one", "map-a", "team-a")
             AwaitingMapFlights.published("one")
+            // Confirmed archives are pruned; a late finished checkpoint must not recreate them.
+            assertTrue(AwaitingMapFlights.allEntries().isEmpty())
             AwaitingMapFlights.record("one", "RID", "Aircraft", points, true, "", "team-a")
-            assertEquals(2, AwaitingMapFlights.allEntries().single().getJSONArray("points").length())
+            assertTrue(AwaitingMapFlights.allEntries().isEmpty())
             assertNull(AwaitingMapFlights.publicationId("RID", "map-a", "team-a"))
         } finally { file.delete() }
     }

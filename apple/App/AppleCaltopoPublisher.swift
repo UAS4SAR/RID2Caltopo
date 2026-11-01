@@ -7,6 +7,8 @@ enum AppleCaltopoPublisherEvent: Sendable, Equatable {
     case trackStarted(String)
     case pointPublished(String, rttMilliseconds: Int64)
     case trackStopped(String)
+    /// Shape archive confirmed (live finish or interrupted recovery).
+    case trackArchived(liveTrackID: String, remoteID: String, folderTitle: String)
     case failed(String)
 }
 
@@ -15,6 +17,7 @@ struct AppleArchivedCaltopoTrack: Sendable {
     let label: String
     let observations: [RidObservation]
     let folderID: String
+    let folderTitle: String
     let configurationGeneration: Int
 }
 
@@ -160,6 +163,7 @@ actor AppleCaltopoPublisher {
         archiveFolderID = nil
         deviceMarkerAllowed = false
         lastDeviceMarkerPublishedAt = nil
+        await CaltopoInitialFullReadGate.shared.complete()
         guard let liveConfiguration = configuration.liveConfiguration else {
             client = nil
             deviceMarkerPublishingSuspended = false
@@ -179,10 +183,13 @@ actor AppleCaltopoPublisher {
             }
             pendingInterruptedRecoveries = await interruptedJournal.entries(mapID: configuration.mapID)
             await retryMarkerCleanup()
+            await CaltopoInitialFullReadGate.shared.begin()
             do {
-                // Connect must not create folders or a device marker. Probe the map, remove
-                // leftovers, then recover interrupted tracks (lazily ensures folders if needed).
-                _ = try await configuredClient.fetchMapArtifacts(refresh: true)
+                // Connect must not create folders or a device marker. Full-map read discovers
+                // existing Drone Tracks* folders / R2C markers; create only on first flight.
+                let snapshot = try await configuredClient.fetchMapArtifacts(refresh: true)
+                adoptTrackFoldersFromConnectSnapshot(snapshot)
+                await CaltopoInitialFullReadGate.shared.complete()
                 await removeStaleR2CDeviceMarkers(client: configuredClient)
                 mapOpenRetry?.cancel()
                 mapOpenRetry = nil
@@ -192,6 +199,7 @@ actor AppleCaltopoPublisher {
                 continuation.yield(.ready)
                 await retryInterruptedPublications(generation: configurationGeneration)
             } catch {
+                await CaltopoInitialFullReadGate.shared.complete()
                 if let message = CaltopoServerAvailability.retryMessage(error) {
                     continuation.yield(.failed(message))
                     scheduleMapOpenRetry(client: configuredClient, generation: configurationGeneration)
@@ -221,14 +229,18 @@ actor AppleCaltopoPublisher {
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled, let self else { return }
             guard await self.configurationGeneration == generation else { return }
+            await CaltopoInitialFullReadGate.shared.begin()
             do {
                 // Probe the map without creating folders/markers; recovery ensures lazily.
-                _ = try await client.fetchMapArtifacts(refresh: true)
+                let snapshot = try await client.fetchMapArtifacts(refresh: true)
+                await self.adoptTrackFoldersFromConnectSnapshot(snapshot)
+                await CaltopoInitialFullReadGate.shared.complete()
                 await self.removeStaleR2CDeviceMarkers(client: client)
                 await self.finishMapOpenRetry()
                 self.continuation.yield(.ready)
                 await self.retryInterruptedPublications(generation: generation)
             } catch {
+                await CaltopoInitialFullReadGate.shared.complete()
                 guard !Task.isCancelled, await self.configurationGeneration == generation else { return }
                 if let message = CaltopoServerAvailability.retryMessage(error) {
                     self.continuation.yield(.failed(message))
@@ -616,15 +628,34 @@ actor AppleCaltopoPublisher {
         }
     }
 
-    func finish(remoteID: String, description: String = "") async -> AppleArchivedCaltopoTrack? {
+    func finish(
+        remoteID: String,
+        description: String = "",
+        fallbackObservations: [RidObservation] = []
+    ) async -> AppleArchivedCaltopoTrack? {
         guard !finishingRemoteIDs.contains(remoteID) else { return nil }
         finishingRemoteIDs.insert(remoteID)
         let generation = configurationGeneration
         let label = labels[remoteID] ?? remoteID
-        let saved = observations[remoteID] ?? []
+        var saved = observations[remoteID] ?? []
         // Queued points from a flight that never received a LiveTrack id must still
         // publish through the archive when a map is configured.
         var id = liveTrackIDs[remoteID] ?? requestedLiveTrackIDs[remoteID]
+        // Publisher buffers can be cleared by a mid-session reconfigure while the
+        // LiveTrack is still live. Prefer durable journal / caller RID geometry over
+        // stop-only (empty Shape archive → track vanishes with no Drone Tracks row).
+        if saved.isEmpty {
+            if let id, let journaled = await interruptedJournal.entry(liveTrackID: id),
+               !journaled.observations.isEmpty {
+                saved = journaled.observations
+            } else if let journaled = await interruptedJournal.entry(remoteID: remoteID),
+                      !journaled.observations.isEmpty {
+                saved = journaled.observations
+                if id == nil { id = journaled.liveTrackID }
+            } else if !fallbackObservations.isEmpty {
+                saved = fallbackObservations
+            }
+        }
         if id == nil && !saved.isEmpty && configuredConfiguration != nil {
             let assigned = UUID().uuidString.lowercased()
             requestedLiveTrackIDs[remoteID] = assigned
@@ -634,24 +665,51 @@ actor AppleCaltopoPublisher {
         let finishingClient = client
         let finishingConfiguration = configuredConfiguration
         await finishingClient?.stopPositionReports(remoteID: remoteID)
+        var clearPublicationState = true
         defer {
             if generation == configurationGeneration {
                 finishingRemoteIDs.remove(remoteID)
-                startTasks.removeValue(forKey: remoteID)
-                liveTrackIDs.removeValue(forKey: remoteID)
-                requestedLiveTrackIDs.removeValue(forKey: remoteID)
-                nextStartAttemptAt.removeValue(forKey: remoteID)
-                lastInterruptedJournalWriteAt.removeValue(forKey: remoteID)
-                labels.removeValue(forKey: remoteID)
-                observations.removeValue(forKey: remoteID)
+                if clearPublicationState {
+                    startTasks.removeValue(forKey: remoteID)
+                    liveTrackIDs.removeValue(forKey: remoteID)
+                    requestedLiveTrackIDs.removeValue(forKey: remoteID)
+                    nextStartAttemptAt.removeValue(forKey: remoteID)
+                    lastInterruptedJournalWriteAt.removeValue(forKey: remoteID)
+                    labels.removeValue(forKey: remoteID)
+                    observations.removeValue(forKey: remoteID)
+                }
             }
         }
         // A map disconnect may already have cleared the live client while this
         // flight was still airborne. Persist the finish intent first so reconnect
         // recovery can convert the LiveTrack once, exactly as a normal archive.
-        guard let id else { return nil }
+        guard let id else {
+            AppleLog.warning(
+                "CalTopo",
+                "CalTopo track not archived reason=no-live-track-id remoteId=\(remoteID)"
+            )
+            return nil
+        }
         let mapID = finishingConfiguration?.mapID ?? configuredConfiguration?.mapID
-        guard let mapID, !mapID.isEmpty else { return nil }
+        guard let mapID, !mapID.isEmpty else {
+            AppleLog.warning(
+                "CalTopo",
+                "CalTopo track not archived reason=no-map liveTrackId=\(id)"
+            )
+            return nil
+        }
+        if saved.isEmpty {
+            AppleLog.warning(
+                "CalTopo",
+                "CalTopo track not archived reason=no-waypoints liveTrackId=\(id)"
+            )
+            // Still stop the LiveTrack so it does not linger; do not claim a Shape archive.
+            if let client = finishingClient {
+                try? await client.stopLiveTrack(liveTrackID: id)
+                continuation.yield(.trackStopped(remoteID))
+            }
+            return nil
+        }
         let entry = CaltopoInterruptedPublication(
             mapID: mapID, remoteID: remoteID, liveTrackID: id,
             label: label, description: description, observations: saved)
@@ -668,6 +726,10 @@ actor AppleCaltopoPublisher {
               finishingConfiguration != nil else {
             // Ended offline after disconnect: the journal upsert above is the
             // durable pending finish; reconnect recovery loads it once.
+            AppleLog.warning(
+                "CalTopo",
+                "CalTopo track not archived reason=client-unavailable liveTrackId=\(id)"
+            )
             return nil
         }
         // Lost/unvalidated Internet: durable journal only — do not start a Shape POST
@@ -680,9 +742,9 @@ actor AppleCaltopoPublisher {
                 pendingInterruptedRecoveries.removeAll { $0.liveTrackID == id }
                 pendingInterruptedRecoveries.append(entry)
             }
-            AppleLog.info(
+            AppleLog.warning(
                 "CalTopo",
-                "archiveLiveTrack(\(label)): deferred offline points=\(saved.count) liveTrackId=\(id)"
+                "CalTopo track not archived reason=offline points=\(saved.count) liveTrackId=\(id)"
             )
             return nil
         }
@@ -690,22 +752,64 @@ actor AppleCaltopoPublisher {
             // Finish an in-flight create before the Shape write; a lost response does not
             // prevent conversion because the durable identity is already known.
             if let pendingStart { _ = try? await pendingStart.value }
-            guard generation == configurationGeneration else { return nil }
-            _ = try await ensureMapArtifacts(reason: .firstTrack)
-            guard generation == configurationGeneration, let archiveFolderID else { return nil }
+            guard generation == configurationGeneration else {
+                clearPublicationState = false
+                AppleLog.warning(
+                    "CalTopo",
+                    "CalTopo track not archived reason=map-reconfigured liveTrackId=\(id)"
+                )
+                return nil
+            }
+            let flightDate = CaltopoTrackFolderResolver.flightArchiveDate(observations: saved)
+            let archiveFolderTitle = CaltopoTrackFolderResolver.archiveFolderName(
+                trackFolderName: trackFolderName,
+                date: flightDate
+            )
+            let archiveFolderID = try await resolveArchiveFolderID(for: flightDate)
+            guard generation == configurationGeneration else {
+                clearPublicationState = false
+                AppleLog.warning(
+                    "CalTopo",
+                    "CalTopo track not archived reason=map-reconfigured liveTrackId=\(id)"
+                )
+                return nil
+            }
+            guard !archiveFolderID.isEmpty else {
+                if generation == configurationGeneration {
+                    pendingInterruptedRecoveries.removeAll { $0.liveTrackID == id }
+                    pendingInterruptedRecoveries.append(entry)
+                }
+                clearPublicationState = false
+                AppleLog.warning(
+                    "CalTopo",
+                    "CalTopo track not archived reason=dated-folder-unavailable liveTrackId=\(id) folder=\(archiveFolderTitle)"
+                )
+                return nil
+            }
             try await client.archiveLiveTrack(
                 liveTrackID: id, label: label, observations: saved,
                 folderID: archiveFolderID, description: description)
             try await interruptedJournal.remove(liveTrackID: id)
+            pendingInterruptedRecoveries.removeAll { $0.liveTrackID == id }
+            AppleLog.info(
+                "CalTopo",
+                "CalTopo track archived id=\(id) folder=\(archiveFolderTitle)"
+            )
+            continuation.yield(.trackArchived(
+                liveTrackID: id, remoteID: remoteID, folderTitle: archiveFolderTitle))
             continuation.yield(.trackStopped(remoteID))
             return AppleArchivedCaltopoTrack(
                 liveTrackID: id, label: label, observations: saved, folderID: archiveFolderID,
-                configurationGeneration: generation)
+                folderTitle: archiveFolderTitle, configurationGeneration: generation)
         } catch {
             if generation == configurationGeneration {
                 pendingInterruptedRecoveries.removeAll { $0.liveTrackID == id }
                 pendingInterruptedRecoveries.append(entry)
             }
+            AppleLog.warning(
+                "CalTopo",
+                "CalTopo track not archived reason=request-failed liveTrackId=\(id): \(error.localizedDescription)"
+            )
             continuation.yield(.failed("Stop \(remoteID): \(error.localizedDescription)"))
             return nil
         }
@@ -775,6 +879,32 @@ actor AppleCaltopoPublisher {
         }
     }
 
+    /// Non-blocking folder id for clue send (nil until connect adoption or first-flight create).
+    func cachedTrackFolderID() -> String? { trackFolderID }
+
+    /// Bounded wait for the connect full-map read. Clue uploads only.
+    func awaitInitialFullReadForClue(
+        timeoutSeconds: TimeInterval = CaltopoClueTrackFolderSend.initialReadWaitSeconds
+    ) async -> Bool {
+        await CaltopoInitialFullReadGate.shared.wait(timeoutSeconds: timeoutSeconds)
+    }
+
+    /// Cache existing Drone Tracks* folder ids from the connect full-map read (never creates).
+    private func adoptTrackFoldersFromConnectSnapshot(_ snapshot: CaltopoArtifactSnapshot) {
+        let activeName = CaltopoTrackFolderResolver.normalizedTrackFolderNameForAdoption(trackFolderName)
+        let archiveName = CaltopoTrackFolderResolver.archiveFolderName(trackFolderName: activeName)
+        if trackFolderID == nil,
+           let adopted = CaltopoTrackFolderResolver.adoptedFolderID(named: activeName, in: snapshot) {
+            trackFolderID = adopted
+            AppleLog.info("CalTopo", "adopted folder title=\(activeName) id=\(adopted)")
+        }
+        if archiveFolderID == nil,
+           let adopted = CaltopoTrackFolderResolver.adoptedFolderID(named: archiveName, in: snapshot) {
+            archiveFolderID = adopted
+            AppleLog.info("CalTopo", "adopted folder title=\(archiveName) id=\(adopted)")
+        }
+    }
+
     /// Lazily creates or reuses Drone Tracks folders. Idempotent and coalesced under concurrency.
     /// Does not publish the device marker; callers enable that only for a live-track start.
     @discardableResult
@@ -786,9 +916,13 @@ actor AppleCaltopoPublisher {
         let generation = configurationGeneration
         let resolver = folderResolver
         let folderName = trackFolderName
+        let knownActive = trackFolderID
+        let knownArchive = archiveFolderID
         let resolved = try await resolver.resolve(
             trackFolderName: folderName,
-            settleDelay: .milliseconds(500),
+            settleDelay: .zero,
+            existingActiveID: knownActive,
+            existingArchiveID: knownArchive,
             fetchSnapshot: {
                 // Prefer the warm map-open snapshot. refresh:true would re-enter the shared
                 // full-map-read gate (90s) and stall clue POSTs behind reconnect / LiveTrack recovery.
@@ -800,25 +934,21 @@ actor AppleCaltopoPublisher {
                     visible: visible,
                     labelVisible: labelVisible
                 )
-            },
-            deleteFolder: { folderID in
-                try await client.deleteFolder(folderID: folderID)
-                AppleLog.info(
-                    "CalTopo",
-                    "Removed empty duplicate track folder id=\(folderID)"
-                )
             }
         )
         guard generation == configurationGeneration else { throw CancellationError() }
-        trackFolderID = resolved.active
-        archiveFolderID = resolved.archive
+        // Prefer ids adopted while resolve was in flight over a just-created duplicate.
+        if trackFolderID == nil { trackFolderID = resolved.active }
+        if archiveFolderID == nil { archiveFolderID = resolved.archive }
+        let active = trackFolderID ?? resolved.active
+        let archive = archiveFolderID ?? resolved.archive
         if resolved.created {
             AppleLog.info(
                 "CalTopo",
-                "Created map artifacts reason=\(reason.rawValue) active=\(resolved.active) archive=\(resolved.archive) folder='\(folderName)'"
+                "Created map artifacts reason=\(reason.rawValue) active=\(active) archive=\(archive) folder='\(folderName)'"
             )
         }
-        return resolved
+        return CaltopoTrackFolderIDs(active: active, archive: archive, created: resolved.created)
     }
 
     private func persistInterruptedPublication(
@@ -868,17 +998,14 @@ actor AppleCaltopoPublisher {
         if generation == configurationGeneration && !configurationTransitionInFlight { await retryMarkerCleanup() }
         guard generation == configurationGeneration, !configurationTransitionInFlight,
               !pendingInterruptedRecoveries.isEmpty, let client else { return }
-        do {
-            _ = try await ensureMapArtifacts(reason: .firstTrack)
-            guard generation == configurationGeneration else { return }
-            await recoverInterruptedPublications(client: client)
-        } catch {
-            AppleLog.warning("CalTopo", "Pending track recovery deferred: \(error.localizedDescription)")
-        }
+        // Active folder is optional for Shape archives; each flight resolves its own dated folder.
+        _ = try? await ensureMapArtifacts(reason: .firstTrack)
+        guard generation == configurationGeneration else { return }
+        await recoverInterruptedPublications(client: client)
     }
 
     private func recoverInterruptedPublications(client: CaltopoLiveClient) async {
-        guard !recoveryInFlight, let archiveFolderID, !pendingInterruptedRecoveries.isEmpty else { return }
+        guard !recoveryInFlight, !pendingInterruptedRecoveries.isEmpty else { return }
         recoveryInFlight = true
         defer { recoveryInFlight = false }
         let generation = configurationGeneration
@@ -889,6 +1016,21 @@ actor AppleCaltopoPublisher {
             guard !requestedLiveTrackIDs.values.contains(entry.liveTrackID),
                   !liveTrackIDs.values.contains(entry.liveTrackID) else { continue }
             do {
+                let flightDate = CaltopoTrackFolderResolver.flightArchiveDate(
+                    observations: entry.observations
+                )
+                let archiveFolderID = try await resolveArchiveFolderID(for: flightDate)
+                guard !archiveFolderID.isEmpty else {
+                    AppleLog.warning(
+                        "CalTopo",
+                        "Interrupted LiveTrack archive deferred — dated folder unavailable liveTrackId=\(entry.liveTrackID)"
+                    )
+                    continue
+                }
+                let archiveFolderTitle = CaltopoTrackFolderResolver.archiveFolderName(
+                    trackFolderName: trackFolderName,
+                    date: flightDate
+                )
                 try await client.archiveLiveTrack(
                     liveTrackID: entry.liveTrackID,
                     label: entry.label,
@@ -898,6 +1040,15 @@ actor AppleCaltopoPublisher {
                 )
                 try await interruptedJournal.remove(liveTrackID: entry.liveTrackID)
                 completed.insert(entry.liveTrackID)
+                AppleLog.info(
+                    "CalTopo",
+                    "CalTopo track archived id=\(entry.liveTrackID) folder=\(archiveFolderTitle)"
+                )
+                continuation.yield(.trackArchived(
+                    liveTrackID: entry.liveTrackID,
+                    remoteID: entry.remoteID,
+                    folderTitle: archiveFolderTitle
+                ))
                 AppleLog.info(
                     "CalTopo",
                     "Recovered interrupted LiveTrack remoteId=\(entry.remoteID) liveTrackId=\(entry.liveTrackID) points=\(entry.points.count)"
@@ -913,6 +1064,46 @@ actor AppleCaltopoPublisher {
         if generation == configurationGeneration {
             pendingInterruptedRecoveries.removeAll { completed.contains($0.liveTrackID) }
         }
+    }
+
+    /// Dated "Drone Tracks &lt;ddMMM&gt;" for a flight: adopt from the full read, or create.
+    /// Never archives at the map root or into a duplicate same-title folder.
+    private func resolveArchiveFolderID(for flightDate: Date) async throws -> String {
+        guard let client else { throw CancellationError() }
+        let generation = configurationGeneration
+        let folderName = trackFolderName
+        let archiveName = CaltopoTrackFolderResolver.archiveFolderName(
+            trackFolderName: folderName,
+            date: flightDate
+        )
+        let todayName = CaltopoTrackFolderResolver.archiveFolderName(trackFolderName: folderName)
+        let knownForToday =
+            CaltopoTrackFolderResolver.folderTitlesMatch(archiveName, expected: todayName)
+            ? archiveFolderID
+            : nil
+        let snapshot = try await client.fetchMapArtifacts(refresh: false)
+        let resolved = try await CaltopoTrackFolderResolver.adoptOrCreateArchiveFolderID(
+            trackFolderName: folderName,
+            flightDate: flightDate,
+            existingArchiveID: knownForToday,
+            snapshot: snapshot,
+            createFolder: { title, visible, labelVisible in
+                try await client.createFolder(
+                    title: title,
+                    visible: visible,
+                    labelVisible: labelVisible
+                )
+            }
+        )
+        guard generation == configurationGeneration else { throw CancellationError() }
+        if CaltopoTrackFolderResolver.folderTitlesMatch(archiveName, expected: todayName) {
+            if archiveFolderID == nil { archiveFolderID = resolved }
+        }
+        if let adopted = CaltopoTrackFolderResolver.adoptedFolderID(named: archiveName, in: snapshot),
+           adopted == resolved {
+            AppleLog.info("CalTopo", "adopted folder title=\(archiveName) id=\(adopted)")
+        }
+        return resolved
     }
 
     private static func normalizedTrackFolderName(_ value: String) -> String {

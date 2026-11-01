@@ -699,6 +699,7 @@ fun StreamsScreen(
     }
 
     if (showPendingClueUploads) {
+        var confirmDismissId by remember { mutableStateOf<String?>(null) }
         AlertDialog(
             onDismissRequest = { showPendingClueUploads = false },
             title = {
@@ -710,10 +711,14 @@ fun StreamsScreen(
             text = {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                     Text(
-                        "Clue Submit still uploads immediately. Retry wakes pending uploads without waiting for the next automatic attempt.",
+                        "Clue Submit still uploads immediately. Retry wakes pending uploads without waiting for the next automatic attempt. Dismiss keeps the local photo.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    viewModel.pendingClueActionFeedback?.let { feedback ->
+                        Spacer(Modifier.height(8.dp))
+                        Text(feedback, style = MaterialTheme.typography.bodySmall)
+                    }
                     Spacer(Modifier.height(12.dp))
                     pendingClueUploads.forEach { row ->
                         Text(row.title, fontWeight = FontWeight.SemiBold)
@@ -731,26 +736,61 @@ fun StreamsScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Text(
+                            "Map ${if (row.mapName.isBlank() || row.mapName == row.mapId) row.mapId else "${row.mapName} (${row.mapId})"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            "Credential ${row.credentialProfile}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
                             "Attempts ${row.uploadAttempts} · ${row.lastErrorPlain}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(onClick = { viewModel.uploadPendingClueAsNewMarker(row.id) }) {
+                                Text("Upload as new marker")
+                            }
+                            TextButton(onClick = { confirmDismissId = row.id }) {
+                                Text("Dismiss (keep local copy)")
+                            }
+                        }
                         Spacer(Modifier.height(10.dp))
                     }
                 }
             },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        viewModel.retryPendingClueUploadsNow()
-                        showPendingClueUploads = false
-                    }
-                ) { Text("Retry now") }
+                TextButton(onClick = { viewModel.retryPendingClueUploadsNow() }) {
+                    Text("Retry now")
+                }
             },
             dismissButton = {
                 TextButton(onClick = { showPendingClueUploads = false }) { Text("Close") }
             },
         )
+        confirmDismissId?.let { dismissId ->
+            AlertDialog(
+                onDismissRequest = { confirmDismissId = null },
+                title = { Text("Keep local copy?") },
+                text = {
+                    Text("The photo and clue details stay on this device. Nothing is deleted. Auto-upload for this clue stops.")
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            viewModel.dismissPendingClueKeepLocal(dismissId)
+                            confirmDismissId = null
+                        },
+                    ) { Text("Dismiss (keep local copy)") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmDismissId = null }) { Text("Cancel") }
+                },
+            )
+        }
     }
     if (showNotamPanel) {
         NotamPanel(

@@ -39,7 +39,14 @@ final class RIDTrackViewModel: ObservableObject {
                 open[entry.remoteID] = entry
                 canonical[RidTrackStore.canonicalAircraftID(entry.remoteID)] = entry
             }
-            return (entries.filter { $0.decision == "review" }, open, canonical)
+            return (entries.filter {
+                TrackArchiveConfirmation.showsInAwaitingPublicationInbox(
+                    decision: $0.decision,
+                    finished: $0.finished,
+                    archiveConfirmed: $0.archiveConfirmed == true,
+                    hasArchiveId: !($0.caltopoArchiveId ?? "").isEmpty
+                )
+            }, open, canonical)
         }.value
         guard generation == awaitingRefreshGeneration, !Task.isCancelled else { return }
         awaitingMapJournalEntries = entries
@@ -403,6 +410,23 @@ final class RIDTrackViewModel: ObservableObject {
                     self.lastSEIPublicationAtByAircraftID.removeValue(forKey: id)
                     self.updateCaltopoThumbnailRefreshTargets()
                     self.caltopoStatus = "Stopped \(id)"
+                case let .trackArchived(liveTrackID, remoteID, folderTitle):
+                    Task { [weak self] in
+                        guard let self else { return }
+                        do {
+                            _ = try await self.awaitingMapJournal.confirmArchive(
+                                remoteID: remoteID,
+                                flightID: nil,
+                                archiveId: liveTrackID,
+                                folderTitle: folderTitle
+                            )
+                            try await self.awaitingMapJournal.pruneConfirmedArchives()
+                            await self.refreshAwaitingMapState()
+                        } catch {
+                            self.archiveStatus =
+                                "Archive confirmation could not be saved: \(error.localizedDescription)"
+                        }
+                    }
                 case let .failed(message):
                     self.caltopoStatus = message.hasPrefix("CalTopo server unavailable") ? message : "Error: \(message)"
                     self.caltopoRTTMilliseconds = nil
@@ -631,6 +655,14 @@ final class RIDTrackViewModel: ObservableObject {
         store.ensureMapArtifacts = { [weak self] reason in
             guard let self else { throw CancellationError() }
             return try await self.ensureMapArtifacts(reason: reason)
+        }
+        store.cachedTrackFolderID = { [weak self] in
+            guard let self else { return nil }
+            return await self.caltopoPublisher.cachedTrackFolderID()
+        }
+        store.awaitInitialFullReadForClue = { [weak self] timeout in
+            guard let self else { return true }
+            return await self.caltopoPublisher.awaitInitialFullReadForClue(timeoutSeconds: timeout)
         }
         Task { [archiveStore] in
             // App-sandbox FlightStorage is durable without an Android-style Archive Dir
@@ -1247,11 +1279,20 @@ final class RIDTrackViewModel: ObservableObject {
         }
         await awaitingMapJournal.ready()
         await refreshAwaitingMapState()
+        do { try await awaitingMapJournal.pruneConfirmedArchives() }
+        catch { /* inbox refresh still proceeds; prune retries on the next connect */ }
         await publisher.configure(
             configuration,
             trackFolderName: trackFolderName,
             deviceMarkerID: peerCoordinator?.localZoneID ?? ""
         )
+        // Map connect after an empty-map review intent: bind in-progress flights so LiveTrack
+        // archive at end is not diverted into the review inbox.
+        if !configuration.mapID.isEmpty {
+            for remoteID in Array(awaitingOpenFlights.keys) {
+                await bindOpenReviewIfNeeded(remoteID: remoteID)
+            }
+        }
         await queueCompletedDeferredFlights()
         await MainActor.run {
             if let marker = self.localDeviceMarker { self.publishLocalDeviceMarker(marker, force: true) }
@@ -1965,6 +2006,19 @@ final class RIDTrackViewModel: ObservableObject {
         ownershipActivationTasks.removeValue(forKey: remoteID)?.cancel()
         let publication = publicationChains.removeValue(forKey: remoteID)
         _ = await publication?.value
+        let flightID = liveFlightID(aircraftID: remoteID)
+            ?? RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+        let fallbackObservations = track.points.map {
+            RidObservation(
+                source: $0.source ?? track.lastObservation.source,
+                aircraftId: remoteID,
+                receivedAt: $0.receivedAt,
+                latitude: $0.latitude,
+                longitude: $0.longitude,
+                altitudeMeters: $0.altitudeMeters,
+                droneTimestamp: $0.droneTime
+            )
+        }
         let videoURL = peerCoordinator?.capturedVideoURL(matching: recording.designators,
             trackStartedAt: recording.startedAt, trackEndedAt: recording.endedAt)
         let description = CaltopoArchiveDescription.build(capturedVideoURL: videoURL)
@@ -1972,7 +2026,8 @@ final class RIDTrackViewModel: ObservableObject {
         for attempt in 0..<Self.caltopoFinishRetryCount {
             archivedTrack = await caltopoPublisher.finish(
                 remoteID: remoteID,
-                description: description
+                description: description,
+                fallbackObservations: fallbackObservations
             )
             if archivedTrack != nil { break }
             guard attempt + 1 < Self.caltopoFinishRetryCount else { break }
@@ -1981,6 +2036,20 @@ final class RIDTrackViewModel: ObservableObject {
                 "Retrying LiveTrack archive remoteId=\(remoteID) attempt=\(attempt + 2)"
             )
             try? await Task.sleep(nanoseconds: Self.caltopoFinishRetryNanoseconds)
+        }
+        if let archivedTrack {
+            do {
+                _ = try await awaitingMapJournal.confirmArchive(
+                    remoteID: remoteID,
+                    flightID: flightID,
+                    archiveId: archivedTrack.liveTrackID,
+                    folderTitle: archivedTrack.folderTitle
+                )
+                try await awaitingMapJournal.pruneConfirmedArchives()
+                await refreshAwaitingMapState()
+            } catch {
+                archiveStatus = "Archive confirmation could not be saved: \(error.localizedDescription)"
+            }
         }
         guard description.isEmpty, let archivedTrack else { return }
         Task { [weak self] in

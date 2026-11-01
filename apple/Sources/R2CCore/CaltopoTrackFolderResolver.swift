@@ -43,6 +43,8 @@ public actor CaltopoTrackFolderResolver {
         date: Date = Date(),
         timeZone: TimeZone = .current,
         settleDelay: Duration = .zero,
+        existingActiveID: String? = nil,
+        existingArchiveID: String? = nil,
         fetchSnapshot: @escaping FetchSnapshot,
         createFolder: @escaping CreateFolder,
         deleteFolder: @escaping DeleteFolder = { _ in }
@@ -57,14 +59,22 @@ public actor CaltopoTrackFolderResolver {
             date: date,
             timeZone: timeZone
         )
+        let knownActive: String? = {
+            let trimmed = existingActiveID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }()
+        let knownArchive: String? = {
+            let trimmed = existingArchiveID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }()
         let taskID = UUID()
         let task = Task {
-            var snapshot = try await fetchSnapshot()
-            var activeID = Self.preferredFolderID(
+            let snapshot = try await fetchSnapshot()
+            var activeID = knownActive ?? Self.preferredFolderID(
                 named: activeName,
                 in: snapshot
             )
-            var archiveID = Self.preferredFolderID(
+            var archiveID = knownArchive ?? Self.preferredFolderID(
                 named: archiveName,
                 in: snapshot
             )
@@ -72,59 +82,29 @@ public actor CaltopoTrackFolderResolver {
             var createdActiveID: String?
             var createdArchiveID: String?
 
-            let resolvedActiveID: String
-            if let activeID {
-                resolvedActiveID = activeID
-            } else {
-                resolvedActiveID = try await createFolder(activeName, true, true)
-                createdActiveID = resolvedActiveID
-                activeID = resolvedActiveID
+            // Create returns the GUID; that response is the acknowledgement — do not
+            // re-read the map to confirm. Optional settleDelay / deleteFolder are unused.
+            // Check adopted / snapshot ids first; create only what is still missing.
+            _ = settleDelay
+            _ = deleteFolder
+            if activeID == nil {
+                let created = try await createFolder(activeName, true, true)
+                createdActiveID = created
+                activeID = created
                 createdFolder = true
             }
-            let resolvedArchiveID: String
-            if let archiveID {
-                resolvedArchiveID = archiveID
-            } else {
-                resolvedArchiveID = try await createFolder(archiveName, false, false)
-                createdArchiveID = resolvedArchiveID
-                archiveID = resolvedArchiveID
+            if archiveID == nil {
+                let created = try await createFolder(archiveName, false, false)
+                createdArchiveID = created
+                archiveID = created
                 createdFolder = true
             }
+            _ = createdActiveID
+            _ = createdArchiveID
 
-            if createdFolder {
-                if settleDelay > .zero {
-                    try await Task.sleep(for: settleDelay)
-                }
-                snapshot = try await fetchSnapshot()
-                activeID = Self.preferredFolderID(
-                    named: activeName,
-                    in: snapshot,
-                    excluding: createdActiveID
-                ) ?? activeID
-                archiveID = Self.preferredFolderID(
-                    named: archiveName,
-                    in: snapshot,
-                    excluding: createdArchiveID
-                ) ?? archiveID
-            }
-
-            let chosenActiveID = activeID ?? resolvedActiveID
-            let chosenArchiveID = archiveID ?? resolvedArchiveID
-            let occupied = Self.occupiedFolderIDs(in: snapshot)
-            for createdID in [createdActiveID, createdArchiveID].compactMap({ $0 }) {
-                guard createdID != chosenActiveID,
-                      createdID != chosenArchiveID,
-                      !occupied.contains(createdID)
-                else { continue }
-                // Match Android's ownership boundary: never delete an
-                // arbitrary pre-existing map folder. We may clean up only the
-                // unused folder this resolution just created after another
-                // publisher won the race.
-                try? await deleteFolder(createdID)
-            }
             return CaltopoTrackFolderIDs(
-                active: chosenActiveID,
-                archive: chosenArchiveID,
+                active: activeID!,
+                archive: archiveID!,
                 created: createdFolder
             )
         }
@@ -154,13 +134,66 @@ public actor CaltopoTrackFolderResolver {
         return normalizedTrackFolderName(trackFolderName) + " " + formatter.string(from: date)
     }
 
+    /// Calendar day used for "Drone Tracks &lt;ddMMM&gt;": earliest observation, else fallback.
+    public static func flightArchiveDate(
+        observations: [RidObservation],
+        fallback: Date = Date()
+    ) -> Date {
+        observations.map(\.receivedAt).min() ?? fallback
+    }
+
+    /// Adopt an existing dated archive folder from a connect/full-read snapshot, or create it.
+    /// Never returns a blank id (map root). Does not create the active "Drone Tracks" folder.
+    public static func adoptOrCreateArchiveFolderID(
+        trackFolderName: String,
+        flightDate: Date,
+        timeZone: TimeZone = .current,
+        existingArchiveID: String? = nil,
+        snapshot: CaltopoArtifactSnapshot,
+        createFolder: (String, Bool, Bool) async throws -> String
+    ) async throws -> String {
+        let archiveName = archiveFolderName(
+            trackFolderName: trackFolderName,
+            date: flightDate,
+            timeZone: timeZone
+        )
+        let known: String? = {
+            let trimmed = existingArchiveID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }()
+        // Prefer a same-title match from the full read over creating a duplicate.
+        if let adopted = preferredFolderID(named: archiveName, in: snapshot) {
+            return adopted
+        }
+        // Caller may pass a session-cached id only when it already names this flight day.
+        if let known { return known }
+        return try await createFolder(archiveName, false, false)
+    }
+
+    public static func normalizedTrackFolderNameForAdoption(_ value: String) -> String {
+        normalizedTrackFolderName(value)
+    }
+
+    /// Match CalTopo folder titles by trimmed, case-insensitive comparison.
+    public static func folderTitlesMatch(_ title: String, expected: String) -> Bool {
+        let left = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let right = expected.trimmingCharacters(in: .whitespacesAndNewlines)
+        return left.compare(right, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+    }
+
+    /// First matching folder id in a connect snapshot (trimmed, case-insensitive).
+    public static func adoptedFolderID(named expectedTitle: String, in snapshot: CaltopoArtifactSnapshot) -> String? {
+        let expected = normalizedTrackFolderName(expectedTitle)
+        return snapshot.folders.first { folderTitlesMatch($0.title, expected: expected) }?.id
+    }
+
     private static func normalizedTrackFolderName(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "Drone Tracks" : trimmed
     }
 
     private static func folderTitle(_ title: String, matches expected: String) -> Bool {
-        title.compare(expected, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        folderTitlesMatch(title, expected: expected)
     }
 
     private static func preferredFolderID(

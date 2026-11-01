@@ -2,7 +2,7 @@ import Foundation
 
 /// Startup integrity for clue photos and indexes. Runs entirely off the UI thread.
 public enum ClueTrackDurabilityIntegrity {
-    public static let missingPhotoError = "Missing photo"
+    public static let missingPhotoError = CluePhotoUploadPolicy.photoMissingMessage
 
     public struct Summary: Sendable, Equatable {
         public var orphanPhotosReindexed: Int
@@ -25,12 +25,17 @@ public enum ClueTrackDurabilityIntegrity {
     }
 
     /// IDs that should resume upload after reload (pending / failed / interrupted uploading).
+    /// Confirmed uploads and map-deleted clues are excluded — never auto re-POST.
     public static func pendingUploadIDs(in records: [OperationalClueRecord]) -> [UUID] {
         records.compactMap { record in
-            switch record.uploadState {
-            case .pending, .failed, .uploading: return record.id
-            case .localOnly, .published: return nil
-            }
+            if CluePhotoUploadPolicy.stopsAutoRetry(record.lastUploadError) { return nil }
+            if record.caltopoRemotelyDeleted == true { return nil }
+            guard ClueUploadConfirmation.mayAutoUpload(
+                uploadState: record.uploadState,
+                confirmed: record.uploadConfirmed,
+                remotelyDeleted: record.caltopoRemotelyDeleted == true
+            ) else { return nil }
+            return record.id
         }
     }
 

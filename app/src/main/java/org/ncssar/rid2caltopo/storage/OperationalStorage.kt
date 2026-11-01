@@ -75,10 +75,41 @@ internal object OperationalStorage {
                 if (ArchiveDirAvailability.isUnavailable(error)) {
                     announceUnavailable(error.message ?: ArchiveDirAvailability.CHOOSE_OR_RECONNECT)
                     CaltopoClient.CTWarn("OperationalStorage", "Archive Dir unavailable at startup; app-private durability remains active")
+                } else if (isTransientPrepareFailure(error)) {
+                    CaltopoClient.CTWarn(
+                        "OperationalStorage",
+                        "Archive prepare deferred at startup (live writer race): ${error.message}",
+                    )
+                    schedulePrepareRetry(context.applicationContext)
                 } else {
                     CaltopoClient.CTWarn("OperationalStorage", "Archive prepare failed at startup: ${error.message}")
                 }
             }
+        }
+    }
+
+    private fun schedulePrepareRetry(context: Context) {
+        startup.execute {
+            try {
+                Thread.sleep(2_000L)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return@execute
+            }
+            if (state.value.ready) return@execute
+            runCatching { prepare(context) }
+                .onFailure { error ->
+                    if (isTransientPrepareFailure(error)) {
+                        CaltopoClient.CTWarn(
+                            "OperationalStorage",
+                            "Archive prepare retry still deferred: ${error.message}",
+                        )
+                    } else if (ArchiveDirAvailability.isUnavailable(error)) {
+                        announceUnavailable(error.message ?: ArchiveDirAvailability.CHOOSE_OR_RECONNECT)
+                    } else {
+                        CaltopoClient.CTWarn("OperationalStorage", "Archive prepare retry failed: ${error.message}")
+                    }
+                }
         }
     }
     fun retry(context: Context) = start(context)
@@ -109,6 +140,14 @@ internal object OperationalStorage {
         }.getOrElse { error ->
             if (isUnavailable(error)) {
                 announceUnavailable(error.message ?: ArchiveDirAvailability.CHOOSE_OR_RECONNECT)
+                false
+            } else if (isTransientPrepareFailure(error)) {
+                // Live writers raced archive verify — retry later; do not fail unrelated features.
+                CaltopoClient.CTWarn(
+                    "OperationalStorage",
+                    "Archive prepare busy (live writer); retry later: ${error.message}",
+                )
+                schedulePrepareRetry(context.applicationContext)
                 false
             } else throw error
         }
@@ -197,7 +236,15 @@ internal object OperationalStorage {
                 // directory snapshot before bulk work; it never mutates queue contents.
                 tree.refresh()
                 for (area in selected.filterNot { it.id == "queue-state" || it.id in recorderAreas }) {
-                    migrateAreaSources(context, value, area, ::checkSelection)
+                    try {
+                        migrateAreaSources(context, value, area, ::checkSelection)
+                    } catch (error: Exception) {
+                        if (!isTransientPrepareFailure(error)) throw error
+                        CaltopoClient.CTWarn(
+                            "OperationalStorage",
+                            "Migrating ${area.id} deferred (live writer): ${error.message}",
+                        )
+                    }
                 }
                 // Each bulk source is verified before its old projection is replaced. The
                 // independently prepared queue area is never scanned or hydrated again here.
@@ -205,8 +252,16 @@ internal object OperationalStorage {
                     // Independent lanes (clues) may delete archive entries while bulk prepare
                     // still holds a stale directory listing from migrate.
                     tree.refresh()
-                    prepareAreaProjection(context, value, area, hydrationScratch, ::checkSelection)
-                    if (area.id == "clues") markCluesPrepared(generation)
+                    try {
+                        prepareAreaProjection(context, value, area, hydrationScratch, ::checkSelection)
+                        if (area.id == "clues") markCluesPrepared(generation)
+                    } catch (error: Exception) {
+                        if (!isTransientPrepareFailure(error)) throw error
+                        CaltopoClient.CTWarn(
+                            "OperationalStorage",
+                            "Preparing ${area.id} deferred (live writer): ${error.message}",
+                        )
+                    }
                 }
                 importLegacyCaches(context, root, value)
                 checkSelection()
@@ -282,8 +337,24 @@ internal object OperationalStorage {
             val area = selected.single { it.id == "queue-state" }
             val value = Store(uri, work, tree, writer, listOf(area))
             val scratch = TemporaryStorage.directory(context, "archive-hydration", root.uri)
-            migrateAreaSources(context, value, area, ::checkSelection, announce = false)
-            prepareAreaProjection(context, value, area, scratch, ::checkSelection)
+            try {
+                migrateAreaSources(context, value, area, ::checkSelection, announce = false)
+                prepareAreaProjection(context, value, area, scratch, ::checkSelection)
+            } catch (error: Exception) {
+                if (!isTransientPrepareFailure(error)) throw error
+                // Queue journals stay durable in app-private storage. A live-writer race
+                // must not block recorder/bulk readiness or recording inventory.
+                CaltopoClient.CTWarn(
+                    "OperationalStorage",
+                    "Operational state archive sync deferred (live writer): ${error.message}",
+                )
+                for (name in queueNames) {
+                    val source = ArchiveDirAvailability.operationalStateFile(context.filesDir, name)
+                    if (source.isFile) retainLater(source)
+                    val legacy = File(context.filesDir, name)
+                    if (legacy.isFile) retainLater(legacy)
+                }
+            }
             checkSelection()
             check(root.isDirectory && root.canRead() && root.canWrite()) { "Archive Dir became unavailable during operational-state preparation." }
             value.migrated.clear()
@@ -424,8 +495,23 @@ internal object OperationalStorage {
             copySource(value, area, source, source, replace = projected, ancestry = emptySet(), projection = projection)
         }
         if (area.id == "queue-state") for (name in queueNames) {
-            val source = File(context.filesDir, name)
-            if (source.isFile) commit(value, source, "${area.retained}/$name", replace = false)
+            val sources = listOf(
+                ArchiveDirAvailability.operationalStateFile(context.filesDir, name),
+                File(context.filesDir, name),
+            ).distinctBy { it.absolutePath }
+            for (source in sources) {
+                if (!source.isFile) continue
+                try {
+                    commit(value, source, "${area.retained}/$name", replace = false, stableSnapshot = true)
+                } catch (error: Exception) {
+                    if (!isTransientPrepareFailure(error)) throw error
+                    CaltopoClient.CTWarn(
+                        "OperationalStorage",
+                        "state file $name archive retain deferred: ${error.message}",
+                    )
+                    retainLater(source)
+                }
+            }
         }
         if (area.id == "review-annotations") for (source in context.cacheDir.listFiles().orEmpty().filter { it.isFile && it.name.endsWith(".review.json") }) {
             commit(value, source, "${area.retained}/${source.name}", replace = false)
@@ -481,12 +567,16 @@ internal object OperationalStorage {
     /**
      * Clues hydrate is always a union merge. Never replace the working projection with the
      * archive, and never delete clue images or index entries during prepare/retry/reconcile.
+     *
+     * Clue photos are retained operational data: the live tree stays under durable
+     * app-private `files/clues`, never under clearable cache `operational-work`.
      */
     private fun prepareCluesProjection(context: Context, value: Store, area: Area, hydrationScratch: File, checkSelection: () -> Unit) {
         val work = value.work
         val hydrationStarted = android.os.SystemClock.elapsedRealtime()
         checkSelection()
-        val destination = File(work, area.id)
+        val priorCacheRoots = priorClueWorkingRoots(context, value, area)
+        val destination = materializeDurableCluesRoot(area, priorCacheRoots)
         check(destination.isDirectory || destination.mkdirs())
         val archiveStage = File(work.parentFile, ".clues-archive-${UUID.randomUUID()}")
         check(archiveStage.isDirectory || archiveStage.mkdirs())
@@ -501,15 +591,25 @@ internal object OperationalStorage {
                 )
                 value.tree.refresh()
             }
-            // Working projection and any still-materialized app-private source trees win per id.
+            // Working projection, prior cache projections, and still-material sources win per id.
             val workingRoots = buildList {
                 add(destination)
+                addAll(priorCacheRoots)
                 for (source in area.sources) {
                     if (!source.exists()) continue
-                    if (Files.isSymbolicLink(source.toPath())) continue
+                    if (Files.isSymbolicLink(source.toPath())) {
+                        projectedRoot(context, area, source)?.let { add(it.toFile()) }
+                        continue
+                    }
                     if (source.canonicalFile == destination.canonicalFile) continue
                     if (source.isDirectory) add(source)
                 }
+                val workClues = File(work, area.id)
+                if (workClues.isDirectory && workClues.canonicalFile != destination.canonicalFile) {
+                    add(workClues)
+                }
+            }.distinctBy { file ->
+                runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
             }
             ClueProjectionMerge.mergeTree(archiveStage, destination, preferExisting = true) { relative ->
                 CaltopoClient.CTWarn(
@@ -532,7 +632,7 @@ internal object OperationalStorage {
                 if (Files.isSymbolicLink(source.toPath())) {
                     Files.delete(source.toPath())
                 } else if (source.exists() && source.canonicalFile != destination.canonicalFile) {
-                    // Content already merged into destination; replace the material tree with the alias.
+                    // Content already merged into durable destination; retire the duplicate tree.
                     val aside = File(source.parentFile, ".${source.name}-merged-${UUID.randomUUID()}")
                     check(source.renameTo(aside)) { "Cannot retire merged clues source." }
                     removeTree(aside)
@@ -545,16 +645,83 @@ internal object OperationalStorage {
                 check(area.alias.renameTo(aside))
                 removeTree(aside)
             }
-            if (!Files.isSymbolicLink(area.alias.toPath())) {
-                Os.symlink(destination.absolutePath, area.alias.absolutePath)
+            if (!area.alias.exists()) {
+                if (destination.canonicalFile != area.alias.canonicalFile) {
+                    check(destination.renameTo(area.alias)) { "Cannot publish durable clues directory." }
+                } else {
+                    check(area.alias.mkdirs() || area.alias.isDirectory)
+                }
             }
+            // Retain after the durable alias is published so Archive Dir has every pending photo.
+            for (file in area.alias.walkTopDown().filter { it.isFile }) {
+                checkSelection()
+                val relative = file.relativeTo(area.alias).invariantSeparatorsPath
+                if (relative.isNotEmpty() && allowed(area, relative)) {
+                    runCatching { commit(value, file, "${area.retained}/$relative") }
+                        .onFailure { error ->
+                            CaltopoClient.CTWarn(
+                                "OperationalStorage",
+                                "Clues durable retain deferred path=$relative: ${error.message}",
+                            )
+                        }
+                }
+            }
+            // Never symlink clues into clearable cache — keep a material durable directory.
             CaltopoClient.CTDebug(
                 "OperationalStorage",
-                "Prepared area=clues reused=merge elapsedMs=${android.os.SystemClock.elapsedRealtime() - hydrationStarted}",
+                "Prepared area=clues reused=merge durable=true elapsedMs=${android.os.SystemClock.elapsedRealtime() - hydrationStarted}",
             )
         } finally {
             if (archiveStage.exists()) removeTree(archiveStage)
         }
+    }
+
+    /** Cache-era `operational-work/<hash>/clues` trees that may still hold pending photos. */
+    private fun priorClueWorkingRoots(context: Context, value: Store, area: Area): List<File> {
+        val found = linkedSetOf<File>()
+        for (source in area.sources) {
+            if (!Files.isSymbolicLink(source.toPath())) continue
+            projectedRoot(context, area, source)?.toFile()?.takeIf { it.isDirectory }?.let { found.add(it) }
+        }
+        for (cacheRoot in TemporaryStorage.roots(context)) {
+            File(cacheRoot, "operational-work").listFiles().orEmpty()
+                .filter { it.isDirectory && it.name.matches(Regex("[a-f0-9]{16}")) }
+                .map { File(it, area.id) }
+                .filter { it.isDirectory }
+                .forEach { found.add(it) }
+            File(cacheRoot, "temporary-operational").listFiles().orEmpty()
+                .filter { it.isDirectory }
+                .map { File(it, area.id) }
+                .filter { it.isDirectory }
+                .forEach { found.add(it) }
+        }
+        File(value.work, area.id).takeIf { it.isDirectory }?.let { found.add(it) }
+        return found.toList()
+    }
+
+    /**
+     * Ensures `files/clues` is a material durable directory. When a prior prepare left a
+     * symlink into cache, merge that tree into a material destination first.
+     */
+    private fun materializeDurableCluesRoot(area: Area, priorCacheRoots: List<File>): File {
+        val alias = area.alias
+        alias.parentFile?.mkdirs()
+        if (Files.isSymbolicLink(alias.toPath())) {
+            val linked = runCatching { File(Os.readlink(alias.path)).canonicalFile }.getOrNull()
+            val material = File(alias.parentFile, ".clues-durable-${UUID.randomUUID()}")
+            check(material.mkdirs())
+            if (linked?.isDirectory == true) {
+                ClueProjectionMerge.mergeTree(linked, material, preferExisting = false)
+            }
+            for (root in priorCacheRoots) {
+                if (linked != null && root.canonicalFile == linked.canonicalFile) continue
+                ClueProjectionMerge.mergeTree(root, material, preferExisting = false)
+            }
+            Files.delete(alias.toPath())
+            return material
+        }
+        if (!alias.exists()) check(alias.mkdirs()) { "Cannot create durable clues directory." }
+        return alias
     }
     private fun unavailable(message: String): ArchiveDirUnavailableException {
         announceUnavailable(message)
@@ -568,7 +735,9 @@ internal object OperationalStorage {
             message.contains("is child of") ||
             message.contains("Archive file is unavailable") ||
             // Clues-lane delete/add during bulk hydrate can stale the migrated snapshot.
-            message.contains("Archive hydration did not preserve clues")
+            message.contains("Archive hydration did not preserve clues") ||
+            // Live writers (interrupted-tracks, clues.json, …) change bytes between digest passes.
+            message.contains("File changed or archive verification failed")
     }
 
     /** After hydrate, every migrated path must still match the staged copy. */
@@ -588,11 +757,16 @@ internal object OperationalStorage {
                 val archiveHash = if (archivePresent) {
                     runCatching { value.tree.read(path).use { VerifiedArchiveTree.digest(it) } }.getOrNull()
                 } else null
-                when (ClueHydrationReconcile.verdict(localHash, hash, archivePresent, archiveHash)) {
+                when (ClueHydrationReconcile.verdict(localHash, hash, archivePresent, archiveHash, relative)) {
                     ClueHydrationReconcile.Verdict.MATCH -> continue
                     ClueHydrationReconcile.Verdict.RACE -> {
-                        if (archiveHash != null && localHash == archiveHash) value.migrated[path] = archiveHash
-                        else value.migrated.remove(path)
+                        // Prefer the staged (post-merge) digest when present — clues.json is
+                        // rewritten by union merge and will not match the pre-merge migrated hash.
+                        when {
+                            localHash != null -> value.migrated[path] = localHash
+                            archiveHash != null -> value.migrated[path] = archiveHash
+                            else -> value.migrated.remove(path)
+                        }
                         CaltopoClient.CTDebug(
                             "OperationalStorage",
                             "Clues hydrate reconciled concurrent lane change path=$path",
@@ -689,11 +863,17 @@ internal object OperationalStorage {
     }
     private fun projectedRoot(context: Context, area: Area, source: File): Path? {
         val target = File(Os.readlink(source.path)).canonicalFile.toPath()
+        // Legacy cache projections (pre-durable clues) remain recognizable for migrate/merge.
         for (root in TemporaryStorage.roots(context)) {
             val base = File(root, "operational-work").canonicalFile.toPath()
             // Cache removal must not turn a recoverable projection into a missing legacy SD card.
             if (target.startsWith(base) && target.nameCount == base.nameCount + 2 &&
                 target.fileName.toString() == area.id && target.parent.fileName.toString().matches(Regex("[a-f0-9]{16}"))) return target
+        }
+        // Durable material clues live at files/clues (alias itself), not under operational-work.
+        if (area.id == "clues") {
+            val durable = area.alias.canonicalFile.toPath()
+            if (target == durable) return target
         }
         return null
     }
@@ -709,7 +889,8 @@ internal object OperationalStorage {
             val relative = source.relativeTo(base).invariantSeparatorsPath
             if (!allowed(area, relative)) return
             try {
-                commit(value, source, "${area.retained}/$relative", replace)
+                val snapshot = area.id == "queue-state" || area.id == "clues"
+                commit(value, source, "${area.retained}/$relative", replace, stableSnapshot = snapshot)
             } catch (error: IllegalStateException) {
                 // Clues hydrate unions working + archive; mismatched same-path copies must
                 // both survive migrate so prepareCluesProjection can merge them.
@@ -717,16 +898,63 @@ internal object OperationalStorage {
                     error.message?.startsWith("Conflicting archive file:") == true) {
                     return
                 }
+                if (isTransientPrepareFailure(error) && (area.id == "queue-state" || area.id == "clues")) {
+                    CaltopoClient.CTWarn(
+                        "OperationalStorage",
+                        "Retaining ${area.id} path=$relative deferred (live writer): ${error.message}",
+                    )
+                    retainLater(source)
+                    return
+                }
                 throw error
             }
         }
     }
-    private fun commit(value: Store, source: File, path: String, replace: Boolean = true) {
-        value.writer.put(source, path, replace, modified = source.lastModified())
-        if (!state.value.ready) value.migrated[path] = source.inputStream().use { VerifiedArchiveTree.digest(it) }
-        if (value.tree.exists("$path.r2c-chunks")) value.tree.delete("$path.r2c-chunks")
-        forgetHeader(value, path)
-        value.growingOffsets.remove(path)
+    private fun commit(
+        value: Store,
+        source: File,
+        path: String,
+        replace: Boolean = true,
+        stableSnapshot: Boolean = false,
+    ) {
+        val publish = if (stableSnapshot) stableSnapshotOf(value, source) else source
+        try {
+            value.writer.put(publish, path, replace, modified = source.lastModified())
+            if (!state.value.ready) {
+                value.migrated[path] = publish.inputStream().use { VerifiedArchiveTree.digest(it) }
+            }
+            if (value.tree.exists("$path.r2c-chunks")) value.tree.delete("$path.r2c-chunks")
+            forgetHeader(value, path)
+            value.growingOffsets.remove(path)
+        } finally {
+            if (publish !== source) publish.delete()
+        }
+    }
+
+    /**
+     * Copy once before archive verify. Live writers (atomic .partial replace) must not
+     * change bytes between VerifiedArchiveTree's digest-before and digest-after passes.
+     */
+    private fun stableSnapshotOf(value: Store, source: File): File {
+        val parent = value.work.parentFile?.takeIf { it.isDirectory || it.mkdirs() }
+            ?: source.parentFile
+            ?: error("Cannot create archive snapshot directory.")
+        val snapshot = File.createTempFile("r2c-stable-", ".bin", parent)
+        try {
+            source.inputStream().use { input ->
+                FileOutputStream(snapshot).use { output ->
+                    input.copyTo(output, 256 * 1024)
+                    output.fd.sync()
+                }
+            }
+            return snapshot
+        } catch (error: Exception) {
+            snapshot.delete()
+            throw IllegalStateException(
+                "File changed or archive verification failed: ${source.name}. Original files were retained.",
+                error,
+            )
+        }
     }
     private fun requiresIsolatedHydration(value: Store, path: String): Boolean {
         val entries = value.tree.list(path)
@@ -876,7 +1104,18 @@ internal object OperationalStorage {
         archiveCommit.lock()
         try {
             check()
-            commit(value, file, path)
+            val queuePath = path.contains("/queue-state/") || queueNames.any { path.endsWith("/$it") || path == it }
+            val cluesPath = path.contains("/clues/") || path.endsWith("/clues.json")
+            try {
+                commit(value, file, path, stableSnapshot = queuePath || cluesPath)
+            } catch (error: Exception) {
+                if (!isTransientPrepareFailure(error)) throw error
+                CaltopoClient.CTWarn(
+                    "OperationalStorage",
+                    "Archive retain deferred for live writer path=$path: ${error.message}",
+                )
+                deferRetain(file)
+            }
             check()
         } finally {
             archiveCommit.unlock()
@@ -1056,6 +1295,9 @@ internal object OperationalStorage {
     }
     fun ready(): Boolean = state.value.ready
 
+    /** True while the clues prepare lock is held (merge/rename of the durable tree). */
+    fun cluesPrepareInProgress(): Boolean = cluesPrepare.isLocked
+
     /** True when clues lane verify/prepare already completed for this Archive Dir selection. */
     fun cluesReady(): Boolean {
         val generation = selectionGeneration.get()
@@ -1148,12 +1390,13 @@ internal object OperationalStorage {
     }
 
     private fun cluesProjectionReusable(context: Context, work: File, area: Area): Boolean {
-        val destination = File(work, area.id)
-        if (!destination.isDirectory) return false
-        if (!Files.isSymbolicLink(area.alias.toPath())) return false
-        return runCatching {
-            projectedRoot(context, area, area.alias) == destination.canonicalFile.toPath()
-        }.getOrDefault(false)
+        // Durable clues stay material under files/clues. A leftover cache symlink must rematerialize.
+        if (Files.isSymbolicLink(area.alias.toPath())) return false
+        if (!area.alias.isDirectory) return false
+        val workClues = File(work, area.id)
+        return !workClues.isDirectory || runCatching {
+            workClues.canonicalFile == area.alias.canonicalFile
+        }.getOrDefault(true)
     }
     fun removeIfManaged(file: File): Boolean {
         if (preparedRecorder?.let { mapping(file, it.value) } != null) { remove(file); return true }
@@ -1303,10 +1546,12 @@ internal object OperationalStorage {
             val area = selected.single { it.id == "clues" }
             val value = Store(uri, work, tree, writer, listOf(area))
             val reuseProjection = cluesPreparedGeneration == generation && cluesProjectionReusable(context, work, area)
+            var notifyProjectionReady = false
             if (!reuseProjection) {
                 val scratch = TemporaryStorage.directory(context, "archive-hydration", root.uri)
                 migrateAreaSources(context, value, area, ::checkSelection, announce = false)
                 prepareAreaProjection(context, value, area, scratch, ::checkSelection)
+                notifyProjectionReady = true
             } else {
                 CaltopoClient.CTDebug("OperationalStorage", "Reused session-prepared clues projection")
             }
@@ -1321,9 +1566,15 @@ internal object OperationalStorage {
             }
             markCluesPrepared(generation)
             CaltopoClient.CTDebug("OperationalStorage", "Clue storage ready independently of bulk storage")
+            cluesPrepare.unlock()
+            // After the rename window closes, reload the in-memory index and wake the UI
+            // that may have kept a last-good snapshot during prepare.
+            if (notifyProjectionReady) {
+                org.ncssar.rid2caltopo.app.FlightStorage.notifyCluesProjectionReady()
+            }
             return prepared
         } finally {
-            cluesPrepare.unlock()
+            if (cluesPrepare.isHeldByCurrentThread) cluesPrepare.unlock()
         }
     }
 

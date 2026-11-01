@@ -75,7 +75,10 @@ class ClueProjectionMergeDurabilityTest {
             assertTrue(byId.containsKey("orphan"))
             assertEquals("pending", byId.getValue("orphan").getString("uploadState"))
             assertEquals("failed", byId.getValue("ghost").getString("uploadState"))
-            assertEquals("missing-photo", byId.getValue("ghost").getString("lastUploadError"))
+            assertEquals(
+                org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.PHOTO_MISSING_MESSAGE,
+                byId.getValue("ghost").getString("lastUploadError"),
+            )
         } finally {
             root.deleteRecursively()
         }

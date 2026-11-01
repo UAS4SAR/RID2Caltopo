@@ -16,6 +16,34 @@ def instrumentation_passed(output, minimum):
     return bool(match and int(match[1]) >= minimum and "FAILURES!!!" not in output and "INSTRUMENTATION_FAILED" not in output)
 
 
+def package_process_pids(adb_run, package):
+    """Return 'name=pids' entries for main and :caltopo_probe; pidof exits 1 when absent."""
+    alive = []
+    for name in (package, f"{package}:caltopo_probe"):
+        result = adb_run(["shell", "pidof", name], timeout=10)
+        pids = result.stdout.strip()
+        if result.returncode == 0 and pids:
+            alive.append(f"{name}={pids}")
+        elif result.returncode not in (0, 1):
+            raise RuntimeError(f"pidof {name} failed: {result.stdout[-1000:]}")
+    return alive
+
+
+def force_stop_and_await_gone(adb_run, package, timeout_s=8.0):
+    """Force-stop and wait until main and :caltopo_probe processes are absent."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        stopped = adb_run(["shell", "am", "force-stop", package], timeout=30)
+        if stopped.returncode:
+            raise RuntimeError(f"force-stop failed: {stopped.stdout[-1000:]}")
+        alive = package_process_pids(adb_run, package)
+        if not alive:
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"Package {package} still running after force-stop: {', '.join(alive)}")
+        time.sleep(0.05)
+
+
 def numbers(value):
     if isinstance(value, list):
         return [number for item in value for number in numbers(item)]
@@ -81,9 +109,12 @@ def main():
     emulator = subprocess.Popen([args.emulator, "-avd", args.avd, "-port", str(port), "-read-only", "-no-window",
                                  "-no-snapshot", "-no-audio", "-gpu", "swiftshader", "-memory", "4096"], stdout=log, stderr=subprocess.STDOUT)
 
-    def adb(*command, timeout=120):
+    def adb_run(command, timeout=120):
         assert serial.startswith("emulator-")
-        result = subprocess.run([args.adb, "-s", serial, *command], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+        return subprocess.run([args.adb, "-s", serial, *command], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+
+    def adb(*command, timeout=120):
+        result = adb_run(command, timeout=timeout)
         if result.returncode: raise RuntimeError(f"Emulator command failed: {command}: {result.stdout[-4000:]}")
         return result.stdout
 
@@ -120,8 +151,17 @@ def main():
         adb("install", "-r", args.benchmark_tests)
         adb("shell", "mkdir", "-p", remote)
         adb("logcat", "-c")
-        output = adb("shell", "am", "instrument", "-w", "-e", "androidx.benchmark.suppressErrors", "EMULATOR",
-                     "-e", "additionalTestOutputDir", remote, benchmark_package + "/androidx.test.runner.AndroidJUnitRunner", timeout=240)
+        # Cold-start Macrobenchmark fails if any package process (including
+        # :caltopo_probe from the personal-session provider) is still alive after
+        # its kill. Clear leftovers from install/recovery before instrumenting, and
+        # disable dropShaders so Macrobenchmark does not wake Application.init
+        # (which starts :caltopo_probe) between setup and the alive check.
+        force_stop_and_await_gone(adb_run, package)
+        output = adb("shell", "am", "instrument", "-w",
+                     "-e", "androidx.benchmark.suppressErrors", "EMULATOR",
+                     "-e", "androidx.benchmark.dropShaders.enable", "false",
+                     "-e", "additionalTestOutputDir", remote,
+                     benchmark_package + "/androidx.test.runner.AndroidJUnitRunner", timeout=240)
         (out / "macrobenchmark.log").write_text(output)
         violations = adb("logcat", "-d", "-v", "threadtime", "R2CQualification:E", "AndroidRuntime:E", "*:S")
         (out / "startup-violations.log").write_text(violations)

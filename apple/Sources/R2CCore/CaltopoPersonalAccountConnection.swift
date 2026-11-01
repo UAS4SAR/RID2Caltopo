@@ -53,6 +53,12 @@ public final class CaltopoPersonalAccountConnection: @unchecked Sendable {
         credentialLog.info("\(line, privacy: .public)")
     }
 
+    /// Failed CalTopo calls: method + path (ids kept; no query keys/signatures/coordinates).
+    public static func logFailedRequest(method: String, path: String, status: Int, credential: String) {
+        let line = "failed " + requestLogLine(method: method, path: path, status: status, credential: credential)
+        credentialLog.error("\(line, privacy: .public)")
+    }
+
     /// State transitions only. The message must not contain a secret, signature, or query.
     public static func logState(_ message: String) {
         let safe = message.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? message

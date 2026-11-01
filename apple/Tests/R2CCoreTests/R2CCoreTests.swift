@@ -946,7 +946,8 @@ func caltopoFolderResolutionCoalescesConcurrentPublishers() async throws {
     #expect(results[0] == CaltopoTrackFolderIDs(active: "active-created", archive: "archive-created", created: true))
     #expect(results[1] == results[0])
     let counts = await probe.counts()
-    #expect(counts.fetches == 2)
+    // One warm snapshot; create GUIDs are the acknowledgement (no confirmation re-read).
+    #expect(counts.fetches == 1)
     #expect(counts.creations == 2)
 }
 
@@ -999,29 +1000,15 @@ func caltopoFolderResolutionKeepsPopulatedArchiveWithoutDeletingPreexistingFolde
 }
 
 @Test
-func caltopoFolderResolutionDeletesOnlyItsOwnUnusedRaceLosers() async throws {
+func caltopoFolderResolutionUsesCreatedGUIDsWithoutConfirmationReread() async throws {
     let resolver = CaltopoTrackFolderResolver()
-    let initial = CaltopoArtifactSnapshot()
-    let settled = CaltopoArtifactSnapshot(folders: [
-        CaltopoArtifactFolder(id: "active-other", title: "Drone Tracks", initiallyVisible: true),
-        CaltopoArtifactFolder(id: "active-created", title: "Drone Tracks", initiallyVisible: true),
-        CaltopoArtifactFolder(
-            id: "archive-other",
-            title: "Drone Tracks 24Jul",
-            initiallyVisible: false
-        ),
-        CaltopoArtifactFolder(
-            id: "archive-created",
-            title: "Drone Tracks 24Jul",
-            initiallyVisible: false
-        ),
-    ])
-    let probe = CaltopoFolderResolverProbe(snapshots: [initial, settled])
+    let probe = CaltopoFolderResolverProbe(snapshot: CaltopoArtifactSnapshot())
 
     let result = try await resolver.resolve(
         trackFolderName: "Drone Tracks",
         date: Date(timeIntervalSince1970: 1_721_779_200),
         timeZone: TimeZone(secondsFromGMT: 0)!,
+        settleDelay: .milliseconds(500),
         fetchSnapshot: { await probe.fetch() },
         createFolder: { title, visible, labelVisible in
             await probe.create(title: title, visible: visible, labelVisible: labelVisible)
@@ -1031,8 +1018,11 @@ func caltopoFolderResolutionDeletesOnlyItsOwnUnusedRaceLosers() async throws {
         }
     )
 
-    #expect(result == CaltopoTrackFolderIDs(active: "active-other", archive: "archive-other", created: true))
-    #expect(Set(await probe.deletions()) == Set(["active-created", "archive-created"]))
+    #expect(result == CaltopoTrackFolderIDs(active: "active-created", archive: "archive-created", created: true))
+    let counts = await probe.counts()
+    #expect(counts.fetches == 1)
+    #expect(counts.creations == 2)
+    #expect(await probe.deletions().isEmpty)
 }
 
 @Test
@@ -1056,6 +1046,146 @@ func caltopoFolderResolutionReusesExistingDailyFolder() async throws {
     let counts = await probe.counts()
     #expect(counts.fetches == 1)
     #expect(counts.creations == 0)
+}
+
+@Test
+func caltopoConnectSnapshotAdoptsExistingFoldersByTrimmedCaseInsensitiveTitle() {
+    let snapshot = CaltopoArtifactSnapshot(folders: [
+        CaltopoArtifactFolder(id: "existing-active", title: "  drone tracks  ", initiallyVisible: true),
+        CaltopoArtifactFolder(id: "existing-archive", title: " DRONE TRACKS 24Jul ", initiallyVisible: false),
+    ])
+    #expect(
+        CaltopoTrackFolderResolver.adoptedFolderID(named: "Drone Tracks", in: snapshot) == "existing-active"
+    )
+    #expect(
+        CaltopoTrackFolderResolver.adoptedFolderID(named: "Drone Tracks 24Jul", in: snapshot) == "existing-archive"
+    )
+    #expect(CaltopoTrackFolderResolver.folderTitlesMatch(" DRONE TRACKS ", expected: "Drone Tracks"))
+}
+
+@Test
+func caltopoFlightArchiveDateUsesEarliestObservation() {
+    let early = Date(timeIntervalSince1970: 1_721_779_200) // 24 Jul 2024 UTC
+    let late = Date(timeIntervalSince1970: 1_721_865_600) // 25 Jul 2024 UTC
+    let observations = [
+        RidObservation(source: .bluetoothLegacy, aircraftId: "RID", receivedAt: late, latitude: 1, longitude: 2),
+        RidObservation(source: .bluetoothLegacy, aircraftId: "RID", receivedAt: early, latitude: 1, longitude: 2),
+    ]
+    #expect(CaltopoTrackFolderResolver.flightArchiveDate(observations: observations) == early)
+    #expect(
+        CaltopoTrackFolderResolver.archiveFolderName(
+            trackFolderName: "Drone Tracks",
+            date: CaltopoTrackFolderResolver.flightArchiveDate(observations: observations),
+            timeZone: TimeZone(secondsFromGMT: 0)!
+        ) == "Drone Tracks 24Jul"
+    )
+}
+
+@Test
+func caltopoAdoptOrCreateArchiveFolderReusesFlightDateFolderNotTodayCache() async throws {
+    let flightDate = Date(timeIntervalSince1970: 1_721_779_200) // 24 Jul 2024 UTC
+    let snapshot = CaltopoArtifactSnapshot(folders: [
+        CaltopoArtifactFolder(id: "archive-today", title: "Drone Tracks 25Jul", initiallyVisible: false),
+        CaltopoArtifactFolder(id: "archive-past", title: " drone tracks 24jul ", initiallyVisible: false),
+    ])
+    var created: [String] = []
+    let resolved = try await CaltopoTrackFolderResolver.adoptOrCreateArchiveFolderID(
+        trackFolderName: "Drone Tracks",
+        flightDate: flightDate,
+        timeZone: TimeZone(secondsFromGMT: 0)!,
+        // Session cache for a different day must not win over the flight-day title.
+        existingArchiveID: nil,
+        snapshot: snapshot,
+        createFolder: { title, _, _ in
+            created.append(title)
+            return "created-\(title)"
+        }
+    )
+    #expect(resolved == "archive-past")
+    #expect(created.isEmpty)
+}
+
+@Test
+func caltopoAdoptOrCreateArchiveFolderCreatesFlightDateFolderWhenMissing() async throws {
+    let flightDate = Date(timeIntervalSince1970: 1_721_779_200) // 24 Jul 2024 UTC
+    var created: [String] = []
+    let resolved = try await CaltopoTrackFolderResolver.adoptOrCreateArchiveFolderID(
+        trackFolderName: "Drone Tracks",
+        flightDate: flightDate,
+        timeZone: TimeZone(secondsFromGMT: 0)!,
+        existingArchiveID: nil,
+        snapshot: CaltopoArtifactSnapshot(folders: [
+            CaltopoArtifactFolder(id: "archive-today", title: "Drone Tracks 25Jul", initiallyVisible: false),
+        ]),
+        createFolder: { title, visible, labelVisible in
+            created.append(title)
+            #expect(visible == false)
+            #expect(labelVisible == false)
+            return "created-\(title)"
+        }
+    )
+    #expect(resolved == "created-Drone Tracks 24Jul")
+    #expect(created == ["Drone Tracks 24Jul"])
+}
+
+@Test
+func caltopoFolderResolutionPrefersAlreadyAdoptedIdsBeforeCreate() async throws {
+    let resolver = CaltopoTrackFolderResolver()
+    let probe = CaltopoFolderResolverProbe(snapshot: CaltopoArtifactSnapshot())
+    let result = try await resolver.resolve(
+        trackFolderName: "Drone Tracks",
+        date: Date(timeIntervalSince1970: 1_721_779_200),
+        timeZone: TimeZone(secondsFromGMT: 0)!,
+        existingActiveID: "adopted-active",
+        existingArchiveID: "adopted-archive",
+        fetchSnapshot: { await probe.fetch() },
+        createFolder: { title, visible, labelVisible in
+            await probe.create(title: title, visible: visible, labelVisible: labelVisible)
+        }
+    )
+    #expect(result == CaltopoTrackFolderIDs(active: "adopted-active", archive: "adopted-archive", created: false))
+    let counts = await probe.counts()
+    #expect(counts.creations == 0)
+}
+
+@Test
+func caltopoClueFolderSendUsesAdoptedFolderAfterInitialRead() {
+    let folder = CaltopoClueTrackFolderSend.folderIDForSendSync(
+        initialReadCompleted: true,
+        cachedFolderID: "adopted-active",
+        ensuredFolderID: "created-active"
+    )
+    #expect(folder == "adopted-active")
+}
+
+@Test
+func caltopoClueFolderSendEnsuresAfterInitialReadWhenCacheEmpty() {
+    let folder = CaltopoClueTrackFolderSend.folderIDForSendSync(
+        initialReadCompleted: true,
+        cachedFolderID: nil,
+        ensuredFolderID: "ensured-active"
+    )
+    #expect(folder == "ensured-active")
+}
+
+@Test
+func caltopoClueFolderSendTimeoutFallsBackWithoutEnsure() {
+    let folder = CaltopoClueTrackFolderSend.folderIDForSendSync(
+        initialReadCompleted: false,
+        cachedFolderID: nil,
+        ensuredFolderID: "should-not-use"
+    )
+    #expect(folder == nil)
+}
+
+@Test
+func caltopoInitialFullReadGateWaitTimesOutThenCompletes() async {
+    let gate = CaltopoInitialFullReadGate()
+    await gate.begin()
+    let timedOut = await gate.wait(timeoutSeconds: 0.05)
+    #expect(timedOut == false)
+    await gate.complete()
+    #expect(await gate.wait(timeoutSeconds: 0.05) == true)
 }
 
 @Test

@@ -31,6 +31,16 @@ public final class CaltopoInterruptedTrackJournal {
                             @NonNull String label,
                             @NonNull String description,
                             @NonNull JSONArray points) {
+        return save(mapId, remoteId, liveTrackId, label, description, points, 0L);
+    }
+
+    public static boolean save(@NonNull String mapId,
+                            @NonNull String remoteId,
+                            @NonNull String liveTrackId,
+                            @NonNull String label,
+                            @NonNull String description,
+                            @NonNull JSONArray points,
+                            long flightStartedAtMs) {
         CaltopoRecoveryWork.requireOffMain();
         if (mapId.isEmpty() || liveTrackId.isEmpty()) return false;
         final JSONObject toWrite;
@@ -60,6 +70,10 @@ public final class CaltopoInterruptedTrackJournal {
                 entry.put("label", label);
                 entry.put("description", description);
                 entry.put("points", new JSONArray(points.toString()));
+                // Keep a previously recorded flight day when a refresh omits it.
+                if (flightStartedAtMs > 0L) {
+                    entry.put("flightStartedAtMs", flightStartedAtMs);
+                }
                 cachedRoot = root;
                 toWrite = copyRoot(root);
             } catch (Exception error) {
@@ -88,6 +102,20 @@ public final class CaltopoInterruptedTrackJournal {
                                       @NonNull String archiveFolderId,
                                       @NonNull R2cRuntime runtime,
                                       @NonNull java.util.List<JSONObject> mapFeatures) {
+        return recover(mapId, runtime, mapFeatures, flightStartedAtMs -> archiveFolderId);
+    }
+
+    /**
+     * Retry interrupted / finished-track archives. {@code archiveFolderIdForFlight} must return
+     * the dated "Drone Tracks &lt;date&gt;" folder for {@code flightStartedAtMs} (0 = unknown/today),
+     * never blank — map-root archives are rejected.
+     */
+    @NonNull
+    public static Set<String> recover(
+            @NonNull String mapId,
+            @NonNull R2cRuntime runtime,
+            @NonNull java.util.List<JSONObject> mapFeatures,
+            @NonNull java.util.function.LongFunction<String> archiveFolderIdForFlight) {
         // Upgrade old journals from positive server evidence, without recreating
         // an archive that is already present on this map.
         java.util.Map<String, JSONObject> archivedFeatures = new java.util.HashMap<>();
@@ -115,6 +143,14 @@ public final class CaltopoInterruptedTrackJournal {
             try {
                 if (entry.optBoolean("archiveUploaded") || archiveContainsPoints(archivedFeatures.get(liveTrackId), points)) {
                     finishArchiveCleanup(mapId, liveTrackId, runtime);
+                    continue;
+                }
+                long flightStartedAtMs = entry.optLong("flightStartedAtMs", 0L);
+                String archiveFolderId = archiveFolderIdForFlight.apply(flightStartedAtMs);
+                if (archiveFolderId == null || archiveFolderId.isEmpty()) {
+                    inFlight.remove(liveTrackId);
+                    CaltopoClient.CTWarn(TAG,
+                            "Interrupted LiveTrack archive deferred — dated folder unavailable id=" + liveTrackId);
                     continue;
                 }
                 JSONObject feature = archiveFeature(entry, archiveFolderId);
@@ -179,7 +215,8 @@ public final class CaltopoInterruptedTrackJournal {
                 synchronized (LOCK) { cachedRoot = null; }
                 throw writeError;
             }
-            AwaitingMapFlights.published(liveTrackId);
+            AwaitingMapFlights.confirmArchive(liveTrackId, null, liveTrackId, null);
+            CaltopoClient.CTInfo(TAG, "CalTopo track archived id=" + liveTrackId + " folder=(recovery)");
             runtime.getCalTopoSessionGateway().deleteLiveTrackOnMap(mapId, liveTrackId, deleteOp -> CaltopoRecoveryWork.offMainArchive(() -> {
                 // Match Apple's already-gone handling. Standalone archives never
                 // created a LiveTrack, for which CalTopo returns 400 (or 404).
