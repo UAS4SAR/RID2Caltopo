@@ -34,13 +34,6 @@ import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
 import androidx.core.content.ContextCompat;
 
-import com.google.android.gms.location.FusedLocationProviderClient;
-import com.google.android.gms.location.LocationCallback;
-import com.google.android.gms.location.LocationRequest;
-import com.google.android.gms.location.LocationResult;
-import com.google.android.gms.location.LocationServices;
-import com.google.android.gms.location.Priority;
-
 import org.ncssar.rid2caltopo.R;
 import org.ncssar.rid2caltopo.data.CaltopoClient;
 import org.ncssar.rid2caltopo.data.CaltopoMap;
@@ -79,8 +72,6 @@ public class ScanningService extends Service {
     private boolean foregroundStarted = false;
     private boolean foregroundStartBlocked = false;
     private final Handler lifecycleHandler = new Handler(Looper.getMainLooper());
-    private FusedLocationProviderClient fusedLocationClient;
-    private LocationCallback backgroundLocationCallback;
     private boolean externalDisplayConnected = false;
     private final Runnable incidentMapBackgroundDisconnect = new Runnable() {
         @Override public void run() {
@@ -221,7 +212,8 @@ public class ScanningService extends Service {
         stopForegroundSafely();
         lifecycleHandler.removeCallbacks(incidentMapBackgroundDisconnect);
         lifecycleHandler.removeCallbacks(trackerSilenceDisconnect);
-        stopBackgroundLocationUpdates();
+        // Service destroy is process-session teardown; release the shared location client here.
+        DeviceLocationMonitor.stop();
         if (scanning) {
             stopScanning();
         }
@@ -299,10 +291,11 @@ public class ScanningService extends Service {
             lifecycleHandler.removeCallbacks(trackerSilenceDisconnect);
             if (displayActive) {
                 CaltopoMap.EndIncidentDisplayInactive();
-                stopBackgroundLocationUpdates();
             } else {
                 CaltopoMap.BeginIncidentDisplayInactive();
-                startBackgroundLocationUpdates();
+                // Keep the existing long-lived client; do not create/unbind a second
+                // FusedLocationProviderClient on every display transition.
+                DeviceLocationMonitor.ensureStarted(getApplicationContext());
                 lifecycleHandler.postDelayed(
                         trackerSilenceDisconnect,
                         TRACKER_SILENCE_RECHECK_MS);
@@ -327,6 +320,7 @@ public class ScanningService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
+        DeviceLocationMonitor.ensureStarted(getApplicationContext());
         startScanning();
         return START_STICKY;
     }
@@ -439,41 +433,6 @@ public class ScanningService extends Service {
         }
         foregroundStarted = false;
         return false;
-    }
-
-    private void startBackgroundLocationUpdates() {
-        if (backgroundLocationCallback != null) return;
-        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION)
-                != PackageManager.PERMISSION_GRANTED) {
-            CTError(TAG, "Background movement monitoring unavailable: precise location not granted.");
-            return;
-        }
-        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this);
-        backgroundLocationCallback = new LocationCallback() {
-            @Override public void onLocationResult(@NonNull LocationResult result) {
-                for (android.location.Location location : result.getLocations()) {
-                    CaltopoMap.UpdateMyLocation(location);
-                }
-            }
-        };
-        LocationRequest request = new LocationRequest.Builder(10_000L)
-                .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
-                .setMinUpdateIntervalMillis(5_000L)
-                .setMinUpdateDistanceMeters(5.0f)
-                .build();
-        fusedLocationClient.requestLocationUpdates(
-                request, backgroundLocationCallback, Looper.getMainLooper())
-                .addOnFailureListener(error -> CTError(
-                        TAG, "Background movement location request failed", error));
-        CTDebug(TAG, "Background movement location monitoring started.");
-    }
-
-    private void stopBackgroundLocationUpdates() {
-        if (fusedLocationClient != null && backgroundLocationCallback != null) {
-            fusedLocationClient.removeLocationUpdates(backgroundLocationCallback);
-        }
-        backgroundLocationCallback = null;
-        fusedLocationClient = null;
     }
 
     private void stopForegroundSafely() {

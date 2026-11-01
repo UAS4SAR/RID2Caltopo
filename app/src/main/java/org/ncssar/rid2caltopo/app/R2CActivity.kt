@@ -70,12 +70,6 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.savedstate.SavedStateRegistryOwner
-import com.google.android.gms.location.FusedLocationProviderClient
-import com.google.android.gms.location.LocationCallback
-import com.google.android.gms.location.LocationRequest
-import com.google.android.gms.location.LocationResult
-import com.google.android.gms.location.LocationServices
-import com.google.android.gms.location.Priority
 import com.google.android.material.snackbar.Snackbar
 import org.ncssar.rid2caltopo.BuildConfig
 import org.ncssar.rid2caltopo.data.CaltopoClient
@@ -846,9 +840,6 @@ class R2CActivity :
     R2CMqttManager.PeerListChangedListener,
     PeerCoordinator.VideoStreamRequestListener {
     private var settingsReadyActivityCreated = false
-    var locationRequest: LocationRequest? = null
-    var locationCallback: LocationCallback? = null
-    var mFusedLocationClient: FusedLocationProviderClient? = null
     private val outstandingPermissionsList = ArrayList<String?>()
     private lateinit var localViewModel: R2CViewModel
     private lateinit var streamsViewModel: StreamsViewModel
@@ -2657,82 +2648,12 @@ class R2CActivity :
         InitializedCalled = true
         CaltopoClient.InitArchiveDir()
 
-        locationRequest = LocationRequest.Builder((10 * 1000).toLong()) // 10 seconds
-            .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
-            .setMinUpdateIntervalMillis((5 * 1000).toLong()) // 5 seconds
-            .build()
-
-        mFusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-        locationCallback = object : LocationCallback() {
-            override fun onLocationResult(locationResult: LocationResult) {
-                for (location in locationResult.locations) {
-                    if (location != null) {
-                        val hadDeviceLocationBefore = CaltopoMap.GetDeviceLocation() != null
-                        CaltopoMap.UpdateMyLocation(location)
-                        streamsViewModel.prefetchTerrainForLocation(
-                            location.latitude,
-                            location.longitude,
-                        )
-                        if (!hadDeviceLocationBefore && CaltopoMap.GetDeviceLocation() != null) {
-                            AirspaceCenter.requestImmediateRefresh()
-                            NotamCenter.requestImmediateRefresh()
-                            LandRestrictionCenter.requestImmediateRefresh()
-                        }
-                    }
-                }
-            }
+        // Long-lived application-scoped client — never create/tear down GMS location
+        // clients from the activity lifecycle (unbind stalls the main looper).
+        DeviceLocationMonitor.setLocationListener { location ->
+            streamsViewModel.prefetchTerrainForLocation(location.latitude, location.longitude)
         }
-        if ((ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
-            PackageManager.PERMISSION_GRANTED) &&
-                (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) ==
-                        PackageManager.PERMISSION_GRANTED)) {
-            if (mFusedLocationClient != null && locationRequest != null && locationCallback != null) {
-                CTDebug(TAG, "initialize(): requesting fused location updates.")
-                mFusedLocationClient?.requestLocationUpdates(
-                    locationRequest!!,
-                    locationCallback!!,
-                    Looper.getMainLooper()
-                )?.addOnSuccessListener {
-                    CTDebug(TAG, "initialize(): fused location updates registered.")
-                }?.addOnFailureListener { e ->
-                    CTError(TAG, "initialize(): requestLocationUpdates failed.", e)
-                }
-                mFusedLocationClient?.lastLocation
-                    ?.addOnSuccessListener { location ->
-                        if (location == null) {
-                            CTDebug(TAG, "initialize(): fused lastLocation unavailable.")
-                            return@addOnSuccessListener
-                        }
-                        CTDebug(
-                            TAG,
-                            String.format(
-                                Locale.US,
-                                "initialize(): applying fused lastLocation lat=%.7f lng=%.7f accuracy=%.3fm ageMs=%d",
-                                location.latitude,
-                                location.longitude,
-                                location.accuracy,
-                                (System.currentTimeMillis() - location.time).coerceAtLeast(0L)
-                            )
-                        )
-                        val hadDeviceLocationBefore = CaltopoMap.GetDeviceLocation() != null
-                        CaltopoMap.UpdateMyLocation(location)
-                        streamsViewModel.prefetchTerrainForLocation(
-                            location.latitude,
-                            location.longitude,
-                        )
-                        if (!hadDeviceLocationBefore && CaltopoMap.GetDeviceLocation() != null) {
-                            AirspaceCenter.requestImmediateRefresh()
-                            NotamCenter.requestImmediateRefresh()
-                            LandRestrictionCenter.requestImmediateRefresh()
-                        }
-                    }
-                    ?.addOnFailureListener { e ->
-                        CTError(TAG, "initialize(): fused lastLocation failed.", e)
-                    }
-            }
-        } else {
-            CTError(TAG, "initialize(): location permissions unavailable; fused location updates not requested.")
-        }
+        DeviceLocationMonitor.ensureStarted(applicationContext)
         CTDebug(
             TAG,
             String.format(
@@ -2758,19 +2679,15 @@ class R2CActivity :
         RestartingFlag = false
     }
 
+    private fun detachLocationListener() {
+        DeviceLocationMonitor.setLocationListener(null)
+    }
+
     private fun stopLocationUpdates() {
-        try {
-            val callback = locationCallback
-            if (callback != null) {
-                mFusedLocationClient?.removeLocationUpdates(callback)
-            }
-        } catch (e: Exception) {
-            CTError(TAG, "stopLocationUpdates() raised:", e)
-        } finally {
-            locationCallback = null
-            locationRequest = null
-            mFusedLocationClient = null
-        }
+        detachLocationListener()
+        // Only release the shared GMS client on real session shutdown. Config-change
+        // and non-primary destroys must not unbind Play Services on the main looper.
+        DeviceLocationMonitor.stop()
     }
 
     fun showToast(message: String) {
@@ -3004,7 +2921,7 @@ class R2CActivity :
                 CTError(TAG, "onDestroy() raised:", e)
             }
         } else {
-            stopLocationUpdates()
+            detachLocationListener()
             CTDebug(
                 TAG,
                 String.format(

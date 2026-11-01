@@ -75,10 +75,41 @@ internal object OperationalStorage {
                 if (ArchiveDirAvailability.isUnavailable(error)) {
                     announceUnavailable(error.message ?: ArchiveDirAvailability.CHOOSE_OR_RECONNECT)
                     CaltopoClient.CTWarn("OperationalStorage", "Archive Dir unavailable at startup; app-private durability remains active")
+                } else if (isTransientPrepareFailure(error)) {
+                    CaltopoClient.CTWarn(
+                        "OperationalStorage",
+                        "Archive prepare deferred at startup (live writer race): ${error.message}",
+                    )
+                    schedulePrepareRetry(context.applicationContext)
                 } else {
                     CaltopoClient.CTWarn("OperationalStorage", "Archive prepare failed at startup: ${error.message}")
                 }
             }
+        }
+    }
+
+    private fun schedulePrepareRetry(context: Context) {
+        startup.execute {
+            try {
+                Thread.sleep(2_000L)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return@execute
+            }
+            if (state.value.ready) return@execute
+            runCatching { prepare(context) }
+                .onFailure { error ->
+                    if (isTransientPrepareFailure(error)) {
+                        CaltopoClient.CTWarn(
+                            "OperationalStorage",
+                            "Archive prepare retry still deferred: ${error.message}",
+                        )
+                    } else if (ArchiveDirAvailability.isUnavailable(error)) {
+                        announceUnavailable(error.message ?: ArchiveDirAvailability.CHOOSE_OR_RECONNECT)
+                    } else {
+                        CaltopoClient.CTWarn("OperationalStorage", "Archive prepare retry failed: ${error.message}")
+                    }
+                }
         }
     }
     fun retry(context: Context) = start(context)
@@ -109,6 +140,14 @@ internal object OperationalStorage {
         }.getOrElse { error ->
             if (isUnavailable(error)) {
                 announceUnavailable(error.message ?: ArchiveDirAvailability.CHOOSE_OR_RECONNECT)
+                false
+            } else if (isTransientPrepareFailure(error)) {
+                // Live writers raced archive verify — retry later; do not fail unrelated features.
+                CaltopoClient.CTWarn(
+                    "OperationalStorage",
+                    "Archive prepare busy (live writer); retry later: ${error.message}",
+                )
+                schedulePrepareRetry(context.applicationContext)
                 false
             } else throw error
         }
@@ -197,7 +236,15 @@ internal object OperationalStorage {
                 // directory snapshot before bulk work; it never mutates queue contents.
                 tree.refresh()
                 for (area in selected.filterNot { it.id == "queue-state" || it.id in recorderAreas }) {
-                    migrateAreaSources(context, value, area, ::checkSelection)
+                    try {
+                        migrateAreaSources(context, value, area, ::checkSelection)
+                    } catch (error: Exception) {
+                        if (!isTransientPrepareFailure(error)) throw error
+                        CaltopoClient.CTWarn(
+                            "OperationalStorage",
+                            "Migrating ${area.id} deferred (live writer): ${error.message}",
+                        )
+                    }
                 }
                 // Each bulk source is verified before its old projection is replaced. The
                 // independently prepared queue area is never scanned or hydrated again here.
@@ -205,8 +252,16 @@ internal object OperationalStorage {
                     // Independent lanes (clues) may delete archive entries while bulk prepare
                     // still holds a stale directory listing from migrate.
                     tree.refresh()
-                    prepareAreaProjection(context, value, area, hydrationScratch, ::checkSelection)
-                    if (area.id == "clues") markCluesPrepared(generation)
+                    try {
+                        prepareAreaProjection(context, value, area, hydrationScratch, ::checkSelection)
+                        if (area.id == "clues") markCluesPrepared(generation)
+                    } catch (error: Exception) {
+                        if (!isTransientPrepareFailure(error)) throw error
+                        CaltopoClient.CTWarn(
+                            "OperationalStorage",
+                            "Preparing ${area.id} deferred (live writer): ${error.message}",
+                        )
+                    }
                 }
                 importLegacyCaches(context, root, value)
                 checkSelection()
@@ -282,8 +337,24 @@ internal object OperationalStorage {
             val area = selected.single { it.id == "queue-state" }
             val value = Store(uri, work, tree, writer, listOf(area))
             val scratch = TemporaryStorage.directory(context, "archive-hydration", root.uri)
-            migrateAreaSources(context, value, area, ::checkSelection, announce = false)
-            prepareAreaProjection(context, value, area, scratch, ::checkSelection)
+            try {
+                migrateAreaSources(context, value, area, ::checkSelection, announce = false)
+                prepareAreaProjection(context, value, area, scratch, ::checkSelection)
+            } catch (error: Exception) {
+                if (!isTransientPrepareFailure(error)) throw error
+                // Queue journals stay durable in app-private storage. A live-writer race
+                // must not block recorder/bulk readiness or recording inventory.
+                CaltopoClient.CTWarn(
+                    "OperationalStorage",
+                    "Operational state archive sync deferred (live writer): ${error.message}",
+                )
+                for (name in queueNames) {
+                    val source = ArchiveDirAvailability.operationalStateFile(context.filesDir, name)
+                    if (source.isFile) retainLater(source)
+                    val legacy = File(context.filesDir, name)
+                    if (legacy.isFile) retainLater(legacy)
+                }
+            }
             checkSelection()
             check(root.isDirectory && root.canRead() && root.canWrite()) { "Archive Dir became unavailable during operational-state preparation." }
             value.migrated.clear()
@@ -424,8 +495,23 @@ internal object OperationalStorage {
             copySource(value, area, source, source, replace = projected, ancestry = emptySet(), projection = projection)
         }
         if (area.id == "queue-state") for (name in queueNames) {
-            val source = File(context.filesDir, name)
-            if (source.isFile) commit(value, source, "${area.retained}/$name", replace = false)
+            val sources = listOf(
+                ArchiveDirAvailability.operationalStateFile(context.filesDir, name),
+                File(context.filesDir, name),
+            ).distinctBy { it.absolutePath }
+            for (source in sources) {
+                if (!source.isFile) continue
+                try {
+                    commit(value, source, "${area.retained}/$name", replace = false, stableSnapshot = true)
+                } catch (error: Exception) {
+                    if (!isTransientPrepareFailure(error)) throw error
+                    CaltopoClient.CTWarn(
+                        "OperationalStorage",
+                        "state file $name archive retain deferred: ${error.message}",
+                    )
+                    retainLater(source)
+                }
+            }
         }
         if (area.id == "review-annotations") for (source in context.cacheDir.listFiles().orEmpty().filter { it.isFile && it.name.endsWith(".review.json") }) {
             commit(value, source, "${area.retained}/${source.name}", replace = false)
@@ -649,7 +735,9 @@ internal object OperationalStorage {
             message.contains("is child of") ||
             message.contains("Archive file is unavailable") ||
             // Clues-lane delete/add during bulk hydrate can stale the migrated snapshot.
-            message.contains("Archive hydration did not preserve clues")
+            message.contains("Archive hydration did not preserve clues") ||
+            // Live writers (interrupted-tracks, clues.json, …) change bytes between digest passes.
+            message.contains("File changed or archive verification failed")
     }
 
     /** After hydrate, every migrated path must still match the staged copy. */
@@ -801,7 +889,8 @@ internal object OperationalStorage {
             val relative = source.relativeTo(base).invariantSeparatorsPath
             if (!allowed(area, relative)) return
             try {
-                commit(value, source, "${area.retained}/$relative", replace)
+                val snapshot = area.id == "queue-state" || area.id == "clues"
+                commit(value, source, "${area.retained}/$relative", replace, stableSnapshot = snapshot)
             } catch (error: IllegalStateException) {
                 // Clues hydrate unions working + archive; mismatched same-path copies must
                 // both survive migrate so prepareCluesProjection can merge them.
@@ -809,16 +898,63 @@ internal object OperationalStorage {
                     error.message?.startsWith("Conflicting archive file:") == true) {
                     return
                 }
+                if (isTransientPrepareFailure(error) && (area.id == "queue-state" || area.id == "clues")) {
+                    CaltopoClient.CTWarn(
+                        "OperationalStorage",
+                        "Retaining ${area.id} path=$relative deferred (live writer): ${error.message}",
+                    )
+                    retainLater(source)
+                    return
+                }
                 throw error
             }
         }
     }
-    private fun commit(value: Store, source: File, path: String, replace: Boolean = true) {
-        value.writer.put(source, path, replace, modified = source.lastModified())
-        if (!state.value.ready) value.migrated[path] = source.inputStream().use { VerifiedArchiveTree.digest(it) }
-        if (value.tree.exists("$path.r2c-chunks")) value.tree.delete("$path.r2c-chunks")
-        forgetHeader(value, path)
-        value.growingOffsets.remove(path)
+    private fun commit(
+        value: Store,
+        source: File,
+        path: String,
+        replace: Boolean = true,
+        stableSnapshot: Boolean = false,
+    ) {
+        val publish = if (stableSnapshot) stableSnapshotOf(value, source) else source
+        try {
+            value.writer.put(publish, path, replace, modified = source.lastModified())
+            if (!state.value.ready) {
+                value.migrated[path] = publish.inputStream().use { VerifiedArchiveTree.digest(it) }
+            }
+            if (value.tree.exists("$path.r2c-chunks")) value.tree.delete("$path.r2c-chunks")
+            forgetHeader(value, path)
+            value.growingOffsets.remove(path)
+        } finally {
+            if (publish !== source) publish.delete()
+        }
+    }
+
+    /**
+     * Copy once before archive verify. Live writers (atomic .partial replace) must not
+     * change bytes between VerifiedArchiveTree's digest-before and digest-after passes.
+     */
+    private fun stableSnapshotOf(value: Store, source: File): File {
+        val parent = value.work.parentFile?.takeIf { it.isDirectory || it.mkdirs() }
+            ?: source.parentFile
+            ?: error("Cannot create archive snapshot directory.")
+        val snapshot = File.createTempFile("r2c-stable-", ".bin", parent)
+        try {
+            source.inputStream().use { input ->
+                FileOutputStream(snapshot).use { output ->
+                    input.copyTo(output, 256 * 1024)
+                    output.fd.sync()
+                }
+            }
+            return snapshot
+        } catch (error: Exception) {
+            snapshot.delete()
+            throw IllegalStateException(
+                "File changed or archive verification failed: ${source.name}. Original files were retained.",
+                error,
+            )
+        }
     }
     private fun requiresIsolatedHydration(value: Store, path: String): Boolean {
         val entries = value.tree.list(path)
@@ -968,7 +1104,18 @@ internal object OperationalStorage {
         archiveCommit.lock()
         try {
             check()
-            commit(value, file, path)
+            val queuePath = path.contains("/queue-state/") || queueNames.any { path.endsWith("/$it") || path == it }
+            val cluesPath = path.contains("/clues/") || path.endsWith("/clues.json")
+            try {
+                commit(value, file, path, stableSnapshot = queuePath || cluesPath)
+            } catch (error: Exception) {
+                if (!isTransientPrepareFailure(error)) throw error
+                CaltopoClient.CTWarn(
+                    "OperationalStorage",
+                    "Archive retain deferred for live writer path=$path: ${error.message}",
+                )
+                deferRetain(file)
+            }
             check()
         } finally {
             archiveCommit.unlock()
