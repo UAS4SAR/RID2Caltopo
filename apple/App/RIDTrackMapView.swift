@@ -4209,6 +4209,8 @@ private final class CameraFootprintMapView: UIView {
     private var displayTimer: Timer?
     private var cacheGeneration = -1
     private var laidOutSize = CGSize.zero
+    private let overlayBook = CameraFootprintOverlayBook()
+    private let debugThrottle = CameraFootprintDebugThrottle()
     private let solidHalo = CAShapeLayer()
     private let dashedHalo = CAShapeLayer()
     private let solidStroke = CAShapeLayer()
@@ -4251,6 +4253,7 @@ private final class CameraFootprintMapView: UIView {
         worker?.cancel(); worker = nil
         displayTimer?.invalidate(); displayTimer = nil
         inputs = [:]; terrain = [:]; inputProvider = { [:] }
+        overlayBook.clear()
         clearPaths()
         removeFromSuperview()
     }
@@ -4304,7 +4307,7 @@ private final class CameraFootprintMapView: UIView {
         }
         inputs = next
         if next.isEmpty {
-            worker?.cancel(); worker = nil; terrain = [:]; clearPaths(); return
+            worker?.cancel(); worker = nil; terrain = [:]; overlayBook.clear(); clearPaths(); return
         }
         ensureWorker()
         rebuildPaths()
@@ -4365,14 +4368,26 @@ private final class CameraFootprintMapView: UIView {
                 path.addLine(to: points[next])
             }
         }
+        // One closed outline per aircraft. Drawing corners and boundary together produced
+        // two overlapping skewed quads when terrain lagged the live pose (especially shallow).
+        let outlines = overlayBook.sync(inputs: inputs, terrain: terrain)
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        debugThrottle.retain(activeKeys: Set(inputs.keys))
         for (id, input) in inputs {
-            let sampled = terrain[id].flatMap { entry -> [CameraFootprintVertex]? in
-                guard !entry.1.isEmpty, cameraFootprintTerrainReusable(cached: entry.0, current: input) else { return nil }
-                return entry.1
+            if debugThrottle.shouldLog(droneKey: id, nowMs: nowMs) {
+                AppleLog.debug(
+                    "CameraFootprint",
+                    cameraFootprintDebugLine(
+                        source: "SEI",
+                        gimbalTiltDeg: input.tilt,
+                        headingDeg: input.azimuth,
+                        aglMeters: input.height
+                    )
+                )
             }
-            let drawing = CameraFootprintDrawing(input: input, terrain: sampled, liveCorners: true)
-            closedOutline(drawing.corners)
-            closedOutline(drawing.boundary)
+            if let outline = outlines[id] {
+                closedOutline(outline)
+            }
         }
         solidHalo.path = solid.cgPath
         solidStroke.path = solid.cgPath

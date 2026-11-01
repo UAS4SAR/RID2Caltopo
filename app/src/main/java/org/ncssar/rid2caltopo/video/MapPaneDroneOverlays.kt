@@ -66,8 +66,9 @@ internal fun drawCameraFootprints(
         paints.border.pathEffect = null
     }
     footprints.forEach { footprint ->
-        closedOutline(footprint.corners)
-        closedOutline(footprint.boundary)
+        // One closed outline per aircraft. Drawing corners and boundary together produced
+        // two overlapping skewed quads when terrain lagged the live pose (especially shallow).
+        closedOutline(cameraFootprintDisplayOutline(footprint))
     }
 }
 

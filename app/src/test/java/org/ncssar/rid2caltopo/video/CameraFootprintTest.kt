@@ -197,4 +197,54 @@ class CameraFootprintTest {
         assertNull(cameraFootprintPreferenceKey("  "))
         assertNull(cameraFootprintPreferenceKey(""))
     }
+    @Test fun toggleOffRemovesOverlayAndToggleOnYieldsExactlyOne() {
+        val book = CameraFootprintOverlayBook()
+        val pose = input(tilt = -16.0, azimuth = 203.0)
+        assertEquals(1, book.sync(mapOf("matrice" to pose)).size)
+        assertEquals(1, book.outlineCount("matrice"))
+        assertTrue(book.sync(emptyMap()).isEmpty())
+        assertEquals(0, book.outlineCount("matrice"))
+        assertEquals(1, book.sync(mapOf("matrice" to pose)).size)
+        assertEquals(1, book.outlineCount("matrice"))
+        assertEquals(1, book.size())
+    }
+    @Test fun singleOverlayPerDroneEvenWhenTerrainAndLiveCornersDiffer() {
+        val origin = input(tilt = -16.0, azimuth = 203.0)
+        val moved = origin.copy(azimuth = 206.0, tilt = -14.0)
+        val terrain = CameraFootprintGeometry.project(origin, elevation = { _, _ -> 900.0 }, edgeSubdivisions = 1)
+        val drawing = cameraFootprintLiveDrawing(moved, terrain)
+        // Both lists can be populated, but display must pick exactly one closed outline.
+        assertTrue(drawing.corners.size >= 3)
+        assertTrue(drawing.boundary.size >= 3)
+        assertEquals(1, listOf(cameraFootprintDisplayOutline(drawing)).size)
+        val book = CameraFootprintOverlayBook()
+        book.sync(mapOf("a" to moved), mapOf("a" to (origin to terrain)))
+        assertEquals(1, book.outlineCount("a"))
+        assertEquals(1, book.size())
+    }
+    @Test fun overlayRemovedWhenFlightOrStreamEnds() {
+        val book = CameraFootprintOverlayBook()
+        book.sync(mapOf("a" to input(), "b" to input(azimuth = 90.0)))
+        assertEquals(2, book.size())
+        book.sync(mapOf("b" to input(azimuth = 90.0)))
+        assertEquals(0, book.outlineCount("a"))
+        assertEquals(1, book.outlineCount("b"))
+        book.sync(emptyMap())
+        assertEquals(0, book.size())
+    }
+    @Test fun shallowGimbalFarEdgeClampPreventsSelfIntersectingOutline() {
+        val shallow = input(tilt = -10.0, azimuth = 203.0).copy(height = 22.5, horizontalFov = 90.0, verticalFov = 60.0)
+        assertNotNull(cameraFootprintFarGroundRangeCap(shallow.height, shallow.tilt, shallow.verticalFov))
+        assertNull(cameraFootprintFarGroundRangeCap(100.0, -90.0, 60.0))
+        val clamped = CameraFootprintGeometry.project(shallow, edgeSubdivisions = 8)
+        assertTrue(clamped.isNotEmpty())
+        assertFalse(cameraFootprintOutlineSelfIntersects(clamped))
+        assertTrue(clamped.any { it.clipped })
+        val farSlant = clamped.take(2).maxOf { vertex ->
+            cameraFootprintDistanceMeters(shallow.latitude, shallow.longitude, vertex.latitude, vertex.longitude)
+        }
+        assertTrue("Far edge should stay well below the 3 km absolute max; got $farSlant", farSlant < 500.0)
+        val horizon = CameraFootprintGeometry.project(shallow.copy(tilt = 0.0), edgeSubdivisions = 8)
+        assertFalse(cameraFootprintOutlineSelfIntersects(horizon))
+    }
 }

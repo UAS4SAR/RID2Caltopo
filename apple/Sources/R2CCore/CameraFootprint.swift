@@ -32,6 +32,7 @@ public enum CameraFootprintGeometry {
         let launchGround = elevation?(i.launchLatitude,i.launchLongitude)
         if elevation != nil && launchGround == nil { return [] }
         let aircraftZ = (launchGround ?? 0) + i.height
+        let groundCap = cameraFootprintFarGroundRangeCap(height: i.height, tiltDeg: i.tilt, verticalFovDeg: i.verticalFov)
         let rad = Double.pi / 180, earth = 6378137.0
         let yaw = i.azimuth*rad, pitch = i.tilt*rad
         let fx = sin(yaw)*cos(pitch), fy = cos(yaw)*cos(pitch), fz = sin(pitch)
@@ -48,6 +49,12 @@ public enum CameraFootprintGeometry {
                 let x = (a.0+(b.0-a.0)*t)*h, y = (a.1+(b.1-a.1)*t)*v
                 let dx = fx+rx*x+ux*y, dy = fy+ry*x+uy*y, dz = fz+uz*y
                 let norm = sqrt(dx*dx+dy*dy+dz*dz)
+                func rayLimit() -> Double {
+                    guard let groundCap else { return maximumRange }
+                    let horiz = hypot(dx, dy) / norm
+                    guard horiz > 1e-8 else { return maximumRange }
+                    return min(maximumRange, groundCap / horiz)
+                }
                 func coordinate(_ distance: Double) -> (Double,Double) {
                     (i.latitude+dy/norm*distance/earth/rad,
                      i.longitude+dx/norm*distance/(earth*cos(i.latitude*rad))/rad)
@@ -59,14 +66,15 @@ public enum CameraFootprintGeometry {
                     else { ground=0 }
                     return aircraftZ+dz/norm*distance-ground
                 }
-                var distance = maximumRange, clipped = true
+                let limit = rayLimit()
+                var distance = limit, clipped = true
                 if elevation == nil {
                     let hit = dz < -1e-8 ? -i.height*norm/dz : Double.infinity
-                    distance=min(hit,maximumRange); clipped=hit > maximumRange
+                    distance=min(hit,limit); clipped=hit > limit
                 } else {
                     guard let initial = clearance(0), initial > 0 else { return [] }
                     var previous = 0.0, step = 5.0
-                    while step <= maximumRange {
+                    while step <= limit {
                         if cancelled() { return [] }
                         let c = clearance(step)
                         if c == nil || c! <= 0 {
@@ -87,6 +95,53 @@ public enum CameraFootprintGeometry {
         }
         return vertices
     }
+}
+
+/// When the far FOV edge nears the horizon, cap ground range to a multiple of the near-edge
+/// ground distance so a closed outline cannot self-intersect.
+public func cameraFootprintFarGroundRangeCap(height: Double, tiltDeg: Double, verticalFovDeg: Double) -> Double? {
+    guard [height, tiltDeg, verticalFovDeg].allSatisfy(\.isFinite), height > 0 else { return nil }
+    let farElev = tiltDeg + verticalFovDeg / 2
+    guard farElev >= cameraFootprintShallowFarElevationDegrees else { return nil }
+    let nearElev = tiltDeg - verticalFovDeg / 2
+    let nearGround = nearElev < -1e-3 ? abs(height / tan(nearElev * .pi / 180)) : abs(height)
+    return max(nearGround * cameraFootprintShallowFarFactor, abs(height) * 2)
+}
+
+/// Non-adjacent edge crossings in a local ENU frame.
+public func cameraFootprintOutlineSelfIntersects(_ vertices: [CameraFootprintVertex]) -> Bool {
+    guard vertices.count >= 4 else { return false }
+    let originLat = vertices[0].latitude, originLon = vertices[0].longitude
+    guard originLat.isFinite, originLon.isFinite else { return false }
+    let cosLat = cos(originLat * .pi / 180)
+    func xy(_ v: CameraFootprintVertex) -> (Double, Double) {
+        ((v.longitude - originLon) * .pi / 180 * 6_378_137 * cosLat,
+         (v.latitude - originLat) * .pi / 180 * 6_378_137)
+    }
+    func cross(_ ax: Double, _ ay: Double, _ bx: Double, _ by: Double) -> Double { ax * by - ay * bx }
+    func segmentsIntersect(_ a: (Double, Double), _ b: (Double, Double),
+                           _ c: (Double, Double), _ d: (Double, Double)) -> Bool {
+        let abx = b.0 - a.0, aby = b.1 - a.1
+        let d1 = cross(abx, aby, c.0 - a.0, c.1 - a.1)
+        let d2 = cross(abx, aby, d.0 - a.0, d.1 - a.1)
+        let cdx = d.0 - c.0, cdy = d.1 - c.1
+        let d3 = cross(cdx, cdy, a.0 - c.0, a.1 - c.1)
+        let d4 = cross(cdx, cdy, b.0 - c.0, b.1 - c.1)
+        return d1 * d2 < 0 && d3 * d4 < 0
+    }
+    let points = vertices.map(xy)
+    let n = points.count
+    for i in 0..<n {
+        let a = points[i], b = points[(i + 1) % n]
+        let lastJ = i == 0 ? n - 1 : n
+        if i + 2 < lastJ {
+            for j in (i + 2)..<lastJ {
+                if i == 0 && j == n - 1 { continue }
+                if segmentsIntersect(a, b, points[j], points[(j + 1) % n]) { return true }
+            }
+        }
+    }
+    return false
 }
 
 public struct CameraFootprintDrawing: Sendable {
@@ -110,6 +165,13 @@ public let cameraFootprintTerrainAzimuthDegrees = 12.0
 public let cameraFootprintTerrainTiltDegrees = 5.0
 public let cameraFootprintTerrainFovDegrees = 1.5
 public let cameraFootprintTerrainLaunchMeters = 1.0
+public let cameraFootprintShallowFarElevationDegrees = -5.0
+public let cameraFootprintShallowFarFactor = 3.0
+public let cameraFootprintShallowTiltDegrees = -25.0
+public let cameraFootprintShallowTerrainPositionMeters = 8.0
+public let cameraFootprintShallowTerrainAzimuthDegrees = 4.0
+public let cameraFootprintShallowTerrainTiltDegrees = 2.0
+public let cameraFootprintDebugIntervalMs: Int64 = 5_000
 
 public func cameraFootprintDistanceMeters(_ lat1: Double, _ lon1: Double, _ lat2: Double, _ lon2: Double) -> Double {
     guard [lat1, lon1, lat2, lon2].allSatisfy(\.isFinite) else { return .infinity }
@@ -129,15 +191,77 @@ public func cameraFootprintAngleDeltaDegrees(_ a: Double, _ b: Double) -> Double
 
 /// Exact pose equality never matches a moving SEI stream. One 500 ms terrain pass stays usable through a slow orbit.
 public func cameraFootprintTerrainReusable(cached: CameraFootprintInput, current: CameraFootprintInput) -> Bool {
-    guard cameraFootprintDistanceMeters(cached.launchLatitude, cached.launchLongitude, current.launchLatitude, current.launchLongitude) <= cameraFootprintTerrainLaunchMeters,
-          cameraFootprintDistanceMeters(cached.latitude, cached.longitude, current.latitude, current.longitude) <= cameraFootprintTerrainPositionMeters,
+    guard cameraFootprintDistanceMeters(cached.launchLatitude, cached.launchLongitude, current.launchLatitude, current.launchLongitude) <= cameraFootprintTerrainLaunchMeters else { return false }
+    let shallow = cached.tilt > cameraFootprintShallowTiltDegrees || current.tilt > cameraFootprintShallowTiltDegrees
+    let positionLimit = shallow ? cameraFootprintShallowTerrainPositionMeters : cameraFootprintTerrainPositionMeters
+    let azimuthLimit = shallow ? cameraFootprintShallowTerrainAzimuthDegrees : cameraFootprintTerrainAzimuthDegrees
+    let tiltLimit = shallow ? cameraFootprintShallowTerrainTiltDegrees : cameraFootprintTerrainTiltDegrees
+    guard cameraFootprintDistanceMeters(cached.latitude, cached.longitude, current.latitude, current.longitude) <= positionLimit,
           abs(cached.height - current.height) <= cameraFootprintTerrainHeightMeters,
-          cameraFootprintAngleDeltaDegrees(cached.azimuth, current.azimuth) <= cameraFootprintTerrainAzimuthDegrees,
-          abs(cached.tilt - current.tilt) <= cameraFootprintTerrainTiltDegrees,
+          cameraFootprintAngleDeltaDegrees(cached.azimuth, current.azimuth) <= azimuthLimit,
+          abs(cached.tilt - current.tilt) <= tiltLimit,
           abs(cached.horizontalFov - current.horizontalFov) <= cameraFootprintTerrainFovDegrees,
           abs(cached.verticalFov - current.verticalFov) <= cameraFootprintTerrainFovDegrees
     else { return false }
     return true
+}
+
+/// Exactly one closed footprint per aircraft. Terrain replaces the live outline in place.
+public func cameraFootprintDisplayOutline(_ drawing: CameraFootprintDrawing) -> [CameraFootprintVertex] {
+    if drawing.boundary.count >= 3 { return drawing.boundary }
+    if drawing.corners.count >= 3 { return drawing.corners }
+    return []
+}
+
+/// In-place footprint overlays keyed by aircraft. Toggle-off / stream-end clears an id.
+public final class CameraFootprintOverlayBook: @unchecked Sendable {
+    private var byDrone: [String: [CameraFootprintVertex]] = [:]
+
+    public init() {}
+
+    @discardableResult
+    public func sync(
+        inputs: [String: CameraFootprintInput],
+        terrain: [String: (CameraFootprintInput, [CameraFootprintVertex])] = [:]
+    ) -> [String: [CameraFootprintVertex]] {
+        var next: [String: [CameraFootprintVertex]] = [:]
+        for (id, input) in inputs {
+            let sampled: [CameraFootprintVertex]? = {
+                guard let entry = terrain[id], !entry.1.isEmpty,
+                      cameraFootprintTerrainReusable(cached: entry.0, current: input) else { return nil }
+                return entry.1
+            }()
+            let outline = cameraFootprintDisplayOutline(CameraFootprintDrawing(input: input, terrain: sampled, liveCorners: true))
+            if outline.count >= 3 { next[id] = outline }
+        }
+        byDrone = next
+        return next
+    }
+
+    public func outlineCount(_ id: String) -> Int { byDrone[id] == nil ? 0 : 1 }
+    public var size: Int { byDrone.count }
+    public func clear() { byDrone.removeAll() }
+}
+
+public func cameraFootprintDebugLine(source: String, gimbalTiltDeg: Double, headingDeg: Double, aglMeters: Double) -> String {
+    String(format: "CameraFootprint source=%@ gimbalTiltDeg=%.1f headingDeg=%.1f aglM=%.1f",
+           source, gimbalTiltDeg, headingDeg, aglMeters)
+}
+
+/// At most one debug line per drone per `cameraFootprintDebugIntervalMs`.
+public final class CameraFootprintDebugThrottle: @unchecked Sendable {
+    private let intervalMs: Int64
+    private var lastByDrone: [String: Int64] = [:]
+    public init(intervalMs: Int64 = cameraFootprintDebugIntervalMs) { self.intervalMs = intervalMs }
+    public func shouldLog(droneKey: String, nowMs: Int64) -> Bool {
+        let last = lastByDrone[droneKey] ?? 0
+        guard nowMs - last >= intervalMs else { return false }
+        lastByDrone[droneKey] = nowMs
+        return true
+    }
+    public func retain(activeKeys: Set<String>) {
+        lastByDrone = lastByDrone.filter { activeKeys.contains($0.key) }
+    }
 }
 
 public struct CameraFootprintFrameRect: Sendable, Equatable {

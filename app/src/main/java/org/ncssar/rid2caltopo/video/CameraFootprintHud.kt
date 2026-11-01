@@ -84,6 +84,8 @@ internal fun CameraFootprintHud(
     modifier: Modifier = Modifier,
 ) {
     val drawingsState = remember { mutableStateOf<List<CameraFootprintDrawing>>(emptyList()) }
+    val overlayBook = remember { CameraFootprintOverlayBook() }
+    val debugThrottle = remember { CameraFootprintDebugThrottle() }
     var projectionTick by remember { mutableIntStateOf(0) }
     DisposableEffect(projectionClock) {
         projectionClock.onChange = {
@@ -95,9 +97,26 @@ internal fun CameraFootprintHud(
         while (isActive) {
             val inputs = currentCameraFootprintInputs(viewModel)
             val cached = terrain.value
+            // Replace-in-place per aircraft; empty inputs (toggle off / stream end) remove overlays.
+            overlayBook.sync(inputs, cached)
+            val nowMs = System.currentTimeMillis()
+            debugThrottle.retain(inputs.keys)
             drawingsState.value = inputs.mapNotNull { (id, input) ->
+                if (debugThrottle.shouldLog(id, nowMs)) {
+                    org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug(
+                        "CameraFootprint",
+                        cameraFootprintDebugLine(
+                            source = "SEI",
+                            gimbalTiltDeg = input.tilt,
+                            headingDeg = input.azimuth,
+                            aglMeters = input.height,
+                        ),
+                    )
+                }
                 val outline = cameraFootprintTerrainForDisplay(cached[id], input)
-                cameraFootprintLiveDrawing(input, outline).takeIf { it.corners.isNotEmpty() || it.boundary.isNotEmpty() }
+                cameraFootprintLiveDrawing(input, outline).takeIf {
+                    cameraFootprintDisplayOutline(it).size >= 3
+                }
             }
             delay(CAMERA_FOOTPRINT_FRAME_MS)
         }

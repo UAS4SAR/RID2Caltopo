@@ -206,6 +206,60 @@ final class CameraFootprintTests: XCTestCase {
         XCTAssertNil(cameraFootprintPreferenceKey("  "))
         XCTAssertNil(cameraFootprintPreferenceKey(""))
     }
+    func testToggleOffRemovesOverlayAndToggleOnYieldsExactlyOne() {
+        let book = CameraFootprintOverlayBook()
+        let pose = input(tilt: -16, azimuth: 203)
+        XCTAssertEqual(book.sync(inputs: ["matrice": pose]).count, 1)
+        XCTAssertEqual(book.outlineCount("matrice"), 1)
+        XCTAssertTrue(book.sync(inputs: [:]).isEmpty)
+        XCTAssertEqual(book.outlineCount("matrice"), 0)
+        XCTAssertEqual(book.sync(inputs: ["matrice": pose]).count, 1)
+        XCTAssertEqual(book.outlineCount("matrice"), 1)
+        XCTAssertEqual(book.size, 1)
+    }
+    func testSingleOverlayPerDroneEvenWhenTerrainAndLiveCornersDiffer() {
+        let origin = input(tilt: -16, azimuth: 203)
+        let moved = CameraFootprintInput(
+            latitude: origin.latitude, longitude: origin.longitude,
+            launchLatitude: origin.launchLatitude, launchLongitude: origin.launchLongitude,
+            height: origin.height, azimuth: 206, tilt: -14,
+            horizontalFov: origin.horizontalFov, verticalFov: origin.verticalFov
+        )
+        let terrain = CameraFootprintGeometry.project(origin, elevation: { _, _ in 900 }, edgeSubdivisions: 1)
+        let drawing = CameraFootprintDrawing(input: moved, terrain: terrain, liveCorners: true)
+        XCTAssertGreaterThanOrEqual(drawing.corners.count, 3)
+        XCTAssertGreaterThanOrEqual(drawing.boundary.count, 3)
+        XCTAssertEqual([cameraFootprintDisplayOutline(drawing)].count, 1)
+        let book = CameraFootprintOverlayBook()
+        book.sync(inputs: ["a": moved], terrain: ["a": (origin, terrain)])
+        XCTAssertEqual(book.outlineCount("a"), 1)
+        XCTAssertEqual(book.size, 1)
+    }
+    func testOverlayRemovedWhenFlightOrStreamEnds() {
+        let book = CameraFootprintOverlayBook()
+        book.sync(inputs: ["a": input(), "b": input(azimuth: 90)])
+        XCTAssertEqual(book.size, 2)
+        book.sync(inputs: ["b": input(azimuth: 90)])
+        XCTAssertEqual(book.outlineCount("a"), 0)
+        XCTAssertEqual(book.outlineCount("b"), 1)
+        book.sync(inputs: [:])
+        XCTAssertEqual(book.size, 0)
+    }
+    func testShallowGimbalFarEdgeClampPreventsSelfIntersectingOutline() {
+        let shallow = input(tilt: -10, azimuth: 203).height(22.5).fov(horizontal: 90, vertical: 60)
+        XCTAssertNotNil(cameraFootprintFarGroundRangeCap(height: shallow.height, tiltDeg: shallow.tilt, verticalFovDeg: shallow.verticalFov))
+        XCTAssertNil(cameraFootprintFarGroundRangeCap(height: 100, tiltDeg: -90, verticalFovDeg: 60))
+        let clamped = CameraFootprintGeometry.project(shallow, edgeSubdivisions: 8)
+        XCTAssertFalse(clamped.isEmpty)
+        XCTAssertFalse(cameraFootprintOutlineSelfIntersects(clamped))
+        XCTAssertTrue(clamped.contains { $0.clipped })
+        let farSlant = clamped.prefix(2).map {
+            cameraFootprintDistanceMeters(shallow.latitude, shallow.longitude, $0.latitude, $0.longitude)
+        }.max() ?? 0
+        XCTAssertLessThan(farSlant, 500, "Far edge should stay well below the 3 km absolute max; got \(farSlant)")
+        let horizon = CameraFootprintGeometry.project(shallow.tilt(0), edgeSubdivisions: 8)
+        XCTAssertFalse(cameraFootprintOutlineSelfIntersects(horizon))
+    }
 }
 
 private extension CameraFootprintInput {

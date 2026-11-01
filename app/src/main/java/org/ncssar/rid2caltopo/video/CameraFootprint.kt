@@ -28,6 +28,7 @@ internal object CameraFootprintGeometry {
             val launchGround = elevation?.invoke(launchLatitude, launchLongitude)
             if (elevation != null && launchGround == null) return emptyList()
             val aircraftZ = (launchGround ?: 0.0) + height
+            val groundCap = cameraFootprintFarGroundRangeCap(height, tilt, verticalFov)
             val yaw = Math.toRadians(azimuth); val pitch = Math.toRadians(tilt)
             val fx = sin(yaw) * cos(pitch); val fy = cos(yaw) * cos(pitch); val fz = sin(pitch)
             val rx = cos(yaw); val ry = -sin(yaw)
@@ -43,6 +44,12 @@ internal object CameraFootprintGeometry {
                     val y = (a.second + (b.second - a.second) * t) * v
                     val dx = fx + rx*x + ux*y; val dy = fy + ry*x + uy*y; val dz = fz + uz*y
                     val norm = sqrt(dx*dx + dy*dy + dz*dz)
+                    fun rayLimit(): Double {
+                        if (groundCap == null) return MAX_RANGE
+                        val horiz = hypot(dx, dy) / norm
+                        if (horiz <= 1e-8) return MAX_RANGE
+                        return min(MAX_RANGE, groundCap / horiz)
+                    }
                     fun coordinate(distance: Double): Pair<Double, Double> =
                         latitude + Math.toDegrees(dy/norm*distance/EARTH_RADIUS) to
                             longitude + Math.toDegrees(dx/norm*distance/(EARTH_RADIUS*cos(Math.toRadians(latitude))))
@@ -53,16 +60,17 @@ internal object CameraFootprintGeometry {
                     }
                     var distance: Double
                     var clipped: Boolean
+                    val limit = rayLimit()
                     if (elevation == null) {
                         val hit = if (dz < -1e-8) -height*norm/dz else Double.POSITIVE_INFINITY
-                        distance = min(hit, MAX_RANGE); clipped = hit > MAX_RANGE
+                        distance = min(hit, limit); clipped = hit > limit
                     } else {
                         val initial = clearance(0.0) ?: return emptyList()
                         if (initial <= 0) return emptyList()
                         var previous = 0.0
-                        distance = MAX_RANGE; clipped = true
+                        distance = limit; clipped = true
                         var step = 5.0
-                        while (step <= MAX_RANGE) {
+                        while (step <= limit) {
                             if (cancelled()) return emptyList()
                             val c = clearance(step)
                             if (c == null || c <= 0) {
@@ -84,6 +92,62 @@ internal object CameraFootprintGeometry {
             }
         }
     }
+}
+
+/**
+ * When the far FOV edge nears the horizon, cap ground range to a multiple of the near-edge
+ * ground distance so a closed outline cannot self-intersect.
+ */
+internal fun cameraFootprintFarGroundRangeCap(
+    height: Double,
+    tiltDeg: Double,
+    verticalFovDeg: Double,
+): Double? {
+    if (!listOf(height, tiltDeg, verticalFovDeg).all { it.isFinite() } || height <= 0) return null
+    val farElev = tiltDeg + verticalFovDeg / 2.0
+    if (farElev < CAMERA_FOOTPRINT_SHALLOW_FAR_ELEVATION_DEGREES) return null
+    val nearElev = tiltDeg - verticalFovDeg / 2.0
+    val nearGround = if (nearElev < -1e-3) abs(height / tan(Math.toRadians(nearElev))) else abs(height)
+    return max(nearGround * CAMERA_FOOTPRINT_SHALLOW_FAR_FACTOR, abs(height) * 2.0)
+}
+
+/** Non-adjacent edge crossings in a local ENU frame. */
+internal fun cameraFootprintOutlineSelfIntersects(vertices: List<CameraFootprintVertex>): Boolean {
+    if (vertices.size < 4) return false
+    val originLat = vertices[0].latitude
+    val originLon = vertices[0].longitude
+    if (!originLat.isFinite() || !originLon.isFinite()) return false
+    val meanLat = Math.toRadians(originLat)
+    val cosLat = cos(meanLat)
+    fun xy(v: CameraFootprintVertex): Pair<Double, Double> {
+        val east = Math.toRadians(v.longitude - originLon) * 6378137.0 * cosLat
+        val north = Math.toRadians(v.latitude - originLat) * 6378137.0
+        return east to north
+    }
+    fun cross(ax: Double, ay: Double, bx: Double, by: Double) = ax * by - ay * bx
+    fun segmentsIntersect(
+        a: Pair<Double, Double>, b: Pair<Double, Double>,
+        c: Pair<Double, Double>, d: Pair<Double, Double>,
+    ): Boolean {
+        val abx = b.first - a.first; val aby = b.second - a.second
+        val d1 = cross(abx, aby, c.first - a.first, c.second - a.second)
+        val d2 = cross(abx, aby, d.first - a.first, d.second - a.second)
+        val cdx = d.first - c.first; val cdy = d.second - c.second
+        val d3 = cross(cdx, cdy, a.first - c.first, a.second - c.second)
+        val d4 = cross(cdx, cdy, b.first - c.first, b.second - c.second)
+        return d1 * d2 < 0.0 && d3 * d4 < 0.0
+    }
+    val points = vertices.map(::xy)
+    val n = points.size
+    for (i in 0 until n) {
+        val a = points[i]; val b = points[(i + 1) % n]
+        val lastJ = if (i == 0) n - 1 else n
+        for (j in i + 2 until lastJ) {
+            if (i == 0 && j == n - 1) continue
+            if (segmentsIntersect(a, b, points[j], points[(j + 1) % n])) return true
+        }
+    }
+    return false
 }
 
 /** Corner display never waits for (or disappears with) the terrain boundary. */
@@ -111,6 +175,15 @@ internal const val CAMERA_FOOTPRINT_TERRAIN_AZIMUTH_DEGREES = 12.0
 internal const val CAMERA_FOOTPRINT_TERRAIN_TILT_DEGREES = 5.0
 internal const val CAMERA_FOOTPRINT_TERRAIN_FOV_DEGREES = 1.5
 internal const val CAMERA_FOOTPRINT_TERRAIN_LAUNCH_METERS = 1.0
+/** Far FOV elevation (deg) at or above this triggers the shallow far-edge ground clamp. */
+internal const val CAMERA_FOOTPRINT_SHALLOW_FAR_ELEVATION_DEGREES = -5.0
+internal const val CAMERA_FOOTPRINT_SHALLOW_FAR_FACTOR = 3.0
+/** Tilts above this (less negative) amplify small pose deltas at the far edge. */
+internal const val CAMERA_FOOTPRINT_SHALLOW_TILT_DEGREES = -25.0
+internal const val CAMERA_FOOTPRINT_SHALLOW_TERRAIN_POSITION_METERS = 8.0
+internal const val CAMERA_FOOTPRINT_SHALLOW_TERRAIN_AZIMUTH_DEGREES = 4.0
+internal const val CAMERA_FOOTPRINT_SHALLOW_TERRAIN_TILT_DEGREES = 2.0
+internal const val CAMERA_FOOTPRINT_DEBUG_INTERVAL_MS = 5_000L
 
 internal fun cameraFootprintDistanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
     if (!listOf(lat1, lon1, lat2, lon2).all { it.isFinite() }) return Double.POSITIVE_INFINITY
@@ -130,10 +203,14 @@ internal fun cameraFootprintAngleDeltaDegrees(a: Double, b: Double): Double {
 
 internal fun cameraFootprintTerrainReusable(cached: CameraFootprintInput, current: CameraFootprintInput): Boolean {
     if (cameraFootprintDistanceMeters(cached.launchLatitude, cached.launchLongitude, current.launchLatitude, current.launchLongitude) > CAMERA_FOOTPRINT_TERRAIN_LAUNCH_METERS) return false
-    if (cameraFootprintDistanceMeters(cached.latitude, cached.longitude, current.latitude, current.longitude) > CAMERA_FOOTPRINT_TERRAIN_POSITION_METERS) return false
+    val shallow = cached.tilt > CAMERA_FOOTPRINT_SHALLOW_TILT_DEGREES || current.tilt > CAMERA_FOOTPRINT_SHALLOW_TILT_DEGREES
+    val positionLimit = if (shallow) CAMERA_FOOTPRINT_SHALLOW_TERRAIN_POSITION_METERS else CAMERA_FOOTPRINT_TERRAIN_POSITION_METERS
+    val azimuthLimit = if (shallow) CAMERA_FOOTPRINT_SHALLOW_TERRAIN_AZIMUTH_DEGREES else CAMERA_FOOTPRINT_TERRAIN_AZIMUTH_DEGREES
+    val tiltLimit = if (shallow) CAMERA_FOOTPRINT_SHALLOW_TERRAIN_TILT_DEGREES else CAMERA_FOOTPRINT_TERRAIN_TILT_DEGREES
+    if (cameraFootprintDistanceMeters(cached.latitude, cached.longitude, current.latitude, current.longitude) > positionLimit) return false
     if (abs(cached.height - current.height) > CAMERA_FOOTPRINT_TERRAIN_HEIGHT_METERS) return false
-    if (cameraFootprintAngleDeltaDegrees(cached.azimuth, current.azimuth) > CAMERA_FOOTPRINT_TERRAIN_AZIMUTH_DEGREES) return false
-    if (abs(cached.tilt - current.tilt) > CAMERA_FOOTPRINT_TERRAIN_TILT_DEGREES) return false
+    if (cameraFootprintAngleDeltaDegrees(cached.azimuth, current.azimuth) > azimuthLimit) return false
+    if (abs(cached.tilt - current.tilt) > tiltLimit) return false
     if (abs(cached.horizontalFov - current.horizontalFov) > CAMERA_FOOTPRINT_TERRAIN_FOV_DEGREES) return false
     if (abs(cached.verticalFov - current.verticalFov) > CAMERA_FOOTPRINT_TERRAIN_FOV_DEGREES) return false
     return true
@@ -177,6 +254,71 @@ internal fun cameraFootprintLiveDrawing(input: CameraFootprintInput, terrain: Li
         boundary.filter { it.corner }.takeIf { it.size == 4 }.orEmpty()
     }
     return CameraFootprintDrawing(corners, boundary)
+}
+
+/**
+ * Exactly one closed footprint per aircraft. Terrain replaces the live outline in place;
+ * callers must never stroke both [CameraFootprintDrawing.corners] and [CameraFootprintDrawing.boundary].
+ */
+internal fun cameraFootprintDisplayOutline(drawing: CameraFootprintDrawing): List<CameraFootprintVertex> = when {
+    drawing.boundary.size >= 3 -> drawing.boundary
+    drawing.corners.size >= 3 -> drawing.corners
+    else -> emptyList()
+}
+
+/**
+ * In-place footprint overlays keyed by aircraft. Toggle-off / stream-end clears an id;
+ * toggle-on and pose updates replace the single outline for that id.
+ */
+internal class CameraFootprintOverlayBook {
+    private val byDrone = LinkedHashMap<String, List<CameraFootprintVertex>>()
+
+    fun sync(
+        inputs: Map<String, CameraFootprintInput>,
+        terrain: Map<String, Pair<CameraFootprintInput, List<CameraFootprintVertex>>> = emptyMap(),
+    ): Map<String, List<CameraFootprintVertex>> {
+        val next = LinkedHashMap<String, List<CameraFootprintVertex>>()
+        for ((id, input) in inputs) {
+            val outline = cameraFootprintDisplayOutline(
+                cameraFootprintLiveDrawing(input, cameraFootprintTerrainForDisplay(terrain[id], input)),
+            )
+            if (outline.size >= 3) next[id] = outline
+        }
+        byDrone.clear()
+        byDrone.putAll(next)
+        return LinkedHashMap(byDrone)
+    }
+
+    fun outlineCount(id: String): Int = if (byDrone.containsKey(id)) 1 else 0
+    fun size(): Int = byDrone.size
+    fun clear() { byDrone.clear() }
+}
+
+internal fun cameraFootprintDebugLine(
+    source: String,
+    gimbalTiltDeg: Double,
+    headingDeg: Double,
+    aglMeters: Double,
+): String = java.lang.String.format(
+    java.util.Locale.US,
+    "CameraFootprint source=%s gimbalTiltDeg=%.1f headingDeg=%.1f aglM=%.1f",
+    source, gimbalTiltDeg, headingDeg, aglMeters,
+)
+
+/** At most one debug line per drone per [CAMERA_FOOTPRINT_DEBUG_INTERVAL_MS]. */
+internal class CameraFootprintDebugThrottle(
+    private val intervalMs: Long = CAMERA_FOOTPRINT_DEBUG_INTERVAL_MS,
+) {
+    private val lastByDrone = HashMap<String, Long>()
+    fun shouldLog(droneKey: String, nowMs: Long): Boolean {
+        val last = lastByDrone[droneKey] ?: 0L
+        if (nowMs - last < intervalMs) return false
+        lastByDrone[droneKey] = nowMs
+        return true
+    }
+    fun retain(activeKeys: Set<String>) {
+        lastByDrone.keys.retainAll(activeKeys)
+    }
 }
 
 /**
