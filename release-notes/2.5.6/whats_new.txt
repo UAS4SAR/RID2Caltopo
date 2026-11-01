@@ -3,6 +3,7 @@ Latest changes:
 - Sign in to a personal CalTopo account with Credentials through desktop activation. Existing personal browser logins keep Session Cookies until you choose Credentials. Confirm Log Out to clear the saved personal account.
 - Map Browser remembers the last credential profile, including personal accounts.
 - Clue uploads start as soon as you press Submit, save durably on this device first, and retry without creating duplicates, including photos.
+- If a clue photo upload times out after CalTopo already accepted the photo, the next retry finishes the marker link instead of staying pending forever. Tap “N clue(s) pending” to review and retry.
 - When CalTopo is unreachable, pending uploads wait and flush as soon as connectivity returns.
 - Disconnect or quit finishes and archives this device's live track.
 - Create the CalTopo Drone Tracks folder and R2C device marker only when the first track starts.

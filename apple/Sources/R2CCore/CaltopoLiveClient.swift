@@ -220,8 +220,9 @@ public actor CaltopoLiveClient {
     })
     private var positionReportKeys: Set<String> = []
     private var stoppedLiveTrackIDs: Set<String> = []
-    /// Bound archive/clue/LiveTrack attempts so a dead path cannot stall for minutes.
-    public static let requestTimeoutSeconds: TimeInterval = 15
+    /// Bound archive/clue/LiveTrack JSON attempts so a dead path cannot stall for minutes.
+    /// Photo `/data` uploads use `CluePhotoUploadPolicy.photoUploadTimeoutSeconds`.
+    public static let requestTimeoutSeconds: TimeInterval = CluePhotoUploadPolicy.jsonTimeoutSeconds
     private let ownsSession: Bool
 
     public init(
@@ -552,9 +553,13 @@ public actor CaltopoLiveClient {
         }
         let markerID = clue.markerID.uuidString.lowercased()
         let mediaID = clue.mediaID.uuidString.lowercased()
+        let photoTimeout = CluePhotoUploadPolicy.photoUploadTimeoutSeconds(jpegBytes: clue.jpegData.count)
         // Clue media must not share startLane: 502 retries would HOL-block LiveTrack create/points.
-        func acknowledged(_ request: URLRequest) async throws -> Data {
-            let data = try await perform(request, lane: clueLane)
+        func acknowledged(
+            _ request: URLRequest,
+            timeout: TimeInterval = Self.requestTimeoutSeconds
+        ) async throws -> Data {
+            let data = try await perform(request, lane: clueLane, timeout: timeout)
             guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   envelope["status"] as? String == "ok", envelope["error"] == nil
             else { throw CaltopoLiveClientError.httpStatus(502, "Photo upload was not acknowledged; retained for retry.") }
@@ -586,8 +591,38 @@ public actor CaltopoLiveClient {
         } catch CaltopoLiveClientError.httpStatus(let code, _) where code == 400 || code == 404 {
             // Media has not been created yet. Other errors must retain the clue for retry.
         }
-        if !mediaExists { _ = try await acknowledged(requests[1]) }
-        if !mediaReady { _ = try await acknowledged(requests[2]) }
+        if !mediaExists {
+            do {
+                _ = try await acknowledged(requests[1])
+                mediaExists = true
+            } catch let CaltopoLiveClientError.httpStatus(code, message)
+                where CluePhotoUploadPolicy.isExistingBackendMediaError(statusCode: code, message: message)
+            {
+                // Timed-out create already landed; verify and continue instead of looping on 400.
+                let data = try await perform(makeMediaSnapshotRequest(mediaID: clue.mediaID, now: now), lane: clueLane)
+                mediaReady = try CaltopoPhotoMediaState.isReady(data, mediaID: clue.mediaID, ownerID: mediaOwner)
+                mediaExists = true
+            }
+        }
+        if mediaExists && !mediaReady {
+            do {
+                _ = try await acknowledged(requests[2], timeout: photoTimeout)
+                mediaReady = true
+            } catch let CaltopoLiveClientError.httpStatus(code, message)
+                where CluePhotoUploadPolicy.isExistingBackendMediaError(statusCode: code, message: message)
+            {
+                let data = try await perform(makeMediaSnapshotRequest(mediaID: clue.mediaID, now: now), lane: clueLane)
+                if try CaltopoPhotoMediaState.isReady(data, mediaID: clue.mediaID, ownerID: mediaOwner) {
+                    mediaReady = true
+                } else {
+                    // Object exists but bytes are unusable — caller regenerates media id.
+                    throw CaltopoLiveClientError.httpStatus(
+                        409,
+                        "\(CluePhotoUploadPolicy.existingBackendMediaToken); media present but not ready"
+                    )
+                }
+            }
+        }
         // MapMediaObject POST is not always idempotent; probe / recover so retries do not 400.
         var linkPresent = false
         do {
@@ -1244,10 +1279,11 @@ public actor CaltopoLiveClient {
     private func perform(
         _ request: URLRequest,
         acceptedStatusCodes: Set<Int> = [],
-        lane: CaltopoNetworkLane? = nil
+        lane: CaltopoNetworkLane? = nil,
+        timeout: TimeInterval = requestTimeoutSeconds
     ) async throws -> Data {
         var request = request
-        request.timeoutInterval = Self.requestTimeoutSeconds
+        request.timeoutInterval = timeout
         var personalCookieURL: URL?
         var personalSendCookie = false
         // A signed personal account has no browser cookie. Position reports stay

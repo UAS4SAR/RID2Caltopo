@@ -146,9 +146,134 @@ class PublishStoredPhotoMediaProbeTest {
         assertEquals(400, op.responseCode)
     }
 
+    @Test
+    fun existingBackendMediaCreate400SkipsRecreateAndLinks() {
+        val markerId = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        val mediaId = UUID.nameUUIDFromBytes("$markerId:media".toByteArray(Charsets.UTF_8)).toString()
+        val linkId = UUID.nameUUIDFromBytes("$markerId:link".toByteArray(Charsets.UTF_8)).toString()
+        val calls = CopyOnWriteArrayList<String>()
+        val readyMedia = """{"status":"ok","result":{"id":"$mediaId","properties":{"creator":"TEAM01","mediaIsReady":true},"metadata":{"filesize":12}}}"""
+
+        CaltopoSession.setPhotoExchangeForTesting { op ->
+            val key = "${op.method} ${op.url}"
+            calls.add(key)
+            when {
+                op.method == CaltopoSession.CtsMethod_t.POST &&
+                    op.url == "/api/v1/map/MAP01/Marker/$markerId" -> complete(op, 200, true, okBody)
+                op.method == CaltopoSession.CtsMethod_t.GET &&
+                    op.url == "/api/v1/media/$mediaId" -> {
+                    // First probe: absent. After create 400, recovery GET: ready.
+                    val priorPosts = calls.count {
+                        it == "POST /api/v1/media/$mediaId"
+                    }
+                    if (priorPosts == 0) {
+                        complete(op, 400, false, "Personal map request failed.")
+                    } else {
+                        complete(op, 200, true, readyMedia)
+                    }
+                }
+                op.method == CaltopoSession.CtsMethod_t.POST &&
+                    op.url == "/api/v1/media/$mediaId" -> {
+                    op.serverResponseBody = """{"message":"Cannot update existing backendMedia"}"""
+                    complete(op, 400, false, """{"message":"Cannot update existing backendMedia"}""")
+                }
+                op.method == CaltopoSession.CtsMethod_t.GET &&
+                    op.url == "/api/v1/map/MAP01/MapMediaObject/$linkId" ->
+                    complete(op, 404, false, "absent")
+                op.method == CaltopoSession.CtsMethod_t.POST &&
+                    op.url == "/api/v1/map/MAP01/MapMediaObject/$linkId" -> complete(op, 200, true, okBody)
+                else -> error("Unexpected PhotoOp $key")
+            }
+        }
+
+        val outer = CaltopoSession.PublishStoredPhoto(
+            "MAP01", "TEAM01", markerId, 47.0, -122.0,
+            "stuck clue", "photo", "folder", 1L, byteArrayOf(1, 2, 3), null,
+        )
+        outer.get(5, TimeUnit.SECONDS)
+        assertTrue("publish should treat existing-media 400 as success path", outer.success())
+        assertFalse(calls.any { it == "POST /api/v1/media/$mediaId/data" })
+        assertTrue(calls.any { it == "POST /api/v1/map/MAP01/MapMediaObject/$linkId" })
+    }
+
+    @Test
+    fun existingBackendMediaData400ContinuesWhenReady() {
+        val markerId = "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+        val mediaId = UUID.nameUUIDFromBytes("$markerId:media".toByteArray(Charsets.UTF_8)).toString()
+        val linkId = UUID.nameUUIDFromBytes("$markerId:link".toByteArray(Charsets.UTF_8)).toString()
+        val calls = CopyOnWriteArrayList<String>()
+        val notReady = """{"status":"ok","result":{"id":"$mediaId","properties":{"creator":"TEAM01","mediaIsReady":false},"metadata":{"filesize":0}}}"""
+        val ready = """{"status":"ok","result":{"id":"$mediaId","properties":{"creator":"TEAM01","mediaIsReady":true},"metadata":{"filesize":12}}}"""
+        var mediaGets = 0
+
+        CaltopoSession.setPhotoExchangeForTesting { op ->
+            val key = "${op.method} ${op.url}"
+            calls.add(key)
+            when {
+                op.method == CaltopoSession.CtsMethod_t.POST &&
+                    op.url == "/api/v1/map/MAP01/Marker/$markerId" -> complete(op, 200, true, okBody)
+                op.method == CaltopoSession.CtsMethod_t.GET &&
+                    op.url == "/api/v1/media/$mediaId" -> {
+                    mediaGets += 1
+                    complete(op, 200, true, if (mediaGets == 1) notReady else ready)
+                }
+                op.method == CaltopoSession.CtsMethod_t.POST &&
+                    op.url == "/api/v1/media/$mediaId/data" -> {
+                    assertTrue(op.callTimeoutSeconds >= 45)
+                    op.serverResponseBody = """{"message":"Cannot update existing backendMedia"}"""
+                    complete(op, 400, false, """{"message":"Cannot update existing backendMedia"}""")
+                }
+                op.method == CaltopoSession.CtsMethod_t.GET &&
+                    op.url == "/api/v1/map/MAP01/MapMediaObject/$linkId" ->
+                    complete(op, 404, false, "absent")
+                op.method == CaltopoSession.CtsMethod_t.POST &&
+                    op.url == "/api/v1/map/MAP01/MapMediaObject/$linkId" -> complete(op, 200, true, okBody)
+                else -> error("Unexpected PhotoOp $key")
+            }
+        }
+
+        val outer = CaltopoSession.PublishStoredPhoto(
+            "MAP01", "TEAM01", markerId, 47.0, -122.0,
+            "stuck clue", "photo", "folder", 1L, ByteArray(900_000) { 1 }, null,
+        )
+        outer.get(5, TimeUnit.SECONDS)
+        assertTrue(outer.success())
+        assertTrue(calls.any { it == "POST /api/v1/map/MAP01/MapMediaObject/$linkId" })
+    }
+
+    @Test
+    fun reconcileSucceedsWhenAllPartsPresentWithoutRepost() {
+        val markerId = "c3d4e5f6-a7b8-9012-cdef-123456789012"
+        val mediaId = UUID.nameUUIDFromBytes("$markerId:media".toByteArray(Charsets.UTF_8)).toString()
+        val linkId = UUID.nameUUIDFromBytes("$markerId:link".toByteArray(Charsets.UTF_8)).toString()
+        val calls = CopyOnWriteArrayList<String>()
+        val readyMedia = """{"status":"ok","result":{"id":"$mediaId","properties":{"creator":"TEAM01","mediaIsReady":true},"metadata":{"filesize":12}}}"""
+
+        CaltopoSession.setPhotoExchangeForTesting { op ->
+            val key = "${op.method} ${op.url}"
+            calls.add(key)
+            when {
+                op.method == CaltopoSession.CtsMethod_t.GET &&
+                    op.url == "/api/v1/map/MAP01/Marker/$markerId" -> complete(op, 200, true, okBody)
+                op.method == CaltopoSession.CtsMethod_t.GET &&
+                    op.url == "/api/v1/media/$mediaId" -> complete(op, 200, true, readyMedia)
+                op.method == CaltopoSession.CtsMethod_t.GET &&
+                    op.url == "/api/v1/map/MAP01/MapMediaObject/$linkId" -> complete(op, 200, true, okBody)
+                else -> error("Unexpected PhotoOp $key")
+            }
+        }
+
+        val outer = CaltopoSession.ReconcileStoredPhoto("MAP01", "TEAM01", markerId, linkId, null)
+        outer.get(5, TimeUnit.SECONDS)
+        assertTrue(outer.success())
+        assertEquals(200, outer.responseCode)
+        assertFalse(calls.any { it.startsWith("POST ") })
+    }
+
     private fun complete(op: CaltopoOp, code: Int, success: Boolean, body: String) {
         op.responseCode = code
         op.response = body
+        if (op.serverResponseBody == null) op.serverResponseBody = body
         if (success) {
             op.responseJson = JSONObject(body).optJSONObject("result") ?: JSONObject()
         }

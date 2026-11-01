@@ -31,7 +31,7 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
     public var uploadAttempts: Int
     public var lastUploadError: String?
     public var caltopoMarkerID: String?
-    public let caltopoMediaID: UUID
+    public var caltopoMediaID: UUID
     // Optional for compatibility with older indexes. Missing destinations require review.
     public var destinationMapID: String?
     public var destinationTeamID: String?

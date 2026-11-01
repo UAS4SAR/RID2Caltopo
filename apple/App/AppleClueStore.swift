@@ -5,6 +5,15 @@ import UIKit
 
 private struct ClueUploadAttemptTimeout: Error {}
 
+struct PendingClueUploadRow: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let title: String
+    let designator: String
+    let capturedAt: Date
+    let uploadAttempts: Int
+    let lastErrorPlain: String
+}
+
 struct AppleClueDraft: Sendable {
     let capturedAt: Date
     let aircraftID: String
@@ -40,6 +49,7 @@ final class AppleClueStore: ObservableObject {
     @Published private(set) var reviewRevision = 0
     @Published private(set) var status = "No local clues"
     @Published private(set) var pendingUploadCount = 0
+    @Published private(set) var pendingUploadRows: [PendingClueUploadRow] = []
 
     private let disk = OperationalWorkQueue(label: "org.ncssar.clues.disk")
     private var initialLoad: Task<Void, Never>?
@@ -137,6 +147,26 @@ final class AppleClueStore: ObservableObject {
     func flushPendingBestEffort() {
         guard client != nil, !teamID.isEmpty else { return }
         AppleLog.info("Clue", "flushPendingBestEffort pending=\(pendingUploadCount)")
+        resume()
+    }
+
+    /// Pending-chip Retry now: clear per-clue upload tasks' backoff by re-enqueueing immediately.
+    func retryPendingUploadsNow() {
+        AppleLog.info("Clue", "retryPendingUploadsNow pending=\(pendingUploadCount)")
+        let pendingIDs = records
+            .filter { $0.uploadState == .pending || $0.uploadState == .failed || $0.uploadState == .uploading }
+            .map(\.id)
+        for id in pendingIDs {
+            uploadTasks[id]?.cancel()
+            uploadTasks.removeValue(forKey: id)
+            mutate(id) { value in
+                if value.uploadState != .published && value.uploadState != .localOnly {
+                    value.uploadState = .pending
+                }
+            }
+        }
+        Task { try? await persistIndex() }
+        updateStatus()
         resume()
     }
 
@@ -630,8 +660,8 @@ final class AppleClueStore: ObservableObject {
                         terminalReason = "reconciled"
                         break
                     }
-                    // Per-request timeout is 15s; multi-step clue publish gets a 45s attempt budget.
-                    let attemptBudgetSeconds: Double = 45
+                    // JSON calls stay ~15s; photo /data and the attempt budget scale with JPEG size.
+                    let attemptBudgetSeconds = CluePhotoUploadPolicy.attemptBudgetSeconds(jpegBytes: jpeg.count)
                     let publishLatitude = latest.clueLatitude
                     let publishLongitude = latest.clueLongitude
                     let publishTitle = latest.title
@@ -689,22 +719,44 @@ final class AppleClueStore: ObservableObject {
                     }
                     terminalReason = "published"
                     break
+                } catch let CaltopoLiveClientError.httpStatus(code, message)
+                    where code == 409
+                        && message.localizedCaseInsensitiveContains(
+                            CluePhotoUploadPolicy.existingBackendMediaToken
+                        )
+                {
+                    // Corrupt / unusable existing media: persist a new id and retry without long backoff.
+                    let fresh = UUID()
+                    self.mutate(id) { value in
+                        value.caltopoMediaID = fresh
+                        value.uploadState = .pending
+                        value.lastUploadError = "Replacing unusable CalTopo photo; retrying."
+                    }
+                    try? await self.persistIndex()
+                    self.updateStatus()
+                    AppleLog.warning(
+                        "Clue",
+                        "Clue upload regenerating media id=\(id) attempt=\(attempt)"
+                    )
+                    terminalReason = "media-regenerated"
+                    continue
                 } catch is ClueUploadAttemptTimeout {
                     let attempts = self.records.first(where: { $0.id == id })?.uploadAttempts ?? 1
                     if await self.reconcileUploadedClue(id: id, jpeg: jpeg, teamID: destinationTeamID) {
                         terminalReason = "reconciled-after-timeout"
                         break
                     }
+                    let budget = Int(CluePhotoUploadPolicy.attemptBudgetSeconds(jpegBytes: jpeg.count))
                     self.mutate(id) { value in
                         value.uploadState = .failed
-                        value.lastUploadError = "Upload timed out after 45s; will retry."
+                        value.lastUploadError = "Upload timed out after \(budget)s; will retry."
                     }
                     try? await self.persistIndex()
                     self.updateStatus()
                     let delay = min(60.0, 2.0 * pow(2.0, Double(max(attempts - 1, 0))))
                     AppleLog.warning(
                         "Clue",
-                        "Clue upload failed id=\(id) attempt=\(attempts) retry=\(Int(delay))s error=timeout-45s"
+                        "Clue upload failed id=\(id) attempt=\(attempts) retry=\(Int(delay))s error=timeout-\(budget)s"
                     )
                     terminalReason = "timeout-retrying"
                     try? await Task.sleep(for: .seconds(delay))
@@ -1000,6 +1052,19 @@ final class AppleClueStore: ObservableObject {
         guard !indexLoadFailed else { return }
         let pending = ClueTrackDurabilityIntegrity.pendingUploadCount(in: records)
         pendingUploadCount = pending
+        pendingUploadRows = records
+            .filter { $0.uploadState == .pending || $0.uploadState == .failed || $0.uploadState == .uploading }
+            .sorted { $0.capturedAt > $1.capturedAt }
+            .map {
+                PendingClueUploadRow(
+                    id: $0.id,
+                    title: $0.title.isEmpty ? "Untitled clue" : $0.title,
+                    designator: $0.designator,
+                    capturedAt: $0.capturedAt,
+                    uploadAttempts: $0.uploadAttempts,
+                    lastErrorPlain: CluePhotoUploadPolicy.plainUploadError($0.lastUploadError)
+                )
+            }
         status = records.isEmpty ? "No local clues" : "\(records.count) local clues\(pending > 0 ? "; \(pending) awaiting CalTopo" : "")"
     }
 

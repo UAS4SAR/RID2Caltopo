@@ -55,7 +55,11 @@ public class CaltopoOp implements Future <CaltopoOp> {
     /** Response codes that stay failures for success() but must not emit CaltopoOpFailed. */
     public int[] quietErrorCodes;
     public String response;    // if receivedTimestampInMsec && goodResponse == false;
+    /** Raw HTTP body before availability wording rewrite (clue media 400 classification). */
+    public String serverResponseBody;
     public JSONObject responseJson; // if receivedTimestampInMsec && goodResponse == true;
+    /** When > 0, overrides OkHttp call/read/write timeouts for this request only. */
+    public int callTimeoutSeconds;
 	public boolean goNaked;
     public boolean positionReport;
     boolean cleanupAuthorizationBound;

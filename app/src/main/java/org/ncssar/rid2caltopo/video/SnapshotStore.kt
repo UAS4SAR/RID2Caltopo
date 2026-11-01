@@ -31,9 +31,19 @@ data class AndroidClueRecord(
     val destinationTeamId: String = "",
     val uploadState: String = "legacy",
     val lastUploadError: String = "",
+    val uploadAttempts: Int = 0,
+    /** Blank uses deterministic marker-derived media id; set when regenerating after corrupt media. */
+    val caltopoMediaId: String = "",
+    /** Blank uses deterministic marker-derived link id. */
+    val caltopoLinkId: String = "",
     /** Waypoint binding (optional; records saved before binding existed have none). */
     val binding: ClueBinding? = null,
 ) {
+    fun resolvedMediaId(): String =
+        caltopoMediaId.ifBlank { org.ncssar.rid2caltopo.data.CaltopoSession.defaultStoredPhotoMediaId(id) }
+
+    fun resolvedLinkId(): String =
+        caltopoLinkId.ifBlank { org.ncssar.rid2caltopo.data.CaltopoSession.defaultStoredPhotoLinkId(id) }
     /** Capture time used for flight ownership: the bound capture time on the drone clock. */
     val ownershipTimeMs: Long get() = binding?.captureTimeMs ?: createdAtMs
 
@@ -341,6 +351,26 @@ class AndroidClueStore private constructor(
         }
     }
 
+    /** Persist a regenerated media/link id after corrupt existing-backendMedia recovery. */
+    fun updateCaltopoMediaIds(id: String, mediaId: String, linkId: String) {
+        ensureLoaded()
+        val prior: AndroidClueRecord
+        val indexSnapshot: List<AndroidClueRecord>
+        val indexRoot: File
+        synchronized(this) {
+            prior = storedRecords[id] ?: return
+            storedRecords[id] = prior.copy(caltopoMediaId = mediaId, caltopoLinkId = linkId)
+            indexSnapshot = storedRecords.values.toList()
+            indexRoot = root
+        }
+        try {
+            persistIndexSnapshot(indexSnapshot, indexRoot)
+        } catch (failure: Exception) {
+            synchronized(this) { storedRecords[id] = prior }
+            throw failure
+        }
+    }
+
     /** Marks a pending clue as actively uploading (UI + Manage Storage visibility). */
     fun markUploading(id: String) {
         ensureLoaded()
@@ -350,8 +380,11 @@ class AndroidClueStore private constructor(
         synchronized(this) {
             prior = storedRecords[id] ?: return
             if (!prior.publishToCaltopo || prior.uploadState == "published") return
-            if (prior.uploadState == "uploading") return
-            storedRecords[id] = prior.copy(uploadState = "uploading")
+            storedRecords[id] = prior.copy(
+                uploadState = "uploading",
+                uploadAttempts = prior.uploadAttempts + 1,
+                lastUploadError = "",
+            )
             indexSnapshot = storedRecords.values.toList()
             indexRoot = root
         }
@@ -530,6 +563,9 @@ private fun AndroidClueRecord.toJson(): JSONObject = JSONObject()
     .put("destinationTeamId", destinationTeamId)
     .put("uploadState", uploadState)
     .put("lastUploadError", lastUploadError)
+    .put("uploadAttempts", uploadAttempts)
+    .put("caltopoMediaId", caltopoMediaId)
+    .put("caltopoLinkId", caltopoLinkId)
     .also { json -> binding?.let { json.put("binding", it.toJson()) } }
 
 private fun JSONObject.toAndroidClueRecord(): AndroidClueRecord? {
@@ -552,6 +588,9 @@ private fun JSONObject.toAndroidClueRecord(): AndroidClueRecord? {
         destinationTeamId = optString("destinationTeamId"),
         uploadState = optString("uploadState", "legacy"),
         lastUploadError = optString("lastUploadError"),
+        uploadAttempts = optInt("uploadAttempts", 0),
+        caltopoMediaId = optString("caltopoMediaId"),
+        caltopoLinkId = optString("caltopoLinkId"),
         binding = ClueBinding.fromJson(optJSONObject("binding")),
     ).takeIf { it.lat.isFinite() && it.lng.isFinite() }
 }
@@ -571,7 +610,8 @@ internal fun publishFirstPendingClue(
     val record = store.pendingForMap(mapId, teamId).firstOrNull() ?: return null
     org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
         mapId, teamId, record.id, record.lat, record.lng, record.title, record.publishedDescription,
-        folderId, record.createdAtMs, jpegFor(record), done,
+        folderId, record.createdAtMs, jpegFor(record),
+        record.caltopoMediaId.ifBlank { null }, record.caltopoLinkId.ifBlank { null }, done,
     )
     return record
 }

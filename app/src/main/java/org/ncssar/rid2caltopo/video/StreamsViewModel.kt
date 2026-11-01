@@ -256,6 +256,17 @@ data class LocalMapMarker(
     val sourceDesignator: String,
     val uploadState: String = "legacy",
     val lastUploadError: String = "",
+    val uploadAttempts: Int = 0,
+)
+
+/** Row for the tappable "N clue(s) pending" sheet. */
+data class PendingClueUploadRow(
+    val id: String,
+    val title: String,
+    val designator: String,
+    val createdAtMs: Long,
+    val uploadAttempts: Int,
+    val lastErrorPlain: String,
 )
 
 data class ClueSnapshotRef(
@@ -276,6 +287,16 @@ private fun AndroidClueRecord.toLocalMapMarker(): LocalMapMarker = LocalMapMarke
     sourceDesignator = sourceDesignator,
     uploadState = uploadState,
     lastUploadError = lastUploadError,
+    uploadAttempts = uploadAttempts,
+)
+
+private fun AndroidClueRecord.toPendingClueUploadRow(): PendingClueUploadRow = PendingClueUploadRow(
+    id = id,
+    title = title.ifBlank { "Untitled clue" },
+    designator = sourceDesignator,
+    createdAtMs = createdAtMs,
+    uploadAttempts = uploadAttempts,
+    lastErrorPlain = org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.plainUploadError(lastUploadError),
 )
 
 fun removeLocalMapMarkerById(markers: MutableList<LocalMapMarker>, markerId: String): Boolean {
@@ -1590,6 +1611,11 @@ class StreamsViewModel(
     val pendingClue: PendingClue?
         get() = _pendingClue.value
     val localMapMarkers = mutableStateListOf<LocalMapMarker>()
+    private val _pendingClueUploads = mutableStateOf<List<PendingClueUploadRow>>(emptyList())
+    val pendingClueUploads: List<PendingClueUploadRow>
+        get() = _pendingClueUploads.value
+    val pendingClueUploadCount: Int
+        get() = _pendingClueUploads.value.size
     private val clueSnapshotRefsByTitle = mutableStateMapOf<String, ClueSnapshotRef>()
     private val localClueStore by lazy { AndroidClueStore.shared(application.applicationContext) }
     private val clueDiskMutex = kotlinx.coroutines.sync.Mutex()
@@ -2285,6 +2311,7 @@ class StreamsViewModel(
                 resetFolderVisibility()
                 localMapMarkers.clear()
                 clueSnapshotRefsByTitle.clear()
+                _pendingClueUploads.value = emptyList()
                 activeLocalClueMapKey = null
             }
         }
@@ -3009,9 +3036,26 @@ class StreamsViewModel(
                 localClueSnapshotsById[record.id] = snapshot
                 clueSnapshotRefsByTitle[record.title.trim()] = snapshot
             }
+            _pendingClueUploads.value = loaded
+                .map { it.first }
+                .filter {
+                    it.publishToCaltopo &&
+                        (it.uploadState == "pending" || it.uploadState == "uploading" || it.uploadState == "failed")
+                }
+                .sortedByDescending { it.createdAtMs }
+                .map { it.toPendingClueUploadRow() }
             activeLocalClueMapKey = mapKey
             CTDebug(tag, "Loaded ${localMapMarkers.size} local clue(s) for $mapKey")
         }
+    }
+
+    /** Clears backoff and wakes the pending-upload owner (pending chip Retry now). */
+    fun retryPendingClueUploadsNow() {
+        for (row in _pendingClueUploads.value) {
+            clueUploadBackoff.reset(row.id)
+            clueUploadBackoff.markDelayedUntil(row.id, 0L)
+        }
+        retryPendingClues()
     }
 
     private data class ClueSaveContext(
@@ -3388,7 +3432,7 @@ class StreamsViewModel(
         try {
             val jpeg = localClueStore.imageFile(record).readBytes()
             // Prefer the latest local projection (post-save terrain may have landed during image I/O).
-            val latest = clueStorage {
+            var latest = clueStorage {
                 clueDiskMutex.withLock {
                     localClueStore.recordsForMap(record.mapKey).firstOrNull { it.id == record.id } ?: record
                 }
@@ -3406,8 +3450,27 @@ class StreamsViewModel(
                 mapId, teamId, latest.id, latest.lat, latest.lng, latest.title,
                 latest.publishedDescription, folder, latest.createdAtMs,
                 jpeg,
+                latest.caltopoMediaId.ifBlank { null },
+                latest.caltopoLinkId.ifBlank { null },
             ) { result -> outcome.complete(result) }
-            val result = outcome.await()
+            var result = outcome.await()
+            if (!result.success() && result.responseCode == 409 &&
+                result.responseString().orEmpty().contains(
+                    org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.EXISTING_BACKEND_MEDIA_TOKEN,
+                    ignoreCase = true,
+                )
+            ) {
+                latest = regenerateClueMediaIds(latest)
+                val retry = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
+                org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
+                    mapId, teamId, latest.id, latest.lat, latest.lng, latest.title,
+                    latest.publishedDescription, folder, latest.createdAtMs,
+                    jpeg,
+                    latest.caltopoMediaId.ifBlank { null },
+                    latest.caltopoLinkId.ifBlank { null },
+                ) { published -> retry.complete(published) }
+                result = retry.await()
+            }
             if (!result.success() &&
                 result.responseCode in listOf(400, 401, 403, 404, 413, 422)
             ) {
@@ -3416,7 +3479,7 @@ class StreamsViewModel(
                     "Clue upload failed id=${record.id} attempt=$attempt reason=http-${result.responseCode} " +
                         "error=${result.responseString().take(300)}",
                 )
-                if (reconcilePendingClue(mapId, teamId, folder, record, jpeg)) {
+                if (reconcilePendingClue(mapId, teamId, folder, latest, jpeg)) {
                     endClueUpload(record.id)
                     clueUploadBackoff.reset(record.id)
                     return
@@ -3490,12 +3553,10 @@ class StreamsViewModel(
             } catch (_: Exception) {
                 continue
             }
-            val linkId = java.util.UUID.nameUUIDFromBytes(
-                (record.id + ":link").toByteArray(Charsets.UTF_8),
-            ).toString()
             val probe = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
             org.ncssar.rid2caltopo.data.CaltopoSession.ReconcileStoredPhoto(
-                mapId, teamId, record.id, linkId,
+                mapId, teamId, record.id, record.resolvedLinkId(),
+                record.caltopoMediaId.ifBlank { null },
             ) { result -> probe.complete(result) }
             val probed = probe.await()
             if (probed.success()) continue
@@ -3535,6 +3596,7 @@ class StreamsViewModel(
     /**
      * Probe marker/media/link. When all present, clear pending. When partial, complete missing
      * parts via PublishStoredPhoto before clearing. Marker-only must not mark published.
+     * Never re-POSTs existing media as a blind create — PublishStoredPhoto recovers 400-existing.
      */
     private suspend fun reconcilePendingClue(
         mapId: String,
@@ -3543,22 +3605,21 @@ class StreamsViewModel(
         record: AndroidClueRecord,
         jpeg: ByteArray,
     ): Boolean {
-        val linkId = java.util.UUID.nameUUIDFromBytes(
-            (record.id + ":link").toByteArray(Charsets.UTF_8),
-        ).toString()
+        var working = record
         val probe = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
         org.ncssar.rid2caltopo.data.CaltopoSession.ReconcileStoredPhoto(
             mapId,
             teamId,
-            record.id,
-            linkId,
+            working.id,
+            working.resolvedLinkId(),
+            working.caltopoMediaId.ifBlank { null },
         ) { result -> probe.complete(result) }
         val probed = probe.await()
         val partsBefore = probed.responseString().orEmpty()
         if (probed.success()) {
             clueStorage {
                 clueDiskMutex.withLock {
-                    localClueStore.recordUploadResult(record.id, true, "", terminal = false)
+                    localClueStore.recordUploadResult(working.id, true, "", terminal = false)
                 }
             }.onSuccess {
                 hydrateLocalClues(currentLocalClueMapKey())
@@ -3566,7 +3627,7 @@ class StreamsViewModel(
             android.util.Log.i(tag, "Clue reconcile parts ${partsBefore.ifBlank { "marker=ok media=ok link=ok" }}")
             android.util.Log.i(
                 tag,
-                "Clue upload reconciled id=${record.id} featureId=${record.id}",
+                "Clue upload reconciled id=${working.id} featureId=${working.id}",
             )
             return true
         }
@@ -3574,13 +3635,32 @@ class StreamsViewModel(
         if (probed.responseCode != 409 && !partsBefore.contains("ok")) return false
         val publish = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
         org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
-            mapId, teamId, record.id, record.lat, record.lng, record.title,
-            record.publishedDescription, folder, record.createdAtMs, jpeg,
+            mapId, teamId, working.id, working.lat, working.lng, working.title,
+            working.publishedDescription, folder, working.createdAtMs, jpeg,
+            working.caltopoMediaId.ifBlank { null },
+            working.caltopoLinkId.ifBlank { null },
         ) { result -> publish.complete(result) }
-        val published = publish.await()
+        var published = publish.await()
+        if (!published.success() && published.responseCode == 409 &&
+            published.responseString().orEmpty().contains(
+                org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.EXISTING_BACKEND_MEDIA_TOKEN,
+                ignoreCase = true,
+            )
+        ) {
+            working = regenerateClueMediaIds(working)
+            val retry = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
+            org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
+                mapId, teamId, working.id, working.lat, working.lng, working.title,
+                working.publishedDescription, folder, working.createdAtMs, jpeg,
+                working.caltopoMediaId.ifBlank { null },
+                working.caltopoLinkId.ifBlank { null },
+            ) { result -> retry.complete(result) }
+            published = retry.await()
+        }
         val after = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
         org.ncssar.rid2caltopo.data.CaltopoSession.ReconcileStoredPhoto(
-            mapId, teamId, record.id, linkId,
+            mapId, teamId, working.id, working.resolvedLinkId(),
+            working.caltopoMediaId.ifBlank { null },
         ) { result -> after.complete(result) }
         val verified = after.await()
         val partsAfter = verified.responseString().orEmpty()
@@ -3594,16 +3674,30 @@ class StreamsViewModel(
         if (!verified.success()) return false
         clueStorage {
             clueDiskMutex.withLock {
-                localClueStore.recordUploadResult(record.id, true, "", terminal = false)
+                localClueStore.recordUploadResult(working.id, true, "", terminal = false)
             }
         }.onSuccess {
             hydrateLocalClues(currentLocalClueMapKey())
         }
         android.util.Log.i(
             tag,
-            "Clue upload reconciled id=${record.id} featureId=${record.id}",
+            "Clue upload reconciled id=${working.id} featureId=${working.id}",
         )
         return published.success() || verified.success()
+    }
+
+    private suspend fun regenerateClueMediaIds(record: AndroidClueRecord): AndroidClueRecord {
+        val mediaId = java.util.UUID.randomUUID().toString()
+        val linkId = java.util.UUID.randomUUID().toString()
+        clueStorage {
+            clueDiskMutex.withLock {
+                localClueStore.updateCaltopoMediaIds(record.id, mediaId, linkId)
+            }
+        }.onSuccess {
+            hydrateLocalClues(currentLocalClueMapKey())
+        }
+        android.util.Log.i(tag, "Clue media ids regenerated id=${record.id}")
+        return record.copy(caltopoMediaId = mediaId, caltopoLinkId = linkId)
     }
 
     private fun reconcilePartTransition(

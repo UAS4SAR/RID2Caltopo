@@ -52,6 +52,8 @@ import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.VideocamOff
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import org.ncssar.rid2caltopo.ui.AlertDialog
 import androidx.compose.material3.Icon
@@ -347,6 +349,9 @@ fun StreamsScreen(
     }
     var showNotamPanel by remember { mutableStateOf(false) }
     var showLandRestrictionPanel by remember { mutableStateOf(false) }
+    var showPendingClueUploads by remember { mutableStateOf(false) }
+    val pendingClueUploadCount = viewModel.pendingClueUploadCount
+    val pendingClueUploads = viewModel.pendingClueUploads
     var showRegisteredDesignators by remember { mutableStateOf(false) }
     var showPerformancePanel by remember { mutableStateOf(false) }
     var showCompliancePanel by remember { mutableStateOf(false) }
@@ -421,6 +426,28 @@ fun StreamsScreen(
                     ResumeProximityAlertButton(onSettings = { onProximitySettingsTap?.invoke() })
                     NotamStatusChip(state = notamUiState, airspaceState = airspaceUiState, onClick = { showNotamPanel = true }, outerPadding = PaddingValues(0.dp))
                     LandRestrictionStatusChip(state = landRestrictionUiState, onClick = { showLandRestrictionPanel = true }, outerPadding = PaddingValues(0.dp))
+                    if (pendingClueUploadCount > 0) {
+                        AssistChip(
+                            onClick = { showPendingClueUploads = true },
+                            label = {
+                                Text(
+                                    text = if (pendingClueUploadCount == 1) {
+                                        "1 clue pending"
+                                    } else {
+                                        "$pendingClueUploadCount clues pending"
+                                    },
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Clip,
+                                )
+                            },
+                            colors = AssistChipDefaults.assistChipColors(
+                                containerColor = Color(0xFFF57C00),
+                                labelColor = Color.White,
+                            ),
+                            modifier = Modifier.padding(PaddingValues(0.dp)),
+                        )
+                    }
                     StreamsMapStatusButton(mapName = mapName, onClick = onMapStatusTap, compact = true)
                 }
             }
@@ -671,6 +698,60 @@ fun StreamsScreen(
         )
     }
 
+    if (showPendingClueUploads) {
+        AlertDialog(
+            onDismissRequest = { showPendingClueUploads = false },
+            title = {
+                Text(
+                    if (pendingClueUploadCount == 1) "1 clue pending"
+                    else "$pendingClueUploadCount clues pending"
+                )
+            },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    Text(
+                        "Clue Submit still uploads immediately. Retry wakes pending uploads without waiting for the next automatic attempt.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    pendingClueUploads.forEach { row ->
+                        Text(row.title, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            buildString {
+                                if (row.designator.isNotBlank()) append(row.designator).append(" · ")
+                                append(
+                                    java.text.DateFormat.getDateTimeInstance(
+                                        java.text.DateFormat.MEDIUM,
+                                        java.text.DateFormat.SHORT,
+                                    ).format(java.util.Date(row.createdAtMs))
+                                )
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            "Attempts ${row.uploadAttempts} · ${row.lastErrorPlain}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.retryPendingClueUploadsNow()
+                        showPendingClueUploads = false
+                    }
+                ) { Text("Retry now") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPendingClueUploads = false }) { Text("Close") }
+            },
+        )
+    }
     if (showNotamPanel) {
         NotamPanel(
             state = notamUiState,

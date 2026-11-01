@@ -577,7 +577,15 @@ public class CaltopoSession {
                         .header("User-Agent", "RID2Caltopo/0.2")
                         .method(op.method.toString(), requestBody);
 
-                OkHttpClient requestClient = MyOkHttpClient;
+                OkHttpClient.Builder clientBuilder = MyOkHttpClient.newBuilder();
+                if (op.callTimeoutSeconds > 0) {
+                    int seconds = op.callTimeoutSeconds;
+                    clientBuilder
+                            .readTimeout(seconds, TimeUnit.SECONDS)
+                            .writeTimeout(seconds, TimeUnit.SECONDS)
+                            .callTimeout(seconds, TimeUnit.SECONDS);
+                }
+                OkHttpClient requestClient = clientBuilder.build();
                 // Position reports authenticate with the connect key in the path. A signed
                 // personal map has no browser cookie; asking the cookie probe throws before
                 // the GET is sent and the live track never receives points.
@@ -591,7 +599,7 @@ public class CaltopoSession {
                     if (!op.goNaked) requestBuilder.header("Cookie", cookie)
                             .header("Origin", "https://caltopo.com")
                             .header("Referer", "https://caltopo.com/m/" + op.personalAuthorization.getMapID());
-                    requestClient = MyOkHttpClient.newBuilder().followRedirects(false).followSslRedirects(false)
+                    requestClient = clientBuilder.followRedirects(false).followSslRedirects(false)
                             .addNetworkInterceptor(new PersonalSessionDispatchInterceptor(() -> {
                                 CaltopoPersonalSession.requireValid(op.personalAuthorization, op.goNaked
                                         ? "/api/v1/map/" + op.personalAuthorization.getMapID() + "/since/0" : op.url);
@@ -603,7 +611,7 @@ public class CaltopoSession {
                     if (!op.goNaked && !finalUrl.encodedPath().startsWith("/api/v1/map/" + op.personalAuthorization.getMapID() + "/")
                             && CaltopoPersonalSession.mediaID(finalUrl.encodedPath()) == null)
                         throw new IllegalStateException("Personal request left the selected map");
-                    requestClient = MyOkHttpClient.newBuilder().followRedirects(false).followSslRedirects(false).build();
+                    requestClient = clientBuilder.followRedirects(false).followSslRedirects(false).build();
                 }
                 if (Thread.currentThread().isInterrupted() || (op.asyncFuture != null && op.asyncFuture.isCancelled())) throw new InterruptedException();
                 try (Response response = requestClient.newCall(requestBuilder.build()).execute()) {
@@ -614,6 +622,7 @@ public class CaltopoSession {
 
                     // Response.body().string() handles the stream reading and closing automatically
                     op.response = (response.body() != null) ? response.body().string() : "";
+                    op.serverResponseBody = op.response;
 
                     if (response.isSuccessful()) {
                         goodResponse = true;
@@ -1584,11 +1593,17 @@ public class CaltopoSession {
     // Each stage uses the authorization captured for this clue, never the current account by accident.
     private static CaltopoOp PhotoOp(CaltopoPersonalSession.Authorization personal, String credentialKey,
             CtsMethod_t method, String path, JSONObject payload, boolean naked) {
-        return PhotoOp(personal, credentialKey, method, path, payload, naked, null);
+        return PhotoOp(personal, credentialKey, method, path, payload, naked, null, 0);
     }
 
     private static CaltopoOp PhotoOp(CaltopoPersonalSession.Authorization personal, String credentialKey,
             CtsMethod_t method, String path, JSONObject payload, boolean naked, int[] quietErrorCodes) {
+        return PhotoOp(personal, credentialKey, method, path, payload, naked, quietErrorCodes, 0);
+    }
+
+    private static CaltopoOp PhotoOp(CaltopoPersonalSession.Authorization personal, String credentialKey,
+            CtsMethod_t method, String path, JSONObject payload, boolean naked, int[] quietErrorCodes,
+            int callTimeoutSeconds) {
         if (!java.util.Objects.equals(personal, CaltopoPersonalSession.capture("")) ||
             (personal == null && (Cred == null || !credentialKey.equals(Cred.teamId))))
             throw new IllegalStateException("Clue upload paused: original credentials are no longer selected");
@@ -1599,6 +1614,7 @@ public class CaltopoSession {
         op.url = path;
         op.payload = payload;
         op.quietErrorCodes = quietErrorCodes;
+        op.callTimeoutSeconds = callTimeoutSeconds;
         PhotoExchangeForTesting exchange = photoExchangeForTesting;
         if (exchange != null) {
             exchange.apply(op);
@@ -1701,14 +1717,19 @@ public class CaltopoSession {
      */
     public static CaltopoOp ReconcileStoredPhoto(String mapId, String teamId, String markerId,
             String linkId, Consumer<CaltopoOp> done) {
+        return ReconcileStoredPhoto(mapId, teamId, markerId, linkId, null, done);
+    }
+
+    public static CaltopoOp ReconcileStoredPhoto(String mapId, String teamId, String markerId,
+            String linkId, @Nullable String mediaIdOverride, Consumer<CaltopoOp> done) {
         CTDebug(TAG, "ReconcileStoredPhoto() start mapId='" + mapId + "' teamId='" + teamId +
                 "' markerId='" + markerId + "'");
         CaltopoOp outer = new CaltopoOp(done);
         final CaltopoPersonalSession.Authorization personal = CaltopoPersonalSession.capture("");
         SubmitPhotoRequest(outer, () -> {
             try {
-                String mediaId = UUID.nameUUIDFromBytes((markerId + ":media")
-                        .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+                String mediaId = (mediaIdOverride != null && !mediaIdOverride.isEmpty())
+                        ? mediaIdOverride : defaultStoredPhotoMediaId(markerId);
                 String mediaOwner = personal != null ? personal.getMediaOwnerID() : teamId;
                 if ((mediaOwner == null || mediaOwner.isEmpty()) && teamId != null
                         && teamId.startsWith("personal:")) {
@@ -1757,9 +1778,31 @@ public class CaltopoSession {
         return outer;
     }
 
+    /** Deterministic media id for a clue marker (override stored on the record when regenerated). */
+    public static String defaultStoredPhotoMediaId(String markerId) {
+        return UUID.nameUUIDFromBytes((markerId + ":media").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+    }
+
+    /** Deterministic MapMediaObject id for a clue marker. */
+    public static String defaultStoredPhotoLinkId(String markerId) {
+        return UUID.nameUUIDFromBytes((markerId + ":link").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+    }
+
     public static CaltopoOp PublishStoredPhoto(String mapId, String teamId, String markerId,
             double lat, double lng, String title, String description, String folderId,
             long createdAt, byte[] jpeg, Consumer<CaltopoOp> done) {
+        return PublishStoredPhoto(mapId, teamId, markerId, lat, lng, title, description, folderId,
+                createdAt, jpeg, null, null, done);
+    }
+
+    /**
+     * @param mediaIdOverride optional; blank uses {@link #defaultStoredPhotoMediaId}
+     * @param linkIdOverride optional; blank uses {@link #defaultStoredPhotoLinkId}
+     */
+    public static CaltopoOp PublishStoredPhoto(String mapId, String teamId, String markerId,
+            double lat, double lng, String title, String description, String folderId,
+            long createdAt, byte[] jpeg, @Nullable String mediaIdOverride, @Nullable String linkIdOverride,
+            Consumer<CaltopoOp> done) {
         CTDebug(TAG, "PublishStoredPhoto() start mapId='" + mapId + "' teamId='" + teamId +
                 "' markerId='" + markerId + "' folderId='" + folderId +
                 "' bytes=" + (jpeg == null ? 0 : jpeg.length));
@@ -1785,13 +1828,15 @@ public class CaltopoSession {
                         || !CluePublicationIdentity.sameTeam(teamId, personal.getCredentialKey())
                         || mediaOwner.isEmpty()))
                     throw new IllegalStateException("Original personal account and map must be selected");
-                String mediaId = UUID.nameUUIDFromBytes((markerId + ":media").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+                String mediaId = (mediaIdOverride != null && !mediaIdOverride.isEmpty())
+                        ? mediaIdOverride : defaultStoredPhotoMediaId(markerId);
                 // Live track already uses the signed personal HMAC. Clues must use that same
                 // grant; the cookie media probe only knows browser-session UUID tokens.
                 if (CluePublicationAuth.requiresCookieMediaAuthorization(personal)) {
                     CaltopoPersonalSession.authorizeMedia(personal, mediaId);
                 }
-                String linkId = UUID.nameUUIDFromBytes((markerId + ":link").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+                String linkId = (linkIdOverride != null && !linkIdOverride.isEmpty())
+                        ? linkIdOverride : defaultStoredPhotoLinkId(markerId);
                 JSONObject geometry = new JSONObject().put("type", "Point").put("coordinates", new JSONArray().put(lng).put(lat));
                 JSONObject props = new JSONObject().put("class", "Marker").put("title", title)
                     .put("description", description).put("created", createdAt).put("folderId", folderId)
@@ -1805,14 +1850,14 @@ public class CaltopoSession {
                     CaltopoOp existingMarker = PhotoOp(personal, teamId, CtsMethod_t.GET,
                             CALTOPO_MAP_API_V1 + mapId + "/Marker/" + markerId, null, false, new int[] {400, 404});
                     CTDebug(TAG, "PublishStoredPhoto() marker POST failed code=" + result.responseCode +
-                            " body=" + SafeResponseText(result.response) +
+                            " body=" + SafeResponseText(result.serverResponseBody != null ? result.serverResponseBody : result.response) +
                             "; existing GET code=" + existingMarker.responseCode);
                     if (existingMarker.success()) {
                         markerPresent = true;
                         result = existingMarker;
                     } else if (result.responseCode >= 400 && result.responseCode < 500) {
                         CTWarn(TAG, "PublishStoredPhoto() marker HTTP " + result.responseCode +
-                                " body=" + SafeResponseText(result.response));
+                                " body=" + SafeResponseText(result.serverResponseBody != null ? result.serverResponseBody : result.response));
                     }
                 }
                 boolean mediaReady = false;
@@ -1826,10 +1871,45 @@ public class CaltopoSession {
                     } else if (existing.responseCode == 400 || existing.responseCode == 404) {
                         result = PhotoOp(personal, teamId, CtsMethod_t.POST, CALTOPO_MEDIA_API_V1 + mediaId,
                             new JSONObject().put("properties", new JSONObject().put("creator", mediaOwner)), false);
+                        if (!result.success() && isExistingBackendMediaConflict(result)) {
+                            // Timed-out create already landed; verify and continue instead of looping on 400.
+                            CaltopoOp recovered = PhotoOp(personal, teamId, CtsMethod_t.GET, CALTOPO_MEDIA_API_V1 + mediaId,
+                                    null, false, new int[] {400, 404});
+                            if (recovered.success()) {
+                                mediaReady = CaltopoPhotoMediaState.isReady(recovered.responseJson, mediaId, mediaOwner);
+                                result = recovered;
+                                CTInfo(TAG, "PublishStoredPhoto() media create 400 treated as existing mediaId=" + mediaId);
+                            }
+                        }
                     } else result = existing;
                 }
-                if (result.success() && !mediaReady) result = PhotoOp(personal, teamId, CtsMethod_t.POST, CALTOPO_MEDIA_API_V1 + mediaId + "/data",
-                    new JSONObject().put("creator", mediaOwner).put("data", android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP)), false);
+                if (result.success() && !mediaReady) {
+                    int photoTimeout = CluePhotoUploadPolicy.photoUploadTimeoutSeconds(jpeg == null ? 0 : jpeg.length);
+                    result = PhotoOp(personal, teamId, CtsMethod_t.POST, CALTOPO_MEDIA_API_V1 + mediaId + "/data",
+                        new JSONObject().put("creator", mediaOwner).put("data",
+                                android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP)),
+                        false, null, photoTimeout);
+                    if (!result.success() && isExistingBackendMediaConflict(result)) {
+                        CaltopoOp recovered = PhotoOp(personal, teamId, CtsMethod_t.GET, CALTOPO_MEDIA_API_V1 + mediaId,
+                                null, false, new int[] {400, 404});
+                        if (recovered.success()
+                                && CaltopoPhotoMediaState.isReady(recovered.responseJson, mediaId, mediaOwner)) {
+                            mediaReady = true;
+                            result = recovered;
+                            CTInfo(TAG, "PublishStoredPhoto() media /data 400 treated as existing ready mediaId=" + mediaId);
+                        } else if (recovered.success()) {
+                            // Object exists but bytes are unusable: caller regenerates media id on next attempt.
+                            outer.responseCode = 409;
+                            outer.response = CluePhotoUploadPolicy.EXISTING_BACKEND_MEDIA_TOKEN
+                                    + "; media present but not ready";
+                            CTWarn(TAG, "PublishStoredPhoto() existing media not ready mediaId=" + mediaId);
+                            outer.setOperationIsDone(false);
+                            return outer;
+                        }
+                    } else if (result.success()) {
+                        mediaReady = true;
+                    }
+                }
                 if (result.success()) {
                     // Idempotent link: probe first so a prior success that timed out client-side does not 400.
                     CaltopoOp existingLink = PhotoOp(personal, teamId, CtsMethod_t.GET,
@@ -1845,7 +1925,7 @@ public class CaltopoSession {
                             new JSONObject().put("id", linkId).put("type", "Feature").put("geometry", geometry).put("properties", linkProps), false);
                         if (!result.success()) {
                             CTWarn(TAG, "PublishStoredPhoto() MapMediaObject POST code=" + result.responseCode +
-                                    " body=" + SafeResponseText(result.response));
+                                    " body=" + SafeResponseText(result.serverResponseBody != null ? result.serverResponseBody : result.response));
                             CaltopoOp recoveredLink = PhotoOp(personal, teamId, CtsMethod_t.GET,
                                     CALTOPO_MAP_API_V1 + mapId + "/MapMediaObject/" + linkId,
                                     null, false, new int[] {400, 404});
@@ -1855,10 +1935,12 @@ public class CaltopoSession {
                 }
                 outer.responseCode = result.responseCode;
                 String loginExpired = CluePublicationAuth.loginExpiredMessage(result.responseCode);
-                outer.response = loginExpired != null ? loginExpired : result.response;
+                outer.response = loginExpired != null ? loginExpired
+                        : (result.serverResponseBody != null && !result.serverResponseBody.isEmpty()
+                            ? result.serverResponseBody : result.response);
                 if (!result.success() && result.responseCode >= 400 && result.responseCode < 500) {
                     CTWarn(TAG, "PublishStoredPhoto() HTTP " + result.responseCode +
-                            " body=" + SafeResponseText(result.response));
+                            " body=" + SafeResponseText(outer.response));
                 }
                 CTDebug(TAG, "PublishStoredPhoto() result markerId='" + markerId + "' success=" +
                         result.success() + " code=" + result.responseCode);
@@ -1872,6 +1954,12 @@ public class CaltopoSession {
             return outer;
         });
         return outer;
+    }
+
+    private static boolean isExistingBackendMediaConflict(CaltopoOp op) {
+        if (op == null) return false;
+        String body = op.serverResponseBody != null ? op.serverResponseBody : op.response;
+        return CluePhotoUploadPolicy.isExistingBackendMediaError(op.responseCode, body);
     }
 
     static CaltopoOp BgAddPhotoWaypoint(CaltopoOp apwOp,

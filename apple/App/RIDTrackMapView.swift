@@ -106,6 +106,46 @@ struct AppleOperationalStatusChipLabel: View {
     }
 }
 
+struct PendingClueUploadsSheet: View {
+    let rows: [PendingClueUploadRow]
+    let onRetryNow: () -> Void
+    let onClose: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(rows) { row in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(row.title)
+                                .font(.headline)
+                            Text(row.designator.isEmpty ? "Captured \(row.capturedAt.formatted(date: .abbreviated, time: .shortened))" : "\(row.designator) · \(row.capturedAt.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            Text("Attempts \(row.uploadAttempts) · \(row.lastErrorPlain)")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                } footer: {
+                    Text("Clue Submit still uploads immediately. Retry wakes pending uploads without waiting for the next automatic attempt.")
+                }
+            }
+            .navigationTitle(rows.count == 1 ? "1 clue pending" : "\(rows.count) clues pending")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close", action: onClose)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Retry now", action: onRetryNow)
+                }
+            }
+        }
+    }
+}
+
 @MainActor
 final class AppleMapViewportMemory: ObservableObject {
     var streamFocusArrival = OperationalStreamFocusArrival()
@@ -642,6 +682,7 @@ struct RIDTrackMapView: View {
     @State private var clueError: String?
     @State private var showNotams = false
     @State private var showAirspace = false
+    @State private var showPendingClueUploads = false
     @State private var showLandRestrictions = false
     @State private var showMapOptions = false
     @State private var showMutualAidExport = false
@@ -841,6 +882,16 @@ struct RIDTrackMapView: View {
         }
         .onChange(of: automaticStreamPairingAircraftID, initial: true) { _, aircraftID in
             handleAutomaticStreamPairing(aircraftID)
+        }
+        .sheet(isPresented: $showPendingClueUploads) {
+            PendingClueUploadsSheet(
+                rows: clueStore.pendingUploadRows,
+                onRetryNow: {
+                    clueStore.retryPendingUploadsNow()
+                    showPendingClueUploads = false
+                },
+                onClose: { showPendingClueUploads = false }
+            )
         }
         .sheet(isPresented: $showNotams) { AppleNotamPanel(center: notams, location: locationProvider.lastLocation) }
         .sheet(isPresented: $showAirspace) {
@@ -2303,10 +2354,12 @@ struct RIDTrackMapView: View {
         .accessibilityLabel("Incident map")
         .accessibilityValue(liveViewMapTitle)
         if clueStore.pendingUploadCount > 0 {
-            AppleOperationalStatusChipLabel(
-                title: "\(clueStore.pendingUploadCount) clue\(clueStore.pendingUploadCount == 1 ? "" : "s") pending",
+            operationalStatusChip(
+                "\(clueStore.pendingUploadCount) clue\(clueStore.pendingUploadCount == 1 ? "" : "s") pending",
                 tone: .caution
-            )
+            ) {
+                showPendingClueUploads = true
+            }
             .accessibilityLabel("Pending clue uploads")
             .accessibilityValue("\(clueStore.pendingUploadCount)")
         }
