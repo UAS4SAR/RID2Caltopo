@@ -187,7 +187,7 @@ object AwaitingMapFlights {
             geometry.put(JSONArray().put(point.getDouble(0)).put(point.getDouble(1)).put(point.getDouble(2)))
         }
         CaltopoInterruptedTrackJournal.save(item.optString("map"), item.optString("remote"), id,
-            item.optString("label"), "", geometry)
+            item.optString("label"), "", geometry, firstTime(item))
     }
     @JvmStatic fun reconcile(map: String, team: String) {
         val ctxt = R2CApplication.getAppCtxt()

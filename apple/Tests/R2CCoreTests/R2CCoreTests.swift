@@ -1064,6 +1064,71 @@ func caltopoConnectSnapshotAdoptsExistingFoldersByTrimmedCaseInsensitiveTitle() 
 }
 
 @Test
+func caltopoFlightArchiveDateUsesEarliestObservation() {
+    let early = Date(timeIntervalSince1970: 1_721_779_200) // 24 Jul 2024 UTC
+    let late = Date(timeIntervalSince1970: 1_721_865_600) // 25 Jul 2024 UTC
+    let observations = [
+        RidObservation(source: .bluetoothLegacy, aircraftId: "RID", receivedAt: late, latitude: 1, longitude: 2),
+        RidObservation(source: .bluetoothLegacy, aircraftId: "RID", receivedAt: early, latitude: 1, longitude: 2),
+    ]
+    #expect(CaltopoTrackFolderResolver.flightArchiveDate(observations: observations) == early)
+    #expect(
+        CaltopoTrackFolderResolver.archiveFolderName(
+            trackFolderName: "Drone Tracks",
+            date: CaltopoTrackFolderResolver.flightArchiveDate(observations: observations),
+            timeZone: TimeZone(secondsFromGMT: 0)!
+        ) == "Drone Tracks 24Jul"
+    )
+}
+
+@Test
+func caltopoAdoptOrCreateArchiveFolderReusesFlightDateFolderNotTodayCache() async throws {
+    let flightDate = Date(timeIntervalSince1970: 1_721_779_200) // 24 Jul 2024 UTC
+    let snapshot = CaltopoArtifactSnapshot(folders: [
+        CaltopoArtifactFolder(id: "archive-today", title: "Drone Tracks 25Jul", initiallyVisible: false),
+        CaltopoArtifactFolder(id: "archive-past", title: " drone tracks 24jul ", initiallyVisible: false),
+    ])
+    var created: [String] = []
+    let resolved = try await CaltopoTrackFolderResolver.adoptOrCreateArchiveFolderID(
+        trackFolderName: "Drone Tracks",
+        flightDate: flightDate,
+        timeZone: TimeZone(secondsFromGMT: 0)!,
+        // Session cache for a different day must not win over the flight-day title.
+        existingArchiveID: nil,
+        snapshot: snapshot,
+        createFolder: { title, _, _ in
+            created.append(title)
+            return "created-\(title)"
+        }
+    )
+    #expect(resolved == "archive-past")
+    #expect(created.isEmpty)
+}
+
+@Test
+func caltopoAdoptOrCreateArchiveFolderCreatesFlightDateFolderWhenMissing() async throws {
+    let flightDate = Date(timeIntervalSince1970: 1_721_779_200) // 24 Jul 2024 UTC
+    var created: [String] = []
+    let resolved = try await CaltopoTrackFolderResolver.adoptOrCreateArchiveFolderID(
+        trackFolderName: "Drone Tracks",
+        flightDate: flightDate,
+        timeZone: TimeZone(secondsFromGMT: 0)!,
+        existingArchiveID: nil,
+        snapshot: CaltopoArtifactSnapshot(folders: [
+            CaltopoArtifactFolder(id: "archive-today", title: "Drone Tracks 25Jul", initiallyVisible: false),
+        ]),
+        createFolder: { title, visible, labelVisible in
+            created.append(title)
+            #expect(visible == false)
+            #expect(labelVisible == false)
+            return "created-\(title)"
+        }
+    )
+    #expect(resolved == "created-Drone Tracks 24Jul")
+    #expect(created == ["Drone Tracks 24Jul"])
+}
+
+@Test
 func caltopoFolderResolutionPrefersAlreadyAdoptedIdsBeforeCreate() async throws {
     let resolver = CaltopoTrackFolderResolver()
     let probe = CaltopoFolderResolverProbe(snapshot: CaltopoArtifactSnapshot())

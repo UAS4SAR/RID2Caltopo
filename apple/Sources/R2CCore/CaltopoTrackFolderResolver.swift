@@ -134,6 +134,42 @@ public actor CaltopoTrackFolderResolver {
         return normalizedTrackFolderName(trackFolderName) + " " + formatter.string(from: date)
     }
 
+    /// Calendar day used for "Drone Tracks &lt;ddMMM&gt;": earliest observation, else fallback.
+    public static func flightArchiveDate(
+        observations: [RidObservation],
+        fallback: Date = Date()
+    ) -> Date {
+        observations.map(\.receivedAt).min() ?? fallback
+    }
+
+    /// Adopt an existing dated archive folder from a connect/full-read snapshot, or create it.
+    /// Never returns a blank id (map root). Does not create the active "Drone Tracks" folder.
+    public static func adoptOrCreateArchiveFolderID(
+        trackFolderName: String,
+        flightDate: Date,
+        timeZone: TimeZone = .current,
+        existingArchiveID: String? = nil,
+        snapshot: CaltopoArtifactSnapshot,
+        createFolder: (String, Bool, Bool) async throws -> String
+    ) async throws -> String {
+        let archiveName = archiveFolderName(
+            trackFolderName: trackFolderName,
+            date: flightDate,
+            timeZone: timeZone
+        )
+        let known: String? = {
+            let trimmed = existingArchiveID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }()
+        // Prefer a same-title match from the full read over creating a duplicate.
+        if let adopted = preferredFolderID(named: archiveName, in: snapshot) {
+            return adopted
+        }
+        // Caller may pass a session-cached id only when it already names this flight day.
+        if let known { return known }
+        return try await createFolder(archiveName, false, false)
+    }
+
     public static func normalizedTrackFolderNameForAdoption(_ value: String) -> String {
         normalizedTrackFolderName(value)
     }

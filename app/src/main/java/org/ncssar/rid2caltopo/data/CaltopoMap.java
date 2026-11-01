@@ -167,6 +167,9 @@ public class CaltopoMap {
     private static final DelayedExec InitialMarkerPublishDelay = new DelayedExec();
     private static String FolderId;
     private static volatile String ArchiveFolderId;
+    /** Session cache of dated archive folder ids keyed by normalized title (lowercased). */
+    private static final java.util.concurrent.ConcurrentHashMap<String, String> ArchiveFolderIdsByTitle =
+            new java.util.concurrent.ConcurrentHashMap<>();
     /** Serializes lazy Drone Tracks folder creation across track/clue callers. */
     private static final Object MapArtifactsLock = new Object();
     private static volatile boolean MapArtifactsEnsureInFlight = false;
@@ -973,32 +976,42 @@ public class CaltopoMap {
 
     /**
      * Internet restored: retry interrupted / finished-track Shape archives.
-     * Uses stored map + archive folder even if MapStatus has not flipped to up yet
+     * Uses stored map even if MapStatus has not flipped to up yet
      * (validated Internet often precedes the next successful map poll).
+     * Each pending flight resolves its own dated archive folder.
      */
     public static void recoverInterruptedTracksOnInternetRestored() {
         CaltopoInterruptedTrackJournal.clearInFlightForConnectivityRestore();
         String mapId = GetMapId();
-        String archiveFolder = ArchiveFolderId;
-        if (mapId == null || mapId.isEmpty() || archiveFolder == null || archiveFolder.isEmpty()) {
-            CTDebug(TAG, "recoverInterruptedTracksOnInternetRestored(): skip — map/archive folder not ready");
+        if (mapId == null || mapId.isEmpty()) {
+            CTDebug(TAG, "recoverInterruptedTracksOnInternetRestored(): skip — map not ready");
             return;
         }
         if (GetMapStatus() == MapStatusListener.mapStatus.up) {
             LookForExistingLiveTracks();
             return;
         }
-        // Map not yet "up", but folders from the prior session are still known — recover
+        // Map not yet "up", but the prior session's artifact snapshot is still known — recover
         // finished-track journals immediately so a hung offline POST cannot delay them.
         final R2cRuntime runtime = getCurrentRuntime();
         final java.util.List<JSONObject> features = GetArtifactFeatureSnapshot();
         CaltopoRecoveryWork.execute(() -> {
             try {
-                CaltopoInterruptedTrackJournal.recover(mapId, archiveFolder, runtime, features);
+                recoverInterruptedTracks(mapId, runtime, features);
             } catch (Exception error) {
                 CTWarn(TAG, "Interrupted LiveTrack recovery after reconnect raised", error);
             }
         });
+    }
+
+    /** Recover pending Shape archives into each flight's dated Drone Tracks folder. */
+    @NonNull
+    static java.util.Set<String> recoverInterruptedTracks(
+            @NonNull String mapId,
+            @NonNull R2cRuntime runtime,
+            @NonNull java.util.List<JSONObject> features) {
+        return CaltopoInterruptedTrackJournal.recover(
+                mapId, runtime, features, CaltopoMap::resolveArchiveFolderIdForFlight);
     }
 
     /** Pending finished-track archives + owned LiveTracks for connectivity-flush logging. */
@@ -1076,6 +1089,7 @@ public class CaltopoMap {
         PeerIdMap.clear();
         FolderId = null;
         ArchiveFolderId = null;
+        ArchiveFolderIdsByTitle.clear();
         DeviceMarkerAllowed = false;
         LastErrorString = null;
         completeInitialFullRead();
@@ -1317,6 +1331,7 @@ public class CaltopoMap {
                                 "adopted folder title=%s id=%s", FolderName, FolderId));
                     } else if (ArchiveFolderId == null && folderTitlesMatch(title, archiveFolderName)) {
                         ArchiveFolderId = folderId;
+                        rememberArchiveFolder(archiveFolderName, folderId);
                         CTInfo(TAG, String.format(Locale.US,
                                 "adopted folder title=%s id=%s", archiveFolderName, ArchiveFolderId));
                     }
@@ -1326,13 +1341,14 @@ public class CaltopoMap {
         }
 
         // Connecting must not create folders. Reuse any that already exist on the map;
-        // ensureMapArtifacts creates them lazily on first track or clue upload.
-        if (FolderId != null && ArchiveFolderId != null) {
+        // ensureMapArtifacts / resolveArchiveFolderIdForFlight create them lazily.
+        // Idle LiveTrack recovery can start once the active folder is known; each
+        // finished track resolves its own dated archive folder.
+        if (FolderId != null) {
             LookForExistingLiveTracks();
         } else {
             CTInfo(TAG, String.format(Locale.US,
-                    "parseMap() folders not complete yet active=%s archive=%s; deferring creation until first track/clue",
-                    FolderId != null ? FolderId : "missing",
+                    "parseMap() active folder missing; archive=%s; deferring LiveTrack recovery until first track/clue",
                     ArchiveFolderId != null ? ArchiveFolderId : "missing"));
         }
     }
@@ -1457,20 +1473,9 @@ public class CaltopoMap {
                     if (!recoveryContextIsCurrent(requestMapId, refreshGeneration)) return;
                     AwaitingMapFlights.reconcile(requestMapId, scope);
                     if (!recoveryContextIsCurrent(requestMapId, refreshGeneration)) return;
-                    String archiveFolder = ArchiveFolderId;
-                    if (archiveFolder == null || archiveFolder.isEmpty()) {
-                        // Reuse a folder already on the map; create only for journaled recovery.
-                        adoptExistingTrackFoldersFromArtifacts();
-                        archiveFolder = ArchiveFolderId;
-                    }
-                    if ((archiveFolder == null || archiveFolder.isEmpty()) &&
-                            CaltopoInterruptedTrackJournal.hasPendingForMap(requestMapId)) {
-                        ensureMapArtifacts("first-track");
-                        archiveFolder = ArchiveFolderId;
-                    }
-                    if (archiveFolder == null || archiveFolder.isEmpty()) return;
-                    CaltopoInterruptedTrackJournal.recover(
-                            requestMapId, archiveFolder, runtime, GetArtifactFeatureSnapshot());
+                    if (!CaltopoInterruptedTrackJournal.hasPendingForMap(requestMapId)) return;
+                    // Per-flight dated folders: adopt from the full read, create only if missing.
+                    recoverInterruptedTracks(requestMapId, runtime, GetArtifactFeatureSnapshot());
                 } catch (Exception error) {
                     CTError(TAG, "Flight recovery deferred; journal retained for retry.", error);
                 } finally {
@@ -2053,17 +2058,16 @@ public class CaltopoMap {
     }
 
     private static void LookForExistingLiveTracks() {
-        if (null == FolderId || null == ArchiveFolderId) return;
+        if (null == FolderId) return;
         final String mapId = GetMapId();
-        final String archiveFolder = ArchiveFolderId;
         final long generation = MapRefreshGeneration;
         final R2cRuntime runtime = getCurrentRuntime();
         CaltopoRecoveryWork.execute(() -> {
             if (!recoveryContextIsCurrent(mapId, generation)) return;
             final java.util.Set<String> recoveringTrackIds;
             try {
-                recoveringTrackIds = CaltopoInterruptedTrackJournal.recover(
-                        mapId, archiveFolder, runtime, GetArtifactFeatureSnapshot());
+                recoveringTrackIds = recoverInterruptedTracks(
+                        mapId, runtime, GetArtifactFeatureSnapshot());
             } catch (Exception error) {
                 CTError(TAG, "Startup flight recovery deferred; journal retained for retry.", error);
                 CaltopoRecoveryWork.onMain(() -> {
@@ -2122,7 +2126,8 @@ public class CaltopoMap {
             // found a feature in the drone folder old enough to archive.
             CTDebug(TAG, String.format(Locale.US, "%s:%s last updated %.3f seconds ago - archiving.",
                     featureClass, title, (double)trackAgeInMilliseconds/1000.0));
-            ArchiveFeature(feature, featureClass, timeNowInMilliseconds, 0);
+            ArchiveFeature(feature, featureClass, timeNowInMilliseconds, 0,
+                    lastUpdatedInMilliseconds > 0L ? lastUpdatedInMilliseconds : timeNowInMilliseconds);
         }
         // The initial snapshot is current. Normal polling will pick up subsequent
         // changes without making another read a prerequisite for connection.
@@ -2135,14 +2140,33 @@ public class CaltopoMap {
      */
     public static void ArchiveFeature(@NonNull JSONObject feature, @NonNull String featureClass,
                                long timeNowInMilliseconds, long maxWaitInMilliseconds) {
-        ArchiveFeature(feature, featureClass, timeNowInMilliseconds, maxWaitInMilliseconds, null);
+        // Unknown flight day → today's dated folder (0 → resolveArchiveFolderIdForFlight today).
+        ArchiveFeature(feature, featureClass, timeNowInMilliseconds, maxWaitInMilliseconds, 0L, null);
+    }
+
+    public static void ArchiveFeature(@NonNull JSONObject feature, @NonNull String featureClass,
+                               long timeNowInMilliseconds, long maxWaitInMilliseconds,
+                               long flightStartedAtMs) {
+        ArchiveFeature(feature, featureClass, timeNowInMilliseconds, maxWaitInMilliseconds,
+                flightStartedAtMs, null);
     }
 
     static void ArchiveFeature(@NonNull JSONObject feature, @NonNull String featureClass,
                                long timeNowInMilliseconds, long maxWaitInMilliseconds,
                                @Nullable Consumer<Boolean> onComplete) {
-        ArchiveFeatureOnMap(feature, featureClass, timeNowInMilliseconds, maxWaitInMilliseconds,
-                GetMapId(), ArchiveFolderId, getCurrentRuntime(), onComplete);
+        ArchiveFeature(feature, featureClass, timeNowInMilliseconds, maxWaitInMilliseconds,
+                0L, onComplete);
+    }
+
+    static void ArchiveFeature(@NonNull JSONObject feature, @NonNull String featureClass,
+                               long timeNowInMilliseconds, long maxWaitInMilliseconds,
+                               long flightStartedAtMs,
+                               @Nullable Consumer<Boolean> onComplete) {
+        CaltopoRecoveryWork.offMainArchive(() -> {
+            String destinationFolder = resolveArchiveFolderIdForFlight(flightStartedAtMs);
+            ArchiveFeatureOnMap(feature, featureClass, timeNowInMilliseconds, maxWaitInMilliseconds,
+                    GetMapId(), destinationFolder, getCurrentRuntime(), onComplete);
+        });
     }
 
     static void ArchiveFeatureOnMap(@NonNull JSONObject feature, @NonNull String featureClass,
@@ -2282,25 +2306,19 @@ public class CaltopoMap {
         boolean createdAny = false;
         try {
             adoptExistingTrackFoldersFromArtifacts();
-            if (!foldersReady()) {
-                String archiveName = archiveFolderName(FolderName, new Date());
-                if (blankToNull(FolderId) == null) {
-                    String created = createFolderBlocking(FolderName, true, true);
-                    if (created != null) {
-                        FolderId = created;
-                        createdAny = true;
-                    }
+            if (blankToNull(FolderId) == null) {
+                String created = createFolderBlocking(FolderName, true, true);
+                if (created != null) {
+                    FolderId = created;
+                    createdAny = true;
                 }
-                if (blankToNull(ArchiveFolderId) == null) {
-                    String created = createFolderBlocking(archiveName, false, false);
-                    if (created != null) {
-                        ArchiveFolderId = created;
-                        createdAny = true;
-                    }
-                }
-                // Another publisher may have won the race; prefer existing titles.
-                adoptExistingTrackFoldersFromArtifacts();
             }
+            if (blankToNull(ArchiveFolderId) == null) {
+                // Today's dated folder: adopt from the full read, or create once.
+                resolveArchiveFolderIdForFlightLocked(System.currentTimeMillis());
+            }
+            // Another publisher may have won the race; prefer existing titles.
+            adoptExistingTrackFoldersFromArtifacts();
             if (createdAny && foldersReady()) {
                 CTInfo(TAG, String.format(Locale.US,
                         "Created map artifacts reason=%s active=%s archive=%s folder='%s'",
@@ -2313,6 +2331,101 @@ public class CaltopoMap {
                 MapArtifactsLock.notifyAll();
             }
         }
+    }
+
+    /**
+     * Dated "Drone Tracks &lt;ddMMM&gt;" folder for a flight: adopt from the full-read
+     * artifact snapshot when present, otherwise create. Never returns blank (map root).
+     * {@code flightStartedAtMs <= 0} uses today.
+     */
+    @Nullable
+    public static String resolveArchiveFolderIdForFlight(long flightStartedAtMs) {
+        if (onAndroidUiThread()) {
+            CTWarn(TAG, "resolveArchiveFolderIdForFlight(): refused on the UI thread");
+            return null;
+        }
+        if (ShutdownInProgress || DisconnectInProgress || GetMapId().isEmpty()) {
+            CTWarn(TAG, "resolveArchiveFolderIdForFlight(): map unavailable");
+            return null;
+        }
+        synchronized (MapArtifactsLock) {
+            while (MapArtifactsEnsureInFlight) {
+                try {
+                    MapArtifactsLock.wait(30_000L);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return blankToNull(ArchiveFolderId);
+                }
+            }
+            MapArtifactsEnsureInFlight = true;
+        }
+        try {
+            return resolveArchiveFolderIdForFlightLocked(flightStartedAtMs);
+        } finally {
+            synchronized (MapArtifactsLock) {
+                MapArtifactsEnsureInFlight = false;
+                MapArtifactsLock.notifyAll();
+            }
+        }
+    }
+
+    @Nullable
+    private static String resolveArchiveFolderIdForFlightLocked(long flightStartedAtMs) {
+        long started = flightStartedAtMs > 0L ? flightStartedAtMs : System.currentTimeMillis();
+        Date flightDate = new Date(started);
+        String archiveName = archiveFolderName(FolderName, flightDate);
+        String todayName = archiveFolderName(FolderName, new Date());
+        if (blankToNull(ArchiveFolderId) != null && folderTitlesMatch(archiveName, todayName)) {
+            rememberArchiveFolder(archiveName, ArchiveFolderId);
+            return ArchiveFolderId;
+        }
+        String cached = ArchiveFolderIdsByTitle.get(archiveFolderCacheKey(archiveName));
+        if (blankToNull(cached) != null) {
+            cacheArchiveFolderIfToday(flightDate, cached);
+            return cached;
+        }
+        String found = folderIdInArtifacts(archiveName);
+        if (found != null) {
+            rememberArchiveFolder(archiveName, found);
+            cacheArchiveFolderIfToday(flightDate, found);
+            CTInfo(TAG, String.format(Locale.US,
+                    "adopted folder title=%s id=%s", archiveName, found));
+            return found;
+        }
+        String created = createFolderBlocking(archiveName, false, false);
+        // Prefer a same-title folder that appeared while create was in flight.
+        String adopted = folderIdInArtifacts(archiveName);
+        String resolved = blankToNull(adopted != null ? adopted : created);
+        if (resolved != null) {
+            rememberArchiveFolder(archiveName, resolved);
+            cacheArchiveFolderIfToday(flightDate, resolved);
+            if (adopted == null || adopted.equals(created)) {
+                CTInfo(TAG, String.format(Locale.US,
+                        "Created map artifacts reason=archive-flight active=%s archive=%s folder='%s'",
+                        FolderId != null ? FolderId : "missing", resolved, archiveName));
+            } else {
+                CTInfo(TAG, String.format(Locale.US,
+                        "adopted folder title=%s id=%s", archiveName, resolved));
+            }
+        }
+        return resolved;
+    }
+
+    private static void cacheArchiveFolderIfToday(@NonNull Date flightDate, @NonNull String folderId) {
+        String todayName = archiveFolderName(FolderName, new Date());
+        String flightName = archiveFolderName(FolderName, flightDate);
+        if (folderTitlesMatch(todayName, flightName)) {
+            ArchiveFolderId = folderId;
+        }
+    }
+
+    private static void rememberArchiveFolder(@NonNull String archiveName, @NonNull String folderId) {
+        ArchiveFolderIdsByTitle.put(archiveFolderCacheKey(archiveName), folderId);
+    }
+
+    @NonNull
+    private static String archiveFolderCacheKey(@NonNull String archiveName) {
+        return archiveName.trim().toLowerCase(Locale.US);
     }
 
     /** Enable periodic device-marker publication after the first live track starts. */
@@ -2340,6 +2453,7 @@ public class CaltopoMap {
             String found = folderIdInArtifacts(archiveName);
             if (found != null) {
                 ArchiveFolderId = found;
+                rememberArchiveFolder(archiveName, found);
                 CTInfo(TAG, String.format(Locale.US,
                         "adopted folder title=%s id=%s", archiveName, ArchiveFolderId));
             }

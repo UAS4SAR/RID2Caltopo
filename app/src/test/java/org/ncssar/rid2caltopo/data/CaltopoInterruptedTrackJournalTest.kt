@@ -8,6 +8,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import java.io.File
+import java.util.Calendar
+import java.util.GregorianCalendar
 
 class CaltopoInterruptedTrackJournalTest {
     private lateinit var journalFile: File
@@ -182,6 +184,49 @@ class CaltopoInterruptedTrackJournalTest {
         CaltopoInterruptedTrackJournal.recover("map", "folder", fixture.runtime, listOf(shape))
         assertEquals(1, fixture.calTopoSessionGateway.countOperations("editObject"))
         assertEquals(0, CaltopoInterruptedTrackJournal.entriesForTesting().length())
+    }
+
+    @Test
+    fun retriedArchiveUsesFlightDateFolderNotSessionTodayFolder() {
+        val flightStartedAtMs = GregorianCalendar(2024, Calendar.JULY, 24, 12, 0).timeInMillis
+        CaltopoInterruptedTrackJournal.save(
+            "map",
+            "RID",
+            "flight-past",
+            "Flight",
+            "",
+            JSONArray("[[-121,39,500]]"),
+            flightStartedAtMs,
+        )
+        val persisted = CaltopoInterruptedTrackJournal.entriesForTesting().getJSONObject(0)
+        assertEquals(flightStartedAtMs, persisted.getLong("flightStartedAtMs"))
+        val fixture = TestR2cRuntimeFactory.create("flight-date-folder")
+        val chosen = java.util.concurrent.atomic.AtomicReference<String>()
+        CaltopoInterruptedTrackJournal.recover(
+            "map",
+            fixture.runtime,
+            emptyList(),
+        ) { started ->
+            chosen.set(if (started == flightStartedAtMs) "archive-24jul" else "archive-today")
+            chosen.get()
+        }
+        assertEquals("archive-24jul", chosen.get())
+        assertEquals(1, fixture.calTopoSessionGateway.countOperations("editObject"))
+        val feature = fixture.calTopoSessionGateway.snapshotOperations()
+            .first { it.kind == "editObject" }
+            .payload
+        assertEquals("archive-24jul", feature?.optJSONObject("properties")?.optString("folderId"))
+    }
+
+    @Test
+    fun retriedArchiveSkipsWhenDatedFolderUnavailableRatherThanMapRoot() {
+        CaltopoInterruptedTrackJournal.save(
+            "map", "RID", "flight-root", "Flight", "", JSONArray("[[-121,39,500]]"), 1_721_779_200_000L,
+        )
+        val fixture = TestR2cRuntimeFactory.create("no-folder")
+        CaltopoInterruptedTrackJournal.recover("map", fixture.runtime, emptyList()) { "" }
+        assertEquals(0, fixture.calTopoSessionGateway.countOperations("editObject"))
+        assertEquals(1, CaltopoInterruptedTrackJournal.entriesForTesting().length())
     }
 
 }

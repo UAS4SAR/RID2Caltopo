@@ -427,6 +427,81 @@ class CaltopoMapTest {
         }
     }
 
+    @Test fun resolveArchiveFolderIdForFlightAdoptsExistingDatedFolderNotTodayCache() {
+        mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.up)
+        folderIdField.set(null, "active-today")
+        archiveFolderIdField.set(null, "archive-today")
+        val folderNameField = CaltopoMap::class.java.getDeclaredField("FolderName").apply { isAccessible = true }
+        val previousName = folderNameField.get(null)
+        val flightDate = GregorianCalendar(2024, Calendar.JULY, 24, 12, 0).time
+        try {
+            folderNameField.set(null, "Drone Tracks")
+            val pastName = CaltopoMap.archiveFolderName("Drone Tracks", flightDate)
+            val features = org.json.JSONArray()
+                .put(org.json.JSONObject()
+                    .put("id", "active-today")
+                    .put("properties", org.json.JSONObject()
+                        .put("class", "Folder")
+                        .put("title", "Drone Tracks")))
+                .put(org.json.JSONObject()
+                    .put("id", "archive-today")
+                    .put("properties", org.json.JSONObject()
+                        .put("class", "Folder")
+                        .put("title", CaltopoMap.archiveFolderName("Drone Tracks", java.util.Date()))))
+                .put(org.json.JSONObject()
+                    .put("id", "archive-past")
+                    .put("properties", org.json.JSONObject()
+                        .put("class", "Folder")
+                        .put("title", " ${pastName.uppercase(java.util.Locale.US)} ")))
+            reconcileArtifactStoreMethod.invoke(
+                null,
+                org.json.JSONObject().put("features", features),
+                "full",
+            )
+            val resolved = CaltopoMap.resolveArchiveFolderIdForFlight(flightDate.time)
+            assertEquals("archive-past", resolved)
+            assertEquals("archive-today", CaltopoMap.GetArchiveFolderId())
+            assertEquals(0, fixture.calTopoSessionGateway.countOperations("addFolder"))
+        } finally {
+            folderNameField.set(null, previousName)
+        }
+    }
+
+    @Test fun resolveArchiveFolderIdForFlightCreatesDatedFolderWhenMissing() {
+        mapStatusField.set(null, CaltopoMap.MapStatusListener.mapStatus.up)
+        folderIdField.set(null, "active")
+        archiveFolderIdField.set(null, null)
+        val folderNameField = CaltopoMap::class.java.getDeclaredField("FolderName").apply { isAccessible = true }
+        val previousName = folderNameField.get(null)
+        val flightDate = GregorianCalendar(2024, Calendar.JULY, 23, 18, 0).time
+        try {
+            folderNameField.set(null, "Drone Tracks")
+            reconcileArtifactStoreMethod.invoke(
+                null,
+                org.json.JSONObject().put(
+                    "features",
+                    org.json.JSONArray()
+                        .put(org.json.JSONObject()
+                            .put("id", "active")
+                            .put("properties", org.json.JSONObject()
+                                .put("class", "Folder")
+                                .put("title", "Drone Tracks"))),
+                ),
+                "full",
+            )
+            val pastName = CaltopoMap.archiveFolderName("Drone Tracks", flightDate)
+            val resolved = CaltopoMap.resolveArchiveFolderIdForFlight(flightDate.time)
+            assertEquals("folder-$pastName", resolved)
+            assertEquals(1, fixture.calTopoSessionGateway.countOperations("addFolder"))
+            // Retry must reuse the created/adopted id, not POST another folder.
+            assertEquals("folder-$pastName", CaltopoMap.resolveArchiveFolderIdForFlight(flightDate.time))
+            assertEquals(1, fixture.calTopoSessionGateway.countOperations("addFolder"))
+            assertEquals(null, CaltopoMap.GetArchiveFolderId())
+        } finally {
+            folderNameField.set(null, previousName)
+        }
+    }
+
     @Test fun clueFolderSendWaitsForAdoptedFolderAfterInitialRead() {
         val ensured = java.util.concurrent.atomic.AtomicInteger(0)
         val folder = ClueTrackFolderSend.folderIdForSend(
@@ -745,6 +820,9 @@ class CaltopoMapTest {
         fullMapRefreshPendingField.setBoolean(null, false)
         mapRefreshGenerationField.setLong(null, 1L)
         resetArtifactStoreMethod.invoke(null, "CaltopoMapTest.setUp")
+        @Suppress("UNCHECKED_CAST")
+        (CaltopoMap::class.java.getDeclaredField("ArchiveFolderIdsByTitle").apply { isAccessible = true }
+            .get(null) as java.util.concurrent.ConcurrentHashMap<String, String>).clear()
         MapOfflinePrepRuntime.resetForTesting()
         MappingWorkRuntime.resetForTesting()
         CaltopoMap.resetAutoQuitRelocationForTesting()

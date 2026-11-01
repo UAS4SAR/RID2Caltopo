@@ -700,8 +700,9 @@ actor AppleCaltopoPublisher {
             // prevent conversion because the durable identity is already known.
             if let pendingStart { _ = try? await pendingStart.value }
             guard generation == configurationGeneration else { return nil }
-            _ = try await ensureMapArtifacts(reason: .firstTrack)
-            guard generation == configurationGeneration, let archiveFolderID else { return nil }
+            let flightDate = CaltopoTrackFolderResolver.flightArchiveDate(observations: saved)
+            let archiveFolderID = try await resolveArchiveFolderID(for: flightDate)
+            guard generation == configurationGeneration, !archiveFolderID.isEmpty else { return nil }
             try await client.archiveLiveTrack(
                 liveTrackID: id, label: label, observations: saved,
                 folderID: archiveFolderID, description: description)
@@ -903,17 +904,14 @@ actor AppleCaltopoPublisher {
         if generation == configurationGeneration && !configurationTransitionInFlight { await retryMarkerCleanup() }
         guard generation == configurationGeneration, !configurationTransitionInFlight,
               !pendingInterruptedRecoveries.isEmpty, let client else { return }
-        do {
-            _ = try await ensureMapArtifacts(reason: .firstTrack)
-            guard generation == configurationGeneration else { return }
-            await recoverInterruptedPublications(client: client)
-        } catch {
-            AppleLog.warning("CalTopo", "Pending track recovery deferred: \(error.localizedDescription)")
-        }
+        // Active folder is optional for Shape archives; each flight resolves its own dated folder.
+        _ = try? await ensureMapArtifacts(reason: .firstTrack)
+        guard generation == configurationGeneration else { return }
+        await recoverInterruptedPublications(client: client)
     }
 
     private func recoverInterruptedPublications(client: CaltopoLiveClient) async {
-        guard !recoveryInFlight, let archiveFolderID, !pendingInterruptedRecoveries.isEmpty else { return }
+        guard !recoveryInFlight, !pendingInterruptedRecoveries.isEmpty else { return }
         recoveryInFlight = true
         defer { recoveryInFlight = false }
         let generation = configurationGeneration
@@ -924,6 +922,17 @@ actor AppleCaltopoPublisher {
             guard !requestedLiveTrackIDs.values.contains(entry.liveTrackID),
                   !liveTrackIDs.values.contains(entry.liveTrackID) else { continue }
             do {
+                let flightDate = CaltopoTrackFolderResolver.flightArchiveDate(
+                    observations: entry.observations
+                )
+                let archiveFolderID = try await resolveArchiveFolderID(for: flightDate)
+                guard !archiveFolderID.isEmpty else {
+                    AppleLog.warning(
+                        "CalTopo",
+                        "Interrupted LiveTrack archive deferred — dated folder unavailable liveTrackId=\(entry.liveTrackID)"
+                    )
+                    continue
+                }
                 try await client.archiveLiveTrack(
                     liveTrackID: entry.liveTrackID,
                     label: entry.label,
@@ -948,6 +957,46 @@ actor AppleCaltopoPublisher {
         if generation == configurationGeneration {
             pendingInterruptedRecoveries.removeAll { completed.contains($0.liveTrackID) }
         }
+    }
+
+    /// Dated "Drone Tracks &lt;ddMMM&gt;" for a flight: adopt from the full read, or create.
+    /// Never archives at the map root or into a duplicate same-title folder.
+    private func resolveArchiveFolderID(for flightDate: Date) async throws -> String {
+        guard let client else { throw CancellationError() }
+        let generation = configurationGeneration
+        let folderName = trackFolderName
+        let archiveName = CaltopoTrackFolderResolver.archiveFolderName(
+            trackFolderName: folderName,
+            date: flightDate
+        )
+        let todayName = CaltopoTrackFolderResolver.archiveFolderName(trackFolderName: folderName)
+        let knownForToday =
+            CaltopoTrackFolderResolver.folderTitlesMatch(archiveName, expected: todayName)
+            ? archiveFolderID
+            : nil
+        let snapshot = try await client.fetchMapArtifacts(refresh: false)
+        let resolved = try await CaltopoTrackFolderResolver.adoptOrCreateArchiveFolderID(
+            trackFolderName: folderName,
+            flightDate: flightDate,
+            existingArchiveID: knownForToday,
+            snapshot: snapshot,
+            createFolder: { title, visible, labelVisible in
+                try await client.createFolder(
+                    title: title,
+                    visible: visible,
+                    labelVisible: labelVisible
+                )
+            }
+        )
+        guard generation == configurationGeneration else { throw CancellationError() }
+        if CaltopoTrackFolderResolver.folderTitlesMatch(archiveName, expected: todayName) {
+            if archiveFolderID == nil { archiveFolderID = resolved }
+        }
+        if let adopted = CaltopoTrackFolderResolver.adoptedFolderID(named: archiveName, in: snapshot),
+           adopted == resolved {
+            AppleLog.info("CalTopo", "adopted folder title=\(archiveName) id=\(adopted)")
+        }
+        return resolved
     }
 
     private static func normalizedTrackFolderName(_ value: String) -> String {
