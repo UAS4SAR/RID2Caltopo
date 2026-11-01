@@ -129,9 +129,15 @@ object ClueTrackDurabilityIntegrity {
             val image = File(root, imageName)
             if (image.isFile) continue
             missingPhotos++
-            if (json.optString("uploadState") != "failed") {
+            val error = json.optString("lastUploadError")
+            val alreadyTerminal = json.optString("uploadState") == "failed" &&
+                org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.stopsAutoRetry(error)
+            if (!alreadyTerminal) {
                 json.put("uploadState", "failed")
-                json.put("lastUploadError", "missing-photo")
+                json.put(
+                    "lastUploadError",
+                    org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.PHOTO_MISSING_MESSAGE,
+                )
             }
         }
         if (orphansReindexed > 0 || missingPhotos > 0 || !indexFile.isFile) {

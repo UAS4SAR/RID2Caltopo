@@ -56,6 +56,19 @@ class CluePhotoUploadPolicyTest {
         )
         assertEquals("Waiting to upload", CluePhotoUploadPolicy.plainUploadError(""))
         assertEquals("Needs attention", CluePhotoUploadPolicy.plainUploadError("Needs attention"))
+        assertEquals("Photo missing", CluePhotoUploadPolicy.plainUploadError("Photo missing"))
+        assertEquals("Photo missing", CluePhotoUploadPolicy.plainUploadError("missing-photo"))
+    }
+
+    @Test
+    fun missingPhotoStopsAutoRetryAndNotesLostPhotoOnce() {
+        assertTrue(CluePhotoUploadPolicy.stopsAutoRetry("Photo missing"))
+        assertTrue(CluePhotoUploadPolicy.stopsAutoRetry("Needs attention"))
+        assertTrue(CluePhotoUploadPolicy.stopsAutoRetry("missing-photo"))
+        assertFalse(CluePhotoUploadPolicy.stopsAutoRetry("Upload timed out; will retry"))
+        val noted = CluePhotoUploadPolicy.descriptionWithLostPhotoNote("Found beside trail")
+        assertTrue(CluePhotoUploadPolicy.descriptionNotesLostPhoto(noted))
+        assertEquals(noted, CluePhotoUploadPolicy.descriptionWithLostPhotoNote(noted))
     }
 
     @Test

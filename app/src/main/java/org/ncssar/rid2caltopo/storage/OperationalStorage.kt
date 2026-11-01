@@ -481,12 +481,16 @@ internal object OperationalStorage {
     /**
      * Clues hydrate is always a union merge. Never replace the working projection with the
      * archive, and never delete clue images or index entries during prepare/retry/reconcile.
+     *
+     * Clue photos are retained operational data: the live tree stays under durable
+     * app-private `files/clues`, never under clearable cache `operational-work`.
      */
     private fun prepareCluesProjection(context: Context, value: Store, area: Area, hydrationScratch: File, checkSelection: () -> Unit) {
         val work = value.work
         val hydrationStarted = android.os.SystemClock.elapsedRealtime()
         checkSelection()
-        val destination = File(work, area.id)
+        val priorCacheRoots = priorClueWorkingRoots(context, value, area)
+        val destination = materializeDurableCluesRoot(area, priorCacheRoots)
         check(destination.isDirectory || destination.mkdirs())
         val archiveStage = File(work.parentFile, ".clues-archive-${UUID.randomUUID()}")
         check(archiveStage.isDirectory || archiveStage.mkdirs())
@@ -501,15 +505,25 @@ internal object OperationalStorage {
                 )
                 value.tree.refresh()
             }
-            // Working projection and any still-materialized app-private source trees win per id.
+            // Working projection, prior cache projections, and still-material sources win per id.
             val workingRoots = buildList {
                 add(destination)
+                addAll(priorCacheRoots)
                 for (source in area.sources) {
                     if (!source.exists()) continue
-                    if (Files.isSymbolicLink(source.toPath())) continue
+                    if (Files.isSymbolicLink(source.toPath())) {
+                        projectedRoot(context, area, source)?.let { add(it.toFile()) }
+                        continue
+                    }
                     if (source.canonicalFile == destination.canonicalFile) continue
                     if (source.isDirectory) add(source)
                 }
+                val workClues = File(work, area.id)
+                if (workClues.isDirectory && workClues.canonicalFile != destination.canonicalFile) {
+                    add(workClues)
+                }
+            }.distinctBy { file ->
+                runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
             }
             ClueProjectionMerge.mergeTree(archiveStage, destination, preferExisting = true) { relative ->
                 CaltopoClient.CTWarn(
@@ -532,7 +546,7 @@ internal object OperationalStorage {
                 if (Files.isSymbolicLink(source.toPath())) {
                     Files.delete(source.toPath())
                 } else if (source.exists() && source.canonicalFile != destination.canonicalFile) {
-                    // Content already merged into destination; replace the material tree with the alias.
+                    // Content already merged into durable destination; retire the duplicate tree.
                     val aside = File(source.parentFile, ".${source.name}-merged-${UUID.randomUUID()}")
                     check(source.renameTo(aside)) { "Cannot retire merged clues source." }
                     removeTree(aside)
@@ -545,16 +559,83 @@ internal object OperationalStorage {
                 check(area.alias.renameTo(aside))
                 removeTree(aside)
             }
-            if (!Files.isSymbolicLink(area.alias.toPath())) {
-                Os.symlink(destination.absolutePath, area.alias.absolutePath)
+            if (!area.alias.exists()) {
+                if (destination.canonicalFile != area.alias.canonicalFile) {
+                    check(destination.renameTo(area.alias)) { "Cannot publish durable clues directory." }
+                } else {
+                    check(area.alias.mkdirs() || area.alias.isDirectory)
+                }
             }
+            // Retain after the durable alias is published so Archive Dir has every pending photo.
+            for (file in area.alias.walkTopDown().filter { it.isFile }) {
+                checkSelection()
+                val relative = file.relativeTo(area.alias).invariantSeparatorsPath
+                if (relative.isNotEmpty() && allowed(area, relative)) {
+                    runCatching { commit(value, file, "${area.retained}/$relative") }
+                        .onFailure { error ->
+                            CaltopoClient.CTWarn(
+                                "OperationalStorage",
+                                "Clues durable retain deferred path=$relative: ${error.message}",
+                            )
+                        }
+                }
+            }
+            // Never symlink clues into clearable cache — keep a material durable directory.
             CaltopoClient.CTDebug(
                 "OperationalStorage",
-                "Prepared area=clues reused=merge elapsedMs=${android.os.SystemClock.elapsedRealtime() - hydrationStarted}",
+                "Prepared area=clues reused=merge durable=true elapsedMs=${android.os.SystemClock.elapsedRealtime() - hydrationStarted}",
             )
         } finally {
             if (archiveStage.exists()) removeTree(archiveStage)
         }
+    }
+
+    /** Cache-era `operational-work/<hash>/clues` trees that may still hold pending photos. */
+    private fun priorClueWorkingRoots(context: Context, value: Store, area: Area): List<File> {
+        val found = linkedSetOf<File>()
+        for (source in area.sources) {
+            if (!Files.isSymbolicLink(source.toPath())) continue
+            projectedRoot(context, area, source)?.toFile()?.takeIf { it.isDirectory }?.let { found.add(it) }
+        }
+        for (cacheRoot in TemporaryStorage.roots(context)) {
+            File(cacheRoot, "operational-work").listFiles().orEmpty()
+                .filter { it.isDirectory && it.name.matches(Regex("[a-f0-9]{16}")) }
+                .map { File(it, area.id) }
+                .filter { it.isDirectory }
+                .forEach { found.add(it) }
+            File(cacheRoot, "temporary-operational").listFiles().orEmpty()
+                .filter { it.isDirectory }
+                .map { File(it, area.id) }
+                .filter { it.isDirectory }
+                .forEach { found.add(it) }
+        }
+        File(value.work, area.id).takeIf { it.isDirectory }?.let { found.add(it) }
+        return found.toList()
+    }
+
+    /**
+     * Ensures `files/clues` is a material durable directory. When a prior prepare left a
+     * symlink into cache, merge that tree into a material destination first.
+     */
+    private fun materializeDurableCluesRoot(area: Area, priorCacheRoots: List<File>): File {
+        val alias = area.alias
+        alias.parentFile?.mkdirs()
+        if (Files.isSymbolicLink(alias.toPath())) {
+            val linked = runCatching { File(Os.readlink(alias.path)).canonicalFile }.getOrNull()
+            val material = File(alias.parentFile, ".clues-durable-${UUID.randomUUID()}")
+            check(material.mkdirs())
+            if (linked?.isDirectory == true) {
+                ClueProjectionMerge.mergeTree(linked, material, preferExisting = false)
+            }
+            for (root in priorCacheRoots) {
+                if (linked != null && root.canonicalFile == linked.canonicalFile) continue
+                ClueProjectionMerge.mergeTree(root, material, preferExisting = false)
+            }
+            Files.delete(alias.toPath())
+            return material
+        }
+        if (!alias.exists()) check(alias.mkdirs()) { "Cannot create durable clues directory." }
+        return alias
     }
     private fun unavailable(message: String): ArchiveDirUnavailableException {
         announceUnavailable(message)
@@ -689,11 +770,17 @@ internal object OperationalStorage {
     }
     private fun projectedRoot(context: Context, area: Area, source: File): Path? {
         val target = File(Os.readlink(source.path)).canonicalFile.toPath()
+        // Legacy cache projections (pre-durable clues) remain recognizable for migrate/merge.
         for (root in TemporaryStorage.roots(context)) {
             val base = File(root, "operational-work").canonicalFile.toPath()
             // Cache removal must not turn a recoverable projection into a missing legacy SD card.
             if (target.startsWith(base) && target.nameCount == base.nameCount + 2 &&
                 target.fileName.toString() == area.id && target.parent.fileName.toString().matches(Regex("[a-f0-9]{16}"))) return target
+        }
+        // Durable material clues live at files/clues (alias itself), not under operational-work.
+        if (area.id == "clues") {
+            val durable = area.alias.canonicalFile.toPath()
+            if (target == durable) return target
         }
         return null
     }
@@ -1148,12 +1235,13 @@ internal object OperationalStorage {
     }
 
     private fun cluesProjectionReusable(context: Context, work: File, area: Area): Boolean {
-        val destination = File(work, area.id)
-        if (!destination.isDirectory) return false
-        if (!Files.isSymbolicLink(area.alias.toPath())) return false
-        return runCatching {
-            projectedRoot(context, area, area.alias) == destination.canonicalFile.toPath()
-        }.getOrDefault(false)
+        // Durable clues stay material under files/clues. A leftover cache symlink must rematerialize.
+        if (Files.isSymbolicLink(area.alias.toPath())) return false
+        if (!area.alias.isDirectory) return false
+        val workClues = File(work, area.id)
+        return !workClues.isDirectory || runCatching {
+            workClues.canonicalFile == area.alias.canonicalFile
+        }.getOrDefault(true)
     }
     fun removeIfManaged(file: File): Boolean {
         if (preparedRecorder?.let { mapping(file, it.value) } != null) { remove(file); return true }

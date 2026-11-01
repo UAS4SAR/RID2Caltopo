@@ -190,7 +190,7 @@ final class AppleClueStore: ObservableObject {
             mutate(id) { value in
                 if value.uploadState != .published && value.uploadState != .localOnly {
                     value.uploadState = .pending
-                    if value.lastUploadError == CluePhotoUploadPolicy.needsAttentionMessage {
+                    if CluePhotoUploadPolicy.stopsAutoRetry(value.lastUploadError) {
                         value.lastUploadError = nil
                     }
                 }
@@ -254,9 +254,7 @@ final class AppleClueStore: ObservableObject {
         guard generation == configurationGeneration else { return }
         // Reconcile before enqueue so a prior client timeout that still landed on CalTopo
         // clears "1 clue pending" without risking a duplicate feature.
-        let pendingIDs = records
-            .filter { $0.uploadState == .pending || $0.uploadState == .failed || $0.uploadState == .uploading }
-            .map(\.id)
+        let pendingIDs = ClueTrackDurabilityIntegrity.pendingUploadIDs(in: records)
         for id in pendingIDs {
             guard generation == configurationGeneration else { return }
             if await reconcileUploadedClue(id: id) { continue }
@@ -679,14 +677,7 @@ final class AppleClueStore: ObservableObject {
                 }
                 let imageURL = self.imageURL(for: record)
                 guard let jpeg = try? await self.disk.run({ try Data(contentsOf: imageURL) }) else {
-                    terminalReason = "image-unreadable"
-                    self.mutate(id) { value in
-                        value.uploadState = .failed
-                        value.lastUploadError = "Clue photo could not be read for upload."
-                    }
-                    try? await self.persistIndex()
-                    self.updateStatus()
-                    AppleLog.warning("Clue", "Clue upload failed id=\(id) reason=image-unreadable")
+                    terminalReason = await self.handleMissingCluePhoto(id: id, record: record)
                     break
                 }
                 guard !Task.isCancelled, generation == self.configurationGeneration,
@@ -1020,6 +1011,61 @@ final class AppleClueStore: ObservableObject {
         try? await persistIndex()
         updateStatus()
         AppleLog.warning("Clue", "Clue upload regenerating media id=\(id) reason=\(reason)")
+    }
+
+    /// Photo gone: upload marker-only with a lost-photo note, or stop on Photo missing. Log once.
+    private func handleMissingCluePhoto(id: UUID, record: OperationalClueRecord) async -> String {
+        let alreadyNoted = CluePhotoUploadPolicy.descriptionNotesLostPhoto(record.clueDescription)
+            || CluePhotoUploadPolicy.stopsAutoRetry(record.lastUploadError)
+        if alreadyNoted {
+            mutate(id) { value in
+                value.uploadState = .failed
+                value.lastUploadError = CluePhotoUploadPolicy.photoMissingMessage
+            }
+            try? await persistIndex()
+            updateStatus()
+            AppleLog.error("Clue", "Pending clue photo missing; stopping automatic photo retry id=\(id)")
+            return "photo-missing"
+        }
+        AppleLog.error("Clue", "Pending clue photo missing; stopping automatic photo retry id=\(id)")
+        let notedDescription = CluePhotoUploadPolicy.descriptionWithLostPhotoNote(record.publishedDescription)
+        let markerID = Self.publishMarkerID(for: record)
+        if let client {
+            do {
+                let folderID = await cachedFolderIDForClue()
+                try await client.updatePhotoClueMarker(
+                    markerID: markerID.uuidString.lowercased(),
+                    latitude: record.clueLatitude,
+                    longitude: record.clueLongitude,
+                    title: record.title,
+                    description: notedDescription,
+                    folderID: folderID,
+                    createdMilliseconds: Int64(record.capturedAt.timeIntervalSince1970 * 1_000)
+                )
+                mutate(id) { value in
+                    value.clueDescription = CluePhotoUploadPolicy.descriptionWithLostPhotoNote(value.clueDescription)
+                    value.uploadState = .published
+                    value.lastUploadError = nil
+                }
+                try? await persistIndex()
+                updateStatus()
+                AppleLog.warning("Clue", "Clue uploaded as marker without photo id=\(id)")
+                return "marker-without-photo"
+            } catch {
+                AppleLog.warning(
+                    "Clue",
+                    "Clue marker-without-photo failed id=\(id) error=\(error.localizedDescription)"
+                )
+            }
+        }
+        mutate(id) { value in
+            value.clueDescription = CluePhotoUploadPolicy.descriptionWithLostPhotoNote(value.clueDescription)
+            value.uploadState = .failed
+            value.lastUploadError = CluePhotoUploadPolicy.photoMissingMessage
+        }
+        try? await persistIndex()
+        updateStatus()
+        return "photo-missing"
     }
 
     /// Returns true when the clue should stop auto-retry ("Needs attention").

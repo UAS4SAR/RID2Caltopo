@@ -25,8 +25,36 @@ object CluePhotoUploadPolicy {
     /** Returned when media create/data state cannot be verified; caller must mint a new media id. */
     const val AMBIGUOUS_MEDIA_STATE_TOKEN = "media state ambiguous"
     const val NEEDS_ATTENTION_MESSAGE = "Needs attention"
+    /** Terminal local failure when the JPEG cannot be recovered from any known root. */
+    const val PHOTO_MISSING_MESSAGE = "Photo missing"
+    /** Appended to the CalTopo marker description when uploading a marker without its photo. */
+    const val PHOTO_LOST_DESCRIPTION_NOTE =
+        "Photo was lost on this device before upload; marker only."
     /** Identical permanent 4xx fingerprints before auto-retry stops (still saved; woken on reconnect). */
     const val PERMANENT_FAILURE_LIMIT = 5
+
+    /** True when auto-upload must stop and wait for an explicit operator action. */
+    @JvmStatic
+    fun stopsAutoRetry(lastUploadError: String?): Boolean {
+        val text = lastUploadError?.trim().orEmpty()
+        if (text.isEmpty()) return false
+        return text.contains(NEEDS_ATTENTION_MESSAGE, ignoreCase = true) ||
+            text.contains(PHOTO_MISSING_MESSAGE, ignoreCase = true) ||
+            text.equals("missing-photo", ignoreCase = true)
+    }
+
+    @JvmStatic
+    fun descriptionNotesLostPhoto(description: String?): Boolean {
+        val text = description.orEmpty()
+        return text.contains(PHOTO_LOST_DESCRIPTION_NOTE, ignoreCase = true)
+    }
+
+    @JvmStatic
+    fun descriptionWithLostPhotoNote(description: String?): String {
+        val base = description?.trim().orEmpty()
+        if (descriptionNotesLostPhoto(base)) return base
+        return if (base.isEmpty()) PHOTO_LOST_DESCRIPTION_NOTE else "$base\n\n$PHOTO_LOST_DESCRIPTION_NOTE"
+    }
 
     private val localClueTimeFormatter: DateTimeFormatter =
         DateTimeFormatter.ofPattern("h:mm a zzz", Locale.US)
@@ -93,6 +121,11 @@ object CluePhotoUploadPolicy {
         if (text.isEmpty()) return "Waiting to upload"
         if (text.contains(NEEDS_ATTENTION_MESSAGE, ignoreCase = true)) {
             return NEEDS_ATTENTION_MESSAGE
+        }
+        if (text.contains(PHOTO_MISSING_MESSAGE, ignoreCase = true) ||
+            text.equals("missing-photo", ignoreCase = true)
+        ) {
+            return PHOTO_MISSING_MESSAGE
         }
         if (text.contains(AMBIGUOUS_MEDIA_STATE_TOKEN, ignoreCase = true) ||
             text.contains(EXISTING_BACKEND_MEDIA_TOKEN, ignoreCase = true)

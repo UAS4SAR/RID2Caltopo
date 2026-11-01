@@ -3068,6 +3068,8 @@ class StreamsViewModel(
     val pendingClueActionFeedback: String? by _pendingClueActionFeedback
     private val permanentClueFailureStreak =
         java.util.concurrent.ConcurrentHashMap<String, Pair<String, Int>>()
+    /** Missing-photo ERROR is logged once per clue id until Retry clears it. */
+    private val missingCluePhotoLogged = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     /** Clears backoff and wakes pending uploads immediately (not throttled). */
     fun retryPendingClueUploadsNow() {
@@ -3076,9 +3078,22 @@ class StreamsViewModel(
             clueUploadBackoff.reset(row.id)
             clueUploadBackoff.markDelayedUntil(row.id, 0L)
             permanentClueFailureStreak.remove(row.id)
+            missingCluePhotoLogged.remove(row.id)
         }
-        retryPendingClues()
         viewModelScope.launch {
+            // Operator Retry clears terminal photo-missing / needs-attention so recovery can run again.
+            clueStorage {
+                clueDiskMutex.withLock {
+                    for (row in _pendingClueUploads.value) {
+                        val record = localClueStore.record(row.id) ?: continue
+                        if (org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.stopsAutoRetry(record.lastUploadError)) {
+                            localClueStore.recordUploadResult(record.id, false, "", terminal = false)
+                        }
+                    }
+                }
+            }
+            hydrateLocalClues(currentLocalClueMapKey())
+            retryPendingClues()
             delay(2_000)
             _pendingClueActionFeedback.value = when {
                 pendingClueUploadCount == 0 -> "Uploaded"
@@ -3487,7 +3502,10 @@ class StreamsViewModel(
             .incrementAndGet()
         val attemptStartedAt = android.os.SystemClock.elapsedRealtime()
         try {
-            val jpeg = localClueStore.imageFile(record).readBytes()
+            val jpeg = loadClueJpegForUpload(record) ?: run {
+                handleMissingCluePhoto(mapId, teamId, record)
+                return
+            }
             val submitDeadlineSeconds =
                 org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.submitDeadlineSeconds(jpeg.size)
             val sendBudgetSeconds =
@@ -3645,6 +3663,12 @@ class StreamsViewModel(
             throw cancelled
         } catch (error: Exception) {
             endClueUpload(record.id)
+            if (error is java.io.FileNotFoundException ||
+                (error is java.io.IOException && error.message?.contains("No such file", ignoreCase = true) == true)
+            ) {
+                handleMissingCluePhoto(mapId, teamId, record)
+                return
+            }
             CTError(tag, "Pending clue remains local", error)
             val delayMs = clueUploadBackoff.nextDelayMs(record.id)
             clueUploadBackoff.markDelayedUntil(
@@ -3652,6 +3676,121 @@ class StreamsViewModel(
                 android.os.SystemClock.elapsedRealtime() + delayMs,
             )
         }
+    }
+
+    private suspend fun loadClueJpegForUpload(record: AndroidClueRecord): ByteArray? {
+        val primary = localClueStore.imageFile(record)
+        if (primary.isFile && primary.length() > 0L) {
+            return runCatching { primary.readBytes() }.getOrNull()?.takeIf { it.isNotEmpty() }
+        }
+        return withContext(Dispatchers.IO) {
+            val adopted = clueStorage {
+                clueDiskMutex.withLock { localClueStore.adoptMissingPhoto(record) }
+            }.getOrNull()
+            adopted?.takeIf { it.isFile && it.length() > 0L }?.readBytes()?.takeIf { it.isNotEmpty() }
+        }
+    }
+
+    /**
+     * Photo gone after prior-location recovery: upload a marker with a lost-photo note, or
+     * mark Needs attention / Photo missing once. Never FileNotFound-retry forever.
+     */
+    private suspend fun handleMissingCluePhoto(
+        mapId: String,
+        teamId: String,
+        record: AndroidClueRecord,
+    ) {
+        endClueUpload(record.id)
+        clueUploadBackoff.reset(record.id)
+        val latest = clueStorage {
+            clueDiskMutex.withLock {
+                localClueStore.record(record.id) ?: record
+            }
+        }.getOrDefault(record)
+        val alreadyNoted = org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.descriptionNotesLostPhoto(
+            latest.description,
+        )
+        if (alreadyNoted ||
+            org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.stopsAutoRetry(latest.lastUploadError)
+        ) {
+            logMissingCluePhotoOnce(latest.id)
+            clueStorage {
+                clueDiskMutex.withLock {
+                    localClueStore.recordUploadResult(
+                        latest.id,
+                        false,
+                        org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.PHOTO_MISSING_MESSAGE,
+                        terminal = true,
+                    )
+                }
+            }.onSuccess { hydrateLocalClues(currentLocalClueMapKey()) }
+            return
+        }
+        logMissingCluePhotoOnce(latest.id)
+        val notedDescription = org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.descriptionWithLostPhotoNote(
+            latest.publishedDescription,
+        )
+        val folder = withContext(Dispatchers.IO) {
+            CaltopoMap.GetFolderId().orEmpty()
+        }
+        val outcome = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
+        org.ncssar.rid2caltopo.data.CaltopoSession.UpdateStoredPhotoMarker(
+            mapId,
+            teamId,
+            latest.resolvedMarkerId(),
+            latest.lat,
+            latest.lng,
+            latest.title,
+            notedDescription,
+            folder,
+            latest.createdAtMs,
+        ) { result -> outcome.complete(result) }
+        val result = try {
+            kotlinx.coroutines.withTimeout(30_000L) { outcome.await() }
+        } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+            null
+        }
+        if (result != null && result.success()) {
+            clueStorage {
+                clueDiskMutex.withLock {
+                    localClueStore.update(
+                        listOf(
+                            latest.copy(
+                                description = org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy
+                                    .descriptionWithLostPhotoNote(latest.description),
+                                uploadState = "published",
+                                lastUploadError = "",
+                            ),
+                        ),
+                    )
+                }
+            }.onSuccess { hydrateLocalClues(currentLocalClueMapKey()) }
+            android.util.Log.w(
+                tag,
+                "Clue uploaded as marker without photo id=${latest.id}",
+            )
+            return
+        }
+        clueStorage {
+            clueDiskMutex.withLock {
+                val withNote = latest.copy(
+                    description = org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy
+                        .descriptionWithLostPhotoNote(latest.description),
+                )
+                localClueStore.update(listOf(withNote))
+                localClueStore.recordUploadResult(
+                    latest.id,
+                    false,
+                    org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.PHOTO_MISSING_MESSAGE,
+                    terminal = true,
+                )
+            }
+        }.onSuccess { hydrateLocalClues(currentLocalClueMapKey()) }
+    }
+
+    private fun logMissingCluePhotoOnce(id: String) {
+        if (!missingCluePhotoLogged.add(id)) return
+        CTError(tag, "Pending clue photo missing; stopping automatic photo retry id=$id")
     }
 
     private suspend fun resolveClueFolderUnderDeadline(

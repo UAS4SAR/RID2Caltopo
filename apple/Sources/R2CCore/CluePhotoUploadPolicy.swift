@@ -16,8 +16,36 @@ public enum CluePhotoUploadPolicy {
     /// Thrown/returned when media create/data state cannot be verified; caller must mint a new media id.
     public static let ambiguousMediaStateToken = "media state ambiguous"
     public static let needsAttentionMessage = "Needs attention"
+    /// Terminal local failure when the JPEG cannot be recovered.
+    public static let photoMissingMessage = "Photo missing"
+    /// Appended to the CalTopo marker description when uploading a marker without its photo.
+    public static let photoLostDescriptionNote =
+        "Photo was lost on this device before upload; marker only."
     /// Identical permanent 4xx fingerprints before auto-retry stops (still saved; woken on reconnect).
     public static let permanentFailureLimit = 5
+
+    /// True when auto-upload must stop and wait for an explicit operator action.
+    public static func stopsAutoRetry(_ lastUploadError: String?) -> Bool {
+        let text = (lastUploadError ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { return false }
+        if text.localizedCaseInsensitiveContains(needsAttentionMessage) { return true }
+        if text.localizedCaseInsensitiveContains(photoMissingMessage) { return true }
+        if text.caseInsensitiveCompare("missing-photo") == .orderedSame { return true }
+        if text.caseInsensitiveCompare("Missing photo") == .orderedSame { return true }
+        return false
+    }
+
+    public static func descriptionNotesLostPhoto(_ description: String?) -> Bool {
+        let text = description ?? ""
+        return text.localizedCaseInsensitiveContains(photoLostDescriptionNote)
+    }
+
+    public static func descriptionWithLostPhotoNote(_ description: String?) -> String {
+        let base = (description ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if descriptionNotesLostPhoto(base) { return base }
+        if base.isEmpty { return photoLostDescriptionNote }
+        return "\(base)\n\n\(photoLostDescriptionNote)"
+    }
 
     /// Seconds for the media `/data` HTTP call from JPEG byte length.
     public static func photoUploadTimeoutSeconds(jpegBytes: Int) -> TimeInterval {
@@ -77,6 +105,11 @@ public enum CluePhotoUploadPolicy {
         if text.isEmpty { return "Waiting to upload" }
         if text.localizedCaseInsensitiveContains(needsAttentionMessage) {
             return needsAttentionMessage
+        }
+        if text.localizedCaseInsensitiveContains(photoMissingMessage)
+            || text.caseInsensitiveCompare("missing-photo") == .orderedSame
+            || text.caseInsensitiveCompare("Missing photo") == .orderedSame {
+            return photoMissingMessage
         }
         if text.range(of: ambiguousMediaStateToken, options: .caseInsensitive) != nil
             || text.range(of: existingBackendMediaToken, options: .caseInsensitive) != nil {

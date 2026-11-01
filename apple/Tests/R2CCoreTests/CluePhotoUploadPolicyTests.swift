@@ -49,6 +49,18 @@ import Testing
         )
         #expect(CluePhotoUploadPolicy.plainUploadError("") == "Waiting to upload")
         #expect(CluePhotoUploadPolicy.plainUploadError("Needs attention") == "Needs attention")
+        #expect(CluePhotoUploadPolicy.plainUploadError("Photo missing") == "Photo missing")
+        #expect(CluePhotoUploadPolicy.plainUploadError("missing-photo") == "Photo missing")
+    }
+
+    @Test func missingPhotoStopsAutoRetryAndNotesLostPhotoOnce() {
+        #expect(CluePhotoUploadPolicy.stopsAutoRetry("Photo missing"))
+        #expect(CluePhotoUploadPolicy.stopsAutoRetry("Needs attention"))
+        #expect(CluePhotoUploadPolicy.stopsAutoRetry("missing-photo"))
+        #expect(!CluePhotoUploadPolicy.stopsAutoRetry("Upload timed out; will retry"))
+        let noted = CluePhotoUploadPolicy.descriptionWithLostPhotoNote("Found beside trail")
+        #expect(CluePhotoUploadPolicy.descriptionNotesLostPhoto(noted))
+        #expect(CluePhotoUploadPolicy.descriptionWithLostPhotoNote(noted) == noted)
     }
 
     @Test func markerTimeIncludesLocalZoneAndUTC() {

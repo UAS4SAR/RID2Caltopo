@@ -2,7 +2,7 @@ import Foundation
 
 /// Startup integrity for clue photos and indexes. Runs entirely off the UI thread.
 public enum ClueTrackDurabilityIntegrity {
-    public static let missingPhotoError = "Missing photo"
+    public static let missingPhotoError = CluePhotoUploadPolicy.photoMissingMessage
 
     public struct Summary: Sendable, Equatable {
         public var orphanPhotosReindexed: Int
@@ -27,6 +27,7 @@ public enum ClueTrackDurabilityIntegrity {
     /// IDs that should resume upload after reload (pending / failed / interrupted uploading).
     public static func pendingUploadIDs(in records: [OperationalClueRecord]) -> [UUID] {
         records.compactMap { record in
+            if CluePhotoUploadPolicy.stopsAutoRetry(record.lastUploadError) { return nil }
             switch record.uploadState {
             case .pending, .failed, .uploading: return record.id
             case .localOnly, .published: return nil

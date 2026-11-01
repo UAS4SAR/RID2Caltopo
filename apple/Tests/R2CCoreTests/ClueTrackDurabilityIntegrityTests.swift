@@ -105,6 +105,18 @@ import Testing
         let flagged = result.records.first { $0.id == missingID }
         #expect(flagged?.uploadState == .failed)
         #expect(flagged?.lastUploadError == ClueTrackDurabilityIntegrity.missingPhotoError)
+        #expect(ClueTrackDurabilityIntegrity.pendingUploadIDs(in: result.records) == [])
+    }
+
+    @Test func photoMissingStopsAutoRetryResume() {
+        let missing = sampleRecord(
+            imageFilename: "day/gone.jpg",
+            uploadState: .failed
+        )
+        var flagged = missing
+        flagged.lastUploadError = CluePhotoUploadPolicy.photoMissingMessage
+        #expect(ClueTrackDurabilityIntegrity.pendingUploadIDs(in: [flagged]).isEmpty)
+        #expect(CluePhotoUploadPolicy.stopsAutoRetry(flagged.lastUploadError))
     }
 
     @Test func liveTrackEnqueueNotGatedOnAwaitingMapHistoryInViewModel() throws {

@@ -161,6 +161,8 @@ class AndroidClueStore private constructor(
                 indexRoot = root
             }
             persistIndexSnapshot(indexSnapshot, indexRoot)
+            // Archive Dir retain must not wait on the save path; cache wipe must not be the only copy.
+            retainClueArtifacts(imageFile, thumbnailFile, File(indexRoot, "clues.json"))
             if (context != null) org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("ClueStore",
                 "Save id=${record.id} storageCheckMs=${(preparedAt - started) / 1_000_000} " +
                     "imageMs=${(imageAt - preparedAt) / 1_000_000} thumbnailMs=${(thumbnailAt - imageAt) / 1_000_000} " +
@@ -295,7 +297,8 @@ class AndroidClueStore private constructor(
                 it.publishToCaltopo &&
                     (it.uploadState == "pending" || it.uploadState == "failed" || it.uploadState == "uploading") &&
                     mapId.isNotBlank() && teamId.isNotBlank() && it.mapKey == "map:$mapId" &&
-                    org.ncssar.rid2caltopo.data.CluePublicationIdentity.sameTeam(it.destinationTeamId, teamId)
+                    org.ncssar.rid2caltopo.data.CluePublicationIdentity.sameTeam(it.destinationTeamId, teamId) &&
+                    !org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.stopsAutoRetry(it.lastUploadError)
             }
         }
     }
@@ -468,6 +471,29 @@ class AndroidClueStore private constructor(
 
     fun thumbnailFile(record: AndroidClueRecord): File = File(root, record.thumbnailFilename)
 
+    /**
+     * Search known prior clue roots and copy a missing JPEG into the durable store.
+     * Must run off Main. Returns the adopted file, or null when the photo is gone.
+     */
+    fun adoptMissingPhoto(record: AndroidClueRecord): File? {
+        val app = context ?: return imageFile(record).takeIf { it.isFile && it.length() > 0L }
+        ensureLoaded()
+        val directory = synchronized(this) { selectRoot(); root }
+        val image = org.ncssar.rid2caltopo.storage.CluePhotoRecovery.adoptIfFound(
+            app,
+            record.imageFilename,
+            directory,
+        )
+        if (image != null) {
+            org.ncssar.rid2caltopo.storage.CluePhotoRecovery.adoptIfFound(
+                app,
+                record.thumbnailFilename,
+                directory,
+            )
+        }
+        return image
+    }
+
     fun loadThumbnail(record: AndroidClueRecord): Bitmap? {
         val path = thumbnailFile(record).absolutePath
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -528,18 +554,14 @@ class AndroidClueStore private constructor(
 
     private fun selectRoot() {
         val app = context ?: return
-        // Clues always stay durable in app-private storage. Temporary session archive uses
-        // TemporaryStorage; reconnect migrates via OperationalStorage retain/hydrate.
-        val next = when {
-            org.ncssar.rid2caltopo.data.CaltopoClient.GetArchiveUri() != null ->
-                File(app.filesDir, "clues")
-            org.ncssar.rid2caltopo.data.CaltopoClient.HasArchiveDirForCurrentSession() ->
-                org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(app, "clues")
-            else -> {
-                org.ncssar.rid2caltopo.storage.OperationalStorage.announceUnavailable()
-                File(app.filesDir, "clues")
-            }
+        // Clue photos are retained operational data: always durable app-private files/clues.
+        // Never TemporaryStorage/cache — OS or app cache cleanup must not orphan pending rows.
+        if (org.ncssar.rid2caltopo.data.CaltopoClient.GetArchiveUri() == null &&
+            !org.ncssar.rid2caltopo.data.CaltopoClient.HasArchiveDirForCurrentSession()
+        ) {
+            org.ncssar.rid2caltopo.storage.OperationalStorage.announceUnavailable()
         }
+        val next = File(app.filesDir, "clues")
         if (next != root) { root = next; loaded = false }
     }
 
@@ -551,10 +573,21 @@ class AndroidClueStore private constructor(
         directory.mkdirs()
         val array = JSONArray()
         snapshot.forEach { array.put(it.toJson()) }
+        val indexFile = File(directory, "clues.json")
         replaceFileAtomically(
-            File(directory, "clues.json"),
+            indexFile,
             array.toString(2).toByteArray(Charsets.UTF_8),
         )
+        if (context != null) {
+            org.ncssar.rid2caltopo.storage.OperationalStorage.retainLater(indexFile)
+        }
+    }
+
+    private fun retainClueArtifacts(vararg files: File) {
+        if (context == null) return
+        for (file in files) {
+            if (file.isFile) org.ncssar.rid2caltopo.storage.OperationalStorage.retainLater(file)
+        }
     }
 
     private fun encodeJpeg(bitmap: Bitmap, quality: Int): ByteArray {
