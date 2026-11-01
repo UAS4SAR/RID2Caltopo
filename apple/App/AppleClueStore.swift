@@ -79,6 +79,8 @@ final class AppleClueStore: ObservableObject {
     private var folderResolver = CaltopoTrackFolderResolver()
     private var uploadTasks: [UUID: Task<Void, Never>] = [:]
     private var integrityScanDone = false
+    /// User-deleted ids — refuse resurrecting writes and drop them from reload/merge.
+    private var deletedIds: Set<UUID> = []
     /// Consecutive identical permanent 4xx fingerprints per clue (auto-retry bound).
     private var permanentFailureStreak: [UUID: (fingerprint: String, count: Int)] = [:]
     /// Shared with the track publisher so clue and track folder creation stay one path.
@@ -97,9 +99,15 @@ final class AppleClueStore: ObservableObject {
         let root = self.root, disk = self.disk
         initialLoad = Task { [weak self] in
             do {
-                let loaded = try await disk.run { try OperationalClueIndex.load(root: root) }
+                let loaded = try await disk.run { () -> (records: [OperationalClueRecord], deleted: Set<UUID>) in
+                    let deleted = Self.loadDeletedIds(root: root)
+                    let records = try OperationalClueIndex.load(root: root)
+                        .filter { !deleted.contains($0.id) }
+                    return (records, deleted)
+                }
                 guard let self else { return }
-                self.records = loaded
+                self.deletedIds = loaded.deleted
+                self.records = loaded.records
                 self.updateStatus()
                 // Integrity scan must not block clue Submit. Run it after the index is ready.
                 Task { [weak self] in await self?.performDurabilityIntegrityScan() }
@@ -593,19 +601,26 @@ final class AppleClueStore: ObservableObject {
     @discardableResult
     func delete(_ id: UUID) async -> Bool {
         await initialLoad?.value
+        // Cancel in-flight upload first; tombstone before index rewrite so late success cannot resurrect.
         uploadTasks.removeValue(forKey: id)?.cancel()
-        guard let index = records.firstIndex(where: { $0.id == id }) else { return false }
-        let record = records.remove(at: index)
-        let image = imageURL(for: record), thumbnail = thumbnailURL(for: record)
+        permanentFailureStreak.removeValue(forKey: id)
+        deletedIds.insert(id)
+        let record = records.first(where: { $0.id == id })
+        records.removeAll { $0.id == id }
+        updateStatus()
+        let image = record.map(imageURL(for:))
+        let thumbnail = record.map(thumbnailURL(for:))
+        let root = self.root
+        let tombs = deletedIds
         let removed = (try? await disk.run {
-            try? FileManager.default.removeItem(at: image)
-            try? FileManager.default.removeItem(at: thumbnail)
-            return !FileManager.default.fileExists(atPath: image.path)
+            try Self.persistDeletedIds(tombs, root: root)
+            if let image { try? FileManager.default.removeItem(at: image) }
+            if let thumbnail { try? FileManager.default.removeItem(at: thumbnail) }
+            return image.map { !FileManager.default.fileExists(atPath: $0.path) } ?? true
         }) ?? false
         try? await persistIndex()
-        updateStatus()
         AppleLog.info("Clue", "Local clue deleted id=\(id)")
-        clueChanged?(record)
+        if let record { clueChanged?(record) }
         return removed
     }
 
@@ -644,12 +659,16 @@ final class AppleClueStore: ObservableObject {
 
     private func enqueueUpload(_ id: UUID) {
         guard uploadTasks[id] == nil else { return }
-        guard let record = records.first(where: { $0.id == id }),
-              record.canAutomaticallyPublish(mapID: mapID, teamID: teamID) else {
-            let stored = records.first(where: { $0.id == id })
+        guard !deletedIds.contains(id) else { return }
+        guard let record = records.first(where: { $0.id == id }) else { return }
+        if record.uploadConfirmed || record.caltopoRemotelyDeleted == true {
+            AppleLog.info("Clue", "Clue upload skipped confirmed/remotely-deleted id=\(id)")
+            return
+        }
+        guard record.canAutomaticallyPublish(mapID: mapID, teamID: teamID) else {
             AppleLog.warning(
                 "Clue",
-                "Clue upload skipped id=\(id) reason=destination-mismatch mapId=\(mapID) teamId=\(teamID) storedMap=\(stored?.destinationMapID ?? "nil") storedTeam=\(stored?.destinationTeamID ?? "nil") state=\(stored?.uploadState.rawValue ?? "missing")"
+                "Clue upload skipped id=\(id) reason=destination-mismatch mapId=\(mapID) teamId=\(teamID) storedMap=\(record.destinationMapID ?? "nil") storedTeam=\(record.destinationTeamID ?? "nil") state=\(record.uploadState.rawValue)"
             )
             mutate(id) { $0.lastUploadError = "Waiting for the original map, or review to choose a destination." }
             Task { try? await persistIndex() }
@@ -675,8 +694,16 @@ final class AppleClueStore: ObservableObject {
             guard let self else { return }
             var terminalReason = "loop-exit"
             while !Task.isCancelled && generation == self.configurationGeneration {
+                if self.deletedIds.contains(id) {
+                    terminalReason = "user-deleted"
+                    break
+                }
                 guard let record = self.records.first(where: { $0.id == id }) else {
                     terminalReason = "record-missing"
+                    break
+                }
+                if record.uploadConfirmed || record.caltopoRemotelyDeleted == true {
+                    terminalReason = "confirmed-or-remotely-deleted"
                     break
                 }
                 if record.uploadState == .published {
@@ -922,11 +949,59 @@ final class AppleClueStore: ObservableObject {
     /// Returns true only when marker + media + link are all present (completing any missing part).
     @discardableResult
     private func reconcileUploadedClue(id: UUID, jpeg: Data? = nil, teamID: String? = nil) async -> Bool {
+        guard !deletedIds.contains(id) else { return true }
         guard let client, let record = records.first(where: { $0.id == id }) else { return false }
         let destinationTeamID = teamID
             ?? record.destinationTeamID
             ?? self.teamID
         guard !destinationTeamID.isEmpty else { return false }
+        // Confirmed / remotely-deleted clues: probe only — never publishPhotoClue.
+        if record.uploadConfirmed || record.caltopoRemotelyDeleted == true {
+            do {
+                let parts = try await client.probePhotoClueParts(
+                    markerID: Self.publishMarkerID(for: record),
+                    mediaID: record.caltopoMediaID,
+                    teamID: destinationTeamID
+                )
+                if deletedIds.contains(id) { return true }
+                let decision = ClueUploadConfirmation.decideProbe(
+                    confirmed: true,
+                    markerPresent: parts.markerPresent,
+                    mediaPresent: parts.mediaReady,
+                    linkPresent: parts.linkPresent
+                )
+                switch decision {
+                case .confirmReconciled:
+                    mutate(id) { value in
+                        value.uploadState = .published
+                        value.caltopoPartsReconciled = true
+                        value.caltopoRemotelyDeleted = false
+                        value.lastUploadError = nil
+                    }
+                    try? await persistIndex()
+                    updateStatus()
+                    return true
+                case .markRemotelyDeleted:
+                    mutate(id) { value in
+                        value.caltopoRemotelyDeleted = true
+                        value.caltopoPartsReconciled = true
+                        value.uploadState = .published
+                    }
+                    try? await persistIndex()
+                    updateStatus()
+                    AppleLog.info("Clue", "Clue map-deleted id=\(id) — not re-uploading confirmed clue")
+                    return true
+                case .leaveAlone, .mayAutoUpload, .repairPartial:
+                    return true
+                }
+            } catch {
+                AppleLog.warning(
+                    "Clue",
+                    "Clue upload reconcile probe failed id=\(id) error=\(error.localizedDescription)"
+                )
+                return true
+            }
+        }
         do {
             let jpegData: Data
             if let jpeg {
@@ -936,6 +1011,7 @@ final class AppleClueStore: ObservableObject {
                 guard let loaded = try? await disk.run({ try Data(contentsOf: imageURL) }) else { return false }
                 jpegData = loaded
             }
+            if deletedIds.contains(id) { return true }
             // Cached folder only — reconcile must never wait on folder ensure / full-map reads.
             let folderID = await cachedFolderIDForClue()
             guard let result = try await client.reconcilePhotoClue(
@@ -952,6 +1028,7 @@ final class AppleClueStore: ObservableObject {
                     folderID: folderID
                 )
             ) else { return false }
+            if deletedIds.contains(id) { return true }
             permanentFailureStreak.removeValue(forKey: id)
             mutate(id) { value in
                 value.uploadState = .published
@@ -1155,46 +1232,61 @@ final class AppleClueStore: ObservableObject {
         }
     }
 
-    /// Re-verify recently published clues (last 24 h) that are not yet durably reconciled.
+    /// One-shot probe of published clues that are not yet durably reconciled.
+    /// Confirmed uploads are never re-POSTed: all-present backfills reconciled; marker
+    /// absence marks remotely-deleted (media may still exist in the personal library).
     func reverifyRecentPublishedClues() async {
         guard let client, !teamID.isEmpty else { return }
         await initialLoad?.value
         let cutoff = Date().addingTimeInterval(-24 * 60 * 60)
         let recent = records.filter {
+            $0.caltopoRemotelyDeleted != true &&
+            !deletedIds.contains($0.id) &&
             CluePartsReconcilePolicy.needsAutoReverify(
                 uploadState: $0.uploadState,
                 partsReconciled: $0.caltopoPartsReconciled == true
             ) && $0.capturedAt >= cutoff
         }
         for record in recent {
+            if deletedIds.contains(record.id) { continue }
             do {
                 let parts = try await client.probePhotoClueParts(
                     markerID: Self.publishMarkerID(for: record),
                     mediaID: record.caltopoMediaID,
                     teamID: record.destinationTeamID ?? teamID
                 )
-                if parts.allPresent {
+                if deletedIds.contains(record.id) { continue }
+                let decision = ClueUploadConfirmation.decideProbe(
+                    confirmed: record.uploadConfirmed,
+                    markerPresent: parts.markerPresent,
+                    mediaPresent: parts.mediaReady,
+                    linkPresent: parts.linkPresent
+                )
+                switch decision {
+                case .confirmReconciled:
                     mutate(record.id) { value in
                         value.caltopoPartsReconciled = true
+                        value.caltopoRemotelyDeleted = false
                     }
                     try? await persistIndex()
-                    continue
+                case .markRemotelyDeleted:
+                    mutate(record.id) { value in
+                        value.caltopoRemotelyDeleted = true
+                        value.caltopoPartsReconciled = true
+                        value.uploadState = .published
+                    }
+                    try? await persistIndex()
+                    AppleLog.info(
+                        "Clue",
+                        "Clue map-deleted id=\(record.id) — not re-uploading confirmed clue"
+                    )
+                case .leaveAlone, .mayAutoUpload, .repairPartial:
+                    // Confirmed clues never auto-POST from re-verify, even when media/link remain.
+                    AppleLog.info(
+                        "Clue",
+                        "Clue re-verify leave-alone id=\(record.id) decision=\(decision.rawValue)"
+                    )
                 }
-                // Nothing visible may be a transient map/auth miss — do not demote published.
-                if !parts.anyPresent { continue }
-                if await reconcileUploadedClue(id: record.id) { continue }
-                // Still incomplete after repair: re-queue without losing the local clue.
-                mutate(record.id) { value in
-                    value.uploadState = .pending
-                    value.caltopoPartsReconciled = false
-                    value.lastUploadError = "Re-verify found incomplete CalTopo parts; repairing."
-                }
-                try? await persistIndex()
-                enqueueUpload(record.id)
-                AppleLog.info(
-                    "Clue",
-                    "Clue re-verify queued repair id=\(record.id)"
-                )
             } catch {
                 AppleLog.warning(
                     "Clue",
@@ -1245,8 +1337,26 @@ final class AppleClueStore: ObservableObject {
     }
 
     private func mutate(_ id: UUID, _ body: (inout OperationalClueRecord) -> Void) {
+        guard !deletedIds.contains(id) else { return }
         guard let index = records.firstIndex(where: { $0.id == id }) else { return }
         body(&records[index])
+    }
+
+    private nonisolated static let tombstoneFilename = "deleted-clue-ids.json"
+
+    private nonisolated static func loadDeletedIds(root: URL) -> Set<UUID> {
+        let url = root.appendingPathComponent(tombstoneFilename)
+        guard let data = try? Data(contentsOf: url),
+              let raw = try? JSONDecoder().decode([String].self, from: data)
+        else { return [] }
+        return Set(raw.compactMap { UUID(uuidString: $0) })
+    }
+
+    private nonisolated static func persistDeletedIds(_ ids: Set<UUID>, root: URL) throws {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let sorted = ids.map { $0.uuidString.lowercased() }.sorted()
+        let data = try JSONEncoder().encode(sorted)
+        try data.write(to: root.appendingPathComponent(tombstoneFilename), options: .atomic)
     }
 
     private var pruning = false
@@ -1335,7 +1445,13 @@ final class AppleClueStore: ObservableObject {
         let pending = ClueTrackDurabilityIntegrity.pendingUploadCount(in: records)
         pendingUploadCount = pending
         pendingUploadRows = records
-            .filter { $0.uploadState == .pending || $0.uploadState == .failed || $0.uploadState == .uploading }
+            .filter {
+                ClueUploadConfirmation.mayAutoUpload(
+                    uploadState: $0.uploadState,
+                    confirmed: $0.uploadConfirmed,
+                    remotelyDeleted: $0.caltopoRemotelyDeleted == true
+                )
+            }
             .sorted { $0.capturedAt > $1.capturedAt }
             .map {
                 PendingClueUploadRow(
