@@ -164,8 +164,9 @@ fun ClueSheetContent (
         )
     }
     var submissionFeedback by remember(clue.designator) { mutableStateOf<String?>(null) }
-    var gimbalPitchText by remember(clue.designator) {
-        mutableStateOf(formatClueGimbalPitchText(clue.gimbalAngleDeg))
+    var gimbalPitchFieldValue by remember(clue.designator) {
+        val text = formatClueGimbalPitchText(clue.gimbalAngleDeg)
+        mutableStateOf(TextFieldValue(text = text, selection = TextRange(text.length)))
     }
     var gimbalFieldSeenFocus by remember(clue.designator) { mutableStateOf(false) }
     var headingDraft by remember(clue.designator) {
@@ -173,15 +174,22 @@ fun ClueSheetContent (
     }
     var headingDragging by remember(clue.designator) { mutableStateOf(false) }
 
+    fun setGimbalPitchText(text: String, cursorAtEnd: Boolean = true) {
+        gimbalPitchFieldValue = TextFieldValue(
+            text = text,
+            selection = if (cursorAtEnd) TextRange(text.length) else TextRange(0),
+        )
+    }
+
     fun commitGimbalPitch(advanceToTitle: Boolean, force: Boolean): Boolean {
         if (saving || gimbalFromSei) return true
-        val parsed = gimbalPitchText.trim().toDoubleOrNull()
+        val parsed = gimbalPitchFieldValue.text.trim().toDoubleOrNull()
         if (parsed == null || !parsed.isFinite()) {
-            gimbalPitchText = formatClueGimbalPitchText(clue.gimbalAngleDeg)
+            setGimbalPitchText(formatClueGimbalPitchText(clue.gimbalAngleDeg))
             return false
         }
         val clamped = clampClueGimbalPitchDeg(parsed)
-        gimbalPitchText = formatClueGimbalPitchText(clamped)
+        setGimbalPitchText(formatClueGimbalPitchText(clamped))
         if (force || clamped != clue.gimbalAngleDeg || !clue.gimbalAngleConfirmed) {
             onGimbalAngleChange(clamped)
         }
@@ -195,7 +203,7 @@ fun ClueSheetContent (
         if (saving) return
         var pitchForIssue = clue.gimbalAngleDeg
         if (!gimbalFromSei) {
-            val parsed = gimbalPitchText.trim().toDoubleOrNull()
+            val parsed = gimbalPitchFieldValue.text.trim().toDoubleOrNull()
             if (parsed == null || !parsed.isFinite()) {
                 submissionFeedback =
                     "Enter a gimbal pitch between ${CLUE_GIMBAL_PITCH_MIN_DEG.toInt()}° and ${CLUE_GIMBAL_PITCH_MAX_DEG.toInt()}°."
@@ -204,7 +212,7 @@ fun ClueSheetContent (
                 return
             }
             pitchForIssue = clampClueGimbalPitchDeg(parsed)
-            gimbalPitchText = formatClueGimbalPitchText(pitchForIssue)
+            setGimbalPitchText(formatClueGimbalPitchText(pitchForIssue))
             onGimbalAngleChange(pitchForIssue)
         }
         if (clue.title.isBlank()) {
@@ -239,7 +247,7 @@ fun ClueSheetContent (
 
     LaunchedEffect(clue.gimbalAngleDeg) {
         if (gimbalFromSei || !gimbalFieldSeenFocus) {
-            gimbalPitchText = formatClueGimbalPitchText(clue.gimbalAngleDeg)
+            setGimbalPitchText(formatClueGimbalPitchText(clue.gimbalAngleDeg))
         }
     }
 
@@ -425,8 +433,8 @@ fun ClueSheetContent (
                 } else {
                     OutlinedTextField(
                         enabled = !saving,
-                        value = gimbalPitchText,
-                        onValueChange = { gimbalPitchText = it },
+                        value = gimbalPitchFieldValue,
+                        onValueChange = { gimbalPitchFieldValue = it },
                         label = { Text("Gimbal pitch (°)") },
                         singleLine = true,
                         modifier = Modifier
@@ -435,6 +443,14 @@ fun ClueSheetContent (
                             .onFocusChanged { focusState ->
                                 if (focusState.isFocused) {
                                     gimbalFieldSeenFocus = true
+                                    // Match iOS: cursor lands after pre-filled "-90".
+                                    val text = gimbalPitchFieldValue.text
+                                    if (gimbalPitchFieldValue.selection.start == 0 && text.isNotEmpty()) {
+                                        gimbalPitchFieldValue = TextFieldValue(
+                                            text = text,
+                                            selection = TextRange(text.length),
+                                        )
+                                    }
                                 } else if (gimbalFieldSeenFocus) {
                                     commitGimbalPitch(advanceToTitle = false, force = false)
                                 }

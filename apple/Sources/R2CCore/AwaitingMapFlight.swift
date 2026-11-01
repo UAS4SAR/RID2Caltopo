@@ -29,17 +29,31 @@ public struct AwaitingMapFlight: Codable, Sendable, Equatable, Identifiable {
     public var mapID: String
     public var teamID: String
     public var publicationStarted: Bool?
+    /// CalTopo Shape id returned by a successful LiveTrack→Shape archive.
+    public var caltopoArchiveId: String?
+    /// Dated "Drone Tracks <ddMMM>" folder title used for that archive.
+    public var caltopoArchiveFolder: String?
+    /// Durable confirmation that the Shape archive completed (never auto-reupload).
+    public var archiveConfirmed: Bool?
     public var firstTime: Date { points.first?.receivedAt ?? .distantPast }
     public var lastTime: Date { points.last?.receivedAt ?? .distantPast }
     /// First/last waypoint on the drone clock (falls back to receive time), used for clue ownership.
     public var firstBindingTime: Date { points.map(\.bindingTime).min() ?? .distantPast }
     public var lastBindingTime: Date { points.map(\.bindingTime).max() ?? .distantPast }
+    public var hasArchiveConfirmation: Bool {
+        TrackArchiveConfirmation.isConfirmed(
+            decision: decision,
+            archiveConfirmed: archiveConfirmed == true,
+            hasArchiveId: !(caltopoArchiveId ?? "").isEmpty
+        )
+    }
 
     public init(id: String? = nil, remoteID: String, label: String, observations: [RidObservation], teamID: String) {
         self.id = id ?? UUID().uuidString.lowercased()
         self.remoteID = remoteID; self.label = label
         points = observations.map(CaltopoInterruptedPublicationPoint.init)
         finished = false; decision = "review"; mapID = ""; self.teamID = teamID
+        caltopoArchiveId = nil; caltopoArchiveFolder = nil; archiveConfirmed = nil
     }
     public func suggested(icLocations: [MapCoordinate], now: Date = Date()) -> Bool {
         guard (0...86_400).contains(now.timeIntervalSince(lastTime)) else { return false }
@@ -152,7 +166,13 @@ public actor AwaitingMapFlightJournal {
         if let index = next.lastIndex(where: { $0.remoteID == remoteID && !$0.finished }) {
             next[index].points = observations.map(CaltopoInterruptedPublicationPoint.init)
             next[index].label = label; next[index].finished = finished
-            if finished && next[index].decision == "bound" && next[index].publicationStarted != true { next[index].decision = "review" }
+            // Match Android: a connected-map bound flight that never started LiveTrack still
+            // publishes through the archive path — it must not fall into the review inbox.
+            if finished && next[index].decision == "bound" && next[index].publicationStarted != true {
+                next[index].decision = next[index].mapID.isEmpty ? "review" : "publish"
+            }
+            // Live-published flights are removed here; Shape confirmation is recorded separately
+            // via confirmArchive (and must not reappear as a review offer).
             if finished && ["bound", "local"].contains(next[index].decision) { next.remove(at: index) }
         } else {
             guard !finished, !next.contains(where: { $0.remoteID == remoteID && $0.firstTime == first.receivedAt }) else { return }
@@ -193,10 +213,85 @@ public actor AwaitingMapFlightJournal {
     public func notePublication(remoteID: String, mapID: String) async throws {
         try await beginMutation()
         defer { endMutation() }
+        guard !mapID.isEmpty else { return }
         var next = entries
-        guard let index = next.lastIndex(where: { $0.remoteID == remoteID && !$0.finished && $0.mapID == mapID }), next[index].publicationStarted != true else { return }
-        next[index].publicationStarted = true
+        // Live publish to a connected map must bind an empty-map review intent captured before
+        // connect; requiring mapID equality left those rows as finished review forever.
+        guard let index = next.lastIndex(where: {
+            $0.remoteID == remoteID && !$0.finished
+                && ($0.mapID == mapID || ($0.mapID.isEmpty && $0.decision == "review"))
+        }) else { return }
+        var changed = false
+        if next[index].mapID.isEmpty {
+            next[index].mapID = mapID
+            next[index].decision = "bound"
+            changed = true
+        }
+        if next[index].publicationStarted != true {
+            next[index].publicationStarted = true
+            changed = true
+        }
+        guard changed else { return }
         try await commit(next)
+    }
+
+    /// Records durable CalTopo Shape-archive confirmation and removes the flight from the
+    /// awaiting-publication inbox. Confirmed rows are pruned (never auto-reuploaded).
+    @discardableResult
+    public func confirmArchive(
+        remoteID: String,
+        flightID: String?,
+        archiveId: String,
+        folderTitle: String
+    ) async throws -> Bool {
+        try await beginMutation()
+        defer { endMutation() }
+        let trimmedId = archiveId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedId.isEmpty else { return false }
+        var next = entries
+        let index = next.lastIndex(where: { entry in
+            if let flightID, entry.id == flightID { return true }
+            if entry.id == trimmedId { return true }
+            return entry.remoteID == remoteID
+                && (entry.decision == "review" || entry.decision == "queued"
+                    || entry.decision == "publish" || entry.decision == "bound"
+                    || entry.decision == "published")
+        })
+        guard let index else { return false }
+        next[index].decision = "published"
+        next[index].caltopoArchiveId = trimmedId
+        next[index].caltopoArchiveFolder = folderTitle
+        next[index].archiveConfirmed = true
+        next[index].finished = true
+        if next[index].points.count > 1, let first = next[index].points.first, let last = next[index].points.last {
+            next[index].points = [first, last]
+        }
+        // Prune confirmed archives so stale queued/published rows cannot linger or block.
+        next.removeAll {
+            TrackArchiveConfirmation.isConfirmed(
+                decision: $0.decision,
+                archiveConfirmed: $0.archiveConfirmed == true,
+                hasArchiveId: !($0.caltopoArchiveId ?? "").isEmpty
+            )
+        }
+        try await commit(next)
+        return true
+    }
+
+    /// Removes entries whose CalTopo Shape archive is already confirmed. Never deletes
+    /// unpublished review/local offers.
+    public func pruneConfirmedArchives() async throws {
+        try await beginMutation()
+        defer { endMutation() }
+        let remaining = entries.filter {
+            !TrackArchiveConfirmation.isConfirmed(
+                decision: $0.decision,
+                archiveConfirmed: $0.archiveConfirmed == true,
+                hasArchiveId: !($0.caltopoArchiveId ?? "").isEmpty
+            )
+        }
+        guard remaining.count != entries.count else { return }
+        try await commit(remaining)
     }
     public func discard(remoteID: String, startedAt: Date) async throws {
         try await beginMutation()

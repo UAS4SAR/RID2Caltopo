@@ -106,6 +106,16 @@ public actor CaltopoInterruptedPublicationJournal {
         return payload.entries.filter { $0.mapID == mapID }
     }
 
+    public func entry(liveTrackID: String) -> CaltopoInterruptedPublication? {
+        load()
+        return payload.entries.first { $0.liveTrackID == liveTrackID }
+    }
+
+    public func entry(remoteID: String) -> CaltopoInterruptedPublication? {
+        load()
+        return payload.entries.last { $0.remoteID == remoteID }
+    }
+
     public func remove(liveTrackID: String) throws {
         load()
         payload.entries.removeAll { $0.liveTrackID == liveTrackID }

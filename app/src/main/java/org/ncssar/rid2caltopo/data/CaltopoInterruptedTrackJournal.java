@@ -215,7 +215,8 @@ public final class CaltopoInterruptedTrackJournal {
                 synchronized (LOCK) { cachedRoot = null; }
                 throw writeError;
             }
-            AwaitingMapFlights.published(liveTrackId);
+            AwaitingMapFlights.confirmArchive(liveTrackId, null, liveTrackId, null);
+            CaltopoClient.CTInfo(TAG, "CalTopo track archived id=" + liveTrackId + " folder=(recovery)");
             runtime.getCalTopoSessionGateway().deleteLiveTrackOnMap(mapId, liveTrackId, deleteOp -> CaltopoRecoveryWork.offMainArchive(() -> {
                 // Match Apple's already-gone handling. Standalone archives never
                 // created a LiveTrack, for which CalTopo returns 400 (or 404).

@@ -4,6 +4,7 @@ import org.json.JSONObject
 import org.json.JSONArray
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -166,8 +167,8 @@ class CaltopoInterruptedTrackJournalTest {
             assertEquals(1, fixture.calTopoSessionGateway.countOperations("editObject"))
             assertEquals(listOf("review"), AwaitingMapFlights.pending().map { it.getString("id") })
             val saved = JSONArray(choices.readText())
-            val selected = (0 until saved.length()).map { saved.getJSONObject(it) }.single { it.getString("id") == "selected" }
-            assertEquals("published", selected.getString("decision"))
+            // Confirmed Shape archives are pruned from the awaiting journal.
+            assertFalse((0 until saved.length()).any { saved.getJSONObject(it).getString("id") == "selected" })
         } finally {
             AwaitingMapFlights.useFileForTesting(null)
             choices.delete()
