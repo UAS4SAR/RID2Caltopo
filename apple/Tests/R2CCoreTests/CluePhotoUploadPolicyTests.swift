@@ -11,6 +11,18 @@ import Testing
         #expect(CluePhotoUploadPolicy.photoUploadTimeoutSeconds(jpegBytes: 20 * 1024 * 1024) == 180)
     }
 
+    @Test func sendBudgetExcludesFolderWaitAndSubmitDeadlineCoversBoth() {
+        #expect(CluePhotoUploadPolicy.attemptBudgetSeconds(jpegBytes: 0) == 90)
+        #expect(CluePhotoUploadPolicy.attemptBudgetSeconds(jpegBytes: 100_000) == 120)
+        #expect(CluePhotoUploadPolicy.submitDeadlineSeconds(jpegBytes: 0) == 180)
+        #expect(CluePhotoUploadPolicy.submitDeadlineSeconds(jpegBytes: 100_000) == 210)
+        #expect(
+            CluePhotoUploadPolicy.submitDeadlineSeconds(jpegBytes: 0)
+                == CluePhotoUploadPolicy.attemptBudgetSeconds(jpegBytes: 0)
+                    + CluePhotoUploadPolicy.submitDeadlineFolderAllowanceSeconds
+        )
+    }
+
     @Test func existingBackendMediaMessageIsClassified() {
         #expect(CluePhotoUploadPolicy.isExistingBackendMediaError(
             statusCode: 400,

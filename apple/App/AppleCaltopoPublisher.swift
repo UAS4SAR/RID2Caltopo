@@ -790,8 +790,9 @@ actor AppleCaltopoPublisher {
             trackFolderName: folderName,
             settleDelay: .milliseconds(500),
             fetchSnapshot: {
-                // A second folder/race inspection refreshes the existing snapshot with a delta.
-                try await client.fetchMapArtifacts(refresh: true)
+                // Prefer the warm map-open snapshot. refresh:true would re-enter the shared
+                // full-map-read gate (90s) and stall clue POSTs behind reconnect / LiveTrack recovery.
+                try await client.fetchMapArtifacts(refresh: false)
             },
             createFolder: { title, visible, labelVisible in
                 try await client.createFolder(

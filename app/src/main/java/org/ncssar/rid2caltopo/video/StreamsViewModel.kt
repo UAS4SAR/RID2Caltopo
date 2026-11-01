@@ -3331,9 +3331,12 @@ class StreamsViewModel(
         clueUploadOwner = viewModelScope.launch {
             val owner = coroutineContext[kotlinx.coroutines.Job]
             try {
-                val folder = withContext(Dispatchers.IO) { CaltopoMap.resolveTrackFolderIdForClue() }
-                if (!folder.isNullOrBlank()) {
-                    reverifyRecentPublishedClues(mapId, teamId, folder)
+                // Best-effort re-verify uses a cached folder when available; per-clue upload
+                // resolves its own folder under the Submit deadline so LiveTrack recovery cannot
+                // hold every pending clue behind one shared wait before "Clue upload start".
+                val folderHint = withContext(Dispatchers.IO) { CaltopoMap.GetFolderId() }
+                if (!folderHint.isNullOrBlank()) {
+                    reverifyRecentPublishedClues(mapId, teamId, folderHint)
                 }
                 while (isActive) {
                     if (CaltopoMap.GetMapStatus() != mapStatus.up || CaltopoMap.GetMapId().trim() != mapId) {
@@ -3344,12 +3347,6 @@ class StreamsViewModel(
                         logClueRetry("publication-team-blank", "retryPendingClues: skip reason=publication-team-changed")
                         return@launch
                     }
-                    val folderAgain = withContext(Dispatchers.IO) { CaltopoMap.resolveTrackFolderIdForClue() }
-                    if (folderAgain.isNullOrBlank()) {
-                        logClueRetry("track-folder-unresolved", "retryPendingClues: skip reason=track-folder-unresolved mapId=$mapId teamId=$teamId")
-                        return@launch
-                    }
-                    val folder = folderAgain
                     val (pending, visibleIds, pendingSummary) = clueStorage {
                         clueDiskMutex.withLock {
                             Triple(
@@ -3400,9 +3397,9 @@ class StreamsViewModel(
                         }
                         logClueRetry(
                             "uploading:${record.id}",
-                            "retryPendingClues: uploading id=${record.id} mapId=$mapId teamId=$teamId folder=$folder",
+                            "retryPendingClues: uploading id=${record.id} mapId=$mapId teamId=$teamId",
                         )
-                        async(Dispatchers.IO) { uploadPendingClue(mapId, teamId, folder, record) }
+                        async(Dispatchers.IO) { uploadPendingClue(mapId, teamId, record) }
                     }
                     if (batch.isEmpty()) {
                         kotlinx.coroutines.delay(50L)
@@ -3419,18 +3416,23 @@ class StreamsViewModel(
     private suspend fun uploadPendingClue(
         mapId: String,
         teamId: String,
-        folder: String,
         record: AndroidClueRecord,
     ) {
         val attempt = clueUploadAttemptCounts
             .getOrPut(record.id) { java.util.concurrent.atomic.AtomicInteger(0) }
             .incrementAndGet()
-        android.util.Log.i(
-            tag,
-            "Clue upload start id=${record.id} attempt=$attempt mapId=$mapId teamId=$teamId",
-        )
+        val attemptStartedAt = android.os.SystemClock.elapsedRealtime()
         try {
             val jpeg = localClueStore.imageFile(record).readBytes()
+            val submitDeadlineSeconds =
+                org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.submitDeadlineSeconds(jpeg.size)
+            val sendBudgetSeconds =
+                org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.attemptBudgetSeconds(jpeg.size)
+            android.util.Log.i(
+                tag,
+                "Clue upload start id=${record.id} attempt=$attempt mapId=$mapId teamId=$teamId " +
+                    "submitDeadline=${submitDeadlineSeconds}s sendBudget=${sendBudgetSeconds}s",
+            )
             // Prefer the latest local projection (post-save terrain may have landed during image I/O).
             var latest = clueStorage {
                 clueDiskMutex.withLock {
@@ -3438,6 +3440,15 @@ class StreamsViewModel(
                 }
             }.getOrDefault(record)
             android.util.Log.i(tag, clueUploadPositionLogLineForRecord(latest))
+            val folder = resolveClueFolderUnderDeadline(
+                clueId = record.id,
+                attempt = attempt,
+                attemptStartedAt = attemptStartedAt,
+                submitDeadlineSeconds = submitDeadlineSeconds,
+            ) ?: run {
+                markClueUploadTimeout(record.id, attempt, "submit", submitDeadlineSeconds)
+                return
+            }
             // Startup and retries: complete any partial prior POST (marker/media/link).
             if (reconcilePendingClue(mapId, teamId, folder, latest, jpeg)) {
                 endClueUpload(record.id)
@@ -3445,15 +3456,34 @@ class StreamsViewModel(
                 flushPendingClueTerrainMarkerEdit(latest.id, latest.mapKey)
                 return
             }
-            val outcome = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
-            org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
-                mapId, teamId, latest.id, latest.lat, latest.lng, latest.title,
-                latest.publishedDescription, folder, latest.createdAtMs,
-                jpeg,
-                latest.caltopoMediaId.ifBlank { null },
-                latest.caltopoLinkId.ifBlank { null },
-            ) { result -> outcome.complete(result) }
-            var result = outcome.await()
+            val remainingOverallMs =
+                submitDeadlineSeconds * 1000L - (android.os.SystemClock.elapsedRealtime() - attemptStartedAt)
+            if (remainingOverallMs <= 0L) {
+                markClueUploadTimeout(record.id, attempt, "submit", submitDeadlineSeconds)
+                return
+            }
+            val sendTimeoutMs = minOf(sendBudgetSeconds * 1000L, remainingOverallMs)
+            android.util.Log.i(
+                tag,
+                "Clue upload send id=${record.id} attempt=$attempt folder=$folder sendTimeout=${sendTimeoutMs / 1000}s",
+            )
+            var result = publishStoredPhotoWithSendTimeout(
+                mapId = mapId,
+                teamId = teamId,
+                folder = folder,
+                record = latest,
+                jpeg = jpeg,
+                sendTimeoutMs = sendTimeoutMs,
+            )
+            if (result == null) {
+                // Log/mark before reconcile so MapArtifacts / full-map waits cannot delay the timeout line.
+                markClueUploadTimeout(record.id, attempt, "send", sendBudgetSeconds)
+                if (reconcilePendingClue(mapId, teamId, folder, latest, jpeg)) {
+                    clueUploadBackoff.reset(record.id)
+                    flushPendingClueTerrainMarkerEdit(latest.id, latest.mapKey)
+                }
+                return
+            }
             if (!result.success() && result.responseCode == 409 &&
                 result.responseString().orEmpty().contains(
                     org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.EXISTING_BACKEND_MEDIA_TOKEN,
@@ -3461,15 +3491,18 @@ class StreamsViewModel(
                 )
             ) {
                 latest = regenerateClueMediaIds(latest)
-                val retry = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
-                org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
-                    mapId, teamId, latest.id, latest.lat, latest.lng, latest.title,
-                    latest.publishedDescription, folder, latest.createdAtMs,
-                    jpeg,
-                    latest.caltopoMediaId.ifBlank { null },
-                    latest.caltopoLinkId.ifBlank { null },
-                ) { published -> retry.complete(published) }
-                result = retry.await()
+                result = publishStoredPhotoWithSendTimeout(
+                    mapId = mapId,
+                    teamId = teamId,
+                    folder = folder,
+                    record = latest,
+                    jpeg = jpeg,
+                    sendTimeoutMs = sendTimeoutMs,
+                )
+                if (result == null) {
+                    markClueUploadTimeout(record.id, attempt, "send", sendBudgetSeconds)
+                    return
+                }
             }
             if (!result.success() &&
                 result.responseCode in listOf(400, 401, 403, 404, 413, 422)
@@ -3537,6 +3570,81 @@ class StreamsViewModel(
                 android.os.SystemClock.elapsedRealtime() + delayMs,
             )
         }
+    }
+
+    private suspend fun resolveClueFolderUnderDeadline(
+        clueId: String,
+        attempt: Int,
+        attemptStartedAt: Long,
+        submitDeadlineSeconds: Int,
+    ): String? {
+        val remainingMs =
+            submitDeadlineSeconds * 1000L - (android.os.SystemClock.elapsedRealtime() - attemptStartedAt)
+        if (remainingMs <= 0L) return null
+        val cached = CaltopoMap.GetFolderId()
+        if (!cached.isNullOrBlank()) return cached
+        return try {
+            kotlinx.coroutines.withTimeout(remainingMs) {
+                withContext(Dispatchers.IO) { CaltopoMap.resolveTrackFolderIdForClue() }
+            }?.takeIf { it.isNotBlank() }
+        } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+            android.util.Log.w(
+                tag,
+                "Clue upload folder resolve timed out id=$clueId attempt=$attempt",
+            )
+            null
+        }
+    }
+
+    private suspend fun publishStoredPhotoWithSendTimeout(
+        mapId: String,
+        teamId: String,
+        folder: String,
+        record: AndroidClueRecord,
+        jpeg: ByteArray,
+        sendTimeoutMs: Long,
+    ): org.ncssar.rid2caltopo.data.CaltopoOp? {
+        val outcome = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
+        org.ncssar.rid2caltopo.data.CaltopoSession.PublishStoredPhoto(
+            mapId, teamId, record.id, record.lat, record.lng, record.title,
+            record.publishedDescription, folder, record.createdAtMs,
+            jpeg,
+            record.caltopoMediaId.ifBlank { null },
+            record.caltopoLinkId.ifBlank { null },
+        ) { result -> outcome.complete(result) }
+        return try {
+            kotlinx.coroutines.withTimeout(sendTimeoutMs) { outcome.await() }
+        } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+            null
+        }
+    }
+
+    private suspend fun markClueUploadTimeout(
+        clueId: String,
+        attempt: Int,
+        kind: String,
+        budgetSeconds: Int,
+    ) {
+        val delayMs = clueUploadBackoff.nextDelayMs(clueId)
+        clueUploadBackoff.markDelayedUntil(
+            clueId,
+            android.os.SystemClock.elapsedRealtime() + delayMs,
+        )
+        clueStorage {
+            clueDiskMutex.withLock {
+                localClueStore.recordUploadResult(
+                    clueId,
+                    false,
+                    "Upload timed out after ${budgetSeconds}s; will retry.",
+                    terminal = false,
+                )
+            }
+        }.onSuccess { hydrateLocalClues(currentLocalClueMapKey()) }
+        endClueUpload(clueId)
+        android.util.Log.w(
+            tag,
+            "Clue upload failed id=$clueId attempt=$attempt retry=${delayMs / 1000}s error=timeout-$kind-${budgetSeconds}s",
+        )
     }
 
     /** Re-verify published clues from the last 24 h and repair missing photos/links. */

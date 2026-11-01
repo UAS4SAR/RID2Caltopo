@@ -13,6 +13,10 @@ object CluePhotoUploadPolicy {
     /** Extra seconds per megabyte of JPEG payload (wire is larger after base64). */
     const val PHOTO_TIMEOUT_PER_MEGABYTE_SECONDS = 30
     const val PHOTO_TIMEOUT_CAP_SECONDS = 180
+    /** Overhead for marker/media/link steps around the photo POST in one send budget. */
+    const val ATTEMPT_BUDGET_OVERHEAD_SECONDS = 45
+    /** Extra wall-clock from Submit for folder ensure / map readiness before the first wire send. */
+    const val SUBMIT_DEADLINE_FOLDER_ALLOWANCE_SECONDS = 90
 
     const val EXISTING_BACKEND_MEDIA_TOKEN = "Cannot update existing backendMedia"
 
@@ -23,6 +27,21 @@ object CluePhotoUploadPolicy {
         val megabytes = bytes / (1024.0 * 1024.0)
         val scaled = PHOTO_TIMEOUT_BASE_SECONDS + ceil(megabytes).toInt() * PHOTO_TIMEOUT_PER_MEGABYTE_SECONDS
         return min(PHOTO_TIMEOUT_CAP_SECONDS, max(PHOTO_TIMEOUT_BASE_SECONDS, scaled))
+    }
+
+    /** Multi-step publish budget measured from when PublishStoredPhoto starts (not folder ensure). */
+    @JvmStatic
+    fun attemptBudgetSeconds(jpegBytes: Int): Int {
+        return min(
+            PHOTO_TIMEOUT_CAP_SECONDS + ATTEMPT_BUDGET_OVERHEAD_SECONDS,
+            photoUploadTimeoutSeconds(jpegBytes) + ATTEMPT_BUDGET_OVERHEAD_SECONDS,
+        )
+    }
+
+    /** Overall wall-clock from Submit / attempt start covering folder ensure + send budget. */
+    @JvmStatic
+    fun submitDeadlineSeconds(jpegBytes: Int): Int {
+        return attemptBudgetSeconds(jpegBytes) + SUBMIT_DEADLINE_FOLDER_ALLOWANCE_SECONDS
     }
 
     /** CalTopo rejects re-POSTing an id that already has backend media (common after client timeout). */

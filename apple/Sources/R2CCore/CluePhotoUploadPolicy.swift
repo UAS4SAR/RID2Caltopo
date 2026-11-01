@@ -9,8 +9,11 @@ public enum CluePhotoUploadPolicy {
     /// Extra seconds per megabyte of JPEG payload (wire is larger after base64).
     public static let photoTimeoutPerMegabyteSeconds: TimeInterval = 30
     public static let photoTimeoutCapSeconds: TimeInterval = 180
-    /// Overhead for marker/media/link steps around the photo POST in one attempt budget.
+    /// Overhead for marker/media/link steps around the photo POST in one send budget.
     public static let attemptBudgetOverheadSeconds: TimeInterval = 45
+    /// Extra wall-clock from Submit for folder ensure / map readiness before the first wire send.
+    /// Sized for one shared full-map-read gate interval so reconnect cannot starve the overall deadline.
+    public static let submitDeadlineFolderAllowanceSeconds: TimeInterval = 90
 
     public static let existingBackendMediaToken = "Cannot update existing backendMedia"
 
@@ -22,12 +25,17 @@ public enum CluePhotoUploadPolicy {
         return min(photoTimeoutCapSeconds, max(photoTimeoutBaseSeconds, scaled))
     }
 
-    /// Whole multi-step publish attempt budget (photo timeout + short JSON steps).
+    /// Multi-step publish budget measured from when the first clue request is sent (not folder ensure).
     public static func attemptBudgetSeconds(jpegBytes: Int) -> TimeInterval {
         min(
             photoTimeoutCapSeconds + attemptBudgetOverheadSeconds,
             photoUploadTimeoutSeconds(jpegBytes: jpegBytes) + attemptBudgetOverheadSeconds
         )
+    }
+
+    /// Overall wall-clock from Submit / attempt start covering folder ensure + send budget.
+    public static func submitDeadlineSeconds(jpegBytes: Int) -> TimeInterval {
+        attemptBudgetSeconds(jpegBytes: jpegBytes) + submitDeadlineFolderAllowanceSeconds
     }
 
     /// CalTopo rejects re-POSTing an id that already has backend media (common after client timeout).

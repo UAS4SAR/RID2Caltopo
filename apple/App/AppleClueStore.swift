@@ -3,7 +3,13 @@ import ImageIO
 import R2CCore
 import UIKit
 
-private struct ClueUploadAttemptTimeout: Error {}
+private struct ClueUploadAttemptTimeout: Error {
+    let kind: Kind
+    enum Kind: String {
+        case send
+        case submit
+    }
+}
 
 struct PendingClueUploadRow: Identifiable, Equatable, Sendable {
     let id: UUID
@@ -634,9 +640,15 @@ final class AppleClueStore: ObservableObject {
                         terminalReason = "record-missing"
                         break
                     }
+                    // Submit / attempt wall-clock starts here. Folder ensure must not count against
+                    // the send budget — that timer starts only when publishPhotoClue is invoked.
+                    let attemptStartedAt = Date()
+                    let submitDeadlineSeconds = CluePhotoUploadPolicy.submitDeadlineSeconds(jpegBytes: jpeg.count)
+                    let sendBudgetSeconds = CluePhotoUploadPolicy.attemptBudgetSeconds(jpegBytes: jpeg.count)
                     AppleLog.info(
                         "Clue",
-                        "Clue upload start id=\(id) attempt=\(attempt) mapId=\(self.mapID) teamId=\(destinationTeamID)"
+                        "Clue upload start id=\(id) attempt=\(attempt) mapId=\(self.mapID) teamId=\(destinationTeamID) " +
+                            "submitDeadline=\(Int(submitDeadlineSeconds))s sendBudget=\(Int(sendBudgetSeconds))s"
                     )
                     let terrainApplied = ClueUploadPosition.descriptionIndicatesTerrainApplied(latest.clueDescription)
                     AppleLog.info(
@@ -660,8 +672,6 @@ final class AppleClueStore: ObservableObject {
                         terminalReason = "reconciled"
                         break
                     }
-                    // JSON calls stay ~15s; photo /data and the attempt budget scale with JPEG size.
-                    let attemptBudgetSeconds = CluePhotoUploadPolicy.attemptBudgetSeconds(jpegBytes: jpeg.count)
                     let publishLatitude = latest.clueLatitude
                     let publishLongitude = latest.clueLongitude
                     let publishTitle = latest.title
@@ -669,11 +679,34 @@ final class AppleClueStore: ObservableObject {
                     let publishMediaID = latest.caltopoMediaID
                     let publishCreatedMs = Int64(latest.capturedAt.timeIntervalSince1970 * 1_000)
                     let markerID: String = try await {
-                        try await withThrowingTaskGroup(of: String.self) { group in
+                        let folderID: String = try await {
+                            try await withThrowingTaskGroup(of: String.self) { group in
+                                group.addTask {
+                                    try await self.resolveTrackFolder(using: client)
+                                }
+                                group.addTask {
+                                    let remaining = submitDeadlineSeconds - Date().timeIntervalSince(attemptStartedAt)
+                                    guard remaining > 0 else { throw ClueUploadAttemptTimeout(kind: .submit) }
+                                    try await Task.sleep(for: .seconds(remaining))
+                                    throw ClueUploadAttemptTimeout(kind: .submit)
+                                }
+                                let first = try await group.next()!
+                                group.cancelAll()
+                                return first
+                            }
+                        }()
+                        try Task.checkCancellation()
+                        let remainingOverall = submitDeadlineSeconds - Date().timeIntervalSince(attemptStartedAt)
+                        guard remainingOverall > 0 else { throw ClueUploadAttemptTimeout(kind: .submit) }
+                        let sendTimeout = min(sendBudgetSeconds, remainingOverall)
+                        AppleLog.info(
+                            "Clue",
+                            "Clue upload send id=\(id) attempt=\(attempt) folder=\(folderID) " +
+                                "sendTimeout=\(Int(sendTimeout))s"
+                        )
+                        return try await withThrowingTaskGroup(of: String.self) { group in
                             group.addTask {
-                                let folderID = try await self.resolveTrackFolder(using: client)
-                                try Task.checkCancellation()
-                                return try await client.publishPhotoClue(CaltopoPhotoClue(
+                                try await client.publishPhotoClue(CaltopoPhotoClue(
                                     markerID: id,
                                     mediaID: publishMediaID,
                                     latitude: publishLatitude,
@@ -687,10 +720,8 @@ final class AppleClueStore: ObservableObject {
                                 ))
                             }
                             group.addTask {
-                                await Task.detached {
-                                    try? await Task.sleep(for: .seconds(attemptBudgetSeconds))
-                                }.value
-                                throw ClueUploadAttemptTimeout()
+                                try await Task.sleep(for: .seconds(sendTimeout))
+                                throw ClueUploadAttemptTimeout(kind: .send)
                             }
                             let first = try await group.next()!
                             group.cancelAll()
@@ -740,13 +771,12 @@ final class AppleClueStore: ObservableObject {
                     )
                     terminalReason = "media-regenerated"
                     continue
-                } catch is ClueUploadAttemptTimeout {
+                } catch let timeout as ClueUploadAttemptTimeout {
                     let attempts = self.records.first(where: { $0.id == id })?.uploadAttempts ?? 1
-                    if await self.reconcileUploadedClue(id: id, jpeg: jpeg, teamID: destinationTeamID) {
-                        terminalReason = "reconciled-after-timeout"
-                        break
-                    }
-                    let budget = Int(CluePhotoUploadPolicy.attemptBudgetSeconds(jpegBytes: jpeg.count))
+                    let budget = timeout.kind == .submit
+                        ? Int(CluePhotoUploadPolicy.submitDeadlineSeconds(jpegBytes: jpeg.count))
+                        : Int(CluePhotoUploadPolicy.attemptBudgetSeconds(jpegBytes: jpeg.count))
+                    let token = "timeout-\(timeout.kind.rawValue)-\(budget)s"
                     self.mutate(id) { value in
                         value.uploadState = .failed
                         value.lastUploadError = "Upload timed out after \(budget)s; will retry."
@@ -754,10 +784,15 @@ final class AppleClueStore: ObservableObject {
                     try? await self.persistIndex()
                     self.updateStatus()
                     let delay = min(60.0, 2.0 * pow(2.0, Double(max(attempts - 1, 0))))
+                    // Log before reconcile so a full-map-read gate wait cannot delay the timeout line.
                     AppleLog.warning(
                         "Clue",
-                        "Clue upload failed id=\(id) attempt=\(attempts) retry=\(Int(delay))s error=timeout-\(budget)s"
+                        "Clue upload failed id=\(id) attempt=\(attempts) retry=\(Int(delay))s error=\(token)"
                     )
+                    if await self.reconcileUploadedClue(id: id, jpeg: jpeg, teamID: destinationTeamID) {
+                        terminalReason = "reconciled-after-timeout"
+                        break
+                    }
                     terminalReason = "timeout-retrying"
                     try? await Task.sleep(for: .seconds(delay))
                 } catch {
@@ -935,7 +970,8 @@ final class AppleClueStore: ObservableObject {
             trackFolderName: folderName,
             settleDelay: .milliseconds(500),
             fetchSnapshot: {
-                try await client.fetchMapArtifacts(refresh: true)
+                // Same warm-snapshot preference as the shared publisher path.
+                try await client.fetchMapArtifacts(refresh: false)
             },
             createFolder: { title, visible, labelVisible in
                 try await client.createFolder(

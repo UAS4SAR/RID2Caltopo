@@ -18,6 +18,19 @@ class CluePhotoUploadPolicyTest {
     }
 
     @Test
+    fun sendBudgetExcludesFolderWaitAndSubmitDeadlineCoversBoth() {
+        assertEquals(90, CluePhotoUploadPolicy.attemptBudgetSeconds(0))
+        assertEquals(120, CluePhotoUploadPolicy.attemptBudgetSeconds(100_000))
+        assertEquals(180, CluePhotoUploadPolicy.submitDeadlineSeconds(0))
+        assertEquals(210, CluePhotoUploadPolicy.submitDeadlineSeconds(100_000))
+        assertEquals(
+            CluePhotoUploadPolicy.attemptBudgetSeconds(0) +
+                CluePhotoUploadPolicy.SUBMIT_DEADLINE_FOLDER_ALLOWANCE_SECONDS,
+            CluePhotoUploadPolicy.submitDeadlineSeconds(0),
+        )
+    }
+
+    @Test
     fun existingBackendMediaMessageIsClassified() {
         assertTrue(
             CluePhotoUploadPolicy.isExistingBackendMediaError(
