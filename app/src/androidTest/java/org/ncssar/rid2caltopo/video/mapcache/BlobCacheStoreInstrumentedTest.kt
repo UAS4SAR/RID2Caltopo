@@ -147,6 +147,56 @@ class BlobCacheStoreInstrumentedTest {
     }
 
     @Test
+    fun safBlobCacheStore_concurrentGetsDoNotSerializeBehindBlobIo() {
+        val root = DocumentFile.fromFile(createTempDir("safconcurrent"))
+        val cache = SafBlobCacheStore(
+            context = context,
+            rootDir = root,
+            namespace = "tile_cache_v1_test_${UUID.randomUUID()}",
+            maxBytes = 1_024L * 1_024L,
+            defaultTtlMs = 60_000L,
+        )
+        val keys = (0 until 8).map { idx ->
+            val key = "v1|src|12|100|$idx"
+            val payload = ByteArray(64 * 1024) { idx.toByte() }
+            cache.put(key, payload, expiresAtMs = cache.defaultExpiry())
+            key
+        }
+
+        val executor = Executors.newFixedThreadPool(8)
+        val startGate = CountDownLatch(1)
+        val started = CountDownLatch(8)
+        val finished = CountDownLatch(8)
+        val maxOverlap = java.util.concurrent.atomic.AtomicInteger(0)
+        val inFlight = java.util.concurrent.atomic.AtomicInteger(0)
+        try {
+            keys.forEach { key ->
+                executor.submit {
+                    assertTrue(startGate.await(5, TimeUnit.SECONDS))
+                    started.countDown()
+                    val flying = inFlight.incrementAndGet()
+                    maxOverlap.accumulateAndGet(flying) { a, b -> maxOf(a, b) }
+                    try {
+                        assertNotNull(cache.get(key))
+                    } finally {
+                        inFlight.decrementAndGet()
+                        finished.countDown()
+                    }
+                }
+            }
+            startGate.countDown()
+            assertTrue(started.await(5, TimeUnit.SECONDS))
+            assertTrue(finished.await(30, TimeUnit.SECONDS))
+            assertTrue(
+                "concurrent SAF gets should overlap; maxOverlap=${maxOverlap.get()}",
+                maxOverlap.get() >= 2
+            )
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun safBlobCacheStore_prewarmRejectsStaleDatabaseResidency() {
         val root = DocumentFile.fromFile(createTempDir("safstale"))
         val namespace = "tile_cache_v1_test_${UUID.randomUUID()}"

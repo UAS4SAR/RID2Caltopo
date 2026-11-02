@@ -30,7 +30,8 @@ open class TileCacheMapProvider private constructor(
     tileSource: ITileSource,
     private val tileWriter: IFilesystemCache,
     private val registerReceiver: SimpleRegisterReceiver,
-    private val networkAllowed: Boolean
+    private val networkAllowed: Boolean,
+    private val downloadThreads: Int
 ) : MapTileProviderArray(tileSource, registerReceiver) {
     private companion object {
         private const val PROBE_MIN_INTERVAL_MS = 30_000L
@@ -41,8 +42,16 @@ open class TileCacheMapProvider private constructor(
         context: Context,
         tileSource: ITileSource = TileSourceFactory.DEFAULT_TILE_SOURCE,
         tileWriter: IFilesystemCache,
-        networkAllowed: Boolean = true
-    ) : this(context, tileSource, tileWriter, SimpleRegisterReceiver(context), networkAllowed)
+        networkAllowed: Boolean = true,
+        downloadThreads: Int = MapTileUsagePolicy.liveFetchConcurrency(tileSource.name())
+    ) : this(
+        context,
+        tileSource,
+        tileWriter,
+        SimpleRegisterReceiver(context),
+        networkAllowed,
+        downloadThreads.coerceAtLeast(1)
+    )
 
     private val platformNetworkCheck = NetworkAvailabliltyCheck(context)
     private val networkAvailabilityCheck: INetworkAvailablityCheck = object : INetworkAvailablityCheck {
@@ -76,11 +85,12 @@ open class TileCacheMapProvider private constructor(
         }
         mTileProviderList.add(approximater)
 
+        // Per-source concurrency: USGS/USFS may use a bounded pool; OSM/Esri stay at 1.
         downloaderProvider = MapTileDownloader(
             tileSource,
             tileWriter,
             networkAvailabilityCheck,
-            Configuration.getInstance().tileDownloadThreads.toInt(),
+            downloadThreads,
             Configuration.getInstance().tileDownloadMaxQueueSize.toInt()
         )
         downloaderProvider.setTileDownloader(object : TileDownloader() {

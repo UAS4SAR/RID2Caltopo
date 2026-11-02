@@ -26,3 +26,15 @@ import Testing
     #expect(OperationalMapTilePolicy.cacheAgeDays(Int.max) == 3650)
     #expect(OperationalMapTilePolicy.openStreetMapCopyrightURL.absoluteString == "https://www.openstreetmap.org/copyright")
 }
+
+@Test func fetchConcurrencyAllowsBoundedParallelOnlyForUsgsHostedTopo() {
+    #expect(OperationalMapTilePolicy.liveFetchConcurrency(.openStreetMap) == 1)
+    #expect(OperationalMapTilePolicy.liveFetchConcurrency(.imagery) == 1)
+    #expect(OperationalMapTilePolicy.offlineFetchConcurrency(.openStreetMap) == 1)
+    #expect(OperationalMapTilePolicy.offlineFetchConcurrency(.imagery) == 1)
+    #expect(OperationalMapTilePolicy.liveFetchConcurrency(.usgsScannedTopo) == 5)
+    #expect(OperationalMapTilePolicy.liveFetchConcurrency(.usfsTopo) == 5)
+    #expect(OperationalMapTilePolicy.offlineFetchConcurrency(.usgsScannedTopo) == 5)
+    #expect(OperationalMapTilePolicy.offlineFetchConcurrency(.usfsTopo) == 5)
+    #expect((4...6).contains(OperationalMapTilePolicy.usgsHostedFetchConcurrency))
+}

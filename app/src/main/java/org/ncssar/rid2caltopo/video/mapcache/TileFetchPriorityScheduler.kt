@@ -15,7 +15,7 @@ internal class TileFetchPriorityScheduler(
         namedThreadFactory("r2c-tile-high")
     ),
     private val lowExecutor: ExecutorService = Executors.newFixedThreadPool(
-        DEFAULT_LOW_PRIORITY_THREADS,
+        MapTileUsagePolicy.OFFLINE_FETCH_THREAD_POOL,
         namedThreadFactory("r2c-tile-low")
     )
 ) : Closeable {
@@ -38,8 +38,6 @@ internal class TileFetchPriorityScheduler(
     }
 
     companion object {
-        private const val DEFAULT_LOW_PRIORITY_THREADS = 2
-
         private fun namedThreadFactory(prefix: String): ThreadFactory {
             val counter = AtomicInteger(0)
             return ThreadFactory { runnable ->

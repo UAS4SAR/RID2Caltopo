@@ -11,6 +11,7 @@ import androidx.documentfile.provider.DocumentFile
 import java.io.File
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 private object SafCacheIndexDatabaseHolder {
@@ -91,14 +92,19 @@ internal class SafBlobCacheStore(
         namespace.startsWith("dem_point_v") -> ReadableLayoutKind.DEM
         else -> ReadableLayoutKind.NONE
     }
+    // Metadata / index lock only. Never hold across SAF or byte-stream I/O.
     private val dbLock = Any()
     private val prewarmLock = Any()
+    // Striped per-key gates: concurrent recover/put for the same tile serialize
+    // without blocking unrelated tile reads behind one coarse monitor.
+    private val keyStripes = Array(64) { Any() }
     private val hitCount = AtomicLong(0)
     private val missCount = AtomicLong(0)
     private val evictionCount = AtomicLong(0)
     private val staleServedCount = AtomicLong(0)
     private val bytesUsedAtomic = AtomicLong(0L)
-    private var namespaceFileIndex: MutableMap<String, DocumentFile>? = null
+    @Volatile
+    private var namespaceFileIndex: ConcurrentHashMap<String, DocumentFile>? = null
     @Volatile
     private var prewarmed = false
 
@@ -107,36 +113,42 @@ internal class SafBlobCacheStore(
     override fun defaultExpiry(nowMs: Long): Long = nowMs + defaultTtlMs
 
     override fun put(cacheKey: String, bytes: ByteArray, expiresAtMs: Long) {
-        val nsDir = getOrCreateNamespaceDir() ?: return
-        val relativePath = keyToRelativePath(cacheKey)
-        val target = ensureWritableFile(nsDir, relativePath) ?: return
-        if (!writeBytes(Uri.parse(target.uri.toString()), bytes)) {
-            MapCacheDebug.log("saf put-failed ns=$namespace key=$cacheKey uri=${target.uri}")
-            return
-        }
+        val gate = keyGate(cacheKey)
+        synchronized(gate) {
+            val nsDir = getOrCreateNamespaceDir() ?: return
+            val relativePath = keyToRelativePath(cacheKey)
+            val target = ensureWritableFile(nsDir, relativePath) ?: return
+            if (!writeBytes(Uri.parse(target.uri.toString()), bytes)) {
+                MapCacheDebug.log("saf put-failed ns=$namespace key=$cacheKey uri=${target.uri}")
+                return
+            }
 
-        val now = System.currentTimeMillis()
-        val cv = ContentValues().apply {
-            put("namespace", storageNamespace)
-            put("cache_key", cacheKey)
-            put("file_uri", target.uri.toString())
-            put("file_name", relativePath)
-            put("size_bytes", bytes.size)
-            put("created_at", now)
-            put("accessed_at", now)
-            put("expires_at", expiresAtMs)
+            val now = System.currentTimeMillis()
+            val cv = ContentValues().apply {
+                put("namespace", storageNamespace)
+                put("cache_key", cacheKey)
+                put("file_uri", target.uri.toString())
+                put("file_name", relativePath)
+                put("size_bytes", bytes.size)
+                put("created_at", now)
+                put("accessed_at", now)
+                put("expires_at", expiresAtMs)
+            }
+            synchronized(dbLock) {
+                db.replaceOrThrow("saf_entries", null, cv)
+                namespaceFileIndex?.set(relativePath, target)
+                bytesUsedAtomic.set(bytesUsedLocked())
+            }
+            MapCacheDebug.log("saf put ns=$namespace key=$cacheKey bytes=${bytes.size} uri=${target.uri}")
         }
-        synchronized(dbLock) {
-            db.replaceOrThrow("saf_entries", null, cv)
-            namespaceFileIndex?.set(relativePath, target)
-            bytesUsedAtomic.set(bytesUsedLocked())
-        }
-        MapCacheDebug.log("saf put ns=$namespace key=$cacheKey bytes=${bytes.size} uri=${target.uri}")
     }
 
     override fun get(cacheKey: String, countHitMiss: Boolean): CachedBlob? {
-        val row = synchronized(dbLock) {
-            queryRow(cacheKey) ?: recoverRowFromFileLocked(cacheKey)
+        // Fast path: short metadata lookup, then read bytes outside dbLock so
+        // concurrent tile readers are not serialized behind SAF I/O.
+        var row = synchronized(dbLock) { queryRow(cacheKey) }
+        if (row == null) {
+            row = recoverRowFromFile(cacheKey)
         }
         if (row == null) {
             if (countHitMiss) missCount.incrementAndGet()
@@ -175,40 +187,52 @@ internal class SafBlobCacheStore(
     }
 
     override fun getExpiration(cacheKey: String): Long? {
-        synchronized(dbLock) {
-            return (queryRow(cacheKey) ?: recoverRowFromFileLocked(cacheKey))?.expiresAt
-        }
+        synchronized(dbLock) { queryRow(cacheKey) }?.expiresAt?.let { return it }
+        return recoverRowFromFile(cacheKey)?.expiresAt
     }
 
     override fun exists(cacheKey: String): Boolean {
         // Offline-map preparation calls this thousands of times. Reading every
         // cached tile body just to prove it exists makes removable SAF storage
         // the bottleneck and needlessly updates the LRU timestamp for a probe.
-        return synchronized(dbLock) {
-            val indexed = queryRow(cacheKey)
-            if (indexed != null && namespaceFileIndex?.containsKey(indexed.fileName) == false) {
+        val indexed = synchronized(dbLock) {
+            val row = queryRow(cacheKey)
+            if (row != null && namespaceFileIndex?.containsKey(row.fileName) == false) {
                 // A completed prewarm is a filesystem snapshot. Do not let a
                 // stale database row make package/readiness checks skip a tile
                 // that is no longer present on removable storage.
                 deleteRow(cacheKey)
                 null
             } else {
-                indexed ?: recoverRowFromFileLocked(cacheKey)
+                row
             }
-        } != null
+        }
+        if (indexed != null) return true
+        return recoverRowFromFile(cacheKey) != null
     }
 
-    override fun remove(cacheKey: String): Boolean = synchronized(dbLock) {
-        val row = queryRow(cacheKey) ?: return@synchronized false
-        try {
-            val file = DocumentFile.fromSingleUri(appContext, Uri.parse(row.fileUri))
-            if (file != null && file.exists() && !file.delete()) return@synchronized false
-        } catch (_: Exception) { return@synchronized false }
-        val deleted = db.delete("saf_entries", "namespace = ? AND cache_key = ?", arrayOf(storageNamespace, cacheKey))
-        namespaceFileIndex?.remove(row.fileName)
-        namespaceFileIndex?.remove(legacyFileNameForKey(cacheKey))
-        if (deleted > 0) bytesUsedAtomic.set(bytesUsedLocked())
-        deleted > 0
+    override fun remove(cacheKey: String): Boolean {
+        val gate = keyGate(cacheKey)
+        synchronized(gate) {
+            val row = synchronized(dbLock) { queryRow(cacheKey) } ?: return false
+            try {
+                val file = DocumentFile.fromSingleUri(appContext, Uri.parse(row.fileUri))
+                if (file != null && file.exists() && !file.delete()) return false
+            } catch (_: Exception) {
+                return false
+            }
+            synchronized(dbLock) {
+                val deleted = db.delete(
+                    "saf_entries",
+                    "namespace = ? AND cache_key = ?",
+                    arrayOf(storageNamespace, cacheKey)
+                )
+                namespaceFileIndex?.remove(row.fileName)
+                namespaceFileIndex?.remove(legacyFileNameForKey(cacheKey))
+                if (deleted > 0) bytesUsedAtomic.set(bytesUsedLocked())
+                return deleted > 0
+            }
+        }
     }
 
     override fun clear() {
@@ -218,7 +242,13 @@ internal class SafBlobCacheStore(
             namespaceFileIndex?.clear()
             bytesUsedAtomic.set(0L)
         }
+        // Filesystem wipe outside dbLock.
         nsDir?.listFiles()?.forEach { deleteRecursively(it) }
+    }
+
+    private fun keyGate(cacheKey: String): Any {
+        val stripe = (cacheKey.hashCode() ushr 1) % keyStripes.size
+        return keyStripes[stripe]
     }
 
     // Lock-free: all fields are AtomicLong; bytesUsedAtomic is kept current by put/remove/clear/evict.
@@ -276,7 +306,7 @@ internal class SafBlobCacheStore(
                 }
             }
             synchronized(dbLock) {
-                namespaceFileIndex = fileIndex
+                namespaceFileIndex = ConcurrentHashMap(fileIndex)
                 maybeRebuildIndexLocked(indexedFiles)
                 bytesUsedAtomic.set(bytesUsedLocked())
                 MapCacheDebug.log("saf prewarm ns=$namespace ready files=${namespaceFileIndex?.size ?: 0}")
@@ -456,56 +486,70 @@ internal class SafBlobCacheStore(
         db.delete("saf_entries", "namespace = ? AND cache_key = ?", arrayOf(storageNamespace, cacheKey))
     }
 
-    private fun recoverRowFromFileLocked(cacheKey: String): Row? {
-        val nsDir = getNamespaceDir() ?: return null
-        val relativePath = keyToRelativePath(cacheKey)
-        val legacyPath = legacyFileNameForKey(cacheKey)
-        val fileIndex = namespaceFileIndex
-        val located = if (fileIndex != null) {
-            val indexed = fileIndex[relativePath]?.takeIf { it.isFile }
-            val legacy = fileIndex[legacyPath]?.takeIf { it.isFile }
-            val resolvedFile = if (indexed == null && legacy != null && relativePath != legacyPath) {
-                migrateLegacyFileLocked(nsDir, legacyPath, relativePath, legacy, fileIndex)
+    /**
+     * Discover a missing index row from the filesystem. SAF/file work runs outside
+     * [dbLock]; only the final index publish takes the metadata lock.
+     */
+    private fun recoverRowFromFile(cacheKey: String): Row? {
+        val gate = keyGate(cacheKey)
+        synchronized(gate) {
+            synchronized(dbLock) { queryRow(cacheKey) }?.let { return it }
+
+            val nsDir = getNamespaceDir() ?: return null
+            val relativePath = keyToRelativePath(cacheKey)
+            val legacyPath = legacyFileNameForKey(cacheKey)
+            val fileIndex = namespaceFileIndex
+            val located = if (fileIndex != null) {
+                val indexed = fileIndex[relativePath]?.takeIf { it.isFile }
+                val legacy = fileIndex[legacyPath]?.takeIf { it.isFile }
+                val resolvedFile = if (indexed == null && legacy != null && relativePath != legacyPath) {
+                    migrateLegacyFile(nsDir, legacyPath, relativePath, legacy, fileIndex)
+                } else {
+                    indexed ?: legacy
+                } ?: return null
+                val resolvedName = if (resolvedFile === legacy && indexed == null) legacyPath else relativePath
+                LocatedFile(resolvedFile, resolvedName)
             } else {
-                indexed ?: legacy
-            } ?: return null
-            val resolvedName = if (resolvedFile === legacy && indexed == null) legacyPath else relativePath
-            LocatedFile(resolvedFile, resolvedName)
-        } else {
-            findCacheFile(nsDir, relativePath) ?: findCacheFile(nsDir, legacyPath) ?: return null
+                findCacheFile(nsDir, relativePath) ?: findCacheFile(nsDir, legacyPath) ?: return null
+            }
+            // length() is a SAF metadata call — keep it outside dbLock.
+            val size = located.file.length().coerceAtLeast(0L)
+            val now = System.currentTimeMillis()
+            val expiresAt = defaultExpiry(now)
+            val uriString = located.file.uri.toString()
+            val cv = ContentValues().apply {
+                put("namespace", storageNamespace)
+                put("cache_key", cacheKey)
+                put("file_uri", uriString)
+                put("file_name", located.fileName)
+                put("size_bytes", size)
+                put("created_at", now)
+                put("accessed_at", now)
+                put("expires_at", expiresAt)
+            }
+            synchronized(dbLock) {
+                // Another writer may have indexed this key while we scanned.
+                queryRow(cacheKey)?.let { return it }
+                db.replaceOrThrow("saf_entries", null, cv)
+                namespaceFileIndex?.set(located.fileName, located.file)
+            }
+            MapCacheDebug.log(
+                "saf reindex ns=$namespace key=$cacheKey file=${located.fileName} size=$size uri=$uriString"
+            )
+            return Row(
+                fileUri = uriString,
+                fileName = located.fileName,
+                expiresAt = expiresAt
+            )
         }
-        val now = System.currentTimeMillis()
-        val expiresAt = defaultExpiry(now)
-        val size = located.file.length().coerceAtLeast(0L)
-        val uriString = located.file.uri.toString()
-        val cv = ContentValues().apply {
-            put("namespace", storageNamespace)
-            put("cache_key", cacheKey)
-            put("file_uri", uriString)
-            put("file_name", located.fileName)
-            put("size_bytes", size)
-            put("created_at", now)
-            put("accessed_at", now)
-            put("expires_at", expiresAt)
-        }
-        db.replaceOrThrow("saf_entries", null, cv)
-        namespaceFileIndex?.set(located.fileName, located.file)
-        MapCacheDebug.log(
-            "saf reindex ns=$namespace key=$cacheKey file=${located.fileName} size=$size uri=$uriString"
-        )
-        return Row(
-            fileUri = uriString,
-            fileName = located.fileName,
-            expiresAt = expiresAt
-        )
     }
 
-    private fun migrateLegacyFileLocked(
+    private fun migrateLegacyFile(
         nsDir: DocumentFile,
         legacyPath: String,
         relativePath: String,
         legacyFile: DocumentFile,
-        fileIndex: MutableMap<String, DocumentFile>
+        fileIndex: ConcurrentHashMap<String, DocumentFile>
     ): DocumentFile? {
         val bytes = readBytes(legacyFile.uri) ?: return legacyFile
         val migratedFile = ensureWritableFile(nsDir, relativePath) ?: return legacyFile
@@ -520,19 +564,12 @@ internal class SafBlobCacheStore(
         return migratedFile
     }
 
-    private fun ensureNamespaceFileIndexLocked(nsDir: DocumentFile): MutableMap<String, DocumentFile> {
-        namespaceFileIndex?.let { return it }
-        val index = buildNamespaceFileIndex(nsDir)
-        namespaceFileIndex = index
-        return index
-    }
-
     private fun buildNamespaceFileIndex(
         nsDir: DocumentFile,
         sizes: MutableMap<String, Long> = HashMap()
-    ): MutableMap<String, DocumentFile> {
+    ): ConcurrentHashMap<String, DocumentFile> {
         val startNs = System.nanoTime()
-        val index = HashMap<String, DocumentFile>()
+        val index = ConcurrentHashMap<String, DocumentFile>()
         // A partial listing must not replace the database's complete index.
         indexNamespaceFiles(nsDir, "", index, sizes)
         val elapsedMs = (System.nanoTime() - startNs) / 1_000_000.0

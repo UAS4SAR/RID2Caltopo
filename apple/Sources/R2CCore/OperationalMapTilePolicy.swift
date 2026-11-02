@@ -4,6 +4,10 @@ import Foundation
 public enum OperationalMapTilePolicy {
     public static let minimumCacheAgeDays = 7
     public static let openStreetMapCopyrightURL = URL(string: "https://www.openstreetmap.org/copyright")!
+    /// Conservative default for OSM/Esri and other suppliers that misbehave under parallel fetch.
+    public static let defaultFetchConcurrency = 1
+    /// Bounded parallel fetch for USGS Scanned Topo and USFS Topo only (matches Android).
+    public static let usgsHostedFetchConcurrency = 5
     private static let offlinePackageSources: Set<String> = [
         "USGS-Contours",
         "USGS-ScannedTopo",
@@ -23,5 +27,18 @@ public enum OperationalMapTilePolicy {
 
     public static func allowsPackageExport(source: String) -> Bool {
         offlinePackageSources.contains(source)
+    }
+
+    /// Live viewport fetch concurrency. MapKit already parallelizes; this documents the
+    /// intended per-source policy and gates offline download workers.
+    public static func liveFetchConcurrency(_ layer: OperationalMapBaseLayer) -> Int {
+        switch layer {
+        case .usgsScannedTopo, .usfsTopo: usgsHostedFetchConcurrency
+        case .openStreetMap, .imagery: defaultFetchConcurrency
+        }
+    }
+
+    public static func offlineFetchConcurrency(_ layer: OperationalMapBaseLayer) -> Int {
+        liveFetchConcurrency(layer)
     }
 }

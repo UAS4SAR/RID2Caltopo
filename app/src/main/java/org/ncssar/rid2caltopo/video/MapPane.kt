@@ -118,6 +118,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -125,6 +127,8 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.channels.Channel
 import androidx.documentfile.provider.DocumentFile
@@ -202,6 +206,7 @@ import org.ncssar.rid2caltopo.video.mapcache.UnifiedMapCache
 import org.ncssar.rid2caltopo.video.mapcache.MapCacheUsage
 import org.ncssar.rid2caltopo.video.mapcache.MapCachePolicy
 import org.ncssar.rid2caltopo.video.mapcache.MapCacheSettings
+import org.ncssar.rid2caltopo.video.mapcache.MapTileUsagePolicy
 import org.ncssar.rid2caltopo.video.mapcache.TileCacheMapProvider
 import org.ncssar.rid2caltopo.video.mapcache.TileDiskCacheWriter
 import org.ncssar.rid2caltopo.video.mapcache.TileFetchPriorityScheduler
@@ -639,7 +644,8 @@ private fun buildTileMapProvider(
     return TileCacheMapProvider(
         context = context,
         tileSource = tileSource,
-        tileWriter = tileWriter
+        tileWriter = tileWriter,
+        downloadThreads = MapTileUsagePolicy.liveFetchConcurrency(tileSource.name())
     ).apply {
         setUseDataConnection(true)
         setOfflineFirst(false)
@@ -1324,30 +1330,44 @@ internal fun SplitMapPane(
                     return@launch
                 }
                 val passStartMs = System.currentTimeMillis()
-                var attemptedRequests = 0
-                var availableRequests = 0
+                val attemptedRequests = AtomicInteger(0)
+                val availableRequests = AtomicInteger(0)
+                val fetchConcurrency = MapTileUsagePolicy.liveFetchConcurrency(source.name())
                 MapCacheDebug.debug(
                     MapCacheDebug.TAG_TILE,
-                    "live-priority pass start zoom=$passZoom requests=${requests.size} source=${source.name()}"
+                    "live-priority pass start zoom=$passZoom requests=${requests.size} " +
+                        "source=${source.name()} concurrency=$fetchConcurrency"
                 )
                 try {
-                    for (request in requests) {
-                        currentCoroutineContext().ensureActive()
+                    suspend fun fetchOne(request: LiveTileRequest): Boolean {
                         if (request.requiresCurrentCached && !tileCacheWriter.exists(source, request.currentTileIndex)) {
-                            continue
+                            return false
                         }
                         val key = "${source.name()}:${request.tileIndex}"
-                        if (key in autoPrefetchedMapTiles) continue
-                        attemptedRequests++
+                        if (key in autoPrefetchedMapTiles) return false
+                        attemptedRequests.incrementAndGet()
                         val taskStartMs = System.currentTimeMillis()
-                        val available = tileFetchPriorityScheduler.highPriority {
-                            prefetchMapTileIfMissing(
-                                source,
-                                request.tileIndex,
-                                tileCacheWriter,
-                                offlineHttpClient,
-                                reason = "live-priority"
-                            )
+                        val available = if (fetchConcurrency <= 1) {
+                            tileFetchPriorityScheduler.highPriority {
+                                prefetchMapTileIfMissing(
+                                    source,
+                                    request.tileIndex,
+                                    tileCacheWriter,
+                                    offlineHttpClient,
+                                    reason = "live-priority"
+                                )
+                            }
+                        } else {
+                            // USGS/USFS: fetch on IO so the single-thread high pool cannot serialize them.
+                            withContext(Dispatchers.IO) {
+                                prefetchMapTileIfMissing(
+                                    source,
+                                    request.tileIndex,
+                                    tileCacheWriter,
+                                    offlineHttpClient,
+                                    reason = "live-priority"
+                                )
+                            }
                         }
                         val taskElapsedMs = System.currentTimeMillis() - taskStartMs
                         if (taskElapsedMs >= 1_000L) {
@@ -1359,7 +1379,26 @@ internal fun SplitMapPane(
                         }
                         if (available) {
                             autoPrefetchedMapTiles.add(key)
-                            availableRequests++
+                            availableRequests.incrementAndGet()
+                        }
+                        return available
+                    }
+                    if (fetchConcurrency <= 1) {
+                        for (request in requests) {
+                            currentCoroutineContext().ensureActive()
+                            fetchOne(request)
+                        }
+                    } else {
+                        val gate = Semaphore(fetchConcurrency)
+                        coroutineScope {
+                            requests.map { request ->
+                                async {
+                                    gate.withPermit {
+                                        currentCoroutineContext().ensureActive()
+                                        fetchOne(request)
+                                    }
+                                }
+                            }.awaitAll()
                         }
                     }
                 } catch (e: CancellationException) {
@@ -1367,7 +1406,7 @@ internal fun SplitMapPane(
                     MapCacheDebug.debug(
                         MapCacheDebug.TAG_TILE,
                         "live-priority pass cancelled zoom=$passZoom requests=${requests.size} " +
-                            "attempted=$attemptedRequests elapsedMs=$elapsedMs"
+                            "attempted=${attemptedRequests.get()} elapsedMs=$elapsedMs"
                     )
                     throw e
                 } finally {
@@ -1376,7 +1415,7 @@ internal fun SplitMapPane(
                         MapCacheDebug.warn(
                             MapCacheDebug.TAG_TILE,
                             "live-priority pass slow zoom=$passZoom requests=${requests.size} " +
-                                "attempted=$attemptedRequests available=$availableRequests elapsedMs=$elapsedMs"
+                                "attempted=${attemptedRequests.get()} available=${availableRequests.get()} elapsedMs=$elapsedMs"
                         )
                     } else {
                         MapCacheDebug.debug(
@@ -2067,8 +2106,8 @@ internal fun SplitMapPane(
                     }
 
                     if (!maximizeThroughput) {
-                        // One serial worker per supplier; independent suppliers can run together.
-                        // Never queue multiple simultaneous requests to the same tile source.
+                        // Per-source concurrency: OSM/Esri/contours stay serial; USGS/USFS may use a bound.
+                        // Independent suppliers can still progress together.
                         val orderedTileIndexes = if (tileSources.isEmpty()) emptyList() else orderedTileIndexesForOfflinePrep(
                             bounds = bounds,
                             minZoom = preset.minZoom,
@@ -2079,9 +2118,29 @@ internal fun SplitMapPane(
                         )
                         tileSources.map { source ->
                             launch {
-                                for (tileIndex in orderedTileIndexes) {
-                                    currentCoroutineContext().ensureActive()
-                                    processTile(source, tileIndex)
+                                val concurrency = MapTileUsagePolicy.offlineFetchConcurrency(source.name())
+                                if (concurrency <= 1) {
+                                    for (tileIndex in orderedTileIndexes) {
+                                        currentCoroutineContext().ensureActive()
+                                        processTile(source, tileIndex)
+                                    }
+                                } else {
+                                    val queue = Channel<Long>(capacity = concurrency * 4)
+                                    coroutineScope {
+                                        repeat(concurrency) {
+                                            launch {
+                                                for (tileIndex in queue) {
+                                                    currentCoroutineContext().ensureActive()
+                                                    processTile(source, tileIndex)
+                                                }
+                                            }
+                                        }
+                                        for (tileIndex in orderedTileIndexes) {
+                                            currentCoroutineContext().ensureActive()
+                                            queue.send(tileIndex)
+                                        }
+                                        queue.close()
+                                    }
                                 }
                             }
                         }.joinAll()

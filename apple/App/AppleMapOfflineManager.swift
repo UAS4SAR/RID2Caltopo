@@ -962,16 +962,12 @@ final class AppleMapOfflineManager: ObservableObject {
             }
             let aolWeight=(aolPlan?.advertisedBytes ?? 0)+Int64(aolPlan?.tiles ?? 0)*8_000_000
             self.progress.estimatedBytesTotal += aolWeight
-            // Supplier-specific workers are serial. Different suppliers may progress together.
-            // The former aggressive same-supplier throughput mode returned abuse tiles in field
-            // trials and does not appear supported by tile suppliers.
+            // Per-source concurrency: OSM/Esri stay interactive-only; USGS/USFS may use a
+            // bounded parallel fetch. Contours remain serial. Different suppliers progress together.
             await withTaskGroup(of: Void.self) { group in
                 for layer in baseLayers {
                     group.addTask {
-                        for tile in tiles {
-                            guard !Task.isCancelled else { return }
-                            await self.fetchTile(tile, baseLayer: layer)
-                        }
+                        await self.fetchTilesBounded(tiles, baseLayer: layer)
                     }
                 }
                 if includeContours {
@@ -1236,6 +1232,40 @@ final class AppleMapOfflineManager: ObservableObject {
 
     private var badHashes: Set<String> {
         AppleBadTilePolicy.hashes(defaults: defaults)
+    }
+
+    private func fetchTilesBounded(_ tiles: [OperationalOfflineTile], baseLayer: OperationalMapBaseLayer) async {
+        let concurrency = max(1, OperationalMapTilePolicy.offlineFetchConcurrency(baseLayer))
+        if concurrency <= 1 {
+            for tile in tiles {
+                guard !Task.isCancelled else { return }
+                await fetchTile(tile, baseLayer: baseLayer)
+            }
+            return
+        }
+        await withTaskGroup(of: Void.self) { group in
+            var nextIndex = 0
+            var inFlight = 0
+            func enqueueAvailable() {
+                while inFlight < concurrency && nextIndex < tiles.count {
+                    let tile = tiles[nextIndex]
+                    nextIndex += 1
+                    inFlight += 1
+                    group.addTask {
+                        await self.fetchTile(tile, baseLayer: baseLayer)
+                    }
+                }
+            }
+            enqueueAvailable()
+            for await _ in group {
+                inFlight -= 1
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    return
+                }
+                enqueueAvailable()
+            }
+        }
     }
 
     private func fetchTile(_ tile: OperationalOfflineTile, baseLayer: OperationalMapBaseLayer) async {

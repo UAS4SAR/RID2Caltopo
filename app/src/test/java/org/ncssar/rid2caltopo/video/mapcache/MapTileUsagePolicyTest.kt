@@ -37,4 +37,23 @@ class MapTileUsagePolicyTest {
         }
         assertFalse(MapTileUsagePolicy.allowsOfflineDownload("USGS-Contours", "http://carto.nationalmap.gov/export"))
     }
+
+    @Test fun fetchConcurrencyAllowsBoundedParallelOnlyForUsgsHostedTopo() {
+        assertEquals(1, MapTileUsagePolicy.liveFetchConcurrency("OSM-Standard"))
+        assertEquals(1, MapTileUsagePolicy.liveFetchConcurrency("ArcGIS-WorldImagery"))
+        assertEquals(1, MapTileUsagePolicy.liveFetchConcurrency("USGS-Contours"))
+        assertEquals(1, MapTileUsagePolicy.offlineFetchConcurrency("OSM-Standard"))
+        assertEquals(1, MapTileUsagePolicy.offlineFetchConcurrency("ArcGIS-WorldImagery"))
+        assertEquals(1, MapTileUsagePolicy.offlineFetchConcurrency("USGS-Contours"))
+
+        assertEquals(5, MapTileUsagePolicy.liveFetchConcurrency("USGS-ScannedTopo"))
+        assertEquals(5, MapTileUsagePolicy.liveFetchConcurrency("USFS-Topo"))
+        assertEquals(5, MapTileUsagePolicy.offlineFetchConcurrency("USGS-ScannedTopo"))
+        assertEquals(5, MapTileUsagePolicy.offlineFetchConcurrency("USFS-Topo"))
+        assertTrue(MapTileUsagePolicy.USGS_HOSTED_FETCH_CONCURRENCY in 4..6)
+        assertEquals(
+            MapTileUsagePolicy.USGS_HOSTED_FETCH_CONCURRENCY + 1,
+            MapTileUsagePolicy.OFFLINE_FETCH_THREAD_POOL
+        )
+    }
 }
