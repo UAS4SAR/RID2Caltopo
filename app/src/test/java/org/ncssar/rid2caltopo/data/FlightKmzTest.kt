@@ -69,16 +69,25 @@ class FlightKmzTest {
         assertEquals(listOf(t0, t0 + 1_000), contents.points.map { it.timeMs })
         assertNull(contents.points[0].receivedAtMs)
         assertNull(contents.points[1].altitudeMeters)
-        val extended = geoJson(JSONArray()
+        val legacy = geoJson(JSONArray()
             .put(JSONArray().put(-121.1).put(39.1).put(100).put(t0))
             .put(JSONArray().put(-121.2).put(39.2).put(101).put(t0 + 1_000)),
             JSONObject().put("r2c_point_received_ms", JSONArray().put(t0 + 150).put(JSONObject.NULL))
                 .put("r2c_point_drone_clock", JSONArray().put(true).put(false)).put("r2c_flight_id", "flight-9"))
-        val decoded = FlightArchiveRebuild.decode(extended)!!
-        assertEquals(t0 + 150, decoded.points[0].receivedAtMs)
-        assertNull(decoded.points[1].receivedAtMs)
-        assertFalse(decoded.points[1].droneClock)
-        assertEquals("flight-9", FlightArchiveRebuild.flightId(extended))
+        val decodedLegacy = FlightArchiveRebuild.decode(legacy)!!
+        assertEquals(t0 + 150, decodedLegacy.points[0].receivedAtMs)
+        assertNull(decodedLegacy.points[1].receivedAtMs)
+        assertFalse(decodedLegacy.points[1].droneClock)
+        val compact = geoJson(JSONArray()
+            .put(JSONArray().put(-121.1).put(39.1).put(100).put(t0))
+            .put(JSONArray().put(-121.2).put(39.2).put(101).put(t0 + 1_000)),
+            JSONObject().put("r2c_point_recv_base_ms", t0 + 150)
+                .put("r2c_point_recv_off_ms", JSONArray().put(0).put(JSONObject.NULL))
+                .put("r2c_point_no_drone_clock", JSONArray().put(1)).put("r2c_flight_id", "flight-9"))
+        val decodedCompact = FlightArchiveRebuild.decode(compact)!!
+        assertEquals(decodedLegacy.points.map { it.receivedAtMs }, decodedCompact.points.map { it.receivedAtMs })
+        assertEquals(decodedLegacy.points.map { it.droneClock }, decodedCompact.points.map { it.droneClock })
+        assertEquals("flight-9", FlightArchiveRebuild.flightId(legacy))
         assertNull(FlightArchiveRebuild.flightId(old))
         assertNull(FlightArchiveRebuild.decode("{}".toByteArray()))
         assertEquals("RID-1_x.kmz", FlightArchiveRebuild.kmzName("RID-1_x.json"))

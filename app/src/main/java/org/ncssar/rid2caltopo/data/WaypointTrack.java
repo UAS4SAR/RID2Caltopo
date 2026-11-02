@@ -485,16 +485,8 @@ public class WaypointTrack {
             joProp.put("title", trackLabel);
             joProp.put("start_time", startTimeStr);
             joProp.put("r2c_prop", r2cProp);
-            // Optional per-point fields aligned with coordinates (older files omit them).
-            JSONArray received = new JSONArray();
-            JSONArray droneClock = new JSONArray();
-            for (int i = 0; i < coordinates.length(); i++) {
-                Long value = i < pointReceivedAtMs.size() ? pointReceivedAtMs.get(i) : null;
-                received.put(value == null ? JSONObject.NULL : value);
-                droneClock.put(i >= pointDroneClock.size() || pointDroneClock.get(i));
-            }
-            joProp.put("r2c_point_received_ms", received);
-            joProp.put("r2c_point_drone_clock", droneClock);
+            // Compact receive-time / drone-clock encoding (see FlightArchivePointTiming).
+            FlightArchivePointTiming.write(joProp, pointReceivedAtMs, pointDroneClock, coordinates.length());
             joProp.put("r2c_flight_id", deferredPublicationId);
             jo.put("properties", joProp);
 

@@ -21,24 +21,23 @@ object FlightArchiveRebuild {
 
     /**
      * Decodes WaypointTrack (and Apple) GeoJSON: coordinates are [lng, lat, alt, timeMs] as strings or
-     * numbers; `r2c_point_received_ms` and `r2c_point_drone_clock` are optional aligned arrays.
+     * numbers. Per-point receive times / drone-clock flags use [FlightArchivePointTiming] (compact
+     * writer format, with legacy absolute arrays still accepted).
      */
     fun decode(bytes: ByteArray): FlightArchiveContents? = runCatching {
         val root = JSONObject(String(bytes, Charsets.UTF_8))
         val feature = root.optJSONArray("features")?.optJSONObject(0) ?: return null
         val properties = feature.optJSONObject("properties") ?: JSONObject()
         val coordinates = feature.optJSONObject("geometry")?.optJSONArray("coordinates") ?: return null
-        val received = properties.optJSONArray("r2c_point_received_ms")
-        val droneClock = properties.optJSONArray("r2c_point_drone_clock")
+        val received = FlightArchivePointTiming.readReceivedAtMs(properties, coordinates.length())
+        val droneClock = FlightArchivePointTiming.readDroneClock(properties, coordinates.length())
         val points = (0 until coordinates.length()).mapNotNull { index ->
             val point = coordinates.optJSONArray(index) ?: return@mapNotNull null
             val lon = point.optString(0).toDoubleOrNull() ?: return@mapNotNull null
             val lat = point.optString(1).toDoubleOrNull() ?: return@mapNotNull null
             val time = point.optString(3).toDoubleOrNull()?.toLong() ?: return@mapNotNull null
             val altitude = point.optString(2).toDoubleOrNull()?.takeIf { it.isFinite() && it > INVALID_ALTITUDE }
-            val receivedAt = received?.takeIf { index < it.length() && !it.isNull(index) }?.optString(index)?.toDoubleOrNull()?.toLong()
-            val clock = droneClock?.takeIf { index < it.length() && !it.isNull(index) }?.optBoolean(index, true) ?: true
-            ClueBindingPoint(time, receivedAt, lat, lon, altitude, "track", clock)
+            ClueBindingPoint(time, received[index], lat, lon, altitude, "track", droneClock[index])
         }
         val remote = properties.optJSONObject("r2c_prop")?.optString("rid").orEmpty()
             .ifEmpty { properties.optString("r2c_remote_id") }

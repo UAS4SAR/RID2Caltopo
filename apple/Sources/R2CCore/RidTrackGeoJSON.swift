@@ -66,8 +66,10 @@ public enum RidTrackGeoJSON {
                 String(Int64((point.bindingTime.timeIntervalSince1970 * 1_000).rounded())),
             ]
         }
-        // Diagnostic only: the app's receive time per point, so a drone clock offset can be measured.
-        let receivedMilliseconds = track.points.map { Int64(($0.receivedAt.timeIntervalSince1970 * 1_000).rounded()) }
+        // Compact receive-time / drone-clock encoding (see FlightArchivePointTiming).
+        let receivedMilliseconds: [Int64?] = track.points.map {
+            Int64(($0.receivedAt.timeIntervalSince1970 * 1_000).rounded())
+        }
         let droneClock = track.points.map { $0.droneTime != nil }
         let miles = track.distanceMeters / 1_609.344
         let r2cProperties: [String: Any] = [
@@ -91,9 +93,8 @@ public enum RidTrackGeoJSON {
             "title": archiveTitle(for: track, metadata: metadata),
             "start_time": startTime,
             "r2c_prop": r2cProperties,
-            "r2c_point_received_ms": receivedMilliseconds,
-            "r2c_point_drone_clock": droneClock,
         ]
+        FlightArchivePointTiming.write(into: &properties, receivedAtMs: receivedMilliseconds, droneClock: droneClock)
         if !metadata.flightID.isEmpty { properties["r2c_flight_id"] = metadata.flightID }
         let feature: [String: Any] = [
             "type": "Feature",
@@ -126,7 +127,8 @@ public enum RidTrackGeoJSON {
     }
 
     /// Reads an archive written by either platform. Coordinates are [lng, lat, alt, timeMs] as strings
-    /// or numbers; the optional receive-time arrays are absent in older files.
+    /// or numbers. Per-point timing uses [FlightArchivePointTiming] (compact writer format; legacy
+    /// absolute arrays still accepted).
     public static func decodeArchive(_ data: Data) -> ArchiveContents? {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let feature = (root["features"] as? [[String: Any]])?.first,
@@ -135,8 +137,8 @@ public enum RidTrackGeoJSON {
         else { return nil }
         let properties = feature["properties"] as? [String: Any] ?? [:]
         let r2c = properties["r2c_prop"] as? [String: Any] ?? [:]
-        let received = properties["r2c_point_received_ms"] as? [Any]
-        let droneClock = properties["r2c_point_drone_clock"] as? [Any]
+        let received = FlightArchivePointTiming.readReceivedAtMs(properties: properties, pointCount: coordinates.count)
+        let droneClock = FlightArchivePointTiming.readDroneClock(properties: properties, pointCount: coordinates.count)
         func number(_ value: Any?) -> Double? {
             if let value = value as? NSNumber { return value.doubleValue }
             if let value = value as? String { return Double(value) }
@@ -147,10 +149,8 @@ public enum RidTrackGeoJSON {
             guard coordinate.count >= 4, let lng = number(coordinate[0]), let lat = number(coordinate[1]),
                   let time = number(coordinate[3]) else { continue }
             let altitude = number(coordinate[2]).flatMap { $0 <= -999 ? nil : $0 }
-            let receivedAt = received.flatMap { index < $0.count ? number($0[index]) : nil }.map { Int64($0) }
-            let isDrone = droneClock.flatMap { index < $0.count ? ($0[index] as? Bool) : nil } ?? true
-            points.append(ClueBindingPoint(timeMs: Int64(time), receivedAtMs: receivedAt, latitude: lat, longitude: lng,
-                                           altitudeMeters: altitude, source: "archive", droneClock: isDrone))
+            points.append(ClueBindingPoint(timeMs: Int64(time), receivedAtMs: received[index], latitude: lat, longitude: lng,
+                                           altitudeMeters: altitude, source: "archive", droneClock: droneClock[index]))
         }
         let flightID = (properties["r2c_flight_id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         return ArchiveContents(title: properties["title"] as? String ?? "", remoteID: r2c["rid"] as? String ?? "",

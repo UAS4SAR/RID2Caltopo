@@ -357,6 +357,15 @@ private func record(capture: Date = Date(timeIntervalSince1970: 1_790_553_873), 
     #expect(contents.points[1].receivedAtMs == nil)
     #expect(contents.points[1].altitudeMeters == nil)
     #expect(RidTrackGeoJSON.decodeArchive(Data("{}".utf8)) == nil)
+    let compact = """
+    {"type":"FeatureCollection","features":[{"type":"Feature","properties":{"title":"D_1","r2c_prop":{"rid":"RID-1"},
+    "r2c_point_recv_base_ms":1790553873150,"r2c_point_recv_off_ms":[0,null],"r2c_point_no_drone_clock":[1]},
+    "geometry":{"type":"LineString","coordinates":[["-121.000000","39.000000","120","1790553873000"],["-121.001","39.001","-1000","1790553874000"]]}}]}
+    """
+    let compactContents = try #require(RidTrackGeoJSON.decodeArchive(Data(compact.utf8)))
+    #expect(compactContents.points[0].receivedAtMs == 1_790_553_873_150)
+    #expect(compactContents.points[1].receivedAtMs == nil)
+    #expect(compactContents.points.map(\.droneClock) == [true, false])
 }
 
 @Test func geoJSONStoresDroneTimeAndDiagnosticReceiveTime() async throws {
@@ -369,10 +378,73 @@ private func record(capture: Date = Date(timeIntervalSince1970: 1_790_553_873), 
     }
     let track = try #require(await store.snapshot().first)
     let encoded = try RidTrackGeoJSON.encode(track: track)
+    let root = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    let properties = try #require(((root["features"] as? [[String: Any]])?.first)?["properties"] as? [String: Any])
+    #expect(properties[FlightArchivePointTiming.legacyReceivedMs] == nil)
+    #expect(properties[FlightArchivePointTiming.legacyDroneClock] == nil)
+    #expect(properties[FlightArchivePointTiming.recvBaseMs] as? Int64 == 1_790_553_873_400
+            || (properties[FlightArchivePointTiming.recvBaseMs] as? NSNumber)?.int64Value == 1_790_553_873_400)
+    #expect(properties[FlightArchivePointTiming.noDroneClock] == nil)
     let contents = try #require(RidTrackGeoJSON.decodeArchive(encoded))
     #expect(contents.points.map(\.timeMs) == [1_790_553_873_000, 1_790_553_883_000])
     #expect(contents.points.map(\.receivedAtMs) == [1_790_553_873_400, 1_790_553_883_400])
     #expect(contents.points.allSatisfy { $0.droneClock })
+}
+
+@Test func compactArchiveTimingMatchesLegacyForClueBindingAndIsSmaller() throws {
+    let sample: [ClueBindingPoint] = (0..<120).map { i in
+        let time = t0 + Int64(i) * 1_000
+        let received: Int64? = i % 23 == 0 ? nil : time + 150 + Int64(i % 7)
+        return ClueBindingPoint(timeMs: time, receivedAtMs: received, latitude: 39 + Double(i) * 0.0001,
+                                longitude: -121, altitudeMeters: 120, source: "archive", droneClock: i % 17 != 0)
+    }
+    let coords: [[Any]] = sample.map { p in
+        [NSNumber(value: p.longitude), NSNumber(value: p.latitude), NSNumber(value: 120), NSNumber(value: p.timeMs)]
+    }
+    let legacyReceived: [Any] = sample.map { point in
+        if let received = point.receivedAtMs { return NSNumber(value: received) }
+        return NSNull()
+    }
+    let legacyProps: [String: Any] = [
+        "title": "D_1",
+        "r2c_prop": ["rid": "RID-1"],
+        FlightArchivePointTiming.legacyReceivedMs: legacyReceived,
+        FlightArchivePointTiming.legacyDroneClock: sample.map(\.droneClock),
+    ]
+    var compactProps: [String: Any] = ["title": "D_1", "r2c_prop": ["rid": "RID-1"]]
+    FlightArchivePointTiming.write(into: &compactProps, receivedAtMs: sample.map(\.receivedAtMs),
+                                   droneClock: sample.map(\.droneClock))
+    func archive(_ properties: [String: Any]) throws -> RidTrackGeoJSON.ArchiveContents {
+        let root: [String: Any] = [
+            "type": "FeatureCollection",
+            "features": [["type": "Feature", "properties": properties,
+                          "geometry": ["type": "LineString", "coordinates": coords]]],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: root)
+        return try #require(RidTrackGeoJSON.decodeArchive(data))
+    }
+    let legacy = try archive(legacyProps)
+    let compact = try archive(compactProps)
+    #expect(legacy.points == compact.points)
+    let capture = t0 + 61_250
+    let legacyBind = ClueBinder.bind(aircraftID: "RID-1", flightID: "flight-1", captureTimeMs: capture,
+                                     captureTimeSource: "stream-pts", captureReceivedAtMs: capture + 400,
+                                     points: legacy.points, framePosition: nil, originIsWaypoint: false)
+    let compactBind = ClueBinder.bind(aircraftID: "RID-1", flightID: "flight-1", captureTimeMs: capture,
+                                      captureTimeSource: "stream-pts", captureReceivedAtMs: capture + 400,
+                                      points: compact.points, framePosition: nil, originIsWaypoint: false)
+    #expect(legacyBind == compactBind)
+
+    let legacyTiming = try JSONSerialization.data(withJSONObject: [
+        FlightArchivePointTiming.legacyReceivedMs: legacyReceived,
+        FlightArchivePointTiming.legacyDroneClock: sample.map(\.droneClock),
+    ])
+    var compactOnly: [String: Any] = [:]
+    FlightArchivePointTiming.write(into: &compactOnly, receivedAtMs: sample.map(\.receivedAtMs),
+                                   droneClock: sample.map(\.droneClock))
+    let compactTiming = try JSONSerialization.data(withJSONObject: compactOnly)
+    #expect(compactTiming.count < legacyTiming.count)
+    #expect(compactTiming.count < legacyTiming.count * 70 / 100)
 }
 
 @Test func safeWriterReplacesVerifiesAndSweeps() throws {

@@ -133,7 +133,12 @@ class WaypointTrackTest {
         // Stable id with the iOS scheme from the drone's remote id and the track's start time.
         val startedAtMs = WaypointTrack::class.java.getDeclaredField("startedAtMs").apply { isAccessible = true }.getLong(track)
         assertEquals(RidFlightId.make("RID-BIND", startedAtMs), flightId)
-        assertEquals(1_790_553_873_400L, properties.getJSONArray("r2c_point_received_ms").getLong(0))
+        assertEquals(1_790_553_873_400L, properties.getLong("r2c_point_recv_base_ms"))
+        assertEquals(0L, properties.getJSONArray("r2c_point_recv_off_ms").getLong(0))
+        assertEquals(950L, properties.getJSONArray("r2c_point_recv_off_ms").getLong(1))
+        assertEquals(1, properties.getJSONArray("r2c_point_no_drone_clock").getInt(0))
+        assertFalse(properties.has("r2c_point_received_ms"))
+        assertFalse(properties.has("r2c_point_drone_clock"))
         // Coordinates keep the existing [lng, lat, alt, droneTimeMs] format; the archive decoder reads both.
         val decoded = FlightArchiveRebuild.decode(geoJson)!!
         assertEquals(points.map { it.timeMs }, decoded.points.map { it.timeMs })
