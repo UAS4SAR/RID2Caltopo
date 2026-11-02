@@ -1563,9 +1563,7 @@ struct RIDTrackMapView: View {
             // not also change the layout and destroy their presenting view.
             .simultaneousGesture(TapGesture().onEnded { onMapTap?() }, including: onMapTap == nil ? .none : .all)
             Group {
-                if baseLayer == .openStreetMap {
-                    Link(mapAttribution(inset: inset), destination: OperationalMapTilePolicy.openStreetMapCopyrightURL)
-                } else {
+                if baseLayer == .imagery {
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 8) {
                             Link("Powered by Esri", destination: EsriImageryAttribution.esriURL)
@@ -1575,6 +1573,8 @@ struct RIDTrackMapView: View {
                              (showContours && !inset ? " · Contours: USGS" : ""))
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                } else {
+                    Link(mapAttribution(inset: inset), destination: baseLayer.attributionURL)
                 }
             }
                 .font(.system(size: inset ? 10 : 11))
@@ -1653,7 +1653,7 @@ struct RIDTrackMapView: View {
     }
 
     private func mapAttribution(inset: Bool) -> String {
-        let base = baseLayer == .openStreetMap ? "© OpenStreetMap contributors" : "Tiles © Esri"
+        let base = "\(baseLayer.attribution) · DEM: USGS"
         return showContours && !inset ? "\(base) · Contours: USGS" : base
     }
 
@@ -6443,15 +6443,16 @@ private enum AircraftMarkerRenderer {
 }
 
 private final class CachedMapTileOverlay: MKTileOverlay {
-    private static let baseSourceMaximumZ = 19
     private static let displayMaximumZ = 22
     private let baseLayer: OperationalMapBaseLayer?
     private let contours: Bool
     private let cacheRoot: URL
+    private let sourceMaximumZ: Int
 
     init(baseLayer: OperationalMapBaseLayer) {
         self.baseLayer = baseLayer
         contours = false
+        sourceMaximumZ = baseLayer.sourceMaximumZoom
         cacheRoot = AppleMapCachePaths.root.appendingPathComponent(baseLayer.cacheKey, isDirectory: true)
         super.init(urlTemplate: nil)
         minimumZ = 0
@@ -6462,6 +6463,7 @@ private final class CachedMapTileOverlay: MKTileOverlay {
     init(contours: Bool) {
         baseLayer = nil
         self.contours = contours
+        sourceMaximumZ = Self.displayMaximumZ
         cacheRoot = AppleMapCachePaths.root.appendingPathComponent("usgsContours", isDirectory: true)
         super.init(urlTemplate: nil)
         minimumZ = 0
@@ -6482,7 +6484,7 @@ private final class CachedMapTileOverlay: MKTileOverlay {
             requestedZoom: path.z,
             requestedX: path.x,
             requestedY: path.y,
-            sourceMaximumZoom: Self.baseSourceMaximumZ
+            sourceMaximumZoom: sourceMaximumZ
         )
         let sourcePath = overzoom.map {
             MKTileOverlayPath(

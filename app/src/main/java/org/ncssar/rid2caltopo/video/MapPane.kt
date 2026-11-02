@@ -478,8 +478,18 @@ private fun consumeInsetMarkerTaps(marker: Marker, isInsetMode: Boolean) {
 internal fun mapPaneAttributionText(contoursEnabled: Boolean, baseLayer: BaseLayerOption = BaseLayerOption.OpenStreetMap,
                                     imagerySources: String = EsriImageryAttribution.FALLBACK_SOURCES): String =
     buildString {
-        append(if (baseLayer == BaseLayerOption.Imagery) "Powered by Esri · Sources: $imagerySources · DEM: USGS"
-               else "© OpenStreetMap contributors · DEM: USGS")
+        append(
+            when (baseLayer) {
+                BaseLayerOption.Imagery ->
+                    "Powered by Esri · Sources: $imagerySources · DEM: USGS"
+                BaseLayerOption.UsgsScannedTopo ->
+                    "USGS Historical Topographic Map Collection · DEM: USGS"
+                BaseLayerOption.UsfsTopo ->
+                    "USGS The National Map (USGSTopo) · DEM: USGS"
+                BaseLayerOption.OpenStreetMap ->
+                    "© OpenStreetMap contributors · DEM: USGS"
+            }
+        )
         if (contoursEnabled) append(" · Contours: USGS")
     }
 
@@ -1422,7 +1432,10 @@ internal fun SplitMapPane(
                 maxZoom = offlinePrepPreset.maxZoom,
                 clipBoundary = selectedBoundary
             )
-            val tileEstimate = offlinePrepTileOperationCount(baseTileEstimate, offlinePrepTileSources(offlinePrepIncludeImagery, offlinePrepIncludeOsm, offlinePrepIncludeContours).size)
+            val tileEstimate = offlinePrepTileOperationCount(
+                baseTileEstimate,
+                offlinePrepTileSources(baseLayer, offlinePrepIncludeContours).size
+            )
             val demEstimate = if (offlinePrepIncludeDem) {
                 estimateDemDownloadCount(estimateBounds, offlinePrepDemResolution)
             } else 0
@@ -1487,7 +1500,7 @@ internal fun SplitMapPane(
             return@LaunchedEffect
         }
         offlinePrepCacheStatus = OfflinePrepCacheStatus(checked = false)
-        val tileSources = offlinePrepTileSources(offlinePrepIncludeImagery, offlinePrepIncludeOsm, offlinePrepIncludeContours)
+        val tileSources = offlinePrepTileSources(baseLayer, offlinePrepIncludeContours)
         val includeDem = offlinePrepIncludeDem
         val computed = withContext(Dispatchers.IO) {
             var tileMissing = 0
@@ -1693,10 +1706,16 @@ internal fun SplitMapPane(
         offlinePrepActiveCalls.clear()
         offlinePrepCancelRequested = false
         offlinePrepInFlight = true
+        val tileSources = offlinePrepTileSources(baseLayer, offlinePrepIncludeContours)
         val tileLayerLabels = buildList {
-            if (offlinePrepIncludeImagery) add("Imagery")
-            // Public OSM tiles are excluded from offline preparation.
-            if (offlinePrepIncludeContours) add("Contours")
+            for (source in tileSources) {
+                when (source.name()) {
+                    UsgsScannedTopoTileSource.name() -> add("USGS Scanned Topo")
+                    UsfsTopoTileSource.name() -> add("USFS Topo")
+                    UsgsContoursTileSource.name() -> add("Contours")
+                    else -> add(source.name())
+                }
+            }
         }
         offlinePrepProgress = OfflinePrepProgress(
             phase = "Preparing", total = 0, completed = 0, includesAol = aolPlan != null,
@@ -1708,7 +1727,6 @@ internal fun SplitMapPane(
         val includeDem = offlinePrepIncludeDem
         val demResolution = offlinePrepDemResolution
         val includeContours = offlinePrepIncludeContours
-        val tileSources = offlinePrepTileSources(offlinePrepIncludeImagery, offlinePrepIncludeOsm, includeContours)
         // Field trials returned supplier abuse tiles. High concurrency does not appear
         // supported by tile suppliers; retain the implementation disabled for investigation.
         val maximizeThroughput = false
@@ -1865,15 +1883,25 @@ internal fun SplitMapPane(
                     suspend fun processTile(tileSource: OnlineTileSourceBase, tileIndex: Long) {
                         require(tileSource.name() != OsmStandardTileSource.name()) { "OSM offline download is not permitted." }
                         ensureActive()
+                        val z = MapTileIndex.getZoom(tileIndex)
+                        // Past the supplier's native max zoom, live display overzooms a parent tile.
+                        if (z > tileSource.maximumZoomLevel) {
+                            hits.incrementAndGet()
+                            tileCompleted.incrementAndGet()
+                            completed.incrementAndGet()
+                            completedEstimatedBytes.addAndGet(20_000L)
+                            MapOfflinePrepRuntime.noteProgress()
+                            return
+                        }
                         val exists = tileCacheWriter.exists(tileSource, tileIndex)
                         if (exists) {
                             hits.incrementAndGet()
                         } else {
-                            val z = MapTileIndex.getZoom(tileIndex)
                             val x = MapTileIndex.getX(tileIndex)
                             val y = MapTileIndex.getY(tileIndex)
                             var failureDetail = ""
                             var ok = false
+                            var absentCoverage = false
                             for (attempt in 1..OFFLINE_TILE_FETCH_MAX_ATTEMPTS) {
                                 var retryable = false
                                 ok = try {
@@ -1884,6 +1912,11 @@ internal fun SplitMapPane(
                                     try {
                                         offlinePrepTileFetchScheduler.lowPriority {
                                             call.execute().use { resp ->
+                                                if (resp.code == 404) {
+                                                    // Outside coverage / no-data: blank at display time.
+                                                    absentCoverage = true
+                                                    return@use true
+                                                }
                                                 if (!resp.isSuccessful) {
                                                     retryable = resp.code == 408 || resp.code == 429 || resp.code >= 500
                                                     failureDetail = "http=${resp.code} z=$z x=$x y=$y source=${tileSource.name()}"
@@ -1926,7 +1959,7 @@ internal fun SplitMapPane(
                                 delay(OSM_OFFLINE_PREP_REQUEST_DELAY_MS)
                             }
                             if (ok) {
-                                fetched.incrementAndGet()
+                                if (absentCoverage) hits.incrementAndGet() else fetched.incrementAndGet()
                             } else {
                                 tileFailed.incrementAndGet()
                                 totalFailed.incrementAndGet()
@@ -5352,8 +5385,17 @@ internal fun SplitMapPane(
                 lineHeight = 12.sp,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.clickable {
-                    uriHandler.openUri(if (baseLayer == BaseLayerOption.Imagery) EsriImageryAttribution.SOURCE_URL
-                                       else "https://www.openstreetmap.org/copyright")
+                    uriHandler.openUri(
+                        when (baseLayer) {
+                            BaseLayerOption.Imagery -> EsriImageryAttribution.SOURCE_URL
+                            BaseLayerOption.UsgsScannedTopo ->
+                                "https://www.usgs.gov/programs/national-geospatial-program/historical-topographic-maps"
+                            BaseLayerOption.UsfsTopo ->
+                                "https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer"
+                            BaseLayerOption.OpenStreetMap ->
+                                "https://www.openstreetmap.org/copyright"
+                        }
+                    )
                 }
             )
         }

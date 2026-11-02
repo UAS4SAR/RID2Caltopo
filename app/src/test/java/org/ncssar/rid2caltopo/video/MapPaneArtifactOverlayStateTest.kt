@@ -379,6 +379,14 @@ class MapPaneArtifactOverlayStateTest {
             listOf(UsgsContoursTileSource.name()),
             offlinePrepTileSources(BaseLayerOption.Imagery, includeContours = true).map { it.name() }
         )
+        assertEquals(
+            listOf(UsgsScannedTopoTileSource.name()),
+            offlinePrepTileSources(BaseLayerOption.UsgsScannedTopo, includeContours = false).map { it.name() }
+        )
+        assertEquals(
+            listOf(UsfsTopoTileSource.name(), UsgsContoursTileSource.name()),
+            offlinePrepTileSources(BaseLayerOption.UsfsTopo, includeContours = true).map { it.name() }
+        )
     }
 
     @Test
@@ -394,7 +402,47 @@ class MapPaneArtifactOverlayStateTest {
             assertEquals(expected, sources.map { it.name() })
             assertEquals(12 * expected.size, offlinePrepTileOperationCount(12, sources.size))
         }
+        assertEquals(
+            listOf(UsgsScannedTopoTileSource.name(), UsfsTopoTileSource.name(), UsgsContoursTileSource.name()),
+            offlinePrepTileSources(
+                includeImagery = false,
+                includeOsm = false,
+                includeContours = true,
+                includeUsgsScannedTopo = true,
+                includeUsfsTopo = true
+            ).map { it.name() }
+        )
         assertEquals(Int.MAX_VALUE, offlinePrepTileOperationCount(Int.MAX_VALUE, 3))
+    }
+
+    @Test
+    fun usgsAndUsfsTopoTileSourcesMatchContracts() {
+        val index = MapTileIndex.getTileIndex(12, 657, 1582)
+        assertEquals(
+            "https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/12/1582/657",
+            UsfsTopoTileSource.getTileURLString(index)
+        )
+        assertEquals(16, UsfsTopoTileSource.maximumZoomLevel)
+        assertEquals(16, UsgsScannedTopoTileSource.maximumZoomLevel)
+        val scanned = UsgsScannedTopoTileSource.getTileURLString(MapTileIndex.getTileIndex(1, 1, 1))
+        assertEquals(
+            "https://historical1.arcgis.com/arcgis/rest/services/USGS_Historical_Topographic_Maps/ImageServer/exportImage" +
+                "?bbox=0.000000,-20037508.342789,20037508.342789,0.000000" +
+                "&bboxSR=3857&imageSR=3857&size=256,256&format=png32&transparent=true&f=image",
+            scanned
+        )
+        assertTrue(
+            mapPaneAttributionText(false, BaseLayerOption.UsgsScannedTopo)
+                .contains("Historical Topographic Map Collection")
+        )
+        assertTrue(mapPaneAttributionText(false, BaseLayerOption.UsfsTopo).contains("USGSTopo"))
+        assertTrue(
+            buildOfflineTileRequest(UsgsScannedTopoTileSource, scanned).header("User-Agent")!!.isNotBlank()
+        )
+        assertTrue(
+            buildOfflineTileRequest(UsfsTopoTileSource, UsfsTopoTileSource.getTileURLString(index))
+                .url.toString().startsWith("https://basemap.nationalmap.gov/")
+        )
     }
 
     @Test

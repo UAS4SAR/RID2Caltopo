@@ -12,6 +12,8 @@ import org.ncssar.rid2caltopo.video.mapcache.TileDiskCacheWriter
 import org.ncssar.rid2caltopo.video.ArcGisWorldImageryTileSource
 import org.ncssar.rid2caltopo.video.GeoBoundary
 import org.ncssar.rid2caltopo.video.UsgsContoursTileSource
+import org.ncssar.rid2caltopo.video.UsgsScannedTopoTileSource
+import org.ncssar.rid2caltopo.video.UsfsTopoTileSource
 import org.ncssar.rid2caltopo.video.OsmStandardTileSource
 import org.ncssar.rid2caltopo.mapping.MappingLayer
 import org.osmdroid.tileprovider.tilesource.ITileSource
@@ -221,6 +223,8 @@ object MutualAidPackageManager {
         OsmStandardTileSource.name() -> OsmStandardTileSource
         ArcGisWorldImageryTileSource.name() -> ArcGisWorldImageryTileSource
         UsgsContoursTileSource.name() -> UsgsContoursTileSource
+        UsgsScannedTopoTileSource.name() -> UsgsScannedTopoTileSource
+        UsfsTopoTileSource.name() -> UsfsTopoTileSource
         else -> null
     }
 

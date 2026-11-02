@@ -2581,6 +2581,23 @@ private func proximityDrone(
         == "https://tile.openstreetmap.org/12/657/1582.png")
     #expect(OperationalMapBaseLayer.imagery.tileURL(zoom: 12, x: 657, y: 1582)?.absoluteString
         == "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/12/1582/657.jpg")
+    #expect(OperationalMapBaseLayer.usfsTopo.tileURL(zoom: 12, x: 657, y: 1582)?.absoluteString
+        == "https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/12/1582/657")
+    let scanned = try #require(OperationalMapBaseLayer.usgsScannedTopo.tileURL(zoom: 1, x: 1, y: 1)?.absoluteString)
+    #expect(scanned.hasPrefix(
+        "https://historical1.arcgis.com/arcgis/rest/services/USGS_Historical_Topographic_Maps/ImageServer/exportImage?"
+    ))
+    #expect(scanned.contains("bbox=0.000000,-20037508.342789,20037508.342789,0.000000"))
+    #expect(scanned.contains("bboxSR=3857"))
+    #expect(scanned.contains("imageSR=3857"))
+    #expect(scanned.contains("size=256,256"))
+    #expect(scanned.contains("format=png32"))
+    #expect(scanned.contains("transparent=true"))
+    #expect(scanned.contains("f=image"))
+    #expect(OperationalMapBaseLayer.usgsScannedTopo.sourceMaximumZoom == 16)
+    #expect(OperationalMapBaseLayer.usfsTopo.sourceMaximumZoom == 16)
+    #expect(OperationalMapBaseLayer.usgsScannedTopo.attribution.contains("Historical Topographic"))
+    #expect(OperationalMapBaseLayer.usfsTopo.attribution.contains("USGSTopo"))
 }
 
 @Test func operationalMapOverzoomSelectsAndOffsetsTheLevelNineteenParent() throws {

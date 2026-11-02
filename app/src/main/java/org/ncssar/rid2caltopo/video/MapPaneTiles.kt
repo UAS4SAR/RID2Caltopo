@@ -59,15 +59,57 @@ internal object UsgsContoursTileSource : OnlineTileSourceBase(
         val zoom = MapTileIndex.getZoom(pMapTileIndex)
         val x = MapTileIndex.getX(pMapTileIndex)
         val y = MapTileIndex.getY(pMapTileIndex)
-        val tilesPerSide = 1 shl zoom
-        val span = (WEB_MERCATOR_HALF_WORLD_METERS * 2.0) / tilesPerSide.toDouble()
-        val minX = -WEB_MERCATOR_HALF_WORLD_METERS + (x * span)
-        val maxX = minX + span
-        val maxY = WEB_MERCATOR_HALF_WORLD_METERS - (y * span)
-        val minY = maxY - span
-        val bbox = String.format(Locale.US, "%.6f,%.6f,%.6f,%.6f", minX, minY, maxX, maxY)
-        return "$baseUrl?bbox=$bbox&bboxSR=3857&imageSR=3857&size=256,256&format=png32&transparent=true&f=image"
+        return mercatorExportTileUrl(baseUrl, zoom, x, y)
     }
+}
+
+/** USGS Historical Topographic Map Collection (scanned quads). ImageServer export, like contours. */
+internal object UsgsScannedTopoTileSource : OnlineTileSourceBase(
+    "USGS-ScannedTopo",
+    0,
+    16,
+    256,
+    ".png",
+    arrayOf("https://historical1.arcgis.com/arcgis/rest/services/USGS_Historical_Topographic_Maps/ImageServer/exportImage")
+) {
+    override fun getTileURLString(pMapTileIndex: Long): String {
+        val zoom = MapTileIndex.getZoom(pMapTileIndex)
+        val x = MapTileIndex.getX(pMapTileIndex)
+        val y = MapTileIndex.getY(pMapTileIndex)
+        return mercatorExportTileUrl(baseUrl, zoom, x, y)
+    }
+}
+
+/**
+ * USFS / Forest Service topo-style basemap.
+ * EDW_FSTopo_01 (apps.fs.usda.gov) returns 404; the current FS Basemap is vector-only.
+ * National Map USGSTopo is the verified public raster topo tile cache (z0–16).
+ */
+internal object UsfsTopoTileSource : OnlineTileSourceBase(
+    "USFS-Topo",
+    0,
+    16,
+    256,
+    ".jpg",
+    arrayOf("https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/")
+) {
+    override fun getTileURLString(pMapTileIndex: Long): String {
+        val zoom = MapTileIndex.getZoom(pMapTileIndex)
+        val x = MapTileIndex.getX(pMapTileIndex)
+        val y = MapTileIndex.getY(pMapTileIndex)
+        return "$baseUrl$zoom/$y/$x"
+    }
+}
+
+private fun mercatorExportTileUrl(baseUrl: String, zoom: Int, x: Int, y: Int): String {
+    val tilesPerSide = 1 shl zoom
+    val span = (WEB_MERCATOR_HALF_WORLD_METERS * 2.0) / tilesPerSide.toDouble()
+    val minX = -WEB_MERCATOR_HALF_WORLD_METERS + (x * span)
+    val maxX = minX + span
+    val maxY = WEB_MERCATOR_HALF_WORLD_METERS - (y * span)
+    val minY = maxY - span
+    val bbox = String.format(Locale.US, "%.6f,%.6f,%.6f,%.6f", minX, minY, maxX, maxY)
+    return "$baseUrl?bbox=$bbox&bboxSR=3857&imageSR=3857&size=256,256&format=png32&transparent=true&f=image"
 }
 
 internal fun osmUserAgent(): String =
@@ -80,13 +122,18 @@ internal fun buildOfflineTileRequest(
     require(org.ncssar.rid2caltopo.video.mapcache.MapTileUsagePolicy.allowsOfflineDownload(tileSource.name(), url)) {
         "Offline downloads of public OSM and Esri basemap tiles are disabled."
     }
-    return Request.Builder().url(url).build()
+    return Request.Builder()
+        .url(url)
+        .header("User-Agent", osmUserAgent())
+        .build()
 }
 
 internal fun tileSourceForBaseLayer(baseLayer: BaseLayerOption): OnlineTileSourceBase =
     when (baseLayer) {
         BaseLayerOption.OpenStreetMap -> OsmStandardTileSource
         BaseLayerOption.Imagery -> ArcGisWorldImageryTileSource
+        BaseLayerOption.UsgsScannedTopo -> UsgsScannedTopoTileSource
+        BaseLayerOption.UsfsTopo -> UsfsTopoTileSource
     }
 
 internal fun offlinePrepTileSources(
@@ -94,13 +141,25 @@ internal fun offlinePrepTileSources(
     includeContours: Boolean
 ): List<OnlineTileSourceBase> {
     val sources = mutableListOf<OnlineTileSourceBase>()
-    // Neither public basemap is an offline source, including legacy selections.
+    val baseSource = tileSourceForBaseLayer(baseLayer)
+    val probeUrl = baseSource.getTileURLString(MapTileIndex.getTileIndex(0, 0, 0))
+    if (org.ncssar.rid2caltopo.video.mapcache.MapTileUsagePolicy.allowsOfflineDownload(baseSource.name(), probeUrl)) {
+        sources += baseSource
+    }
     if (includeContours) sources += UsgsContoursTileSource
     return sources
 }
 
-internal fun offlinePrepTileSources(includeImagery: Boolean, includeOsm: Boolean, includeContours: Boolean): List<OnlineTileSourceBase> = buildList {
-    // Both flags are retained for old callers; public OSM/Esri cannot be prefetched.
+internal fun offlinePrepTileSources(
+    includeImagery: Boolean,
+    includeOsm: Boolean,
+    includeContours: Boolean,
+    includeUsgsScannedTopo: Boolean = false,
+    includeUsfsTopo: Boolean = false
+): List<OnlineTileSourceBase> = buildList {
+    // Imagery/OSM flags are retained for old callers; public OSM/Esri cannot be prefetched.
+    if (includeUsgsScannedTopo) add(UsgsScannedTopoTileSource)
+    if (includeUsfsTopo) add(UsfsTopoTileSource)
     if (includeContours) add(UsgsContoursTileSource)
 }
 

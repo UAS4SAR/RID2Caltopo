@@ -83,16 +83,55 @@ public enum OperationalMapFocusPolicy {
 public enum OperationalMapBaseLayer: String, CaseIterable, Codable, Sendable, Equatable {
     case openStreetMap
     case imagery
+    case usgsScannedTopo
+    case usfsTopo
 
     public var label: String {
         switch self {
         case .openStreetMap: "OpenStreetMap"
         case .imagery: "Imagery"
+        case .usgsScannedTopo: "USGS Scanned Topo"
+        case .usfsTopo: "USFS Topo"
         }
     }
 
     public var cacheKey: String { rawValue }
-    public var fileExtension: String { self == .imagery ? "jpg" : "png" }
+    public var fileExtension: String {
+        switch self {
+        case .imagery, .usfsTopo: "jpg"
+        case .openStreetMap, .usgsScannedTopo: "png"
+        }
+    }
+
+    /// Native tile cache maximum before MapKit overzoom.
+    public var sourceMaximumZoom: Int {
+        switch self {
+        case .openStreetMap, .imagery: 19
+        case .usgsScannedTopo, .usfsTopo: 16
+        }
+    }
+
+    public var attribution: String {
+        switch self {
+        case .openStreetMap: "© OpenStreetMap contributors"
+        case .imagery: "Tiles © Esri"
+        case .usgsScannedTopo: "USGS Historical Topographic Map Collection"
+        case .usfsTopo: "USGS The National Map (USGSTopo)"
+        }
+    }
+
+    public var attributionURL: URL {
+        switch self {
+        case .openStreetMap:
+            OperationalMapTilePolicy.openStreetMapCopyrightURL
+        case .imagery:
+            EsriImageryAttribution.sourceURL
+        case .usgsScannedTopo:
+            URL(string: "https://www.usgs.gov/programs/national-geospatial-program/historical-topographic-maps")!
+        case .usfsTopo:
+            URL(string: "https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer")!
+        }
+    }
 
     public func tileURL(zoom: Int, x: Int, y: Int) -> URL? {
         switch self {
@@ -100,9 +139,44 @@ public enum OperationalMapBaseLayer: String, CaseIterable, Codable, Sendable, Eq
             URL(string: "https://tile.openstreetmap.org/\(zoom)/\(x)/\(y).png")
         case .imagery:
             URL(string: "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/\(zoom)/\(y)/\(x).jpg")
+        case .usgsScannedTopo:
+            OperationalMapTileURL.mercatorExportImageURL(
+                base: "https://historical1.arcgis.com/arcgis/rest/services/USGS_Historical_Topographic_Maps/ImageServer/exportImage",
+                zoom: zoom,
+                x: x,
+                y: y
+            )
+        case .usfsTopo:
+            URL(string: "https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/\(zoom)/\(y)/\(x)")
         }
     }
 
+}
+
+public enum OperationalMapTileURL {
+    public static let webMercatorHalfWorldMeters = 20_037_508.342789244
+
+    /// ArcGIS ImageServer / MapServer export tile URL in Web Mercator (matches Android contours/HTMC).
+    public static func mercatorExportImageURL(base: String, zoom: Int, x: Int, y: Int) -> URL? {
+        let tilesPerSide = pow(2.0, Double(zoom))
+        let span = webMercatorHalfWorldMeters * 2.0 / tilesPerSide
+        let minX = -webMercatorHalfWorldMeters + Double(x) * span
+        let maxX = minX + span
+        let maxY = webMercatorHalfWorldMeters - Double(y) * span
+        let minY = maxY - span
+        let bbox = String(format: "%.6f,%.6f,%.6f,%.6f", minX, minY, maxX, maxY)
+        var components = URLComponents(string: base)
+        components?.queryItems = [
+            URLQueryItem(name: "bbox", value: bbox),
+            URLQueryItem(name: "bboxSR", value: "3857"),
+            URLQueryItem(name: "imageSR", value: "3857"),
+            URLQueryItem(name: "size", value: "256,256"),
+            URLQueryItem(name: "format", value: "png32"),
+            URLQueryItem(name: "transparent", value: "true"),
+            URLQueryItem(name: "f", value: "image")
+        ]
+        return components?.url
+    }
 }
 
 public struct OperationalOverzoomTile: Sendable, Equatable {

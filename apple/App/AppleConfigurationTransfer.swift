@@ -315,6 +315,12 @@ final class AppleConfigurationTransferManager: ObservableObject {
             case "USGS-Contours":
                 key = "usgsContours"
                 ext = "png"
+            case "USGS-ScannedTopo":
+                key = OperationalMapBaseLayer.usgsScannedTopo.cacheKey
+                ext = OperationalMapBaseLayer.usgsScannedTopo.fileExtension
+            case "USFS-Topo":
+                key = OperationalMapBaseLayer.usfsTopo.cacheKey
+                ext = OperationalMapBaseLayer.usfsTopo.fileExtension
             default: continue
             }
             let destination = AppleMapCachePaths.tile(.init(zoom: z, x: x, y: y), layerKey: key, fileExtension: ext)

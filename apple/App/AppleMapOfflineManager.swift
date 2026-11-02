@@ -273,6 +273,8 @@ enum AppleCacheHTTPClient {
                 let (data, response) = try await session.data(for: request)
                 guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
                 if http.statusCode == 200 { return data }
+                // No-data / outside coverage for USGS/USFS topo tiles.
+                if http.statusCode == 404 { throw URLError(.fileDoesNotExist) }
                 guard OperationalCacheRetryPolicy.shouldRetry(statusCode: http.statusCode),
                       let delay = OperationalCacheRetryPolicy.delaySeconds(
                           attempt: attempt,
@@ -608,20 +610,12 @@ actor AppleDEMDownloadCoordinator {
 
 enum AppleMapTileRequest {
     static func contourURL(zoom: Int, x: Int, y: Int) -> URL {
-        let halfWorld = 20_037_508.342789244
-        let span = halfWorld * 2 / pow(2, Double(zoom))
-        let minX = -halfWorld + Double(x) * span
-        let maxX = minX + span
-        let maxY = halfWorld - Double(y) * span
-        let minY = maxY - span
-        var components = URLComponents(string: "https://carto.nationalmap.gov/arcgis/rest/services/contours/MapServer/export")!
-        components.queryItems = [
-            .init(name: "bbox", value: String(format: "%.6f,%.6f,%.6f,%.6f", minX, minY, maxX, maxY)),
-            .init(name: "bboxSR", value: "3857"), .init(name: "imageSR", value: "3857"),
-            .init(name: "size", value: "256,256"), .init(name: "format", value: "png32"),
-            .init(name: "transparent", value: "true"), .init(name: "f", value: "image"),
-        ]
-        return components.url!
+        OperationalMapTileURL.mercatorExportImageURL(
+            base: "https://carto.nationalmap.gov/arcgis/rest/services/contours/MapServer/export",
+            zoom: zoom,
+            x: x,
+            y: y
+        )!
     }
 }
 
@@ -933,7 +927,7 @@ final class AppleMapOfflineManager: ObservableObject {
             includesAOL: aolPlan != nil,
             estimatedBytesTotal: Self.saturatedAdd(estimatedTileBytes, estimatedDEMBytes),
             startedAt: Date(),
-            tileLayers: baseLayers.map { $0 == .imagery ? "Imagery" : "OSM" } + (includeContours ? ["Contours"] : []),
+            tileLayers: baseLayers.map(\.label) + (includeContours ? ["Contours"] : []),
             includesDEM: includeDEM,
             aolFilesTotal: aolPlan?.sources.count ?? 0,
             aolTilesTotal: aolPlan?.tiles ?? 0
@@ -1246,6 +1240,11 @@ final class AppleMapOfflineManager: ObservableObject {
 
     private func fetchTile(_ tile: OperationalOfflineTile, baseLayer: OperationalMapBaseLayer) async {
         guard OperationalMapTilePolicy.allowsOfflineDownload(baseLayer) else { return }
+        // Past the supplier's native max zoom, overzoom uses a parent tile at display time.
+        if tile.zoom > baseLayer.sourceMaximumZoom {
+            recordCacheHit(kind: .tile)
+            return
+        }
         let destination = AppleMapCachePaths.tile(tile, layerKey: baseLayer.cacheKey, fileExtension: baseLayer.fileExtension)
         guard let url = baseLayer.tileURL(zoom: tile.zoom, x: tile.x, y: tile.y) else {
             recordFailure(kind: .tile)
@@ -1285,6 +1284,9 @@ final class AppleMapOfflineManager: ObservableObject {
             recordDownload(kind: .tile)
         } catch is CancellationError {
             return
+        } catch let error as URLError where error.code == .fileDoesNotExist {
+            // Outside coverage: leave uncached so the map stays blank/transparent.
+            recordCacheHit(kind: .tile)
         } catch {
             AppleLog.warning("MapOffline", "Tile download failed \(url.absoluteString): \(error.localizedDescription)")
             recordFailure(kind: .tile)
@@ -1588,7 +1590,8 @@ struct AppleOfflineMapPreparationView: View {
     }
 
     private var selectedBaseLayers: [OperationalMapBaseLayer] {
-        [] // Public basemaps are never offline download inputs.
+        // OSM/Esri stay interactive-only; USGS/USFS government topo layers may prefetch.
+        [baseLayer].filter(OperationalMapTilePolicy.allowsOfflineDownload)
     }
 
     private var aolWorkingBytes: Int64 { includeAOL ? (aolPlan.map { $0.reused ? 0 : $0.advertisedBytes*3/2+Int64($0.tiles)*16_000_000 } ?? 0) : 0 }

@@ -2,9 +2,12 @@ import Foundation
 import Testing
 @testable import R2CCore
 
-@Test func publicBasemapsCannotBecomeOfflineInputs() {
+@Test func publicOsmAndEsriBasemapsCannotBecomeOfflineInputs() {
+    #expect(!OperationalMapTilePolicy.allowsOfflineDownload(.openStreetMap))
+    #expect(!OperationalMapTilePolicy.allowsOfflineDownload(.imagery))
+    #expect(OperationalMapTilePolicy.allowsOfflineDownload(.usgsScannedTopo))
+    #expect(OperationalMapTilePolicy.allowsOfflineDownload(.usfsTopo))
     for layer in OperationalMapBaseLayer.allCases {
-        #expect(!OperationalMapTilePolicy.allowsOfflineDownload(layer))
         #expect(layer.tileURL(zoom: 8, x: 40, y: 80) != nil)
     }
 }
@@ -13,6 +16,8 @@ import Testing
         #expect(!OperationalMapTilePolicy.allowsPackageExport(source: source))
     }
     #expect(OperationalMapTilePolicy.allowsPackageExport(source: "USGS-Contours"))
+    #expect(OperationalMapTilePolicy.allowsPackageExport(source: "USGS-ScannedTopo"))
+    #expect(OperationalMapTilePolicy.allowsPackageExport(source: "USFS-Topo"))
 }
 @Test func cacheAgeClampsOldSettingsToSupportedOSMFallback() {
     for age in [Int.min, -1, 0, 1, 6, 7] { #expect(OperationalMapTilePolicy.cacheAgeDays(age) == 7) }

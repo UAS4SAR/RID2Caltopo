@@ -59,7 +59,9 @@ internal const val WEB_MERCATOR_HALF_WORLD_METERS = 20_037_508.342789244
 
 internal enum class BaseLayerOption(val label: String) {
     OpenStreetMap("OpenStreetMap"),
-    Imagery("Imagery")
+    Imagery("Imagery"),
+    UsgsScannedTopo("USGS Scanned Topo"),
+    UsfsTopo("USFS Topo")
 }
 
 internal enum class OfflinePrepAreaMode(val label: String) {
