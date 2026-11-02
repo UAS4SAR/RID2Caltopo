@@ -1,0 +1,3 @@
+Latest changes:
+- Unconfirmed flights stay local until the Drone Confirmation Panel is Confirmed: no CalTopo LiveTrack/archive publish and no tracker live traffic or flight record without acknowledgement.
+- Returning aircraft always reopen confirmation after a completed flight, including quick returns without a new video publisher session.

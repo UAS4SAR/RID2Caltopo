@@ -1,22 +1,3 @@
 Latest changes:
-- Confirmed clue and track uploads stay published: no re-upload after map deletion, and clue deletes remain final.
-- Live tracks auto-archive into a dated Drone Tracks folder; the awaiting-publication list stays accurate.
-- Fixed a startup freeze from location-client churn, archive prepare races, and the gimbal -90 cursor.
-- After a reinstall or when Archive Dir access is missing, the app no longer crashes on startup. Tracks and clues keep saving on this device and migrate when you reconnect Archive Dir; Submit still uploads immediately.
-- Sign in to a personal CalTopo account with Credentials through desktop activation. Existing personal browser logins keep Session Cookies until you choose Credentials. Confirm Log Out to clear the saved personal account.
-- Map Browser remembers the last credential profile, including personal accounts.
-- Clue uploads start as soon as you press Submit, save durably on this device first, and retry without creating duplicates, including photos.
-- If a clue photo upload times out after CalTopo already accepted the photo, the next retry finishes the marker link instead of staying pending forever. Tap “N clue(s) pending” to review and retry.
-- When CalTopo is unreachable, pending uploads wait and flush as soon as connectivity returns.
-- Disconnect or quit finishes and archives this device's live track.
-- Create the CalTopo Drone Tracks folder and R2C device marker only when the first track starts.
-- Project angled-gimbal clues onto local 1 m terrain with safer height checks. When a later terrain refine finishes, the clue marker and note update.
-- When live video includes gimbal pitch, use it and move focus to Title. Otherwise enter pitch as a number (preset -90) and press Return for Title. Heading commits when you release the control; the pitch slider is removed.
-- Fixed the toast shown when deleting a clue so deletes no longer flash a storage-prepare message.
-- Smoother live video, fewer map-overlay rebuilds while flying, less hitching during streaming, and less thumbnail encoding work.
-- Hardened crash and deadlock paths around live tracks, clues, connectivity, and quit.
-- Full-screen map follow resumes after inspection focus and Follow-On without tapping Follow again.
-- Fixed missing CalTopo track names and missing recording links on published tracks.
-- Preserve original photos during archive verification, and keep storage failures from closing the app.
-- Preserve unreadable flight and clue history and show a recovery error instead of treating it as empty.
-- Prepare live track history, map geometry, and saved-flight review off the interface thread for better responsiveness.
+- Unconfirmed flights stay local until the Drone Confirmation Panel is Confirmed: no CalTopo LiveTrack/archive publish and no tracker live traffic or flight record without acknowledgement.
+- Returning aircraft always reopen confirmation after a completed flight, including quick returns without a new video publisher session.

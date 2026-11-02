@@ -1,0 +1,1 @@
+Unconfirmed flights stay local until Confirmed. Returning aircraft always reopen the confirmation panel.
