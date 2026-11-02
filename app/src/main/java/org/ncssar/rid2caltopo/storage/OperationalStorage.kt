@@ -551,23 +551,44 @@ internal object OperationalStorage {
             if (projected && projection?.parent?.fileName.toString() == work.name && area.id in listOf("processing", "layers")) continue
             copySource(value, area, source, source, replace = projected, ancestry = emptySet(), projection = projection)
         }
-        if (area.id == "queue-state") for (name in queueNames) {
-            val sources = listOf(
-                ArchiveDirAvailability.operationalStateFile(context.filesDir, name),
-                File(context.filesDir, name),
-            ).distinctBy { it.absolutePath }
-            for (source in sources) {
-                if (!source.isFile) continue
-                try {
-                    commit(value, source, "${area.retained}/$name", replace = false, stableSnapshot = true)
-                } catch (error: Exception) {
-                    if (!isTransientPrepareFailure(error)) throw error
-                    CaltopoClient.CTWarn(
-                        "OperationalStorage",
-                        "state file $name archive retain deferred: ${error.message}",
-                    )
-                    retainLater(source)
+        if (area.id == "queue-state") {
+            for (name in queueNames) {
+                val sources = listOf(
+                    ArchiveDirAvailability.operationalStateFile(context.filesDir, name),
+                    File(context.filesDir, name),
+                ).distinctBy { it.absolutePath }
+                for (source in sources) {
+                    if (!source.isFile) continue
+                    try {
+                        // Local queue state is authoritative. replace=false left a stale Archive Dir
+                        // copy after Discard, and the next hydrate resurrected awaiting-map rows.
+                        commit(value, source, "${area.retained}/$name", replace = true, stableSnapshot = true)
+                    } catch (error: Exception) {
+                        if (!isTransientPrepareFailure(error)) throw error
+                        CaltopoClient.CTWarn(
+                            "OperationalStorage",
+                            "state file $name archive retain deferred: ${error.message}",
+                        )
+                        retainLater(source)
+                    }
                 }
+            }
+            // Drop legacy archived journals so they cannot rehydrate after Discard.
+            val archivedJournals = "${area.retained}/waypoint-track-journals"
+            if (value.tree.exists(archivedJournals)) {
+                runCatching { value.tree.delete(archivedJournals) }
+                    .onSuccess {
+                        CaltopoClient.CTInfo(
+                            "OperationalStorage",
+                            "Purged archived waypoint-track-journals from Archive Dir",
+                        )
+                    }
+                    .onFailure { error ->
+                        CaltopoClient.CTWarn(
+                            "OperationalStorage",
+                            "Could not purge archived waypoint-track-journals: ${error.message}",
+                        )
+                    }
             }
         }
         if (area.id == "review-annotations") for (source in context.cacheDir.listFiles().orEmpty().filter { it.isFile && it.name.endsWith(".review.json") }) {
@@ -923,8 +944,9 @@ internal object OperationalStorage {
         // retained credentials or operational originals.
         if (area.id == "legacy-cache" && name.startsWith("saf_cache_index.db")) return false
         if (name == "mapping-volume.json") return false
-        // Crash-recovery waypoint journals are app-private and ephemeral. Archiving them
-        // re-hydrates finished flights into recoverUnfinished on every launch.
+        // Crash-recovery waypoint journals are app-private and ephemeral. Archiving or
+        // hydrating them re-feeds recoverUnfinished on every launch (working-copy delete
+        // alone left journalsRetained=0 while Archive Dir copies returned next boot).
         if (area.id == "queue-state" &&
             (relative == "waypoint-track-journals" || relative.startsWith("waypoint-track-journals/"))) {
             return false
@@ -1053,6 +1075,11 @@ internal object OperationalStorage {
             return
         }
         for (entry in value.tree.list(path)) {
+            // Crash-recovery journals are ephemeral. Hydrating archived copies re-fed
+            // recoverUnfinished on every launch even after Discard (journalsRetained=0 only
+            // reflected the working copy delete; Archive Dir still held the .ndjson files).
+            if (path.endsWith("/queue-state") && entry.name == "waypoint-track-journals") continue
+            if (path.contains("/queue-state/waypoint-track-journals")) continue
             if (entry.directory && entry.name.endsWith(".r2c-chunks")) {
                 val chunks = value.tree.list("$path/${entry.name}").filter { !it.directory && it.name.matches(Regex("[0-9]{16}_[a-f0-9]{64}")) }.sortedBy { it.name }
                 val target = File(directory, entry.name.removeSuffix(".r2c-chunks"))

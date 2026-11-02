@@ -166,7 +166,8 @@ final class RIDTrackViewModel: ObservableObject {
             do {
                 try await waypointAppendJournal.ensureOpen(
                     flightID: flightID, remoteID: track.aircraftID, label: label,
-                    mapID: mapID, teamID: teamID)
+                    mapID: mapID, teamID: teamID,
+                    startedAtMs: Int64((track.flightStartedAt.timeIntervalSince1970 * 1_000).rounded()))
                 try await waypointAppendJournal.append(observation: observation, flightID: flightID)
             } catch {
                 archiveStatus = "Waypoint journal write failed: \(error.localizedDescription)"
@@ -207,6 +208,9 @@ final class RIDTrackViewModel: ObservableObject {
     func decideAwaitingFlight(_ id: String, mapID: String?, teamID: String) async -> Bool {
         do {
             try await awaitingMapJournal.decide(id: id, mapID: mapID, teamID: teamID)
+            if mapID == nil {
+                try? await publicationLedger.remember(flightID: id, disposition: .declined)
+            }
             await refreshAwaitingMapState()
             await queueCompletedDeferredFlights()
             return true
@@ -222,8 +226,14 @@ final class RIDTrackViewModel: ObservableObject {
     /// archive files, and its journal entry. Works without a connected map.
     @discardableResult
     func discardAwaitingFlight(_ flight: AwaitingMapFlight, clues: AppleClueStore) async -> Bool {
-        guard let current = awaitingMapJournalEntries.first(where: { $0.id == flight.id }), current.finished else {
+        // Prefer the live journal row; fall back to the UI snapshot so a mid-recovery
+        // finished=false race cannot refuse Discard (Android device-log failure mode).
+        let current = awaitingMapJournalEntries.first(where: { $0.id == flight.id }) ?? flight
+        guard ["review", "bound", "local"].contains(current.decision) else {
             AppleLog.warning("AwaitingMap", "Discard refused id=\(flight.id) remoteId=\(flight.remoteID): flight not found or still in progress")
+            // Still tombstone + drop leftover journal when the inbox row is already gone.
+            try? await publicationLedger.remember(flightID: flight.id, disposition: .discarded)
+            try? await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
             return false
         }
         let records = clues.records, otherFlights = awaitingMapJournalEntries
@@ -231,6 +241,8 @@ final class RIDTrackViewModel: ObservableObject {
             AwaitingMapClueMatch.ownedClues(records, flight: current, otherFlights: otherFlights)
         }.value
         guard !Task.isCancelled else { return false }
+        // Tombstone first so a crash mid-discard still blocks journal recovery / inbox.
+        try? await publicationLedger.remember(flightID: current.id, disposition: .discarded)
         let result = await AwaitingMapFlightDiscarder.discard(
             flight: current,
             journal: awaitingMapJournal,
@@ -238,6 +250,8 @@ final class RIDTrackViewModel: ObservableObject {
             deleteClue: { await clues.delete($0) },
             deleteArchive: { [archiveStore] in await archiveStore.deleteFlightArchive(current) }
         )
+        // Always finalize the crash-recovery journal so cold start cannot re-promote.
+        try? await waypointAppendJournal.acknowledgeRecovered(flightID: current.id)
         await refreshAwaitingMapState()
         if result.succeeded {
             AppleLog.info("AwaitingMap", result.logSummary(for: current))

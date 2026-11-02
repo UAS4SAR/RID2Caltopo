@@ -16,6 +16,18 @@ struct FlightPublicationLedgerTests {
         #expect(try await ledger.isDeclinedOrSuppressed(flightID: "flight-a"))
     }
 
+    @Test func discardedBlocksPublicationAndAwaitingMap() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let ledger = FlightPublicationLedger(fileURL: root.appendingPathComponent("ledger.json"))
+        try await ledger.remember(flightID: "flight-discard", disposition: .discarded)
+        #expect(try await ledger.disposition(flightID: "flight-discard") == .discarded)
+        #expect(try await ledger.blocksPublication(flightID: "flight-discard"))
+        #expect(try await ledger.blocksAwaitingMapPromotion(flightID: "flight-discard"))
+        #expect(try await ledger.isDeclinedOrSuppressed(flightID: "flight-discard"))
+    }
+
     @Test func publishedWinsOverSuppressed() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

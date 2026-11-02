@@ -80,6 +80,8 @@ import org.ncssar.rid2caltopo.data.AwaitingMapFlightText
 import org.ncssar.rid2caltopo.data.AwaitingMapFlights
 import org.ncssar.rid2caltopo.data.CaltopoClient
 import org.ncssar.rid2caltopo.data.CaltopoMap
+import org.ncssar.rid2caltopo.data.FlightPublicationLedger
+import org.ncssar.rid2caltopo.data.WaypointTrackJournal
 import org.ncssar.rid2caltopo.video.AndroidClueStore
 import java.text.DateFormat
 import java.text.SimpleDateFormat
@@ -260,11 +262,30 @@ fun AwaitingMapPublicationPanel(onChooseMap: () -> Unit = {}) {
     }
 }
 
-/** Real discard: clue store, operator archive tree, and the awaiting-map journal. */
+/**
+ * Real discard: durable ledger tombstone, clue/archive cleanup, awaiting-map entry, and
+ * crash-recovery journal. Lookup uses allEntries (not pending) so a mid-recovery
+ * finished=false race or a prior ledger hide cannot refuse an operator Discard — that was
+ * the device-log "flight not found or still in progress" failure.
+ */
 private fun discardFlight(context: android.content.Context, flight: JSONObject, clueIds: List<String>): AwaitingMapFlightDiscarder.Result {
-    val current = AwaitingMapFlights.pending().firstOrNull { it.optString("id") == flight.optString("id") }
-    if (current == null || !current.optBoolean("finished")) {
-        return AwaitingMapFlightDiscarder.Result(false, emptyList(), emptyList(), listOf("flight not found or still in progress"))
+    val id = flight.optString("id")
+    // Tombstone first so crash / power loss mid-discard still blocks journal recovery.
+    if (id.isNotEmpty()) {
+        FlightPublicationLedger.remember(id, FlightPublicationLedger.Disposition.DISCARDED)
+    }
+    val decisions = setOf("review", "bound", "local")
+    val current = AwaitingMapFlights.allEntries().firstOrNull {
+        it.optString("id") == id && it.optString("decision") in decisions
+    }
+    if (current == null) {
+        if (id.isNotEmpty()) WaypointTrackJournal.removeNow(id)
+        return AwaitingMapFlightDiscarder.Result(
+            entryRemoved = true,
+            deletedClueIds = emptyList(),
+            deletedArchiveFiles = emptyList(),
+            failures = emptyList(),
+        )
     }
     val store = AndroidClueStore.shared(context)
     val archiveRoot = CaltopoClient.GetArchiveDir()
@@ -279,13 +300,16 @@ private fun discardFlight(context: android.content.Context, flight: JSONObject, 
         }
     }
     if (archive == null) CaltopoClient.CTInfo(TAG, "Discard: no archive folder available; no archive files to delete")
-    return AwaitingMapFlightDiscarder.discard(
+    val result = AwaitingMapFlightDiscarder.discard(
         flight = current,
         clueIds = clueIds,
         deleteClue = { store.delete(it) },
         archive = archive,
         removeEntry = { AwaitingMapFlights.discard(it) },
     )
+    // Always finalize the journal synchronously so cold start cannot re-promote this id.
+    WaypointTrackJournal.removeNow(id)
+    return result
 }
 
 @Composable

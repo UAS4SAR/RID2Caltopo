@@ -61,6 +61,8 @@ object AwaitingMapFlights {
         val existing = all().firstOrNull { it.optString("id") == id }
         // Never infer a new publication request from a completed archive or another map's flight.
         if (existing == null && finished) return
+        // Discarded / declined / published ledger tombstones must never re-enter the inbox.
+        if (existing == null && FlightPublicationLedger.blocksAwaitingMapPromotion(id)) return
         val initialMap = selectedMap
         val item = existing ?: JSONObject().put("id", id).put("remote", remote).put("map", initialMap)
             .put("team", selectedTeam).put("decision", if (initialMap.isEmpty()) "review" else "bound").also { entries.put(it) }
@@ -238,13 +240,20 @@ object AwaitingMapFlights {
                 .forEach { queueCompleted(it) }
         }
     }
-    /** Removes exactly one undecided or local entry. Returns false when nothing matched. */
+    /**
+     * Removes exactly one undecided or local entry and records a durable discarded
+     * disposition so leftover journals / archive hydrate cannot resurrect it.
+     * Returns false when nothing matched.
+     */
     @JvmStatic @Synchronized fun discard(id: String): Boolean {
         load()
-        val remaining = all().filterNot { it.optString("id") == id && it.optString("decision") in listOf("review", "bound", "local") }
-        if (remaining.size == entries.length()) return false
+        val matched = all().firstOrNull {
+            it.optString("id") == id && it.optString("decision") in listOf("review", "bound", "local")
+        } ?: return false
+        // Tombstone first so a crash between ledger and journal prune still blocks recovery.
+        FlightPublicationLedger.remember(matched.optString("id"), FlightPublicationLedger.Disposition.DISCARDED)
         val prior = entries
-        entries = JSONArray(remaining)
+        entries = JSONArray(all().filterNot { it.optString("id") == id })
         try { save() } catch (error: Exception) { entries = prior; throw error }
         publishChoices()
         return true

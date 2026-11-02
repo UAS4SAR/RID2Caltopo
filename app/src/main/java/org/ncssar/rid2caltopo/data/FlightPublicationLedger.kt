@@ -16,6 +16,8 @@ object FlightPublicationLedger {
     enum class Disposition(val wire: String) {
         /** Operator chose Don't Publish / Ignore on the Drone Confirmation Panel. */
         DECLINED("declined"),
+        /** Operator discarded an awaiting-map offer; never re-enter inbox or publish. */
+        DISCARDED("discarded"),
         /** Flight ended with no DCP acknowledgement; never publish or await a map. */
         SUPPRESSED("suppressed"),
         /** Local archive written with local_archive_only (declined retention). */
@@ -80,6 +82,8 @@ object FlightPublicationLedger {
     private fun merge(prior: Disposition?, next: Disposition): Disposition = when {
         prior == Disposition.PUBLISHED -> Disposition.PUBLISHED
         next == Disposition.PUBLISHED -> Disposition.PUBLISHED
+        // Discard and Don't Publish are permanent operator refusals; never downgrade them.
+        prior == Disposition.DISCARDED || next == Disposition.DISCARDED -> Disposition.DISCARDED
         prior == Disposition.DECLINED || next == Disposition.DECLINED -> Disposition.DECLINED
         prior == Disposition.LOCAL_ARCHIVED || next == Disposition.LOCAL_ARCHIVED -> Disposition.LOCAL_ARCHIVED
         else -> next
@@ -103,11 +107,12 @@ object FlightPublicationLedger {
     @JvmStatic
     fun blocksAwaitingMapPromotion(flightId: String): Boolean = blocksPublication(flightId)
 
-    /** True when the operator declined or the flight never received DCP acknowledgement. */
+    /** True when the operator declined/discarded or the flight never received DCP acknowledgement. */
     @JvmStatic
     fun isDeclinedOrSuppressed(flightId: String): Boolean {
         val d = disposition(flightId) ?: return false
-        return d == Disposition.DECLINED || d == Disposition.SUPPRESSED || d == Disposition.LOCAL_ARCHIVED
+        return d == Disposition.DECLINED || d == Disposition.DISCARDED ||
+            d == Disposition.SUPPRESSED || d == Disposition.LOCAL_ARCHIVED
     }
 
     @JvmStatic

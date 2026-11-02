@@ -36,6 +36,18 @@ class FlightPublicationLedgerTest {
     }
 
     @Test
+    fun discardedBlocksPublicationAndAwaitingMap() {
+        FlightPublicationLedger.remember("flight-discard", FlightPublicationLedger.Disposition.DISCARDED)
+        assertEquals(
+            FlightPublicationLedger.Disposition.DISCARDED,
+            FlightPublicationLedger.disposition("flight-discard"),
+        )
+        assertTrue(FlightPublicationLedger.blocksPublication("flight-discard"))
+        assertTrue(FlightPublicationLedger.blocksAwaitingMapPromotion("flight-discard"))
+        assertTrue(FlightPublicationLedger.isDeclinedOrSuppressed("flight-discard"))
+    }
+
+    @Test
     fun suppressedBlocksAwaitingMap() {
         FlightPublicationLedger.remember("flight-b", FlightPublicationLedger.Disposition.SUPPRESSED)
         assertTrue(FlightPublicationLedger.blocksAwaitingMapPromotion("flight-b"))

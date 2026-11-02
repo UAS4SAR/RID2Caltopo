@@ -299,12 +299,15 @@ public struct AwaitingMapFlightDiscardResult: Equatable, Sendable {
 public enum AwaitingMapFlightDiscarder {
     /// Deletes the flight's clue photos and archive files first, then its journal entry, so a
     /// failure leaves the entry in place for another attempt. Nothing outside the flight is touched.
+    /// [beforeRemoveEntry] runs only after cleanup succeeds and before the inbox row is pruned
+    /// (used to write the durable discarded ledger tombstone).
     public static func discard(
         flight: AwaitingMapFlight,
         journal: AwaitingMapFlightJournal,
         clueIDs: [UUID],
         deleteClue: (UUID) async -> Bool,
-        deleteArchive: () async -> AwaitingMapArchiveDeletion
+        deleteArchive: () async -> AwaitingMapArchiveDeletion,
+        beforeRemoveEntry: ((String) async throws -> Void)? = nil
     ) async -> AwaitingMapFlightDiscardResult {
         var result = AwaitingMapFlightDiscardResult()
         for id in clueIDs {
@@ -313,6 +316,9 @@ public enum AwaitingMapFlightDiscarder {
         result.archive = await deleteArchive()
         guard result.failures.isEmpty, result.archive.failures.isEmpty else { return result }
         do {
+            if let beforeRemoveEntry {
+                try await beforeRemoveEntry(flight.id)
+            }
             result.entryRemoved = try await journal.discard(id: flight.id)
             if !result.entryRemoved { result.failures.append("journal entry not found") }
         } catch {

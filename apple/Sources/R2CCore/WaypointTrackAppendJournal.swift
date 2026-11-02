@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Append-only per-flight waypoint journal for unclean-exit recovery.
 /// Durable writes run on a dedicated serial queue so LiveTrack start/archive
@@ -12,6 +13,7 @@ public struct WaypointTrackAppendJournal: Sendable {
         public var teamID: String
         public var observations: [RidObservation]
         public var finished: Bool
+        public var startedAtMs: Int64
     }
 
     private let directory: URL
@@ -26,11 +28,29 @@ public struct WaypointTrackAppendJournal: Sendable {
         remoteID: String,
         label: String,
         mapID: String,
-        teamID: String
+        teamID: String,
+        startedAtMs: Int64? = nil
     ) async throws {
         try await disk.run {
             try FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
             let fileURL = self.fileURL(flightID)
+            let requestedStart = startedAtMs ?? Int64(Date().timeIntervalSince1970 * 1_000)
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                if let existing = try Self.read(fileURL: fileURL) {
+                    if existing.finished {
+                        try? FileManager.default.removeItem(at: fileURL)
+                    } else if existing.startedAtMs <= 0 || existing.startedAtMs == requestedStart {
+                        // Same in-progress flight: keep appending.
+                        return
+                    } else {
+                        // Leftover unfinished journal from a different start must not receive
+                        // another flight's points under a reused id.
+                        try? FileManager.default.removeItem(at: fileURL)
+                    }
+                } else {
+                    try? FileManager.default.removeItem(at: fileURL)
+                }
+            }
             guard !FileManager.default.fileExists(atPath: fileURL.path) else { return }
             let header: [String: Any] = [
                 "type": "header",
@@ -39,7 +59,7 @@ public struct WaypointTrackAppendJournal: Sendable {
                 "label": label,
                 "map": mapID,
                 "team": teamID,
-                "startedAtMs": Int64(Date().timeIntervalSince1970 * 1_000),
+                "startedAtMs": requestedStart,
             ]
             try Self.append(header, to: fileURL)
         }
@@ -93,12 +113,23 @@ public struct WaypointTrackAppendJournal: Sendable {
         }
     }
 
+    private static let log = Logger(subsystem: "org.ncssar.RID2Caltopo", category: "WaypointTrackJournal")
+
     /// Deletes a recovered journal after durable awaiting-map commit succeeded.
+    /// Logs explicitly when the file remains after a failed delete.
     public func acknowledgeRecovered(flightID: String) async throws {
         try await disk.run {
             let fileURL = self.fileURL(flightID)
             guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
-            try FileManager.default.removeItem(at: fileURL)
+            do {
+                try FileManager.default.removeItem(at: fileURL)
+            } catch {
+                Self.log.warning("Could not delete journal \(fileURL.lastPathComponent, privacy: .public); file still present: \(error.localizedDescription, privacy: .public)")
+                throw error
+            }
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                Self.log.warning("Journal delete reported success but file still present: \(fileURL.lastPathComponent, privacy: .public)")
+            }
         }
     }
 
@@ -131,6 +162,7 @@ public struct WaypointTrackAppendJournal: Sendable {
         var map = ""
         var team = ""
         var finished = false
+        var startedAtMs: Int64 = 0
         var observations: [RidObservation] = []
         for line in text.split(whereSeparator: \.isNewline) where !line.isEmpty {
             guard let data = line.data(using: .utf8),
@@ -144,6 +176,13 @@ public struct WaypointTrackAppendJournal: Sendable {
                 label = row["label"] as? String ?? label
                 map = row["map"] as? String ?? map
                 team = row["team"] as? String ?? team
+                if let value = row["startedAtMs"] as? Int64 {
+                    startedAtMs = value
+                } else if let value = row["startedAtMs"] as? Int {
+                    startedAtMs = Int64(value)
+                } else if let value = row["startedAtMs"] as? Double {
+                    startedAtMs = Int64(value)
+                }
             case "point":
                 let lat = row["lat"] as? Double ?? 0
                 let lng = row["lng"] as? Double ?? 0
@@ -175,6 +214,6 @@ public struct WaypointTrackAppendJournal: Sendable {
         guard !id.isEmpty else { return nil }
         return RecoveredFlight(
             id: id, remoteID: remote, label: label, mapID: map, teamID: team,
-            observations: observations, finished: finished)
+            observations: observations, finished: finished, startedAtMs: startedAtMs)
     }
 }

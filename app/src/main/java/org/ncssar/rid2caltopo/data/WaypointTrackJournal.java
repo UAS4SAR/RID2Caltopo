@@ -131,11 +131,25 @@ public final class WaypointTrackJournal {
                                 return;
                             }
                         } else if (existing != null) {
-                            // Same in-progress flight (including mid-flight Don't Publish): keep appending.
-                            return;
+                            long requestedStart = startedAtMs > 0 ? startedAtMs : 0L;
+                            // Same in-progress flight (including mid-flight Don't Publish): keep
+                            // appending. A leftover unfinished journal from a different start must
+                            // never receive another flight's points under a reused id.
+                            if (requestedStart <= 0L
+                                    || existing.startedAtMs <= 0L
+                                    || existing.startedAtMs == requestedStart) {
+                                return;
+                            }
+                            CTWarn(TAG, String.format(Locale.US,
+                                    "ensureOpen replacing unfinished journal %s priorStart=%d newStart=%d",
+                                    file.getName(), existing.startedAtMs, requestedStart));
+                            if (!file.delete()) {
+                                CTWarn(TAG, "Could not replace mismatched journal " + file.getName());
+                                return;
+                            }
                         }
                     }
-                    // Do not open a fresh journal for a flight id already declined/suppressed/published.
+                    // Do not open a fresh journal for a flight id already declined/discarded/published.
                     if (!file.exists() && FlightPublicationLedger.blocksAwaitingMapPromotion(flightId)) {
                         CTDebug(TAG, "ensureOpen skipped for ledger-blocked flight " + flightId);
                         return;
@@ -211,18 +225,37 @@ public final class WaypointTrackJournal {
     }
 
     public static void remove(@NonNull String flightId) {
-        Writer.execute(() -> {
+        Writer.execute(() -> removeNowLocked(flightId));
+    }
+
+    /**
+     * Synchronously delete a crash-recovery journal so Discard survives process death / power loss
+     * before the writer queue drains. Logs explicitly when the file remains after a failed delete.
+     */
+    public static void removeNow(@NonNull String flightId) {
+        try {
+            Writer.submit(() -> removeNowLocked(flightId)).get(10, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception error) {
+            CTError(TAG, "removeNow failed for " + flightId + "; journal may remain", error);
+            // Best-effort direct attempt if the writer is stuck or rejected.
             synchronized (lockFor(flightId)) {
-                try {
-                    File file = journalFile(flightId);
-                    if (file.exists() && !file.delete()) {
-                        CTWarn(TAG, "Could not delete journal " + file.getName());
-                    }
-                } finally {
-                    FlightLocks.remove(flightId);
-                }
+                removeNowLocked(flightId);
             }
-        });
+        }
+    }
+
+    private static void removeNowLocked(@NonNull String flightId) {
+        try {
+            File file = journalFile(flightId);
+            if (!file.exists()) return;
+            if (!file.delete()) {
+                CTWarn(TAG, "Could not delete journal " + file.getName() + "; file still present");
+            } else if (file.exists()) {
+                CTWarn(TAG, "Journal delete reported success but file still present: " + file.getName());
+            }
+        } finally {
+            FlightLocks.remove(flightId);
+        }
     }
 
     /**
@@ -242,13 +275,11 @@ public final class WaypointTrackJournal {
                     if (!file.exists()) continue;
                     RecoveredFlight recovered = readJournal(file);
                     if (recovered == null || recovered.points.length() == 0) {
-                        // noinspection ResultOfMethodCallIgnored
-                        file.delete();
+                        deleteJournalFile(file, "empty-or-unreadable");
                         continue;
                     }
                     if (recovered.finished) {
-                        // noinspection ResultOfMethodCallIgnored
-                        file.delete();
+                        deleteJournalFile(file, "already-finished");
                         continue;
                     }
                     if (shouldRetireWithoutPromotion(recovered)) {
@@ -258,8 +289,7 @@ public final class WaypointTrackJournal {
                         if (FlightPublicationLedger.isDeclinedOrSuppressed(recovered.id)) {
                             writeLocalTrackIfPossible(recovered, /*localOnly=*/true);
                         }
-                        // noinspection ResultOfMethodCallIgnored
-                        file.delete();
+                        deleteJournalFile(file, "ledger-or-finished-gate");
                         continue;
                     }
                     CTDebug(TAG, String.format(Locale.US,
@@ -288,8 +318,7 @@ public final class WaypointTrackJournal {
                     writeLocalTrackIfPossible(recovered, /*localOnly=*/false);
                     Runnable beforeDelete = recoverBeforeDeleteHook;
                     if (beforeDelete != null) beforeDelete.run();
-                    // noinspection ResultOfMethodCallIgnored
-                    file.delete();
+                    deleteJournalFile(file, "promoted");
                 } catch (Exception error) {
                     CTError(TAG, "recoverUnfinished failed for " + file.getName()
                             + "; journal retained", error);
@@ -300,6 +329,19 @@ public final class WaypointTrackJournal {
 
     private static boolean shouldRetireWithoutPromotion(@NonNull RecoveredFlight recovered) {
         return FlightPublicationRecoveryGate.shouldRetireWithoutPromotion(recovered.id);
+    }
+
+    private static void deleteJournalFile(@NonNull File file, @NonNull String reason) {
+        if (!file.exists()) return;
+        if (file.delete()) {
+            if (file.exists()) {
+                CTWarn(TAG, "Journal delete reported success but file still present after "
+                        + reason + ": " + file.getName());
+            }
+            return;
+        }
+        CTWarn(TAG, "Could not delete journal after " + reason + ": " + file.getName()
+                + "; file still present");
     }
 
     private static void writeLocalTrackIfPossible(@NonNull RecoveredFlight recovered, boolean localOnly) {

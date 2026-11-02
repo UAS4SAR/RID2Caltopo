@@ -21,7 +21,10 @@ class AwaitingMapFlightReviewTest {
     private val zone = ZoneId.of("America/Los_Angeles")
     private val start = 1_790_553_873_000L
 
-    @After fun reset() { AwaitingMapFlights.useFileForTesting(null) }
+    @After fun reset() {
+        AwaitingMapFlights.useFileForTesting(null)
+        FlightPublicationLedger.useFileForTesting(null)
+    }
 
     /** Journal points use WaypointTrack's string format: [lon, lat, alt, timeMs]. */
     private fun point(time: Long, lat: Double, lon: Double) = JSONArray()
@@ -166,6 +169,7 @@ class AwaitingMapFlightReviewTest {
         val root = Files.createTempDirectory("awaiting-discard").toFile()
         try {
             AwaitingMapFlights.useFileForTesting(File(root, "awaiting-map-flights.json"))
+            FlightPublicationLedger.useFileForTesting(File(root, "flight-publication-ledger.json").also { it.writeText("{}") })
             AwaitingMapFlights.record("target", "RID-1", "1SAR7Db150Brdg_0641", points(), false, "", "")
             AwaitingMapFlights.record("target", "RID-1", "1SAR7Db150Brdg_0641", points(), true, "", "")
             AwaitingMapFlights.record("other", "RID-2", "1sar7DjMn4Pr_0641", points(), false, "", "")
@@ -200,6 +204,10 @@ class AwaitingMapFlightReviewTest {
             assertEquals(listOf("a", "b"), result.deletedClueIds)
             assertEquals(targetNames.map { "tracks-27Sep2026/$it" }, result.deletedArchiveFiles)
             assertEquals(listOf("other"), AwaitingMapFlights.allEntries().map { it.getString("id") })
+            assertEquals(
+                FlightPublicationLedger.Disposition.DISCARDED,
+                FlightPublicationLedger.disposition("target"),
+            )
             val remaining = AndroidClueStore.forDirectory(File(root, "clues"))
             assertEquals(listOf("c", "d"), remaining.recordsForMap("unassigned").map { it.id }.sorted())
             listOf("a", "b").forEach { assertFalse(File(root, "clues/$it.jpg").exists()) }
@@ -216,6 +224,7 @@ class AwaitingMapFlightReviewTest {
         val root = Files.createTempDirectory("awaiting-discard-fail").toFile()
         try {
             AwaitingMapFlights.useFileForTesting(File(root, "awaiting-map-flights.json"))
+            FlightPublicationLedger.useFileForTesting(File(root, "flight-publication-ledger.json").also { it.writeText("{}") })
             AwaitingMapFlights.record("target", "RID-1", "1SAR7Db150Brdg", points(), false, "", "")
             val target = AwaitingMapFlights.pending().single()
             val result = AwaitingMapFlightDiscarder.discard(target, listOf("missing"), { false },
@@ -223,6 +232,7 @@ class AwaitingMapFlightReviewTest {
             assertFalse(result.succeeded)
             assertFalse(result.entryRemoved)
             assertNotNull(AwaitingMapFlights.pending().singleOrNull { it.getString("id") == "target" })
+            assertEquals(null, FlightPublicationLedger.disposition("target"))
         } finally {
             root.deleteRecursively()
         }

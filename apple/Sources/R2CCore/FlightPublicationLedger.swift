@@ -8,6 +8,7 @@ import Foundation
 public actor FlightPublicationLedger {
     public enum Disposition: String, Sendable, Equatable {
         case declined
+        case discarded
         case suppressed
         case localArchived = "local_archived"
         case published
@@ -49,7 +50,7 @@ public actor FlightPublicationLedger {
 
     public func isDeclinedOrSuppressed(flightID: String) throws -> Bool {
         guard let value = try disposition(flightID: flightID) else { return false }
-        return value == .declined || value == .suppressed || value == .localArchived
+        return value == .declined || value == .discarded || value == .suppressed || value == .localArchived
     }
 
     public func allForTesting() throws -> [String: Disposition] {
@@ -66,6 +67,8 @@ public actor FlightPublicationLedger {
     private static func merge(prior: Disposition?, next: Disposition) -> Disposition {
         if prior == .published { return .published }
         if next == .published { return .published }
+        // Discard and Don't Publish are permanent operator refusals; never downgrade them.
+        if prior == .discarded || next == .discarded { return .discarded }
         if prior == .declined || next == .declined { return .declined }
         if prior == .localArchived || next == .localArchived { return .localArchived }
         return next
