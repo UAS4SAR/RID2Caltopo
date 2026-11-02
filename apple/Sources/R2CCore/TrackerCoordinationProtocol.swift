@@ -526,6 +526,13 @@ public struct TrackerCoordinationProtocolState: Sendable {
         return ownershipEvent(remoteID: remoteID, ownerZoneID: owner)
     }
 
+    /// Flight end retires operator confirmation for this aircraft. A later rediscovery must not
+    /// inherit the prior flight's local confirmation lease.
+    public mutating func clearLocalConfirmation(remoteID: String) {
+        guard !remoteID.isEmpty else { return }
+        locallyConfirmedRemoteIDs.remove(remoteID)
+    }
+
     public mutating func assignFallbackOwnership(remoteID: String) -> TrackerCoordinationEvent? {
         guard !remoteID.isEmpty else { return nil }
         ownersByRemoteID[remoteID] = localZoneID

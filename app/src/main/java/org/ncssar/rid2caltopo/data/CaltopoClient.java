@@ -3049,6 +3049,24 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         CurrentPeerConfirmedDroneRemoteIds.remove(remoteId);
     }
 
+    /**
+     * Flight end retires operator confirmation for this aircraft. A later rediscovery must not
+     * inherit the prior flight's Confirmed state for map or tracker publication.
+     * Does not set local-archive-only: that flag means Ignore/unknown, which retains across
+     * flights and would incorrectly suppress the next confirmation panel.
+     */
+    public static void ClearCurrentFlightConfirmation(@NonNull String remoteId) {
+        if (RejectNonCanonicalRemoteId("ClearCurrentFlightConfirmation()", remoteId)) return;
+        SessionConfirmedDroneRemoteIds.remove(remoteId);
+        CurrentPeerConfirmedDroneRemoteIds.remove(remoteId);
+        CtDroneSpec activeDs = GetState().droneSpecTable.get(remoteId);
+        if (activeDs != null) {
+            activeDs.setCurrentFlightConfirmed(false);
+        }
+        CTInfo(TAG, "ClearCurrentFlightConfirmation(): remoteId=" + remoteId +
+                " publication=gated_unconfirmed");
+    }
+
     public static void PromoteLocalArchiveOnlyDrone(@NonNull String remoteId) {
         promoteLocalArchiveOnlyDrone(remoteId, null);
     }

@@ -26,7 +26,9 @@ import org.ncssar.rid2caltopo.data.CaltopoClient
 import org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection
 import org.ncssar.rid2caltopo.data.CaltopoPersonalSession
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug
+import org.ncssar.rid2caltopo.data.CaltopoClient.CTInfo
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTWarn
+import org.ncssar.rid2caltopo.data.CurrentFlightPublicationGate
 import org.ncssar.rid2caltopo.data.CaltopoCredentials
 import org.ncssar.rid2caltopo.data.CaltopoLiveTrack
 import org.ncssar.rid2caltopo.data.CaltopoMap
@@ -211,6 +213,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
     val activeScreen : StateFlow<ActiveScreen> = _activeScreen.asStateFlow()
     private val promptedCurrentFlightRemoteIds = linkedSetOf<String>()
     private val confirmedCurrentFlightRemoteIds = linkedSetOf<String>()
+    private val publicationGateLoggedRemoteIds = linkedSetOf<String>()
     private var pendingDroneConfirmationRequestedByOperator = false
     private var lastDroneListSignature: List<DroneSpecUiSignature>? = null
     private var lastUnknownDroneConfirmationOrganization = ""
@@ -935,6 +938,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         }
         R2CApplication.getAppCtxt()?.let { TabletPilotCallsignPrefs.save(it, callsign) }
         confirmedCurrentFlightRemoteIds.add(remoteId)
+        publicationGateLoggedRemoteIds.remove(remoteId)
         CTDebug(tag, "savePendingDroneConfirmation(): saving local confirmation remoteId=$remoteId mappedId='$mappedId'")
         CaltopoClient.SaveDroneSpecConfirmation(
             remoteId,
@@ -950,6 +954,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             callsign,
             mappedId
         )
+        logPublicationGateIfNeeded(remoteId, confirmed = true, ignored = false)
         _pendingDroneConfirmation.value = null
         pendingDroneConfirmationRequestedByOperator = false
     }
@@ -1110,6 +1115,15 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             CaltopoClient.IsCurrentPeerDroneConfirmed(remoteId)
         ) return false
         if (newLocalVideo) declinedDroneVideoConfirmation.markHandled(remoteId)
+        val publication = CurrentFlightPublicationGate.decide(
+            confirmed = false,
+            ignored = declined && !newLocalVideo
+        )
+        CTInfo(
+            tag,
+            "Panel path=queue_new_flight remoteId=$remoteId publication=${publication.logLabel} reason=$reason " +
+                "aircraftReceivedAtMs=${drone.mostRecentAircraftReceiptMsecTimestamp} ${confirmationMediaDiagnostics()}"
+        )
         CTDebug(
             tag,
             "Queueing confirmation for ${drone.remoteId}: " +
@@ -1118,12 +1132,23 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                 "aircraftReceivedAtMs=${drone.mostRecentAircraftReceiptMsecTimestamp} ${confirmationMediaDiagnostics()}"
         )
         promptedCurrentFlightRemoteIds.add(remoteId)
+        logPublicationGateIfNeeded(remoteId, confirmed = false, ignored = declined && !newLocalVideo)
         _pendingDroneConfirmation.value = buildConfirmationState(drone)
         pendingDroneConfirmationRequestedByOperator = false
         refreshPendingDroneConfirmationValidation()
         // The activity hosts the dialog above every page. Keep Live View mounted so
         // confirmation does not recreate its panels or reset the operator's map viewport.
         return true
+    }
+
+    private fun logPublicationGateIfNeeded(remoteId: String, confirmed: Boolean, ignored: Boolean) {
+        val trimmed = remoteId.trim()
+        if (trimmed.isEmpty() || !publicationGateLoggedRemoteIds.add(trimmed)) return
+        val decision = CurrentFlightPublicationGate.decide(confirmed = confirmed, ignored = ignored)
+        CTInfo(
+            tag,
+            "Publication ${decision.logLabel} remoteId=$trimmed panelConfirmed=$confirmed ignored=$ignored"
+        )
     }
 
     private fun clearInactivePromptOnly(remoteId: String, reason: String, trackFinished: Boolean = false) {
@@ -1147,7 +1172,9 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         completedFlightConfirmationGuard.end(trimmedRemoteId, System.currentTimeMillis())
         CTDebug(tag, "Retiring confirmation eligibility remoteId=$trimmedRemoteId videoListed=${trimmedRemoteId in liveStreamConfirmationSpecs} reason=$reason")
         confirmedCurrentFlightRemoteIds.remove(trimmedRemoteId)
-        CaltopoClient.ClearCurrentPeerDroneConfirmation(trimmedRemoteId)
+        publicationGateLoggedRemoteIds.remove(trimmedRemoteId)
+        // Retire Confirmed for map/tracker so a quick rediscovery cannot inherit publication.
+        CaltopoClient.ClearCurrentFlightConfirmation(trimmedRemoteId)
         clearInactivePromptOnly(trimmedRemoteId, reason, trackFinished = true)
     }
 

@@ -240,6 +240,8 @@ final class AppleDroneConfirmationStore: ObservableObject {
     private var completedFlightGuard = CompletedFlightConfirmationGuard()
     private var peerConfirmationMapID = ""
     private var ignoredRemoteIDs: Set<String> = []
+    /// One publication gate/allow INFO line per remoteID per current flight.
+    private var publicationGateLogged: Set<String> = []
     private let defaults = UserDefaults.standard
     private(set) var editableImportedMappings: [RidAircraftIdentity] = []
     private var orderedImportedMappings: [RidAircraftIdentity] = []
@@ -297,12 +299,17 @@ final class AppleDroneConfirmationStore: ObservableObject {
     ) -> String? {
         completedFlightGuard.updateSessions(videoSessions)
         declinedVideoConfirmation.update(videoSessions)
-        let eligible = orderedRemoteIDs.filter {
-            completedFlightGuard.allows(remoteID: $0, receivedAt: aircraftReceivedAt[$0]) { AppleLog.info("DroneConfirmation", "\($0) \(mediaDiagnostics)") }
+        var rearmedRemoteIDs: Set<String> = []
+        let eligible = orderedRemoteIDs.filter { remoteID in
+            completedFlightGuard.allows(remoteID: remoteID, receivedAt: aircraftReceivedAt[remoteID]) {
+                if $0.contains("Confirmation rearmed") { rearmedRemoteIDs.insert(remoteID) }
+                AppleLog.info("DroneConfirmation", "\($0) \(mediaDiagnostics)")
+            }
         }
+        let confirmedRemoteIDs = Set(sessionIdentities.keys).union(peerIdentities.keys)
         let reconciliation = confirmationLifecycle.reconcile(
             orderedRemoteIDs: eligible,
-            confirmedRemoteIDs: Set(sessionIdentities.keys).union(peerIdentities.keys),
+            confirmedRemoteIDs: confirmedRemoteIDs,
             ignoredRemoteIDs: ignoredRemoteIDs,
             videoReconfirmationRemoteIDs: Set(eligible.filter {
                 ignoredRemoteIDs.contains($0) && declinedVideoConfirmation.hasNewPublisher($0)
@@ -314,6 +321,7 @@ final class AppleDroneConfirmationStore: ObservableObject {
             completedFlightGuard.end(remoteID: remoteID, at: Date()) { AppleLog.info("DroneConfirmation", "\($0) \(mediaDiagnostics)") }
             sessionIdentities.removeValue(forKey: remoteID)
             peerIdentities.removeValue(forKey: remoteID)
+            publicationGateLogged.remove(remoteID)
         }
         if !reconciliation.endedRemoteIDs.isEmpty {
             AppleLog.info(
@@ -321,8 +329,27 @@ final class AppleDroneConfirmationStore: ObservableObject {
                 "Cleared current-flight decisions remoteIds=\(reconciliation.endedRemoteIDs.sorted().joined(separator: ","))"
             )
         }
-        guard let candidate = reconciliation.candidateRemoteID else { return nil }
+        guard let candidate = reconciliation.candidateRemoteID else {
+            for remoteID in rearmedRemoteIDs where !confirmedRemoteIDs.contains(remoteID) && !ignoredRemoteIDs.contains(remoteID) {
+                let path = allowPrompt ? "rearm_no_candidate" : "rearm_prompt_deferred"
+                AppleLog.info(
+                    "DroneConfirmation",
+                    "Panel path=\(path) remoteId=\(remoteID) publication=\(CurrentFlightPublicationGate.decide(confirmed: false, ignored: false).logLabel)"
+                )
+            }
+            for remoteID in rearmedRemoteIDs where confirmedRemoteIDs.contains(remoteID) {
+                AppleLog.info(
+                    "DroneConfirmation",
+                    "Panel path=rearm_already_confirmed remoteId=\(remoteID) publication=\(CurrentFlightPublicationGate.decide(confirmed: true, ignored: false).logLabel)"
+                )
+            }
+            return nil
+        }
         if ignoredRemoteIDs.contains(candidate) { declinedVideoConfirmation.markHandled(candidate) }
+        AppleLog.info(
+            "DroneConfirmation",
+            "Panel path=queue_new_flight remoteId=\(candidate) publication=\(CurrentFlightPublicationGate.decide(confirmed: false, ignored: ignoredRemoteIDs.contains(candidate)).logLabel) aircraftReceivedAt=\(String(describing: aircraftReceivedAt[candidate])) publisherSessions=\((videoSessions[candidate] ?? []).sorted()) \(mediaDiagnostics)"
+        )
         AppleLog.info("DroneConfirmation", "Queueing confirmation remoteId=\(candidate) aircraftReceivedAt=\(String(describing: aircraftReceivedAt[candidate])) publisherSessions=\((videoSessions[candidate] ?? []).sorted()) \(mediaDiagnostics)")
         return candidate
     }
@@ -332,7 +359,22 @@ final class AppleDroneConfirmationStore: ObservableObject {
         confirmationLifecycle.endFlight(remoteID: remoteID)
         sessionIdentities.removeValue(forKey: remoteID)
         peerIdentities.removeValue(forKey: remoteID)
+        publicationGateLogged.remove(remoteID)
         AppleLog.info("DroneConfirmation", "Cleared confirmation at telemetry track end remoteId=\(remoteID)")
+    }
+
+    /// Once per current flight: whether map/tracker publication is gated or allowed.
+    func logPublicationGateIfNeeded(remoteID: String) {
+        guard !remoteID.isEmpty, !publicationGateLogged.contains(remoteID) else { return }
+        publicationGateLogged.insert(remoteID)
+        let decision = CurrentFlightPublicationGate.decide(
+            confirmed: isCurrentFlightConfirmed(remoteID),
+            ignored: isIgnored(remoteID)
+        )
+        AppleLog.info(
+            "DroneConfirmation",
+            "Publication \(decision.logLabel) remoteId=\(remoteID) panelConfirmed=\(isCurrentFlightConfirmed(remoteID)) ignored=\(isIgnored(remoteID))"
+        )
     }
 
     func isIgnored(_ remoteID: String) -> Bool {
@@ -434,10 +476,12 @@ final class AppleDroneConfirmationStore: ObservableObject {
         guard identity.isComplete || (recordUnresolvedPilot && !identity.remoteID.isEmpty) else { return }
         ignoredRemoteIDs.remove(identity.remoteID)
         sessionIdentities[identity.remoteID] = identity
+        publicationGateLogged.remove(identity.remoteID)
         AppleLog.info(
             "DroneConfirmation",
             "Confirmed remoteId=\(identity.remoteID) mappedId=\(identity.mappedID) organization='\(identity.organization)' callsign='\(identity.pilotCallsign)' description='\(identity.droneDescription)' sessionOnly=true"
         )
+        logPublicationGateIfNeeded(remoteID: identity.remoteID)
     }
 
     func applyImportedMappings(_ mappings: [OrgConfigRIDMapping], managedDownload: Bool = false) async throws {
@@ -531,6 +575,7 @@ final class AppleDroneConfirmationStore: ObservableObject {
         confirmationLifecycle.reset()
         completedFlightGuard = CompletedFlightConfirmationGuard()
         ignoredRemoteIDs.removeAll()
+        publicationGateLogged.removeAll()
         persistMappingRecords([])
         defaults.removeObject(forKey: Self.ignoredRemoteIDsDefaultsKey)
     }

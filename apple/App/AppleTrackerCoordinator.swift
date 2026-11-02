@@ -587,7 +587,8 @@ final class AppleTrackerCoordinator: ObservableObject {
     private var firstSightingsSent: Set<String> = []
     private var seenVideoStreamRequestIDs: [String] = []
     private var pendingConfirmations: [String: TrackerCoordinationIdentity] = [:]
-    /// Saves made before coordination starts. configure() resets protocol state and replays these.
+    /// Saves made before coordination starts, or while the current flight is still active.
+    /// Flight end must clear these so a rediscovered aircraft cannot inherit the prior flight.
     private var rememberedConfirmations: [String: TrackerCoordinationIdentity] = [:]
     private var lastSightingSentAt: [String: Date] = [:]
     private let trafficSourceEpoch = UUID().uuidString
@@ -1035,6 +1036,15 @@ final class AppleTrackerCoordinator: ObservableObject {
         observedSightings.removeValue(forKey: remoteID)
         firstSightingsSent.remove(remoteID)
         pendingConfirmations.removeValue(forKey: remoteID)
+        // Prior-flight Save must not auto-confirm the next rediscovery.
+        let forgotRemembered = rememberedConfirmations.removeValue(forKey: remoteID) != nil
+        protocolState.clearLocalConfirmation(remoteID: remoteID)
+        if forgotRemembered {
+            AppleLog.info(
+                "TrackerPeer",
+                "Cleared remembered confirmation at flight end remoteId=\(remoteID)"
+            )
+        }
         lastSightingSentAt.removeValue(forKey: remoteID)
         trafficAltitudeCalibrationByRemoteID.removeValue(forKey: remoteID)
         trafficSequenceByKey = trafficSequenceByKey.filter { !$0.key.hasSuffix("|\(remoteID)") }

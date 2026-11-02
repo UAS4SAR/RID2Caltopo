@@ -586,13 +586,9 @@ class R2CViewModelDroneConfirmationTest {
         viewModel.onDroneSpecsChanged(listOf(activeDrone(remoteId, waypointTimestampMsec = System.currentTimeMillis() + 1)))
 
         assertEquals(remoteId, viewModel.pendingDroneConfirmation.value?.remoteId)
-
-        CaltopoClient.ClearCurrentPeerDroneConfirmation(remoteId)
-        val recreatedViewModel = R2CViewModel(SimpleTimer())
-        recreatedViewModel.onDroneConfirmationCandidate(CtDroneSpec(remoteId))
-
-        assertTrue(CaltopoClient.IsSessionDroneConfirmed(remoteId))
-        assertEquals(remoteId, recreatedViewModel.pendingDroneConfirmation.value?.remoteId)
+        // Flight end retires session confirmation; a later Save establishes a new one.
+        assertFalse(CaltopoClient.IsSessionDroneConfirmed(remoteId))
+        assertFalse(CaltopoClient.IsCurrentPeerDroneConfirmed(remoteId))
     }
 
     @Test
@@ -614,9 +610,40 @@ class R2CViewModelDroneConfirmationTest {
         CaltopoLiveTrack.NotifyLocalTrackFinished(drone, "test track finished")
         viewModel.onDroneSpecsChanged(listOf(drone))
         assertNull(viewModel.pendingDroneConfirmation.value)
+        assertFalse(CaltopoClient.GetDroneSpec(remoteId)!!.isCurrentFlightConfirmed)
+        assertFalse(CaltopoClient.IsCurrentPeerDroneConfirmed(remoteId))
         viewModel.onDroneSpecsChanged(listOf(activeDrone(remoteId, waypointTimestampMsec = System.currentTimeMillis() + 1)))
 
         assertEquals(remoteId, viewModel.pendingDroneConfirmation.value?.remoteId)
+    }
+
+    @Test
+    fun quickReturnWithoutPublisherSessionQueuesPanelAndKeepsPublicationGated() {
+        val remoteId = "RID60SRETURN"
+        val firstSeen = System.currentTimeMillis()
+        val first = activeDrone(remoteId, waypointTimestampMsec = firstSeen)
+        val viewModel = R2CViewModel(SimpleTimer())
+        viewModel.onDroneSpecsChanged(listOf(first))
+        assertNotNull(viewModel.pendingDroneConfirmation.value)
+        viewModel.updatePendingDroneConfirmation("NCSSAR", "1SAR7", "DJI Mini 4 Pro")
+        viewModel.savePendingDroneConfirmation()
+        assertTrue(CaltopoClient.GetDroneSpec(remoteId)!!.isCurrentFlightConfirmed)
+
+        CaltopoLiveTrack.NotifyLocalTrackFinished(first, "flight end")
+        assertFalse(CaltopoClient.GetDroneSpec(remoteId)!!.isCurrentFlightConfirmed)
+        assertFalse(CaltopoClient.IsCurrentPeerDroneConfirmed(remoteId))
+        // Fresh aircraft receipt ~60s later, no live publisher session.
+        val returning = activeDrone(remoteId, waypointTimestampMsec = firstSeen + 60_000L)
+        viewModel.onLiveStreamDesignatorsChanged(emptySet(), listOf(returning), emptyMap())
+        viewModel.onDroneSpecsChanged(listOf(returning))
+        assertEquals(remoteId, viewModel.pendingDroneConfirmation.value?.remoteId)
+        assertFalse(CaltopoClient.GetDroneSpec(remoteId)!!.isCurrentFlightConfirmed)
+        assertFalse(
+            org.ncssar.rid2caltopo.data.CurrentFlightPublicationGate.decide(
+                confirmed = false,
+                ignored = false
+            ).allowsPublication
+        )
     }
 
     @Test

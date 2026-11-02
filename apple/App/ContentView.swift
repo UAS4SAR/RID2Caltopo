@@ -710,7 +710,12 @@ struct ContentView: View {
                 }
                 ridTracks.configureFlightRecording(droneConfirmations.isCurrentFlightConfirmed)
                 ridTracks.configurePublicationSuppression { remoteID in
-                    !droneConfirmations.isCurrentFlightConfirmed(remoteID) || droneConfirmations.isIgnored(remoteID)
+                    droneConfirmations.logPublicationGateIfNeeded(remoteID: remoteID)
+                    let decision = CurrentFlightPublicationGate.decide(
+                        confirmed: droneConfirmations.isCurrentFlightConfirmed(remoteID),
+                        ignored: droneConfirmations.isIgnored(remoteID)
+                    )
+                    return !decision.allowsPublication
                 }
                 ridTracks.configurePairedVideoActivity(
                     { streamRegistry.flightActivityByAircraftID() },
@@ -773,6 +778,7 @@ struct ContentView: View {
                     peerConfirmationClearer: droneConfirmations.clearPeerConfirmation,
                     flightEndConsumer: { remoteID in
                         AppleLog.info("DroneConfirmation", "Flight end remoteId=\(remoteID) \(confirmationMediaDiagnostics)")
+                        peerCoordinator.droneLost(remoteID: remoteID)
                         droneConfirmations.endFlight(remoteID: remoteID)
                         dismissEndedDroneConfirmation(remoteID)
                     }
@@ -3058,7 +3064,10 @@ struct ContentView: View {
                 aircraftReceivedAt: Dictionary(ridTracks.tracks.map { ($0.aircraftID, $0.lastAircraftMessageAt) }, uniquingKeysWith: max),
                 videoSessions: confirmationVideoSessions,
                 mediaDiagnostics: confirmationMediaDiagnostics,
-                onFlightEnded: dismissEndedDroneConfirmation
+                onFlightEnded: { remoteID in
+                    peerCoordinator.droneLost(remoteID: remoteID)
+                    dismissEndedDroneConfirmation(remoteID)
+                }
               ),
               !droneConfirmations.isUnassociated(remoteID)
         else { return }
@@ -3102,7 +3111,10 @@ struct ContentView: View {
             videoSessions: confirmationVideoSessions,
             allowPrompt: pendingDroneConfirmation == nil,
             mediaDiagnostics: confirmationMediaDiagnostics,
-            onFlightEnded: dismissEndedDroneConfirmation
+            onFlightEnded: { endedRemoteID in
+                peerCoordinator.droneLost(remoteID: endedRemoteID)
+                dismissEndedDroneConfirmation(endedRemoteID)
+            }
         )
         if !ProcessInfo.processInfo.arguments.contains("--suppress-auto-confirmation"),
            pendingDroneConfirmation == nil,

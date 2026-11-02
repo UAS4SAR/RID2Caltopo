@@ -228,7 +228,7 @@ class DefaultPeerCoordinatorTest {
     }
 
     @Test
-    fun unconfirmedTrackStillSendsTrackerAdvisoryTraffic() {
+    fun unconfirmedTrackDoesNotSendTrackerAdvisoryTraffic() {
         val coordinator = DefaultPeerCoordinator.getInstance()
         coordinator.start("MAP1", "zone-alpha", "Alpha", null)
         val drone = CtDroneSpec("DRONEPENDING")
@@ -247,16 +247,15 @@ class DefaultPeerCoordinatorTest {
         val messages = synchronized(transport.sentMessages) {
             transport.sentMessages.map(::JSONObject)
         }
-        assertTrue(messages.any {
+        assertTrue(messages.none {
             it.optString("type") == "traffic_position" &&
-                it.optString("source") == "rid" &&
                 it.optString("remoteId") == drone.remoteId
         })
         assertFalse(messages.any { it.optString("type") == "sighting" })
     }
 
     @Test
-    fun seiAdvisoryTrafficBypassesOwnershipConfirmation() {
+    fun seiTrafficRequiresCurrentFlightConfirmation() {
         val coordinator = DefaultPeerCoordinator.getInstance()
         coordinator.start("MAP1", "zone-alpha", "Alpha", null)
 
@@ -264,15 +263,34 @@ class DefaultPeerCoordinatorTest {
             "DRONESEI", "1SAR7DjMtrc4td", 39.1, -121.2, 550.0,
             2345L, 2300L, 87.0
         )
+        assertTrue(
+            synchronized(transport.sentMessages) {
+                transport.sentMessages.map(::JSONObject)
+            }.none {
+                it.optString("type") == "traffic_position" &&
+                    it.optString("remoteId") == "DRONESEI"
+            }
+        )
 
-        val messages = synchronized(transport.sentMessages) {
-            transport.sentMessages.map(::JSONObject)
-        }
-        assertTrue(messages.any {
-            it.optString("type") == "traffic_position" &&
-                it.optString("source") == "sei" &&
-                it.optString("remoteId") == "DRONESEI"
-        })
+        CaltopoClient.SaveDroneSpecConfirmation(
+            "DRONESEI", "NCSSAR", "DJI Matrice 4TD", "1SAR7", "1SAR7DjMtrc4td"
+        )
+        coordinator.onDroneConfirmed(
+            "DRONESEI", "NCSSAR", "DJI Matrice 4TD", "1SAR7", "1SAR7DjMtrc4td"
+        )
+        coordinator.onSEIPositionReceived(
+            "DRONESEI", "1SAR7DjMtrc4td", 39.1, -121.2, 550.0,
+            2346L, 2301L, 87.0
+        )
+        assertTrue(
+            synchronized(transport.sentMessages) {
+                transport.sentMessages.map(::JSONObject)
+            }.any {
+                it.optString("type") == "traffic_position" &&
+                    it.optString("source") == "sei" &&
+                    it.optString("remoteId") == "DRONESEI"
+            }
+        )
     }
 
     @Test

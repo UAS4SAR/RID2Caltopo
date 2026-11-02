@@ -251,10 +251,7 @@ public final class DefaultPeerCoordinator implements PeerCoordinator {
         if (registration == null ||
                 !registration.coordinatorActivated ||
                 !CaltopoClient.IsCurrentPeerDroneConfirmed(droneSpec.getRemoteId())) {
-            if (trackerSelected) {
-                activeCoordinator.onTrafficPositionReceived(
-                        droneSpec, droneLat, droneLon, droneAlt, timestampMsec, telemetry);
-            }
+            // Unconfirmed flights must not publish live peer traffic or flight records.
             return;
         }
         activeCoordinator.onWaypointReceived(
@@ -278,6 +275,7 @@ public final class DefaultPeerCoordinator implements PeerCoordinator {
                                       long altitudeTimestampMsec,
                                       @Nullable Double headingDegrees) {
         if (!trackerSelected) return;
+        if (!CaltopoClient.IsCurrentPeerDroneConfirmed(remoteId)) return;
         activeCoordinator.onSEIPositionReceived(
                 remoteId, mappedId, droneLat, droneLon, droneAlt,
                 timestampMsec, altitudeTimestampMsec, headingDegrees);

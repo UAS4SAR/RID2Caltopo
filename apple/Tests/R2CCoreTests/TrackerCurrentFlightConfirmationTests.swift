@@ -18,3 +18,12 @@ import Testing
     _ = try connected.handleIncoming(peerOwner, receivedAtMilliseconds: 2000)
     #expect(!connected.isLocalAlertEligible(remoteID: "operator-approved"))
 }
+
+@Test func trackerLocalConfirmationDoesNotSurviveFlightEnd() {
+    var state = TrackerCoordinationProtocolState(localZoneID: "local")
+    _ = state.confirmLocally(remoteID: "RID-RETURN")
+    #expect(state.isConfirmedLocally(remoteID: "RID-RETURN"))
+    state.clearLocalConfirmation(remoteID: "RID-RETURN")
+    #expect(!state.isConfirmedLocally(remoteID: "RID-RETURN"))
+    #expect(!state.isLocalAlertEligible(remoteID: "RID-RETURN"))
+}
