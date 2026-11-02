@@ -192,7 +192,8 @@ public class WaypointTrack {
                 remoteId == null ? "" : remoteId,
                 trackLabel,
                 mapId == null ? "" : mapId,
-                AwaitingMapFlights.selectedPublicationScope());
+                AwaitingMapFlights.selectedPublicationScope(),
+                startedAtMs);
 	}
 
 
@@ -776,6 +777,26 @@ public class WaypointTrack {
         return r2cProp != null && r2cProp.optBoolean("local_archive_only", false);
     }
 
+    @Nullable
+    private static String FlightIdFromGeoJson(@Nullable JSONObject waypointTrack) {
+        if (waypointTrack == null) return null;
+        JSONArray features = waypointTrack.optJSONArray("features");
+        if (features == null || features.length() <= 0) return null;
+        JSONObject feature = features.optJSONObject(0);
+        if (feature == null) return null;
+        JSONObject properties = feature.optJSONObject("properties");
+        if (properties == null) return null;
+        String id = properties.optString("r2c_flight_id", "").trim();
+        return id.isEmpty() ? null : id;
+    }
+
+    /** Ledger decline / suppress / local-archive / published blocks tracker stats upload. */
+    private static boolean IsPublicationBlocked(@Nullable JSONObject waypointTrack) {
+        if (IsLocalArchiveOnly(waypointTrack)) return true;
+        String flightId = FlightIdFromGeoJson(waypointTrack);
+        return flightId != null && FlightPublicationLedger.blocksPublication(flightId);
+    }
+
     public static class ResubmitRecentTrackStatsResult {
         public final int daysRequested;
         public int directoriesChecked;
@@ -883,8 +904,8 @@ public class WaypointTrack {
                 continue;
             }
             if (waypointTrack == null) continue;
-            if (IsLocalArchiveOnly(waypointTrack)) {
-                CTInfo(TAG, "ResubmitRecentTrackStatsToTracker() skipping local-archive-only file " + filename);
+            if (IsPublicationBlocked(waypointTrack)) {
+                CTInfo(TAG, "ResubmitRecentTrackStatsToTracker() skipping publication-blocked file " + filename);
                 ReportStatsForFile(reportedFilepath, filename);
                 result.filesMarkedReported++;
                 result.filesSkippedIneligible++;
@@ -991,8 +1012,8 @@ public class WaypointTrack {
                         continue;
                     }
                     if (null == waypointTrack) continue;
-                    if (IsLocalArchiveOnly(waypointTrack)) {
-                        CTInfo(TAG, "BgPollUnreportedTracks() skipping local-archive-only file " + filename);
+                    if (IsPublicationBlocked(waypointTrack)) {
+                        CTInfo(TAG, "BgPollUnreportedTracks() skipping publication-blocked file " + filename);
                         ReportStatsForFile(finalReportedFilepath, filename);
                         continue;
                     }
@@ -1058,17 +1079,30 @@ public class WaypointTrack {
 
     boolean shouldRecordArchive() {
         prepareForArchive();
-        return archivedFlightConfirmed;
+        // Confirmed publish OR Don't Publish (local-archive-only) both write a local archive.
+        // Unacknowledged flights do not.
+        return archivedFlightConfirmed || archivedLocalOnly;
     }
 
     public void archive() {
-        if (!shouldRecordArchive()) {
-            CTDebug(TAG, "archive(): ignored unanswered/unconfirmed flight " + archivedRemoteId);
-            return;
-        }
+        prepareForArchive();
         long numCoords = coordinates.length();
         if (numCoords <= 0) {
             CTDebug(TAG, "archive(): no waypoints.");
+            retireUnpublishedJournal(FlightPublicationLedger.Disposition.SUPPRESSED);
+            return;
+        }
+        if (!archivedFlightConfirmed && !archivedLocalOnly) {
+            CTDebug(TAG, "archive(): suppressed unacknowledged flight " + archivedRemoteId);
+            retireUnpublishedJournal(FlightPublicationLedger.Disposition.SUPPRESSED);
+            return;
+        }
+        if (archivedLocalOnly && !archivedFlightConfirmed) {
+            // Don't Publish: durable local archive, never awaiting-map / tracker / CalTopo.
+            CTDebug(TAG, "archive(): declined flight retained locally only " + archivedRemoteId);
+            FlightPublicationLedger.remember(
+                    deferredPublicationId, FlightPublicationLedger.Disposition.DECLINED);
+            archiveRecorded();
             return;
         }
         double first = coordinates.optJSONArray(0).optDouble(3, Double.NaN);
@@ -1076,9 +1110,18 @@ public class WaypointTrack {
         if (!ShortFlightRecording.request(archivedMappedId.isEmpty() ? archivedRemoteId : archivedMappedId,
                 (last - first) / 1000.0, archivedDistanceInFeet * 0.3048,
                 () -> GetTrackArchiveExecutorPool().submit(this::archiveRecorded),
-                () -> AwaitingMapFlights.discard(deferredPublicationId))) {
+                () -> {
+                    AwaitingMapFlights.discard(deferredPublicationId);
+                    retireUnpublishedJournal(FlightPublicationLedger.Disposition.SUPPRESSED);
+                })) {
             archiveRecorded();
         }
+    }
+
+    private void retireUnpublishedJournal(@NonNull FlightPublicationLedger.Disposition disposition) {
+        FlightPublicationLedger.remember(deferredPublicationId, disposition);
+        AwaitingMapFlights.discard(deferredPublicationId);
+        WaypointTrackJournal.markFinishedAndRemove(deferredPublicationId);
     }
 
     private void archiveRecorded() {
@@ -1105,9 +1148,13 @@ public class WaypointTrack {
                 return;
             }
             WaypointTrackJournal.markFinishedAndRemove(deferredPublicationId);
+            if (archivedLocalOnly) {
+                FlightPublicationLedger.remember(
+                        deferredPublicationId, FlightPublicationLedger.Disposition.LOCAL_ARCHIVED);
+            }
             dataFilepath = todaysArchiveDir.findFile(fileName);
             CTDebug(TAG, String.format(Locale.US, "archive(): wrote %d coordinates to %s", numCoords, fileName));
-            if (archivedOkToLog && !archivedLocalOnly) {
+            if (archivedOkToLog && !archivedLocalOnly && archivedFlightConfirmed) {
                 CTDebug(TAG, String.format(Locale.US,
                         "archive(%s): Publishing...", fileName));
                 QueueGeoJsonStatsReport(

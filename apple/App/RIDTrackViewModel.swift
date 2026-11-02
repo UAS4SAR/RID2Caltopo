@@ -13,7 +13,11 @@ final class RIDTrackViewModel: ObservableObject {
     private let waypointAppendJournal = WaypointTrackAppendJournal(directory:
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("waypoint-track-journals", isDirectory: true))
+    private let publicationLedger = FlightPublicationLedger(fileURL:
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("flight-publication-ledger.json"))
     private var waypointJournalRecoveryDone = false
+    private var waypointJournalRecoveryTask: Task<Void, Never>?
     @Published private(set) var awaitingMapFlights: [AwaitingMapFlight] = []
     @Published private(set) var awaitingMapJournalEntries: [AwaitingMapFlight] = []
     @Published private(set) var awaitingMapHistoryError: String?
@@ -50,7 +54,20 @@ final class RIDTrackViewModel: ObservableObject {
         }.value
         guard generation == awaitingRefreshGeneration, !Task.isCancelled else { return }
         awaitingMapJournalEntries = entries
-        awaitingMapFlights = prepared.0
+        var visible: [AwaitingMapFlight] = []
+        for flight in prepared.0 {
+            let blocked = (try? await publicationLedger.blocksAwaitingMapPromotion(flightID: flight.id)) == true
+            if TrackArchiveConfirmation.showsInAwaitingPublicationInbox(
+                decision: flight.decision,
+                finished: flight.finished,
+                archiveConfirmed: flight.archiveConfirmed == true,
+                hasArchiveId: !(flight.caltopoArchiveId ?? "").isEmpty,
+                ledgerBlocksPromotion: blocked
+            ) {
+                visible.append(flight)
+            }
+        }
+        awaitingMapFlights = visible
         awaitingOpenFlights = prepared.1; awaitingOpenCanonicalFlights = prepared.2
         awaitingMapHistoryReady = error == nil
         awaitingMapHistoryError = error
@@ -78,10 +95,41 @@ final class RIDTrackViewModel: ObservableObject {
     private var awaitingFlightWrites: [String: Task<Void, Never>] = [:]
 
     private func recoverWaypointAppendJournals() async {
+        if let existing = waypointJournalRecoveryTask {
+            await existing.value
+            return
+        }
+        let task = Task { @MainActor in
+            await self.recoverWaypointAppendJournalsLocked()
+        }
+        waypointJournalRecoveryTask = task
+        await task.value
+        waypointJournalRecoveryTask = nil
+    }
+
+    private func recoverWaypointAppendJournalsLocked() async {
         do {
             let recovered = try await waypointAppendJournal.recoverUnfinished()
+            let existingEntries = await awaitingMapJournal.entries
             for flight in recovered {
                 do {
+                    if try await publicationLedger.blocksAwaitingMapPromotion(flightID: flight.id) {
+                        try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
+                        continue
+                    }
+                    if let prior = existingEntries.last(where: { $0.id == flight.id }), prior.finished {
+                        if TrackArchiveConfirmation.isConfirmed(
+                            decision: prior.decision,
+                            archiveConfirmed: prior.archiveConfirmed == true,
+                            hasArchiveId: !(prior.caltopoArchiveId ?? "").isEmpty
+                        ) {
+                            try await publicationLedger.remember(flightID: flight.id, disposition: .published)
+                        } else if prior.decision == "local" {
+                            try await publicationLedger.remember(flightID: flight.id, disposition: .declined)
+                        }
+                        try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
+                        continue
+                    }
                     try await awaitingMapJournal.record(
                         remoteID: flight.remoteID,
                         label: flight.label,
@@ -751,9 +799,14 @@ final class RIDTrackViewModel: ObservableObject {
         ownershipActivationTasks.removeValue(forKey: remoteID)?.cancel()
         let publication = publicationChains.removeValue(forKey: remoteID)
         publication?.cancel()
-        Task { [caltopoPublisher] in
+        let flightID = liveFlightID(aircraftID: remoteID)
+        Task { [caltopoPublisher, publicationLedger, awaitingMapJournal] in
             _ = await publication?.value
             await caltopoPublisher.discard(remoteID: remoteID)
+            if let flightID {
+                try? await publicationLedger.remember(flightID: flightID, disposition: .declined)
+                _ = try? await awaitingMapJournal.discard(id: flightID)
+            }
         }
     }
 
@@ -1605,18 +1658,27 @@ final class RIDTrackViewModel: ObservableObject {
     }
 
     private func archive(_ track: RidAircraftTrack, publishFlightEnd: Bool = false) async {
+        let flightID = liveFlightID(aircraftID: track.aircraftID)
+            ?? RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
         // Snapshot the decision before publishing flight end clears the current DCP state.
         guard flightRecordingAllowed?(track.aircraftID) == true else {
+            let alreadyDeclined =
+                (try? await publicationLedger.isDeclinedOrSuppressed(flightID: flightID)) == true
+            let disposition: FlightPublicationLedger.Disposition =
+                alreadyDeclined ? .declined : .suppressed
+            try? await publicationLedger.remember(flightID: flightID, disposition: disposition)
+            try? await waypointAppendJournal.markFinishedAndRemove(flightID: flightID)
             if publishFlightEnd {
                 peerCoordinator?.droneLost(remoteID: track.aircraftID)
                 flightEndConsumer?(track.aircraftID)
                 tracks.removeAll { $0.aircraftID == track.aircraftID }
             }
-            AppleLog.info("DroneConfirmation", "Ignored unanswered/unconfirmed flight remoteId=\(track.aircraftID); archive and upload skipped")
+            AppleLog.info(
+                "DroneConfirmation",
+                "Ignored unanswered/unconfirmed flight remoteId=\(track.aircraftID); archive and upload skipped disposition=\(disposition.rawValue)"
+            )
             return
         }
-        let flightID = liveFlightID(aircraftID: track.aircraftID)
-            ?? RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
         await recordAwaitingFlight(track, finished: true)?.value
         try? await waypointAppendJournal.markFinishedAndRemove(flightID: flightID)
         await queueCompletedDeferredFlights()

@@ -168,6 +168,7 @@ object AwaitingMapFlights {
                 finished = it.optBoolean("finished"),
                 archiveConfirmed = it.optBoolean("archiveConfirmed"),
                 hasArchiveId = it.optString("caltopoArchiveId").isNotEmpty(),
+                flightId = it.optString("id"),
             )
         }.map { JSONObject(it.toString()) }
     }
@@ -183,6 +184,9 @@ object AwaitingMapFlights {
             item.put("decision", if (map == null) "local" else "publish").put("map", map ?: "").put("team", team)
             try { save() } catch (error: Exception) { entries = JSONArray(prior); throw error }
             publishChoices()
+            if (map == null) {
+                FlightPublicationLedger.remember(id, FlightPublicationLedger.Disposition.DECLINED)
+            }
             if (map != null) {
                 bindItem = JSONObject(item.toString())
                 bindOthers = all().map { JSONObject(it.toString()) }
@@ -286,6 +290,10 @@ object AwaitingMapFlights {
             if (points != null && points.length() > 1) {
                 match.put("points", JSONArray().put(points.get(0)).put(points.get(points.length() - 1)))
             }
+            FlightPublicationLedger.remember(
+                match.optString("id").ifEmpty { trimmedId },
+                FlightPublicationLedger.Disposition.PUBLISHED,
+            )
         }
         val remaining = all().filterNot {
             TrackArchiveConfirmation.isConfirmed(
@@ -294,7 +302,14 @@ object AwaitingMapFlights {
                 hasArchiveId = it.optString("caltopoArchiveId").isNotEmpty(),
             )
         }
-        if (match == null && remaining.size == entries.length()) return false
+        if (match == null && remaining.size == entries.length()) {
+            // Still record the ledger tombstone when the awaiting-map row was already pruned.
+            if (flightId != null) {
+                FlightPublicationLedger.remember(flightId, FlightPublicationLedger.Disposition.PUBLISHED)
+                return true
+            }
+            return false
+        }
         entries = JSONArray(remaining)
         save()
         publishChoices()

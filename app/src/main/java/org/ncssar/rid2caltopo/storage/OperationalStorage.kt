@@ -235,7 +235,14 @@ internal object OperationalStorage {
                 // The queue lane has its own provider cache and writer. Refresh this lane's
                 // directory snapshot before bulk work; it never mutates queue contents.
                 tree.refresh()
-                for (area in selected.filterNot { it.id == "queue-state" || it.id in recorderAreas }) {
+                // Heavy media/DEM/layer areas dominated launch (recordings verify ~449s). Prepare
+                // compact operational areas first, publish ready, then finish heavies off the
+                // critical path so flight archive/recovery never waits on video tree digests.
+                val heavyAreas = setOf("recordings", "recording-originals", "decoded-terrain", "layers")
+                val critical = selected.filterNot {
+                    it.id == "queue-state" || it.id in recorderAreas || it.id in heavyAreas
+                }
+                for (area in critical) {
                     try {
                         migrateAreaSources(context, value, area, ::checkSelection)
                     } catch (error: Exception) {
@@ -248,7 +255,7 @@ internal object OperationalStorage {
                 }
                 // Each bulk source is verified before its old projection is replaced. The
                 // independently prepared queue area is never scanned or hydrated again here.
-                for (area in selected.filterNot { it.id == "queue-state" || it.id in recorderAreas }) {
+                for (area in critical) {
                     // Independent lanes (clues) may delete archive entries while bulk prepare
                     // still holds a stale directory listing from migrate.
                     tree.refresh()
@@ -274,6 +281,19 @@ internal object OperationalStorage {
                     state.value = Status(ready = true, message = "Retained operational data is in Archive Dir.")
                 }
                 flushDeferredRetains()
+                val heavy = selected.filter { it.id in heavyAreas }
+                if (heavy.isNotEmpty()) {
+                    startup.execute {
+                        runCatching {
+                            prepareHeavyAreas(context, value, heavy, hydrationScratch, generation)
+                        }.onFailure { error ->
+                            CaltopoClient.CTWarn(
+                                "OperationalStorage",
+                                "Deferred heavy-area prepare: ${error.message}",
+                            )
+                        }
+                    }
+                }
             } catch (error: Exception) {
                 state.value = Status(message = error.message ?: "Archive storage could not be prepared; original copies were retained.")
                 throw error
@@ -281,6 +301,43 @@ internal object OperationalStorage {
         } finally {
             prepareBody.unlock()
         }
+    }
+
+    private fun prepareHeavyAreas(
+        context: Context,
+        value: Store,
+        heavy: List<Area>,
+        hydrationScratch: File,
+        generation: Long,
+    ) {
+        worker()
+        fun checkSelection() = check(selectionGeneration.get() == generation) {
+            "Archive Dir changed during heavy-area preparation."
+        }
+        for (area in heavy) {
+            try {
+                migrateAreaSources(context, value, area, ::checkSelection, announce = false)
+            } catch (error: Exception) {
+                if (!isTransientPrepareFailure(error)) throw error
+                CaltopoClient.CTWarn(
+                    "OperationalStorage",
+                    "Migrating ${area.id} deferred (live writer): ${error.message}",
+                )
+            }
+        }
+        for (area in heavy) {
+            value.tree.refresh()
+            try {
+                prepareAreaProjection(context, value, area, hydrationScratch, ::checkSelection)
+            } catch (error: Exception) {
+                if (!isTransientPrepareFailure(error)) throw error
+                CaltopoClient.CTWarn(
+                    "OperationalStorage",
+                    "Preparing ${area.id} deferred (live writer): ${error.message}",
+                )
+            }
+        }
+        CaltopoClient.CTDebug("OperationalStorage", "Deferred heavy areas ready count=${heavy.size}")
     }
     private fun recoverArchive(value: Store) = synchronized(recoveryGate) {
         recoveredUri?.let { check(it == value.uri) { "Restart the app after changing Archive Dir." }; return@synchronized }
@@ -866,6 +923,12 @@ internal object OperationalStorage {
         // retained credentials or operational originals.
         if (area.id == "legacy-cache" && name.startsWith("saf_cache_index.db")) return false
         if (name == "mapping-volume.json") return false
+        // Crash-recovery waypoint journals are app-private and ephemeral. Archiving them
+        // re-hydrates finished flights into recoverUnfinished on every launch.
+        if (area.id == "queue-state" &&
+            (relative == "waypoint-track-journals" || relative.startsWith("waypoint-track-journals/"))) {
+            return false
+        }
         if (area.id == "missions" && relative.contains("/cloud/") &&
             (name.contains("credential", true) || name.contains("session", true) || name.contains("token", true))) return false
         return true
@@ -1344,7 +1407,14 @@ internal object OperationalStorage {
         } } } }
     }
     fun workspace(context: Context): File { requireReady(context); return synchronized(gate) { requireNotNull(store).work } }
-    private val queueNames = listOf("awaiting-map-flights.json", "flight-archive-journal.json", "flight-kmz-rewrites.json", "caltopo-interrupted-tracks.json", "device-marker-cleanup.json")
+    private val queueNames = listOf(
+        "awaiting-map-flights.json",
+        "flight-archive-journal.json",
+        "flight-kmz-rewrites.json",
+        "caltopo-interrupted-tracks.json",
+        "device-marker-cleanup.json",
+        "flight-publication-ledger.json",
+    )
     fun stateFile(context: Context, name: String): File {
         require(name in queueNames)
         // App-private journal/queue files must work without Archive Dir. Retain copies once

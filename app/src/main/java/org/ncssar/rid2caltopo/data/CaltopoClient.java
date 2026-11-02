@@ -1306,28 +1306,39 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
      */
     @Nullable
     public static DocumentFile GetTodaysTrackDir() {
-        DocumentFile todaysDir = null;
+        return GetTrackDirForTime(System.currentTimeMillis());
+    }
+
+    /**
+     * Create/find the daily tracks folder for [timeMs] (flight start / first point), not "now".
+     * Recovery must write into the flight's own day so finished flights are not rewritten into
+     * today's folder under a new date.
+     */
+    @Nullable
+    public static DocumentFile GetTrackDirForTime(long timeMs) {
+        DocumentFile dayDir = null;
         Context ctxt = R2CApplication.getAppCtxt();
         if (null == ctxt) return null;
         DocumentFile archiveDir = GetArchiveDir();
         if (null != archiveDir) try {
+            long stamp = timeMs > 0 ? timeMs : System.currentTimeMillis();
             SimpleDateFormat sdf = new SimpleDateFormat("ddMMMyyyy", Locale.US);
-            String dirpath = "tracks-" + sdf.format(new Date());
-            todaysDir = archiveDir.findFile(dirpath);
-            if (null == todaysDir) {
-                todaysDir = archiveDir.createDirectory(dirpath);
-                if (null == todaysDir) {
-                    CTError(TAG, String.format(Locale.US, "GetTodaysTrackDir(): Not able to create '%s'", archiveDir));
+            String dirpath = "tracks-" + sdf.format(new Date(stamp));
+            dayDir = archiveDir.findFile(dirpath);
+            if (null == dayDir) {
+                dayDir = archiveDir.createDirectory(dirpath);
+                if (null == dayDir) {
+                    CTError(TAG, String.format(Locale.US, "GetTrackDirForTime(): Not able to create '%s'", dirpath));
                 } else {
-                    CTDebug(TAG, String.format(Locale.US, "GetTodaysTrackDir(): Created '%s'", archiveDir));
+                    CTDebug(TAG, String.format(Locale.US, "GetTrackDirForTime(): Created '%s'", dirpath));
                 }
             } else {
-                CTDebug(TAG, String.format(Locale.US, "GetTodaysTrackDir(): found existing '%s'", archiveDir));
+                CTDebug(TAG, String.format(Locale.US, "GetTrackDirForTime(): found existing '%s'", dirpath));
             }
         } catch (Exception e) {
-            CTError(TAG, "Not able to create today's archive dir", e);
+            CTError(TAG, "Not able to create archive day dir", e);
         }
-        return todaysDir;
+        return dayDir;
     }
 
     public static String GetTrackFolderName() {
@@ -2954,6 +2965,14 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         activeDs.setCurrentFlightConfirmed(false);
         CurrentPeerConfirmedDroneRemoteIds.remove(remoteId);
         activeDs.setLocalArchiveOnly(true);
+        // Durable Don't Publish for the live flight id — recovery and tracker upload must
+        // honour this even if the process dies before archive() runs.
+        String liveFlightId = WaypointTrack.GetLiveFlightId(activeDs);
+        if (liveFlightId != null && !liveFlightId.isEmpty()) {
+            FlightPublicationLedger.remember(
+                    liveFlightId, FlightPublicationLedger.Disposition.DECLINED);
+            AwaitingMapFlights.discard(liveFlightId);
+        }
 
         UpdateDroneSpecs();
     }
@@ -3915,7 +3934,13 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         ClientClassState ccs = GetState();
         if (ccs.landRestrictionsLastUpdatedEpochMs != value) {
             ccs.landRestrictionsLastUpdatedEpochMs = value;
-            ArchiveState("land restrictions timestamp changed");
+            // Timestamp-only refresh must not emit ArchiveState / CTEvent traffic. That log
+            // previously lined up with slow OperationalStorage prepare completing and looked
+            // like a rescan trigger; quiet persist keeps config durable without side effects.
+            Context ctxt = R2CApplication.getAppCtxt();
+            if (ctxt != null) {
+                AppConfigStore.persistState(ctxt, ccs, ArchivePermissionMissingFlag);
+            }
         }
     }
 
