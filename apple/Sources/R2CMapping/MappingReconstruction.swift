@@ -141,12 +141,13 @@ public enum MappingReconstruction {
             let estimated=defaults[phase] ?? 1
             let timeHint: Double? = local == nil && unitIndex == nil && estimated > 1 ? min(0.85, max(0, phaseElapsedMs / estimated)) : nil
             // Prefer unit counts so projectTiles can apply the back-loaded local curve.
-            let fraction: Double
+            let rawFraction: Double
             if let unitIndex, let unitTotal, unitTotal > 0 {
-                fraction=phases.overall(phase, unitIndex: unitIndex, unitTotal: unitTotal)
+                rawFraction=phases.overall(phase, unitIndex: unitIndex, unitTotal: unitTotal)
             } else {
-                fraction=phases.overall(phase, local: local, timeHint: timeHint)
+                rawFraction=phases.overall(phase, local: local, timeHint: timeHint)
             }
+            let fraction = rawFraction.isFinite ? rawFraction : 0
             let stage=stageOverride ?? phases.stage(phase, unitIndex: unitIndex, unitTotal: unitTotal)
             if phase != lastPhase {
                 if let lastPhase {
@@ -180,23 +181,23 @@ public enum MappingReconstruction {
                 return (parts[0], parts[1])
             }
             if body.hasPrefix("Checking original") {
-                if let (i, n) = counts(in: body) { try reportPhase(MappingProgressPhases.checkOriginals, local: Double(max(0, i - 1)) / Double(n), unitIndex: i, unitTotal: n, stageOverride: stage) }
-                else { try reportPhase(MappingProgressPhases.checkOriginals, local: fraction, stageOverride: stage) }
+                if let (i, n) = counts(in: body), n > 0 { try reportPhase(MappingProgressPhases.checkOriginals, local: Double(max(0, i - 1)) / Double(n), unitIndex: i, unitTotal: n, stageOverride: stage) }
+                else { try reportPhase(MappingProgressPhases.checkOriginals, local: fraction.isFinite ? fraction : nil, stageOverride: stage) }
             } else if body.hasPrefix("Preparing full-resolution color") || body.hasPrefix("Preparing original") || body.hasPrefix("Coloring 3D") {
-                if let (i, n) = counts(in: body) { try reportPhase(MappingProgressPhases.prepareColors, local: Double(max(0, i - 1)) / Double(n), unitIndex: i, unitTotal: n, stageOverride: stage) }
+                if let (i, n) = counts(in: body), n > 0 { try reportPhase(MappingProgressPhases.prepareColors, local: Double(max(0, i - 1)) / Double(n), unitIndex: i, unitTotal: n, stageOverride: stage) }
                 else { try reportPhase(MappingProgressPhases.prepareColors, local: nil, stageOverride: stage) }
             } else if body.hasPrefix("Rendering 2D tiles") || body.hasPrefix("Projecting") {
-                if let (i, n) = counts(in: body) { try reportPhase(MappingProgressPhases.projectTiles, local: Double(i) / Double(n), unitIndex: i, unitTotal: n, stageOverride: stage) }
+                if let (i, n) = counts(in: body), n > 0 { try reportPhase(MappingProgressPhases.projectTiles, local: Double(i) / Double(n), unitIndex: i, unitTotal: n, stageOverride: stage) }
                 else { try reportPhase(MappingProgressPhases.projectTiles, local: nil, stageOverride: stage) }
             } else if body.hasPrefix("Preparing zoom") || body.hasPrefix("Building zoom") {
-                if let (i, n) = counts(in: body) { try reportPhase(MappingProgressPhases.zoomLevels, local: Double(i) / Double(n), unitIndex: i, unitTotal: n, stageOverride: stage) }
+                if let (i, n) = counts(in: body), n > 0 { try reportPhase(MappingProgressPhases.zoomLevels, local: Double(i) / Double(n), unitIndex: i, unitTotal: n, stageOverride: stage) }
                 else { try reportPhase(MappingProgressPhases.zoomLevels, local: nil, stageOverride: stage) }
             } else if body.hasPrefix("Assembling") || body.hasPrefix("Packaging") || body.hasPrefix("Verifying 3D") || body.hasPrefix("Saving file") || body.hasPrefix("Verifying saved file") || body.hasPrefix("Saving camera") {
-                if let (i, n) = counts(in: body) { try reportPhase(MappingProgressPhases.package, local: Double(i) / Double(n), unitIndex: i, unitTotal: n, stageOverride: stage) }
+                if let (i, n) = counts(in: body), n > 0 { try reportPhase(MappingProgressPhases.package, local: Double(i) / Double(n), unitIndex: i, unitTotal: n, stageOverride: stage) }
                 else { try reportPhase(MappingProgressPhases.package, local: nil, stageOverride: stage) }
             } else if body.hasPrefix("Matching") || body.hasPrefix("Refining local surface") || body.contains("Matching photo seams") {
-                let local = min(1, max(0, fraction))
-                let pct = Int(local * 100)
+                let local = fraction.isFinite ? min(1, max(0, fraction)) : 0
+                let pct = MappingNativeEngine.percentInt(local)
                 try reportPhase(MappingProgressPhases.matchSeams, local: local, stageOverride: "\(phases.title(MappingProgressPhases.matchSeams)) · \(pct)%")
             } else if body == "Map ready" || body.hasPrefix("Publishing") {
                 try reportPhase(MappingProgressPhases.publish, local: body == "Map ready" ? 1 : 0, stageOverride: stage)

@@ -124,10 +124,11 @@ object MappingProcessingManager {
                 lastSaved=now
                 val elapsed=(now-started)/1_000_000_000
                 val remaining=phases.etaSeconds(fraction,now)
-                val next=MappingProcessingState(id,title,stage=stage,progress=fraction,remainingSeconds=remaining,elapsedSeconds=elapsed,
+                val progressValue=fraction.takeIf{it.isFinite()}?:0.0
+                val next=MappingProcessingState(id,title,stage=stage,progress=progressValue,remainingSeconds=remaining,elapsedSeconds=elapsed,
                     surfacePreviewId=if(File(budgetRoot,"surface/surface.glb").isFile)workId else null,estimateSummary=current.value?.estimateSummary)
                 current.value=next
-                MappingPhotoStore.writeJson(File(root,"processing-status.json"),JSONObject().put("active",true).put("stage",stage).put("progress",fraction).put("remainingSeconds",remaining ?: JSONObject.NULL).put("elapsedSeconds",elapsed)
+                MappingPhotoStore.writeJson(File(root,"processing-status.json"),JSONObject().put("active",true).put("stage",stage).put("progress",progressValue).put("remainingSeconds",remaining ?: JSONObject.NULL).put("elapsedSeconds",elapsed)
                     .put("estimate",current.value?.estimateSummary?.let{JSONObject().put("summary",it)} ?: JSONObject.NULL).put("updatedAt",Instant.now().toString()))
                 MappingProcessingForegroundService.update(app,next)
             }
@@ -136,26 +137,26 @@ object MappingProcessingManager {
                 // Matching photo seams: JNI passes a real 0..1 local fraction as the second arg.
                 when {
                     stage.startsWith("Matching photo seams") || stage.contains("Matching photo seams") -> {
-                        val local=fraction.coerceIn(0.0,1.0)
-                        val pct=(local*100).toInt()
+                        val local=fraction.takeIf{it.isFinite()}?.coerceIn(0.0,1.0)?:0.0
+                        val pct=MappingSurfaceNative.percentInt(local)
                         reportPhase(MappingProgressPhases.MATCH_SEAMS,local,stageOverride="${phases.title(MappingProgressPhases.MATCH_SEAMS)} · $pct%")
                     }
                     stage.startsWith("Checking original") || stage.startsWith("Reading photo") -> {
                         val match=Regex("""(\d+)/(\d+)""").find(stage)
                         val i=match?.groupValues?.get(1)?.toIntOrNull();val n=match?.groupValues?.get(2)?.toIntOrNull()
-                        if(i!=null&&n!=null) reportPhase(MappingProgressPhases.CHECK_ORIGINALS,(i-1).coerceAtLeast(0).toDouble()/n,i,n,stage)
-                        else reportPhase(MappingProgressPhases.CHECK_ORIGINALS,fraction.coerceIn(0.0,1.0),stageOverride=stage)
+                        if(i!=null&&n!=null&&n>0) reportPhase(MappingProgressPhases.CHECK_ORIGINALS,(i-1).coerceAtLeast(0).toDouble()/n,i,n,stage)
+                        else reportPhase(MappingProgressPhases.CHECK_ORIGINALS,fraction.takeIf{it.isFinite()}?.coerceIn(0.0,1.0),stageOverride=stage)
                     }
                     stage.startsWith("Preparing original image colors") || stage.startsWith("Preparing image pixels") || stage.startsWith("Coloring the 3D") -> {
                         val match=Regex("""(\d+)/(\d+)""").find(stage)
                         val i=match?.groupValues?.get(1)?.toIntOrNull();val n=match?.groupValues?.get(2)?.toIntOrNull()
-                        if(i!=null&&n!=null) reportPhase(MappingProgressPhases.PREPARE_COLORS,(i-1).coerceAtLeast(0).toDouble()/n,i,n,stage)
+                        if(i!=null&&n!=null&&n>0) reportPhase(MappingProgressPhases.PREPARE_COLORS,(i-1).coerceAtLeast(0).toDouble()/n,i,n,stage)
                         else reportPhase(MappingProgressPhases.PREPARE_COLORS,null,stageOverride=stage)
                     }
                     stage.startsWith("Projecting") || stage.startsWith("Stitching map tile") -> {
                         val match=Regex("""(\d+)/(\d+)""").find(stage)
                         val i=match?.groupValues?.get(1)?.toIntOrNull();val n=match?.groupValues?.get(2)?.toIntOrNull()
-                        if(i!=null&&n!=null) reportPhase(MappingProgressPhases.PROJECT_TILES,i.toDouble()/n,i,n,stage)
+                        if(i!=null&&n!=null&&n>0) reportPhase(MappingProgressPhases.PROJECT_TILES,i.toDouble()/n,i,n,stage)
                         else reportPhase(MappingProgressPhases.PROJECT_TILES,null,stageOverride=stage)
                     }
                     stage.startsWith("Building map zoom") ->
@@ -163,7 +164,7 @@ object MappingProcessingManager {
                     stage.startsWith("Packaging") || stage.startsWith("Verifying 3D") || stage.startsWith("Preparing the map") -> {
                         val match=Regex("""(\d+)/(\d+)""").find(stage)
                         val i=match?.groupValues?.get(1)?.toIntOrNull();val n=match?.groupValues?.get(2)?.toIntOrNull()
-                        if(i!=null&&n!=null) reportPhase(MappingProgressPhases.PACKAGE,i.toDouble()/n,i,n,stage)
+                        if(i!=null&&n!=null&&n>0) reportPhase(MappingProgressPhases.PACKAGE,i.toDouble()/n,i,n,stage)
                         else reportPhase(MappingProgressPhases.PACKAGE,null,stageOverride=stage)
                     }
                     stage.startsWith("Finding image detail") || stage.startsWith("Aligning") || stage.startsWith("Refining") ||

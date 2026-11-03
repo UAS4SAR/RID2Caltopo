@@ -138,6 +138,44 @@ final class MappingProgressPhasesTests: XCTestCase {
         XCTAssertTrue((1300...1900).contains(blended))
     }
 
+    func testNonFiniteLocalAndTimeHintTreatedAsNull() {
+        var tracker = MappingProgressPhases.tracker(engine: "flat", photoCount: 10)
+        let band = tracker.band(MappingProgressPhases.matchSeams)
+        XCTAssertEqual(tracker.overall(MappingProgressPhases.matchSeams, local: .nan), band.lowerBound, accuracy: 1e-9)
+        XCTAssertEqual(tracker.overall(MappingProgressPhases.matchSeams, local: .infinity), band.lowerBound, accuracy: 1e-9)
+        XCTAssertEqual(tracker.overall(MappingProgressPhases.matchSeams, local: nil, timeHint: .nan), band.lowerBound, accuracy: 1e-9)
+        let advanced = tracker.overall(MappingProgressPhases.matchSeams, local: 0.5)
+        XCTAssertTrue(advanced.isFinite && advanced > band.lowerBound)
+    }
+
+    func testUnitTotalNonPositiveSkippedAndIndexClamped() {
+        var tracker = MappingProgressPhases.tracker(engine: "rtk-surface", photoCount: 20)
+        let start = tracker.band(MappingProgressPhases.projectTiles).lowerBound
+        XCTAssertEqual(tracker.overall(MappingProgressPhases.projectTiles, unitIndex: 5, unitTotal: 0), start, accuracy: 1e-9)
+        XCTAssertEqual(tracker.overall(MappingProgressPhases.projectTiles, unitIndex: -3, unitTotal: 10), start, accuracy: 1e-9)
+        let atEnd = tracker.overall(MappingProgressPhases.projectTiles, unitIndex: 99, unitTotal: 10)
+        XCTAssertEqual(atEnd, tracker.band(MappingProgressPhases.projectTiles).upperBound, accuracy: 1e-9)
+    }
+
+    func testUnknownPhaseFallsBackSafely() {
+        let tracker = MappingProgressPhases.tracker(engine: "flat", photoCount: 5)
+        XCTAssertEqual(tracker.weight("no-such-phase"), 0)
+        XCTAssertEqual(tracker.title("no-such-phase"), "no-such-phase")
+        XCTAssertEqual(tracker.band("no-such-phase"), 0...0)
+    }
+
+    func testCostsWriteFailureDoesNotThrow() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        // Place a file where the stats directory should be so write fails without killing the caller.
+        let blocker = root.appendingPathComponent("mapping-storage-stats")
+        try Data("not-a-dir".utf8).write(to: blocker)
+        MappingProgressPhases.Costs.record(supportRoot: root, phaseId: MappingProgressPhases.reconstruct, elapsedMs: 1000, photoCount: 10)
+        MappingProgressPhases.Costs.write(supportRoot: root, msPerPhoto: [MappingProgressPhases.reconstruct: 1])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: blocker.path))
+    }
+
     /// Replay the measured A5 Pro full run (134 photos, 195 tiles, ~6490 s).
     func testCalibratedFullRunReplayMatchesWallShareAndEta() {
         let n = 134

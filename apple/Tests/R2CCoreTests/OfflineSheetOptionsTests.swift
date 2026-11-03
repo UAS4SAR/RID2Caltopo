@@ -41,8 +41,12 @@ private var downloadStarted: Options {
 }
 
 @Test func offlineSheetFirstOpenUsesDefaults() {
+    let suite = "offline-sheet-first-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
     let first = Options.forOpening(remembered: nil, downloadRunning: false, viewportBounds: movedViewport,
-                                   contoursOverlayOn: true, baseLayer: .openStreetMap, boundaryIDs: [])
+                                   contoursOverlayOn: true, baseLayer: .openStreetMap, boundaryIDs: [],
+                                   defaults: defaults)
     #expect(first == Options(
         includeUsgsScannedTopo: false,
         includeUsfsTopo: false,
@@ -56,15 +60,39 @@ private var downloadStarted: Options {
 }
 
 @Test func offlineSheetFirstOpenSeedsCurrentOfflineAllowedBaseLayer() {
+    let suite = "offline-sheet-seed-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
     let usgs = Options.forOpening(remembered: nil, downloadRunning: false, viewportBounds: movedViewport,
-                                  contoursOverlayOn: false, baseLayer: .usgsScannedTopo, boundaryIDs: [])
+                                  contoursOverlayOn: false, baseLayer: .usgsScannedTopo, boundaryIDs: [],
+                                  defaults: defaults)
     #expect(usgs.includeUsgsScannedTopo && !usgs.includeUsfsTopo)
     #expect(usgs.selectedOfflineBaseLayers == [.usgsScannedTopo])
 
     let usfs = Options.forOpening(remembered: nil, downloadRunning: false, viewportBounds: movedViewport,
-                                  contoursOverlayOn: false, baseLayer: .usfsTopo, boundaryIDs: [])
+                                  contoursOverlayOn: false, baseLayer: .usfsTopo, boundaryIDs: [],
+                                  defaults: defaults)
     #expect(!usfs.includeUsgsScannedTopo && usfs.includeUsfsTopo)
     #expect(usfs.selectedOfflineBaseLayers == [.usfsTopo])
+}
+
+@Test func offlineSheetPersistsSourceSelectionAndClampsZoomOnRead() {
+    let suite = "offline-sheet-persist-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    Options(
+        includeUsgsScannedTopo: true,
+        includeUsfsTopo: true,
+        includeContours: false,
+        usgsScannedTopoZoom: OperationalOfflineSourceZoom(minZoom: -2, maxZoom: 99),
+        usfsTopoZoom: OperationalOfflineSourceZoom(minZoom: 12, maxZoom: 14),
+        contoursZoom: OperationalOfflineSourceZoom(minZoom: 10, maxZoom: 12),
+        viewportBounds: movedViewport
+    ).persist(defaults: defaults)
+    let loaded = Options.loadPersisted(viewportBounds: movedViewport, defaults: defaults)!
+    #expect(loaded.includeUsgsScannedTopo && loaded.includeUsfsTopo && !loaded.includeContours)
+    let usgs = loaded.usgsScannedTopoZoom.clamped(to: "USGS-ScannedTopo")
+    #expect(usgs.minZoom >= 0 && usgs.maxZoom <= 22 && usgs.minZoom <= usgs.maxZoom)
 }
 
 @Test func offlineSheetMissingBoundaryFallsBackToVisibleMap() {
@@ -75,9 +103,12 @@ private var downloadStarted: Options {
 }
 
 @Test func offlineSheetFirstImageryOpenDoesNotEnableBasemapDownloads() {
+    let suite = "offline-sheet-imagery-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
     let options = Options.forOpening(remembered: nil, downloadRunning: false,
         viewportBounds: movedViewport, contoursOverlayOn: false,
-        baseLayer: .imagery, boundaryIDs: [])
+        baseLayer: .imagery, boundaryIDs: [], defaults: defaults)
     #expect(!options.includeUsgsScannedTopo && !options.includeUsfsTopo)
     #expect(options.selectedOfflineBaseLayers.isEmpty)
     #expect(options.includeDEM)

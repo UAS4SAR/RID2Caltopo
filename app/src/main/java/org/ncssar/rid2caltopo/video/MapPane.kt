@@ -738,7 +738,7 @@ internal fun SplitMapPane(
         val loaded=withContext(Dispatchers.IO) {
             val layers=org.ncssar.rid2caltopo.mapping.MappingLayer.load(context,incidentId)
             val preferences=context.getSharedPreferences("mapping_layers",0)
-            val selectedId=preferences.getString("selectedLocalLayer",null)
+            val selectedId=org.ncssar.rid2caltopo.mapping.PreferenceTypeSafety.string(preferences,"selectedLocalLayer")
             val selected=org.ncssar.rid2caltopo.mapping.MappingLayer.selectedLocal(context)
             when {
                 selectedId==null -> Loaded(layers,null,null,null,null)
@@ -849,6 +849,9 @@ internal fun SplitMapPane(
     val hiddenItemIds = mapFolderVisibility.hiddenItems
     var showBadTilesHowToDialog by remember { mutableStateOf(false) }
     val offlinePrepCoordinator = AndroidMapOfflinePrepCoordinator
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) { offlinePrepCoordinator.ensurePreferencesLoaded(context) }
+    }
     var showOfflinePrepDialog by offlinePrepCoordinator.showDialog
     var showMutualAidPackageDialog by remember { mutableStateOf(false) }
     var offlinePrepInFlight by offlinePrepCoordinator.inFlight
@@ -1682,6 +1685,7 @@ internal fun SplitMapPane(
         val computed = withContext(Dispatchers.IO) {
             var tileMissing = 0
             for (tileSource in tileSources) {
+                ensureActive()
                 val zoom = when (tileSource.name()) {
                     UsgsScannedTopoTileSource.name() -> usgsZoom
                     UsfsTopoTileSource.name() -> usfsZoom
@@ -1694,6 +1698,7 @@ internal fun SplitMapPane(
                     maxZoom = zoom.last,
                     clipBoundary = selectedBoundary
                 ) { tileIndex ->
+                    ensureActive()
                     if (!tileCacheWriter.exists(tileSource, tileIndex)) {
                         tileMissing++
                     }
@@ -1701,12 +1706,14 @@ internal fun SplitMapPane(
             }
             var demMissing = 0
             if (includeDem) {
+                ensureActive()
                 val archiveRoot = CaltopoClient.GetArchiveDir()
                 val demDir = archiveRoot?.findFile("cache")?.findFile("dem")
                 val downloads = runCatching {
                     resolveDemDownloads(prepBounds, offlinePrepDemResolution, demAutoFetchClient)
                 }.getOrDefault(emptyList())
                 for (download in downloads) {
+                    ensureActive()
                     val demFile = demDir?.findFile(download.fileName)
                     if (demFile?.isFile != true && !hasCachedS1mPieces(download, demDir, context)) {
                         demMissing++
@@ -4976,6 +4983,7 @@ internal fun SplitMapPane(
                             offlinePrepIncludeUsfsTopo = baseLayer == BaseLayerOption.UsfsTopo
                             offlinePrepLayerSelectionInitialized = true
                         }
+                        offlinePrepCoordinator.persistSourceSelection(context)
                     }
                     settingsMenuExpanded = false
                     showOfflinePrepDialog = true
@@ -5115,6 +5123,7 @@ internal fun SplitMapPane(
                         offlinePrepAutoCloseJob?.cancel()
                         offlinePrepAutoCloseJob = null
                     }
+                    offlinePrepCoordinator.persistSourceSelection(context)
                     showOfflinePrepDialog = false
                 },
                 title = { Text("Download Map") },

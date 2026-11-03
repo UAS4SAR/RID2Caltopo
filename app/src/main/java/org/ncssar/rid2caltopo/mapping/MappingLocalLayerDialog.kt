@@ -69,8 +69,8 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
                     for(entry in pending) {
                         ensureActive()
                         val usage=withContext(Dispatchers.IO){
-                            entry.flight?.let{index.mission(it.id)}?:MappingMissionStorage.layer(context.filesDir,entry.layer!!.id)
-                        }
+                            entry.flight?.let{index.mission(it.id)}?:entry.layer?.let{MappingMissionStorage.layer(context.filesDir,it.id)}
+                        } ?: continue
                         entries=entries.map{if(it.id==entry.id)it.copy(storage=usage)else it}
                         measuredCount++
                     }

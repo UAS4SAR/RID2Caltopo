@@ -61,11 +61,15 @@ public enum MappingLayerRecovery {
     }
 
     private static func removeEmptyOrphan(dir: URL, id: String, remembered: Set<String>, supportRoot: URL) {
-        precondition(!dir.path.contains("/originals"), "orphan cleanup refuses dirs with originals")
+        if dir.path.contains("/originals") {
+            log.debug("orphan skip originals id=\(id.prefix(8), privacy: .public)")
+            return
+        }
         let originals = dir.appendingPathComponent("originals", isDirectory: true)
         if let names = try? FileManager.default.contentsOfDirectory(atPath: originals.path),
            names.contains(where: { $0.lowercased().hasSuffix(".jpg") }) {
-            preconditionFailure("orphan cleanup refuses dirs with originals")
+            log.debug("orphan skip originals id=\(id.prefix(8), privacy: .public)")
+            return
         }
         let fm = FileManager.default
         let removed: Bool

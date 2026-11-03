@@ -16,9 +16,15 @@ internal object MappingSurfaceNative {
     /** Filled heights (measured where finite, estimated where filled, NaN where empty), 1-bit LSB-first estimated mask, and 6 stats:
      *  estimatedCells, known/estimated/empty fractions, elapsedMs, fillRadiusMeters. */
     class OrthoFill(val heights:FloatArray,val mask:ByteArray,val stats:DoubleArray) {
-        val estimatedCells get()=stats[0].toInt()
-        val fillRadiusMeters get()=stats[5]
+        val estimatedCells get()=finiteCount(stats.getOrElse(0){Double.NaN})
+        val elapsedMs get()=finiteCount(stats.getOrElse(4){Double.NaN})
+        val fillRadiusMeters get()=stats.getOrElse(5){Double.NaN}.takeIf{it.isFinite()}?:0.0
     }
+    /** Int coercion that never traps on NaN/Infinity (matches iOS MappingNativeEngine.finiteCount). */
+    fun finiteCount(value:Double):Int =
+        if(!value.isFinite()) 0 else value.toLong().coerceIn(0L,Int.MAX_VALUE.toLong()).toInt()
+    fun percentInt(fraction:Double):Int =
+        if(!fraction.isFinite()) 0 else (fraction*100.0).toInt().coerceIn(0,100)
     /** surfaceCellMeters<=0 selects the native 0.2 m default; clip = west,south,east,north in the reconstruction's ENU frame (optional). */
     @JvmOverloads fun reconstructStage(cameras:DoubleArray,lasers:DoubleArray,pitch:DoubleArray,
         width:Int,height:Int,focal:Double,paths:Array<String>,adjustment:DoubleArray,

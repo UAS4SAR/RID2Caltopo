@@ -253,4 +253,27 @@ final class MappingLibraryIndexTests: XCTestCase {
         let result = try onIO { try MappingLibraryIndex.refresh(missionsRoot: missions, supportRoot: support, areaBusy: true) }
         XCTAssertTrue(result.index.missions.isEmpty)
     }
+
+    func testWriteFailureDoesNotThrowAndRefreshRetries() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let support = root.appendingPathComponent("Library/Application Support", isDirectory: true)
+        let missions = support.appendingPathComponent("mapping-missions", isDirectory: true)
+        try FileManager.default.createDirectory(at: missions, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = "e80815fa-0000-4000-8000-000000000044"
+        try writeMission(root: missions, id: id)
+        _ = try onIO { try MappingLibraryIndex.refresh(missionsRoot: missions, supportRoot: support) }
+        XCTAssertEqual(try onIO { MappingLibraryIndex.load(supportRoot: support)?.missions.count }, 1)
+        // Turn the index file into a directory so atomic replace fails; refresh must not throw.
+        let indexURL = MappingLibraryIndex.fileURL(supportRoot: support)
+        try FileManager.default.removeItem(at: indexURL)
+        try FileManager.default.createDirectory(at: indexURL, withIntermediateDirectories: true)
+        try Data([1]).write(to: indexURL.appendingPathComponent("child"))
+        let second = try onIO { try MappingLibraryIndex.refresh(missionsRoot: missions, supportRoot: support) }
+        XCTAssertEqual(second.index.missions.count, 1)
+        try FileManager.default.removeItem(at: indexURL)
+        let third = try onIO { try MappingLibraryIndex.refresh(missionsRoot: missions, supportRoot: support) }
+        XCTAssertEqual(try onIO { MappingLibraryIndex.load(supportRoot: support)?.missions.count }, 1)
+        XCTAssertEqual(third.index.missions.count, 1)
+    }
 }

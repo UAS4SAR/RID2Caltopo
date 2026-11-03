@@ -75,8 +75,14 @@ internal object MappingLayerRecovery {
     }
 
     private fun removeEmptyOrphan(context: Context, dir: File, id: String, remembered: Set<String>) {
-        require(!dir.path.contains("mapping-missions")) { "orphan cleanup refuses mapping-missions" }
-        require(!MissionProjectionGuard.hasOriginals(dir)) { "orphan cleanup refuses dirs with originals" }
+        if (dir.path.contains("mapping-missions")) {
+            CaltopoClient.CTDebug("MappingProcessing", "orphan skip missions-path id=${id.take(8)}")
+            return
+        }
+        if (MissionProjectionGuard.hasOriginals(dir)) {
+            CaltopoClient.CTDebug("MappingProcessing", "orphan skip originals id=${id.take(8)}")
+            return
+        }
         // Prefer Archive Dir deletion so deferred layers hydrate cannot resurrect the empty dir.
         val removed = runCatching {
             org.ncssar.rid2caltopo.storage.OperationalStorage.remove(dir)

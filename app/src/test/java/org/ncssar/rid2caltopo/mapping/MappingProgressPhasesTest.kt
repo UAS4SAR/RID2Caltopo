@@ -1,5 +1,6 @@
 package org.ncssar.rid2caltopo.mapping
 
+import java.io.File
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -148,6 +149,39 @@ class MappingProgressPhasesTest {
         MappingProgressPhases.Costs.record(root, MappingProgressPhases.RECONSTRUCT, elapsedMs = 20_000, photoCount = 10)
         val blended = MappingProgressPhases.Costs.load(root).getValue(MappingProgressPhases.RECONSTRUCT)
         assertTrue(blended in 1300.0..1900.0)
+    }
+
+    @Test fun nonFiniteLocalAndTimeHintTreatedAsNull() {
+        val tracker = MappingProgressPhases.tracker("flat", photoCount = 10)
+        val band = tracker.band(MappingProgressPhases.MATCH_SEAMS)
+        assertEquals(band.start, tracker.overall(MappingProgressPhases.MATCH_SEAMS, Double.NaN), 1e-9)
+        assertEquals(band.start, tracker.overall(MappingProgressPhases.MATCH_SEAMS, Double.POSITIVE_INFINITY), 1e-9)
+        assertEquals(band.start, tracker.overall(MappingProgressPhases.MATCH_SEAMS, null, timeHint = Double.NaN), 1e-9)
+        val advanced = tracker.overall(MappingProgressPhases.MATCH_SEAMS, 0.5)
+        assertTrue(advanced.isFinite() && advanced > band.start)
+    }
+
+    @Test fun unitTotalNonPositiveSkippedAndIndexClamped() {
+        val tracker = MappingProgressPhases.tracker("rtk-surface", photoCount = 20)
+        val start = tracker.band(MappingProgressPhases.PROJECT_TILES).start
+        assertEquals(start, tracker.overall(MappingProgressPhases.PROJECT_TILES, 5, 0), 1e-9)
+        assertEquals(start, tracker.overall(MappingProgressPhases.PROJECT_TILES, -3, 10), 1e-9)
+        val atEnd = tracker.overall(MappingProgressPhases.PROJECT_TILES, 99, 10)
+        assertEquals(tracker.band(MappingProgressPhases.PROJECT_TILES).endInclusive, atEnd, 1e-9)
+    }
+
+    @Test fun unknownPhaseFallsBackSafely() {
+        val tracker = MappingProgressPhases.tracker("flat", photoCount = 5)
+        assertEquals(0.0, tracker.weight("no-such-phase"), 0.0)
+        assertEquals("no-such-phase", tracker.title("no-such-phase"))
+        assertEquals(0.0..0.0, tracker.band("no-such-phase"))
+    }
+
+    @Test fun costsWriteFailureDoesNotThrow() {
+        val blocked = File(folder.root, "mapping-storage-stats").apply { writeText("not-a-dir") }
+        MappingProgressPhases.Costs.record(folder.root, MappingProgressPhases.RECONSTRUCT, 1000, 10)
+        MappingProgressPhases.Costs.write(folder.root, mapOf(MappingProgressPhases.RECONSTRUCT to 1.0))
+        assertTrue(blocked.isFile)
     }
 
     /**

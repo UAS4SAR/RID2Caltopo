@@ -286,6 +286,31 @@ class MappingLibraryIndexTest {
         assertEquals(1, refreshed.removed)
     }
 
+    @Test fun writeRenameFailureDoesNotThrowAndRefreshRetries() {
+        val context = IndexContext(folder.root)
+        val (id, _) = mission(folder.root, photos = 2)
+        // Block the stats directory so rename/write fails; refresh must not throw a sticky error.
+        val stats = File(folder.root, "mapping-storage-stats")
+        stats.mkdirs()
+        val indexFile = MappingLibraryIndex.file(folder.root)
+        indexFile.writeText("blocker")
+        // Replace parent with a file so mkdirs/write of tmp fails on next write attempt after delete.
+        // First refresh succeeds into a normal tree.
+        MappingLibraryIndex.refresh(context, null)
+        assertTrue(MappingLibraryIndex.load(folder.root)!!.missions.containsKey(id))
+        // Simulate rename failure by making the destination a non-empty directory named like the index file.
+        indexFile.delete()
+        indexFile.mkdirs()
+        File(indexFile, "child").writeText("x")
+        val second = MappingLibraryIndex.refresh(context, null)
+        assertTrue(second.index.missions.containsKey(id))
+        // Cleanup so subsequent ops can rewrite.
+        indexFile.deleteRecursively()
+        val third = MappingLibraryIndex.refresh(context, null)
+        assertTrue(MappingLibraryIndex.load(folder.root)!!.missions.containsKey(id))
+        assertTrue(third.index.missions.containsKey(id))
+    }
+
     @Test fun zeroCountsWithOriginalsStillList() {
         val context = IndexContext(folder.root)
         val id = UUID.randomUUID().toString()

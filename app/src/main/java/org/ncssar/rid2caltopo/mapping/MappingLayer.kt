@@ -188,7 +188,7 @@ data class MappingLayer(val id: String, val incidentId: String, val title: Strin
                     output.toByteArray()
                 }
                 if(bytes.size>1024*1024)return true
-                val values=JSONArray(String(bytes,Charsets.UTF_8));val hidden=context.getSharedPreferences("mapping_layers",0).getStringSet("hidden:$incidentId",emptySet()).orEmpty()
+                val values=JSONArray(String(bytes,Charsets.UTF_8));val hidden=PreferenceTypeSafety.stringSet(context.getSharedPreferences("mapping_layers",0),"hidden:$incidentId")
                 val discovered=(0 until values.length()).mapNotNull { index -> runCatching {
                     val descriptor=values.getJSONObject(index);val manifest=descriptor.getJSONObject("manifest")
                     manifest.put("tileUrlTemplate",descriptor.getString("tileUrlTemplate"));parse(manifest)

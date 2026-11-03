@@ -142,23 +142,31 @@ internal object MappingProgressPhases {
 
         fun record(filesDir: File, phaseId: String, elapsedMs: Long, photoCount: Int) {
             if (elapsedMs < 1 || photoCount < 1 || phaseId.isBlank()) return
-            val prior = load(filesDir).toMutableMap()
-            val sample = elapsedMs.toDouble() / photoCount.toDouble()
-            val blended = prior[phaseId]?.let { 0.7 * sample + 0.3 * it } ?: sample
-            prior[phaseId] = blended
-            write(filesDir, prior)
+            runCatching {
+                val prior = load(filesDir).toMutableMap()
+                val sample = elapsedMs.toDouble() / photoCount.toDouble()
+                val blended = prior[phaseId]?.let { 0.7 * sample + 0.3 * it } ?: sample
+                prior[phaseId] = blended
+                write(filesDir, prior)
+            }.onFailure {
+                android.util.Log.w("MappingProgress", "phase-costs record failed: ${it.message}")
+            }
         }
 
         fun write(filesDir: File, msPerPhoto: Map<String, Double>) {
-            val destination = file(filesDir)
-            destination.parentFile?.mkdirs()
-            val body = JSONObject().put("schema", SCHEMA).put("msPerPhoto", JSONObject().also { out ->
-                msPerPhoto.forEach { (k, v) -> out.put(k, v) }
-            })
-            val temporary = File(destination.parentFile, "${destination.name}.tmp")
-            temporary.writeText(body.toString())
-            check(temporary.renameTo(destination) || (destination.delete() && temporary.renameTo(destination))) {
-                "Could not save phase costs."
+            runCatching {
+                val destination = file(filesDir)
+                destination.parentFile?.mkdirs()
+                val body = JSONObject().put("schema", SCHEMA).put("msPerPhoto", JSONObject().also { out ->
+                    msPerPhoto.forEach { (k, v) -> out.put(k, v) }
+                })
+                val temporary = File(destination.parentFile, "${destination.name}.tmp")
+                temporary.writeText(body.toString())
+                if (!(temporary.renameTo(destination) || (destination.delete() && temporary.renameTo(destination)))) {
+                    android.util.Log.w("MappingProgress", "phase-costs write rename failed")
+                }
+            }.onFailure {
+                android.util.Log.w("MappingProgress", "phase-costs write failed: ${it.message}")
             }
         }
     }
@@ -219,25 +227,30 @@ internal object MappingProgressPhases {
         private var lastOverallForFlat = 0.0
         private var flatSinceNanos: Long? = null
 
-        fun weight(phase: String): Double = phases.first { it.id == phase }.weight
+        fun weight(phase: String): Double = phases.firstOrNull { it.id == phase }?.weight ?: 0.0
 
         fun band(phase: String): ClosedFloatingPointRange<Double> {
-            val p = phases.first { it.id == phase }
-            val start = starts.getValue(phase)
+            val p = phases.firstOrNull { it.id == phase } ?: return 0.0..0.0
+            val start = starts[phase] ?: 0.0
             return start..(start + p.weight)
         }
 
         /** null local = indeterminate; overall stays at band.start unless time hint provided. */
         fun overall(phase: String, local: Double?, timeHint: Double? = null): Double {
             val range = band(phase)
+            val safeLocal = local?.takeIf { it.isFinite() }
+            val safeHint = timeHint?.takeIf { it.isFinite() }
             val raw = when {
-                local != null -> range.start + min(1.0, max(0.0, local)) * (range.endInclusive - range.start)
-                timeHint != null -> range.start + min(0.85, max(0.0, timeHint)) * (range.endInclusive - range.start)
+                safeLocal != null -> range.start + min(1.0, max(0.0, safeLocal)) * (range.endInclusive - range.start)
+                safeHint != null -> range.start + min(0.85, max(0.0, safeHint)) * (range.endInclusive - range.start)
                 else -> range.start
             }
             val value = max(floor, raw)
-            floor = value
-            return value
+            if (value.isFinite()) {
+                floor = value
+                return value
+            }
+            return if (floor.isFinite()) floor else 0.0
         }
 
         fun overall(
@@ -247,22 +260,23 @@ internal object MappingProgressPhases {
             workDone: Double? = null,
             workTotal: Double? = null,
         ): Double {
-            require(unitTotal > 0 && unitIndex in 0..unitTotal)
+            if (unitTotal <= 0) return overall(phase, null)
+            val index = unitIndex.coerceIn(0, unitTotal)
             val local = if (phase == PROJECT_TILES) {
-                tileLocalFraction(unitIndex, unitTotal, workDone, workTotal)
+                tileLocalFraction(index, unitTotal, workDone, workTotal)
             } else {
-                unitIndex.toDouble() / unitTotal
+                index.toDouble() / unitTotal
             }
             return overall(phase, local)
         }
 
         fun stage(phase: String, unitIndex: Int? = null, unitTotal: Int? = null): String {
-            val title = phases.first { it.id == phase }.title
+            val title = phases.firstOrNull { it.id == phase }?.title ?: phase
             return if (unitIndex != null && unitTotal != null && unitTotal > 0)
                 "$title · $unitIndex/$unitTotal" else title
         }
 
-        fun title(phase: String): String = phases.first { it.id == phase }.title
+        fun title(phase: String): String = phases.firstOrNull { it.id == phase }?.title ?: phase
 
         /** Observe progress for EMA ETA. Returns remaining seconds or null ("estimating…"). */
         fun etaSeconds(overall: Double, nowNanos: Long = System.nanoTime()): Long? {
@@ -282,7 +296,7 @@ internal object MappingProgressPhases {
         }
 
         fun estimatedPhaseMs(phase: String, totalJobMsHint: Double? = null): Double {
-            val w = phases.first { it.id == phase }.weight
+            val w = weight(phase)
             val total = totalJobMsHint ?: defaultCostsMs(photoCount, "rtk-surface").values.sum()
             return w * total
         }

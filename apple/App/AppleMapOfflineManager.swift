@@ -2058,7 +2058,7 @@ struct AppleOfflineMapPreparationView: View {
         // Close, swipe-down while idle, and auto-close drop kept lidar files. Hiding during a download keeps
         // everything; the manager drops them when the run ends with the sheet still hidden.
         .onDisappear {
-            manager.rememberedPreparationOptions = OperationalOfflineSheetOptions(
+            let remembered = OperationalOfflineSheetOptions(
                 includeUsgsScannedTopo: includeUsgsScannedTopo,
                 includeUsfsTopo: includeUsfsTopo,
                 includeContours: includeContours,
@@ -2071,6 +2071,8 @@ struct AppleOfflineMapPreparationView: View {
                 selectedBoundaryID: selectedBoundaryID,
                 viewportBounds: frozenViewportBounds
             )
+            manager.rememberedPreparationOptions = remembered
+            remembered.persist()
             manager.rememberedAOLPlan = aolPlan
             retryTask?.cancel()
             autoClosing = false

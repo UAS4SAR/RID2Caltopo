@@ -282,13 +282,20 @@ internal object MappingLibraryIndex {
         val stampPruned = selfHealStamps(filesDir, volumes, nextMissions.keys)
         val removed = (previous?.missions?.keys.orEmpty() - nextMissions.keys).size +
             (previous?.layers?.keys.orEmpty() - nextLayers.keys).size
-        val index = Index(SCHEMA, nextMissions, nextLayers)
-        if (previous == null || changed > 0 || removed > 0 || stampPruned > 0 ||
-            previous.missions.keys != nextMissions.keys || previous.layers.keys != nextLayers.keys
-        ) {
-            synchronized(MissionDeletionTombstone.lock) { write(filesDir, index) }
-            retainStats(filesDir)
+        val index = synchronized(MissionDeletionTombstone.lock) {
+            // Re-read tombstones under the lock so a concurrent delete cannot be overwritten.
+            val liveTombstones = MissionDeletionTombstone.load(filesDir)
+            val missions = nextMissions.filterKeys { it !in liveTombstones }
+            val layers = nextLayers.filterValues { it.missionId !in liveTombstones }
+            val next = Index(SCHEMA, missions, layers)
+            if (previous == null || changed > 0 || removed > 0 || stampPruned > 0 ||
+                previous.missions.keys != missions.keys || previous.layers.keys != layers.keys
+            ) {
+                write(filesDir, next)
+            }
+            next
         }
+        retainStats(filesDir)
         val refreshMs = (System.nanoTime() - refreshStart) / 1_000_000
         CaltopoClient.CTDebug(TAG, "LibIdx load ms=$loadMs n=${previous?.missions?.size ?: 0} | refresh ms=$refreshMs changed=$changed removed=$removed")
         return RefreshResult(entries(index, context, live), index, loadMs, refreshMs, changed, removed)
@@ -476,13 +483,20 @@ internal object MappingLibraryIndex {
         return (good.minOf { it[1] } + good.maxOf { it[1] }) / 2 to (good.minOf { it[0] } + good.maxOf { it[0] }) / 2
     }
 
-    private fun write(filesDir: File, index: Index) {
+    /** Best-effort durable write. Rename failures are logged and retried on the next refresh. */
+    private fun write(filesDir: File, index: Index): Boolean = runCatching {
         val destination = file(filesDir)
         destination.parentFile?.mkdirs()
         val temporary = File(destination.parentFile, "${destination.name}.tmp")
         temporary.writeText(index.json().toString())
-        check(temporary.renameTo(destination) || (destination.delete() && temporary.renameTo(destination))) {
-            "Could not save library index."
+        if (temporary.renameTo(destination) || (destination.delete() && temporary.renameTo(destination))) {
+            true
+        } else {
+            CaltopoClient.CTDebug(TAG, "LibIdx write rename failed")
+            false
         }
+    }.getOrElse {
+        CaltopoClient.CTDebug(TAG, "LibIdx write failed err=${it.message}")
+        false
     }
 }

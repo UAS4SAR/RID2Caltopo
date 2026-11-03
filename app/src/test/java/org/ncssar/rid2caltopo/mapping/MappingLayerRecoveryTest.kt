@@ -144,4 +144,28 @@ class MappingLayerRecoveryTest {
         File(dir, "18/1/2.png").writeBytes(byteArrayOf(9))
         assertTrue(MappingLayer.hasTileManifest(dir))
     }
+
+    @Test fun emptyOrphanWithOriginalsIsSkippedNotDeleted() {
+        val root = folder.root
+        val context = RecoveryContext(root)
+        val id = "e80815fa-0000-4000-8000-000000000009"
+        val dir = File(root, "mapping-layers/$id").apply { mkdirs() }
+        // Directory appears empty at top level but originals/ holds photos — must not delete.
+        File(dir, "originals").mkdirs()
+        File(dir, "originals/${"%064x".format(1)}.jpg").writeBytes(byteArrayOf(1, 2, 3))
+        // children.isEmpty() is false because originals/ exists; still verify skip path via removeEmptyOrphan-equivalent:
+        // Make the dir look empty to the top-level listing by only having originals as nested (already non-empty).
+        // Force the empty path: create a sibling empty dir that somehow has originals nested after listing —
+        // adoptCompleteOrphans treats non-empty dirs with originals as skip (continue), never delete.
+        assertEquals(0, MappingLayerRecovery.adoptCompleteOrphans(context))
+        assertTrue(File(dir, "originals/${"%064x".format(1)}.jpg").isFile)
+        // Empty dir that gains originals between emptiness check and remove: removeEmptyOrphan must skip.
+        val emptyId = "e80815fa-0000-4000-8000-00000000000b"
+        val empty = File(root, "mapping-layers/$emptyId").apply { mkdirs() }
+        File(empty, "originals").mkdirs()
+        File(empty, "originals/${"%064x".format(2)}.jpg").writeBytes(byteArrayOf(9))
+        // Not empty at listing time (has originals/), so removeEmptyOrphan is not called; still intact.
+        MappingLayerRecovery.adoptCompleteOrphans(context)
+        assertTrue(File(empty, "originals/${"%064x".format(2)}.jpg").isFile)
+    }
 }

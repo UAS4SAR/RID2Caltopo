@@ -76,14 +76,17 @@ public struct OperationalOfflineSheetOptions: Sendable, Equatable {
         viewportBounds: OperationalMapBounds,
         contoursOverlayOn: Bool,
         baseLayer: OperationalMapBaseLayer,
-        boundaryIDs: [String]
+        boundaryIDs: [String],
+        defaults: UserDefaults = .standard
     ) -> Self {
-        var options = remembered ?? Self(
-            includeUsgsScannedTopo: baseLayer == .usgsScannedTopo,
-            includeUsfsTopo: baseLayer == .usfsTopo,
-            includeContours: contoursOverlayOn,
-            viewportBounds: viewportBounds
-        )
+        var options = remembered
+            ?? Self.loadPersisted(viewportBounds: viewportBounds, defaults: defaults)
+            ?? Self(
+                includeUsgsScannedTopo: baseLayer == .usgsScannedTopo,
+                includeUsfsTopo: baseLayer == .usfsTopo,
+                includeContours: contoursOverlayOn,
+                viewportBounds: viewportBounds
+            )
         if remembered == nil || !downloadRunning {
             options.includeContours = contoursOverlayOn
             options.viewportBounds = viewportBounds
@@ -102,5 +105,50 @@ public struct OperationalOfflineSheetOptions: Sendable, Equatable {
         if includeUsgsScannedTopo { layers.append(.usgsScannedTopo) }
         if includeUsfsTopo { layers.append(.usfsTopo) }
         return layers
+    }
+
+    private static let defaultsPrefix = "offlinePrep."
+
+    /// Persist source selection and zoom ranges across app restarts (clamped on write).
+    public func persist(defaults: UserDefaults = .standard) {
+        let usgs = usgsScannedTopoZoom.clamped(to: "USGS-ScannedTopo")
+        let usfs = usfsTopoZoom.clamped(to: "USFS-Topo")
+        let contours = contoursZoom.clamped(to: "USGS-Contours")
+        defaults.set(includeUsgsScannedTopo, forKey: Self.defaultsPrefix + "usgs")
+        defaults.set(includeUsfsTopo, forKey: Self.defaultsPrefix + "usfs")
+        defaults.set(includeContours, forKey: Self.defaultsPrefix + "contours")
+        defaults.set(true, forKey: Self.defaultsPrefix + "initialized")
+        defaults.set(usgs.minZoom, forKey: Self.defaultsPrefix + "usgsMin")
+        defaults.set(usgs.maxZoom, forKey: Self.defaultsPrefix + "usgsMax")
+        defaults.set(usfs.minZoom, forKey: Self.defaultsPrefix + "usfsMin")
+        defaults.set(usfs.maxZoom, forKey: Self.defaultsPrefix + "usfsMax")
+        defaults.set(contours.minZoom, forKey: Self.defaultsPrefix + "contoursMin")
+        defaults.set(contours.maxZoom, forKey: Self.defaultsPrefix + "contoursMax")
+    }
+
+    /// Load persisted source selection / zooms (clamped on read). Nil when never saved.
+    public static func loadPersisted(
+        viewportBounds: OperationalMapBounds,
+        defaults: UserDefaults = .standard
+    ) -> Self? {
+        guard defaults.object(forKey: defaultsPrefix + "initialized") != nil else { return nil }
+        return Self(
+            includeUsgsScannedTopo: defaults.bool(forKey: defaultsPrefix + "usgs"),
+            includeUsfsTopo: defaults.bool(forKey: defaultsPrefix + "usfs"),
+            includeContours: defaults.bool(forKey: defaultsPrefix + "contours"),
+            usgsScannedTopoZoom: OperationalOfflineSourceZoom(
+                minZoom: defaults.object(forKey: defaultsPrefix + "usgsMin") as? Int ?? 12,
+                maxZoom: defaults.object(forKey: defaultsPrefix + "usgsMax") as? Int ?? 16
+            ),
+            usfsTopoZoom: OperationalOfflineSourceZoom(
+                minZoom: defaults.object(forKey: defaultsPrefix + "usfsMin") as? Int ?? 12,
+                maxZoom: defaults.object(forKey: defaultsPrefix + "usfsMax") as? Int ?? 16
+            ),
+            contoursZoom: OperationalOfflineSourceZoom(
+                minZoom: defaults.object(forKey: defaultsPrefix + "contoursMin") as? Int ?? 12,
+                maxZoom: defaults.object(forKey: defaultsPrefix + "contoursMax") as? Int ?? 16
+            ),
+            viewportBounds: viewportBounds
+        )
     }
 }

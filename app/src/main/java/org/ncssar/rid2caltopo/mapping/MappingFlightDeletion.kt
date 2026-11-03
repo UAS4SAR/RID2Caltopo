@@ -93,7 +93,7 @@ internal object MappingFlightDeletion {
                     }
                     editor.putString(key, retained.toString())
                 }
-            if (preferences.getString("selectedLocalLayer", null) in plan.layerIds) editor.remove("selectedLocalLayer")
+            if (PreferenceTypeSafety.string(preferences, "selectedLocalLayer") in plan.layerIds) editor.remove("selectedLocalLayer")
             check(editor.commit()) { "Files were deleted, but map-list metadata could not be saved. Reopen Local maps." }
             if (!originals) {
                 MappingPhotoStore.writeJson(File(context.filesDir, "mapping-missions/$missionId/processing-status.json"),

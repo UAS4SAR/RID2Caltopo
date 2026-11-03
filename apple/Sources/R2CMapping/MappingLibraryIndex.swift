@@ -199,21 +199,30 @@ public enum MappingLibraryIndex {
         let removed = byID.keys.filter { !seen.contains($0) || tombstoned.contains($0.lowercased()) }.count
         // Self-heal: prune index ghosts whose folders are gone and that have no originals anywhere.
         let healed = selfHealAbsent(missionsRoot: missionsRoot, previous: previous, nextMissions: &nextMissions, nextLayers: &nextLayers)
-        if let liveMissionID, let liveStage, let idx = nextMissions.firstIndex(where: { $0.id == liveMissionID }) {
-            nextMissions[idx].stage = liveStage
-            _ = liveProgress
-        }
-        let index = Index(
-            schemaVersion: schemaVersion,
-            missions: nextMissions,
-            layers: nextLayers,
-            updatedAt: ISO8601DateFormatter().string(from: Date())
-        )
-        if previous != index || healed > 0 {
-            try writeAtomic(index, to: fileURL(supportRoot: supportRoot))
-        }
+        _ = liveProgress
+        let index: Index = {
+            MissionDeletionTombstone.lock.lock()
+            defer { MissionDeletionTombstone.lock.unlock() }
+            // Re-read tombstones under the lock so a concurrent delete cannot be overwritten.
+            let liveTombstones = MissionDeletionTombstone.load(supportRoot: supportRoot)
+            var missions = nextMissions.filter { !liveTombstones.contains($0.id.lowercased()) }
+            let layers = nextLayers.filter { !liveTombstones.contains($0.missionID.lowercased()) }
+            if let liveMissionID, let liveStage, let idx = missions.firstIndex(where: { $0.id == liveMissionID }) {
+                missions[idx].stage = liveStage
+            }
+            let next = Index(
+                schemaVersion: schemaVersion,
+                missions: missions,
+                layers: layers,
+                updatedAt: ISO8601DateFormatter().string(from: Date())
+            )
+            if previous != next || healed > 0 {
+                writeBestEffort(next, to: fileURL(supportRoot: supportRoot))
+            }
+            return next
+        }()
         let refreshMs = Int(Date().timeIntervalSince(refreshStarted) * 1000)
-        log.debug("LibIdx load ms=\(loadMs, privacy: .public) n=\(nextMissions.count, privacy: .public) | refresh ms=\(refreshMs, privacy: .public) changed=\(changed, privacy: .public) removed=\(removed, privacy: .public)")
+        log.debug("LibIdx load ms=\(loadMs, privacy: .public) n=\(index.missions.count, privacy: .public) | refresh ms=\(refreshMs, privacy: .public) changed=\(changed, privacy: .public) removed=\(removed, privacy: .public)")
         return RefreshResult(index: index, changed: changed, removed: removed, loadMs: loadMs, refreshMs: refreshMs, fromCache: previous != nil, stale: false, skipReason: nil)
     }
 
@@ -231,7 +240,7 @@ public enum MappingLibraryIndex {
         index.layers.removeAll { $0.missionID.lowercased() == id }
         guard index.missions.count != missionsBefore || index.layers.count != layersBefore else { return }
         index.updatedAt = ISO8601DateFormatter().string(from: Date())
-        try? writeAtomic(index, to: url)
+        writeBestEffort(index, to: url)
     }
 
     /// Drop stale index entries whose mission folders are absent and that have no originals.
@@ -479,5 +488,14 @@ public enum MappingLibraryIndex {
         let fm = FileManager.default
         if fm.fileExists(atPath: url.path) { try fm.removeItem(at: url) }
         try fm.moveItem(at: temporary, to: url)
+    }
+
+    /** Best-effort durable write. Rename failures are logged and retried on the next refresh. */
+    private static func writeBestEffort(_ index: Index, to url: URL) {
+        do {
+            try writeAtomic(index, to: url)
+        } catch {
+            log.debug("LibIdx write failed err=\(error.localizedDescription, privacy: .public)")
+        }
     }
 }

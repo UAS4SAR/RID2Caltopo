@@ -37,6 +37,18 @@ public struct MappingGeometryResult: Codable, Sendable {
 
 /// Call from one serial worker. Native raster mappings are released at the end of each region.
 public enum MappingNativeEngine {
+    /// Int(fraction*100) traps on NaN/Infinity; clamp to a displayable percent.
+    public static func percentInt(_ fraction: Double) -> Int {
+        guard fraction.isFinite else { return 0 }
+        return Int(min(100, max(0, fraction * 100)).rounded(.towardZero))
+    }
+
+    /// Int(stats) traps on NaN/Infinity; clamp to a non-negative count.
+    public static func finiteCount(_ value: Double) -> Int {
+        guard value.isFinite else { return 0 }
+        return Int(min(Double(Int.max), max(0, value)).rounded(.towardZero))
+    }
+
     public static func reconstruct(photos: [MappingOriginal], originals: URL, work: URL, fov: Double,
         surfaceCellMeters: Double = MappingProcessingPolicy.surfaceCellMeters,
         progress: @escaping (String,Double)throws->Void) throws -> MappingGeometryResult {
@@ -87,7 +99,7 @@ public enum MappingNativeEngine {
     }
     public static func prepareProjection(_ g: MappingGeometryResult, rasters: URL, progress: (String,Double)throws->Void) throws {
         try withoutActuallyEscaping(progress) { progress in
-            let bridge=NativeProgress {stage,fraction in try progress("\(stage) · \(Int(fraction*100))%",0.69+0.01*fraction)}
+            let bridge=NativeProgress {stage,fraction in try progress("\(stage) · \(percentInt(fraction))%",0.69+0.01*(fraction.isFinite ? min(1,max(0,fraction)) : 0))}
             let context=Unmanaged.passUnretained(bridge).toOpaque()
             let strings=g.used.map{strdup(rasters.appendingPathComponent(g.digests[$0]+".rgba").path)!}
             defer{strings.forEach{free($0)}}
@@ -142,12 +154,12 @@ public enum MappingNativeEngine {
             R2CMappingBuildOrthoFill(m.baseAddress,Int32(width),Int32(height),cell,enabled ? 1:0,fillRadiusMeters,planeHeight,f.baseAddress,bits.baseAddress,&stats,&error,error.count)
         }}}
         guard ok==1 else{throw MappingMission.Failure(String(cString:error))}
-        return OrthoFill(heights:fill,mask:mask,estimatedCells:Int(stats[0]),knownFraction:stats[1],estimatedFraction:stats[2],emptyFraction:stats[3],fillRadiusMeters:stats[5],elapsedMs:Int(stats[4]))
+        return OrthoFill(heights:fill,mask:mask,estimatedCells:finiteCount(stats[0]),knownFraction:stats[1],estimatedFraction:stats[2],emptyFraction:stats[3],fillRadiusMeters:stats[5],elapsedMs:finiteCount(stats[4]))
     }
     public static func prepareProjection(_ g: MappingGeometryResult, fill: [Float]?, rasters: URL, progress: (String,Double)throws->Void) throws {
         guard let fill else { try prepareProjection(g,rasters:rasters,progress:progress); return }
         try withoutActuallyEscaping(progress) { progress in
-            let bridge=NativeProgress {stage,fraction in try progress("\(stage) · \(Int(fraction*100))%",0.69+0.01*fraction)}
+            let bridge=NativeProgress {stage,fraction in try progress("\(stage) · \(percentInt(fraction))%",0.69+0.01*(fraction.isFinite ? min(1,max(0,fraction)) : 0))}
             let context=Unmanaged.passUnretained(bridge).toOpaque()
             let strings=g.used.map{strdup(rasters.appendingPathComponent(g.digests[$0]+".rgba").path)!}
             defer{strings.forEach{free($0)}}

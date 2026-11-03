@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Phase-weighted mapping progress. Weights come from measured per-phase cost
 /// (ms and photo count) with photo-scaled defaults. Never maps optimizer cost into a fraction.
@@ -145,18 +146,32 @@ public enum MappingProgressPhases {
 
         public static func record(supportRoot: URL, phaseId: String, elapsedMs: Int64, photoCount: Int) {
             guard elapsedMs >= 1, photoCount >= 1, !phaseId.isEmpty else { return }
-            var prior = load(supportRoot: supportRoot)
-            let sample = Double(elapsedMs) / Double(photoCount)
-            prior[phaseId] = prior[phaseId].map { 0.7 * sample + 0.3 * $0 } ?? sample
-            write(supportRoot: supportRoot, msPerPhoto: prior)
+            do {
+                var prior = load(supportRoot: supportRoot)
+                let sample = Double(elapsedMs) / Double(photoCount)
+                prior[phaseId] = prior[phaseId].map { 0.7 * sample + 0.3 * $0 } ?? sample
+                try writeThrowing(supportRoot: supportRoot, msPerPhoto: prior)
+            } catch {
+                Logger(subsystem: "org.ncssar.RID2Caltopo", category: "MappingProgress")
+                    .debug("phase-costs record failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
 
         public static func write(supportRoot: URL, msPerPhoto: [String: Double]) {
+            do {
+                try writeThrowing(supportRoot: supportRoot, msPerPhoto: msPerPhoto)
+            } catch {
+                Logger(subsystem: "org.ncssar.RID2Caltopo", category: "MappingProgress")
+                    .debug("phase-costs write failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+
+        private static func writeThrowing(supportRoot: URL, msPerPhoto: [String: Double]) throws {
             let url = fileURL(supportRoot: supportRoot)
-            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             let body: [String: Any] = ["schema": schema, "msPerPhoto": msPerPhoto]
-            guard let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]) else { return }
-            try? data.write(to: url, options: .atomic)
+            let data = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+            try data.write(to: url, options: .atomic)
         }
     }
 
@@ -220,30 +235,35 @@ public enum MappingProgressPhases {
         }
 
         public func weight(_ phase: String) -> Double {
-            phases.first { $0.id == phase }!.weight
+            phases.first { $0.id == phase }?.weight ?? 0
         }
 
         public func band(_ phase: String) -> ClosedRange<Double> {
-            let p = phases.first { $0.id == phase }!
-            let start = starts[phase]!
+            guard let p = phases.first(where: { $0.id == phase }) else { return 0...0 }
+            let start = starts[phase] ?? 0
             return start...(start + p.weight)
         }
 
         public mutating func overall(_ phase: String, local: Double?, timeHint: Double? = nil) -> Double {
             let range = band(phase)
+            let safeLocal = local.flatMap { $0.isFinite ? $0 : nil }
+            let safeHint = timeHint.flatMap { $0.isFinite ? $0 : nil }
             let raw: Double
-            if let local {
-                let clamped = min(1, max(0, local))
+            if let safeLocal {
+                let clamped = min(1, max(0, safeLocal))
                 raw = range.lowerBound + clamped * (range.upperBound - range.lowerBound)
-            } else if let timeHint {
-                let clamped = min(0.85, max(0, timeHint))
+            } else if let safeHint {
+                let clamped = min(0.85, max(0, safeHint))
                 raw = range.lowerBound + clamped * (range.upperBound - range.lowerBound)
             } else {
                 raw = range.lowerBound
             }
             let value = max(floor, raw)
-            floor = value
-            return value
+            if value.isFinite {
+                floor = value
+                return value
+            }
+            return floor.isFinite ? floor : 0
         }
 
         public mutating func overall(
@@ -253,18 +273,19 @@ public enum MappingProgressPhases {
             workDone: Double? = nil,
             workTotal: Double? = nil
         ) -> Double {
-            precondition(unitTotal > 0 && unitIndex >= 0 && unitIndex <= unitTotal)
+            guard unitTotal > 0 else { return overall(phase, local: nil) }
+            let index = min(unitTotal, max(0, unitIndex))
             let local: Double
             if phase == projectTiles {
-                local = tileLocalFraction(unitIndex: unitIndex, unitTotal: unitTotal, workDone: workDone, workTotal: workTotal)
+                local = tileLocalFraction(unitIndex: index, unitTotal: unitTotal, workDone: workDone, workTotal: workTotal)
             } else {
-                local = Double(unitIndex) / Double(unitTotal)
+                local = Double(index) / Double(unitTotal)
             }
             return overall(phase, local: local)
         }
 
         public func stage(_ phase: String, unitIndex: Int? = nil, unitTotal: Int? = nil) -> String {
-            let title = phases.first { $0.id == phase }!.title
+            let title = phases.first { $0.id == phase }?.title ?? phase
             if let unitIndex, let unitTotal, unitTotal > 0 {
                 return "\(title) · \(unitIndex)/\(unitTotal)"
             }
@@ -272,7 +293,7 @@ public enum MappingProgressPhases {
         }
 
         public func title(_ phase: String) -> String {
-            phases.first { $0.id == phase }!.title
+            phases.first { $0.id == phase }?.title ?? phase
         }
 
         public mutating func etaSeconds(overall: Double, now: Date = Date()) -> Int64? {

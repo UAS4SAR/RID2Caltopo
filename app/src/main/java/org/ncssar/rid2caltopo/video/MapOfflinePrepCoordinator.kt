@@ -10,7 +10,9 @@ import kotlinx.coroutines.SupervisorJob
 import okhttp3.Call
 import org.ncssar.rid2caltopo.app.MapOfflineDownloadService
 import org.ncssar.rid2caltopo.data.CaltopoClient
+import org.ncssar.rid2caltopo.mapping.PreferenceTypeSafety
 import org.ncssar.rid2caltopo.video.mapcache.MapCacheMaintenanceScheduler
+import org.ncssar.rid2caltopo.video.mapcache.MapTileSourceRegistry
 import org.ncssar.rid2caltopo.video.mapcache.TileFetchPriorityScheduler
 import java.io.Closeable
 import java.util.concurrent.ConcurrentHashMap
@@ -102,6 +104,18 @@ internal class OfflinePrepWorkerLease<T : Closeable>(private val factory: () -> 
  * A replacement MapPane observes the same state and reattaches to the active progress UI.
  */
 internal object AndroidMapOfflinePrepCoordinator {
+    private const val PREFS = MAP_CACHE_PREFS_NAME
+    private const val KEY_USGS = "offline_prep_usgs"
+    private const val KEY_USFS = "offline_prep_usfs"
+    private const val KEY_CONTOURS = "offline_prep_contours"
+    private const val KEY_USGS_MIN = "offline_prep_usgs_min"
+    private const val KEY_USGS_MAX = "offline_prep_usgs_max"
+    private const val KEY_USFS_MIN = "offline_prep_usfs_min"
+    private const val KEY_USFS_MAX = "offline_prep_usfs_max"
+    private const val KEY_CONTOURS_MIN = "offline_prep_contours_min"
+    private const val KEY_CONTOURS_MAX = "offline_prep_contours_max"
+    private const val KEY_INITIALIZED = "offline_prep_layers_initialized"
+
     val scope = CoroutineScope(
         SupervisorJob() + Dispatchers.Main.immediate + org.ncssar.rid2caltopo.app.StartupCoroutineSafety.handler
     )
@@ -134,6 +148,59 @@ internal object AndroidMapOfflinePrepCoordinator {
     val autoCloseJob = mutableStateOf<Job?>(null)
     val activeCalls = ConcurrentHashMap.newKeySet<Call>()
     private val tileWorkerLease = OfflinePrepWorkerLease(::TileFetchPriorityScheduler)
+    private val preferencesLoaded = AtomicBoolean(false)
+
+    /** Load persisted source selection / zoom ranges once (clamped on read). Off the hot UI path. */
+    fun ensurePreferencesLoaded(context: Context) {
+        if (!preferencesLoaded.compareAndSet(false, true)) return
+        val prefs = context.applicationContext.getSharedPreferences(PREFS, 0)
+        includeUsgsScannedTopo.value = PreferenceTypeSafety.boolean(prefs, KEY_USGS, false)
+        includeUsfsTopo.value = PreferenceTypeSafety.boolean(prefs, KEY_USFS, false)
+        includeContours.value = PreferenceTypeSafety.boolean(prefs, KEY_CONTOURS, false)
+        layerSelectionInitialized.value = PreferenceTypeSafety.boolean(prefs, KEY_INITIALIZED, false)
+        val usgs = clampZoom("USGS-ScannedTopo",
+            PreferenceTypeSafety.int(prefs, KEY_USGS_MIN, 12),
+            PreferenceTypeSafety.int(prefs, KEY_USGS_MAX, 16))
+        usgsScannedTopoMinZoom.value = usgs.first
+        usgsScannedTopoMaxZoom.value = usgs.last
+        val usfs = clampZoom("USFS-Topo",
+            PreferenceTypeSafety.int(prefs, KEY_USFS_MIN, 12),
+            PreferenceTypeSafety.int(prefs, KEY_USFS_MAX, 16))
+        usfsTopoMinZoom.value = usfs.first
+        usfsTopoMaxZoom.value = usfs.last
+        val contours = clampZoom("USGS-Contours",
+            PreferenceTypeSafety.int(prefs, KEY_CONTOURS_MIN, 12),
+            PreferenceTypeSafety.int(prefs, KEY_CONTOURS_MAX, 16))
+        contoursMinZoom.value = contours.first
+        contoursMaxZoom.value = contours.last
+    }
+
+    fun persistSourceSelection(context: Context) {
+        val prefs = context.applicationContext.getSharedPreferences(PREFS, 0)
+        val usgs = clampZoom("USGS-ScannedTopo", usgsScannedTopoMinZoom.value, usgsScannedTopoMaxZoom.value)
+        val usfs = clampZoom("USFS-Topo", usfsTopoMinZoom.value, usfsTopoMaxZoom.value)
+        val contours = clampZoom("USGS-Contours", contoursMinZoom.value, contoursMaxZoom.value)
+        prefs.edit()
+            .putBoolean(KEY_USGS, includeUsgsScannedTopo.value)
+            .putBoolean(KEY_USFS, includeUsfsTopo.value)
+            .putBoolean(KEY_CONTOURS, includeContours.value)
+            .putBoolean(KEY_INITIALIZED, layerSelectionInitialized.value)
+            .putInt(KEY_USGS_MIN, usgs.first).putInt(KEY_USGS_MAX, usgs.last)
+            .putInt(KEY_USFS_MIN, usfs.first).putInt(KEY_USFS_MAX, usfs.last)
+            .putInt(KEY_CONTOURS_MIN, contours.first).putInt(KEY_CONTOURS_MAX, contours.last)
+            .apply()
+        usgsScannedTopoMinZoom.value = usgs.first
+        usgsScannedTopoMaxZoom.value = usgs.last
+        usfsTopoMinZoom.value = usfs.first
+        usfsTopoMaxZoom.value = usfs.last
+        contoursMinZoom.value = contours.first
+        contoursMaxZoom.value = contours.last
+    }
+
+    private fun clampZoom(sourceId: String, minZoom: Int, maxZoom: Int): IntRange {
+        val clamped = MapTileSourceRegistry.clampZoomRange(sourceId, minZoom, maxZoom)
+        return if (clamped.isEmpty()) minOf(minZoom, maxZoom)..maxOf(minZoom, maxZoom) else clamped
+    }
 
     fun begin(context: Context): TileFetchPriorityScheduler {
         val scheduler = tileWorkerLease.acquire()

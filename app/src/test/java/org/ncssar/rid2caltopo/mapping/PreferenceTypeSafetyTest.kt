@@ -60,4 +60,21 @@ class PreferenceTypeSafetyTest {
         assertTrue(PreferenceTypeSafety.stringSet(prefs, "hidden:x").isEmpty())
         assertTrue(removed.get())
     }
+
+    @Test
+    fun booleanAndIntClearBadTypeAndReturnDefault() {
+        val removed = AtomicBoolean(false)
+        val prefs = ThrowingPrefs { removed.set(true) }
+        // ThrowingPrefs already throws ClassCast from getString/getStringSet; override via a proxy for bool/int.
+        val typed = object : SharedPreferences by prefs {
+            override fun getBoolean(key: String?, defValue: Boolean): Boolean =
+                throw ClassCastException("string for $key")
+            override fun getInt(key: String?, defValue: Int): Int =
+                throw ClassCastException("string for $key")
+            override fun edit(): SharedPreferences.Editor = prefs.edit()
+        }
+        assertEquals(true, PreferenceTypeSafety.boolean(typed, "offline_prep_usgs", true))
+        assertEquals(12, PreferenceTypeSafety.int(typed, "offline_prep_usgs_min", 12))
+        assertTrue(removed.get())
+    }
 }
