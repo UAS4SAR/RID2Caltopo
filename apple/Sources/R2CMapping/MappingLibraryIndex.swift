@@ -104,30 +104,27 @@ public enum MappingLibraryIndex {
         var nextMissions: [MissionEntry] = []
         var nextLayers: [LayerEntry] = []
 
-        if areaBusy {
-            log.debug("LibIdx skip reason=\(reasonHydrating, privacy: .public)")
-            let index = previous ?? Index(schemaVersion: schemaVersion, missions: [], layers: [], updatedAt: ISO8601DateFormatter().string(from: Date()))
-            var missions = index.missions
+        let tombstoned = MissionDeletionTombstone.load(supportRoot: supportRoot)
+        func staleResult(reason: String) -> RefreshResult {
+            log.debug("LibIdx skip reason=\(reason, privacy: .public)")
+            let base = previous ?? Index(schemaVersion: schemaVersion, missions: [], layers: [], updatedAt: ISO8601DateFormatter().string(from: Date()))
+            var missions = base.missions.filter { !tombstoned.contains($0.id.lowercased()) }
+            let layers = base.layers.filter { !tombstoned.contains($0.missionID.lowercased()) }
             if previous != nil {
                 for i in missions.indices { missions[i].stage = staleStage }
             }
-            let staleIndex = Index(schemaVersion: schemaVersion, missions: missions, layers: index.layers, updatedAt: index.updatedAt)
+            let staleIndex = Index(schemaVersion: schemaVersion, missions: missions, layers: layers, updatedAt: base.updatedAt)
             let refreshMs = Int(Date().timeIntervalSince(refreshStarted) * 1000)
-            return RefreshResult(index: staleIndex, changed: 0, removed: 0, loadMs: loadMs, refreshMs: refreshMs, fromCache: previous != nil, stale: previous != nil, skipReason: reasonHydrating)
+            return RefreshResult(index: staleIndex, changed: 0, removed: 0, loadMs: loadMs, refreshMs: refreshMs, fromCache: previous != nil, stale: previous != nil, skipReason: reason)
+        }
+        if areaBusy {
+            return staleResult(reason: reasonHydrating)
         }
 
         let missionDirs: [URL]
         if let override = missionListingOverride {
             guard let listed = override() else {
-                log.debug("LibIdx skip reason=\(reasonUnavailable, privacy: .public)")
-                let index = previous ?? Index(schemaVersion: schemaVersion, missions: [], layers: [], updatedAt: ISO8601DateFormatter().string(from: Date()))
-                var missions = index.missions
-                if previous != nil {
-                    for i in missions.indices { missions[i].stage = staleStage }
-                }
-                let staleIndex = Index(schemaVersion: schemaVersion, missions: missions, layers: index.layers, updatedAt: index.updatedAt)
-                let refreshMs = Int(Date().timeIntervalSince(refreshStarted) * 1000)
-                return RefreshResult(index: staleIndex, changed: 0, removed: 0, loadMs: loadMs, refreshMs: refreshMs, fromCache: previous != nil, stale: previous != nil, skipReason: reasonUnavailable)
+                return staleResult(reason: reasonUnavailable)
             }
             missionDirs = listed
         } else {
@@ -136,15 +133,7 @@ public enum MappingLibraryIndex {
             if fm.fileExists(atPath: missionsRoot.path, isDirectory: &isDir) == false ||
                 (try? missionsRoot.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true &&
                 fm.fileExists(atPath: resolved.path) == false {
-                log.debug("LibIdx skip reason=\(reasonUnavailable, privacy: .public)")
-                let index = previous ?? Index(schemaVersion: schemaVersion, missions: [], layers: [], updatedAt: ISO8601DateFormatter().string(from: Date()))
-                var missions = index.missions
-                if previous != nil {
-                    for i in missions.indices { missions[i].stage = staleStage }
-                }
-                let staleIndex = Index(schemaVersion: schemaVersion, missions: missions, layers: index.layers, updatedAt: index.updatedAt)
-                let refreshMs = Int(Date().timeIntervalSince(refreshStarted) * 1000)
-                return RefreshResult(index: staleIndex, changed: 0, removed: 0, loadMs: loadMs, refreshMs: refreshMs, fromCache: previous != nil, stale: previous != nil, skipReason: reasonUnavailable)
+                return staleResult(reason: reasonUnavailable)
             }
             missionDirs = (try? fm.contentsOfDirectory(at: missionsRoot, includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
         }
@@ -152,6 +141,7 @@ public enum MappingLibraryIndex {
         for mission in missionDirs {
             guard let uuid = UUID(uuidString: mission.lastPathComponent) else { continue }
             let id = uuid.uuidString.lowercased()
+            if tombstoned.contains(id) { continue }
             seen.insert(id)
             let evidence = hasRetainedEvidence(mission)
             let fingerprint: Fingerprint
@@ -203,8 +193,12 @@ public enum MappingLibraryIndex {
                 }
             }
         }
-        // Drop only when parent listing succeeded and id is absent.
-        let removed = byID.keys.filter { !seen.contains($0) }.count
+        // Drop only when parent listing succeeded and id is absent. Also drop tombstoned leftovers.
+        nextMissions.removeAll { tombstoned.contains($0.id.lowercased()) }
+        nextLayers.removeAll { tombstoned.contains($0.missionID.lowercased()) }
+        let removed = byID.keys.filter { !seen.contains($0) || tombstoned.contains($0.lowercased()) }.count
+        // Self-heal: prune index ghosts whose folders are gone and that have no originals anywhere.
+        let healed = selfHealAbsent(missionsRoot: missionsRoot, previous: previous, nextMissions: &nextMissions, nextLayers: &nextLayers)
         if let liveMissionID, let liveStage, let idx = nextMissions.firstIndex(where: { $0.id == liveMissionID }) {
             nextMissions[idx].stage = liveStage
             _ = liveProgress
@@ -215,12 +209,63 @@ public enum MappingLibraryIndex {
             layers: nextLayers,
             updatedAt: ISO8601DateFormatter().string(from: Date())
         )
-        if previous != index {
+        if previous != index || healed > 0 {
             try writeAtomic(index, to: fileURL(supportRoot: supportRoot))
         }
         let refreshMs = Int(Date().timeIntervalSince(refreshStarted) * 1000)
         log.debug("LibIdx load ms=\(loadMs, privacy: .public) n=\(nextMissions.count, privacy: .public) | refresh ms=\(refreshMs, privacy: .public) changed=\(changed, privacy: .public) removed=\(removed, privacy: .public)")
         return RefreshResult(index: index, changed: changed, removed: removed, loadMs: loadMs, refreshMs: refreshMs, fromCache: previous != nil, stale: false, skipReason: nil)
+    }
+
+    /// Remove a mission from the on-disk index. Caller holds `MissionDeletionTombstone.lock`.
+    /// Compact JSON rewrite only — UI callers already run delete off the main thread.
+    public static func dropMission(supportRoot: URL, missionID: String) {
+        let url = fileURL(supportRoot: supportRoot)
+        guard let data = try? Data(contentsOf: url),
+              var index = try? JSONDecoder().decode(Index.self, from: data),
+              index.schemaVersion == schemaVersion else { return }
+        let id = missionID.lowercased()
+        let missionsBefore = index.missions.count
+        let layersBefore = index.layers.count
+        index.missions.removeAll { $0.id.lowercased() == id }
+        index.layers.removeAll { $0.missionID.lowercased() == id }
+        guard index.missions.count != missionsBefore || index.layers.count != layersBefore else { return }
+        index.updatedAt = ISO8601DateFormatter().string(from: Date())
+        try? writeAtomic(index, to: url)
+    }
+
+    /// Drop stale index entries whose mission folders are absent and that have no originals.
+    private static func selfHealAbsent(
+        missionsRoot: URL,
+        previous: Index?,
+        nextMissions: inout [MissionEntry],
+        nextLayers: inout [LayerEntry]
+    ) -> Int {
+        let fm = FileManager.default
+        var healed = 0
+        let live = Set(nextMissions.map { $0.id.lowercased() })
+        for entry in previous?.missions ?? [] {
+            let id = entry.id.lowercased()
+            if live.contains(id) { continue }
+            let folder = missionsRoot.appendingPathComponent(id, isDirectory: true)
+            if hasOriginals(folder) { continue }
+            if fm.fileExists(atPath: folder.path) { continue }
+            healed += 1
+        }
+        nextLayers.removeAll { layer in
+            let id = layer.missionID.lowercased()
+            if live.contains(id) { return false }
+            let folder = missionsRoot.appendingPathComponent(id, isDirectory: true)
+            if hasOriginals(folder) { return false }
+            return !fm.fileExists(atPath: folder.path)
+        }
+        return healed
+    }
+
+    private static func hasOriginals(_ mission: URL) -> Bool {
+        let originals = mission.appendingPathComponent("originals", isDirectory: true)
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: originals.path) else { return false }
+        return names.contains { $0.lowercased().hasSuffix(".jpg") }
     }
 
     public static func hasRetainedEvidence(_ mission: URL) -> Bool {

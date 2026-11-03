@@ -54,24 +54,26 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
                 val prior=entries.associateBy{it.id}
                 entries=retry.entries.map{it.copy(storage=prior[it.id]?.storage)}
             }
-            val index=withContext(Dispatchers.IO){MappingMissionStorage.index(context.filesDir,MappingProcessingManager.state.value)}
-            val pending=mutableListOf<MappingLibraryEntry>()
-            for(entry in entries) {
-                val usage=withContext(Dispatchers.IO){
-                    entry.flight?.let{index.cachedMission(it.id)}?:if(entry.layer!=null)MappingMissionStorage.cachedLayer(context.filesDir,entry.layer.id)else null
-                }
-                if(usage==null)pending.add(entry)
-                else entries=entries.map{if(it.id==entry.id)it.copy(storage=usage)else it}
-            }
-            if(pending.isNotEmpty()) {
-                measuring=true;measuredCount=0;measurementTotal=pending.size
-                for(entry in pending) {
-                    ensureActive()
+            if(!staleBanner) {
+                val index=withContext(Dispatchers.IO){MappingMissionStorage.index(context.filesDir,MappingProcessingManager.state.value)}
+                val pending=mutableListOf<MappingLibraryEntry>()
+                for(entry in entries) {
                     val usage=withContext(Dispatchers.IO){
-                        entry.flight?.let{index.mission(it.id)}?:MappingMissionStorage.layer(context.filesDir,entry.layer!!.id)
+                        entry.flight?.let{index.cachedMission(it.id)}?:if(entry.layer!=null)MappingMissionStorage.cachedLayer(context.filesDir,entry.layer.id)else null
                     }
-                    entries=entries.map{if(it.id==entry.id)it.copy(storage=usage)else it}
-                    measuredCount++
+                    if(usage==null)pending.add(entry)
+                    else entries=entries.map{if(it.id==entry.id)it.copy(storage=usage)else it}
+                }
+                if(pending.isNotEmpty()) {
+                    measuring=true;measuredCount=0;measurementTotal=pending.size
+                    for(entry in pending) {
+                        ensureActive()
+                        val usage=withContext(Dispatchers.IO){
+                            entry.flight?.let{index.mission(it.id)}?:MappingMissionStorage.layer(context.filesDir,entry.layer!!.id)
+                        }
+                        entries=entries.map{if(it.id==entry.id)it.copy(storage=usage)else it}
+                        measuredCount++
+                    }
                 }
             }
         }catch(e:CancellationException){throw e}
@@ -129,10 +131,11 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
     }
     AlertDialog(onDismissRequest=onDismiss,title={Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
         Text("Local maps")
-        if(!loaded || measuring || refreshing) {
+        if(!loaded || measuring || refreshing || staleBanner) {
             LinearProgressIndicator(Modifier.fillMaxWidth().testTag("mapping-library-progress"))
             Text(when {
                 !loaded -> "Loading saved missions…"
+                staleBanner -> "Updating…"
                 measuring -> "Calculating storage sizes · $measuredCount of $measurementTotal missions"
                 else -> "Refreshing…"
             },style=MaterialTheme.typography.bodySmall)
@@ -160,7 +163,10 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
             }
         }
         loadError?.let{message->item(key="load-error"){Text(message,color=MaterialTheme.colorScheme.error);Text("Saved missions are retained. Retrying…")}}
-        if(staleBanner)item(key="stale"){Text(MappingLibraryListing.STALE_STAGE,style=MaterialTheme.typography.bodySmall)}
+        if(staleBanner)item(key="stale"){Column {
+            Text("Updating…",style=MaterialTheme.typography.bodySmall)
+            Text(MappingLibraryListing.STALE_STAGE,style=MaterialTheme.typography.bodySmall)
+        }}
         if(loaded&&entries.isEmpty()&&loadError==null)item(key="empty"){Text("No mapping missions yet.")}
         items(MappingLibraryEntry.sorted(entries,newestFirst),key={it.id}){entry->
             MappingLibraryCard(entry,location?.coordinates,location?.note.orEmpty()) {
@@ -180,7 +186,10 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
             Text(entry.stage,style=MaterialTheme.typography.bodySmall)
             Text(entry.distanceLabel(location) + if(location!=null && locationNote.isNotBlank()) " · $locationNote" else "")
             val size=entry.storage
-            if(size==null)Text("Storage: calculating…") else {
+            if(size==null) {
+                if(entry.stage == MappingLibraryListing.STALE_STAGE) Text("Storage: updating…")
+                else Text("Storage: calculating…")
+            } else {
                 Text("Planning files: ${MappingStorageUsage.format(size.planning)} · Captured images: ${MappingStorageUsage.format(size.originals)}")
                 Text("2D tiles: ${MappingStorageUsage.format(size.maps2D)} · 3D results: ${MappingStorageUsage.format(size.models3D)}")
                 Text("Total: ${size.totalLabel} · includes exports, temporary files and other metadata",style=MaterialTheme.typography.bodySmall)

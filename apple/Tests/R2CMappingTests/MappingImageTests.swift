@@ -55,6 +55,29 @@ final class MappingImageTests:XCTestCase {
         try store.deleteResults(id);XCTAssertTrue(FileManager.default.fileExists(atPath:originals.path))
         XCTAssertThrowsError(try store.deleteMission(id,originalsConfirmed:false));XCTAssertTrue(FileManager.default.fileExists(atPath:folder.path))
         try store.deleteMission(id,originalsConfirmed:true);XCTAssertFalse(FileManager.default.fileExists(atPath:folder.path))
+        XCTAssertTrue(MissionDeletionTombstone.contains(supportRoot:root.deletingLastPathComponent(),id:id))
+    }
+
+    func testOriginalsDeleteFailureStopsBeforeMissionRemoval() throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store=try MappingMissionStore(root:root),id=UUID().uuidString.lowercased()
+        let plan=try JSONSerialization.data(withJSONObject:["missionId":id,"incidentId":"MAP","title":"Test"])
+        let folder=try store.savePlan(plan,boundary:Data())
+        let originals=folder.appendingPathComponent("originals",isDirectory:true)
+        try FileManager.default.createDirectory(at:originals,withIntermediateDirectories:true)
+        let photo=originals.appendingPathComponent("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg")
+        try Data([1,2,3]).write(to:photo)
+        try FileManager.default.setAttributes([.posixPermissions:0o555],ofItemAtPath:originals.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions:0o755],ofItemAtPath:originals.path)
+            try? FileManager.default.removeItem(at:root)
+        }
+        XCTAssertThrowsError(try store.deleteMission(id,originalsConfirmed:true)) { error in
+            let text=(error as? LocalizedError)?.errorDescription ?? String(describing:error)
+            XCTAssertTrue(text.contains("Could not delete original photos"), text)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath:folder.appendingPathComponent("mission.json").path))
+        XCTAssertFalse(MissionDeletionTombstone.contains(supportRoot:root.deletingLastPathComponent(),id:id))
     }
 }
 

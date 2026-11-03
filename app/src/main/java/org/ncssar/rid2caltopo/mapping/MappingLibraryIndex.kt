@@ -158,8 +158,10 @@ internal object MappingLibraryIndex {
     }
 
     fun entries(index: Index, context: Context, live: MappingProcessingState?, stale: Boolean = false): List<MappingLibraryEntry> {
+        val tombstoned = MissionDeletionTombstone.load(context.filesDir)
         val owned = index.missions.values.flatMap { it.resultIds }.toSet()
         val flights = index.missions.values
+            .filter { record -> record.id !in tombstoned }
             .filter { record ->
                 isVisible(record) || MissionProjectionGuard.hasRetainedEvidence(File(context.filesDir, "mapping-missions/${record.id}"))
             }
@@ -188,11 +190,17 @@ internal object MappingLibraryIndex {
         MappingLayerRecovery.ensureScheduled(context)
         MappingProcessingManager.ensureResume(context)
         runCatching { MappingLayerRecovery.adoptCompleteOrphans(context) }
+        val volumes = runCatching { context.getExternalFilesDirs(null) }.getOrNull().orEmpty()
+            .filterNotNull().map { File(it, "local-mapping") }
         val missionDirs = when (val missionListing = MappingLibraryListing.listMissions(filesDir)) {
             is MappingLibraryListing.Result.Unavailable -> {
                 val reason = missionListing.reason
                 CaltopoClient.CTDebug(TAG, "LibIdx skip reason=$reason")
-                val index = previous ?: Index(SCHEMA, emptyMap(), emptyMap())
+                val tombstoned = MissionDeletionTombstone.load(filesDir)
+                val base = previous ?: Index(SCHEMA, emptyMap(), emptyMap())
+                val index = if (tombstoned.isEmpty()) base else Index(SCHEMA,
+                    base.missions.filterKeys { it !in tombstoned },
+                    base.layers.filterValues { it.missionId !in tombstoned })
                 val refreshMs = (System.nanoTime() - refreshStart) / 1_000_000
                 return RefreshResult(entries(index, context, live, stale = previous != null), index, loadMs, refreshMs, 0, 0,
                     stale = previous != null, skipReason = reason)
@@ -209,6 +217,7 @@ internal object MappingLibraryIndex {
         }
         val layersListed = layerListing is MappingLibraryListing.Result.Available
         val storage = MappingMissionStorage.index(filesDir, live)
+        val tombstoned = MissionDeletionTombstone.load(filesDir)
         val nextMissions = linkedMapOf<String, MissionRecord>()
         val nextLayers = linkedMapOf<String, LayerRecord>()
         var changed = 0
@@ -217,6 +226,7 @@ internal object MappingLibraryIndex {
             val missionFile = File(root, "mission.json")
             val mission = jsonReader(missionFile)
             val idFromDir = root.name.takeIf { runCatching { java.util.UUID.fromString(it).toString() == it }.getOrDefault(false) }
+            if (idFromDir != null && idFromDir in tombstoned) continue
             if (mission == null) {
                 if (idFromDir != null && MissionProjectionGuard.hasRetainedEvidence(root)) {
                     seenMissionIds += idFromDir
@@ -229,6 +239,7 @@ internal object MappingLibraryIndex {
             }
             val id = mission.optString("missionId").takeIf { runCatching { java.util.UUID.fromString(it).toString() == it }.getOrDefault(false) } ?: continue
             if (root.name != id) continue
+            if (id in tombstoned) continue
             seenMissionIds += id
             val fingerprint = MissionFingerprint.of(root)
             val cached = previous?.missions?.get(id)
@@ -243,6 +254,7 @@ internal object MappingLibraryIndex {
         }
         // Never drop a previous mission unless the parent listing succeeded and the id is absent.
         for ((id, record) in previous?.missions.orEmpty()) {
+            if (id in tombstoned) continue
             if (id in nextMissions) continue
             if (id !in seenMissionIds) {
                 // Confirmed gone from a successful listing — drop.
@@ -261,20 +273,75 @@ internal object MappingLibraryIndex {
                     changed++
                     rebuildLayer(root, fingerprint) ?: continue
                 }
+                if (record.missionId in tombstoned) continue
                 nextLayers[record.id] = record
             }
         } else {
-            previous?.layers?.let { nextLayers.putAll(it) }
+            previous?.layers?.filterValues { it.missionId !in tombstoned }?.let { nextLayers.putAll(it) }
         }
+        val stampPruned = selfHealStamps(filesDir, volumes, nextMissions.keys)
         val removed = (previous?.missions?.keys.orEmpty() - nextMissions.keys).size +
             (previous?.layers?.keys.orEmpty() - nextLayers.keys).size
         val index = Index(SCHEMA, nextMissions, nextLayers)
-        if (previous == null || changed > 0 || removed > 0 || previous.missions.keys != nextMissions.keys || previous.layers.keys != nextLayers.keys) {
-            write(filesDir, index)
+        if (previous == null || changed > 0 || removed > 0 || stampPruned > 0 ||
+            previous.missions.keys != nextMissions.keys || previous.layers.keys != nextLayers.keys
+        ) {
+            synchronized(MissionDeletionTombstone.lock) { write(filesDir, index) }
+            retainStats(filesDir)
         }
         val refreshMs = (System.nanoTime() - refreshStart) / 1_000_000
         CaltopoClient.CTDebug(TAG, "LibIdx load ms=$loadMs n=${previous?.missions?.size ?: 0} | refresh ms=$refreshMs changed=$changed removed=$removed")
         return RefreshResult(entries(index, context, live), index, loadMs, refreshMs, changed, removed)
+    }
+
+    /**
+     * Drop stale verify-stamp entries whose mission folders are absent everywhere and that have
+     * no originals anywhere. Never prune a mission that still has originals. Index entries for
+     * absent folders are already omitted from [nextMissions] after a successful listing.
+     */
+    private fun selfHealStamps(filesDir: File, volumes: List<File>, liveMissionIds: Set<String>): Int {
+        val stamps = MissionVerifyStamps.load(filesDir)
+        if (stamps.isEmpty()) return 0
+        val kept = stamps.filterKeys { id ->
+            id in liveMissionIds ||
+                missionHasOriginalsAnywhere(filesDir, volumes, id) ||
+                missionPresentAnywhere(filesDir, volumes, id)
+        }
+        val pruned = stamps.size - kept.size
+        if (pruned > 0) {
+            synchronized(MissionDeletionTombstone.lock) { MissionVerifyStamps.write(filesDir, kept) }
+        }
+        return pruned
+    }
+
+    internal fun missionPresentAnywhere(filesDir: File, volumes: List<File>, id: String): Boolean {
+        if (File(filesDir, "mapping-missions/$id").exists()) return true
+        return volumes.any { File(it, "mapping-missions/$id").exists() }
+    }
+
+    internal fun missionHasOriginalsAnywhere(filesDir: File, volumes: List<File>, id: String): Boolean {
+        val roots = listOf(File(filesDir, "mapping-missions/$id")) +
+            volumes.map { File(it, "mapping-missions/$id") }
+        return roots.any { MissionProjectionGuard.hasOriginals(it) }
+    }
+
+    /** Remove [missionId] from the working index under [MissionDeletionTombstone.lock]. */
+    fun dropMissionLocked(filesDir: File, missionId: String) {
+        val previous = load(filesDir) ?: return
+        if (missionId !in previous.missions && previous.layers.values.none { it.missionId == missionId }) return
+        write(filesDir, Index(SCHEMA,
+            previous.missions - missionId,
+            previous.layers.filterValues { it.missionId != missionId }))
+    }
+
+    fun retainStats(filesDir: File) {
+        listOf(
+            file(filesDir),
+            MissionVerifyStamps.file(filesDir),
+            MissionDeletionTombstone.file(filesDir),
+        ).forEach { stats ->
+            if (stats.isFile) runCatching { org.ncssar.rid2caltopo.storage.OperationalStorage.retain(stats) }
+        }
     }
 
     private fun syntheticUnreadable(id: String, root: File): MissionRecord {

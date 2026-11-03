@@ -122,7 +122,19 @@ fun MappingFlightsDialog(mission: MappingMission?, onDismiss: () -> Unit, onConn
             scope.launch {
                 runCatching { withContext(Dispatchers.IO) { MappingFlightDeletion.delete(context, flight.id, originals) } }
                     .onSuccess { if (detailOnly) onDismiss() else selectedId = null; onLayersChanged() }
-                    .onFailure { error = it.message ?: "Could not delete the saved flight." }
+                    .onFailure { failure ->
+                        val message = failure.message ?: "Could not delete the saved flight."
+                        error = when {
+                            message == "Partially deleted, originals kept" -> message
+                            message == "Storage still preparing" -> message
+                            message.contains("Wait for reconstruction", ignoreCase = true) -> message
+                            message.contains("photo transfer", ignoreCase = true) -> message
+                            message.contains("Archive Dir", ignoreCase = true) -> message
+                            message.contains("Reinsert", ignoreCase = true) -> message
+                            else -> message
+                        }
+                        if (message == "Partially deleted, originals kept") onLayersChanged()
+                    }
                 busy = false; busyMessage = null
             }
         }, onProcess = { flight, completedOnly ->

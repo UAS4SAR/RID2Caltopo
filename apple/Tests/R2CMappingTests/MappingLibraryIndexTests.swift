@@ -188,4 +188,69 @@ final class MappingLibraryIndexTests: XCTestCase {
         XCTAssertEqual(result.index.missions.map { $0.id.lowercased() }, [keep.lowercased()])
         XCTAssertEqual(result.removed, 1)
     }
+
+    func testTombstonedMissionHiddenDuringStaleRefresh() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let missions = root.appendingPathComponent("mapping-missions", isDirectory: true)
+        let support = root.appendingPathComponent("Library/Application Support", isDirectory: true)
+        try FileManager.default.createDirectory(at: missions, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = "e80815fa-0000-4000-8000-000000000040"
+        try writeMission(root: missions, id: id)
+        try writeOriginals(missions: missions, id: id)
+        _ = try onIO { try MappingLibraryIndex.refresh(missionsRoot: missions, supportRoot: support) }
+        try onIO {
+            MissionDeletionTombstone.lock.lock()
+            MappingLibraryIndex.dropMission(supportRoot: support, missionID: id)
+            MissionDeletionTombstone.rememberLocked(supportRoot: support, id: id)
+            MissionDeletionTombstone.lock.unlock()
+        }
+        let stale = try onIO {
+            try MappingLibraryIndex.refresh(missionsRoot: missions, supportRoot: support, areaBusy: true)
+        }
+        XCTAssertTrue(stale.stale)
+        XCTAssertTrue(stale.index.missions.isEmpty)
+        XCTAssertTrue(MissionDeletionTombstone.contains(supportRoot: support, id: id))
+        try FileManager.default.removeItem(at: missions.appendingPathComponent(id))
+        let after = try onIO { try MappingLibraryIndex.refresh(missionsRoot: missions, supportRoot: support) }
+        XCTAssertTrue(after.index.missions.isEmpty)
+    }
+
+    func testSelfHealPrunesAbsentIndexWithoutOriginalsAndKeepsOriginals() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let missions = root.appendingPathComponent("mapping-missions", isDirectory: true)
+        let support = root.appendingPathComponent("Library/Application Support", isDirectory: true)
+        try FileManager.default.createDirectory(at: missions, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let alive = "e80815fa-0000-4000-8000-000000000041"
+        let ghost = "e80815fa-0000-4000-8000-000000000042"
+        try writeMission(root: missions, id: alive)
+        try writeOriginals(missions: missions, id: alive)
+        try writeMission(root: missions, id: ghost)
+        _ = try onIO { try MappingLibraryIndex.refresh(missionsRoot: missions, supportRoot: support) }
+        try FileManager.default.removeItem(at: missions.appendingPathComponent(ghost))
+        let result = try onIO { try MappingLibraryIndex.refresh(missionsRoot: missions, supportRoot: support) }
+        XCTAssertEqual(result.index.missions.map { $0.id.lowercased() }, [alive.lowercased()])
+        XCTAssertFalse(result.index.missions.contains { $0.id.lowercased() == ghost.lowercased() })
+    }
+
+    func testDeleteMissionWritesTombstoneAndRefreshHides() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        // Match production layout: supportRoot/mapping-missions.
+        let support = root.appendingPathComponent("Library/Application Support", isDirectory: true)
+        let missions = support.appendingPathComponent("mapping-missions", isDirectory: true)
+        try FileManager.default.createDirectory(at: missions, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = "e80815fa-0000-4000-8000-000000000043"
+        try writeMission(root: missions, id: id)
+        try writeOriginals(missions: missions, id: id)
+        _ = try onIO { try MappingLibraryIndex.refresh(missionsRoot: missions, supportRoot: support) }
+        let store = try MappingMissionStore(root: missions)
+        try onIO { try store.deleteMission(id, originalsConfirmed: true) }
+        XCTAssertTrue(MissionDeletionTombstone.contains(supportRoot: support, id: id))
+        let result = try onIO { try MappingLibraryIndex.refresh(missionsRoot: missions, supportRoot: support, areaBusy: true) }
+        XCTAssertTrue(result.index.missions.isEmpty)
+    }
 }

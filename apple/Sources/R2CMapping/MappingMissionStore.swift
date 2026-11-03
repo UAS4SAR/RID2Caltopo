@@ -1,4 +1,5 @@
 import Foundation
+import os
 import R2CCore
 
 public struct MappingLocalMission: Identifiable, Sendable {
@@ -25,6 +26,7 @@ public struct MappingLocalMission: Identifiable, Sendable {
 /// Every mission owns its plan, byte-preserved originals, resumable work and published results.
 /// All operations run on a serial worker, never the main UI thread.
 public final class MappingMissionStore: @unchecked Sendable {
+    private static let log = Logger(subsystem: "org.ncssar.RID2Caltopo", category: "MapDelete")
     public let root: URL
     public init(root: URL) throws {
         try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true);self.root=root.resolvingSymlinksInPath().standardizedFileURL
@@ -121,11 +123,64 @@ public final class MappingMissionStore: @unchecked Sendable {
     }
     public func deleteResults(_ id: String) throws {
         let folder=try directory(id)
-        for name in ["results","work"]{let path=folder.appendingPathComponent(name);if FileManager.default.fileExists(atPath:path.path){try FileManager.default.removeItem(at:path)}}
+        var removed=0
+        var roots=0
+        var failed=false
+        for name in ["results","work"]{
+            let path=folder.appendingPathComponent(name)
+            guard FileManager.default.fileExists(atPath:path.path) else {continue}
+            roots+=1
+            do {try FileManager.default.removeItem(at:path);removed+=1}
+            catch {failed=true}
+        }
+        let short=String(id.prefix(8))
+        if failed {
+            Self.log.debug("MapDelete id=\(short, privacy: .public) originals=0 roots=\(roots, privacy: .public) partial removed=\(removed, privacy: .public)/\(roots, privacy: .public)")
+            throw MappingMission.Failure("Partially deleted, originals kept")
+        }
+        Self.log.debug("MapDelete id=\(short, privacy: .public) originals=0 roots=\(roots, privacy: .public) ok")
     }
     /// UI must obtain explicit original-photo deletion confirmation before invoking this method.
     public func deleteMission(_ id: String, originalsConfirmed: Bool) throws {
         guard originalsConfirmed else{throw MappingMission.Failure("Confirm deletion of original photos first.")}
-        try FileManager.default.removeItem(at:directory(id))
+        let folder=try directory(id)
+        let supportRoot=root.deletingLastPathComponent()
+        let short=String(id.prefix(8))
+        // Originals first: if any fail, stop before index/record removal so photos are never orphaned.
+        if let failure=Self.removeOriginalsFirst(folder:folder) {
+            Self.log.debug("MapDelete id=\(short, privacy: .public) originals=1 roots=1 refused \(failure, privacy: .public)")
+            throw MappingMission.Failure(failure)
+        }
+        // Metadata before folder remove so a crash mid-delete cannot resurrect from a stale index.
+        MissionDeletionTombstone.lock.lock()
+        MappingLibraryIndex.dropMission(supportRoot:supportRoot,missionID:id)
+        MissionDeletionTombstone.rememberLocked(supportRoot:supportRoot,id:id.lowercased())
+        MissionDeletionTombstone.lock.unlock()
+        do {
+            try FileManager.default.removeItem(at:folder)
+            Self.log.debug("MapDelete id=\(short, privacy: .public) originals=1 roots=1 ok")
+        } catch {
+            Self.log.debug("MapDelete id=\(short, privacy: .public) originals=1 roots=1 partial removed=0/1")
+            throw MappingMission.Failure("Partially deleted, originals kept")
+        }
+    }
+
+    /// Returns an error message when any original photo cannot be deleted.
+    private static func removeOriginalsFirst(folder: URL) -> String? {
+        let originals=folder.appendingPathComponent("originals",isDirectory:true)
+        let fm=FileManager.default
+        guard let names=try? fm.contentsOfDirectory(atPath:originals.path) else {return nil}
+        for name in names where name.lowercased().hasSuffix(".jpg") {
+            do {try fm.removeItem(at:originals.appendingPathComponent(name))}
+            catch {return "Could not delete original photos; mission was not removed."}
+        }
+        let inventory=folder.appendingPathComponent("inventory",isDirectory:true)
+        if let records=try? fm.contentsOfDirectory(atPath:inventory.path) {
+            for name in records where name.hasSuffix(".json") {
+                do {try fm.removeItem(at:inventory.appendingPathComponent(name))}
+                catch {return "Could not delete original photos; mission was not removed."}
+            }
+        }
+        return nil
     }
 }

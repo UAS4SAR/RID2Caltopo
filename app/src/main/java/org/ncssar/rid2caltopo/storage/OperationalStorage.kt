@@ -640,6 +640,7 @@ internal object OperationalStorage {
     ) {
         val filesDir = context.filesDir
         val stamps = org.ncssar.rid2caltopo.mapping.MissionVerifyStamps.load(filesDir).toMutableMap()
+        val tombstoned = org.ncssar.rid2caltopo.mapping.MissionDeletionTombstone.load(filesDir)
         var verified = 0
         var skipped = 0
         for (source in area.sources) {
@@ -653,7 +654,7 @@ internal object OperationalStorage {
             if (!source.exists()) continue
             val projected = projection != null
             val children = source.listFiles() ?: error("Cannot read retained ${area.id}; original copies were retained.")
-            val missionDirs = children.filter { it.isDirectory }
+            val missionDirs = children.filter { it.isDirectory && it.name !in tombstoned }
             val other = children.filterNot { it.isDirectory }
             val plan = org.ncssar.rid2caltopo.mapping.MissionVerifyStamps.plan(missionDirs, stamps)
             var done = 0
@@ -662,11 +663,40 @@ internal object OperationalStorage {
                 done++
                 // Always publish (k/N) so reconstruction UI never falls back to "Connecting…".
                 state.value = Status(busy = true, ready = state.value.ready, message = plan.message(done))
+                if (mission.name in tombstoned) {
+                    skipped++
+                    stamps.remove(mission.name)
+                    continue
+                }
                 if (mission in plan.skip) {
                     skipped++
                     continue
                 }
-                copySource(value, area, source, mission, replace = projected, ancestry = emptySet(), projection = projection)
+                try {
+                    copySource(value, area, source, mission, replace = projected, ancestry = emptySet(), projection = projection)
+                } catch (error: IllegalArgumentException) {
+                    // Tombstoned or already-deleted source mid-migrate is not a hydrate failure.
+                    if (mission.name in tombstoned ||
+                        error.message?.startsWith("Retained source file is unavailable:") == true &&
+                        !mission.exists()
+                    ) {
+                        stamps.remove(mission.name)
+                        skipped++
+                        CaltopoClient.CTDebug("OperationalStorage", "Mission source already deleted id=${mission.name.take(8)}")
+                        continue
+                    }
+                    throw error
+                } catch (error: IllegalStateException) {
+                    if (mission.name in tombstoned ||
+                        (error.message?.startsWith("Retained source file is unavailable:") == true && !mission.exists())
+                    ) {
+                        stamps.remove(mission.name)
+                        skipped++
+                        CaltopoClient.CTDebug("OperationalStorage", "Mission source already deleted id=${mission.name.take(8)}")
+                        continue
+                    }
+                    throw error
+                }
                 val id = mission.name
                 if (runCatching { java.util.UUID.fromString(id).toString() == id }.getOrDefault(false)) {
                     stamps[id] = org.ncssar.rid2caltopo.mapping.MappingLibraryIndex.MissionFingerprint.of(mission)
@@ -701,6 +731,10 @@ internal object OperationalStorage {
             if (!tryRequireReady(context)) return false
         }
         val app = context.applicationContext
+        if (org.ncssar.rid2caltopo.mapping.MissionDeletionTombstone.contains(app.filesDir, missionId)) {
+            CaltopoClient.CTDebug("OperationalStorage", "Mission verify skipped tombstoned id=${missionId.take(8)}")
+            return true
+        }
         val root = File(app.filesDir, "mapping-missions/$missionId")
         if (!root.isDirectory) return false
         val stamps = org.ncssar.rid2caltopo.mapping.MissionVerifyStamps.load(app.filesDir)
@@ -786,6 +820,7 @@ internal object OperationalStorage {
         verifyHydratedProjection(area, value, staged)
         checkSelection()
         if (area.id == "layers") purgeRememberedEmptyLayers(context, value, staged)
+        if (area.id == "missions") purgeTombstonedMissions(context, value, staged)
         if (area.id == "missions" && priorWorking != null && !reuse) {
             val verdict = org.ncssar.rid2caltopo.mapping.MissionProjectionGuard.assertStagedPreservesWorking(priorWorking, staged)
             if (!verdict.ok) {
@@ -817,6 +852,36 @@ internal object OperationalStorage {
         if (area.id == "queue-state") for (name in queueNames) File(context.filesDir, name).let { if (it.exists()) check(it.delete()) }
         if (area.id == "review-annotations") context.cacheDir.listFiles().orEmpty().filter { it.isFile && it.name.endsWith(".review.json") }.forEach { check(it.delete()) }
         CaltopoClient.CTDebug("OperationalStorage", "Prepared area=${area.id} reused=$reuse elapsedMs=${android.os.SystemClock.elapsedRealtime() - hydrationStarted}")
+    }
+
+    /**
+     * Drop intentionally deleted missions from a staged missions projection and Archive Dir so
+     * hydrate cannot re-materialize them. Never touches missions that still have originals.
+     */
+    private fun purgeTombstonedMissions(context: Context, value: Store, staged: File) {
+        require(staged.name == "missions" || staged.name.startsWith(".missions-")) {
+            "purgeTombstonedMissions refused non-missions path name=${staged.name}"
+        }
+        val remembered = org.ncssar.rid2caltopo.mapping.MissionDeletionTombstone.load(context.filesDir)
+        if (remembered.isEmpty()) return
+        var purged = 0
+        for (id in remembered) {
+            val local = File(staged, id)
+            if (local.isDirectory) {
+                if (org.ncssar.rid2caltopo.mapping.MissionProjectionGuard.hasOriginals(local)) continue
+                removeTree(local)
+                purged++
+            }
+            val archived = "cache/local-maps/mapping-missions/$id"
+            if (value.tree.exists(archived)) {
+                // Skip archive purge when originals remain somewhere under the working alias.
+                val working = File(context.filesDir, "mapping-missions/$id")
+                if (org.ncssar.rid2caltopo.mapping.MissionProjectionGuard.hasOriginals(working)) continue
+                runCatching { value.tree.delete(archived) }
+                purged++
+            }
+        }
+        if (purged > 0) CaltopoClient.CTDebug("OperationalStorage", "Purged tombstoned missions count=$purged")
     }
 
     /** Drop empty layer UUID dirs previously removed so Archive Dir hydrate cannot resurrect them. Never missions; never dirs with originals. */

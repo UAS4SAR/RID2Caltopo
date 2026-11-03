@@ -10,6 +10,7 @@ import R2CMapping
     @Published var entries:[MappingLocalMission]=[]
     @Published var loading=false
     @Published var refreshing=false
+    @Published var updating=false
     @Published var error:String?
     @Published var loadingError:String?
     @Published var progress:MappingProgressSnapshot?
@@ -66,7 +67,7 @@ import R2CMapping
                     needRefresh = try MappingLibraryIndex.cheapChanged(missionsRoot: missionsRoot, previous: previous)
                 } else { needRefresh = true }
                 guard needRefresh else {
-                    Task { @MainActor in self.loading = false; self.refreshing = false }
+                    Task { @MainActor in self.loading = false; self.refreshing = false; self.updating = false }
                     return
                 }
                 let result = try MappingLibraryIndex.refresh(
@@ -78,10 +79,16 @@ import R2CMapping
                     .filter { incident.isEmpty || $0.incidentID == incident || $0.incidentID.isEmpty }
                     .map { MappingLibraryIndex.toLocalMission($0, missionsRoot: missionsRoot) }
                     .sorted { newest ? $0.date > $1.date : $0.date < $1.date }
-                Task { @MainActor in self.entries = rows; self.loading = false; self.refreshing = false; self.loadingError = nil }
+                Task { @MainActor in
+                    self.entries = rows
+                    self.loading = false
+                    self.refreshing = false
+                    self.updating = result.stale
+                    self.loadingError = nil
+                }
             } catch {
                 let message = error.localizedDescription
-                Task { @MainActor in self.loadingError = message; self.loading = false; self.refreshing = false }
+                Task { @MainActor in self.loadingError = message; self.loading = false; self.refreshing = false; self.updating = false }
             }
         }
     }
@@ -132,15 +139,48 @@ import R2CMapping
     func remove(_ entry:MappingLocalMission,originals:Bool) {
         guard !busy else{return};busy=true;error=nil
         Task {
-        do {
-        let connection = try await AppleMappingTransferModel.shared.stopForDeletion(entry.id)
-        queue.async {
-            do{try connection?.closeAndWait();let store=try MappingMissionStore(root:MappingMissionStore.applicationRoot());if originals{try store.deleteMission(entry.id,originalsConfirmed:true)}else{try store.deleteResults(entry.id)}
-                let ids=entry.results.map(\.lastPathComponent)
-                Task{@MainActor in AppleMappingTransferModel.shared.deletionFinished(entry.id);for layer in AppleMappingLayerStore.shared.layers where ids.contains(layer.id){AppleMappingLayerStore.shared.deleteLocally(layer);UserDefaults.standard.removeObject(forKey:"mapping.result.\(layer.id)")};self.finish();self.invalidateLibrary();self.refresh(incident:entry.incidentID,newest:true,force:true)}
-            }catch{let message=error.localizedDescription;Task{@MainActor in self.error=message;self.finish()}}
-        }
-        } catch { self.error = error.localizedDescription; self.finish() }
+            do {
+                let connection = try await AppleMappingTransferModel.shared.stopForDeletion(entry.id)
+                queue.async {
+                    do {
+                        try connection?.closeAndWait()
+                        let store = try MappingMissionStore(root: MappingMissionStore.applicationRoot())
+                        if originals { try store.deleteMission(entry.id, originalsConfirmed: true) }
+                        else { try store.deleteResults(entry.id) }
+                        let ids = entry.results.map(\.lastPathComponent)
+                        Task { @MainActor in
+                            AppleMappingTransferModel.shared.deletionFinished(entry.id)
+                            for layer in AppleMappingLayerStore.shared.layers where ids.contains(layer.id) {
+                                AppleMappingLayerStore.shared.deleteLocally(layer)
+                                UserDefaults.standard.removeObject(forKey: "mapping.result.\(layer.id)")
+                            }
+                            self.finish()
+                            self.invalidateLibrary()
+                            self.refresh(incident: entry.incidentID, newest: true, force: true)
+                        }
+                    } catch {
+                        let message = error.localizedDescription
+                        Task { @MainActor in
+                            self.error = message
+                            self.finish()
+                            if message == "Partially deleted, originals kept" {
+                                self.invalidateLibrary()
+                                self.refresh(incident: entry.incidentID, newest: true, force: true)
+                            }
+                        }
+                    }
+                }
+            } catch {
+                let message = error.localizedDescription
+                if message.localizedCaseInsensitiveContains("transfer") || message.localizedCaseInsensitiveContains("processing") {
+                    self.error = message
+                } else if message.localizedCaseInsensitiveContains("preparing") || message.localizedCaseInsensitiveContains("storage") {
+                    self.error = "Storage still preparing"
+                } else {
+                    self.error = message
+                }
+                self.finish()
+            }
         }
     }
     func cancel(){cancellation.cancel()}
@@ -213,6 +253,7 @@ struct AppleLocalMappingView:View {
                     HStack{Button(newest ? "✓ Newest first":"Newest first"){newest=true};Button(newest ? "Oldest first":"✓ Oldest first"){newest=false}}
                     Text("Sorted by capture time; unflown missions use planning time.").font(.footnote)
                     if model.loading && rows.isEmpty {ProgressView("Loading saved missions and storage sizes…")}
+                    else if model.updating {Text("Updating…").font(.footnote).foregroundStyle(.secondary)}
                     else if model.refreshing {Text("Refreshing…").font(.footnote).foregroundStyle(.secondary)}
                     if let error=model.error ?? model.loadingError {Text(error).foregroundStyle(.red)}
                     if !model.loading && rows.isEmpty && model.error==nil && model.loadingError==nil{Text("No mapping missions yet.")}
