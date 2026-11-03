@@ -85,6 +85,7 @@ data class MappingLayer(val id: String, val incidentId: String, val title: Strin
             val preferences=context.getSharedPreferences("mapping_layers",0)
             if(layer==null){
                 preferences.edit().putString("selectedLocalLayer",null).apply()
+                MappingWorkspaceState.clearLocalPreviewZoom()
                 org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("MappingLayer","Selected local layer=none")
                 return true
             }
@@ -97,6 +98,8 @@ data class MappingLayer(val id: String, val incidentId: String, val title: Strin
                 return false
             }
             preferences.edit().putString("selectedLocalLayer",layer.id).apply()
+            // One-shot map zoom, matching iOS localPreviewZoomToken — only explicit select zooms.
+            MappingWorkspaceState.requestLocalPreviewZoom()
             org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("MappingLayer","Selected local layer=${layer.id.take(8)}")
             return true
         }

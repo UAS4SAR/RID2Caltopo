@@ -2,6 +2,8 @@ import XCTest
 import R2CCore
 @testable import R2CMapping
 
+// MappingLocalPreviewZoom lives in R2CCore; this file locks the App MapPane contract.
+
 /// Package-level selection helpers for View 2D (App store mirrors this contract).
 enum MappingLayerSelection {
     static func selectLocal(registered: Set<String>, layerID: String?, hasTiles: Bool) -> (selected: String?, ok: Bool, reason: String?) {
@@ -46,5 +48,23 @@ final class MappingLayerSelectionTests: XCTestCase {
         let result = MappingLayerSelection.selectLocal(registered: ["x"], layerID: nil, hasTiles: true)
         XCTAssertTrue(result.ok)
         XCTAssertNil(result.selected)
+    }
+
+    func testColdStartPersistedSelectionDoesNotZoomWithoutToken() {
+        // Mirrors App localPreviewZoomToken: cold start / MapView recreation with a
+        // persisted selection and usable bounds must not move the camera.
+        XCTAssertFalse(
+            MappingLocalPreviewZoom.shouldZoom(token: nil, lastConsumed: nil, hasUsableBounds: true)
+        )
+        XCTAssertFalse(
+            MappingLocalPreviewZoom.shouldConsume(token: nil, lastConsumed: nil)
+        )
+        let token = UUID()
+        XCTAssertTrue(
+            MappingLocalPreviewZoom.shouldZoom(token: token, lastConsumed: nil, hasUsableBounds: true)
+        )
+        XCTAssertFalse(
+            MappingLocalPreviewZoom.shouldZoom(token: token, lastConsumed: token, hasUsableBounds: true)
+        )
     }
 }

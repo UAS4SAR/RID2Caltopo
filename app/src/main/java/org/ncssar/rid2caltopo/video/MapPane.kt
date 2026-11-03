@@ -727,8 +727,12 @@ internal fun SplitMapPane(
     var mappingLayers by remember { mutableStateOf(emptyList<org.ncssar.rid2caltopo.mapping.MappingLayer>()) }
     var mappingRefreshRevision by remember { mutableStateOf(0L) }
     val mappingLayerChanges by org.ncssar.rid2caltopo.mapping.MappingWorkspaceState.layerChanges.collectAsState()
-    var mappingZoomKey by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(viewModel.mapName,mappingLayerChanges,mappingRefreshRevision) {
+    val mappingZoomToken by org.ncssar.rid2caltopo.mapping.MappingWorkspaceState.localPreviewZoomToken.collectAsState()
+    var consumedMappingZoomToken by remember { mutableStateOf<Long?>(null) }
+    val deviceGpsRecenterToken by MapCameraRequests.deviceGpsRecenterToken.collectAsState()
+    var consumedDeviceGpsRecenterToken by remember { mutableStateOf(0L) }
+    var pendingDeviceGpsRecenter by remember { mutableStateOf(false) }
+    LaunchedEffect(viewModel.mapName,mappingLayerChanges,mappingRefreshRevision,mappingZoomToken) {
         val incidentId=CaltopoMap.GetMapId()
         data class Loaded(val layers:List<org.ncssar.rid2caltopo.mapping.MappingLayer>,val selected:org.ncssar.rid2caltopo.mapping.MappingLayer?,val bounds:List<Double>?,val reason:String?,val selectedId:String?)
         val loaded=withContext(Dispatchers.IO) {
@@ -748,6 +752,7 @@ internal fun SplitMapPane(
                     }
                     Loaded(layers,null,null,reason,selectedId)
                 }
+                // Other-incident layers may still draw; zoom bounds are used only when a one-shot token is pending.
                 selected.incidentId!=incidentId -> Loaded(layers,selected,selected.takeIf{it.bounds.size==4}?.displayBounds(context),"other-incident",selected.id)
                 selected.bounds.size!=4 -> Loaded(layers,selected,null,"no-bounds",selected.id)
                 else -> {
@@ -774,11 +779,58 @@ internal fun SplitMapPane(
             "Mapping layers ready incident=$incidentId count=${loaded.layers.size} selected=${loaded.selected?.id?.take(8) ?: "none"}",
             onChangeOnly = true,
         )?.let { CTDebug(MAP_PANE_TAG, it) }
-        // Zoom on View 2D / selection change (layerChanges), not every incidental refresh.
-        val zoomKey="${mappingLayerChanges}:${loaded.selectedId.orEmpty()}"
-        if(loaded.bounds!=null && zoomKey!=mappingZoomKey) {
-            mappingZoomKey=zoomKey
-            currentMapView?.zoomToBoundingBox(org.osmdroid.util.BoundingBox(loaded.bounds[3],loaded.bounds[2],loaded.bounds[1],loaded.bounds[0]),true,48)
+        // One-shot zoom from View 2D / Local Maps selectLocal only — never cold start or recomposition.
+        val zoomPlan = org.ncssar.rid2caltopo.mapping.planMappingLocalLayerZoom(
+            zoomToken = mappingZoomToken,
+            lastConsumedToken = consumedMappingZoomToken,
+            hasUsableBounds = loaded.bounds != null && loaded.bounds.size == 4,
+            mapReady = currentMapView != null,
+        )
+        if (zoomPlan.consumeToken) {
+            consumedMappingZoomToken = mappingZoomToken
+            org.ncssar.rid2caltopo.mapping.MappingWorkspaceState.clearLocalPreviewZoom()
+        }
+        if (zoomPlan.shouldZoom) {
+            val bounds = loaded.bounds ?: return@LaunchedEffect
+            currentMapView?.zoomToBoundingBox(
+                org.osmdroid.util.BoundingBox(bounds[3], bounds[2], bounds[1], bounds[0]),
+                true,
+                48,
+            )
+        }
+    }
+    LaunchedEffect(deviceGpsRecenterToken) {
+        val deviceFix = CaltopoMap.GetDeviceLocation()?.takeIf {
+            it.latitude.isFinite() && it.longitude.isFinite()
+        }
+        val plan = planDeviceGpsRecenter(
+            requestToken = deviceGpsRecenterToken,
+            lastConsumedToken = consumedDeviceGpsRecenterToken,
+            hasDeviceFix = deviceFix != null,
+        )
+        if (!plan.consumeRequest) return@LaunchedEffect
+        consumedDeviceGpsRecenterToken = deviceGpsRecenterToken
+        if (plan.centerNow && deviceFix != null) {
+            pendingDeviceGpsRecenter = false
+            currentMapView?.controller?.setCenter(GeoPoint(deviceFix.latitude, deviceFix.longitude))
+            CTDebug(MAP_PANE_TAG, "Map recentered on device GPS after clearing location override")
+        } else {
+            pendingDeviceGpsRecenter = plan.pendingUntilFix
+        }
+    }
+    LaunchedEffect(pendingDeviceGpsRecenter) {
+        if (!pendingDeviceGpsRecenter) return@LaunchedEffect
+        while (pendingDeviceGpsRecenter) {
+            val deviceFix = CaltopoMap.GetDeviceLocation()?.takeIf {
+                it.latitude.isFinite() && it.longitude.isFinite()
+            }
+            if (shouldApplyPendingDeviceGpsRecenter(true, deviceFix != null) && deviceFix != null) {
+                pendingDeviceGpsRecenter = false
+                currentMapView?.controller?.setCenter(GeoPoint(deviceFix.latitude, deviceFix.longitude))
+                CTDebug(MAP_PANE_TAG, "Map recentered on next device GPS fix after clearing location override")
+                break
+            }
+            delay(500L)
         }
     }
     val displayedMappingLayers=(mappingLayers+listOfNotNull(localMappingPreview)).distinctBy{it.id}

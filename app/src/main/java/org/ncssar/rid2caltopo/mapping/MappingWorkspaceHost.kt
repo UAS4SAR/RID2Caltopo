@@ -25,10 +25,36 @@ object MappingWorkspaceState {
     val layerChanges = changes.asStateFlow()
     private val display = MutableStateFlow(0L)
     val displayChanges = display.asStateFlow()
+    /** One-shot token set only by [MappingLayer.selectLocal]; cold start never publishes one. */
+    private val localPreviewZoom = MutableStateFlow<Long?>(null)
+    val localPreviewZoomToken = localPreviewZoom.asStateFlow()
     fun open(mission: MappingMission) { current.value = mission }
     fun close() { current.value = null; library.value=false }
     fun layersChanged() { changes.update { it+1 } }
     fun displayChanged() { display.update { it+1 } }
+    fun requestLocalPreviewZoom() { localPreviewZoom.update { (it ?: 0L) + 1L } }
+    fun clearLocalPreviewZoom() { localPreviewZoom.value = null }
+}
+
+/** Pure zoom gate matching iOS localPreviewZoomToken: persist selection never zooms by itself. */
+internal data class MappingLocalLayerZoomPlan(val shouldZoom: Boolean, val consumeToken: Boolean)
+
+internal fun planMappingLocalLayerZoom(
+    zoomToken: Long?,
+    lastConsumedToken: Long?,
+    hasUsableBounds: Boolean,
+    mapReady: Boolean,
+): MappingLocalLayerZoomPlan {
+    if (zoomToken == null || zoomToken == lastConsumedToken) {
+        return MappingLocalLayerZoomPlan(shouldZoom = false, consumeToken = false)
+    }
+    if (!hasUsableBounds) {
+        return MappingLocalLayerZoomPlan(shouldZoom = false, consumeToken = true)
+    }
+    if (!mapReady) {
+        return MappingLocalLayerZoomPlan(shouldZoom = false, consumeToken = false)
+    }
+    return MappingLocalLayerZoomPlan(shouldZoom = true, consumeToken = true)
 }
 
 @Composable

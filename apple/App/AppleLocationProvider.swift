@@ -70,6 +70,8 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
         return status == .authorizedAlways || status == .authorizedWhenInUse
     }
     @Published private(set) var locationOverride: CLLocation?
+    /// One-shot token: clearing the developer override asks the map to recenter on device GPS.
+    @Published private(set) var deviceGpsRecenterToken: UUID?
     @Published private(set) var errorMessage: String?
 
     private var manager: CLLocationManager?
@@ -194,6 +196,7 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
         if physicalLocationIsProvisional, physicalLocation != nil {
             errorMessage = "Using last known location; current fix unavailable"
         }
+        deviceGpsRecenterToken = UUID()
         AppleLog.info("Location", "Developer override cleared")
     }
 

@@ -1071,6 +1071,9 @@ fun MainScreen(
                         val overrideLocation = parseLocationOverride(locationOverrideText)
                         CaltopoMap.SetMyLocationOverride(overrideLocation)
                         locationOverrideLabel = formatLocationOverride(CaltopoMap.GetMyLocationOverride())
+                        if (overrideLocation == null) {
+                            org.ncssar.rid2caltopo.video.MapCameraRequests.requestDeviceGpsRecenter()
+                        }
                         AirspaceCenter.requestImmediateRefresh()
                         NotamCenter.requestImmediateRefresh()
                         LandRestrictionCenter.requestImmediateRefresh()

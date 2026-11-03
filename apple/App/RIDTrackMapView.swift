@@ -1489,6 +1489,7 @@ struct RIDTrackMapView: View {
                 showContours: showContours,
                 tileCacheRevision: offlineMaps.cacheStats.files,
                 operatorCoordinate: locationProvider.lastLocation?.coordinate,
+                deviceGpsRecenterToken: locationProvider.deviceGpsRecenterToken,
                 operatorStatusLines: peerCoordinator.localDeviceStatusLines,
                 viewport: $viewport,
                 viewportMemory: viewportMemory,
@@ -4705,6 +4706,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
     let showContours: Bool
     let tileCacheRevision: Int
     let operatorCoordinate: CLLocationCoordinate2D?
+    let deviceGpsRecenterToken: UUID?
     let operatorStatusLines: [String]
     @Binding var viewport: MKCoordinateRegion
     let viewportMemory: AppleMapViewportMemory
@@ -4808,6 +4810,12 @@ private struct OperationalMKMapView: UIViewRepresentable {
         context.coordinator.onOperatorViewportGesture = onOperatorViewportGesture
         context.coordinator.onLongPressTile = onLongPressTile
         map.showsUserLocation = false
+        context.coordinator.applyDeviceGpsRecenterIfNeeded(
+            on: map,
+            token: deviceGpsRecenterToken,
+            coordinate: operatorCoordinate,
+            inset: inset
+        )
         context.coordinator.updateOperatorLocation(
             on: map,
             coordinate: operatorCoordinate,
@@ -4898,6 +4906,8 @@ private struct OperationalMKMapView: UIViewRepresentable {
         private var mappingLayerFingerprint: [MappingLayer] = []
         private var mappingBoundaryFingerprint: [Bool] = []
         private var lastMappingZoomToken: UUID?
+        private var lastDeviceGpsRecenterToken: UUID?
+        private var pendingDeviceGpsRecenter = false
         private var lastMappingReadySignature = ""
         private var staticRenderState: StaticMapRenderState?
         private var aircraftRenderState: AircraftMapRenderState?
@@ -5021,9 +5031,14 @@ private struct OperationalMKMapView: UIViewRepresentable {
                     AppleLog.debug("MapPane", "Mapping layers ready count=\(layers.count) selected=\(previewID.map { String($0.prefix(8)) } ?? "none")")
                 }
             }
-            if let zoomToken, zoomToken != lastMappingZoomToken,
-               let preview = layers.first(where: { $0.id == previewID }),
-               let bounds = preview.bounds, bounds.count == 4 {
+            let preview = previewID.flatMap { id in layers.first(where: { $0.id == id }) }
+            let hasBounds = preview?.bounds?.count == 4
+            // Token set only by selectLocal; cold start has nil token so this never zooms.
+            if MappingLocalPreviewZoom.shouldZoom(
+                token: zoomToken,
+                lastConsumed: lastMappingZoomToken,
+                hasUsableBounds: hasBounds
+            ), let preview, let bounds = preview.bounds, bounds.count == 4 {
                 lastMappingZoomToken = zoomToken
                 let region = MKCoordinateRegion(
                     center: CLLocationCoordinate2D(latitude: (bounds[1] + bounds[3]) / 2, longitude: (bounds[0] + bounds[2]) / 2),
@@ -5031,15 +5046,58 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 )
                 map.setRegion(region, animated: true)
                 AppleLog.debug("MapPane", "MapLayer show id=\(preview.id.prefix(8)) tiles=1 z=\(preview.minZoom)-\(preview.maxZoom)")
-            } else if let zoomToken, zoomToken != lastMappingZoomToken {
+            } else if MappingLocalPreviewZoom.shouldConsume(token: zoomToken, lastConsumed: lastMappingZoomToken) {
                 lastMappingZoomToken = zoomToken
                 let reason: String
                 if previewID == nil { reason = "none" }
-                else if !layers.contains(where: { $0.id == previewID }) { reason = "unregistered" }
-                else if layers.first(where: { $0.id == previewID })?.bounds?.count != 4 { reason = "no-bounds" }
+                else if preview == nil { reason = "unregistered" }
+                else if !hasBounds { reason = "no-bounds" }
                 else { reason = "other" }
                 AppleLog.warning("MapPane", "MapLayer show id=\(previewID.map { String($0.prefix(8)) } ?? "none") reason=\(reason)")
             }
+        }
+
+        func applyDeviceGpsRecenterIfNeeded(
+            on map: MKMapView,
+            token: UUID?,
+            coordinate: CLLocationCoordinate2D?,
+            inset: Bool
+        ) {
+            guard !inset else { return }
+            let hasFix = coordinate.map(CLLocationCoordinate2DIsValid) ?? false
+            let plan = DeviceGpsRecenter.plan(
+                token: token,
+                lastConsumed: lastDeviceGpsRecenterToken,
+                hasDeviceFix: hasFix
+            )
+            if plan.consumeRequest {
+                lastDeviceGpsRecenterToken = token
+                pendingDeviceGpsRecenter = plan.pendingUntilFix
+                if plan.centerNow, let coordinate {
+                    centerOnDeviceGps(map, coordinate: coordinate)
+                }
+            }
+            if DeviceGpsRecenter.shouldApplyPending(pending: pendingDeviceGpsRecenter, hasDeviceFix: hasFix),
+               let coordinate {
+                pendingDeviceGpsRecenter = false
+                centerOnDeviceGps(map, coordinate: coordinate)
+            }
+        }
+
+        private func centerOnDeviceGps(_ map: MKMapView, coordinate: CLLocationCoordinate2D) {
+            beginProgrammaticViewportChange()
+            var region = map.region
+            if region.span.latitudeDelta <= 0 || region.span.longitudeDelta <= 0 {
+                region.span = MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
+            }
+            region.center = coordinate
+            map.setRegion(region, animated: true)
+            endProgrammaticViewportChange()
+            viewport = region
+            viewportMemory.region = region
+            viewportMemory.visibleMapRect = validVisibleMapRect(from: map)
+            viewportMemory.hasOperationalViewport = true
+            AppleLog.debug("MapPane", "Map recentered on device GPS after clearing location override")
         }
 
         func updateTiles(
