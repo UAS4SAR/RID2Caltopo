@@ -39,7 +39,8 @@ import org.json.JSONObject
                         Text(state.title,style=MaterialTheme.typography.titleLarge)
                         Text(state.stage)
                         LinearProgressIndicator(progress={state.progress.toFloat()},modifier=Modifier.fillMaxWidth())
-                        Text("${(state.progress*100).toInt()}% · ${elapsed/60} min ${elapsed%60} sec elapsed"+(state.remainingSeconds?.let{" · about ${(it+59)/60} min remaining"}?:""))
+                        Text("${(state.progress*100).toInt()}% · ${elapsed/60} min ${elapsed%60} sec elapsed · "+
+                            (state.remainingSeconds?.let{"about ${(it+59)/60} min remaining"} ?: "estimating…"))
                         Text(if(sinceUpdate<5)"Worker updated just now" else "Last worker update ${sinceUpdate} sec ago · waiting for the current operation")
                         state.estimateSummary?.let {
                             Text(it,style=MaterialTheme.typography.bodySmall)

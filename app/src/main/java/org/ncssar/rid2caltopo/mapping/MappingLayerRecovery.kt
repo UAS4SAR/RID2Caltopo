@@ -5,6 +5,8 @@ import android.os.Looper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import org.ncssar.rid2caltopo.data.CaltopoClient
@@ -20,10 +22,14 @@ internal object MappingLayerRecovery {
         if (!scheduled.compareAndSet(false, true)) return
         val app = context.applicationContext
         scope.launch {
-            org.ncssar.rid2caltopo.storage.OperationalStorage.status.collect { status ->
-                if (status.ready) runCatching { adoptCompleteOrphans(app) }
-                    .onFailure { CaltopoClient.CTWarn("MappingProcessing", "orphan adopt failed err=${it.message}") }
-            }
+            // Run once when ready becomes true — not on every status message rewrite.
+            org.ncssar.rid2caltopo.storage.OperationalStorage.status
+                .map { it.ready }
+                .distinctUntilChanged()
+                .collect { ready ->
+                    if (ready) runCatching { adoptCompleteOrphans(app) }
+                        .onFailure { CaltopoClient.CTWarn("MappingProcessing", "orphan adopt failed err=${it.message}") }
+                }
         }
     }
 
@@ -36,6 +42,7 @@ internal object MappingLayerRecovery {
         val root = File(context.filesDir, "mapping-layers")
         if (!root.isDirectory) return 0
         val protected = MappingProcessingManager.protectedMappingIds()
+        val remembered = OrphanEmptyRegistry.load(context.filesDir)
         var adopted = 0
         for (dir in root.listFiles().orEmpty().filter { it.isDirectory }) {
             val id = dir.name
@@ -44,8 +51,7 @@ internal object MappingLayerRecovery {
             if (children == null) continue
             if (children.isEmpty()) {
                 if (id !in protected) {
-                    runCatching { dir.delete() }
-                    CaltopoClient.CTDebug("MappingProcessing", "orphan empty removed id=${id.take(8)}")
+                    removeEmptyOrphan(context, dir, id, remembered)
                 }
                 continue
             }
@@ -63,6 +69,27 @@ internal object MappingLayerRecovery {
             linkMission(context, layer)
         }
         return adopted
+    }
+
+    private fun removeEmptyOrphan(context: Context, dir: File, id: String, remembered: Set<String>) {
+        // Prefer Archive Dir deletion so deferred layers hydrate cannot resurrect the empty dir.
+        val removed = runCatching {
+            org.ncssar.rid2caltopo.storage.OperationalStorage.remove(dir)
+            !dir.exists()
+        }.getOrDefault(false) || runCatching {
+            dir.deleteRecursively()
+            !dir.exists()
+        }.getOrDefault(false) || !dir.exists()
+        if (!removed && dir.exists()) {
+            // Still present (busy projection). Remember so we do not spam the same id.
+            if (id !in remembered) {
+                OrphanEmptyRegistry.remember(context.filesDir, id)
+                CaltopoClient.CTDebug("MappingProcessing", "orphan empty pending id=${id.take(8)}")
+            }
+            return
+        }
+        val first = OrphanEmptyRegistry.remember(context.filesDir, id)
+        if (first) CaltopoClient.CTDebug("MappingProcessing", "orphan empty removed id=${id.take(8)}")
     }
 
     private fun linkMission(context: Context, layer: MappingLayer) {

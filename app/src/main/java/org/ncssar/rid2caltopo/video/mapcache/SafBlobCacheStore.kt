@@ -293,6 +293,15 @@ internal class SafBlobCacheStore(
                 prewarmed = true
                 return
             }
+            // Prefer the persisted saf_entries URIs. A full SAF tree walk of 10k+ tiles
+            // dominated launch (~78s); only rebuild when the DB snapshot is unusable.
+            val reused = tryLoadIndexFromDatabaseLocked()
+            if (reused != null) {
+                prewarmed = true
+                MapCacheDebug.debug(MapCacheDebug.TAG_TILE,
+                    "cache index ready ns=$namespace files=${reused} reused=1 elapsedMs=${System.currentTimeMillis() - startedMs}")
+                return
+            }
             val sizes = HashMap<String, Long>()
             val fileIndex = buildNamespaceFileIndex(nsDir, sizes)
             val indexedFiles = fileIndex.mapNotNull { (relativePath, file) ->
@@ -313,7 +322,70 @@ internal class SafBlobCacheStore(
             }
             prewarmed = true
             MapCacheDebug.debug(MapCacheDebug.TAG_TILE,
-                "cache index ready ns=$namespace files=${fileIndex.size} elapsedMs=${System.currentTimeMillis() - startedMs}")
+                "cache index ready ns=$namespace files=${fileIndex.size} reused=0 elapsedMs=${System.currentTimeMillis() - startedMs}")
+        }
+    }
+
+    /**
+     * Rebuild the in-memory DocumentFile index from persisted saf_entries without walking SAF.
+     * Returns file count on success, null when the DB is empty or sampled URIs look dead.
+     */
+    private fun tryLoadIndexFromDatabaseLocked(): Int? {
+        val rows = synchronized(dbLock) { queryRowsWithSizeLocked() }
+        if (rows.isEmpty()) return null
+        // Spot-check a few URIs. Probing every row reintroduces multi-second SAF latency.
+        val sample = if (rows.size <= 24) rows else {
+            val step = rows.size / 24
+            (0 until 24).map { rows[it * step] }
+        }
+        var sampleOk = 0
+        for (row in sample) {
+            val file = try {
+                DocumentFile.fromSingleUri(appContext, Uri.parse(row.fileUri))
+            } catch (_: Exception) {
+                null
+            }
+            if (file != null && file.isFile) sampleOk++
+        }
+        if (sampleOk < sample.size * 9 / 10) return null
+        val fileIndex = ConcurrentHashMap<String, DocumentFile>(rows.size * 2)
+        for (row in rows) {
+            val file = try {
+                DocumentFile.fromSingleUri(appContext, Uri.parse(row.fileUri))
+            } catch (_: Exception) {
+                null
+            } ?: continue
+            fileIndex[row.fileName] = file
+        }
+        if (fileIndex.size < rows.size * 9 / 10) return null
+        synchronized(dbLock) {
+            namespaceFileIndex = fileIndex
+            bytesUsedAtomic.set(bytesUsedLocked())
+            MapCacheDebug.log("saf prewarm ns=$namespace reused-db files=${fileIndex.size} dbRows=${rows.size}")
+        }
+        return fileIndex.size
+    }
+
+    private fun queryRowsWithSizeLocked(): List<IndexedRow> {
+        val c = db.query(
+            "saf_entries",
+            arrayOf("file_uri", "file_name", "size_bytes"),
+            "namespace = ?",
+            arrayOf(storageNamespace),
+            null,
+            null,
+            null
+        )
+        c.use {
+            val rows = ArrayList<IndexedRow>(it.count.coerceAtLeast(0))
+            while (it.moveToNext()) {
+                rows += IndexedRow(
+                    fileUri = it.getString(0),
+                    fileName = it.getString(1),
+                    sizeBytes = it.getLong(2)
+                )
+            }
+            return rows
         }
     }
 
@@ -921,6 +993,12 @@ internal class SafBlobCacheStore(
         val fileUri: String,
         val fileName: String,
         val expiresAt: Long
+    )
+
+    private data class IndexedRow(
+        val fileUri: String,
+        val fileName: String,
+        val sizeBytes: Long
     )
 
     private data class LocatedFile(

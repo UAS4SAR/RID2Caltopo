@@ -25,7 +25,9 @@ public enum MappingReconstruction {
         var budgetRoot=root.appendingPathComponent("work/rtk-regions-v2")
         var budgetEnabled=true
         var estimateSummary:String?=nil
-        let phases=MappingProgressPhases.tracker(engine:"rtk-surface")
+        let photoCount=photos.count
+        let supportRoot=store.root.deletingLastPathComponent()
+        var phases=MappingProgressPhases.tracker(engine:"rtk-surface", photoCount:photoCount, measuredMsPerPhoto:MappingProgressPhases.Costs.load(supportRoot:supportRoot))
         func ensureCancel() throws { try cancellation.check() }
         func checkBudget() throws {
             try ensureCancel()
@@ -39,19 +41,29 @@ public enum MappingReconstruction {
         func reportPhase(_ phase:String, local:Double?, unitIndex:Int?=nil, unitTotal:Int?=nil, stageOverride:String?=nil) throws {
             try checkBudget()
             let now=Date()
-            let fraction=phases.overall(phase, local: local)
+            let phaseElapsedMs=now.timeIntervalSince(phaseStarted)*1000
+            let defaults=MappingProgressPhases.defaultCostsMs(photoCount:photoCount, engine:"rtk-surface")
+            let estimated=defaults[phase] ?? 1
+            let timeHint: Double? = local == nil && estimated > 1 ? min(0.95, max(0, phaseElapsedMs / estimated)) : nil
+            let fraction=phases.overall(phase, local: local, timeHint: timeHint)
             let stage=stageOverride ?? phases.stage(phase, unitIndex: unitIndex, unitTotal: unitTotal)
             if phase != lastPhase {
-                if let lastPhase { processingLog.debug("phase end id=\(lastPhase, privacy: .public) elapsedMs=\(Int(now.timeIntervalSince(phaseStarted)*1000), privacy: .public)") }
-                processingLog.debug("phase start id=\(phase, privacy: .public)")
+                if let lastPhase {
+                    let endedMs=Int64(now.timeIntervalSince(phaseStarted)*1000)
+                    processingLog.debug("phase end id=\(lastPhase, privacy: .public) elapsedMs=\(endedMs, privacy: .public) photos=\(photoCount, privacy: .public)")
+                    MappingProgressPhases.Costs.record(supportRoot:supportRoot, phaseId:lastPhase, elapsedMs:endedMs, photoCount:photoCount)
+                }
+                processingLog.debug("phase start id=\(phase, privacy: .public) photos=\(photoCount, privacy: .public)")
                 lastPhase=phase; phaseStarted=now; lastProgressLog=now
             } else if now.timeIntervalSince(lastProgressLog) > 60 {
-                processingLog.debug("phase progress id=\(phase, privacy: .public) fraction=\(String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), fraction), privacy: .public) elapsedMs=\(Int(now.timeIntervalSince(started)*1000), privacy: .public)")
+                processingLog.debug("phase progress id=\(phase, privacy: .public) fraction=\(String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), fraction), privacy: .public) elapsedMs=\(Int(now.timeIntervalSince(started)*1000), privacy: .public) photos=\(photoCount, privacy: .public)")
                 lastProgressLog=now
             }
             if now.timeIntervalSince(lastUpdate)>=0.25 || fraction>=1 || local==nil {
                 lastUpdate=now
-                progress(MappingProgressSnapshot(stage:stage,fraction:fraction,startedAt:started,activityAt:now,estimateSummary:estimateSummary))
+                let elapsed=Int64(max(0, now.timeIntervalSince(started)))
+                let remaining=phases.etaSeconds(overall:fraction, elapsedSeconds:elapsed)
+                progress(MappingProgressSnapshot(stage:stage,fraction:fraction,startedAt:started,activityAt:now,estimateSummary:estimateSummary,remainingSeconds:remaining))
             }
         }
         func update(_ stage: String,_ fraction: Double) throws {
@@ -246,13 +258,15 @@ public enum MappingReconstruction {
         try reportPhase(MappingProgressPhases.publish, local:0)
         processingLog.debug("publish layerId=\(resultID.prefix(8), privacy: .public)")
         if let lastPhase {
-            processingLog.debug("phase end id=\(lastPhase, privacy: .public) elapsedMs=\(Int(Date().timeIntervalSince(phaseStarted)*1000), privacy: .public)")
+            let endedMs=Int64(Date().timeIntervalSince(phaseStarted)*1000)
+            processingLog.debug("phase end id=\(lastPhase, privacy: .public) elapsedMs=\(endedMs, privacy: .public) photos=\(photoCount, privacy: .public)")
+            MappingProgressPhases.Costs.record(supportRoot:supportRoot, phaseId:lastPhase, elapsedMs:endedMs, photoCount:photoCount)
         }
         if let encoded=try? JSONSerialization.data(withJSONObject:["active":false,"stage":"Map ready","layerId":resultID,"photoCount":photos.count,"progress":1.0,"updatedAt":ISO8601DateFormatter().string(from:Date())],options:[.sortedKeys]) {
             try? encoded.write(to:root.appendingPathComponent("processing-status.json"),options:.atomic)
         }
         try ensureCancel()
-        progress(MappingProgressSnapshot(stage:"Map ready",fraction:1,startedAt:started,activityAt:Date(),estimateSummary:estimateSummary))
+        progress(MappingProgressSnapshot(stage:"Map ready",fraction:1,startedAt:started,activityAt:Date(),estimateSummary:estimateSummary,remainingSeconds:0))
         return destination
     }
     private static func regionReport(index: Int, g: MappingGeometryResult, surface: URL) -> [String:Any] {

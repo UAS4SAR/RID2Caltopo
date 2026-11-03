@@ -86,6 +86,12 @@ class MappingLayerRecoveryTest {
         assertTrue(File(root, "mapping-layers/$empty").isDirectory)
         MappingLayerRecovery.adoptCompleteOrphans(context)
         assertFalse(File(root, "mapping-layers/$empty").exists())
+        assertTrue(OrphanEmptyRegistry.load(root).contains(empty))
+        // Recreate and rescan: removal still happens, registry prevents a second first-time log.
+        File(root, "mapping-layers/$empty").mkdirs()
+        MappingLayerRecovery.adoptCompleteOrphans(context)
+        assertFalse(File(root, "mapping-layers/$empty").exists())
+        assertEquals(setOf(empty), OrphanEmptyRegistry.load(root))
 
         val protectedId = "e80815fa-0000-4000-8000-00000000000a"
         File(root, "mapping-layers/$protectedId").mkdirs()

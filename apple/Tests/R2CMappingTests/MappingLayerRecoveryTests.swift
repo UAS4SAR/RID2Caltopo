@@ -63,16 +63,24 @@ final class MappingLayerRecoveryTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
+        let support = root.appendingPathComponent("support", isDirectory: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         let emptyID = "e80815fa-0000-4000-8000-000000000014"
         let empty = root.appendingPathComponent("e80815fa-0000-4000-8000-000000000015/results/\(emptyID)", isDirectory: true)
         try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
-        _ = try onIO { try MappingLayerRecovery.adoptCompleteOrphans(missionsRoot: root) }
+        _ = try onIO { try MappingLayerRecovery.adoptCompleteOrphans(missionsRoot: root, supportRoot: support) }
         XCTAssertFalse(FileManager.default.fileExists(atPath: empty.path))
+        XCTAssertTrue(OrphanEmptyRegistry.load(supportRoot: support).contains(emptyID))
+        // Second pass must not re-log; registry already remembers the id.
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        _ = try onIO { try MappingLayerRecovery.adoptCompleteOrphans(missionsRoot: root, supportRoot: support) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: empty.path))
+        XCTAssertEqual(OrphanEmptyRegistry.load(supportRoot: support), [emptyID])
 
         let protectedID = "e80815fa-0000-4000-8000-000000000016"
         let protected = root.appendingPathComponent("e80815fa-0000-4000-8000-000000000017/results/\(protectedID)", isDirectory: true)
         try FileManager.default.createDirectory(at: protected, withIntermediateDirectories: true)
-        _ = try onIO { try MappingLayerRecovery.adoptCompleteOrphans(missionsRoot: root, protectedIds: [protectedID]) }
+        _ = try onIO { try MappingLayerRecovery.adoptCompleteOrphans(missionsRoot: root, protectedIds: [protectedID], supportRoot: support) }
         XCTAssertTrue(FileManager.default.fileExists(atPath: protected.path))
     }
 

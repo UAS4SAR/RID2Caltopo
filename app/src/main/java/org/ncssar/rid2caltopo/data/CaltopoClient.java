@@ -1217,18 +1217,35 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         Log.e(tag, msg);
     }
 
-    public static String ExceptionToString(Exception e) {
+    /** Null-safe; accepts Errors and other Throwables (not only Exception). */
+    public static String ExceptionToString(Throwable e) {
+        return ExceptionToString(e, 0);
+    }
+
+    private static String ExceptionToString(Throwable e, int depth) {
+        if (e == null) return "(null throwable)";
         StringBuilder str = new StringBuilder();
         str.append(e);
         StackTraceElement[] stackTrace = e.getStackTrace();
-        for (StackTraceElement element : stackTrace) {
-            str.append("\n    ");
-            str.append(element);
+        if (stackTrace != null) {
+            for (StackTraceElement element : stackTrace) {
+                str.append("\n    ");
+                str.append(element);
+            }
+        }
+        Throwable cause = e.getCause();
+        if (cause != null && cause != e && depth < 8) {
+            str.append("\nCaused by: ");
+            str.append(ExceptionToString(cause, depth + 1));
         }
         return str.toString();
     }
 
     public static void CTError(String tag, String msg, Exception e) {
+        CTError(tag, msg, (Throwable) e);
+    }
+
+    public static void CTError(String tag, String msg, Throwable e) {
         RegisterDebugTag(tag);
         long myTid = Process.myTid();
         String tidString = "[" + ProcessId + "-" + ((MainThreadId == myTid) ? "main]" : myTid + "]");
@@ -1254,6 +1271,10 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     }
 
     public static void CTWarn(String tag, String msg, Exception e) {
+        CTWarn(tag, msg, (Throwable) e);
+    }
+
+    public static void CTWarn(String tag, String msg, Throwable e) {
         RegisterDebugTag(tag);
         if (DebugLevel >= DebugLevelWarn) {
             long myTid = Process.myTid();
@@ -1264,7 +1285,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             str.append(ExceptionToString(e));
             CTLog("WARN" + tidString, tag, str.toString());
             str.insert(0, "CTWarn" + tidString + ": ");
-            Log.w(tag, msg);
+            Log.w(tag, str.toString());
         }
     }
 

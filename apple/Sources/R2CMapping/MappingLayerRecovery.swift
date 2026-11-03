@@ -17,11 +17,14 @@ public enum MappingLayerRecovery {
     public static func adoptCompleteOrphans(
         missionsRoot: URL,
         protectedIds: Set<String> = [],
-        alreadyRegistered: Set<String> = []
+        alreadyRegistered: Set<String> = [],
+        supportRoot: URL? = nil
     ) throws -> [Adoption] {
         precondition(!Thread.isMainThread, "Mapping layer orphan adoption belongs on an IO worker.")
         let fm = FileManager.default
         guard fm.fileExists(atPath: missionsRoot.path) else { return [] }
+        let statsRoot = supportRoot ?? missionsRoot.deletingLastPathComponent()
+        let remembered = OrphanEmptyRegistry.load(supportRoot: statsRoot)
         var adopted: [Adoption] = []
         let missions = try fm.contentsOfDirectory(at: missionsRoot, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
         for mission in missions {
@@ -35,8 +38,7 @@ public enum MappingLayerRecovery {
                 let children = try fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
                 if children.isEmpty {
                     if !protectedIds.contains(id) {
-                        try? fm.removeItem(at: dir)
-                        log.debug("orphan empty removed id=\(id.prefix(8), privacy: .public)")
+                        removeEmptyOrphan(dir: dir, id: id, remembered: remembered, supportRoot: statsRoot)
                     }
                     continue
                 }
@@ -52,6 +54,27 @@ public enum MappingLayerRecovery {
             }
         }
         return adopted
+    }
+
+    private static func removeEmptyOrphan(dir: URL, id: String, remembered: Set<String>, supportRoot: URL) {
+        let fm = FileManager.default
+        let removed: Bool
+        do {
+            try fm.removeItem(at: dir)
+            removed = !fm.fileExists(atPath: dir.path)
+        } catch {
+            removed = !fm.fileExists(atPath: dir.path)
+        }
+        if !removed && fm.fileExists(atPath: dir.path) {
+            if !remembered.contains(id) {
+                _ = OrphanEmptyRegistry.remember(supportRoot: supportRoot, id: id)
+                log.debug("orphan empty pending id=\(id.prefix(8), privacy: .public)")
+            }
+            return
+        }
+        if OrphanEmptyRegistry.remember(supportRoot: supportRoot, id: id) {
+            log.debug("orphan empty removed id=\(id.prefix(8), privacy: .public)")
+        }
     }
 
     private static func linkMission(mission: URL, layerID: String) {

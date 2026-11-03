@@ -174,6 +174,7 @@ internal object MappingLibraryIndex {
         val loadMs = (System.nanoTime() - loadStart) / 1_000_000
         val refreshStart = System.nanoTime()
         MappingLayerRecovery.ensureScheduled(context)
+        MappingProcessingManager.ensureResume(context)
         runCatching { MappingLayerRecovery.adoptCompleteOrphans(context) }
         val missionDirs = File(filesDir, "mapping-missions").listFiles().orEmpty().filter { it.isDirectory }
         val layerDirs = File(filesDir, "mapping-layers").listFiles().orEmpty().filter { it.isDirectory }

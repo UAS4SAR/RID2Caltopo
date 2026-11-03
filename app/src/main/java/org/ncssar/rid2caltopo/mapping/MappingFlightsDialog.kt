@@ -48,8 +48,11 @@ fun MappingFlightsDialog(mission: MappingMission?, onDismiss: () -> Unit, onConn
     var selectedId by rememberSaveable(initialFlightId) { mutableStateOf(initialFlightId) }
     var inspectedId by rememberSaveable { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var connecting by remember { mutableStateOf(false) }
+    var busyMessage by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    val storageStatus by org.ncssar.rid2caltopo.storage.OperationalStorage.status.collectAsState()
     val selectedSnapshot = flights.firstOrNull { it.id == if (detailOnly) initialFlightId else selectedId }
     val selectedUsage by produceState<MappingStorageUsage?>(null, selectedSnapshot?.id, selectedSnapshot?.photoCount, selectedSnapshot?.resultIds, changes) {
         value=null
@@ -87,33 +90,44 @@ fun MappingFlightsDialog(mission: MappingMission?, onDismiss: () -> Unit, onConn
             onView2D = if (layerHas2D) onViewLayer else null)
         return
     }
+    val phaseMessage = when {
+        connecting -> "Connecting…"
+        busyMessage != null -> busyMessage
+        busy && storageStatus.busy && storageStatus.message.isNotBlank() -> storageStatus.message
+        busy -> "Please wait…"
+        storageStatus.busy && storageStatus.message.isNotBlank() -> storageStatus.message
+        else -> null
+    }
     MappingFlightsContent(flights, selected, busy, error, results = results, viewable2DIds = viewable2DIds, capturedAt = capturedAt, selectedHas2D = layerHas2D,
+        connecting = connecting, phaseMessage = phaseMessage,
         onInspectResult = { inspectedId = it.id }, onViewResult = onViewLayer, freeBytes=overview?.first, unassignedStorage=overview?.second, detailOnly = detailOnly, onSelect = { if (it == null && detailOnly) onDismiss() else selectedId = it; error = null }, onDismiss = onDismiss,
         onInspect = { inspectedId = layer?.id }, onView = { if (layerHas2D) layer?.let(onViewLayer) },
         onConnect = { flight ->
-            busy = true; error = null
+            busy = true; connecting = true; busyMessage = "Connecting…"; error = null
             scope.launch {
                 runCatching { withContext(Dispatchers.IO) { DjiCloudManager.resume(context, flight.id, httpDiagnostic = true) } }
                     .onSuccess { onConnection() }.onFailure { error = it.message ?: "Could not reopen the flight connection." }
-                busy = false
+                busy = false; connecting = false; busyMessage = null
             }
         }, onDelete = { flight, originals ->
-            busy = true; error = null
+            busy = true; connecting = false; busyMessage = "Deleting…"; error = null
             scope.launch {
                 runCatching { withContext(Dispatchers.IO) { MappingFlightDeletion.delete(context, flight.id, originals) } }
                     .onSuccess { if (detailOnly) onDismiss() else selectedId = null; onLayersChanged() }
                     .onFailure { error = it.message ?: "Could not delete the saved flight." }
-                busy = false
+                busy = false; busyMessage = null
             }
         }, onProcess = { flight, completedOnly ->
-            busy = true; error = null
+            busy = true; connecting = false
+            busyMessage = storageStatus.message.takeIf { storageStatus.busy && it.isNotBlank() } ?: "Checking mapping storage…"
+            error = null
             scope.launch {
             runCatching { withContext(Dispatchers.IO) { MappingProcessingManager.start(context, flight.id,
                 expectedPhotos = if (completedOnly) flight.completedDigests.size else flight.photoCount,
                 selectedDigests = if (completedOnly) flight.completedDigests else null,
                 completionSource = if (completedOnly) "operator_selected_completed_batch" else "operator_selected_verified_photos",
                 engine = "rtk-surface") } }.onFailure { error = it.message }
-            busy = false
+            busy = false; busyMessage = null
             }
         })
 }
@@ -126,7 +140,8 @@ internal fun MappingFlightsContent(flights: List<MappingFlightStatus>, selected:
     freeBytes:Long?=null,unassignedStorage:MappingStorageUsage?=null,
     onDelete: (MappingFlightStatus, Boolean) -> Unit = { _, _ -> },
     results: List<MappingLayer> = emptyList(), viewable2DIds: Set<String>? = null, onInspectResult: (MappingLayer) -> Unit = {},
-    onViewResult: (MappingLayer) -> Unit = {}, detailOnly: Boolean = false, capturedAt: String? = "", selectedHas2D: Boolean = false) {
+    onViewResult: (MappingLayer) -> Unit = {}, detailOnly: Boolean = false, capturedAt: String? = "", selectedHas2D: Boolean = false,
+    connecting: Boolean = false, phaseMessage: String? = null) {
     var browsingOriginals by remember(selected?.id) { mutableStateOf(false) }
     if (browsingOriginals && selected != null) MappingOriginalPhotosDialog(selected.id) { browsingOriginals = false }
     var deletingOriginals by remember(selected?.id) { mutableStateOf<Boolean?>(null) }
@@ -182,14 +197,14 @@ internal fun MappingFlightsContent(flights: List<MappingFlightStatus>, selected:
                 TextButton(enabled = !busy && !selected.active, onClick = { deletingOriginals = true }, modifier = Modifier.testTag("mapping-delete-flight")) {
                     Text("Delete entire saved flight…", color = MaterialTheme.colorScheme.error)
                 }
-                if (busy) Text("Please wait…")
+                phaseMessage?.let { Text(it) }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 Text("Flight plan", style = MaterialTheme.typography.titleMedium)
                 Text("Generated: ${MappingTimestamps.generated(selected.createdAt)}")
                 selected.plannedPhotos?.let { photos -> Text("Planned: $photos photos"+(selected.plannedSeconds?.let{" · %.1f min route time".format(it/60.0)}?:"")) }
                 selected.plannedHeightMeters?.let{Text("Planned height: ${org.ncssar.rid2caltopo.data.Units.current.length(it)} above takeoff")}
                 if(selected.hasRoute && selected.photoCount==0) {
-                    TextButton(enabled=!busy,onClick={onConnect(selected)},modifier=Modifier.testTag("mapping-connect-prepared")){Text(if(busy)"Connecting…" else "Connect to Pilot 2")}
+                    TextButton(enabled=!busy,onClick={onConnect(selected)},modifier=Modifier.testTag("mapping-connect-prepared")){Text(if(connecting)"Connecting…" else "Connect to Pilot 2")}
                     Text("No photos collected yet. Review the route and start the flight in Pilot 2.")
                 }
                 Text("Captured images", style = MaterialTheme.typography.titleMedium)
@@ -248,7 +263,7 @@ internal fun MappingFlightsContent(flights: List<MappingFlightStatus>, selected:
                     }
                     Text("Reconstruction stays on screen until it finishes or you cancel it. Originals are retained.")
                 }
-                if (selected.hasRoute && selected.photoCount>0) TextButton(enabled = !busy, onClick = { onConnect(selected) }) { Text(if (busy) "Connecting…" else "Connect to Pilot 2") }
+                if (selected.hasRoute && selected.photoCount>0) TextButton(enabled = !busy, onClick = { onConnect(selected) }) { Text(if (connecting) "Connecting…" else "Connect to Pilot 2") }
                 Text("The connection receives originals for this saved flight. Review clearance and start any flight in Pilot 2.")
             }
         }, confirmButton = { TextButton(enabled = !busy, onClick = { if (selected == null) onDismiss() else onSelect(null) }) {

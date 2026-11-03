@@ -2,9 +2,20 @@ import Foundation
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
+import os
 import R2CCore
 
 public enum MappingSurfaceProducts {
+    private static let fillLog = Logger(subsystem: "org.ncssar.RID2Caltopo", category: "MappingSurfaceFill")
+    private static let fillSkipLock = NSLock()
+    // Guarded by fillSkipLock; marked unsafe for Swift 6 global-mutable checking.
+    nonisolated(unsafe) private static var fillSkipLogged = false
+    static func logFillSkip(_ error: Error) {
+        fillSkipLock.lock(); defer { fillSkipLock.unlock() }
+        guard !fillSkipLogged else { return }
+        fillSkipLogged = true
+        fillLog.warning("ortho fill skipped err=\(String(describing: type(of: error)), privacy: .public)")
+    }
     static func json(_ object: [String:Any], _ url: URL) throws {try JSONSerialization.data(withJSONObject:object,options:[.sortedKeys]).write(to:url,options:.atomic)}
     static func png(_ pixels: [UInt32], _ url: URL) throws {
         var bytes=[UInt8]();bytes.reserveCapacity(pixels.count*4)
@@ -25,10 +36,16 @@ public enum MappingSurfaceProducts {
         var estimatedFillAssignmentCells=0,assignmentSurfaceCells=0
         if fillUnknown2D && !g.approximate {
             try progress("Estimating unknown 2D areas",0.685)
-            let plane=g.heights.filter(\.isFinite).sorted().dropFirst(max(0,g.heights.filter(\.isFinite).count/2)).first.map(Double.init) ?? .nan
-            let fill=try MappingNativeEngine.buildOrthoFill(g.heights,width:g.width,height:g.height,cell:g.cell,enabled:true,fillRadiusMeters:25,planeHeight:plane)
-            fillHeights=fill.heights;fillStats=fill
-            try Data(fill.mask).write(to:surface.appendingPathComponent("estimated-mask.bin"),options:.atomic)
+            do {
+                let plane=g.heights.filter(\.isFinite).sorted().dropFirst(max(0,g.heights.filter(\.isFinite).count/2)).first.map(Double.init) ?? .nan
+                let fill=try MappingNativeEngine.buildOrthoFill(g.heights,width:g.width,height:g.height,cell:g.cell,enabled:true,fillRadiusMeters:25,planeHeight:plane)
+                fillHeights=fill.heights;fillStats=fill
+                try Data(fill.mask).write(to:surface.appendingPathComponent("estimated-mask.bin"),options:.atomic)
+            } catch {
+                // Optional fill must never abort the job; continue measured-only once.
+                MappingSurfaceProducts.logFillSkip(error)
+                try? fm.removeItem(at:surface.appendingPathComponent("estimated-mask.bin"))
+            }
         } else {
             try? fm.removeItem(at:surface.appendingPathComponent("estimated-mask.bin"))
         }

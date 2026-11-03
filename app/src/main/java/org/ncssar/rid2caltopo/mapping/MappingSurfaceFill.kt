@@ -18,11 +18,26 @@ internal object MappingSurfaceFill {
         finite.sort();return finite[finite.size/2].toDouble()
     }
 
-    /** radiusMeters<=0 selects the native 25 m default. */
-    fun build(surface:MappingSurface,radiusMeters:Double=0.0):Result {
-        val native=MappingSurfaceNative.buildOrthoFill(surface.heights,surface.width,surface.height,surface.cell,true,radiusMeters,planeHeight(surface.heights))
-        return Result(native.heights,native.mask,native.estimatedCells,native.fillRadiusMeters)
+    /** radiusMeters<=0 selects the native 25 m default. Optional: never throws UnsatisfiedLinkError out. */
+    fun build(surface:MappingSurface,radiusMeters:Double=0.0):Result? {
+        return try {
+            val native=MappingSurfaceNative.buildOrthoFill(surface.heights,surface.width,surface.height,surface.cell,true,radiusMeters,planeHeight(surface.heights))
+            Result(native.heights,native.mask,native.estimatedCells,native.fillRadiusMeters)
+        } catch (error:Throwable) {
+            // Missing JNI symbol / Error must not kill the reconstruction job.
+            if (!fillFailureLogged) {
+                fillFailureLogged=true
+                org.ncssar.rid2caltopo.data.CaltopoClient.CTWarn(
+                    "MappingSurfaceFill",
+                    "ortho fill skipped err=${error.javaClass.simpleName}: ${error.message?.take(160)}",
+                    error,
+                )
+            }
+            null
+        }
     }
+    @Volatile private var fillFailureLogged=false
+    internal fun resetFailureLogForTest(){fillFailureLogged=false}
 
     /** Raw LSB-first bits, one per surface cell in surface.f32 order. Dimensions are in surface.json. */
     fun writeMask(directory:File,mask:ByteArray) {

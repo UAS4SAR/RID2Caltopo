@@ -188,9 +188,11 @@ public struct MappingProgressSnapshot: Sendable, Equatable {
     public let fraction: Double
     public let startedAt, activityAt: Date
     public let estimateSummary: String?
-    public init(stage: String, fraction: Double, startedAt: Date, activityAt: Date = Date(), estimateSummary: String? = nil) {
+    public let remainingSeconds: Int64?
+    public init(stage: String, fraction: Double, startedAt: Date, activityAt: Date = Date(), estimateSummary: String? = nil, remainingSeconds: Int64? = nil) {
         self.stage=stage; self.fraction=min(1,max(0,fraction.isFinite ? fraction:0)); self.startedAt=startedAt; self.activityAt=activityAt
         self.estimateSummary=estimateSummary
+        self.remainingSeconds=remainingSeconds
     }
     public func elapsed(at now: Date) -> Int { max(0,Int(now.timeIntervalSince(startedAt))) }
     public func activity(at now: Date) -> String {

@@ -235,10 +235,10 @@ internal object OperationalStorage {
                 // The queue lane has its own provider cache and writer. Refresh this lane's
                 // directory snapshot before bulk work; it never mutates queue contents.
                 tree.refresh()
-                // Heavy media/DEM/layer areas dominated launch (recordings verify ~449s). Prepare
-                // compact operational areas first, publish ready, then finish heavies off the
-                // critical path so flight archive/recovery never waits on video tree digests.
-                val heavyAreas = setOf("recordings", "recording-originals", "decoded-terrain", "layers")
+                // Heavy media/DEM/layer/mission areas dominated launch (missions verify ~113s,
+                // recordings ~449s). Prepare compact operational areas first, publish ready, then
+                // finish heavies off the critical path. Reconstruction gates on one mission only.
+                val heavyAreas = setOf("recordings", "recording-originals", "decoded-terrain", "layers", "missions")
                 val critical = selected.filterNot {
                     it.id == "queue-state" || it.id in recorderAreas || it.id in heavyAreas
                 }
@@ -336,6 +336,9 @@ internal object OperationalStorage {
                     "Preparing ${area.id} deferred (live writer): ${error.message}",
                 )
             }
+        }
+        if (state.value.ready) {
+            state.value = Status(ready = true, message = "Retained operational data is in Archive Dir.")
         }
         CaltopoClient.CTDebug("OperationalStorage", "Deferred heavy areas ready count=${heavy.size}")
     }
@@ -539,6 +542,11 @@ internal object OperationalStorage {
         checkSelection()
         // Independent lanes must not clobber bulk prepare's status / ready bit.
         if (announce) state.value = Status(busy = true, message = "Moving retained ${area.id} to Archive Dir…")
+        if (area.id == "missions") {
+            migrateMissionSources(context, value, area, checkSelection, announce)
+            CaltopoClient.CTDebug("OperationalStorage", "Verified sources area=${area.id} elapsedMs=${android.os.SystemClock.elapsedRealtime() - sourceStarted}")
+            return
+        }
         for (source in area.sources) {
             val link = Files.isSymbolicLink(source.toPath())
             val projection = if (link) projectedRoot(context, area, source) else null
@@ -596,10 +604,123 @@ internal object OperationalStorage {
         }
         CaltopoClient.CTDebug("OperationalStorage", "Verified sources area=${area.id} elapsedMs=${android.os.SystemClock.elapsedRealtime() - sourceStarted}")
     }
+
+    /**
+     * Mission migrate is fingerprint-incremental: unchanged mission folders (library-index
+     * folder/manifest mtimes, sizes, counts) are never re-digested. Progress is (k/N) missions.
+     */
+    private fun migrateMissionSources(
+        context: Context,
+        value: Store,
+        area: Area,
+        checkSelection: () -> Unit,
+        announce: Boolean,
+    ) {
+        val filesDir = context.filesDir
+        val stamps = org.ncssar.rid2caltopo.mapping.MissionVerifyStamps.load(filesDir).toMutableMap()
+        var verified = 0
+        var skipped = 0
+        for (source in area.sources) {
+            checkSelection()
+            val link = Files.isSymbolicLink(source.toPath())
+            val projection = if (link) projectedRoot(context, area, source) else null
+            if (link && !source.exists() && projection == null) error("Reconnect the storage holding ${area.id}; its original files were retained.")
+            if (projection != null && !source.exists() && projection.parent.fileName.toString() != value.work.name) {
+                error("Reconnect the previous Archive Dir before moving ${area.id} to another archive.")
+            }
+            if (!source.exists()) continue
+            val projected = projection != null
+            val children = source.listFiles() ?: error("Cannot read retained ${area.id}; original copies were retained.")
+            val missionDirs = children.filter { it.isDirectory }
+            val other = children.filterNot { it.isDirectory }
+            val plan = org.ncssar.rid2caltopo.mapping.MissionVerifyStamps.plan(missionDirs, stamps)
+            var done = 0
+            for (mission in plan.all) {
+                checkSelection()
+                done++
+                // Always publish (k/N) so reconstruction UI never falls back to "Connecting…".
+                state.value = Status(busy = true, ready = state.value.ready, message = plan.message(done))
+                if (mission in plan.skip) {
+                    skipped++
+                    continue
+                }
+                copySource(value, area, source, mission, replace = projected, ancestry = emptySet(), projection = projection)
+                val id = mission.name
+                if (runCatching { java.util.UUID.fromString(id).toString() == id }.getOrDefault(false)) {
+                    stamps[id] = org.ncssar.rid2caltopo.mapping.MappingLibraryIndex.MissionFingerprint.of(mission)
+                    verified++
+                }
+            }
+            for (file in other) {
+                checkSelection()
+                copySource(value, area, source, file, replace = projected, ancestry = emptySet(), projection = projection)
+            }
+        }
+        runCatching { org.ncssar.rid2caltopo.mapping.MissionVerifyStamps.write(filesDir, stamps) }
+        CaltopoClient.CTDebug(
+            "OperationalStorage",
+            "Mission verify incremental verified=$verified skipped=$skipped stamps=${stamps.size}",
+        )
+    }
+
+    /**
+     * Verify/retain one mission's local inputs without waiting on other missions' bulk migrate.
+     * Safe to call when Archive Dir is ready or still preparing deferred mission hydrate.
+     */
+    fun ensureMissionReady(context: Context, missionId: String): Boolean {
+        worker()
+        require(java.util.UUID.fromString(missionId).toString() == missionId)
+        if (!archiveUriPresent()) {
+            announceUnavailable()
+            return false
+        }
+        if (!state.value.ready) {
+            // Compact areas only; missions are deferred and handled below.
+            if (!tryRequireReady(context)) return false
+        }
+        val app = context.applicationContext
+        val root = File(app.filesDir, "mapping-missions/$missionId")
+        if (!root.isDirectory) return false
+        val stamps = org.ncssar.rid2caltopo.mapping.MissionVerifyStamps.load(app.filesDir)
+        if (org.ncssar.rid2caltopo.mapping.MissionVerifyStamps.unchanged(root, stamps)) return true
+        val current = store ?: return state.value.ready
+        val area = current.areas.firstOrNull { it.id == "missions" } ?: return state.value.ready
+        state.value = Status(busy = true, ready = true, message = "Checking mapping storage (1/1)…")
+        try {
+            archiveCommit.lock()
+            try {
+                synchronized(gate) {
+                    kotlin.check(state.value.ready) { state.value.message.ifEmpty { "Archive Dir is unavailable." } }
+                    val link = Files.isSymbolicLink(area.alias.toPath())
+                    val projection = if (link) projectedRoot(app, area, area.alias) else null
+                    copySource(current, area, area.alias, root, replace = projection != null, ancestry = emptySet(), projection = projection)
+                }
+            } finally {
+                archiveCommit.unlock()
+            }
+            val next = stamps.toMutableMap()
+            next[missionId] = org.ncssar.rid2caltopo.mapping.MappingLibraryIndex.MissionFingerprint.of(root)
+            org.ncssar.rid2caltopo.mapping.MissionVerifyStamps.write(app.filesDir, next)
+            CaltopoClient.CTDebug("OperationalStorage", "Mission verify single id=${missionId.take(8)} ok=1")
+            return true
+        } finally {
+            if (state.value.ready) state.value = Status(ready = true, message = "Retained operational data is in Archive Dir.")
+        }
+    }
+
     private fun prepareAreaProjection(context: Context, value: Store, area: Area, hydrationScratch: File, checkSelection: () -> Unit) {
         if (area.id == "clues") {
             prepareCluesProjection(context, value, area, hydrationScratch, checkSelection)
             return
+        }
+        if (area.id == "missions") {
+            val processing = runCatching { org.ncssar.rid2caltopo.mapping.MappingProcessingManager.state.value?.active == true }.getOrDefault(false)
+            val cloud = runCatching { org.ncssar.rid2caltopo.mapping.DjiCloudManager.session.value?.active == true }.getOrDefault(false)
+            if (processing || cloud) {
+                // Local mission tree is authoritative while reconstruction/transfer runs.
+                CaltopoClient.CTDebug("OperationalStorage", "Deferred missions hydrate postponed activeProcessing=$processing activeCloud=$cloud")
+                return
+            }
         }
         val work = value.work
         val hydrationStarted = android.os.SystemClock.elapsedRealtime()
@@ -626,6 +747,7 @@ internal object OperationalStorage {
         }
         verifyHydratedProjection(area, value, staged)
         checkSelection()
+        if (area.id == "layers") purgeRememberedEmptyLayers(context, value, staged)
         if (!reuse) {
             if (destination.exists()) removeTree(destination)
             destination.parentFile!!.mkdirs()
@@ -640,6 +762,26 @@ internal object OperationalStorage {
         if (area.id == "queue-state") for (name in queueNames) File(context.filesDir, name).let { if (it.exists()) check(it.delete()) }
         if (area.id == "review-annotations") context.cacheDir.listFiles().orEmpty().filter { it.isFile && it.name.endsWith(".review.json") }.forEach { check(it.delete()) }
         CaltopoClient.CTDebug("OperationalStorage", "Prepared area=${area.id} reused=$reuse elapsedMs=${android.os.SystemClock.elapsedRealtime() - hydrationStarted}")
+    }
+
+    /** Drop empty layer UUID dirs previously removed so Archive Dir hydrate cannot resurrect them. */
+    private fun purgeRememberedEmptyLayers(context: Context, value: Store, staged: File) {
+        val remembered = org.ncssar.rid2caltopo.mapping.OrphanEmptyRegistry.load(context.filesDir)
+        if (remembered.isEmpty()) return
+        var purged = 0
+        for (id in remembered) {
+            val local = File(staged, id)
+            if (local.isDirectory && local.listFiles().orEmpty().isEmpty()) {
+                removeTree(local)
+                purged++
+            }
+            val archived = "cache/local-maps/mapping-layers/$id"
+            if (value.tree.exists(archived)) {
+                runCatching { value.tree.delete(archived) }
+                purged++
+            }
+        }
+        if (purged > 0) CaltopoClient.CTDebug("OperationalStorage", "Purged remembered empty layers count=$purged")
     }
 
     /**

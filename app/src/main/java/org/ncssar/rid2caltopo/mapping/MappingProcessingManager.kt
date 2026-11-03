@@ -49,7 +49,10 @@ object MappingProcessingManager {
         val mission=JSONObject(File(root,"mission.json").readText())
         require(mission.getString("profile")=="daylight-rgb"){"Select a visible-wide photo flight for local stitching."}
         MappingLayerRecovery.ensureScheduled(app)
-        MappingPhotoStore.writeJson(File(root,"processing-status.json"),JSONObject().put("active",true).put("stage","Preparing local map").put("progress",0.0).put("updatedAt",Instant.now().toString()))
+        MappingPhotoStore.writeJson(File(root,"processing-status.json"),JSONObject().put("active",true).put("stage","Preparing local map").put("progress",0.0)
+            .put("engine",engine).put("completionSource",completionSource)
+            .put("selectedDigests",selection?.let{JSONArray(it)} ?: JSONObject.NULL)
+            .put("updatedAt",Instant.now().toString()))
         current.value=MappingProcessingState(id,mission.getString("title"))
         val nextJob=mappingJob(scope,onStopped={finished,cause->
             // A job cancelled before its first dispatch never enters the worker's try/finally.
@@ -67,7 +70,8 @@ object MappingProcessingManager {
             var budgetRoot=scratchRoot
             val started=System.nanoTime();var lastSaved=0L;var budgetChecked=0L
             var lastProgressLog=0L;var lastPhase:String?=null;var phaseStarted=started
-            val phases=MappingProgressPhases.tracker(engine)
+            var photoCountForWeights=selection?.size ?: expectedPhotos ?: 50
+            var phases=MappingProgressPhases.tracker(engine, photoCountForWeights, MappingProgressPhases.Costs.load(app.filesDir))
             fun ensureCancel(){ ensureActive() }
             fun checkBudget(){
                 ensureCancel()
@@ -86,25 +90,28 @@ object MappingProcessingManager {
             }
             fun reportPhase(phase:String,local:Double?,unitIndex:Int?=null,unitTotal:Int?=null,stageOverride:String?=null){
                 val now=System.nanoTime()
-                val fraction=phases.overall(phase,local)
+                val phaseElapsedMs=(now-phaseStarted)/1_000_000
+                val estimated=phases.estimatedPhaseMs(phase)
+                val timeHint=if(local==null && estimated>1.0) (phaseElapsedMs.toDouble()/estimated).coerceIn(0.0,0.95) else null
+                val fraction=phases.overall(phase,local,timeHint)
                 val stage=stageOverride ?: phases.stage(phase,unitIndex,unitTotal)
                 if(phase!=lastPhase){
-                    if(lastPhase!=null) log("debug","phase end id=$lastPhase elapsedMs=${(now-phaseStarted)/1_000_000}")
-                    log("debug","phase start id=$phase")
+                    val ended=lastPhase
+                    if(ended!=null) {
+                        val endedMs=(now-phaseStarted)/1_000_000
+                        log("debug","phase end id=$ended elapsedMs=$endedMs photos=$photoCountForWeights")
+                        MappingProgressPhases.Costs.record(app.filesDir,ended,endedMs,photoCountForWeights)
+                    }
+                    log("debug","phase start id=$phase photos=$photoCountForWeights")
                     lastPhase=phase;phaseStarted=now;lastProgressLog=now
                 } else if(now-lastProgressLog>60_000_000_000L){
-                    log("debug","phase progress id=$phase fraction=${"%.3f".format(java.util.Locale.US,fraction)} elapsedMs=${(now-started)/1_000_000}")
+                    log("debug","phase progress id=$phase fraction=${"%.3f".format(java.util.Locale.US,fraction)} elapsedMs=${(now-started)/1_000_000} photos=$photoCountForWeights")
                     lastProgressLog=now
                 }
                 if(now-lastSaved<1_000_000_000L&&fraction<1)return
                 lastSaved=now
                 val elapsed=(now-started)/1_000_000_000
-                val remaining=when {
-                    engine!="flat" -> null
-                    local==null -> null
-                    fraction<=0.08 -> null
-                    else -> (elapsed*(1-fraction)/fraction).toLong()
-                }
+                val remaining=phases.etaSeconds(fraction,elapsed)
                 val next=MappingProcessingState(id,mission.getString("title"),stage=stage,progress=fraction,remainingSeconds=remaining,elapsedSeconds=elapsed,
                     surfacePreviewId=if(File(budgetRoot,"surface/surface.glb").isFile)workId else null,estimateSummary=current.value?.estimateSummary)
                 current.value=next
@@ -163,6 +170,8 @@ object MappingProcessingManager {
                 require(expectedPhotos==null||records.size==expectedPhotos){"Verified photo count changed. Review the current flight before processing."}
                 require(records.size in 3..(if(engine=="rtk-surface")MappingVolume.MAX_PHOTOS else 200)){"Choose 3–10,000 visible originals for RTK reconstruction (flat preview supports 200)."}
                 if(records.size>200)require(MappingVolume.card(app)!=null && scratch.canonicalPath.startsWith(MappingVolume.card(app)!!.canonicalPath+"/")){"Insert the mapping microSD card before processing this flight."}
+                photoCountForWeights=records.size
+                phases=MappingProgressPhases.tracker(engine, photoCountForWeights, MappingProgressPhases.Costs.load(app.filesDir))
                 val estimate=MappingStorageEstimate.plan(mission,records.size)
                 val layersRoot=File(app.filesDir,"mapping-layers").apply{mkdirs()}
                 val assessment=MappingStorageEstimate.assess(app,estimate,root,scratchRoot,layersRoot)
@@ -227,7 +236,12 @@ object MappingProcessingManager {
                 // Checkpoints are redundant only after the complete result is published.
                 File(destination,"regions").deleteRecursively()
                 fun markReady(ready:MappingLayer){
-                    if(lastPhase!=null) log("debug","phase end id=$lastPhase elapsedMs=${(System.nanoTime()-phaseStarted)/1_000_000}")
+                    val ended=lastPhase
+                    if(ended!=null) {
+                        val endedMs=(System.nanoTime()-phaseStarted)/1_000_000
+                        log("debug","phase end id=$ended elapsedMs=$endedMs photos=$photoCountForWeights")
+                        MappingProgressPhases.Costs.record(app.filesDir,ended,endedMs,photoCountForWeights)
+                    }
                     MappingPhotoStore.writeJson(File(root,"processing-status.json"),JSONObject().put("active",false).put("stage","Map ready").put("layerId",layerId).put("photoCount",digests.size).put("progress",1.0).put("updatedAt",Instant.now().toString()))
                     current.value=MappingProcessingState(id,mission.getString("title"),active=false,stage="Map ready",progress=1.0,layer=ready,surfacePreviewId=if(ready.surfaceModel.isNotBlank())ready.id else null,estimateSummary=current.value?.estimateSummary)
                 }
@@ -287,6 +301,44 @@ object MappingProcessingManager {
     @Synchronized fun cancel(){job?.cancel(CancellationException("Processing cancelled; originals retained"))}
     @Synchronized fun interrupt(){job?.cancel(CancellationException("Processing interrupted by Android; originals retained"))}
     fun dismiss(){if(current.value?.active!=true)current.value=null}
+
+    private val resumeScheduled=java.util.concurrent.atomic.AtomicBoolean(false)
+    /** After process death, re-queue the active job from processing-status + processing-input. Off UI thread. */
+    fun ensureResume(context:Context) {
+        if(!resumeScheduled.compareAndSet(false,true))return
+        val app=context.applicationContext
+        scope.launch {
+            runCatching { resumeInterruptedJobs(app) }
+                .onFailure{org.ncssar.rid2caltopo.data.CaltopoClient.CTWarn("MappingProcessing","resume failed err=${it.message}")}
+        }
+    }
+
+    private fun resumeInterruptedJobs(context:Context) {
+        if(current.value?.active==true||job?.isCompleted==false)return
+        val root=File(context.filesDir,"mapping-missions")
+        for(dir in root.listFiles().orEmpty().filter{it.isDirectory}) {
+            val status=runCatching{JSONObject(File(dir,"processing-status.json").readText())}.getOrNull() ?: continue
+            if(!status.optBoolean("active"))continue
+            val id=dir.name
+            if(runCatching{UUID.fromString(id).toString()==id}.getOrDefault(false).not())continue
+            val engine=status.optString("engine","rtk-surface").takeIf{it in listOf("flat","rtk-surface")} ?: "rtk-surface"
+            val input=runCatching{JSONObject(File(dir,"processing-input.json").readText())}.getOrNull()
+            val digests=status.optJSONArray("selectedDigests")?.let{arr->(0 until arr.length()).map{arr.getString(it)}}
+                ?: input?.optJSONArray("sha256")?.let{arr->(0 until arr.length()).map{arr.getString(it)}}
+            val completion=status.optString("completionSource",input?.optString("completionSource") ?: "operator_selected_verified_photos")
+            org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("MappingProcessing","resume job id=${id.take(8)} engine=$engine photos=${digests?.size ?: 0}")
+            runCatching {
+                start(context,id,expectedPhotos=digests?.size,selectedDigests=digests,
+                    completionSource=completion.ifBlank{"operator_selected_verified_photos"},engine=engine)
+            }.onFailure { error ->
+                org.ncssar.rid2caltopo.data.CaltopoClient.CTWarn("MappingProcessing","resume start failed id=${id.take(8)} err=${error.message}")
+                val title=runCatching{JSONObject(File(dir,"mission.json").readText()).getString("title")}.getOrDefault(id.take(8))
+                stopped(dir,id,title,error)
+            }
+            return // one active mapping job at a time
+        }
+    }
+
     @Synchronized internal fun maybeStartCompleted(context:Context,id:String,mission:JSONObject){
         val root=File(context.filesDir,"mapping-missions/$id")
         if(mission.optString("profile")!="daylight-rgb"||current.value?.active==true||job?.isCompleted==false)return

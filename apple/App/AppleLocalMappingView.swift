@@ -49,7 +49,7 @@ import R2CMapping
                         self.loading = false
                     }
                 }
-                let orphans = try MappingLayerRecovery.adoptCompleteOrphans(missionsRoot: missionsRoot, protectedIds: [], alreadyRegistered: registered)
+                let orphans = try MappingLayerRecovery.adoptCompleteOrphans(missionsRoot: missionsRoot, protectedIds: [], alreadyRegistered: registered, supportRoot: support)
                 if !orphans.isEmpty {
                     Task { @MainActor in
                         for orphan in orphans {
@@ -427,7 +427,10 @@ struct AppleMappingProgressView:View {
                 Text(estimate).font(.footnote).foregroundStyle(.secondary)
                 Text("These are mapping work-space needs on the volume being written — not the Flight storage or Map cache limits in Manage Storage.").font(.footnote).foregroundStyle(.secondary)
             }
-            TimelineView(.periodic(from:.now,by:1)){context in let elapsed=snapshot.elapsed(at:context.date);VStack(alignment:.leading,spacing:8){Text("\(Int(snapshot.fraction*100))% · \(elapsed/60) min \(elapsed%60) sec elapsed");Text(snapshot.activity(at:context.date))}.frame(maxWidth:.infinity,alignment:.leading)}
+            TimelineView(.periodic(from:.now,by:1)){context in let elapsed=snapshot.elapsed(at:context.date);VStack(alignment:.leading,spacing:8){
+                Text("\(Int(snapshot.fraction*100))% · \(elapsed/60) min \(elapsed%60) sec elapsed · "+(snapshot.remainingSeconds.map{"about \(($0+59)/60) min remaining"} ?? "estimating…"))
+                Text(snapshot.activity(at:context.date))
+            }.frame(maxWidth:.infinity,alignment:.leading)}
             Text(MappingProgressSnapshot.explanation)
             Text("Processing on this tablet. This job stays on screen until it finishes or you cancel it. Originals are retained.")
             Text("Keep R2C open while processing; the operating system may suspend it in the background.").font(.footnote)

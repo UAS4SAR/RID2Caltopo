@@ -11,8 +11,11 @@ object StartupCoroutineSafety {
     private const val TAG = "StartupCoroutine"
 
     val handler = CoroutineExceptionHandler { _, error ->
-        if (error is kotlinx.coroutines.CancellationException) return@CoroutineExceptionHandler
-        CaltopoClient.CTError(TAG, "Uncaught ${error.javaClass.simpleName}: ${sanitize(error.message)}", error as? Exception)
+        // Must never throw: a secondary failure here crashes the process (see A5 Pro p62).
+        runCatching {
+            if (error is kotlinx.coroutines.CancellationException) return@runCatching
+            CaltopoClient.CTError(TAG, "Uncaught ${error.javaClass.simpleName}: ${sanitize(error.message)}", error)
+        }
     }
 
     /** Strip precise coordinates and long numeric tokens from exception text before logging. */

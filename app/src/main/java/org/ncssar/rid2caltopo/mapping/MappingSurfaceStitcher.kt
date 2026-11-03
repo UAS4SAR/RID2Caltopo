@@ -56,6 +56,7 @@ internal object MappingSurfaceStitcher {
         val fill=if(MappingMissionDefaults.fillUnknown2D(mission.optJSONObject("parameters"))&&!approximateSurface&&assignmentCells.known>0){
             check();progress("Estimating unknown 2D areas",.685);MappingSurfaceFill.build(surface)
         } else null
+        // Optional fill: null means skipped (off, approximate, or native unavailable); job continues measured-only.
         val assignmentEstimated=fill?.let{assignment.estimatedCells(it.mask,surface.width,surface.height,surface.x,surface.y,surface.cell)}?:0
         MappingSurfaceFill.putReport(surface.report,fill,assignmentEstimated,assignmentCells.total)
         MappingPhotoStore.writeJson(File(root,"surface-reconstruction-report.json"),JSONObject().put("cameraAdjustment",model.report).put("surface",surface.report))

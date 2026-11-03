@@ -835,3 +835,26 @@ tasks.register("trackerCoordinationTests") {
         runProcess(trackerDir, ["python3", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"])
     }
 }
+
+tasks.register("verifyMappingSurfaceJniSymbols") {
+    group = "verification"
+    description = "Fails if MappingSurfaceNative.external funs lack matching exports in libr2c_mapping_surface.so"
+    def so = file("${rootDir}/tools/mapping/dist/native/android/arm64-v8a/libr2c_mapping_surface.so")
+    def kt = file("${rootDir}/app/src/main/java/org/ncssar/rid2caltopo/mapping/MappingSurfaceNative.kt")
+    inputs.files(so, kt)
+    doLast {
+        if (!so.isFile()) {
+            throw new GradleException("Missing ${so}. Rebuild with tools/mapping/native/build_surface_engine.py")
+        }
+        def names = (kt.text =~ /(?:private\s+)?external\s+fun\s+(\w+)\s*\(/).collect { it[1] }
+        def nmOut = ["nm", "-D", so.absolutePath].execute().text
+        def missing = names.findAll { name ->
+            !nmOut.contains("Java_org_ncssar_rid2caltopo_mapping_MappingSurfaceNative_${name}")
+        }
+        if (!missing.isEmpty()) {
+            throw new GradleException("Missing JNI symbols in ${so.name}: ${missing}. Rebuild the surface engine.")
+        }
+        logger.lifecycle("verifyMappingSurfaceJniSymbols ok count=${names.size()}")
+    }
+}
+tasks.named("check").configure { dependsOn("verifyMappingSurfaceJniSymbols") }

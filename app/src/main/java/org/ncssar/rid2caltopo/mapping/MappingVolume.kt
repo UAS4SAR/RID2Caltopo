@@ -19,6 +19,14 @@ internal object MappingVolume {
                 "Choose or reconnect Archive Dir to use retained operational data."
             }
         }
+        // Reconstruction waits only on this mission's inputs, not bulk mission-tree verify.
+        if (category == "mapping-missions") {
+            check(OperationalStorage.ensureMissionReady(context, id)) {
+                OperationalStorage.status.value.message.ifEmpty {
+                    "Choose or reconnect Archive Dir to use retained operational data."
+                }
+            }
+        }
         return File(context.filesDir, "$category/$id").apply {
             require(isDirectory || mkdirs()) { "Cannot create temporary mapping workspace." }
         }
