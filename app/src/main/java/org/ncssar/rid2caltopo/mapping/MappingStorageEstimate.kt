@@ -1,6 +1,9 @@
 package org.ncssar.rid2caltopo.mapping
 
+import android.content.Context
+import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import kotlin.math.*
 
 /** Planning allowance, not a promise about JPEG compression or scene complexity. */
@@ -9,6 +12,42 @@ internal data class MappingStorageEstimate(val originals:Long,val temporary:Long
     fun projectedUsedFraction(totalBytes:Long,freeBytes:Long):Double =
         if(totalBytes<=0)Double.NaN else (totalBytes-freeBytes+peakAdditionalBytes).toDouble()/totalBytes
     fun warn(totalBytes:Long,freeBytes:Long)=projectedUsedFraction(totalBytes,freeBytes)>=.8
+
+    data class BucketNeed(val bucket:String,val needBytes:Long,val pathHint:String)
+
+    data class BucketAssessment(
+        val bucket:String,
+        val needBytes:Long,
+        val freeBytes:Long,
+        val reserveBytes:Long,
+        val path:File,
+        val label:String,
+    ) {
+        val short:Boolean get() = freeBytes - needBytes < reserveBytes
+        fun message():String = MappingStorageBudget.message(bucket,label,needBytes,freeBytes,reserveBytes)
+        fun json():JSONObject = JSONObject()
+            .put("bucket",bucket).put("needBytes",needBytes).put("freeBytes",freeBytes)
+            .put("reserveBytes",reserveBytes).put("label",label).put("short",short)
+            .put("pathHint",path.name)
+    }
+
+    data class Assessment(val buckets:List<BucketAssessment>) {
+        val shortages:List<BucketAssessment> get() = buckets.filter { it.short }
+        fun summary():String = if (shortages.isEmpty()) buckets.joinToString("; ") { it.message() }
+            else shortages.joinToString("; ") { it.message() }
+        fun json():JSONObject = JSONObject()
+            .put("buckets",JSONArray(buckets.map { it.json() }))
+            .put("shortages",JSONArray(shortages.map { it.json() }))
+            .put("summary",summary())
+    }
+
+    fun needs(originalsRoot:File,scratchRoot:File,layersRoot:File):List<BucketNeed> = listOf(
+        BucketNeed("Original photos",originals,originalsRoot.path),
+        BucketNeed("Mapping work space",temporary,scratchRoot.path),
+        // Final tiles + portable share.zip live under the products / layers volume.
+        BucketNeed("Map products",products,layersRoot.path),
+    )
+
     companion object {
         fun plan(mission:JSONObject,photos:Int):MappingStorageEstimate {
             require(photos in 1..10000)
@@ -31,6 +70,24 @@ internal data class MappingStorageEstimate(val originals:Long,val temporary:Long
             val products=raster*2+model // Final tiles, portable ZIP and regional geometry.
             val temporary=raw+if(regional)(raster+model)*3 else model
             return MappingStorageEstimate(originals,temporary,products)
+        }
+
+        fun assess(
+            context:Context,
+            estimate:MappingStorageEstimate,
+            originalsRoot:File,
+            scratchRoot:File,
+            layersRoot:File,
+            reserveBytes:Long=MappingPhotoStore.FREE_SPACE_RESERVE,
+        ):Assessment {
+            val needs=estimate.needs(originalsRoot,scratchRoot,layersRoot)
+            val paths=listOf(originalsRoot,scratchRoot,layersRoot)
+            return Assessment(needs.mapIndexed { index, need ->
+                val path=paths[index]
+                val free=MappingStorageBudget.freeBytes(path)
+                val label=MappingStorageBudget.label(context,path)
+                BucketAssessment(need.bucket,need.needBytes,free,reserveBytes,path,label)
+            })
         }
     }
 }

@@ -15,6 +15,7 @@ import org.ncssar.rid2caltopo.BuildConfig;
 import org.ncssar.rid2caltopo.video.PeerTrafficMapRegistry;
 import org.ncssar.rid2caltopo.app.R2CApplication;
 import org.ncssar.rid2caltopo.app.R2CActivity;
+import org.ncssar.rid2caltopo.util.LogThrottle;
 import org.ncssar.rid2caltopo.video.ManagedVideoSessionRecording;
 import org.ncssar.rid2caltopo.video.ManagedVideoSessionRecordingCatalog;
 import org.json.JSONArray;
@@ -97,6 +98,8 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
     }
 
     private static final long HEARTBEAT_INTERVAL_MS = 15_000L;
+    private static final long LOG_SUMMARY_INTERVAL_MS = 300_000L;
+    private static final long HEARTBEAT_RTT_ANOMALY_MS = 3_000L;
     private static final long HELLO_ACK_TIMEOUT_MS = 10_000L;
     private static final long HEARTBEAT_ACK_TIMEOUT_MS = 10_000L;
     private static final long ACK_WATCHDOG_INTERVAL_MS = 5_000L;
@@ -1319,9 +1322,15 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
             putFinite(jo, "lat", myLat);
             putFinite(jo, "lng", myLon);
             jo.put("caltopoRttMs", myCaltopoRttMs);
-            CTDebug(TAG, String.format(Locale.US,
-                    "sendHeartbeat(): mapId=%s zoneId=%s lat=%.6f lng=%.6f rttMs=%d",
-                    mapId, myGuid, myLat, myLon, myCaltopoRttMs));
+            // Coarse presence only — never log precise coordinates.
+            String hbMsg = String.format(Locale.US,
+                    "sendHeartbeat(): mapId=%s zoneId=%s hasFix=%s rttMs=%d",
+                    mapId, myGuid,
+                    (Double.isFinite(myLat) && Double.isFinite(myLon) && myLat != 0.0 && myLon != 0.0),
+                    myCaltopoRttMs);
+            String hbOut = LogThrottle.emit("tracker.sendHeartbeat", hbMsg,
+                    LOG_SUMMARY_INTERVAL_MS, true);
+            if (hbOut != null) CTDebug(TAG, hbOut);
             sendJson(jo);
         } catch (Exception e) {
             CTError(TAG, "sendHeartbeat() raised", e);
@@ -1664,8 +1673,11 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                 case "video_stream_advertisement_ack":
                     if (jo.optBoolean("accepted", false)) {
                         JSONArray sessionIds = jo.optJSONArray("sessionIds");
-                        CTDebug(TAG, "Managed video presence accepted sessions="
-                                + (sessionIds == null ? 0 : sessionIds.length()));
+                        String presenceMsg = "Managed video presence accepted sessions="
+                                + (sessionIds == null ? 0 : sessionIds.length());
+                        String presenceOut = LogThrottle.emit(
+                                "tracker.video.presence", presenceMsg, 0L, true);
+                        if (presenceOut != null) CTDebug(TAG, presenceOut);
                     } else {
                         CTWarn(TAG, "Managed video presence rejected: "
                                 + jo.optString("error", "Tracker rejected presence"));
@@ -2139,12 +2151,25 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         lastHeartbeatSeqAcked = ackSeq;
         lastHeartbeatAckAtMs = nowMs;
         lastServerAcknowledgementAtMs = nowMs;
+        long previousLease = lastOwnerLeaseExpireTs;
         if (ownerLeaseExpireTs > 0) {
             lastOwnerLeaseExpireTs = ownerLeaseExpireTs;
         }
-        CTDebug(TAG, String.format(Locale.US,
-                "heartbeat_ack received: seq=%d rttMs=%d ownerLeaseExpireTs=%d",
-                ackSeq, nowMs - lastHeartbeatSentAtMs, ownerLeaseExpireTs));
+        long rttMs = nowMs - lastHeartbeatSentAtMs;
+        boolean leaseChanged = ownerLeaseExpireTs > 0 && ownerLeaseExpireTs != previousLease;
+        boolean anomaly = rttMs >= HEARTBEAT_RTT_ANOMALY_MS;
+        String ackMsg = String.format(Locale.US,
+                "heartbeat_ack received: rttMs=%d ownerLeaseExpireTs=%d",
+                rttMs, ownerLeaseExpireTs);
+        if (anomaly || leaseChanged) {
+            CTDebug(TAG, String.format(Locale.US,
+                    "heartbeat_ack received: seq=%d rttMs=%d ownerLeaseExpireTs=%d anomaly=%s leaseChanged=%s",
+                    ackSeq, rttMs, ownerLeaseExpireTs, anomaly, leaseChanged));
+        } else {
+            String ackOut = LogThrottle.emit("tracker.heartbeat_ack", ackMsg,
+                    LOG_SUMMARY_INTERVAL_MS, true);
+            if (ackOut != null) CTDebug(TAG, ackOut);
+        }
         flushPendingConfirmations();
     }
 

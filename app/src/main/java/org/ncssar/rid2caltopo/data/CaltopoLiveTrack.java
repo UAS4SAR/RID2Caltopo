@@ -14,6 +14,7 @@ import org.json.JSONObject;
 import org.ncssar.rid2caltopo.BuildConfig;
 import org.ncssar.rid2caltopo.app.R2CActivity;
 import org.ncssar.rid2caltopo.app.R2CApplication;
+import org.ncssar.rid2caltopo.util.LogThrottle;
 import org.ncssar.rid2caltopo.video.ManagedVideoSessionRecording;
 import org.ncssar.rid2caltopo.video.ManagedVideoSessionRecordingCatalog;
 import org.ncssar.rid2caltopo.video.ManagedVideoStreamPresence;
@@ -601,9 +602,11 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                                              long timestampMsec) {
         long startedAtMs = System.currentTimeMillis();
         if (LocalTrackListeners.isEmpty()) {
-            CTDebug(ICON_LATENCY_TAG, String.format(Locale.US,
-                    "track_notify_skipped remoteId=%s mappedId=%s reason=no_listeners droneTs=%d lat=%.6f lng=%.6f alt=%.1f",
-                    droneSpec.getRemoteId(), droneSpec.getMappedId(), timestampMsec, lat, lng, altitudeMeters));
+            String skipMsg = String.format(Locale.US,
+                    "track_notify_skipped remoteId=%s mappedId=%s reason=no_listeners",
+                    droneSpec.getRemoteId(), droneSpec.getMappedId());
+            String skipOut = LogThrottle.emit("rid.track_notify_skipped", skipMsg, 30_000L, true);
+            if (skipOut != null) CTDebug(ICON_LATENCY_TAG, skipOut);
             return;
         }
         String remoteId = droneSpec.getRemoteId();
@@ -2197,9 +2200,11 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     private void notifyLocalTrackPoint(double lat, double lng, double altitudeMeters, long timestampMsec) {
         long startedAtMs = System.currentTimeMillis();
         if (LocalTrackListeners.isEmpty()) {
-            CTDebug(ICON_LATENCY_TAG, String.format(Locale.US,
-                    "track_notify_skipped remoteId=%s mappedId=%s reason=no_listeners droneTs=%d lat=%.6f lng=%.6f alt=%.1f",
-                    myRemoteId, droneSpec.getMappedId(), timestampMsec, lat, lng, altitudeMeters));
+            String skipMsg = String.format(Locale.US,
+                    "track_notify_skipped remoteId=%s mappedId=%s reason=no_listeners",
+                    myRemoteId, droneSpec.getMappedId());
+            String skipOut = LogThrottle.emit("rid.track_notify_skipped.inst", skipMsg, 30_000L, true);
+            if (skipOut != null) CTDebug(ICON_LATENCY_TAG, skipOut);
             return;
         }
         String mappedId = droneSpec.getMappedId();

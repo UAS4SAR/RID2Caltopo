@@ -51,48 +51,30 @@ internal data class MappingLibraryEntry(
 internal object MappingLibraryRepository {
     private val captureCache = java.util.concurrent.ConcurrentHashMap<String, Pair<String, String>>()
     private fun json(file: File) = runCatching { JSONObject(file.readText()) }.getOrNull()
-    fun capture(root: File): String {
-        val records = File(root,"inventory").listFiles().orEmpty().mapNotNull(::json).filter { it.optBoolean("complete") }
-            .sortedBy { it.optString("name") }
+    fun capture(root: File, inventory: Map<String, JSONObject>? = null): String {
+        val records = inventory?.values?.toList()
+            ?: File(root, "inventory").listFiles().orEmpty().mapNotNull(::json)
+        val complete = records.filter { it.optBoolean("complete") }.sortedBy { it.optString("name") }
         // Original filenames are chronological for the supported controller. Inspect one header,
         // caching by its identity, without decoding photos during each library refresh.
-        val record = records.firstOrNull() ?: return ""
+        val record = complete.firstOrNull() ?: return ""
         val digest = record.optString("sha256").takeIf { it.matches(Regex("[a-f0-9]{64}")) } ?: return ""
-        val file = File(root,"originals/$digest.jpg")
+        val file = File(root, "originals/$digest.jpg")
         val signature = "$digest:${file.length()}:${file.lastModified()}"
         captureCache[root.path]?.takeIf { it.first == signature }?.let { return it.second }
         val time = runCatching { ExifInterface(file.path).getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL).orEmpty() }.getOrDefault("")
         captureCache[root.path] = signature to time
         return time
     }
-    private fun center(points: List<List<Double>>): Pair<Double,Double>? {
-        val good = points.filter { it.size >= 2 && it[0].isFinite() && it[1].isFinite() && it[0] in -180.0..180.0 && it[1] in -90.0..90.0 }
-        if (good.isEmpty()) return null
-        return (good.minOf { it[1] } + good.maxOf { it[1] })/2 to (good.minOf { it[0] } + good.maxOf { it[0] })/2
-    }
     fun list(context: Context, live: MappingProcessingState?, includeStorage: Boolean = true): List<MappingLibraryEntry> {
         if (!org.ncssar.rid2caltopo.storage.OperationalStorage.tryRequireReady(context)) return emptyList()
-        val flights = MappingFlightRepository.list(context.filesDir, live=live, includeStorage=includeStorage)
-        val owned = flights.flatMap { it.resultIds }.toSet()
-        val entries = flights.map { flight ->
-            val root = File(context.filesDir,"mapping-missions/${flight.id}")
-            val mission = json(File(root,"mission.json"))
-            val reports = flight.resultIds.mapNotNull { json(File(context.filesDir,"mapping-layers/$it/layer.json")) }
-            val captureTime = capture(root).takeIf { MappingLibraryEntry.localCapture(it) != null } ?: reports.map { it.optString("captureTimeLocal") }.filter { MappingLibraryEntry.localCapture(it) != null }.minOrNull().orEmpty()
-            val points = runCatching {
-                val ring = mission!!.getJSONObject("feature").getJSONObject("geometry").getJSONArray("coordinates").getJSONArray(0)
-                (0 until ring.length()).map { index -> ring.getJSONArray(index).let { listOf(it.getDouble(0), it.getDouble(1)) } }
-            }.getOrDefault(emptyList())
-            val has3D = flight.resultIds.any { MappingLibraryFiles.contains(File(context.filesDir,"mapping-layers/$it/surface"), "glb") }
-            MappingLibraryEntry("flight:${flight.id}",flight.title,captureTime,flight.createdAt,flight.hasRoute,flight.photoCount,
-                flight.resultIds.any { MappingLibraryFiles.contains(File(context.filesDir,"mapping-layers/$it"), "png") },has3D,flight.stage,flight.storage,center(points),flight=flight)
-        }
-        return entries + MappingLayer.allLocal(context).filterNot { it.id in owned }.map { layer ->
-            val usage = if (includeStorage) MappingMissionStorage.layer(context.filesDir,layer.id) else null
-            val bounds = layer.bounds
-            MappingLibraryEntry("layer:${layer.id}",layer.title,layer.capturedAt,"",false,layer.photoCount,true,
-                MappingLibraryFiles.contains(File(context.filesDir,"mapping-layers/${layer.id}/surface"), "glb"),
-                "Imported map · originals not stored here",usage,center(layer.assignmentBoundary) ?: if(bounds.size==4) (bounds[1]+bounds[3])/2 to (bounds[0]+bounds[2])/2 else null,layer=layer)
+        val refreshed = MappingLibraryIndex.refresh(context, live)
+        if (!includeStorage) return refreshed.entries
+        val storage = MappingMissionStorage.index(context.filesDir, live)
+        return refreshed.entries.map { entry ->
+            val usage = entry.flight?.let { storage.mission(it.id) }
+                ?: entry.layer?.let { MappingMissionStorage.layer(context.filesDir, it.id) }
+            entry.copy(storage = usage)
         }
     }
 }

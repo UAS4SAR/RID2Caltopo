@@ -148,7 +148,7 @@ class LocalS3(private val directory: File, val prefix: String, private val expir
                 val checked=object:OutputStream() {
                     override fun write(value:Int) { write(byteArrayOf(value.toByte()),0,1) }
                     override fun write(bytes:ByteArray,offset:Int,count:Int) {
-                        require(directory.usableSpace - count >= MappingPhotoStore.FREE_SPACE_RESERVE) { "Tablet storage is full; completed originals are retained." }
+                        MappingStorageBudget.requireFree(directory, count.toLong(), bucket = "Original photos")
                         hash.update(bytes,offset,count); md5.update(bytes,offset,count); output.write(bytes,offset,count)
                     }
                 }

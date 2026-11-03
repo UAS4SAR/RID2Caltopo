@@ -9,6 +9,7 @@ import R2CMapping
     static let shared=AppleLocalMappingModel()
     @Published var entries:[MappingLocalMission]=[]
     @Published var loading=false
+    @Published var refreshing=false
     @Published var error:String?
     @Published var loadingError:String?
     @Published var progress:MappingProgressSnapshot?
@@ -20,15 +21,66 @@ import R2CMapping
     var jobTitle="",jobHeading="Reconstructing mission imagery"
     private let queue=DispatchQueue(label:"org.ncssar.mapping",qos:.userInitiated)
     private var cancellation=MappingCancellation()
+    private let libraryCache = LibraryIndexCache()
     private func store() throws -> MappingMissionStore {try MappingMissionStore(root:MappingMissionStore.applicationRoot())}
-    func refresh(incident: String,newest: Bool) {
-        guard !loading else{return};loading=true
+    func refresh(incident: String,newest: Bool,force: Bool = false) {
+        if loading { return }
+        let hasRows = !entries.isEmpty || libraryCache.hasIndex
+        if hasRows { refreshing = true } else { loading = true }
+        let liveID = busy ? entries.first(where: { progress != nil })?.id : nil
+        let liveStage = progress?.stage
+        let liveProgress = progress?.fraction
+        let registered = Set(AppleMappingLayerStore.shared.layers.map(\.id))
         queue.async {
-            do {let entries=try MappingMissionStore(root:MappingMissionStore.applicationRoot()).list(newestFirst:newest)
-                Task{@MainActor in self.entries=entries;self.loading=false;self.loadingError=nil}
-            }catch{let message=error.localizedDescription;Task{@MainActor in self.loadingError=message;self.loading=false}}
+            do {
+                let missionsRoot = try MappingMissionStore.applicationRoot()
+                let support = missionsRoot.deletingLastPathComponent()
+                if !self.libraryCache.hasIndex, let index = MappingLibraryIndex.load(supportRoot: support) {
+                    self.libraryCache.index = index
+                    let rows = index.missions
+                        .filter { incident.isEmpty || $0.incidentID == incident || $0.incidentID.isEmpty }
+                        .map { MappingLibraryIndex.toLocalMission($0, missionsRoot: missionsRoot) }
+                        .sorted { newest ? $0.date > $1.date : $0.date < $1.date }
+                    Task { @MainActor in
+                        if self.entries.isEmpty { self.entries = rows }
+                        self.loading = false
+                    }
+                }
+                let orphans = try MappingLayerRecovery.adoptCompleteOrphans(missionsRoot: missionsRoot, protectedIds: [], alreadyRegistered: registered)
+                if !orphans.isEmpty {
+                    Task { @MainActor in
+                        for orphan in orphans {
+                            try? AppleMappingLayerStore.shared.installShared([orphan.layer], incidentID: orphan.layer.incidentId)
+                            UserDefaults.standard.set("\(orphan.missionID)/results/\(orphan.layer.id)", forKey: "mapping.result.\(orphan.layer.id)")
+                        }
+                    }
+                }
+                let needRefresh: Bool
+                if force { needRefresh = true }
+                else if let previous = self.libraryCache.index {
+                    needRefresh = try MappingLibraryIndex.cheapChanged(missionsRoot: missionsRoot, previous: previous)
+                } else { needRefresh = true }
+                guard needRefresh else {
+                    Task { @MainActor in self.loading = false; self.refreshing = false }
+                    return
+                }
+                let result = try MappingLibraryIndex.refresh(
+                    missionsRoot: missionsRoot, supportRoot: support,
+                    liveMissionID: liveID, liveStage: liveStage, liveProgress: liveProgress
+                )
+                self.libraryCache.index = result.index
+                let rows = result.index.missions
+                    .filter { incident.isEmpty || $0.incidentID == incident || $0.incidentID.isEmpty }
+                    .map { MappingLibraryIndex.toLocalMission($0, missionsRoot: missionsRoot) }
+                    .sorted { newest ? $0.date > $1.date : $0.date < $1.date }
+                Task { @MainActor in self.entries = rows; self.loading = false; self.refreshing = false; self.loadingError = nil }
+            } catch {
+                let message = error.localizedDescription
+                Task { @MainActor in self.loadingError = message; self.loading = false; self.refreshing = false }
+            }
         }
     }
+    func invalidateLibrary() { libraryCache.index = nil }
     func save(mission: MappingMission,profile: MappingResolution.Profile,gsd: Double,capture: MappingProcessingPolicy.CaptureProfile,canopy: Double,maximumObstacleHeightMeters: Double? = nil,clearanceMeters:Double = 15,maximumCaptureSpeedMetersPerSecond:Double? = nil,transitSpeedMetersPerSecond:Double? = nil) async throws {
         try await Task.detached(priority: .userInitiated) {
         let store=try MappingMissionStore(root:MappingMissionStore.applicationRoot()),data=try mission.json(cameraProfile:profile,desiredGsdCmPerPixel:gsd,captureProfile:capture,canopyHeightMeters:canopy,maximumObstacleHeightMeters:maximumObstacleHeightMeters,clearanceMeters:clearanceMeters,maximumCaptureSpeedMetersPerSecond:maximumCaptureSpeedMetersPerSecond,transitSpeedMetersPerSecond:transitSpeedMetersPerSecond)
@@ -37,6 +89,7 @@ import R2CMapping
         try kmz.write(to:folder.appendingPathComponent("mission.kmz"),options:.atomic)
         try route.summary().write(to:folder.appendingPathComponent("route-summary.json"),options:.atomic)
         }.value
+        invalidateLibrary()
     }
     func importFiles(_ urls:[URL],id:String,incident:String) {
         guard !busy else{return};busy=true;error=nil;jobTitle=entries.first{$0.id==id}?.title ?? "";jobHeading="Importing original photos";let started=Date();cancellation=MappingCancellation();let cancel=cancellation
@@ -48,15 +101,15 @@ import R2CMapping
                     Task{@MainActor in self.progress=value}
                 };digests.append(original.digest)}
                 try store.completeSelection(Array(Set(digests)).sorted(),missionID:id)
-                Task{@MainActor in self.finish();self.refresh(incident:incident,newest:true)}
-            }catch{let message=error.localizedDescription;Task{@MainActor in self.error=message;self.finish();self.refresh(incident:incident,newest:true)}}
+                Task{@MainActor in self.finish();self.invalidateLibrary();self.refresh(incident:incident,newest:true,force:true)}
+            }catch{let message=error.localizedDescription;Task{@MainActor in self.error=message;self.finish();self.invalidateLibrary();self.refresh(incident:incident,newest:true,force:true)}}
         }
     }
     func reconstruct(id:String,incident:String,title:String,selectedDigests:Set<String>? = nil) {
         guard !busy else{return}
         jobTitle=title;jobHeading="Reconstructing mission imagery";outcome=nil
         busy=true;error=nil;ready=nil;cancellation=MappingCancellation();let cancel=cancellation
-        AppleLog.info("Mapping", "Reconstruction started mission=\(id) selectedPhotos=\(selectedDigests?.count ?? -1)")
+        AppleLog.info("Mapping", "Reconstruction started mission=\(id.prefix(8)) selectedPhotos=\(selectedDigests?.count ?? -1)")
         progress=MappingProgressSnapshot(stage:"Preparing local map",fraction:0,startedAt:Date());UIApplication.shared.isIdleTimerDisabled=true
         queue.async {
             do {let result=try MappingReconstruction.run(store:MappingMissionStore(root:MappingMissionStore.applicationRoot()),missionID:id,selectedDigests:selectedDigests,cancellation:cancel){value in Task{@MainActor in self.progress=value}}
@@ -64,11 +117,11 @@ import R2CMapping
                 // A persistent lookup keeps products in their owning mission, avoiding duplicate copies.
                 UserDefaults.standard.set("\(id)/results/\(layer.id)",forKey:"mapping.result.\(layer.id)")
                 Task{@MainActor in
-                    do{try AppleMappingLayerStore.shared.installShared([layer],incidentID:incident);self.ready=result;self.outcome=Outcome(layer:layer,error:nil);AppleLog.info("Mapping", "Reconstruction completed mission=\(id) layer=\(layer.id) photos=\(layer.photoCount ?? 0)")}catch{self.error=error.localizedDescription;self.outcome=Outcome(layer:nil,error:error.localizedDescription)}
-                    self.finish();self.refresh(incident:incident,newest:true)
+                    do{try AppleMappingLayerStore.shared.installShared([layer],incidentID:incident);self.ready=result;self.outcome=Outcome(layer:layer,error:nil);AppleLog.info("Mapping", "Reconstruction completed mission=\(id.prefix(8)) layer=\(layer.id.prefix(8)) photos=\(layer.photoCount ?? 0)")}catch{self.error=error.localizedDescription;self.outcome=Outcome(layer:nil,error:error.localizedDescription)}
+                    self.finish();self.invalidateLibrary();self.refresh(incident:incident,newest:true,force:true)
                 }
             }catch{let message=error is CancellationError ? "Processing cancelled; originals and completed regions retained.":error.localizedDescription
-                Task{@MainActor in self.error=message;self.outcome=Outcome(layer:nil,error:message);self.finish();self.refresh(incident:incident,newest:true)}}
+                Task{@MainActor in self.error=message;self.outcome=Outcome(layer:nil,error:message);self.finish();self.invalidateLibrary();self.refresh(incident:incident,newest:true,force:true)}}
         }
     }
     func remove(_ entry:MappingLocalMission,originals:Bool) {
@@ -79,7 +132,7 @@ import R2CMapping
         queue.async {
             do{try connection?.closeAndWait();let store=try MappingMissionStore(root:MappingMissionStore.applicationRoot());if originals{try store.deleteMission(entry.id,originalsConfirmed:true)}else{try store.deleteResults(entry.id)}
                 let ids=entry.results.map(\.lastPathComponent)
-                Task{@MainActor in AppleMappingTransferModel.shared.deletionFinished(entry.id);for layer in AppleMappingLayerStore.shared.layers where ids.contains(layer.id){AppleMappingLayerStore.shared.deleteLocally(layer);UserDefaults.standard.removeObject(forKey:"mapping.result.\(layer.id)")};self.finish();self.refresh(incident:entry.incidentID,newest:true)}
+                Task{@MainActor in AppleMappingTransferModel.shared.deletionFinished(entry.id);for layer in AppleMappingLayerStore.shared.layers where ids.contains(layer.id){AppleMappingLayerStore.shared.deleteLocally(layer);UserDefaults.standard.removeObject(forKey:"mapping.result.\(layer.id)")};self.finish();self.invalidateLibrary();self.refresh(incident:entry.incidentID,newest:true,force:true)}
             }catch{let message=error.localizedDescription;Task{@MainActor in self.error=message;self.finish()}}
         }
         } catch { self.error = error.localizedDescription; self.finish() }
@@ -87,6 +140,17 @@ import R2CMapping
     }
     func cancel(){cancellation.cancel()}
     private func finish(){busy=false;progress=nil;UIApplication.shared.isIdleTimerDisabled=AppleMappingTransferModel.shared.active}
+}
+
+/// Index cache shared with the mapping IO queue; never touch from MainActor for filesystem work.
+private final class LibraryIndexCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _index: MappingLibraryIndex.Index?
+    var hasIndex: Bool { lock.lock(); defer { lock.unlock() }; return _index != nil }
+    var index: MappingLibraryIndex.Index? {
+        get { lock.lock(); defer { lock.unlock() }; return _index }
+        set { lock.lock(); _index = newValue; lock.unlock() }
+    }
 }
 
 // Android mapping dialogs are the reference for ordering, labels and navigation.
@@ -144,14 +208,15 @@ struct AppleLocalMappingView:View {
                     HStack{Button(newest ? "✓ Newest first":"Newest first"){newest=true};Button(newest ? "Oldest first":"✓ Oldest first"){newest=false}}
                     Text("Sorted by capture time; unflown missions use planning time.").font(.footnote)
                     if model.loading && rows.isEmpty {ProgressView("Loading saved missions and storage sizes…")}
+                    else if model.refreshing {Text("Refreshing…").font(.footnote).foregroundStyle(.secondary)}
                     if let error=model.error ?? model.loadingError {Text(error).foregroundStyle(.red)}
                     if !model.loading && rows.isEmpty && model.error==nil && model.loadingError==nil{Text("No mapping missions yet.")}
                     ForEach(rows){row in
                         VStack(alignment:.leading,spacing:4) {
-                            Text(row.mission.map{($0.photos.isEmpty ? "Planned: "+MappingLayer.generatedLabel($0.date):"Captured: "+MappingLayer.capturedLabel($0.date))} ?? row.layer?.captureTimeSummary ?? "Capture time unavailable").font(.footnote)
+                            Text(row.mission.map{($0.photoCount == 0 ? "Planned: "+MappingLayer.generatedLabel($0.date):"Captured: "+MappingLayer.capturedLabel($0.date))} ?? row.layer?.captureTimeSummary ?? "Capture time unavailable").font(.footnote)
                             Text(row.mission?.title ?? row.layer?.title ?? "Mission").font(.headline)
                             if let entry=row.mission {
-                                Text("Map prepared · \(entry.photos.count) images captured · \(entry.results.isEmpty ? "No map results": "2D / 3D layers available")")
+                                Text("Map prepared · \(entry.photoCount) images captured · \(entry.has2D || !entry.results.isEmpty ? (entry.has3D ? "2D / 3D layers available" : "2D layers available") : "No map results")")
                                 Text(entry.status).font(.footnote)
                                 distance(latitude:entry.latitude,longitude:entry.longitude)
                                 Text("Planning files: \(size(entry.planningBytes)) · Captured images: \(size(entry.photoBytes))")
@@ -170,7 +235,15 @@ struct AppleLocalMappingView:View {
                 } actions:{Button("Hide local preview"){layers.localPreviewID=nil;for layer in layers.layers{layers.setVisible(layer.id,visible:false)};dismiss()};Button("Done"){dismiss()}}
             }
         }
-        .task{repeat{if !model.busy{model.refresh(incident:incidentID,newest:newest)};do{try await Task.sleep(for:.seconds(5))}catch{return}}while !Task.isCancelled}
+        .task{
+            model.refresh(incident:incidentID,newest:newest,force:true)
+            repeat{
+                do{try await Task.sleep(for:.seconds(30))}catch{return}
+                if !model.busy{model.refresh(incident:incidentID,newest:newest)}
+            }while !Task.isCancelled
+        }
+        .onChange(of:model.busy){_,busy in if !busy {model.refresh(incident:incidentID,newest:newest,force:true)}}
+        .onChange(of:layers.layers.map(\.id)){_,_ in model.refresh(incident:incidentID,newest:newest,force:true)}
         .sheet(item:$inspecting){layer in AppleMappingLayerInspector(layer:layer,onDelete:{layers.deleteLocally(layer);inspecting=nil;model.refresh(incident:incidentID,newest:newest)},onView:{show(layer)})}
         .fullScreenCover(item:$surface){AppleMappingSurfaceView(result:$0.url)}
         .fullScreenCover(isPresented:Binding(get:{!connectionPresented && model.hasProcessingPresentation},set:{_ in}),onDismiss:{
@@ -181,7 +254,25 @@ struct AppleLocalMappingView:View {
         }
 
     }
-    private func show(_ layer:MappingLayer){do{try layers.installShared([layer],incidentID:layer.incidentId);layers.setVisible(layer.id,visible:true);layers.localPreviewID=layer.id;inspecting=nil;dismiss()}catch{model.error=error.localizedDescription}}
+    private func show(_ layer:MappingLayer){
+        Task {
+            do {
+                try layers.installShared([layer], incidentID: layer.incidentId)
+            } catch {
+                model.error = error.localizedDescription
+                return
+            }
+            let root = await Task.detached(priority: .userInitiated) { AppleMappingTileCache.layerRoot(layer.id) }.value
+            let hasTiles = await Task.detached(priority: .userInitiated) { MappingLayerTiles.hasTileManifest(root) }.value
+            guard layers.selectLocal(layer, hasTiles: hasTiles) else {
+                model.error = "This map has no imagery yet"
+                return
+            }
+            layers.setVisible(layer.id, visible: true)
+            inspecting = nil
+            dismiss()
+        }
+    }
     @ViewBuilder private func distance(latitude:Double?,longitude:Double?)->some View{
         if let location,let latitude,let longitude{Text("Distance to area center: \(DisplayUnits.current.distance(location.distance(from:CLLocation(latitude:latitude,longitude:longitude))))")}
         else{Text("Distance: current location unavailable")}
@@ -239,6 +330,7 @@ private struct AppleMappingMissionDetail:View {
     @ObservedObject private var model=AppleLocalMappingModel.shared
     @State private var route:[String:Double]=[:]
     @State private var results:[MappingLayer]=[]
+    @State private var resultHas2D:[String:Bool]=[:]
     @State private var completed:[String]=[]
     @State private var pending=0
     @State private var connect=false
@@ -273,7 +365,15 @@ private struct AppleMappingMissionDetail:View {
                 if entry.photos.count>completed.count {Text("\(entry.photos.count-completed.count) additional originals are retained outside that selection. Choose the completed set or all received originals explicitly.")}
             } else if !entry.photos.isEmpty {Text("No completed transfer selection is recorded. Received originals can be selected explicitly for reconstruction.")}
             Text("Map results · \(results.count)").font(.headline)
-            ForEach(results){layer in VStack(alignment:.leading,spacing:6){Text(layer.resultTitle);Text("Generated: \(layer.generatedLabel)");Text("\(layer.photoCount ?? 0) photos · \(layer.surfaceModel == nil ? "2D":"2D and 3D")");Button("View 2D map"){onView(layer)};Button("Inspect / share result · 2D and 3D"){onInspect(layer)}}.padding(12).frame(maxWidth:.infinity,alignment:.leading).background(.quaternary,in:RoundedRectangle(cornerRadius:12))}
+            ForEach(results){layer in
+                let has2D = entry.has2D || resultHas2D[layer.id] == true
+                VStack(alignment:.leading,spacing:6){
+                    Text(layer.resultTitle);Text("Generated: \(layer.generatedLabel)")
+                    Text("\(layer.photoCount ?? 0) photos · \(layer.surfaceModel == nil ? "2D":"2D and 3D")")
+                    Button("View 2D map"){onView(layer)}.disabled(!has2D)
+                    Button("Inspect / share result · 2D and 3D"){onInspect(layer)}
+                }.padding(12).frame(maxWidth:.infinity,alignment:.leading).background(.quaternary,in:RoundedRectangle(cornerRadius:12))
+            }
             if results.isEmpty{Text("No completed map results yet.")}
             if completed.count>=3{Button("Reconstruct completed set · \(completed.count) originals"){model.reconstruct(id:entry.id,incident:entry.incidentID,title:entry.title,selectedDigests:Set(completed))}.accessibilityIdentifier("mapping-reconstruct-completed")}
             if entry.photos.count>=3 && pending==0 && (completed.isEmpty || completed.count<entry.photos.count){Button("Reconstruct all received · \(entry.photos.count) originals"){model.reconstruct(id:entry.id,incident:entry.incidentID,title:entry.title)}.accessibilityIdentifier("mapping-reconstruct-all")}
@@ -293,13 +393,19 @@ private struct AppleMappingMissionDetail:View {
     }
     private func load()async{
         do{let id=entry.id,incident=entry.incidentID,urls=entry.results
-            let value=try await Task.detached{()->([String:Double],[String],Int,[MappingLayer]) in
+            let value=try await Task.detached{()->([String:Double],[String],Int,[MappingLayer],[String:Bool]) in
                 let store=try MappingMissionStore(root:MappingMissionStore.applicationRoot()),root=try store.directory(id)
                 let raw=(try? JSONSerialization.jsonObject(with:Data(contentsOf:root.appendingPathComponent("route-summary.json")))) as? [String:Any] ?? [:]
                 let route=raw.compactMapValues{($0 as? NSNumber)?.doubleValue}
                 let pending=(try? FileManager.default.contentsOfDirectory(atPath:root.appendingPathComponent("incoming").path).filter{$0.hasSuffix(".json")}.count) ?? 0
-                return(route,try store.completedSelection(id),pending,try urls.map{try MappingLayer.decode(Data(contentsOf:$0.appendingPathComponent("layer.json")),incidentID:incident)})
-            }.value;route=value.0;completed=value.1;pending=value.2;results=value.3.sorted { a,b in
+                var layers:[MappingLayer]=[]; var has2D:[String:Bool]=[:]
+                for url in urls {
+                    let layer=try MappingLayer.decode(Data(contentsOf:url.appendingPathComponent("layer.json")),incidentID:incident)
+                    layers.append(layer)
+                    has2D[layer.id]=MappingLayerTiles.hasTileManifest(url)
+                }
+                return(route,try store.completedSelection(id),pending,layers,has2D)
+            }.value;route=value.0;completed=value.1;pending=value.2;resultHas2D=value.4;results=value.3.sorted { a,b in
                 if a.generatedDate != b.generatedDate { return (a.generatedDate ?? .distantPast) > (b.generatedDate ?? .distantPast) }; return a.id < b.id
             }
         }catch{model.error=error.localizedDescription}
@@ -314,6 +420,10 @@ struct AppleMappingProgressView:View {
     var body:some View{VStack(alignment:.leading,spacing:16){
         Text(heading).font(.title)
         ScrollView{VStack(alignment:.leading,spacing:16){Text(title).font(.title2);Text(snapshot.stage);ProgressView(value:snapshot.fraction)
+            if let estimate=snapshot.estimateSummary {
+                Text(estimate).font(.footnote).foregroundStyle(.secondary)
+                Text("These are mapping work-space needs on the volume being written — not the Flight storage or Map cache limits in Manage Storage.").font(.footnote).foregroundStyle(.secondary)
+            }
             TimelineView(.periodic(from:.now,by:1)){context in let elapsed=snapshot.elapsed(at:context.date);VStack(alignment:.leading,spacing:8){Text("\(Int(snapshot.fraction*100))% · \(elapsed/60) min \(elapsed%60) sec elapsed");Text(snapshot.activity(at:context.date))}.frame(maxWidth:.infinity,alignment:.leading)}
             Text(MappingProgressSnapshot.explanation)
             Text("Processing on this tablet. This job stays on screen until it finishes or you cancel it. Originals are retained.")

@@ -29,8 +29,6 @@ internal object MappingVolume {
                 "Choose or reconnect Archive Dir to use retained operational data."
             }
         )
-        require(root.usableSpace - additional > MappingPhotoStore.FREE_SPACE_RESERVE) {
-            "Not enough temporary working space for this map. Retained data remains in Archive Dir."
-        }
+        MappingStorageBudget.requireFree(root, additional, bucket = "Mapping work space")
     }
 }

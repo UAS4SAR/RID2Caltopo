@@ -4897,6 +4897,8 @@ private struct OperationalMKMapView: UIViewRepresentable {
         private var tileFingerprint = ""
         private var mappingLayerFingerprint: [MappingLayer] = []
         private var mappingBoundaryFingerprint: [Bool] = []
+        private var lastMappingZoomToken: UUID?
+        private var lastMappingReadySignature = ""
         private var staticRenderState: StaticMapRenderState?
         private var aircraftRenderState: AircraftMapRenderState?
         /// Full-flight + active polylines keyed by aircraft; swapped individually on append.
@@ -5007,10 +5009,37 @@ private struct OperationalMKMapView: UIViewRepresentable {
 
         func updateMappingLayers(on map:MKMapView,layers:[MappingLayer]) {
             let boundaries=layers.map{UserDefaults.standard.object(forKey:"mapping.soft.\($0.id)") as? Bool ?? true}
-            guard layers != mappingLayerFingerprint || boundaries != mappingBoundaryFingerprint else { return }
-            mappingLayerFingerprint=layers;mappingBoundaryFingerprint=boundaries
-            map.removeOverlays(map.overlays.filter { $0 is MappingLayerTileOverlay })
-            for layer in layers { map.addOverlay(MappingLayerTileOverlay(layer),level:.aboveRoads) }
+            let previewID = AppleMappingLayerStore.shared.localPreviewID
+            let zoomToken = AppleMappingLayerStore.shared.localPreviewZoomToken
+            let signature = layers.map(\.id).joined(separator: ",") + "|" + boundaries.map { $0 ? "1" : "0" }.joined()
+            if layers != mappingLayerFingerprint || boundaries != mappingBoundaryFingerprint {
+                mappingLayerFingerprint=layers;mappingBoundaryFingerprint=boundaries
+                map.removeOverlays(map.overlays.filter { $0 is MappingLayerTileOverlay })
+                for layer in layers { map.addOverlay(MappingLayerTileOverlay(layer),level:.aboveRoads) }
+                if signature != lastMappingReadySignature {
+                    lastMappingReadySignature = signature
+                    AppleLog.debug("MapPane", "Mapping layers ready count=\(layers.count) selected=\(previewID.map { String($0.prefix(8)) } ?? "none")")
+                }
+            }
+            if let zoomToken, zoomToken != lastMappingZoomToken,
+               let preview = layers.first(where: { $0.id == previewID }),
+               let bounds = preview.bounds, bounds.count == 4 {
+                lastMappingZoomToken = zoomToken
+                let region = MKCoordinateRegion(
+                    center: CLLocationCoordinate2D(latitude: (bounds[1] + bounds[3]) / 2, longitude: (bounds[0] + bounds[2]) / 2),
+                    span: MKCoordinateSpan(latitudeDelta: max(0.001, (bounds[3] - bounds[1]) * 1.2), longitudeDelta: max(0.001, (bounds[2] - bounds[0]) * 1.2))
+                )
+                map.setRegion(region, animated: true)
+                AppleLog.debug("MapPane", "MapLayer show id=\(preview.id.prefix(8)) tiles=1 z=\(preview.minZoom)-\(preview.maxZoom)")
+            } else if let zoomToken, zoomToken != lastMappingZoomToken {
+                lastMappingZoomToken = zoomToken
+                let reason: String
+                if previewID == nil { reason = "none" }
+                else if !layers.contains(where: { $0.id == previewID }) { reason = "unregistered" }
+                else if layers.first(where: { $0.id == previewID })?.bounds?.count != 4 { reason = "no-bounds" }
+                else { reason = "other" }
+                AppleLog.warning("MapPane", "MapLayer show id=\(previewID.map { String($0.prefix(8)) } ?? "none") reason=\(reason)")
+            }
         }
 
         func updateTiles(

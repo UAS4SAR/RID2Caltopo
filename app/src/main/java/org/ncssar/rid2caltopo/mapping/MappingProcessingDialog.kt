@@ -41,6 +41,10 @@ import org.json.JSONObject
                         LinearProgressIndicator(progress={state.progress.toFloat()},modifier=Modifier.fillMaxWidth())
                         Text("${(state.progress*100).toInt()}% · ${elapsed/60} min ${elapsed%60} sec elapsed"+(state.remainingSeconds?.let{" · about ${(it+59)/60} min remaining"}?:""))
                         Text(if(sinceUpdate<5)"Worker updated just now" else "Last worker update ${sinceUpdate} sec ago · waiting for the current operation")
+                        state.estimateSummary?.let {
+                            Text(it,style=MaterialTheme.typography.bodySmall)
+                            Text("These are mapping work-space needs on the volume being written — not the Flight storage or Map cache limits in Manage Storage.",style=MaterialTheme.typography.bodySmall)
+                        }
                         Text("Overall progress is approximate. Saving and packaging may take several minutes; file and byte counts show completed work.")
                         Text("Processing on this tablet. This job stays on screen until it finishes or you cancel it. Originals are retained.")
                     }
@@ -57,9 +61,15 @@ import org.json.JSONObject
             state.layer?.let{Text("${it.photoCount} visible photos · estimated ${Units.current.resolution(it.resolutionCmPerPixel)}");Text(it.quality)}
             state.error?.let{Text(it,color=MaterialTheme.colorScheme.error)}
         }
-    },confirmButton={TextButton(onClick={state.layer?.let(onView)?:MappingProcessingManager.dismiss()}){
-        Text(if(state.layer!=null)"View map" else "Done")
-    }},dismissButton={if(state.surfacePreviewId!=null)TextButton(onClick={context.startActivity(android.content.Intent(context,MappingSurfaceViewActivity::class.java).putExtra("layerId",state.surfacePreviewId))}){Text("View 3D surface")}
+    },confirmButton={
+        val layerId=state.layer?.id
+        val canView by produceState(false, layerId) {
+            value = layerId != null && withContext(Dispatchers.IO) { MappingLayer.hasTileManifest(context, layerId) }
+        }
+        TextButton(enabled=state.layer==null || canView,onClick={if(canView)state.layer?.let(onView) else MappingProcessingManager.dismiss()}){
+            Text(if(state.layer!=null)"View map" else "Done")
+        }
+    },dismissButton={if(state.surfacePreviewId!=null)TextButton(onClick={context.startActivity(android.content.Intent(context,MappingSurfaceViewActivity::class.java).putExtra("layerId",state.surfacePreviewId))}){Text("View 3D surface")}
         else if(state.layer!=null)TextButton(onClick={MappingProcessingManager.dismiss()}){Text("Done")}})
 }
 
@@ -105,8 +115,11 @@ import org.json.JSONObject
             Switch(checked=softEdges,onCheckedChange={softEdges=it;MappingBoundary.setSoft(context,layer.id,it)},modifier=Modifier.testTag("mapping-soft-edges"))
             Text(if(softEdges)"Target region · 5 m outer fade" else "Full captured extent")
         }
-        if(onView2D!=null)TextButton(onClick={onView2D(layer)}){Text("View 2D map")}
-        if(layer.surfaceModel.isNotBlank())TextButton(onClick={onView2D?.invoke(layer);context.startActivity(android.content.Intent(context,MappingSurfaceViewActivity::class.java).putExtra("layerId",layer.id))}){Text("View 3D surface")}
+        val has2D by produceState(false, layer.id) {
+            value = withContext(Dispatchers.IO) { MappingLayer.hasTileManifest(context, layer.id) }
+        }
+        if(onView2D!=null)TextButton(enabled=has2D,onClick={onView2D(layer)}){Text("View 2D map")}
+        if(layer.surfaceModel.isNotBlank())TextButton(onClick={if(has2D)onView2D?.invoke(layer);context.startActivity(android.content.Intent(context,MappingSurfaceViewActivity::class.java).putExtra("layerId",layer.id))}){Text("View 3D surface")}
         files?.let { local ->
             if(local.surfaces.size==1) TextButton(onClick={share(local.surfaces.first(),"model/gltf-binary")}) { Text("Share 3D surface (.glb)") }
             else if(local.surfaces.isNotEmpty()) TextButton(onClick={sharingSurfaces=true}) { Text("Share 3D surfaces (.glb)…") }

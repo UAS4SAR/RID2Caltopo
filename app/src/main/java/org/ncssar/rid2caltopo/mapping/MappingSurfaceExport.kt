@@ -38,7 +38,10 @@ internal object MappingSurfaceExport {
     fun renderColors(surface:MappingSurface,cameras:DoubleArray,k:DoubleArray,imageWidth:Int,imageHeight:Int,paths:Array<String>,progress:(String,Double)->Unit,check:()->Unit,bounds:MappingRegionPlan.Bounds?=null):IntArray {
         MappingSurfaceNative.prepareProjection(surface.heights,surface.width,surface.height,surface.x,surface.y,surface.cell,
             cameras,k,imageWidth,imageHeight,paths,object:MappingSurfaceNative.Progress {
-                override fun iteration(iteration:Int,cost:Double):Boolean {check();progress("Matching photo seams · ${(cost*100).toInt()}%",.68+.01*cost);return true}
+                override fun iteration(iteration:Int,cost:Double):Boolean {
+                    // Optimizer cost is not a completion fraction; stay indeterminate in the seams band.
+                    check();progress("Matching photo seams",.68);return true
+                }
             })
         val colors=IntArray(surface.width*surface.height);val pixels=IntArray(256*256)
         val bx=(surface.width+255)/256;val by=(surface.height+255)/256

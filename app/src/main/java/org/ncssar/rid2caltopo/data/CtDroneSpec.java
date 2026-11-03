@@ -19,6 +19,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import org.json.JSONObject;
+import org.ncssar.rid2caltopo.util.LogThrottle;
 import org.opendroneid.android.data.Util;
 
 import java.io.IOException;
@@ -844,9 +845,13 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         lastLat = lat; lastLng = lng; lastAlt = altitudeInMeters;
         proximityPosition = new ProximityPosition(lat, lng, nowWallMsec, proximityTelemetry);
         if (CaltopoClient.CTDebugEnabled(ICON_LATENCY_TAG)) {
-            CaltopoClient.CTDebug(ICON_LATENCY_TAG, String.format(Locale.US,
-                    "rid_rx remoteId=%s waypoint=%d wall=%d droneTs=%d lat=%.6f lng=%.6f alt=%.1f transport=%s rssi=%d airborne=%s distance: %.3f, totalDistance: %.3f, duration: %s",
-                    mappedId, goodCount, System.currentTimeMillis(), timestampInMilliseconds, lat, lng, altitudeInMeters, transportType, getLastRssi(transportType), airborne, lDistanceInFeet, distanceInFeet, getDurationInSecAsString()));
+            // No precise coordinates — aggregate / change-gated.
+            String ridMsg = String.format(Locale.US,
+                    "rid_rx remoteId=%s waypoint=%d transport=%s rssi=%d airborne=%s distanceFt=%.1f totalDistanceFt=%.1f duration=%s",
+                    mappedId, goodCount, transportType, getLastRssi(transportType), airborne,
+                    lDistanceInFeet, distanceInFeet, getDurationInSecAsString());
+            String ridOut = LogThrottle.emit("rid.rx." + mappedId, ridMsg, 30_000L, true);
+            if (ridOut != null) CaltopoClient.CTDebug(ICON_LATENCY_TAG, ridOut);
         }
 
         return true;

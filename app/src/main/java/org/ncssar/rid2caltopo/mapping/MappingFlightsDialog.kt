@@ -30,13 +30,13 @@ fun MappingFlightsDialog(mission: MappingMission?, onDismiss: () -> Unit, onConn
     val changes by MappingWorkspaceState.layerChanges.collectAsState()
     var flightsLoaded by remember { mutableStateOf(false) }
     var loadError by remember { mutableStateOf<String?>(null) }
-    val flights by produceState(emptyList<MappingFlightStatus>(), assignmentId, mission?.incidentId, processing, changes) {
+    val flights by produceState(emptyList<MappingFlightStatus>(), assignmentId, mission?.incidentId, processing?.missionId, processing?.stage, processing?.active, processing?.progress, changes) {
         while (isActive) {
             runCatching { withContext(Dispatchers.IO) { MappingFlightRepository.list(context.filesDir, assignmentId, mission?.incidentId, processing, includeStorage=false, onlyMissionId=if(detailOnly) initialFlightId else null) } }
                 .onSuccess { value = it; loadError = null }
                 .onFailure { loadError = it.message ?: "Could not read saved missions." }
             flightsLoaded = true
-            delay(if(processing?.active==true)1500 else 5000)
+            delay(if(processing?.active==true)1500 else 30_000)
         }
     }
     val overview by produceState<Pair<Long,MappingStorageUsage>?>(null, assignmentId, processing, changes) {
@@ -57,13 +57,18 @@ fun MappingFlightsDialog(mission: MappingMission?, onDismiss: () -> Unit, onConn
         if(id!=null)value=withContext(Dispatchers.IO){MappingMissionStorage.index(context.filesDir,processing).mission(id)}
     }
     val selected=selectedSnapshot?.copy(storage=selectedUsage)
-    val results by produceState(emptyList<MappingLayer>(), selected?.id, selected?.resultIds, changes) {
+    val resultInfo by produceState(emptyList<Pair<MappingLayer, Boolean>>(), selected?.id, selected?.resultIds, changes) {
         value = withContext(Dispatchers.IO) {
             (selected?.resultIds.orEmpty() + listOfNotNull(selected?.layerId)).distinct().mapNotNull { id ->
-                runCatching { MappingLayer.parse(JSONObject(File(context.filesDir, "mapping-layers/$id/layer.json").readText())) }.getOrNull()
-            }.sortedWith(compareByDescending<MappingLayer> { it.generatedInstant }.thenBy { it.id })
+                runCatching {
+                    val layer = MappingLayer.parse(JSONObject(File(context.filesDir, "mapping-layers/$id/layer.json").readText()))
+                    layer to MappingLayer.hasTileManifest(context, id)
+                }.getOrNull()
+            }.sortedWith(compareByDescending<Pair<MappingLayer, Boolean>> { it.first.generatedInstant }.thenBy { it.first.id })
         }
     }
+    val results = resultInfo.map { it.first }
+    val viewable2DIds = resultInfo.filter { it.second }.map { it.first.id }.toSet()
     val capturedAt by produceState<String?>(null, selected?.id, selected?.photoCount) {
         value = null
         value = withContext(Dispatchers.IO) { selected?.let {
@@ -76,13 +81,15 @@ fun MappingFlightsDialog(mission: MappingMission?, onDismiss: () -> Unit, onConn
         return
     }
     val layer = results.firstOrNull { it.id == inspectedId } ?: results.firstOrNull { it.id == selected?.layerId }
+    val layerHas2D = layer != null && layer.id in viewable2DIds
     if (inspectedId != null && layer != null) {
-        MappingLayerInspector(layer, onLayersChanged, { inspectedId = null }, onViewLayer)
+        MappingLayerInspector(layer, onLayersChanged, { inspectedId = null },
+            onView2D = if (layerHas2D) onViewLayer else null)
         return
     }
-    MappingFlightsContent(flights, selected, busy, error, results = results, capturedAt = capturedAt,
+    MappingFlightsContent(flights, selected, busy, error, results = results, viewable2DIds = viewable2DIds, capturedAt = capturedAt, selectedHas2D = layerHas2D,
         onInspectResult = { inspectedId = it.id }, onViewResult = onViewLayer, freeBytes=overview?.first, unassignedStorage=overview?.second, detailOnly = detailOnly, onSelect = { if (it == null && detailOnly) onDismiss() else selectedId = it; error = null }, onDismiss = onDismiss,
-        onInspect = { inspectedId = layer?.id }, onView = { layer?.let(onViewLayer) },
+        onInspect = { inspectedId = layer?.id }, onView = { if (layerHas2D) layer?.let(onViewLayer) },
         onConnect = { flight ->
             busy = true; error = null
             scope.launch {
@@ -118,8 +125,8 @@ internal fun MappingFlightsContent(flights: List<MappingFlightStatus>, selected:
     onConnect: (MappingFlightStatus) -> Unit, onProcess: (MappingFlightStatus, Boolean) -> Unit,
     freeBytes:Long?=null,unassignedStorage:MappingStorageUsage?=null,
     onDelete: (MappingFlightStatus, Boolean) -> Unit = { _, _ -> },
-    results: List<MappingLayer> = emptyList(), onInspectResult: (MappingLayer) -> Unit = {},
-    onViewResult: (MappingLayer) -> Unit = {}, detailOnly: Boolean = false, capturedAt: String? = "") {
+    results: List<MappingLayer> = emptyList(), viewable2DIds: Set<String>? = null, onInspectResult: (MappingLayer) -> Unit = {},
+    onViewResult: (MappingLayer) -> Unit = {}, detailOnly: Boolean = false, capturedAt: String? = "", selectedHas2D: Boolean = false) {
     var browsingOriginals by remember(selected?.id) { mutableStateOf(false) }
     if (browsingOriginals && selected != null) MappingOriginalPhotosDialog(selected.id) { browsingOriginals = false }
     var deletingOriginals by remember(selected?.id) { mutableStateOf<Boolean?>(null) }
@@ -215,19 +222,20 @@ internal fun MappingFlightsContent(flights: List<MappingFlightStatus>, selected:
                 } else if(selected.photoCount>0) Text("No completed transfer selection is recorded. Received originals can be selected explicitly for reconstruction.")
                 Text("Map results · ${results.size}", style = MaterialTheme.typography.titleMedium)
                 results.forEach { result ->
+                    val has2D = viewable2DIds == null || result.id in viewable2DIds
                     Card(Modifier.fillMaxWidth().testTag("mapping-result-${result.id}")) {
                         Column(Modifier.padding(8.dp)) {
                             Text(result.resultTitle)
                             Text("Generated: ${result.generatedLabel}")
                             Text("${result.photoCount} photos · ${if (result.surfaceModel.isNotBlank()) "2D and 3D" else "2D"}")
-                            TextButton(enabled = !busy, onClick = { onViewResult(result) }) { Text("View 2D map") }
+                            TextButton(enabled = !busy && has2D, onClick = { onViewResult(result) }) { Text("View 2D map") }
                             TextButton(enabled = !busy, onClick = { onInspectResult(result) }) { Text("Inspect / share result · 2D and 3D") }
                         }
                     }
                 }
                 if (results.isEmpty() && selected.layerId == null) Text("No completed map results yet.")
                 if (results.isEmpty() && selected.layerId != null) {
-                    TextButton(enabled = !busy, onClick = onView) { Text("View 2D map") }
+                    TextButton(enabled = !busy && selectedHas2D, onClick = onView) { Text("View 2D map") }
                     TextButton(enabled = !busy, onClick = onInspect) { Text("Inspect / share result · 2D and 3D") }
                 }
                 if (selected.visible && !selected.active && selected.photoCount>0) {

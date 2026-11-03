@@ -23,42 +23,58 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
     val processing by MappingProcessingManager.state.collectAsState()
     var entries by remember{mutableStateOf(emptyList<MappingLibraryEntry>())}
     var loaded by remember{mutableStateOf(false)}
+    var refreshing by remember{mutableStateOf(false)}
     var loadError by remember{mutableStateOf<String?>(null)}
     var measuring by remember { mutableStateOf(false) }
     var measuredCount by remember { mutableIntStateOf(0) }
     var measurementTotal by remember { mutableIntStateOf(0) }
-    LaunchedEffect(processing?.active,changes) {
-        while(isActive){
-            try {
-                // Publish mission rows before walking photo, tile and model trees for sizes.
-                val next=withContext(Dispatchers.IO){MappingLibraryRepository.list(context,MappingProcessingManager.state.value,includeStorage=false)}
-                val previous=entries.associateBy { it.id }
-                entries=next.map { it.copy(storage=previous[it.id]?.storage) }
-                loaded=true;loadError=null
-                val index=withContext(Dispatchers.IO){MappingMissionStorage.index(context.filesDir,MappingProcessingManager.state.value)}
-                val pending=mutableListOf<MappingLibraryEntry>()
-                for(entry in next) {
+    LaunchedEffect(processing?.missionId,processing?.stage,processing?.active,processing?.progress,changes) {
+        if(!loaded) {
+            val cached=withContext(Dispatchers.IO){
+                MappingLibraryIndex.load(context.filesDir)?.let{MappingLibraryIndex.entries(it,context,MappingProcessingManager.state.value)}
+            }
+            if(cached!=null){entries=cached;loaded=true}
+        }
+        refreshing=true
+        try {
+            val next=withContext(Dispatchers.IO){MappingLibraryIndex.refresh(context,MappingProcessingManager.state.value).entries}
+            val previous=entries.associateBy{it.id}
+            entries=next.map{it.copy(storage=previous[it.id]?.storage)}
+            loaded=true;loadError=null
+            val index=withContext(Dispatchers.IO){MappingMissionStorage.index(context.filesDir,MappingProcessingManager.state.value)}
+            val pending=mutableListOf<MappingLibraryEntry>()
+            for(entry in next) {
+                val usage=withContext(Dispatchers.IO){
+                    entry.flight?.let{index.cachedMission(it.id)}?:if(entry.layer!=null)MappingMissionStorage.cachedLayer(context.filesDir,entry.layer.id)else null
+                }
+                if(usage==null)pending.add(entry)
+                else entries=entries.map{if(it.id==entry.id)it.copy(storage=usage)else it}
+            }
+            if(pending.isNotEmpty()) {
+                measuring=true;measuredCount=0;measurementTotal=pending.size
+                for(entry in pending) {
+                    ensureActive()
                     val usage=withContext(Dispatchers.IO){
-                        entry.flight?.let { index.cachedMission(it.id) } ?: if(entry.layer!=null)MappingMissionStorage.cachedLayer(context.filesDir,entry.layer.id) else null
+                        entry.flight?.let{index.mission(it.id)}?:MappingMissionStorage.layer(context.filesDir,entry.layer!!.id)
                     }
-                    if(usage==null)pending.add(entry)
-                    else entries=entries.map { if(it.id==entry.id)it.copy(storage=usage) else it }
+                    entries=entries.map{if(it.id==entry.id)it.copy(storage=usage)else it}
+                    measuredCount++
                 }
-                if(pending.isNotEmpty()) {
-                    measuring=true;measuredCount=0;measurementTotal=pending.size
-                    for(entry in pending) {
-                        ensureActive()
-                        val usage=withContext(Dispatchers.IO){
-                            entry.flight?.let { index.mission(it.id) } ?: MappingMissionStorage.layer(context.filesDir,entry.layer!!.id)
-                        }
-                        entries=entries.map { if(it.id==entry.id)it.copy(storage=usage) else it }
-                        measuredCount++
-                    }
-                }
+            }
+        }catch(e:CancellationException){throw e}
+         catch(e:Exception){loadError="Could not refresh local maps: ${e.message ?: "storage unavailable"}"}
+         finally{measuring=false;refreshing=false}
+        while(isActive){
+            delay(30_000)
+            try {
+                refreshing=true
+                val next=withContext(Dispatchers.IO){MappingLibraryIndex.refresh(context,MappingProcessingManager.state.value).entries}
+                val previous=entries.associateBy{it.id}
+                entries=next.map{it.copy(storage=previous[it.id]?.storage)}
+                loadError=null
             }catch(e:CancellationException){throw e}
              catch(e:Exception){loadError="Could not refresh local maps: ${e.message ?: "storage unavailable"}"}
-             finally { measuring=false }
-            delay(5000)
+             finally{refreshing=false}
         }
     }
     var newestFirst by rememberSaveable { mutableStateOf(context.getSharedPreferences("mapping_library",0).getBoolean("newestFirst",true)) }
@@ -91,12 +107,21 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
             }
         },confirmButton={TextButton(onClick={choosingAssignment=false}){Text("Back to local maps")}});return
     }
-    if(inspecting!=null){MappingLayerInspector(inspecting!!,MappingWorkspaceState::layersChanged,{inspecting=null},onView2D={onView(it);inspecting=null;onDismiss()});return}
+    if(inspecting!=null){
+        val layer=inspecting!!
+        MappingLayerInspector(layer,MappingWorkspaceState::layersChanged,{inspecting=null},
+            onView2D={onView(it);inspecting=null;onDismiss()})
+        return
+    }
     AlertDialog(onDismissRequest=onDismiss,title={Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
         Text("Local maps")
-        if(!loaded || measuring) {
+        if(!loaded || measuring || refreshing) {
             LinearProgressIndicator(Modifier.fillMaxWidth().testTag("mapping-library-progress"))
-            Text(if(!loaded) "Loading saved missions…" else "Calculating storage sizes · $measuredCount of $measurementTotal missions",style=MaterialTheme.typography.bodySmall)
+            Text(when {
+                !loaded -> "Loading saved missions…"
+                measuring -> "Calculating storage sizes · $measuredCount of $measurementTotal missions"
+                else -> "Refreshing…"
+            },style=MaterialTheme.typography.bodySmall)
         }
     }},text={LazyColumn(
         Modifier.fillMaxWidth().heightIn(max=480.dp).testTag("mapping-local-layer-list"),state=scroll,

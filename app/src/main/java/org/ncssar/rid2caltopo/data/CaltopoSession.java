@@ -31,6 +31,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 import org.ncssar.rid2caltopo.BuildConfig;
 import org.ncssar.rid2caltopo.app.R2CApplication;
+import org.ncssar.rid2caltopo.util.LogThrottle;
 import org.opendroneid.android.data.Util;
 
 import java.io.ByteArrayOutputStream;
@@ -785,7 +786,9 @@ public class CaltopoSession {
         if (MapId != null && !mapIdIn.equals(MapId)) {
             CTDebug(TAG, "openMap(): changing mapId from " + MapId + " to " + mapIdIn);
         } else {
-            CTDebug(TAG, "openMap(): Setting mapid to " + mapIdIn);
+            String mapMsg = "openMap(): Setting mapid to " + mapIdIn;
+            String mapOut = LogThrottle.emit("caltopo.openMap.mapid", mapMsg, 0L, true);
+            if (mapOut != null) CTDebug(TAG, mapOut);
         }
         MapId = mapIdIn;
 

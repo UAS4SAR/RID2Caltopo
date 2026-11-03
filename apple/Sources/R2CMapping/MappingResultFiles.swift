@@ -6,6 +6,7 @@ public struct MappingResultFiles: Sendable {
     public let cameraLabel: String
     public let missionID: String?
     public let hasOriginals: Bool
+    public let hasTiles: Bool
     public let archive: URL?
     public let surfaces: [URL]
 
@@ -71,6 +72,6 @@ public struct MappingResultFiles: Sendable {
             }
         }
         return MappingResultFiles(assignmentName: assignment, cameraLabel: label, missionID: missionID, hasOriginals: hasOriginals,
-            archive: sharedArchive, surfaces: surfaces)
+            hasTiles: MappingLayerTiles.hasTileManifest(result), archive: sharedArchive, surfaces: surfaces)
     }
 }

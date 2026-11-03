@@ -10,7 +10,16 @@ public struct MappingLocalMission: Identifiable, Sendable {
     public let planningBytes, photoBytes, tileBytes, modelBytes, workBytes, exportBytes, controllerBytes, metadataBytes: Int64
     public var totalBytes:Int64 {planningBytes+photoBytes+tileBytes+modelBytes+workBytes+exportBytes+controllerBytes+metadataBytes}
     public let latitude, longitude: Double?
-    public var status: String { !results.isEmpty ? "Map ready" : photos.isEmpty ? "Map prepared" : "Images captured" }
+    /// When photos are not loaded (index-backed list), prefer this count.
+    public var listedPhotoCount: Int = -1
+    public var stageOverride: String = ""
+    public var has2D: Bool = false
+    public var has3D: Bool = false
+    public var photoCount: Int { listedPhotoCount >= 0 ? listedPhotoCount : photos.count }
+    public var status: String {
+        if !stageOverride.isEmpty { return stageOverride }
+        return !results.isEmpty ? "Map ready" : photoCount == 0 ? "Map prepared" : "Images captured"
+    }
 }
 
 /// Every mission owns its plan, byte-preserved originals, resumable work and published results.

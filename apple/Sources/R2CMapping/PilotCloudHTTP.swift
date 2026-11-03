@@ -14,8 +14,7 @@ struct PilotRequest {
         let output=try FileHandle(forWritingTo:file);var size=0
         do {
             func copy(_ count:Int)throws {guard count>=0,size+count<=limit else{throw MappingMission.Failure("Upload exceeds the permitted size.")};var remaining=count
-                let free=(try FileManager.default.attributesOfFileSystem(forPath:file.deletingLastPathComponent().path)[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
-                guard free-Int64(count)>=256*1024*1024 else{throw MappingMission.Failure("Tablet storage is full. Originals already received are retained.")}
+                try MappingStorageBudget.requireFree(file.deletingLastPathComponent(), needBytes:Int64(count), reserveBytes:MappingStorageBudget.intakeReserveBytes, bucket:"Original photos")
                 while remaining>0 {let data=try peer.read(min(65536,remaining));try output.write(contentsOf:data);size+=data.count;remaining-=data.count}
             }
             if headers["transfer-encoding"]?.lowercased()=="chunked" {

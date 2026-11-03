@@ -31,6 +31,7 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.ncssar.rid2caltopo.app.R2CApplication;
+import org.ncssar.rid2caltopo.util.LogThrottle;
 import org.ncssar.rid2caltopo.video.MapOfflinePrepRuntime;
 import org.ncssar.rid2caltopo.mapping.MappingWorkRuntime;
 
@@ -310,12 +311,17 @@ public class CaltopoMap {
         return CurrentRuntime;
     }
 
+    private static final long LOG_SUMMARY_INTERVAL_MS = 300_000L;
+
     private static void recordCaltopoSessionRtt(@Nullable CaltopoOp op, @NonNull String source) {
         if (op == null || op.fail()) return;
         long rttMs = op.roundTripTimeInMsec();
         if (rttMs <= 0L) return;
-        CTDebug(TAG, String.format(Locale.US,
-                "recordCaltopoSessionRtt(%s): rttMs=%d", source, rttMs));
+        String msg = String.format(Locale.US,
+                "recordCaltopoSessionRtt(%s): rttMs=%d", source, rttMs);
+        String out = LogThrottle.emit("caltopo.sessionRtt." + source, msg,
+                LOG_SUMMARY_INTERVAL_MS, true);
+        if (out != null) CTDebug(TAG, out);
         getCurrentRuntime().getPeerCoordinator().updateCaltopoRtt(rttMs);
     }
 
@@ -1219,14 +1225,16 @@ public class CaltopoMap {
                     ignoreCount++;
                 }
             } else if ("Marker".equals(classString)) {
-                CTDebug(TAG, "parseMapUpdate(): ignoring marker (peer discovery is MQTT-based now): " + idString);
                 ignoreCount++;
             }
         }
         if (newCount > 0 || ignoreCount > 0) {
-            CTDebug(TAG, String.format(Locale.US,
-                    "parseMapUpdate() ignored %d new features.\n  Found %d new peers since my last visit.",
-                    ignoreCount, newCount));
+            String msg = String.format(Locale.US,
+                    "parseMapUpdate() ignored=%d newPeers=%d",
+                    ignoreCount, newCount);
+            String out = LogThrottle.emit("caltopo.parseMapUpdate.ignored", msg,
+                    LOG_SUMMARY_INTERVAL_MS, true);
+            if (out != null) CTDebug(TAG, out);
         }
     }
 
@@ -2874,9 +2882,14 @@ public class CaltopoMap {
                         getCurrentRuntime().getCalTopoSessionGateway().addMarker(latitude, longitude,
                                 LOCAL_DEVICE_MARKER_TITLE_PREFIX + name, LOCAL_DEVICE_MARKER_SYMBOL,
                                 folder, markerId, properties, markerOp -> CaltopoMarkerWork.execute(() -> {
-                                    CTDebug(TAG,"Device marker publication map="+map+" success="+
-                                            (markerOp!=null&&markerOp.success())+" responseCode="+
-                                            (markerOp!=null?markerOp.responseCode:-1));
+                                    boolean pubSuccess = markerOp != null && markerOp.success();
+                                    int pubCode = markerOp != null ? markerOp.responseCode : -1;
+                                    String pubMsg = "Device marker publication map=" + map
+                                            + " success=" + pubSuccess + " responseCode=" + pubCode;
+                                    String pubOut = LogThrottle.emit(
+                                            "caltopo.deviceMarker." + map, pubMsg,
+                                            LOG_SUMMARY_INTERVAL_MS, true);
+                                    if (pubOut != null) CTDebug(TAG, pubOut);
                                     String resolved = markerOp != null && markerOp.success()
                                             ? ownedDeviceMarkerId(markerOp.responseJson, markerId) : "";
                                     try {

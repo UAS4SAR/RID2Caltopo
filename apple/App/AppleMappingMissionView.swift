@@ -23,8 +23,8 @@ private actor AppleMappingMissionPreviewWorker {
         let data=try mission.json(cameraProfile:camera,desiredGsdCmPerPixel:gsd,captureProfile:capture,canopyHeightMeters:canopy,maximumObstacleHeightMeters:obstacle,clearanceMeters:clearance,maximumCaptureSpeedMetersPerSecond:captureSpeed,transitSpeedMetersPerSecond:transitSpeed)
         let root=try MappingMissionStore.applicationRoot()
         try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
-        let attributes=try FileManager.default.attributesOfFileSystem(forPath:root.path)
-        let free=(attributes[.systemFreeSize] as? NSNumber)?.int64Value ?? 0,total=(attributes[.systemSize] as? NSNumber)?.int64Value ?? 0
+        let free=try MappingStorageBudget.freeBytes(root)
+        let total=(try FileManager.default.attributesOfFileSystem(forPath:try MappingStorageBudget.existingDirectory(root).path)[.systemSize] as? NSNumber)?.int64Value ?? 0
         let result=(try MappingPlanningEstimate(mission:data,totalCapacity:total,availableCapacity:free),try MappingFlightRoute(mission:data),free)
         try Task.checkCancellation()
         return result
@@ -226,7 +226,7 @@ struct AppleMappingLayerInspector:View {
             if let engine=layer.engine{Text(engine)}
             if let quality=layer.quality{Text(quality)}
             if layer.assignmentBoundary != nil {Toggle(softEdges ? "Target region · 5 m outer fade":"Full captured extent",isOn:$softEdges).onChange(of:softEdges){_,value in AppleMappingLayerStore.shared.setSoft(layer.id,enabled:value)}}
-            if let onView {Button("View 2D map",action:onView)}
+            if let onView {Button("View 2D map",action:onView).disabled(files?.hasTiles == false)}
             if layer.surfaceModel != nil{Button("View 3D surface"){surface=true}}
             if let files {
                 if files.surfaces.count == 1, let file = files.surfaces.first { ShareLink("Share 3D surface (.glb)", item: file) }
@@ -288,16 +288,49 @@ struct AppleMappingLayerInspector:View {
     static let shared = AppleMappingLayerStore()
     @Published private(set) var layers: [MappingLayer]
     @Published var localPreviewID:String?
+    /// Bumped when View 2D selects a layer so the map can zoom to bounds.
+    @Published private(set) var localPreviewZoomToken: UUID?
     @Published private var hidden: Set<String>
     private init() {
         layers = (UserDefaults.standard.data(forKey:"mappingLayers").flatMap { try? JSONDecoder().decode([MappingLayer].self,from:$0) }) ?? []
         hidden=Set(UserDefaults.standard.stringArray(forKey:"hiddenMappingLayers") ?? [])
+        clearStaleSelectionIfNeeded()
     }
     func isVisible(_ layerID:String) -> Bool { !hidden.contains(layerID) }
     func setVisible(_ layerID:String,visible:Bool) {
         guard layers.contains(where:{$0.id==layerID}) else { return }
         if visible { hidden.remove(layerID) } else { hidden.insert(layerID) }
         save()
+    }
+    /// Returns false when the layer is unregistered or has no tiles (caller must probe tiles off MainActor).
+    @discardableResult
+    func selectLocal(_ layer: MappingLayer?, hasTiles: Bool = true) -> Bool {
+        if layer == nil {
+            localPreviewID = nil
+            localPreviewZoomToken = nil
+            AppleLog.debug("MappingLayer", "Selected local layer=none")
+            return true
+        }
+        guard let layer else { return false }
+        if !layers.contains(where: { $0.id == layer.id }) {
+            AppleLog.warning("MappingLayer", "MapLayer select refused id=\(layer.id.prefix(8)) reason=unregistered")
+            return false
+        }
+        if !hasTiles {
+            AppleLog.warning("MappingLayer", "MapLayer select refused id=\(layer.id.prefix(8)) reason=no-tiles")
+            return false
+        }
+        localPreviewID = layer.id
+        localPreviewZoomToken = UUID()
+        AppleLog.debug("MappingLayer", "Selected local layer=\(layer.id.prefix(8))")
+        return true
+    }
+    func clearStaleSelectionIfNeeded() {
+        guard let id = localPreviewID else { return }
+        if !layers.contains(where: { $0.id == id }) {
+            localPreviewID = nil
+            AppleLog.warning("MappingLayer", "MapLayer sel stale id=\(id.prefix(8)) cleared")
+        }
     }
     func importLayer(link:String,incidentID:String) async throws {
         guard let url=URL(string:link.trimmingCharacters(in:.whitespacesAndNewlines)),["http","https"].contains(url.scheme ?? ""),url.host != nil,url.user == nil,url.password == nil else { throw MappingMission.Failure("Enter the layer link from the mapping station.") }

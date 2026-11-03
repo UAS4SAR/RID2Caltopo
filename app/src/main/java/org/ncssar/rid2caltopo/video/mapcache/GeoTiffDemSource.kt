@@ -11,6 +11,7 @@ import mil.nga.tiff.compression.Predictor
 import mil.nga.tiff.compression.RawCompression
 import org.ncssar.rid2caltopo.data.CaltopoClient
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug
+import org.ncssar.rid2caltopo.util.LogThrottle
 import java.io.Closeable
 import java.io.EOFException
 import java.io.File
@@ -567,8 +568,11 @@ internal class GeoTiffDemSource(context: Context) {
             } else {
                 bf.writeBytes(decoded)
             }
-            MapCacheDebug.warn(MapCacheDebug.TAG_DEM,
-                "dem block-saved $tileName #$blockIndex (${decoded.size}B)")
+            LogThrottle.emit(
+                "dem.block-saved.$tileName",
+                "dem block-saved $tileName #$blockIndex (${decoded.size}B)",
+                minIntervalMs = 30_000L,
+            )?.let { MapCacheDebug.debug(MapCacheDebug.TAG_DEM, it) }
         } catch (e: Exception) {
             MapCacheDebug.warn(MapCacheDebug.TAG_DEM, "dem block-file-write-fail $bf: ${e.message}")
         }

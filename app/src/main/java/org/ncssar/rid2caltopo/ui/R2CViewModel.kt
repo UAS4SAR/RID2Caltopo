@@ -40,6 +40,7 @@ import org.ncssar.rid2caltopo.data.R2CMqttManager
 import org.ncssar.rid2caltopo.data.R2cRuntimeRegistry
 import org.ncssar.rid2caltopo.data.SimpleTimer
 import org.ncssar.rid2caltopo.data.TabletPilotCallsignPrefs
+import org.ncssar.rid2caltopo.util.LogThrottle
 import java.util.concurrent.atomic.AtomicBoolean
 
 enum class ActiveScreen {
@@ -646,7 +647,10 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             is UIEvent.ConnectionStatusChanged -> {
                 // Directly map the Java Enum to our Sealed Class state
                 val status = uiEvent.mapStatus
-                CTDebug(tag, "onUIEvent(${uiEvent}): ConnectionStatus: '${status.name}'")
+                val statusMsg = "onUIEvent(ConnectionStatusChanged): ConnectionStatus: '${status.name}'"
+                LogThrottle.emit("r2c.connectionStatus", statusMsg, onChangeOnly = true)?.let {
+                    CTDebug(tag, it)
+                }
                 connectionState = when (status) {
                     CaltopoMap.MapStatusListener.mapStatus.credentialsVerified -> {
                         // Team verification finishes after the operator may already have chosen

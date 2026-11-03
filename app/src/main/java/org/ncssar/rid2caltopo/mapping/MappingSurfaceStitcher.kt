@@ -64,7 +64,8 @@ internal object MappingSurfaceStitcher {
             MappingSurfaceNative.prepareProjection(surface.heights,surface.width,surface.height,surface.x,surface.y,surface.cell,
                 model.cameras,MappingSurfaceExport.fullIntrinsics(model),model.frames[0].width,model.frames[0].height,paths,
                 object:MappingSurfaceNative.Progress {override fun iteration(iteration:Int,cost:Double):Boolean {
-                    check();progress("Matching photo seams · ${(cost*100).toInt()}%",.69+.01*cost);return true
+                    // Optimizer cost is not a completion fraction; stay indeterminate in the seams band.
+                    check();progress("Matching photo seams",.69);return true
                 }})
             val representation=(if(needsExport)null else restored?.representation) ?: MappingSurfaceExport.write(model,surface,paths,out,progress,check).also {
                 MappingSurfaceCheckpoint.save(mission,digests,out,it,check)

@@ -59,17 +59,51 @@ data class MappingLayer(val id: String, val incidentId: String, val title: Strin
             .filterKeys{!it.startsWith("hidden:")&&!it.startsWith("selected")}.values.filterIsInstance<String>().flatMap{text->
                 runCatching{val array=JSONArray(text);(0 until array.length()).map{parse(array.getJSONObject(it))}}.getOrDefault(emptyList())
             }.distinctBy{it.id}
+        /** Cheap shallow tile probe: layer.json plus one zoom/x tile png. Not a DFS. */
+        fun hasTileManifest(directory:java.io.File):Boolean {
+            if(!java.io.File(directory,"layer.json").isFile)return false
+            val zooms=directory.listFiles()?.filter{it.isDirectory&&it.name.toIntOrNull()!=null}.orEmpty()
+            for(z in zooms){
+                val xs=z.listFiles()?.filter{it.isDirectory}.orEmpty()
+                for(x in xs){
+                    if(x.listFiles()?.any{it.isFile&&it.extension.equals("png",true)}==true)return true
+                }
+            }
+            return false
+        }
+        fun hasTileManifest(context:Context,id:String):Boolean =
+            hasTileManifest(LocalMappingTiles.directory(context,id))
         fun allLocal(context:Context):List<MappingLayer> = savedLayers(context)
-            .filter{MappingLibraryFiles.contains(LocalMappingTiles.directory(context,it.id), "png")}
-        fun selectLocal(context:Context,layer:MappingLayer?){
-            context.getSharedPreferences("mapping_layers",0).edit().putString("selectedLocalLayer",layer?.id).apply()
-            org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("MappingLayer", "Selected local layer=${layer?.id ?: "none"}")
+            .filter{hasTileManifest(context,it.id)}
+        fun selectLocal(context:Context,layer:MappingLayer?):Boolean {
+            val preferences=context.getSharedPreferences("mapping_layers",0)
+            if(layer==null){
+                preferences.edit().putString("selectedLocalLayer",null).apply()
+                org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("MappingLayer","Selected local layer=none")
+                return true
+            }
+            if(savedLayers(context).none{it.id==layer.id}){
+                org.ncssar.rid2caltopo.data.CaltopoClient.CTWarn("MappingLayer","MapLayer select refused id=${layer.id.take(8)} reason=unregistered")
+                return false
+            }
+            if(!hasTileManifest(context,layer.id)){
+                org.ncssar.rid2caltopo.data.CaltopoClient.CTWarn("MappingLayer","MapLayer select refused id=${layer.id.take(8)} reason=no-tiles")
+                return false
+            }
+            preferences.edit().putString("selectedLocalLayer",layer.id).apply()
+            org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("MappingLayer","Selected local layer=${layer.id.take(8)}")
+            return true
         }
         fun selectedLocal(context:Context):MappingLayer? {
-            val id=context.getSharedPreferences("mapping_layers",0).getString("selectedLocalLayer",null)?:return null
-            // Selection is durable metadata. A transiently unavailable imagery directory must
-            // not hide the selected layer; tile availability is handled by the tile workers.
-            return savedLayers(context).firstOrNull{it.id==id}
+            val preferences=context.getSharedPreferences("mapping_layers",0)
+            val id=preferences.getString("selectedLocalLayer",null)?:return null
+            val layer=savedLayers(context).firstOrNull{it.id==id}
+            if(layer==null||!hasTileManifest(context,id)){
+                preferences.edit().remove("selectedLocalLayer").apply()
+                org.ncssar.rid2caltopo.data.CaltopoClient.CTWarn("MappingLayer","MapLayer sel stale id=${id.take(8)} cleared")
+                return null
+            }
+            return layer
         }
         fun parse(value: JSONObject) = MappingLayer(value.getString("layerId"),value.getString("incidentId"),value.getString("title"),
             value.getString("tileUrlTemplate"),value.getInt("minZoom"),value.getInt("maxZoom"),

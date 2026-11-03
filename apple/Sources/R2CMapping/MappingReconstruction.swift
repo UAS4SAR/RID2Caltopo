@@ -2,29 +2,93 @@ import Foundation
 import CryptoKit
 import CoreGraphics
 import ImageIO
+import os
 import R2CCore
 
 public enum MappingReconstruction {
+    private static let processingLog = Logger(subsystem: "org.ncssar.RID2Caltopo", category: "MappingProcessing")
     private struct SavedFile: Codable {let path,sha256:String;let bytes:Int64}
     private struct GeometryCheckpoint: Codable {let fingerprint,sha256:String}
     private struct Checkpoint: Codable {let fingerprint:String;let files:[SavedFile]}
     /// One region is decoded/solved/exported at a time. Checkpoints are verified before reuse.
     public static func run(store: MappingMissionStore, missionID: String, selectedDigests:Set<String>? = nil, cancellation: MappingCancellation,
         progress: @escaping @Sendable (MappingProgressSnapshot)->Void) throws -> URL {
+        precondition(!Thread.isMainThread)
         let fm=FileManager.default,root=try store.directory(missionID),planData=try Data(contentsOf:root.appendingPathComponent("mission.json"))
         guard let plan=try JSONSerialization.jsonObject(with:planData) as? [String:Any],let parameters=plan["parameters"] as? [String:Any],let camera=plan["cameraSpecifications"] as? [String:Any],let fov=camera["diagonalFOVDegrees"] as? Double,
               let feature=plan["feature"] as? [String:Any],let geometry=feature["geometry"] as? [String:Any],let ring=(geometry["coordinates"] as? [[[Double]]])?.first,ring.count>=3 else{throw MappingMission.Failure("Invalid mapping plan.")}
         let allPhotos=try store.originals(missionID)
         if let selectedDigests {guard !selectedDigests.isEmpty,selectedDigests.isSubset(of:Set(allPhotos.map(\.digest))) else{throw MappingMission.Failure("Selected originals are no longer available.")}}
-        let photos=allPhotos.filter{selectedDigests?.contains($0.digest) ?? true},started=Date();var lastUpdate=Date.distantPast,lastBudgetCheck=Date.distantPast
-        func update(_ stage: String,_ fraction: Double) throws {
-            try cancellation.check();let now=Date()
+        let photos=allPhotos.filter{selectedDigests?.contains($0.digest) ?? true},started=Date()
+        var lastUpdate=Date.distantPast,lastBudgetCheck=Date.distantPast,lastProgressLog=Date.distantPast
+        var lastPhase:String?=nil,phaseStarted=started
+        var budgetRoot=root.appendingPathComponent("work/rtk-regions-v2")
+        var budgetEnabled=true
+        var estimateSummary:String?=nil
+        let phases=MappingProgressPhases.tracker(engine:"rtk-surface")
+        func ensureCancel() throws { try cancellation.check() }
+        func checkBudget() throws {
+            try ensureCancel()
+            guard budgetEnabled else { return }
+            let now=Date()
             if now.timeIntervalSince(lastBudgetCheck)>30 {
-                let attributes=try fm.attributesOfFileSystem(forPath:root.path)
-                if let available=attributes[.systemFreeSize] as? NSNumber,available.int64Value<512*1048576 {throw MappingMission.Failure("Storage is full. Originals and completed regions are retained.")}
+                try MappingStorageBudget.checkExisting(budgetRoot, reserveBytes: MappingStorageBudget.reconstructReserveBytes, bucket: "Mapping work space")
                 lastBudgetCheck=now
             }
-            if now.timeIntervalSince(lastUpdate)>=0.25 || fraction>=1 {lastUpdate=now;progress(MappingProgressSnapshot(stage:stage,fraction:fraction,startedAt:started,activityAt:now))}
+        }
+        func reportPhase(_ phase:String, local:Double?, unitIndex:Int?=nil, unitTotal:Int?=nil, stageOverride:String?=nil) throws {
+            try checkBudget()
+            let now=Date()
+            let fraction=phases.overall(phase, local: local)
+            let stage=stageOverride ?? phases.stage(phase, unitIndex: unitIndex, unitTotal: unitTotal)
+            if phase != lastPhase {
+                if let lastPhase { processingLog.debug("phase end id=\(lastPhase, privacy: .public) elapsedMs=\(Int(now.timeIntervalSince(phaseStarted)*1000), privacy: .public)") }
+                processingLog.debug("phase start id=\(phase, privacy: .public)")
+                lastPhase=phase; phaseStarted=now; lastProgressLog=now
+            } else if now.timeIntervalSince(lastProgressLog) > 60 {
+                processingLog.debug("phase progress id=\(phase, privacy: .public) fraction=\(String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), fraction), privacy: .public) elapsedMs=\(Int(now.timeIntervalSince(started)*1000), privacy: .public)")
+                lastProgressLog=now
+            }
+            if now.timeIntervalSince(lastUpdate)>=0.25 || fraction>=1 || local==nil {
+                lastUpdate=now
+                progress(MappingProgressSnapshot(stage:stage,fraction:fraction,startedAt:started,activityAt:now,estimateSummary:estimateSummary))
+            }
+        }
+        func update(_ stage: String,_ fraction: Double) throws {
+            // Stitcher absolute fractions are remapped into phase bands; optimizer cost never drives %.
+            let body: String = {
+                if let range = stage.range(of: " · ") { return String(stage[range.upperBound...]) }
+                return stage
+            }()
+            func counts(in text: String) -> (Int, Int)? {
+                guard let match = text.range(of: #"(\d+)/(\d+)"#, options: .regularExpression) else { return nil }
+                let parts = String(text[match]).split(separator: "/").compactMap { Int($0) }
+                guard parts.count == 2 else { return nil }
+                return (parts[0], parts[1])
+            }
+            if body.hasPrefix("Checking original") {
+                if let (i, n) = counts(in: body) { try reportPhase(MappingProgressPhases.checkOriginals, local: Double(max(0, i - 1)) / Double(n), unitIndex: i, unitTotal: n, stageOverride: stage) }
+                else { try reportPhase(MappingProgressPhases.checkOriginals, local: fraction, stageOverride: stage) }
+            } else if body.hasPrefix("Preparing full-resolution color") || body.hasPrefix("Preparing original") || body.hasPrefix("Coloring 3D") {
+                if let (i, n) = counts(in: body) { try reportPhase(MappingProgressPhases.prepareColors, local: Double(max(0, i - 1)) / Double(n), unitIndex: i, unitTotal: n, stageOverride: stage) }
+                else { try reportPhase(MappingProgressPhases.prepareColors, local: nil, stageOverride: stage) }
+            } else if body.hasPrefix("Rendering 2D tiles") || body.hasPrefix("Projecting") {
+                if let (i, n) = counts(in: body) { try reportPhase(MappingProgressPhases.projectTiles, local: Double(i) / Double(n), unitIndex: i, unitTotal: n, stageOverride: stage) }
+                else { try reportPhase(MappingProgressPhases.projectTiles, local: nil, stageOverride: stage) }
+            } else if body.hasPrefix("Preparing zoom") || body.hasPrefix("Building zoom") {
+                if let (i, n) = counts(in: body) { try reportPhase(MappingProgressPhases.zoomLevels, local: Double(i) / Double(n), unitIndex: i, unitTotal: n, stageOverride: stage) }
+                else { try reportPhase(MappingProgressPhases.zoomLevels, local: nil, stageOverride: stage) }
+            } else if body.hasPrefix("Assembling") || body.hasPrefix("Packaging") || body.hasPrefix("Verifying 3D") || body.hasPrefix("Saving file") || body.hasPrefix("Verifying saved file") || body.hasPrefix("Saving camera") {
+                if let (i, n) = counts(in: body) { try reportPhase(MappingProgressPhases.package, local: Double(i) / Double(n), unitIndex: i, unitTotal: n, stageOverride: stage) }
+                else { try reportPhase(MappingProgressPhases.package, local: nil, stageOverride: stage) }
+            } else if body.hasPrefix("Matching") || body.hasPrefix("Refining local surface") || body.contains("Matching photo seams") {
+                try reportPhase(MappingProgressPhases.matchSeams, local: nil, stageOverride: phases.title(MappingProgressPhases.matchSeams))
+            } else if body == "Map ready" || body.hasPrefix("Publishing") {
+                try reportPhase(MappingProgressPhases.publish, local: body == "Map ready" ? 1 : 0, stageOverride: stage)
+            } else {
+                // Native optimizer cost is never interpreted as local progress.
+                try reportPhase(MappingProgressPhases.reconstruct, local: nil, stageOverride: stage)
+            }
         }
         guard (3...10000).contains(photos.count) else{throw MappingMission.Failure("Choose 3–10,000 original visible-wide photos.")}
         let scale=cos(ring.map{$0[1]}.reduce(0,+)/Double(ring.count) * .pi/180)
@@ -38,10 +102,26 @@ public enum MappingReconstruction {
         let regions=try MappingProcessingPolicy.regions(photos:positions,bounds:bounds,groundScale:scale)
         let originals=root.appendingPathComponent("originals"),work=root.appendingPathComponent("work/rtk-regions-v2")
         try fm.createDirectory(at:work,withIntermediateDirectories:true)
+        budgetRoot=work
+        let width=camera["widthPixels"] as? Int ?? 4032, height=camera["heightPixels"] as? Int ?? 3024
+        let gsdCm=parameters["desiredGroundResolutionCmPerPixel"] as? Double ?? 2
+        let pixelMeters=gsdCm/100
+        let area=bounds.area(scale:scale)
+        let estimate=try MappingProcessingPolicy.storage(photos:photos.count,width:width,height:height,areaSquareMeters:area,pixelMeters:pixelMeters,regional:regions.count>1)
+        let resultsRoot=root.appendingPathComponent("results",isDirectory:true)
+        try fm.createDirectory(at:resultsRoot,withIntermediateDirectories:true)
+        let assessment=try estimate.assess(originalsRoot:root,scratchRoot:work,layersRoot:resultsRoot,reserveBytes:MappingStorageBudget.reconstructReserveBytes)
+        estimateSummary=assessment.summary()
+        if let encoded=try? JSONSerialization.data(withJSONObject:["active":true,"stage":"Preparing local map","progress":0.0,"estimate":assessment.json(),"updatedAt":ISO8601DateFormatter().string(from:Date())],options:[.sortedKeys]) {
+            try? encoded.write(to:root.appendingPathComponent("processing-status.json"),options:.atomic)
+        }
+        processingLog.debug("start missionId=\(missionID.prefix(8), privacy: .public) photos=\(photos.count, privacy: .public) engine=rtk-surface \(assessment.summary(), privacy: .public)")
+        if !assessment.shortages.isEmpty { throw MappingMission.Failure(assessment.summary()) }
+        try reportPhase(MappingProgressPhases.checkOriginals, local:0, stageOverride:phases.title(MappingProgressPhases.checkOriginals))
         var fingerprintData=Data("apple-regions-v6-best-effort".utf8);fingerprintData.append(planData);fingerprintData.append(Data(photos.map(\.digest).sorted().joined().utf8))
         let fingerprint=SHA256.hash(data:fingerprintData).map{String(format:"%02x",$0)}.joined()
         for (i,p) in photos.enumerated(){let file=originals.appendingPathComponent(p.digest+".jpg"),size=Int64(try file.resourceValues(forKeys:[.fileSizeKey]).fileSize ?? 0)
-            guard try MappingFileIO.sha(file,progress:{bytes in try update("Checking original \(i+1)/\(photos.count) · \(MappingProgressSnapshot.bytes(bytes,total:size))",0.04*Double(i)/Double(photos.count))})==p.digest else{throw MappingMission.Failure("Original checksum changed. Re-import \(p.name).")}
+            guard try MappingFileIO.sha(file,progress:{bytes in try update("Checking original \(i+1)/\(photos.count) · \(MappingProgressSnapshot.bytes(bytes,total:size))",Double(i)/Double(photos.count))})==p.digest else{throw MappingMission.Failure("Original checksum changed. Re-import \(p.name).")}
         }
         let pixel=(parameters["desiredGroundResolutionCmPerPixel"] as? Double ?? 2)/100
         let zoom=min(23,max(17,Int(ceil(log2(scale*MappingOriginal.world/(256*pixel))))))
@@ -49,7 +129,11 @@ public enum MappingReconstruction {
         for (index,region) in regions.enumerated(){
             let block=work.appendingPathComponent("regions/\(index)"),checkpoint=block.appendingPathComponent("checkpoint.json")
             try fm.createDirectory(at:block,withIntermediateDirectories:true)
-            func regional(_ stage: String,_ fraction: Double) throws {try update("Region \(index+1)/\(regions.count) · \(stage)",0.04+0.88*(Double(index)+fraction)/Double(regions.count))}
+            func regional(_ stage: String,_ fraction: Double) throws {
+                // Region index is carried in the stage label; overall % comes from phase bands only.
+                _ = fraction
+                try update("Region \(index+1)/\(regions.count) · \(stage)", 0)
+            }
             let old=try? JSONDecoder().decode(Checkpoint.self,from:Data(contentsOf:checkpoint))
             var verified=old?.fingerprint==fingerprint+"-refined-ray-coverage-photo-seams-v5" && !(old?.files.isEmpty ?? true)
             if verified,let old {for (fileIndex,record) in old.files.enumerated(){
@@ -137,8 +221,25 @@ public enum MappingReconstruction {
         let archive=result.appendingPathComponent("share.partial")
         try MappingShareArchive.write(root:result,layerID:resultID,manifest:manifest,destination:archive){try update($0,0.99)}
         try fm.moveItem(at:archive,to:result.appendingPathComponent("share.zip"))
-        let destination=root.appendingPathComponent("results/\(resultID)");try fm.createDirectory(at:destination.deletingLastPathComponent(),withIntermediateDirectories:true);try fm.moveItem(at:result,to:destination)
-        try update("Map ready",1);return destination
+        try checkBudget()
+        let destination=root.appendingPathComponent("results/\(resultID)")
+        try fm.createDirectory(at:destination.deletingLastPathComponent(),withIntermediateDirectories:true)
+        try fm.moveItem(at:result,to:destination)
+        // After move, budget checks must use the published destination — never the deleted publishing URL.
+        budgetRoot=destination
+        budgetEnabled=false
+        try ensureCancel()
+        try reportPhase(MappingProgressPhases.publish, local:0)
+        processingLog.debug("publish layerId=\(resultID.prefix(8), privacy: .public)")
+        if let lastPhase {
+            processingLog.debug("phase end id=\(lastPhase, privacy: .public) elapsedMs=\(Int(Date().timeIntervalSince(phaseStarted)*1000), privacy: .public)")
+        }
+        if let encoded=try? JSONSerialization.data(withJSONObject:["active":false,"stage":"Map ready","layerId":resultID,"photoCount":photos.count,"progress":1.0,"updatedAt":ISO8601DateFormatter().string(from:Date())],options:[.sortedKeys]) {
+            try? encoded.write(to:root.appendingPathComponent("processing-status.json"),options:.atomic)
+        }
+        try ensureCancel()
+        progress(MappingProgressSnapshot(stage:"Map ready",fraction:1,startedAt:started,activityAt:Date(),estimateSummary:estimateSummary))
+        return destination
     }
     private static func pixels(_ url: URL) throws -> [UInt32] {
         guard let source=CGImageSourceCreateWithURL(url as CFURL,nil),let image=CGImageSourceCreateImageAtIndex(source,0,nil),image.width==256,image.height==256 else {throw MappingMission.Failure("Unreadable regional map tile.")}

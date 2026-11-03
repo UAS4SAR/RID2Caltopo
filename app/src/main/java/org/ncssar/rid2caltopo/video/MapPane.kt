@@ -182,6 +182,7 @@ import org.ncssar.rid2caltopo.data.CaltopoClient.CTInfo
 import org.ncssar.rid2caltopo.data.CaltopoClient
 import org.ncssar.rid2caltopo.data.PeerTrafficAltitudeNormalizer
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTDebugEnabled
+import org.ncssar.rid2caltopo.util.LogThrottle
 import org.ncssar.rid2caltopo.data.CaltopoLiveTrack
 import org.ncssar.rid2caltopo.data.CaltopoMap
 import org.ncssar.rid2caltopo.data.WaypointTrack
@@ -726,22 +727,59 @@ internal fun SplitMapPane(
     var mappingLayers by remember { mutableStateOf(emptyList<org.ncssar.rid2caltopo.mapping.MappingLayer>()) }
     var mappingRefreshRevision by remember { mutableStateOf(0L) }
     val mappingLayerChanges by org.ncssar.rid2caltopo.mapping.MappingWorkspaceState.layerChanges.collectAsState()
-    var mappingZoomRevision by remember { mutableStateOf(0L) }
+    var mappingZoomKey by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(viewModel.mapName,mappingLayerChanges,mappingRefreshRevision) {
         val incidentId=CaltopoMap.GetMapId()
-        val (layers,selected,bounds)=withContext(Dispatchers.IO) {
+        data class Loaded(val layers:List<org.ncssar.rid2caltopo.mapping.MappingLayer>,val selected:org.ncssar.rid2caltopo.mapping.MappingLayer?,val bounds:List<Double>?,val reason:String?,val selectedId:String?)
+        val loaded=withContext(Dispatchers.IO) {
             val layers=org.ncssar.rid2caltopo.mapping.MappingLayer.load(context,incidentId)
+            val preferences=context.getSharedPreferences("mapping_layers",0)
+            val selectedId=preferences.getString("selectedLocalLayer",null)
             val selected=org.ncssar.rid2caltopo.mapping.MappingLayer.selectedLocal(context)
-            Triple(layers,selected,selected?.takeIf{it.bounds.size==4}?.displayBounds(context))
+            when {
+                selectedId==null -> Loaded(layers,null,null,null,null)
+                selected==null -> {
+                    val registered=preferences.all.filterKeys{!it.startsWith("hidden:")&&!it.startsWith("selected")}
+                        .values.filterIsInstance<String>().any{it.contains(selectedId)}
+                    val reason=when {
+                        !registered -> "unregistered"
+                        !org.ncssar.rid2caltopo.mapping.MappingLayer.hasTileManifest(context,selectedId) -> "no-tiles"
+                        else -> "unregistered"
+                    }
+                    Loaded(layers,null,null,reason,selectedId)
+                }
+                selected.incidentId!=incidentId -> Loaded(layers,selected,selected.takeIf{it.bounds.size==4}?.displayBounds(context),"other-incident",selected.id)
+                selected.bounds.size!=4 -> Loaded(layers,selected,null,"no-bounds",selected.id)
+                else -> {
+                    var tiles=0
+                    val root=org.ncssar.rid2caltopo.mapping.LocalMappingTiles.directory(context,selected.id)
+                    root.listFiles()?.filter{it.isDirectory&&it.name.toIntOrNull()!=null}?.forEach{z->
+                        z.listFiles()?.filter{it.isDirectory}?.forEach{x->
+                            tiles+=x.listFiles()?.count{it.isFile&&it.extension.equals("png",true)}?:0
+                        }
+                    }
+                    CTDebug(MAP_PANE_TAG,"MapLayer show id=${selected.id.take(8)} tiles=$tiles z=${selected.minZoom}-${selected.maxZoom}")
+                    Loaded(layers,selected,selected.displayBounds(context),null,selected.id)
+                }
+            }
         }
         if(incidentId!=CaltopoMap.GetMapId())return@LaunchedEffect
-        mappingLayers=layers
-        localMappingPreview=selected
-        CTDebug(MAP_PANE_TAG,"Mapping layers ready incident=$incidentId count=${layers.size} selected=${selected?.id ?: "none"}")
-        if(mappingLayerChanges!=mappingZoomRevision && bounds!=null) {
-            currentMapView?.zoomToBoundingBox(org.osmdroid.util.BoundingBox(bounds[3],bounds[2],bounds[1],bounds[0]),true,48)
+        mappingLayers=loaded.layers
+        localMappingPreview=loaded.selected
+        loaded.reason?.let{reason->
+            CTDebug(MAP_PANE_TAG,"MapLayer show id=${loaded.selectedId.orEmpty().take(8)} reason=$reason")
         }
-        mappingZoomRevision=mappingLayerChanges
+        LogThrottle.emit(
+            "mappane.layers.ready",
+            "Mapping layers ready incident=$incidentId count=${loaded.layers.size} selected=${loaded.selected?.id?.take(8) ?: "none"}",
+            onChangeOnly = true,
+        )?.let { CTDebug(MAP_PANE_TAG, it) }
+        // Zoom on View 2D / selection change (layerChanges), not every incidental refresh.
+        val zoomKey="${mappingLayerChanges}:${loaded.selectedId.orEmpty()}"
+        if(loaded.bounds!=null && zoomKey!=mappingZoomKey) {
+            mappingZoomKey=zoomKey
+            currentMapView?.zoomToBoundingBox(org.osmdroid.util.BoundingBox(loaded.bounds[3],loaded.bounds[2],loaded.bounds[1],loaded.bounds[0]),true,48)
+        }
     }
     val displayedMappingLayers=(mappingLayers+listOfNotNull(localMappingPreview)).distinctBy{it.id}
     val mappingDisplayChanges by org.ncssar.rid2caltopo.mapping.MappingWorkspaceState.displayChanges.collectAsState()
@@ -1333,11 +1371,14 @@ internal fun SplitMapPane(
                 val attemptedRequests = AtomicInteger(0)
                 val availableRequests = AtomicInteger(0)
                 val fetchConcurrency = MapTileUsagePolicy.liveFetchConcurrency(source.name())
-                MapCacheDebug.debug(
-                    MapCacheDebug.TAG_TILE,
-                    "live-priority pass start zoom=$passZoom requests=${requests.size} " +
-                        "source=${source.name()} concurrency=$fetchConcurrency"
-                )
+                // Skip routine start for trivial single-request passes; slow/cancelled still logged below.
+                if (requests.size > 1) {
+                    MapCacheDebug.debug(
+                        MapCacheDebug.TAG_TILE,
+                        "live-priority pass start zoom=$passZoom requests=${requests.size} " +
+                            "source=${source.name()} concurrency=$fetchConcurrency"
+                    )
+                }
                 try {
                     suspend fun fetchOne(request: LiveTileRequest): Boolean {
                         if (request.requiresCurrentCached && !tileCacheWriter.exists(source, request.currentTileIndex)) {
@@ -1417,10 +1458,12 @@ internal fun SplitMapPane(
                             "live-priority pass slow zoom=$passZoom requests=${requests.size} " +
                                 "attempted=${attemptedRequests.get()} available=${availableRequests.get()} elapsedMs=$elapsedMs"
                         )
-                    } else {
+                    } else if (elapsedMs > 0L && attemptedRequests.get() > 0) {
+                        // Suppress no-op passes (e.g. requests=1 elapsedMs=0).
                         MapCacheDebug.debug(
                             MapCacheDebug.TAG_TILE,
-                            "live-priority pass done zoom=$passZoom requests=${requests.size} elapsedMs=$elapsedMs"
+                            "live-priority pass done zoom=$passZoom requests=${requests.size} " +
+                                "attempted=${attemptedRequests.get()} available=${availableRequests.get()} elapsedMs=$elapsedMs"
                         )
                     }
                     if (currentCoroutineContext().isActive) {
@@ -3169,8 +3212,14 @@ internal fun SplitMapPane(
             localTrackLastSeededTimestampByMappedId[request.designator] = prepared.first.lastSeededTime
             request.sourceRevision?.let { localTrackLastSeededRevision[request.designator] = it }
             trackOverlayRefreshToken++
-            if (CTDebugEnabled(ICON_LATENCY_TAG)) CTDebug(ICON_LATENCY_TAG,
-                "track_seed_prepared designator=${request.designator} points=${prepared.first.snapshotSize} worker=true")
+            if (CTDebugEnabled(ICON_LATENCY_TAG)) {
+                LogThrottle.emit(
+                    "rid.track_seed.${request.designator}",
+                    "track_seed_prepared designator=${request.designator} points=${prepared.first.snapshotSize} worker=true",
+                    minIntervalMs = 30_000L,
+                    onChangeOnly = true,
+                )?.let { CTDebug(ICON_LATENCY_TAG, it) }
+            }
         }
     }
 
@@ -3206,11 +3255,14 @@ internal fun SplitMapPane(
                 list.add(point)
                 flightList.add(point)
                 trackOverlayRefreshToken++
-                if (CTDebugEnabled(ICON_LATENCY_TAG))  CTDebug(
-                    ICON_LATENCY_TAG,
-                    "track_ingest designator=$key wall=$nowWallMsec droneTs=$timestampMsec " +
-                        "lat=${"%.6f".format(Locale.US, lat)} lng=${"%.6f".format(Locale.US, lng)} alt=${"%.1f".format(Locale.US, altitudeMeters)}"
-                )
+                if (CTDebugEnabled(ICON_LATENCY_TAG)) {
+                    LogThrottle.emit(
+                        "rid.track_ingest.$key",
+                        "track_ingest designator=$key droneTs=$timestampMsec altM=${"%.1f".format(Locale.US, altitudeMeters)}",
+                        minIntervalMs = 30_000L,
+                        onChangeOnly = true,
+                    )?.let { CTDebug(ICON_LATENCY_TAG, it) }
+                }
                 if (list.size > LOCAL_TRACK_RECENT_POINT_LIMIT) {
                     list.removeAt(0)
                 }
@@ -4094,24 +4146,23 @@ internal fun SplitMapPane(
                             )
                         )
                     }
+                    // Coarse presence only — never log precise coordinates.
                     val localDeviceMarkerStats = String.format(
                         Locale.US,
-                        "lat=%.6f lng=%.6f center=%.6f,%.6f zoom=%.2f contains=%s",
-                        myLocation.latitude,
-                        myLocation.longitude,
-                        mapView.mapCenter.latitude,
-                        mapView.mapCenter.longitude,
+                        "present=true zoom=%.2f contains=%s ageMs=%d",
                         mapView.zoomLevelDouble,
-                        mapView.boundingBox.containsLocation(myLocation)
+                        mapView.boundingBox.containsLocation(myLocation),
+                        locationAgeMs(myLocation, uiNowWallMsec)
                     )
                     if (localDeviceMarkerStats != lastLocalDeviceMarkerStats) {
                         lastLocalDeviceMarkerStats = localDeviceMarkerStats
                         localDeviceLocationMissingLogged = false
                         if (CTDebugEnabled(MAP_PANE_TAG)) {
-                            CTDebug(
-                                MAP_PANE_TAG,
-                                "Local device marker: $localDeviceMarkerStats ageMs=${locationAgeMs(myLocation, uiNowWallMsec)}"
-                            )
+                            LogThrottle.emit(
+                                "mappane.localDeviceMarker",
+                                "Local device marker: $localDeviceMarkerStats",
+                                onChangeOnly = true,
+                            )?.let { CTDebug(MAP_PANE_TAG, it) }
                         }
                     }
                 } else if (!localDeviceLocationMissingLogged) {
@@ -4133,18 +4184,21 @@ internal fun SplitMapPane(
                         receivedAtMsec = point.receivedAtMsec,
                     )
                     val pointLatencyKey =
-                        "${point.timestampMsec}|${"%.6f".format(Locale.US, point.lat)}|${"%.6f".format(Locale.US, point.lng)}|${"%.1f".format(Locale.US, point.altitudeM)}|${point.headingDeg?.let { "%.1f".format(Locale.US, it) } ?: "n/a"}|${point.cameraAzimuthDeg?.let { "%.1f".format(Locale.US, it) } ?: "n/a"}|${point.horizontalCameraFovDeg?.let { "%.1f".format(Locale.US, it) } ?: "n/a"}"
+                        "${point.timestampMsec}|${"%.1f".format(Locale.US, point.altitudeM)}|${point.headingDeg?.let { "%.1f".format(Locale.US, it) } ?: "n/a"}|${point.cameraAzimuthDeg?.let { "%.1f".format(Locale.US, it) } ?: "n/a"}|${point.horizontalCameraFovDeg?.let { "%.1f".format(Locale.US, it) } ?: "n/a"}"
                     if (renderLatencyKeyByDesignator[point.designator] != pointLatencyKey) {
                         val renderWallMsec = System.currentTimeMillis()
                         val ingestToRenderMs = point.receivedAtMsec?.let { renderWallMsec - it }
-                        if (CTDebugEnabled(ICON_LATENCY_TAG)) CTDebug(
-                            ICON_LATENCY_TAG,
-                            "icon_render designator=${point.designator} wall=$renderWallMsec droneTs=${point.timestampMsec} " +
-                                "lat=${"%.6f".format(Locale.US, point.lat)} lng=${"%.6f".format(Locale.US, point.lng)} " +
-                                "alt=${"%.1f".format(Locale.US, point.altitudeM)} heading=${point.headingDeg?.let { "%.1f".format(Locale.US, it) } ?: "n/a"} " +
-                                "cameraAzimuth=${point.cameraAzimuthDeg?.let { "%.1f".format(Locale.US, it) } ?: "n/a"} horizontalFov=${point.horizontalCameraFovDeg?.let { "%.1f".format(Locale.US, it) } ?: "n/a"} " +
-                                "trackToRenderMs=${ingestToRenderMs?.toString() ?: "n/a"}"
-                        )
+                        if (CTDebugEnabled(ICON_LATENCY_TAG)) {
+                            LogThrottle.emit(
+                                "rid.icon_render.${point.designator}",
+                                "icon_render designator=${point.designator} droneTs=${point.timestampMsec} " +
+                                    "altM=${"%.1f".format(Locale.US, point.altitudeM)} " +
+                                    "heading=${point.headingDeg?.let { "%.1f".format(Locale.US, it) } ?: "n/a"} " +
+                                    "trackToRenderMs=${ingestToRenderMs?.toString() ?: "n/a"}",
+                                minIntervalMs = 30_000L,
+                                onChangeOnly = true,
+                            )?.let { CTDebug(ICON_LATENCY_TAG, it) }
+                        }
                         renderLatencyKeyByDesignator[point.designator] = pointLatencyKey
                     }
                     val renderLat = point.lat
@@ -4443,19 +4497,15 @@ internal fun SplitMapPane(
                     }
 
                     action?.let {
-                        CTDebug(
-                            MAP_PANE_TAG,
+                        LogThrottle.emit(
+                            "mappane.startupViewport",
                             String.format(
                                 Locale.US,
-                                "Startup viewport check: restoredLat=%.6f restoredLng=%.6f restoredZoom=%.2f " +
-                                    "myLocation=%s locationAgeMs=%d locationFresh=%s operationalContent=%s " +
+                                "Startup viewport check: restoredZoom=%.2f hasMyLocation=%s " +
+                                    "locationAgeMs=%d locationFresh=%s operationalContent=%s " +
                                     "viewportContainsMyLocation=%s restoredUseful=%s currentZoom=%.2f action=%s",
-                                restoredStartupViewport.latitude,
-                                restoredStartupViewport.longitude,
                                 restoredStartupViewport.zoom,
-                                startupMyLocation?.let { loc ->
-                                    String.format(Locale.US, "%.6f,%.6f", loc.latitude, loc.longitude)
-                                } ?: "none",
+                                startupMyLocation != null,
                                 startupLocationAgeMs,
                                 startupLocationFresh,
                                 operationalContentPresent,
@@ -4463,8 +4513,9 @@ internal fun SplitMapPane(
                                 restoredViewportUsefulForMyLocation,
                                 mapView.zoomLevelDouble,
                                 it
-                            )
-                        )
+                            ),
+                            onChangeOnly = true,
+                        )?.let { msg -> CTDebug(MAP_PANE_TAG, msg) }
                     }
                 }
 
@@ -4496,18 +4547,17 @@ internal fun SplitMapPane(
                             if (!isInsetMode) {
                                 persistFullMapViewport(mapView)
                             }
-                            CTDebug(
-                                MAP_PANE_TAG,
+                            LogThrottle.emit(
+                                "mappane.initialViewport",
                                 String.format(
                                     Locale.US,
-                                    "Initial viewport: mode=bounds myLocation=%s artifactPts=%d center=%.6f,%.6f zoom=%.2f",
+                                    "Initial viewport: mode=bounds hasMyLocation=%s artifactPts=%d zoom=%.2f",
                                     myLocation != null,
                                     artifactPoints.size,
-                                    mapView.mapCenter.latitude,
-                                    mapView.mapCenter.longitude,
                                     mapView.zoomLevelDouble
-                                )
-                            )
+                                ),
+                                onChangeOnly = true,
+                            )?.let { CTDebug(MAP_PANE_TAG, it) }
                             appliedInitialViewportThisUpdate = true
                         }
 
@@ -4518,19 +4568,18 @@ internal fun SplitMapPane(
                             if (!isInsetMode) {
                                 persistFullMapViewport(mapView)
                             }
-                            CTDebug(
-                                MAP_PANE_TAG,
+                            LogThrottle.emit(
+                                "mappane.initialViewport",
                                 String.format(
                                     Locale.US,
-                                    "Initial viewport: mode=single-point pointCount=%d measured=%sx%s center=%.6f,%.6f zoom=%.2f",
+                                    "Initial viewport: mode=single-point pointCount=%d measured=%sx%s zoom=%.2f",
                                     viewportPoints.size,
                                     mapView.width,
                                     mapView.height,
-                                    mapView.mapCenter.latitude,
-                                    mapView.mapCenter.longitude,
                                     mapView.zoomLevelDouble
-                                )
-                            )
+                                ),
+                                onChangeOnly = true,
+                            )?.let { CTDebug(MAP_PANE_TAG, it) }
                             appliedInitialViewportThisUpdate = mapView.width > 0 && mapView.height > 0
                         }
 
@@ -4540,19 +4589,16 @@ internal fun SplitMapPane(
                             if (!isInsetMode) {
                                 persistFullMapViewport(mapView)
                             }
-                            CTDebug(
-                                MAP_PANE_TAG,
+                            LogThrottle.emit(
+                                "mappane.initialViewport",
                                 String.format(
                                     Locale.US,
-                                    "Initial viewport: mode=my-location lat=%.6f lng=%.6f ageMs=%d center=%.6f,%.6f zoom=%.2f",
-                                    myLocation.latitude,
-                                    myLocation.longitude,
+                                    "Initial viewport: mode=my-location ageMs=%d zoom=%.2f",
                                     locationAgeMs(myLocation, uiNowWallMsec),
-                                    mapView.mapCenter.latitude,
-                                    mapView.mapCenter.longitude,
                                     mapView.zoomLevelDouble
-                                )
-                            )
+                                ),
+                                onChangeOnly = true,
+                            )?.let { CTDebug(MAP_PANE_TAG, it) }
                             appliedInitialViewportThisUpdate = true
                         }
 
@@ -4562,18 +4608,15 @@ internal fun SplitMapPane(
                             if (!isInsetMode) {
                                 persistFullMapViewport(mapView)
                             }
-                            CTDebug(
-                                MAP_PANE_TAG,
+                            LogThrottle.emit(
+                                "mappane.initialViewport",
                                 String.format(
                                     Locale.US,
-                                    "Initial viewport: mode=focused-drone lat=%.6f lng=%.6f center=%.6f,%.6f zoom=%.2f",
-                                    focusPoint.lat,
-                                    focusPoint.lng,
-                                    mapView.mapCenter.latitude,
-                                    mapView.mapCenter.longitude,
+                                    "Initial viewport: mode=focused-drone zoom=%.2f",
                                     mapView.zoomLevelDouble
-                                )
-                            )
+                                ),
+                                onChangeOnly = true,
+                            )?.let { CTDebug(MAP_PANE_TAG, it) }
                             appliedInitialViewportThisUpdate = true
                         }
                     }

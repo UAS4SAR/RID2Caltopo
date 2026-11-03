@@ -24,6 +24,7 @@ import org.ncssar.rid2caltopo.BuildConfig
 import org.ncssar.rid2caltopo.data.CaltopoClient
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTDebugEnabled
+import org.ncssar.rid2caltopo.util.LogThrottle
 import org.ncssar.rid2caltopo.data.CaltopoMap
 import org.ncssar.rid2caltopo.data.OrgConfigManager
 import org.ncssar.rid2caltopo.video.mapcache.DemElevationService
@@ -277,6 +278,7 @@ internal class NotamRepository {
                 val feature = features.optJSONObject(i) ?: continue
                 notices += featureToNearbyNotam(feature, current)
             }
+            logNotamSeveritySummary("full", notices)
             NotamPolicy.sort(notices)
         }
     }
@@ -314,8 +316,22 @@ internal class NotamRepository {
                 val feature = features.optJSONObject(i) ?: continue
                 notices += featureToNearbyNotam(feature, current)
             }
+            logNotamSeveritySummary("delta", notices)
             notices
         }
+    }
+
+    private fun logNotamSeveritySummary(source: String, notices: List<NearbyNotam>) {
+        if (!CTDebugEnabled(TAG)) return
+        val counts = notices.groupingBy { it.severity }.eachCount()
+        val summary = NotamChipSeverity.entries.joinToString(" ") { sev ->
+            "${sev.name.lowercase()}=${counts[sev] ?: 0}"
+        }
+        LogThrottle.emit(
+            "notam.severity.$source",
+            "NOTAM $source summary total=${notices.size} $summary",
+            onChangeOnly = true,
+        )?.let { CTDebug(TAG, it) }
     }
 
     private suspend fun <T> executeNotamRequest(
@@ -462,6 +478,8 @@ internal class NotamRepository {
             classification = classification,
             scheduleText = notam?.optString("schedule").orEmpty()
         )
+        // Per-notice lines removed — callers emit a severity-count summary instead.
+        // Never log precise coordinates from fallback geometry here.
         return NearbyNotam(
             id = notam?.optString("id").orEmpty().ifBlank { title },
             title = humanized.title,
@@ -483,29 +501,7 @@ internal class NotamRepository {
             severity = severity,
             altitudeBand = altitudeBand,
             geometries = geometries
-        ).also {
-            if (CTDebugEnabled(TAG)) {
-                val geometryType = geometry?.optString("type").orEmpty().ifBlank { "none" }
-                CTDebug(
-                    TAG,
-                    "notice id='${it.id}' severity=${it.severity} distanceNm=${it.distanceNm?.let { d -> "%.2f".format(Locale.US, d) } ?: "n/a"} " +
-                        "intersects=${it.intersectsPilotBubble} geometryType=$geometryType drawableGeometries=${it.geometries.size} " +
-                        "title='${it.title.take(120)}'"
-                )
-                if (fallbackRadiusArea != null) {
-                    CTDebug(
-                        TAG,
-                        "Using fallback radius geometry id='${it.id}' center=${"%.6f".format(Locale.US, fallbackRadiusArea.centerLat)},${"%.6f".format(Locale.US, fallbackRadiusArea.centerLon)} radiusNm=${"%.1f".format(Locale.US, fallbackRadiusArea.radiusNm)}"
-                    )
-                }
-                if (reference.contains("6/3475") || it.title.contains("6/3475")) {
-                    CTDebug(
-                        TAG,
-                        "TFR geometry debug id='${it.id}' reference='${reference}' geometry=${geometry?.toString() ?: "null"}"
-                    )
-                }
-            }
-        }
+        )
     }
 
     private fun buildNotamNumber(notam: JSONObject?): String {

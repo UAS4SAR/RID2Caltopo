@@ -104,9 +104,68 @@ public enum MappingProcessingPolicy {
     public struct StorageEstimate: Sendable, Equatable {
         public let originals, products, temporary: Int64
         public var required: Int64 { originals+products+temporary }
+        public var peakAdditionalBytes: Int64 { originals+temporary+products }
         public func approachesCapacity(total: Int64, available: Int64) -> Bool {
             guard total > 0, available >= 0 else { return true }
             return Double(total-available)+Double(required) >= Double(total)*MappingProcessingPolicy.storageWarningFraction
+        }
+
+        public struct BucketNeed: Sendable, Equatable {
+            public let bucket: String
+            public let needBytes: Int64
+            public let pathHint: String
+        }
+
+        public struct BucketAssessment: Sendable, Equatable {
+            public let bucket: String
+            public let needBytes, freeBytes, reserveBytes: Int64
+            public let path: URL
+            public let label: String
+            public var short: Bool { freeBytes - needBytes < reserveBytes }
+            public func message() -> String {
+                MappingStorageBudget.message(bucket: bucket, label: label, needBytes: needBytes, freeBytes: freeBytes, reserveBytes: reserveBytes)
+            }
+            public func json() -> [String: Any] {
+                ["bucket": bucket, "needBytes": needBytes, "freeBytes": freeBytes,
+                 "reserveBytes": reserveBytes, "label": label, "short": short, "pathHint": path.lastPathComponent]
+            }
+        }
+
+        public struct Assessment: Sendable, Equatable {
+            public let buckets: [BucketAssessment]
+            public var shortages: [BucketAssessment] { buckets.filter(\.short) }
+            public func summary() -> String {
+                let rows = shortages.isEmpty ? buckets : shortages
+                return rows.map { $0.message() }.joined(separator: "; ")
+            }
+            public func json() -> [String: Any] {
+                ["buckets": buckets.map { $0.json() }, "shortages": shortages.map { $0.json() }, "summary": summary()]
+            }
+        }
+
+        public func needs(originalsRoot: URL, scratchRoot: URL, layersRoot: URL) -> [BucketNeed] {
+            [
+                BucketNeed(bucket: "Original photos", needBytes: originals, pathHint: originalsRoot.path),
+                BucketNeed(bucket: "Mapping work space", needBytes: temporary, pathHint: scratchRoot.path),
+                BucketNeed(bucket: "Map products", needBytes: products, pathHint: layersRoot.path),
+            ]
+        }
+
+        public func assess(
+            originalsRoot: URL,
+            scratchRoot: URL,
+            layersRoot: URL,
+            reserveBytes: Int64 = MappingStorageBudget.intakeReserveBytes
+        ) throws -> Assessment {
+            let needs = needs(originalsRoot: originalsRoot, scratchRoot: scratchRoot, layersRoot: layersRoot)
+            let paths = [originalsRoot, scratchRoot, layersRoot]
+            let buckets = try zip(needs, paths).map { need, path in
+                let free = try MappingStorageBudget.freeBytes(path)
+                let label = MappingStorageBudget.label(path)
+                return BucketAssessment(bucket: need.bucket, needBytes: need.needBytes, freeBytes: free,
+                                       reserveBytes: reserveBytes, path: path, label: label)
+            }
+            return Assessment(buckets: buckets)
         }
     }
     public static func storage(photos: Int, width: Int, height: Int, areaSquareMeters: Double, pixelMeters: Double, regional: Bool) throws -> StorageEstimate {
@@ -126,8 +185,10 @@ public struct MappingProgressSnapshot: Sendable, Equatable {
     public let stage: String
     public let fraction: Double
     public let startedAt, activityAt: Date
-    public init(stage: String, fraction: Double, startedAt: Date, activityAt: Date = Date()) {
+    public let estimateSummary: String?
+    public init(stage: String, fraction: Double, startedAt: Date, activityAt: Date = Date(), estimateSummary: String? = nil) {
         self.stage=stage; self.fraction=min(1,max(0,fraction.isFinite ? fraction:0)); self.startedAt=startedAt; self.activityAt=activityAt
+        self.estimateSummary=estimateSummary
     }
     public func elapsed(at now: Date) -> Int { max(0,Int(now.timeIntervalSince(startedAt))) }
     public func activity(at now: Date) -> String {

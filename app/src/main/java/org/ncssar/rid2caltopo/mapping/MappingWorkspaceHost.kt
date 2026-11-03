@@ -1,11 +1,15 @@
 package org.ncssar.rid2caltopo.mapping
 
+import android.widget.Toast
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Dialog ownership is independent of the adaptive map/video layout. No disk credentials or imagery. */
 object MappingWorkspaceState {
@@ -30,19 +34,29 @@ object MappingWorkspaceState {
 @Composable
 fun MappingWorkspaceHost(onViewRequested: () -> Unit = {}) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val mission by MappingWorkspaceState.mission.collectAsState()
     val processing by MappingProcessingManager.state.collectAsState()
     val libraryOpen by MappingWorkspaceState.libraryOpen.collectAsState()
     val assignments by MappingWorkspaceState.assignments.collectAsState()
     val view: (MappingLayer) -> Unit = { layer ->
-        MappingLayer.selectLocal(context, layer)
-        MappingWorkspaceState.layersChanged()
-        MappingWorkspaceState.close()
-        MappingProcessingManager.dismiss()
-        onViewRequested()
+        scope.launch {
+            val ok = withContext(Dispatchers.IO) { MappingLayer.selectLocal(context, layer) }
+            if (!ok) {
+                Toast.makeText(context, "This map has no imagery yet", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            MappingWorkspaceState.layersChanged()
+            MappingWorkspaceState.close()
+            MappingProcessingManager.dismiss()
+            onViewRequested()
+        }
     }
     MappingWorkspaceContent(mission, processing, view, libraryOpen=libraryOpen, assignments=assignments, onHidePreview={
-        MappingLayer.selectLocal(context,null);MappingWorkspaceState.layersChanged();MappingWorkspaceState.close()
+        scope.launch {
+            withContext(Dispatchers.IO) { MappingLayer.selectLocal(context, null) }
+            MappingWorkspaceState.layersChanged(); MappingWorkspaceState.close()
+        }
     })
 }
 

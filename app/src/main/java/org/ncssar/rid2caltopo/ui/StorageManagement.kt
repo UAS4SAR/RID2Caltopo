@@ -52,10 +52,15 @@ internal fun StorageManagementDialog(
     if (localMaps) {
         org.ncssar.rid2caltopo.mapping.MappingLocalLayerDialog(onView = { layer ->
             scope.launch {
-                withContext(Dispatchers.IO) {
-                    org.ncssar.rid2caltopo.mapping.MappingLayer.selectLocal(context, layer)
-                    org.ncssar.rid2caltopo.mapping.MappingWorkspaceState.layersChanged()
+                val ok = if (layer == null) {
+                    withContext(Dispatchers.IO) { org.ncssar.rid2caltopo.mapping.MappingLayer.selectLocal(context, null) }
+                    true
+                } else withContext(Dispatchers.IO) { org.ncssar.rid2caltopo.mapping.MappingLayer.selectLocal(context, layer) }
+                if (!ok) {
+                    android.widget.Toast.makeText(context, "This map has no imagery yet", android.widget.Toast.LENGTH_SHORT).show()
+                    return@launch
                 }
+                org.ncssar.rid2caltopo.mapping.MappingWorkspaceState.layersChanged()
                 localMaps = false; onDismiss()
             }
         }, onDismiss = { localMaps = false })

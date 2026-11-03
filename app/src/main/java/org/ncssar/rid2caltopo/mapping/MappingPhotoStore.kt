@@ -31,7 +31,7 @@ class MappingPhotoStore(val directory: File) {
             val record = JSONObject(it.readText())
             if (record.optBoolean("complete")) 0L else (record.getLong("sizeBytes") - File(pending, "${record.getString("sha256")}.part").length()).coerceAtLeast(0)
         }
-        require(pending.usableSpace - reserved - size >= FREE_SPACE_RESERVE) { "Not enough free tablet storage for these originals." }
+        MappingStorageBudget.requireFree(pending, reserved + size, bucket = "Original photos")
         writeJson(recordFile, JSONObject().put("name", name).put("sizeBytes", size).put("sha256", digest).put("complete", false))
         return progress(digest)
     }
@@ -49,7 +49,7 @@ class MappingPhotoStore(val directory: File) {
         val file = File(pending, "$digest.part")
         require(offset == file.length() && offset >= 0) { "Upload position changed. Select the files again to resume." }
         require(bytes.isNotEmpty() && bytes.size <= CHUNK_BYTES && offset + bytes.size <= record.getLong("sizeBytes")) { "Unsupported photo chunk." }
-        require(pending.usableSpace - bytes.size >= FREE_SPACE_RESERVE) { "Tablet storage is full. Originals already received are retained." }
+        MappingStorageBudget.requireFree(pending, bytes.size.toLong(), bucket = "Original photos")
         MappingMissionStorage.invalidate(file)
         try { RandomAccessFile(file, "rw").use { it.seek(offset); it.write(bytes); it.fd.sync() } }
         finally { MappingMissionStorage.invalidate(file) }
